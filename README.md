@@ -23,4 +23,5 @@ A streaming server which takes inputs and replicates them to multiple outputs.
 2. Nginx MLS: [github.com/live-miracles/MLS](https://github.com/live-miracles/MLS)
 3. Nginx MLS demo: [youtu.be/yzXuirkmexo](https://youtu.be/yzXuirkmexo)
 4. Go-MLS: [github.com/krsna1729/go-mls](https://github.com/krsna1729/go-mls)
-5. Daisy UI: [daisyui.com/](https://daisyui.com/)
+5. Go-MLS demo: [www.youtube.com/watch?v=x2x3uSCAX4M](https://www.youtube.com/watch?v=x2x3uSCAX4M)
+6. Daisy UI: [daisyui.com/](https://daisyui.com/)
