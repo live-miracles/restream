@@ -99,9 +99,9 @@ RUNNING -> ERROR
 
 ```json
 {
-  "id": "path_mystream",
-  "name": "mystream",
-  "status": "ACTIVE"
+    "id": "path_mystream",
+    "name": "mystream",
+    "status": "ACTIVE"
 }
 ```
 
@@ -109,11 +109,11 @@ RUNNING -> ERROR
 
 ```json
 {
-  "id": "pipeline_001",
-  "name": "yt-main-stream",
-  "input": { "path": "mystream" },
-  "outputs": [],
-  "state": "RUNNING"
+    "id": "pipeline_001",
+    "name": "yt-main-stream",
+    "input": { "path": "mystream" },
+    "outputs": [],
+    "state": "RUNNING"
 }
 ```
 

@@ -20,24 +20,24 @@
       async function loadInputs() {
         const r = await getInputs();
 
-        const div = document.getElementById("streams");
-        div.innerHTML = "";
+        const div = document.getElementById('streams');
+        div.innerHTML = '';
         r.data.forEach((item) => {
           div.innerHTML += `<div>${item.name}</div>`;
         });
       }
 
       async function addOutput() {
-        const inputPath = document.getElementById("inputPath").value;
-        const dest = document.getElementById("dest").value;
+        const inputPath = document.getElementById('inputPath').value;
+        const dest = document.getElementById('dest').value;
 
-        await fetch("/outputs/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        await fetch('/outputs/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ inputPath, outputUrl: dest }),
         });
 
-        alert("Output started!");
+        alert('Output started!');
       }
 
       loadInputs();

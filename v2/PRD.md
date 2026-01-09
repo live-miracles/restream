@@ -1,27 +1,30 @@
 # PRD v0.2 (English Version – Frozen)
 
 ## 1. Background / Motivation
+
 - The existing Nginx-based streaming system has pain points: repository structure is messy and difficult to maintain.
 - Decision: migrate to **MediaMTX**, which is actively maintained, well-documented, and easy to understand.
 - Goal: switch the backend to MediaMTX with minimal frontend changes, enabling stream management and FFmpeg-based live streaming.
 
 ## 2. Scope / Goals
+
 - **Backend responsibilities:**
-  - Manage **stream paths**
-  - Manage FFmpeg jobs for pushing streams to external platforms (e.g., YouTube, Facebook, Instagram)
-  - Provide clear API endpoints for frontend consumption
+    - Manage **stream paths**
+    - Manage FFmpeg jobs for pushing streams to external platforms (e.g., YouTube, Facebook, Instagram)
+    - Provide clear API endpoints for frontend consumption
 - Frontend changes are allowed but **not part of this PRD**.
 - **Deployment:**
-  - No Docker; run **Node.js + MediaMTX** directly
-  - Target environment: GCP instance
+    - No Docker; run **Node.js + MediaMTX** directly
+    - Target environment: GCP instance
 - **User system:**
-  - Single admin account
-  - Simple authentication (HTTP auth for MVP)
+    - Single admin account
+    - Simple authentication (HTTP auth for MVP)
 - **State management:**
-  - Only maintain **active stream paths**
-  - Log all user actions (create/update/delete for paths and outputs) for auditing purposes
+    - Only maintain **active stream paths**
+    - Log all user actions (create/update/delete for paths and outputs) for auditing purposes
 
 ## 3. MVP Features (Scope)
+
 - Stream key management (internal path naming)
 - Pipeline creation and assignment (mapping input paths to output streams)
 - Metrics monitoring (bitrate, codec, resolution, sample rate) using MediaMTX and/or ffprobe
@@ -29,6 +32,7 @@
 - FFmpeg job management for pushing streams to external platforms
 
 ## 4. Non-MVP / Future Enhancements
+
 - Better authentication (HTTPS, OAuth, Google Authenticator OTP, etc.)
 - Stream recording and download
 - Uploading local video files and converting to streams
@@ -38,6 +42,7 @@
 - Full configuration-based system (inputs, outputs, pipelines) via human-readable YAML/JSON
 
 ## 5. Key Design Assumptions
+
 1. MediaMTX manages paths and monitors publishers/readers but does **not perform encoding/decoding**.
 2. One publisher can write to a stream path; multiple readers can read concurrently.
 3. The system relies on FFmpeg to push streams to external platforms; the backend manages job lifecycles.
@@ -47,5 +52,6 @@
 ---
 
 ### Conclusion / Frozen Points
+
 - This version clearly defines: **backend responsibilities, deployment assumptions, single admin user, active stream path maintenance, FFmpeg job management, stream key/pipeline/metrics features**
 - Serves as a solid foundation for **RFC v0.1**

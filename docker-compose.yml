@@ -1,47 +1,47 @@
 services:
-  node-app:
-    build: .
-    container_name: node-app
-    ports:
-      - "3030:3030"
-    command: ["npm", "start"]
-    volumes:
-      - .:/app
-      - /app/node_modules
-    depends_on:
-      - mediamtx
+    node-app:
+        build: .
+        container_name: node-app
+        ports:
+            - '3030:3030'
+        command: ['npm', 'start']
+        volumes:
+            - .:/app
+            - /app/node_modules
+        depends_on:
+            - mediamtx
 
-  mediamtx:
-    image: bluenviron/mediamtx:1
-    container_name: mediamtx
-    ports:
-      - "1935:1935" # RTMP ingest
-      - "8554:8554" # RTSP
-      - "8888:8888" # HTTP interface / HLS
-      - "8889:8889" # WebRTC
-      - "8189:8189/udp"
-      - "8189:8189/tcp"
-      - "9997:9997" # API
-    volumes:
-      - ./mediamtx.yml:/mediamtx.yml
+    mediamtx:
+        image: bluenviron/mediamtx:1
+        container_name: mediamtx
+        ports:
+            - '1935:1935' # RTMP ingest
+            - '8554:8554' # RTSP
+            - '8888:8888' # HTTP interface / HLS
+            - '8889:8889' # WebRTC
+            - '8189:8189/udp'
+            - '8189:8189/tcp'
+            - '9997:9997' # API
+        volumes:
+            - ./mediamtx.yml:/mediamtx.yml
 
-  rtmp-ingest:
-    image: jrottenberg/ffmpeg:4.1-ubuntu
-    container_name: rtmp-ingest
-    # restart: unless-stopped
-    depends_on:
-      - mediamtx
-    volumes:
-      - ./test:/test
-    # command: >
-    #     -re -f lavfi -i testsrc=size=1280x720:rate=30
-    #     -f lavfi -i sine=frequency=1000
-    #     -c:v libx264 -preset veryfast -b:v 2500k
-    #     -c:a aac -b:a 128k
-    #     -f flv rtmp://mediamtx:1935/mystream
-    entrypoint: >
-      sh -c "
-      ffmpeg -re -stream_loop -1 -i /test/colorbar-timer.mp4
-      -c:v libx264 -preset veryfast -b:v 2500k
-      -c:a aac -b:a 128k -ac 2
-      -f flv rtmp://mediamtx:1935/mystream"
+    rtmp-ingest:
+        image: jrottenberg/ffmpeg:4.1-ubuntu
+        container_name: rtmp-ingest
+        # restart: unless-stopped
+        depends_on:
+            - mediamtx
+        volumes:
+            - ./test:/test
+        # command: >
+        #     -re -f lavfi -i testsrc=size=1280x720:rate=30
+        #     -f lavfi -i sine=frequency=1000
+        #     -c:v libx264 -preset veryfast -b:v 2500k
+        #     -c:a aac -b:a 128k
+        #     -f flv rtmp://mediamtx:1935/mystream
+        entrypoint: >
+            sh -c "
+            ffmpeg -re -stream_loop -1 -i /test/colorbar-timer.mp4
+            -c:v libx264 -preset veryfast -b:v 2500k
+            -c:a aac -b:a 128k -ac 2
+            -f flv rtmp://mediamtx:1935/mystream"
