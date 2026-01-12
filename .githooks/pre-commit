@@ -1,0 +1,5 @@
+#!/bin/sh
+make pretty || {
+  echo "❌ make pretty failed. Commit aborted."
+  exit 1
+}

@@ -21,6 +21,12 @@ A streaming server which takes inputs and replicates them to multiple outputs.
 - User can use the video as a source feed for any of the streams.
 - User can start stream recording.
 
+## Contribute
+After cloning, run: 
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Links
 
 1. MediaMTX: [github.com/bluenviron/mediamtx](https://github.com/bluenviron/mediamtx)
