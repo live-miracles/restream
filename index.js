@@ -1,21 +1,22 @@
 const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
 
-let jobs = {}; // keep FFmpeg processes
-
-// we should have the stream key management api here first.
-
-// Endpoint: create a stream key
-const crypto = require('crypto');
+/* ======================
+ * In-memory storage
+ * ====================== */
+let jobs = {};
 let streamKeys = {};
 
+/* ======================
+ * Models
+ * ====================== */
 
-// 1. steam key model
-// e.g.{"streamKey":"path_yang_2","label":"test"}
+// 1. StreamKey model
 class StreamKey {
     constructor({ key, label = null, createdAt } = {}) {
         this.key = key || crypto.randomBytes(12).toString('hex');
@@ -24,91 +25,94 @@ class StreamKey {
     }
 }
 
-// 2. pipeline model
+// 2. Pipeline model
 class Pipeline {
-    constructor({ id, name, createdAt, updatedAt } = {}) {
-        if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
+    constructor({ id, name, streamKey = null, createdAt, updatedAt } = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Pipeline.name is required');
+        }
         this.id = id || Date.now().toString();
         this.name = name;
+        this.streamKey = streamKey;
         this.createdAt = createdAt || new Date().toISOString();
         this.updatedAt = updatedAt || null;
-
     }
 }
 
-
-// 3. output model
+// 3. Output model
 class Output {
-    constructor({ id, type: name, url } = {}) {
-        if (!name || typeof name !== 'string') throw new Error('Output.name is required');
-        if (!url || typeof url !== 'string') throw new Error('Output.url is required');
+    constructor({ id, type, url } = {}) {
+        if (!type || typeof type !== 'string') {
+            throw new Error('Output.type is required');
+        }
+        if (!url || typeof url !== 'string') {
+            throw new Error('Output.url is required');
+        }
         this.id = id || Date.now().toString();
-        this.type = name;
+        this.type = type;
         this.url = url;
     }
 }
 
+/* ======================
+ * Stream Key APIs
+ * ====================== */
 
-
-// todo: storage for keys as we need to have descriptive names.
-// create a stream key
+// create stream key
 app.post('/stream-keys', async (req, res) => {
     try {
-        const { streamKey, label } = req.body || {};
-        const key = streamKey || crypto.randomBytes(12).toString('hex');
+        const streamKeyObj = new StreamKey({
+            key: req.body?.streamKey,
+            label: req.body?.label,
+        });
 
-        if (streamKeys[key]) {
+        if (streamKeys[streamKeyObj.key]) {
             return res.status(409).json({ error: 'Stream key already exists' });
         }
 
-        const url = `http://localhost:9997/v3/config/paths/add/${encodeURIComponent(key)}`;
+        const url = `http://localhost:9997/v3/config/paths/add/${encodeURIComponent(streamKeyObj.key)}`;
         const resp = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: key }),
+            body: JSON.stringify({ name: streamKeyObj.key }),
         });
 
-        let data = null;
-        try {
-            data = await resp.json();
-        } catch (e) {
-            /* no JSON body */
-            console.log('No JSON body in MediaMTX response');
-        }
-
+        const data = await resp.json().catch(() => null);
         if (!resp.ok || data?.error) {
-            return res
-                .status(500)
-                .json({ error: data?.error || `MediaMTX returned ${resp.status}` });
+            return res.status(500).json({
+                error: data?.error || `MediaMTX returned ${resp.status}`,
+            });
         }
 
-        streamKeys[key] = { key, label: label || null, createdAt: new Date().toISOString() };
-        return res.status(201).json({ message: 'Stream key created', streamKey: key });
+        streamKeys[streamKeyObj.key] = streamKeyObj;
+        return res.status(201).json({
+            message: 'Stream key created',
+            streamKey: streamKeyObj,
+        });
     } catch (err) {
-        console.error('Error creating stream key', err);
         return res.status(500).json({ error: err.toString() });
     }
 });
 
-// update a stream key's label
+// update stream key label
 app.post('/stream-keys/:key', (req, res) => {
     try {
         const { key } = req.params;
         const { label } = req.body || {};
 
-        if (!streamKeys[key]) {
+        const sk = streamKeys[key];
+        if (!sk) {
             return res.status(404).json({ error: 'Stream key not found' });
         }
 
-        streamKeys[key].label = label || null;
-        return res.json({ message: 'Stream key updated', streamKey: streamKeys[key] });
+        sk.label = label ?? null;
+        return res.json({ message: 'Stream key updated', streamKey: sk });
     } catch (err) {
-        console.error('Error updating stream key', err);
         return res.status(500).json({ error: err.toString() });
     }
 });
 
-// Endpoint: delete a stream key
+// delete stream key
 app.delete('/stream-keys/:key', async (req, res) => {
     try {
         const { key } = req.params;
@@ -120,213 +124,180 @@ app.delete('/stream-keys/:key', async (req, res) => {
         const url = `http://localhost:9997/v3/config/paths/remove/${encodeURIComponent(key)}`;
         const resp = await fetch(url, { method: 'POST' });
 
-        let data = null;
-        try {
-            data = await resp.json();
-        } catch (e) {
-            /* no JSON body */
-            console.log('No JSON body in MediaMTX response');
-        }
-
+        const data = await resp.json().catch(() => null);
         if (!resp.ok || data?.error) {
-            return res
-                .status(500)
-                .json({ error: data?.error || `MediaMTX returned ${resp.status}` });
+            return res.status(500).json({
+                error: data?.error || `MediaMTX returned ${resp.status}`,
+            });
         }
 
         delete streamKeys[key];
         return res.json({ message: 'Stream key deleted' });
     } catch (err) {
-        console.error('Error deleting stream key', err);
         return res.status(500).json({ error: err.toString() });
     }
 });
 
-// Endpoint: list all stream keys
+// list stream keys
 app.get('/stream-keys', (req, res) => {
     return res.json(Object.values(streamKeys));
 });
 
-// and then, the pipeline mgmt APIs go here
+/* ======================
+ * Pipeline APIs
+ * ====================== */
 
-// Endpoint: create a new pipeline
+// create pipeline
 app.post('/pipelines', (req, res) => {
-    // parse the request first
-    const { name } = req.body || {};
-    if (!name) {
-        return res.status(400).json({ error: 'Pipeline name is required' });
+    try {
+        const pipeline = new Pipeline({
+            name: req.body?.name,
+            streamKey: 'sample-stream-key',
+        });
+
+        return res.status(201).json({
+            message: 'Pipeline created',
+            pipeline,
+        });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
     }
-    // placeholder implementation
-    // return the pipeline object
-    const pipeline = {
-        id: Date.now().toString(),
-        name,
-        streamKey: "sample-stream-key", // stream key.
-        createdAt: new Date().toISOString(),
-    };
-    return res.status(201).json({ message: 'Pipeline created', pipeline });
 });
 
-// Endpoint: update an existing pipeline
-// we are now defining the signature of the API here. the body of implementation could be a placeholder for now.
+// update pipeline
 app.post('/pipelines/:id', (req, res) => {
-    const { id } = req.params;
-    const { name } = req.body || {};
-    if (!name) {
-        return res.status(400).json({ error: 'Pipeline name is required' });
+    try {
+        const pipeline = new Pipeline({
+            id: req.params.id,
+            name: req.body?.name,
+            updatedAt: new Date().toISOString(),
+        });
+
+        return res.json({
+            message: 'Pipeline updated',
+            pipeline,
+        });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
     }
-    // placeholder implementation
-    const pipeline = {
-        id,
-        name,
-        updatedAt: new Date().toISOString(),
-    };
-    return res.json({ message: 'Pipeline updated', pipeline });
 });
 
-// Endpoint: delete a pipeline
+// delete pipeline
 app.delete('/pipelines/:id', (req, res) => {
-    const { id } = req.params;
-    // placeholder implementation
-    return res.json({ message: `Pipeline ${id} deleted` });
+    return res.json({ message: `Pipeline ${req.params.id} deleted` });
 });
 
-// Endpoint: list all the pipelines
+// list pipelines
 app.get('/pipelines', (req, res) => {
-    // placeholder implementation
     const pipelines = [
-        {
-            id: '1',
-            name: 'Pipeline 1',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
-        {
-            id: '2',
-            name: 'Pipeline 2',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        },
+        new Pipeline({ id: '1', name: 'Pipeline 1' }),
+        new Pipeline({ id: '2', name: 'Pipeline 2' }),
     ];
     return res.json(pipelines);
 });
 
-// todo Add an endpoint: get all pipeline details including all outputs, like a big get of all configs.
+/* ======================
+ * Output APIs
+ * ====================== */
 
-// we need a global etag var, so that no conflicts happen when multiple users are updating outputs/pipelines.
-// 1. When fetching pipelines/outputs, return the etag in the response header.
-// 2. every 30 seconds, FE will call BE to get and check the etag. if etag is different, FE will refetch the data.
-// 3. when updating outputs/pipelines, FE will send the etag in the request header. BE will check if the etag matches the current one. if not, return 409 conflict.
-
-// and then, the output mgmt APIs go here
-
-// list all outputs from a pipeline
+// list outputs
 app.get('/pipelines/:id/outputs', (req, res) => {
-    const { id } = req.params;
-    // placeholder implementation
     const outputs = [
-        {
+        new Output({
             id: 'out1',
-            name: 'Output 1', // descriptive name
-            url: 'rtmp://example.com/live/stream1', // we dont care if its a FB YT or sth.
-        },
-        {
+            type: 'rtmp',
+            url: 'rtmp://example.com/live/stream1',
+        }),
+        new Output({
             id: 'out2',
-            name: 'Output 2', // descriptive name
-            url: 'rtmp://example.com/live/stream1', // we dont care if its a FB YT or sth.
-        },
+            type: 'rtmp',
+            url: 'rtmp://example.com/live/stream2',
+        }),
     ];
     return res.json(outputs);
 });
 
-// Endpoint: create an output in a pipeline
+// create output
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
-    const { pipelineId } = req.params;
-    const { type, url } = req.body || {};
-    if (!type || !url) {
-        return res.status(400).json({ error: 'Output type and URL are required' });
+    try {
+        const output = new Output(req.body);
+        return res.status(201).json({
+            message: 'Output created',
+            output,
+        });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
     }
-    // placeholder implementation
-    const output = {
-        id: Date.now().toString(),
-        type,
-        url,
-    };
-    return res.status(201).json({ message: 'Output created', output });
 });
 
-// Endpoint: update an output in a pipeline
+// update output
 app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    const { pipelineId, outputId } = req.params;
-    const { type, url } = req.body || {};
-    if (!type || !url) {
-        return res.status(400).json({ error: 'Output type and URL are required' });
+    try {
+        const output = new Output({
+            id: req.params.outputId,
+            type: req.body?.type,
+            url: req.body?.url,
+        });
+
+        return res.json({
+            message: 'Output updated',
+            output,
+        });
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
     }
-    // placeholder implementation
-    const output = {
-        id: outputId,
-        type,
-        url,
-    };
-    return res.json({ message: 'Output updated', output });
 });
 
-// Endpoint: delete an output from a pipeline
+// delete output
 app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    const { pipelineId, outputId } = req.params;
-    // placeholder implementation
-    return res.json({ message: `Output ${outputId} from pipeline ${pipelineId} deleted` });
+    return res.json({
+        message: `Output ${req.params.outputId} from pipeline ${req.params.pipelineId} deleted`,
+    });
 });
 
-// Endpoint: get details of an output in a pipeline
+// get output detail
 app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    const { pipelineId, outputId } = req.params;
-    // placeholder implementation
-    const output = {
-        id: outputId,
-        name: 'rtmp',
+    const output = new Output({
+        id: req.params.outputId,
+        type: 'rtmp',
         url: 'rtmp://example.com/live/stream1',
-    };
+    });
     return res.json(output);
 });
 
-// Endpoint: start an output
+// start output
 app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {
-    const { pipelineId, outputId } = req.params;
-    // placeholder implementation
     return res.json({
-        message: `Output ${outputId} from pipeline ${pipelineId} started`,
+        message: `Output ${req.params.outputId} from pipeline ${req.params.pipelineId} started`,
         success: true,
     });
 });
 
-// Endpoint: stop an output
+// stop output
 app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
-    const { pipelineId, outputId } = req.params;
-    // placeholder implementation
     return res.json({
-        message: `Output ${outputId} from pipeline ${pipelineId} stopped`,
+        message: `Output ${req.params.outputId} from pipeline ${req.params.pipelineId} stopped`,
         success: true,
     });
 });
 
-// Metrics APIs go here
-// Endpoint: Get Metrics
-// status: OFF, ACTIVE, WARNING, ERROR
+/* ======================
+ * Metrics
+ * ====================== */
 
-// Metrics: List active inputs (ask MediaMTX)
 app.get('/inputs', async (req, res) => {
     try {
         const resp = await fetch('http://localhost:9997/v3/paths/list');
         const data = await resp.json();
         res.json(data.items);
     } catch (err) {
-        console.log('Error fetching /inputs', err);
         res.status(500).json({ error: err.toString() });
     }
 });
 
-// todo: more metrics endpoints as needed, e.g., pipelines, RTMP outputs. thru MediaMTX API.
+/* ======================
+ * Static UI & Server
+ * ====================== */
 
 app.use('/dashboard', express.static(path.join(__dirname, 'ui')));
 
