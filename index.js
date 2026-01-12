@@ -13,7 +13,44 @@ let jobs = {}; // keep FFmpeg processes
 const crypto = require('crypto');
 let streamKeys = {};
 
-// todo storage for keys as we need to have descriptive names.
+
+// 1. steam key model
+// e.g.{"streamKey":"path_yang_2","label":"test"}
+class StreamKey {
+    constructor({ key, label = null, createdAt } = {}) {
+        this.key = key || crypto.randomBytes(12).toString('hex');
+        this.label = label ?? null;
+        this.createdAt = createdAt || new Date().toISOString();
+    }
+}
+
+// 2. pipeline model
+class Pipeline {
+    constructor({ id, name, createdAt, updatedAt } = {}) {
+        if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
+        this.id = id || Date.now().toString();
+        this.name = name;
+        this.createdAt = createdAt || new Date().toISOString();
+        this.updatedAt = updatedAt || null;
+
+    }
+}
+
+
+// 3. output model
+class Output {
+    constructor({ id, type: name, url } = {}) {
+        if (!name || typeof name !== 'string') throw new Error('Output.name is required');
+        if (!url || typeof url !== 'string') throw new Error('Output.url is required');
+        this.id = id || Date.now().toString();
+        this.type = name;
+        this.url = url;
+    }
+}
+
+
+
+// todo: storage for keys as we need to have descriptive names.
 // create a stream key
 app.post('/stream-keys', async (req, res) => {
     try {
@@ -124,6 +161,7 @@ app.post('/pipelines', (req, res) => {
     const pipeline = {
         id: Date.now().toString(),
         name,
+        streamKey: "sample-stream-key", // stream key.
         createdAt: new Date().toISOString(),
     };
     return res.status(201).json({ message: 'Pipeline created', pipeline });
@@ -172,6 +210,13 @@ app.get('/pipelines', (req, res) => {
     ];
     return res.json(pipelines);
 });
+
+// todo Add an endpoint: get all pipeline details including all outputs, like a big get of all configs.
+
+// we need a global etag var, so that no conflicts happen when multiple users are updating outputs/pipelines.
+// 1. When fetching pipelines/outputs, return the etag in the response header.
+// 2. every 30 seconds, FE will call BE to get and check the etag. if etag is different, FE will refetch the data.
+// 3. when updating outputs/pipelines, FE will send the etag in the request header. BE will check if the etag matches the current one. if not, return 409 conflict.
 
 // and then, the output mgmt APIs go here
 
