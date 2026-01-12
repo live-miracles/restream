@@ -299,6 +299,6 @@ app.get('/inputs', async (req, res) => {
  * Static UI & Server
  * ====================== */
 
-app.use('/dashboard', express.static(path.join(__dirname, 'ui')));
+app.use('/', express.static(path.join(__dirname, 'ui')));
 
 app.listen(3030, () => console.log('Controller running on 3030'));

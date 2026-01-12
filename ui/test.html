@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Restreamer</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="./script.js"></script>
+  </head>
+  <body>
+    <h2>Active Streams</h2>
+    <div id="streams"></div>
+    <iframe src="http://localhost:8889/mystream" scrolling="no"></iframe>
+
+    <h3>Add Output</h3>
+    <input id="inputPath" placeholder="live/stream1" /><br />
+    <input id="dest" placeholder="rtmp://youtube.com/live2" /><br />
+    <button onclick="addOutput()">Add Output</button>
+
+    <script>
+      async function loadInputs() {
+        const r = await getInputs();
+
+        const div = document.getElementById('streams');
+        div.innerHTML = '';
+        r.data.forEach((item) => {
+          div.innerHTML += `<div>${item.name}</div>`;
+        });
+      }
+
+      async function addOutput() {
+        const inputPath = document.getElementById('inputPath').value;
+        const dest = document.getElementById('dest').value;
+
+        await fetch('/outputs/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inputPath, outputUrl: dest }),
+        });
+
+        alert('Output started!');
+      }
+
+      loadInputs();
+      setInterval(loadInputs, 2000);
+    </script>
+  </body>
+</html>
