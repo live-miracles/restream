@@ -71,7 +71,6 @@ app.post('/stream-keys/:key', (req, res) => {
     }
 });
 
-
 // Endpoint: delete a stream key
 app.delete('/stream-keys/:key', async (req, res) => {
     try {
@@ -147,7 +146,6 @@ app.post('/pipelines/:id', (req, res) => {
     return res.json({ message: 'Pipeline updated', pipeline });
 });
 
-
 // Endpoint: delete a pipeline
 app.delete('/pipelines/:id', (req, res) => {
     const { id } = req.params;
@@ -155,15 +153,21 @@ app.delete('/pipelines/:id', (req, res) => {
     return res.json({ message: `Pipeline ${id} deleted` });
 });
 
-
-
 // Endpoint: list all the pipelines
 app.get('/pipelines', (req, res) => {
     // placeholder implementation
     const pipelines = [
-        { id: '1', name: 'Pipeline 1', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        {
+            id: '1',
+            name: 'Pipeline 1',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
         },
-        { id: '2', name: 'Pipeline 2', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        {
+            id: '2',
+            name: 'Pipeline 2',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
         },
     ];
     return res.json(pipelines);
@@ -190,7 +194,6 @@ app.get('/pipelines/:id/outputs', (req, res) => {
     return res.json(outputs);
 });
 
-
 // Endpoint: create an output in a pipeline
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     const { pipelineId } = req.params;
@@ -206,7 +209,6 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     };
     return res.status(201).json({ message: 'Output created', output });
 });
-
 
 // Endpoint: update an output in a pipeline
 app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
@@ -224,14 +226,12 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
     return res.json({ message: 'Output updated', output });
 });
 
-
 // Endpoint: delete an output from a pipeline
 app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
     const { pipelineId, outputId } = req.params;
     // placeholder implementation
     return res.json({ message: `Output ${outputId} from pipeline ${pipelineId} deleted` });
 });
-
 
 // Endpoint: get details of an output in a pipeline
 app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
@@ -245,27 +245,29 @@ app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
     return res.json(output);
 });
 
-
-
-
 // Endpoint: start an output
 app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {
     const { pipelineId, outputId } = req.params;
     // placeholder implementation
-    return res.json({ message: `Output ${outputId} from pipeline ${pipelineId} started`, success: true });
+    return res.json({
+        message: `Output ${outputId} from pipeline ${pipelineId} started`,
+        success: true,
+    });
 });
 
 // Endpoint: stop an output
 app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
     const { pipelineId, outputId } = req.params;
     // placeholder implementation
-    return res.json({ message: `Output ${outputId} from pipeline ${pipelineId} stopped`, success: true });
+    return res.json({
+        message: `Output ${outputId} from pipeline ${pipelineId} stopped`,
+        success: true,
+    });
 });
 
 // Metrics APIs go here
 // Endpoint: Get Metrics
 // status: OFF, ACTIVE, WARNING, ERROR
-
 
 // Metrics: List active inputs (ask MediaMTX)
 app.get('/inputs', async (req, res) => {
@@ -280,7 +282,6 @@ app.get('/inputs', async (req, res) => {
 });
 
 // todo: more metrics endpoints as needed, e.g., pipelines, RTMP outputs. thru MediaMTX API.
-
 
 app.use('/dashboard', express.static(path.join(__dirname, 'ui')));
 

@@ -22,7 +22,9 @@ A streaming server which takes inputs and replicates them to multiple outputs.
 - User can start stream recording.
 
 ## Contribute
-After cloning, run: 
+
+After cloning, run:
+
 ```sh
 git config core.hooksPath .githooks
 ```

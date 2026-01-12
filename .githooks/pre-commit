@@ -1,5 +1,7 @@
 #!/bin/sh
-make pretty || {
-  echo "❌ make pretty failed. Commit aborted."
-  exit 1
-}
+set -e
+
+echo "Checking code formatting..."
+npx prettier --check .
+
+echo "Formatting looks good 👍"
