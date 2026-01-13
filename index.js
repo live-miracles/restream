@@ -1,9 +1,17 @@
+
+
+/* top requires */
 const express = require('express');
+const fetch = global.fetch || require('node-fetch'); // keep compatibility
+const db = require('./db');
+
+const app = express();
+app.use(express.json());
+
 const { spawn } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
 
-const app = express();
 app.use(express.json());
 
 /* ======================
@@ -54,40 +62,44 @@ class Output {
     }
 }
 
+// i think we should add the sqlite dependency now.
+// and also, add the interactions with mediaMTX, like creating/removing paths
+
 /* ======================
- * Stream Key APIs
+ * Stream Key APIs (updated to use SQLite)
  * ====================== */
 
 // create stream key
 app.post('/stream-keys', async (req, res) => {
     try {
-        const streamKeyObj = new StreamKey({
-            key: req.body?.streamKey,
-            label: req.body?.label,
-        });
+        const key = req.body?.streamKey || crypto.randomBytes(12).toString('hex');
+        const label = req.body?.label ?? null;
 
-        if (streamKeys[streamKeyObj.key]) {
+        if (db.getStreamKey(key)) {
             return res.status(409).json({ error: 'Stream key already exists' });
         }
 
-        const url = `http://localhost:9997/v3/config/paths/add/${encodeURIComponent(streamKeyObj.key)}`;
+        // call MediaMTX
+        const url = `http://localhost:9997/v3/config/paths/add/${encodeURIComponent(key)}`;
         const resp = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: streamKeyObj.key }),
+            body: JSON.stringify({ name: key }),
         });
 
-        const data = await resp.json().catch(() => null);
+        let data = null;
+        try { data = await resp.json(); } catch (e) { /* ignore parse errors */ }
+
         if (!resp.ok || data?.error) {
             return res.status(500).json({
                 error: data?.error || `MediaMTX returned ${resp.status}`,
             });
         }
 
-        streamKeys[streamKeyObj.key] = streamKeyObj;
+        const sk = db.createStreamKey({ key, label, createdAt: new Date().toISOString() });
         return res.status(201).json({
             message: 'Stream key created',
-            streamKey: streamKeyObj,
+            streamKey: sk,
         });
     } catch (err) {
         return res.status(500).json({ error: err.toString() });
@@ -100,13 +112,13 @@ app.post('/stream-keys/:key', (req, res) => {
         const { key } = req.params;
         const { label } = req.body || {};
 
-        const sk = streamKeys[key];
-        if (!sk) {
+        const existing = db.getStreamKey(key);
+        if (!existing) {
             return res.status(404).json({ error: 'Stream key not found' });
         }
 
-        sk.label = label ?? null;
-        return res.json({ message: 'Stream key updated', streamKey: sk });
+        const updated = db.updateStreamKey(key, label ?? null);
+        return res.json({ message: 'Stream key updated', streamKey: updated });
     } catch (err) {
         return res.status(500).json({ error: err.toString() });
     }
@@ -117,21 +129,28 @@ app.delete('/stream-keys/:key', async (req, res) => {
     try {
         const { key } = req.params;
 
-        if (!streamKeys[key]) {
+        const existing = db.getStreamKey(key);
+        if (!existing) {
             return res.status(404).json({ error: 'Stream key not found' });
         }
 
         const url = `http://localhost:9997/v3/config/paths/remove/${encodeURIComponent(key)}`;
         const resp = await fetch(url, { method: 'POST' });
 
-        const data = await resp.json().catch(() => null);
+        let data = null;
+        try { data = await resp.json(); } catch (e) { /* ignore parse errors */ }
+
         if (!resp.ok || data?.error) {
             return res.status(500).json({
                 error: data?.error || `MediaMTX returned ${resp.status}`,
             });
         }
 
-        delete streamKeys[key];
+        const deleted = db.deleteStreamKey(key);
+        if (!deleted) {
+            return res.status(500).json({ error: 'Failed to remove stream key from DB' });
+        }
+
         return res.json({ message: 'Stream key deleted' });
     } catch (err) {
         return res.status(500).json({ error: err.toString() });
@@ -140,8 +159,14 @@ app.delete('/stream-keys/:key', async (req, res) => {
 
 // list stream keys
 app.get('/stream-keys', (req, res) => {
-    return res.json(Object.values(streamKeys));
+    try {
+        const keys = db.listStreamKeys();
+        return res.json(keys);
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
+
 
 /* ======================
  * Pipeline APIs
