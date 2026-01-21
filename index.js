@@ -172,18 +172,18 @@ app.get('/stream-keys', (req, res) => {
  * Pipeline APIs
  * ====================== */
 
+// javascript
+
 // create pipeline
 app.post('/pipelines', (req, res) => {
     try {
-        const pipeline = new Pipeline({
-            name: req.body?.name,
-            streamKey: 'sample-stream-key',
-        });
+        const name = req.body?.name;
+        const streamKey = req.body?.streamKey ?? null;
 
-        return res.status(201).json({
-            message: 'Pipeline created',
-            pipeline,
-        });
+        const pipeline = db.createPipeline({ name, streamKey });
+        // recompute global etag if available
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+        return res.status(201).json({ message: 'Pipeline created', pipeline });
     } catch (err) {
         return res.status(400).json({ error: err.message });
     }
@@ -192,16 +192,18 @@ app.post('/pipelines', (req, res) => {
 // update pipeline
 app.post('/pipelines/:id', (req, res) => {
     try {
-        const pipeline = new Pipeline({
-            id: req.params.id,
-            name: req.body?.name,
-            updatedAt: new Date().toISOString(),
-        });
+        const id = req.params.id;
+        const existing = db.getPipeline(id);
+        if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
 
-        return res.json({
-            message: 'Pipeline updated',
-            pipeline,
-        });
+        const name = req.body?.name ?? existing.name;
+        const streamKey = req.body?.streamKey ?? existing.streamKey;
+
+        const updated = db.updatePipeline(id, { name, streamKey });
+        if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
+
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+        return res.json({ message: 'Pipeline updated', pipeline: updated });
     } catch (err) {
         return res.status(400).json({ error: err.message });
     }
@@ -209,16 +211,29 @@ app.post('/pipelines/:id', (req, res) => {
 
 // delete pipeline
 app.delete('/pipelines/:id', (req, res) => {
-    return res.json({ message: `Pipeline ${req.params.id} deleted` });
+    try {
+        const id = req.params.id;
+        const existing = db.getPipeline(id);
+        if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const ok = db.deletePipeline(id);
+        if (!ok) return res.status(500).json({ error: 'Failed to delete pipeline' });
+
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+        return res.json({ message: `Pipeline ${id} deleted` });
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
 
 // list pipelines
 app.get('/pipelines', (req, res) => {
-    const pipelines = [
-        new Pipeline({ id: '1', name: 'Pipeline 1' }),
-        new Pipeline({ id: '2', name: 'Pipeline 2' }),
-    ];
-    return res.json(pipelines);
+    try {
+        const pipelines = db.listPipelines();
+        return res.json(pipelines);
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
 
 /* ======================
@@ -327,3 +342,8 @@ app.get('/inputs', async (req, res) => {
 app.use('/', express.static(path.join(__dirname, 'ui')));
 
 app.listen(3030, () => console.log('Controller running on 3030'));
+
+// todo: add an etag, for the FE to check the last modified time of the entire config.
+
+
+

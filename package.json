@@ -13,7 +13,7 @@
     "type": "commonjs",
     "dependencies": {
         "better-sqlite3": "12.6.0",
-        "body-parser": "2.2.0",
+        "body-parser": "2.2.2",
         "cors": "2.8.5",
         "express": "5.1.0",
         "package.json": "0.0.0"
