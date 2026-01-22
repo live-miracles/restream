@@ -1,5 +1,8 @@
 .PHONY: *
 
+all:
+	make start-ui
+
 pretty:
 	npx prettier --write .
 

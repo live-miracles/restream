@@ -2,9 +2,10 @@
 <html lang="en" data-theme="dim">
   <head>
     <meta charset="UTF-8" />
-    <title>Dashboard</title>
+    <title data-name="Dashboard">Dashboard</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
+    <script type="text/javascript" src="toml-parser.min.js"></script>
     <script type="text/javascript" src="tools.js"></script>
     <script type="text/javascript" src="pipeline.js"></script>
     <script type="text/javascript" src="api.js"></script>
@@ -13,18 +14,12 @@
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
     <div class="navbar bg-base-100 shrink-0">
       <div class="flex-1">
-        <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">MLS</button>
+        <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">Restream</button>
       </div>
       <div class="flex-none">
         <ul class="menu menu-horizontal px-1">
-          <li><a href="/control.html" class="dynamic-params">Control</a></li>
-          <li><a href="/settings.html" class="dynamic-params">Settings</a></li>
-          <li>
-            <a href="/stat" target="_blank" t>Stats</a>
-          </li>
-          <li><a href="/recording" target="_blank">Recordings</a></li>
-          <li><a href="/config.php?proclist" target="_blank">Processes</a></li>
-          <li><a href="https://github.com/isha-live/MLS" target="_blank">GitHub</a></li>
+          <li><a href="/stream-keys.html" class="dynamic-params">Keys</a></li>
+          <li><a href="https://github.com/live-miracles/restream" target="_blank">GitHub</a></li>
         </ul>
       </div>
     </div>

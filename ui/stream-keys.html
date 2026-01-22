@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dim">
+  <head>
+    <meta charset="UTF-8" />
+    <title data-name="Keys">Keys</title>
+    <link rel="icon" type="image/png" href="logo.png" />
+    <link rel="stylesheet" type="text/css" href="output.css" />
+    <script type="text/javascript" src="toml-parser.min.js"></script>
+    <script type="text/javascript" src="tools.js"></script>
+
+    <script type="text/javascript" src="stream-keys.js" defer></script>
+  </head>
+  <body class="bg-base-100 text-base-content flex h-screen flex-col">
+    <div class="navbar bg-base-100 shrink-0">
+      <div class="flex-1">
+        <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">MLS</button>
+      </div>
+      <div class="flex-none">
+        <ul class="menu menu-horizontal px-1">
+          <li><a href="/stream-keys.html" class="dynamic-params">Keys</a></li>
+          <li><a href="https://github.com/live-miracles/restream" target="_blank">GitHub</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div
+      id="streaming-config-changed-alert"
+      role="alert"
+      class="alert alert-warning fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+      <span>Warning: The streaming configurations were changed by someone. Please refresh the page.</span>
+    </div>
+
+    <div
+      role="alert"
+      id="error-alert"
+      class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span id="error-msg"></span>
+    </div>
+
+    <div></div>
+  </body>
+</html>

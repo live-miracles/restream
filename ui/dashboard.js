@@ -551,11 +551,6 @@ function selectPipeline(id) {
     renderPipelines();
 }
 
-async function fetchConfigs() {
-    const res = await fetch('restream.json');
-    return await res.json();
-}
-
 async function checkStreamingConfigs(secondTime = false) {
     const config = await fetchConfigFile();
     if (
@@ -584,9 +579,7 @@ async function rerenderStatuses() {
 (async () => {
     setVideoPlayers();
 
-    config = await fetchConfigs();
-    document.title = config['server-name'] + ': Dashboard';
-    document.getElementById('server-name').innerHTML = 'MLS: ' + config['server-name'];
+    setServerConfig();
 
     const streamConfig = await fetchConfigFile();
     streamNames = streamConfig.names;
