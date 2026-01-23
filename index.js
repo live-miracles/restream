@@ -240,70 +240,102 @@ app.get('/pipelines', (req, res) => {
  * Output APIs
  * ====================== */
 
-// list outputs
+// list outputs for pipeline
 app.get('/pipelines/:id/outputs', (req, res) => {
-    const outputs = [
-        new Output({
-            id: 'out1',
-            type: 'rtmp',
-            url: 'rtmp://example.com/live/stream1',
-        }),
-        new Output({
-            id: 'out2',
-            type: 'rtmp',
-            url: 'rtmp://example.com/live/stream2',
-        }),
-    ];
-    return res.json(outputs);
+    try {
+        const pid = req.params.id;
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const outputs = db.listOutputs(pid);
+        return res.json(outputs);
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
 
 // create output
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     try {
-        const output = new Output(req.body);
-        return res.status(201).json({
-            message: 'Output created',
-            output,
-        });
+        const pid = req.params.pipelineId;
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const type = req.body?.type;
+        const url = req.body?.url;
+
+        const output = db.createOutput({ pipelineId: pid, type, url });
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+
+        return res.status(201).json({ message: 'Output created', output });
     } catch (err) {
-        return res.status(400).json({ error: err.message });
+        return res.status(400).json({ error: err.message || err.toString() });
     }
 });
 
 // update output
 app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
     try {
-        const output = new Output({
-            id: req.params.outputId,
-            type: req.body?.type,
-            url: req.body?.url,
-        });
+        const pid = req.params.pipelineId;
+        const oid = req.params.outputId;
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
 
-        return res.json({
-            message: 'Output updated',
-            output,
-        });
+        const existing = db.getOutput(pid, oid);
+        if (!existing) return res.status(404).json({ error: 'Output not found' });
+
+        const type = req.body?.type ?? existing.type;
+        const url = req.body?.url ?? existing.url;
+
+        const updated = db.updateOutput(pid, oid, { type, url });
+        if (!updated) return res.status(500).json({ error: 'Failed to update output' });
+
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+        return res.json({ message: 'Output updated', output: updated });
     } catch (err) {
-        return res.status(400).json({ error: err.message });
+        return res.status(400).json({ error: err.message || err.toString() });
     }
 });
 
 // delete output
 app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    return res.json({
-        message: `Output ${req.params.outputId} from pipeline ${req.params.pipelineId} deleted`,
-    });
+    try {
+        const pid = req.params.pipelineId;
+        const oid = req.params.outputId;
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const existing = db.getOutput(pid, oid);
+        if (!existing) return res.status(404).json({ error: 'Output not found' });
+
+        const ok = db.deleteOutput(pid, oid);
+        if (!ok) return res.status(500).json({ error: 'Failed to delete output' });
+
+        if (typeof recomputeEtag === 'function') recomputeEtag();
+        return res.json({ message: `Output ${oid} from pipeline ${pid} deleted` });
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
 
 // get output detail
 app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    const output = new Output({
-        id: req.params.outputId,
-        type: 'rtmp',
-        url: 'rtmp://example.com/live/stream1',
-    });
-    return res.json(output);
+    try {
+        const pid = req.params.pipelineId;
+        const oid = req.params.outputId;
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const output = db.getOutput(pid, oid);
+        if (!output) return res.status(404).json({ error: 'Output not found' });
+
+        return res.json(output);
+    } catch (err) {
+        return res.status(500).json({ error: err.toString() });
+    }
 });
+
+// todo, to be updated.
 
 // start output
 app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {

@@ -3,8 +3,9 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const db = new Database(path.join(__dirname, 'data.db'));
+db.pragma('foreign_keys = ON');
 
-// stream_keys (existing)
+/* stream_keys table */
 db.prepare(`
   CREATE TABLE IF NOT EXISTS stream_keys (
     key TEXT PRIMARY KEY,
@@ -13,18 +14,19 @@ db.prepare(`
   )
 `).run();
 
-// pipelines
+/* pipelines table */
 db.prepare(`
   CREATE TABLE IF NOT EXISTS pipelines (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     stream_key TEXT,
     created_at TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    FOREIGN KEY(stream_key) REFERENCES stream_keys(key) ON DELETE SET NULL
   )
 `).run();
 
-// outputs (optional, related to pipelines)
+/* outputs table */
 db.prepare(`
   CREATE TABLE IF NOT EXISTS outputs (
     id TEXT PRIMARY KEY,
@@ -60,7 +62,7 @@ const updateOutputStmt = db.prepare('UPDATE outputs SET type = @type, url = @url
 const deleteOutputStmt = db.prepare('DELETE FROM outputs WHERE id = ? AND pipeline_id = ?');
 
 module.exports = {
-    /* Stream key helpers (unchanged) */
+    /* stream key helpers */
     createStreamKey({ key, label, createdAt }) {
         insertStreamKey.run({ key, label, created_at: createdAt });
         return getStreamKeyStmt.get(key);
@@ -80,7 +82,7 @@ module.exports = {
         return info.changes > 0;
     },
 
-    /* Pipeline helpers */
+    /* pipeline helpers */
     createPipeline({ id, name, streamKey = null, createdAt }) {
         if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
         const pid = id || crypto.randomBytes(8).toString('hex');
@@ -104,7 +106,7 @@ module.exports = {
         return info.changes > 0;
     },
 
-    /* Output helpers (optional) */
+    /* output helpers */
     createOutput({ id, pipelineId, type, url, createdAt }) {
         if (!pipelineId) throw new Error('pipelineId is required');
         if (!type || !url) throw new Error('Output.type and Output.url are required');
