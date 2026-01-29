@@ -40,6 +40,42 @@ db.prepare(`
 
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_outputs_pipeline ON outputs(pipeline_id)`).run();
 
+
+/* jobs table */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    pipeline_id TEXT NOT NULL,
+    output_id TEXT NOT NULL,
+    pid INTEGER,
+    status TEXT NOT NULL, -- running | stopped | failed
+    started_at TEXT,
+    ended_at TEXT,
+    exit_code INTEGER,
+    exit_signal TEXT,
+    FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE,
+    FOREIGN KEY(output_id) REFERENCES outputs(id) ON DELETE CASCADE
+  )
+`).run();
+
+db.prepare(`
+  CREATE INDEX IF NOT EXISTS idx_jobs_pipeline_output ON jobs(pipeline_id, output_id)
+`).run();
+
+/* job_logs table */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS job_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    ts TEXT,
+    message TEXT,
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+  )
+`).run();
+
+
+
+
 /* StreamKey statements */
 const insertStreamKey = db.prepare('INSERT INTO stream_keys (key, label, created_at) VALUES (@key, @label, @created_at)');
 const getStreamKeyStmt = db.prepare('SELECT key, label, created_at AS createdAt FROM stream_keys WHERE key = ?');
@@ -60,6 +96,39 @@ const getOutputStmt = db.prepare('SELECT id, pipeline_id AS pipelineId, type, ur
 const listOutputsStmt = db.prepare('SELECT id, pipeline_id AS pipelineId, type, url, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at DESC');
 const updateOutputStmt = db.prepare('UPDATE outputs SET type = @type, url = @url WHERE id = @id AND pipeline_id = @pipeline_id');
 const deleteOutputStmt = db.prepare('DELETE FROM outputs WHERE id = ? AND pipeline_id = ?');
+
+
+/* Job statements */
+const insertJob = db.prepare(`
+  INSERT INTO jobs (id, pipeline_id, output_id, pid, status, started_at) 
+  VALUES (@id, @pipeline_id, @output_id, @pid, @status, @started_at)
+`);
+const getJobStmt = db.prepare(`
+  SELECT id, pipeline_id AS pipelineId, output_id AS outputId, pid, status, started_at AS startedAt, ended_at AS endedAt, exit_code AS exitCode, exit_signal AS exitSignal
+  FROM jobs WHERE id = ?
+`);
+const getRunningJobByPipelineOutputStmt = db.prepare(`
+  SELECT * FROM jobs WHERE pipeline_id = ? AND output_id = ? AND status = 'running' LIMIT 1
+`);
+const updateJobStmt = db.prepare(`
+  UPDATE jobs SET pid = @pid, status = @status, ended_at = @ended_at, exit_code = @exit_code, exit_signal = @exit_signal WHERE id = @id
+`);
+const listJobsForOutputStmt = db.prepare(`
+  SELECT id, pipeline_id AS pipelineId, output_id AS outputId, pid, status, started_at AS startedAt, ended_at AS endedAt, exit_code AS exitCode, exit_signal AS exitSignal
+  FROM jobs WHERE pipeline_id = ? AND output_id = ? ORDER BY started_at DESC
+`);
+
+/* JobLog statements */
+const insertJobLog = db.prepare(`
+  INSERT INTO job_logs (job_id, ts, message) VALUES (@job_id, @ts, @message)
+`);
+const listJobLogs = db.prepare(`
+  SELECT ts, message FROM job_logs WHERE job_id = ? ORDER BY id ASC
+`);
+
+
+
+/* Exported DB helpers */
 
 module.exports = {
     /* stream key helpers */
@@ -128,7 +197,37 @@ module.exports = {
     deleteOutput(pipelineId, id) {
         const info = deleteOutputStmt.run(id, pipelineId);
         return info.changes > 0;
+    },
+
+    /* job helpers */
+    createJob({ id, pipelineId, outputId, pid = null, status = 'running', startedAt }) {
+        const jid = id || crypto.randomBytes(8).toString('hex');
+        const now = startedAt || new Date().toISOString();
+        insertJob.run({ id: jid, pipeline_id: pipelineId, output_id: outputId, pid, status, started_at: now });
+        return getJobStmt.get(jid);
+    },
+    getJob(id) {
+        return getJobStmt.get(id);
+    },
+    getRunningJobFor(pipelineId, outputId) {
+        return getRunningJobByPipelineOutputStmt.get(pipelineId, outputId);
+    },
+    updateJob(id, { pid = null, status = null, endedAt = null, exitCode = null, exitSignal = null } = {}) {
+        updateJobStmt.run({ id, pid, status, ended_at: endedAt, exit_code: exitCode, exit_signal: exitSignal });
+        return getJobStmt.get(id);
+    },
+    listJobsForOutput(pipelineId, outputId) {
+        return listJobsForOutputStmt.all(pipelineId, outputId);
+    },
+
+    /* job log helpers */
+    appendJobLog(jobId, message) {
+        try {
+            insertJobLog.run({ job_id: jobId, ts: new Date().toISOString(), message });
+        } catch (e) { /* ignore logging failures */ }
+    },
+    listJobLogs(jobId) {
+        return listJobLogs.all(jobId);
     }
 };
-
 

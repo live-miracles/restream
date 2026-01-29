@@ -18,7 +18,9 @@ app.use(express.json());
  * In-memory storage
  * ====================== */
 let jobs = {};
-let streamKeys = {};
+
+const processes = new Map(); // runtime only: jobId -> ChildProcess
+
 
 /* ======================
  * Models
@@ -340,7 +342,7 @@ app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
 // we should manage the FFMPEG processes here, and start/stop them accordingly.
 
 // start output (spawn ffmpeg)
-app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {
+app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
     try {
         const pid = req.params.pipelineId;
         const oid = req.params.outputId;
@@ -350,24 +352,16 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {
         const output = db.getOutput(pid, oid);
         if (!output) return res.status(404).json({ error: 'Output not found' });
 
-        const jobKey = `${pid}:${oid}`;
-        if (jobs[jobKey] && jobs[jobKey].process && !jobs[jobKey].exited) {
-            return res.status(409).json({ error: 'Output process already running' });
-        }
+        // ensure no running job in DB for this pipeline+output
+        const existingRunning = db.getRunningJobFor(pid, oid);
+        if (existingRunning) return res.status(409).json({ error: 'Output already has a running job', job: existingRunning });
 
-        // determine input URL: prefer pipeline.streamKey, fallback to request body inputUrl
-        const inputUrl = pipeline.streamKey
-            ? `rtmp://localhost:1935/${pipeline.streamKey}`
-            : req.body?.inputUrl;
-
-        if (!inputUrl) {
-            return res.status(400).json({ error: 'No inputUrl available (pipeline.streamKey missing and no inputUrl provided)' });
-        }
+        const inputUrl = pipeline.streamKey ? `rtmp://localhost:1935/${pipeline.streamKey}` : req.body?.inputUrl;
+        if (!inputUrl) return res.status(400).json({ error: 'No inputUrl available (pipeline.streamKey missing and no inputUrl provided)' });
 
         const outputUrl = output.url;
         if (!outputUrl) return res.status(400).json({ error: 'Output URL is empty' });
 
-        // build ffmpeg args matching the example command
         const ffArgs = [
             '-re',
             '-i', inputUrl,
@@ -381,64 +375,66 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', (req, res) => {
             outputUrl
         ];
 
-        const child = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
+        let child;
+        try {
+            child = spawn(ffmpegCmd, ffArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+        } catch (err) {
+            return res.status(500).json({ error: 'Failed to spawn ffmpeg', detail: String(err) });
+        }
 
-        // store job
-        jobs[jobKey] = {
-            process: child,
-            startedAt: new Date().toISOString(),
-            exited: false,
-            exitCode: null,
-            exitSignal: null,
-            logs: [], // small in-memory log buffer
+        // persist job row
+        const job = db.createJob({
+            id: undefined,
+            pipelineId: pid,
+            outputId: oid,
+            pid: child.pid || null,
+            status: 'running',
+            startedAt: new Date().toISOString()
+        });
+
+        // keep only process ref in-memory
+        processes.set(job.id, child);
+
+        const pushLog = (msg) => {
+            db.appendJobLog(job.id, msg);
         };
 
-        // helper to push logs (limit size)
-        const pushLog = (line) => {
-            const buf = jobs[jobKey]?.logs;
-            if (!buf) return;
-            buf.push(line);
-            if (buf.length > 200) buf.shift();
-        };
+        child.on('error', (err) => {
+            db.appendJobLog(job.id, `[error] ${String(err)}`);
+            // mark failed
+            db.updateJob(job.id, { status: 'failed', endedAt: new Date().toISOString(), exitCode: null, exitSignal: null });
+            processes.delete(job.id);
+        });
 
-        // log streams
-        if (child.stdout) {
-            child.stdout.on('data', (d) => {
-                const s = d.toString();
-                console.log(`[ffmpeg ${jobKey}] stdout: ${s}`);
-                pushLog(s);
-            });
-        }
-        if (child.stderr) {
-            child.stderr.on('data', (d) => {
-                const s = d.toString();
-                console.log(`[ffmpeg ${jobKey}] stderr: ${s}`);
-                pushLog(s);
-            });
-        }
+        if (child.stdout) child.stdout.on('data', (d) => {
+            const s = d.toString();
+            pushLog(`[stdout] ${s}`);
+        });
+        if (child.stderr) child.stderr.on('data', (d) => {
+            const s = d.toString();
+            pushLog(`[stderr] ${s}`);
+        });
 
         child.on('exit', (code, signal) => {
-            console.log(`[ffmpeg ${jobKey}] exited code=${code} signal=${signal}`);
-            const job = jobs[jobKey];
-            if (job) {
-                job.exited = true;
-                job.exitCode = code;
-                job.exitSignal = signal;
-                job.endedAt = new Date().toISOString();
-            }
-            // allow consumers to read exit info, then cleanup
-            setTimeout(() => {
-                delete jobs[jobKey];
-            }, 2000);
-            if (typeof recomputeEtag === 'function') recomputeEtag();
+            const st = (code === 0) ? 'stopped' : 'failed';
+            db.updateJob(job.id, { status: st, endedAt: new Date().toISOString(), exitCode: code, exitSignal: signal || null });
+            pushLog(`[exit] code=${code} signal=${signal}`);
+            processes.delete(job.id);
         });
 
-        return res.status(201).json({
-            message: `Output ${oid} from pipeline ${pid} started`,
-            job: { id: jobKey, startedAt: jobs[jobKey].startedAt }
-        });
+        // short delay to detect immediate exit/err
+        await new Promise(r => setTimeout(r, 250));
+        const fresh = db.getJob(job.id);
+        if (fresh.status !== 'running') {
+            // return logs if failed immediately
+            const logs = db.listJobLogs(job.id).map(r => `${r.ts} ${r.message}`).slice(-100);
+            return res.status(500).json({ error: 'ffmpeg failed to start', job: fresh, logs });
+        }
+
+        return res.status(201).json({ message: 'Job started', job });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: String(err) });
     }
 });
 
@@ -447,31 +443,31 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
     try {
         const pid = req.params.pipelineId;
         const oid = req.params.outputId;
-        const jobKey = `${pid}:${oid}`;
-        const job = jobs[jobKey];
 
-        if (!job || !job.process || job.exited) {
-            return res.status(404).json({ error: 'No running job for this output' });
+        const running = db.getRunningJobFor(pid, oid);
+        if (!running) return res.status(404).json({ error: 'No running job for this output' });
+
+        const jobId = running.id;
+        const proc = processes.get(jobId);
+
+        if (proc && !proc.killed) {
+            try { proc.kill('SIGTERM'); } catch (e) { /* ignore */ }
+
+            const killTimeout = setTimeout(() => {
+                try { if (!proc.killed) proc.kill('SIGKILL'); } catch (e) { /* ignore */ }
+            }, 5000);
+
+            proc.once('exit', () => clearTimeout(killTimeout));
+            db.appendJobLog(jobId, '[control] requested SIGTERM');
+            return res.json({ message: 'Stopping job', jobId });
+        } else {
+            // process not in memory — mark job as stopped in DB (best-effort)
+            db.updateJob(jobId, { status: 'stopped', endedAt: new Date().toISOString(), exitCode: null, exitSignal: null });
+            db.appendJobLog(jobId, '[control] stop requested but process not found in memory; marked stopped');
+            return res.json({ message: 'Job marked stopped (process not found)', jobId });
         }
-
-        const child = job.process;
-        // attempt graceful shutdown
-        try { child.kill('SIGTERM'); } catch (e) { /* ignore */ }
-
-        // escalate if still alive after 5s
-        const killTimeout = setTimeout(() => {
-            try {
-                if (!child.killed) child.kill('SIGKILL');
-            } catch (e) { /* ignore */ }
-        }, 5000);
-
-        // once process exits, clear timeout
-        child.once('exit', () => clearTimeout(killTimeout));
-
-        if (typeof recomputeEtag === 'function') recomputeEtag();
-        return res.json({ message: `Stopping output ${oid} from pipeline ${pid}` });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: String(err) });
     }
 });
 
@@ -489,6 +485,13 @@ app.get('/inputs', async (req, res) => {
         res.status(500).json({ error: err.toString() });
     }
 });
+
+// todo, a new endpoint.
+// to expose the MediaMTX API content of this endpoint to FE:
+// RTMP GET /v3/rtmpconns/list
+// returns all RTMP connections.
+
+
 
 /* ======================
  * Static UI & Server
