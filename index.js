@@ -486,10 +486,21 @@ app.get('/inputs', async (req, res) => {
     }
 });
 
-// todo, a new endpoint.
 // to expose the MediaMTX API content of this endpoint to FE:
-// RTMP GET /v3/rtmpconns/list
-// returns all RTMP connections.
+// GET /v3/rtmpconns/list
+// we simply return everything as-is from MediaMTX.
+
+app.get('/metrics/mediamtx/v3/rtmpconns/list', async (req, res) => {
+    try {
+        const resp = await fetch('http://localhost:9997/v3/rtmpconns/list');
+        const data = await resp.json();
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: err.toString() });
+    }
+});
+
+
 
 
 
