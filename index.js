@@ -11,6 +11,7 @@ app.use(express.json());
 const { spawn } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
+const { createHash } = require('crypto');
 
 app.use(express.json());
 
@@ -63,9 +64,6 @@ class Output {
         this.url = url;
     }
 }
-
-// i think we should add the sqlite dependency now.
-// and also, add the interactions with mediaMTX, like creating/removing paths
 
 /* ======================
  * Stream Key APIs (updated to use SQLite)
@@ -512,7 +510,102 @@ app.use('/', express.static(path.join(__dirname, 'ui')));
 
 app.listen(3030, () => console.log('Controller running on 3030'));
 
-// todo: add an etag, for the FE to check the last modified time of the entire config.
+// Etag-related, for the FE to check the last modified time of the entire config.
+
+// normalize quoted etag helper
+function normalizeEtag(s) {
+    if (!s) return null;
+    return s.replace(/^"(.*)"$/, '$1');
+}
+
+// recomputeEtag: deterministic snapshot -> sha256 hex -> persist via db.setEtag
+async function recomputeEtag() {
+    try {
+        // read everything from DB using existing helpers
+        const streamKeys = db.listStreamKeys().map(sk => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
+        const pipelines = db.listPipelines().map(p => ({ id: p.id, name: p.name, streamKey: p.streamKey, createdAt: p.createdAt }));
+
+        // for each pipeline fetch outputs
+        for (const p of pipelines) {
+            const outs = db.listOutputs(p.id).map(o => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+            // sort outputs by id for deterministic ordering
+            outs.sort((a, b) => a.id.localeCompare(b.id));
+            p.outputs = outs;
+        }
+
+        // sort arrays deterministically
+        streamKeys.sort((a, b) => (a.key || '').localeCompare(b.key || ''));
+        pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+
+        const snapshot = { streamKeys, pipelines };
+
+        // stable stringify: we already sorted arrays and keys are consistent
+        const json = JSON.stringify(snapshot);
+
+        const hash = createHash('sha256').update(json).digest('hex');
+        const etag = hash; // store unquoted value, server will quote when sending
+
+        db.setEtag(etag);
+        return etag;
+    } catch (err) {
+        console.error('recomputeEtag error:', err);
+        return null;
+    }
+}
+
+// Initialize etag at startup (best-effort)
+(async () => {
+    try {
+        if (!db.getEtag()) await recomputeEtag();
+    } catch (e) { /* ignore */ }
+})();
+
+
+// endpoint: GET /config  (returns full config + ETag, respect If-None-Match)
+app.get('/config', async (req, res) => {
+    try {
+        // ensure etag is up-to-date
+        let etag = db.getEtag();
+        if (!etag) etag = await recomputeEtag();
+
+        const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
+        if (ifNoneMatch && etag && ifNoneMatch === etag) {
+            // Not modified
+            res.set('ETag', `"${etag}"`);
+            return res.status(304).end();
+        }
+
+        // build snapshot same as recomputeEtag logic
+        const streamKeys = db.listStreamKeys().map(sk => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
+        const pipelines = db.listPipelines().map(p => ({ id: p.id, name: p.name, streamKey: p.streamKey, createdAt: p.createdAt }));
+        for (const p of pipelines) {
+            const outs = db.listOutputs(p.id).map(o => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+            outs.sort((a, b) => a.id.localeCompare(b.id));
+            p.outputs = outs;
+        }
+        streamKeys.sort((a, b) => (a.key || '').localeCompare(b.key || ''));
+        pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+
+        const snapshot = { streamKeys, pipelines };
+
+        // send ETag header (quoted per spec)
+        if (etag) res.set('ETag', `"${etag}"`);
+        return res.json(snapshot);
+    } catch (err) {
+        return res.status(500).json({ error: String(err) });
+    }
+});
+
+// optional: HEAD /config to check ETag only
+app.head('/config', (req, res) => {
+    try {
+        const etag = db.getEtag();
+        if (etag) res.set('ETag', `"${etag}"`);
+        return res.status(200).end();
+    } catch (err) {
+        return res.status(500).end();
+    }
+});
 
 
 

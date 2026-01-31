@@ -73,6 +73,14 @@ db.prepare(`
   )
 `).run();
 
+/* meta table */
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  )
+`).run();
+
 
 
 
@@ -125,6 +133,15 @@ const insertJobLog = db.prepare(`
 const listJobLogs = db.prepare(`
   SELECT ts, message FROM job_logs WHERE job_id = ? ORDER BY id ASC
 `);
+
+
+/* Meta statements */
+const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
+const setMetaStmt = db.prepare(`
+  INSERT INTO meta (key, value) VALUES (@key, @value)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value
+`);
+
 
 
 
@@ -228,6 +245,26 @@ module.exports = {
     },
     listJobLogs(jobId) {
         return listJobLogs.all(jobId);
+    },
+
+
+    /* meta helpers */
+    getMeta(key) {
+        const r = getMetaStmt.get(key);
+        return r ? r.value : null;
+    },
+
+    setMeta(key, value) {
+        setMetaStmt.run({ key, value });
+        return value;
+    },
+
+    getEtag() {
+        return module.exports.getMeta('etag');
+    },
+
+    setEtag(v) {
+        return module.exports.setMeta('etag', v);
     }
 };
 
