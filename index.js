@@ -1,5 +1,3 @@
-
-
 /* top requires */
 const express = require('express');
 const fetch = global.fetch || require('node-fetch'); // keep compatibility
@@ -21,7 +19,6 @@ app.use(express.json());
 let jobs = {};
 
 const processes = new Map(); // runtime only: jobId -> ChildProcess
-
 
 /* ======================
  * Models
@@ -88,7 +85,11 @@ app.post('/stream-keys', async (req, res) => {
         });
 
         let data = null;
-        try { data = await resp.json(); } catch (e) { /* ignore parse errors */ }
+        try {
+            data = await resp.json();
+        } catch (e) {
+            /* ignore parse errors */
+        }
 
         if (!resp.ok || data?.error) {
             return res.status(500).json({
@@ -138,7 +139,11 @@ app.delete('/stream-keys/:key', async (req, res) => {
         const resp = await fetch(url, { method: 'POST' });
 
         let data = null;
-        try { data = await resp.json(); } catch (e) { /* ignore parse errors */ }
+        try {
+            data = await resp.json();
+        } catch (e) {
+            /* ignore parse errors */
+        }
 
         if (!resp.ok || data?.error) {
             return res.status(500).json({
@@ -166,7 +171,6 @@ app.get('/stream-keys', (req, res) => {
         return res.status(500).json({ error: err.toString() });
     }
 });
-
 
 /* ======================
  * Pipeline APIs
@@ -333,7 +337,6 @@ app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
     }
 });
 
-
 /* ======================
  * Start/Stop Output APIs
  * ====================== */
@@ -352,31 +355,56 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
 
         // ensure no running job in DB for this pipeline+output
         const existingRunning = db.getRunningJobFor(pid, oid);
-        if (existingRunning) return res.status(409).json({ error: 'Output already has a running job', job: existingRunning });
+        if (existingRunning)
+            return res
+                .status(409)
+                .json({ error: 'Output already has a running job', job: existingRunning });
 
-        const inputUrl = pipeline.streamKey ? `rtmp://localhost:1935/${pipeline.streamKey}` : req.body?.inputUrl;
-        if (!inputUrl) return res.status(400).json({ error: 'No inputUrl available (pipeline.streamKey missing and no inputUrl provided)' });
+        const inputUrl = pipeline.streamKey
+            ? `rtmp://localhost:1935/${pipeline.streamKey}`
+            : req.body?.inputUrl;
+        if (!inputUrl)
+            return res.status(400).json({
+                error: 'No inputUrl available (pipeline.streamKey missing and no inputUrl provided)',
+            });
 
         const outputUrl = output.url;
         if (!outputUrl) return res.status(400).json({ error: 'Output URL is empty' });
 
         const ffArgs = [
             '-re',
-            '-i', inputUrl,
-            '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-            '-map', '0:v:0', '-map', '1:a:0',
-            '-c:v', 'copy',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-flvflags', 'no_duration_filesize',
-            '-rtmp_live', 'live',
-            '-f', 'flv',
-            outputUrl
+            '-i',
+            inputUrl,
+            '-f',
+            'lavfi',
+            '-i',
+            'anullsrc=channel_layout=stereo:sample_rate=44100',
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a:0',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '128k',
+            '-flvflags',
+            'no_duration_filesize',
+            '-rtmp_live',
+            'live',
+            '-f',
+            'flv',
+            outputUrl,
         ];
 
         const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
         let child;
         try {
-            child = spawn(ffmpegCmd, ffArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+            child = spawn(ffmpegCmd, ffArgs, {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env: process.env,
+            });
         } catch (err) {
             return res.status(500).json({ error: 'Failed to spawn ffmpeg', detail: String(err) });
         }
@@ -388,7 +416,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             outputId: oid,
             pid: child.pid || null,
             status: 'running',
-            startedAt: new Date().toISOString()
+            startedAt: new Date().toISOString(),
         });
 
         // keep only process ref in-memory
@@ -401,32 +429,47 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
         child.on('error', (err) => {
             db.appendJobLog(job.id, `[error] ${String(err)}`);
             // mark failed
-            db.updateJob(job.id, { status: 'failed', endedAt: new Date().toISOString(), exitCode: null, exitSignal: null });
+            db.updateJob(job.id, {
+                status: 'failed',
+                endedAt: new Date().toISOString(),
+                exitCode: null,
+                exitSignal: null,
+            });
             processes.delete(job.id);
         });
 
-        if (child.stdout) child.stdout.on('data', (d) => {
-            const s = d.toString();
-            pushLog(`[stdout] ${s}`);
-        });
-        if (child.stderr) child.stderr.on('data', (d) => {
-            const s = d.toString();
-            pushLog(`[stderr] ${s}`);
-        });
+        if (child.stdout)
+            child.stdout.on('data', (d) => {
+                const s = d.toString();
+                pushLog(`[stdout] ${s}`);
+            });
+        if (child.stderr)
+            child.stderr.on('data', (d) => {
+                const s = d.toString();
+                pushLog(`[stderr] ${s}`);
+            });
 
         child.on('exit', (code, signal) => {
-            const st = (code === 0) ? 'stopped' : 'failed';
-            db.updateJob(job.id, { status: st, endedAt: new Date().toISOString(), exitCode: code, exitSignal: signal || null });
+            const st = code === 0 ? 'stopped' : 'failed';
+            db.updateJob(job.id, {
+                status: st,
+                endedAt: new Date().toISOString(),
+                exitCode: code,
+                exitSignal: signal || null,
+            });
             pushLog(`[exit] code=${code} signal=${signal}`);
             processes.delete(job.id);
         });
 
         // short delay to detect immediate exit/err
-        await new Promise(r => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 250));
         const fresh = db.getJob(job.id);
         if (fresh.status !== 'running') {
             // return logs if failed immediately
-            const logs = db.listJobLogs(job.id).map(r => `${r.ts} ${r.message}`).slice(-100);
+            const logs = db
+                .listJobLogs(job.id)
+                .map((r) => `${r.ts} ${r.message}`)
+                .slice(-100);
             return res.status(500).json({ error: 'ffmpeg failed to start', job: fresh, logs });
         }
 
@@ -449,10 +492,18 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
         const proc = processes.get(jobId);
 
         if (proc && !proc.killed) {
-            try { proc.kill('SIGTERM'); } catch (e) { /* ignore */ }
+            try {
+                proc.kill('SIGTERM');
+            } catch (e) {
+                /* ignore */
+            }
 
             const killTimeout = setTimeout(() => {
-                try { if (!proc.killed) proc.kill('SIGKILL'); } catch (e) { /* ignore */ }
+                try {
+                    if (!proc.killed) proc.kill('SIGKILL');
+                } catch (e) {
+                    /* ignore */
+                }
             }, 5000);
 
             proc.once('exit', () => clearTimeout(killTimeout));
@@ -460,15 +511,22 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
             return res.json({ message: 'Stopping job', jobId });
         } else {
             // process not in memory — mark job as stopped in DB (best-effort)
-            db.updateJob(jobId, { status: 'stopped', endedAt: new Date().toISOString(), exitCode: null, exitSignal: null });
-            db.appendJobLog(jobId, '[control] stop requested but process not found in memory; marked stopped');
+            db.updateJob(jobId, {
+                status: 'stopped',
+                endedAt: new Date().toISOString(),
+                exitCode: null,
+                exitSignal: null,
+            });
+            db.appendJobLog(
+                jobId,
+                '[control] stop requested but process not found in memory; marked stopped',
+            );
             return res.json({ message: 'Job marked stopped (process not found)', jobId });
         }
     } catch (err) {
         return res.status(500).json({ error: String(err) });
     }
 });
-
 
 /* ======================
  * Metrics
@@ -498,10 +556,6 @@ app.get('/metrics/mediamtx/v3/rtmpconns/list', async (req, res) => {
     }
 });
 
-
-
-
-
 /* ======================
  * Static UI & Server
  * ====================== */
@@ -522,12 +576,21 @@ function normalizeEtag(s) {
 async function recomputeEtag() {
     try {
         // read everything from DB using existing helpers
-        const streamKeys = db.listStreamKeys().map(sk => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
-        const pipelines = db.listPipelines().map(p => ({ id: p.id, name: p.name, streamKey: p.streamKey, createdAt: p.createdAt }));
+        const streamKeys = db
+            .listStreamKeys()
+            .map((sk) => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
+        const pipelines = db.listPipelines().map((p) => ({
+            id: p.id,
+            name: p.name,
+            streamKey: p.streamKey,
+            createdAt: p.createdAt,
+        }));
 
         // for each pipeline fetch outputs
         for (const p of pipelines) {
-            const outs = db.listOutputs(p.id).map(o => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+            const outs = db
+                .listOutputs(p.id)
+                .map((o) => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
             // sort outputs by id for deterministic ordering
             outs.sort((a, b) => a.id.localeCompare(b.id));
             p.outputs = outs;
@@ -557,9 +620,10 @@ async function recomputeEtag() {
 (async () => {
     try {
         if (!db.getEtag()) await recomputeEtag();
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+        /* ignore */
+    }
 })();
-
 
 // endpoint: GET /config  (returns full config + ETag, respect If-None-Match)
 app.get('/config', async (req, res) => {
@@ -576,10 +640,19 @@ app.get('/config', async (req, res) => {
         }
 
         // build snapshot same as recomputeEtag logic
-        const streamKeys = db.listStreamKeys().map(sk => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
-        const pipelines = db.listPipelines().map(p => ({ id: p.id, name: p.name, streamKey: p.streamKey, createdAt: p.createdAt }));
+        const streamKeys = db
+            .listStreamKeys()
+            .map((sk) => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
+        const pipelines = db.listPipelines().map((p) => ({
+            id: p.id,
+            name: p.name,
+            streamKey: p.streamKey,
+            createdAt: p.createdAt,
+        }));
         for (const p of pipelines) {
-            const outs = db.listOutputs(p.id).map(o => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+            const outs = db
+                .listOutputs(p.id)
+                .map((o) => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
             outs.sort((a, b) => a.id.localeCompare(b.id));
             p.outputs = outs;
         }
@@ -606,6 +679,3 @@ app.head('/config', (req, res) => {
         return res.status(500).end();
     }
 });
-
-
-
