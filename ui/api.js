@@ -1,13 +1,55 @@
-async function startOut(pipeId, outId) {
-    return await fetchResponse(
-        `/control.php?streamno=${pipeId}&action=out&actnumber=${outId}&state=on`,
-    );
+async function apiRequest(url, { method = 'GET', body = null } = {}) {
+    const options = { method };
+
+    if (body !== null) {
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(url, options);
+
+    let data = null;
+    try {
+        data = await response.json();
+    } catch {
+        /* ignore non-JSON responses */
+    }
+
+    if (!response.ok) {
+        throw new Error(data?.error || `Request failed with ${response.status}`);
+    }
+
+    return data;
 }
 
-async function stopOut(pipeId, outId) {
-    return await fetchResponse(
-        `/control.php?streamno=${pipeId}&action=out&actnumber=${outId}&state=off`,
-    );
+// ===== Keys API =====
+async function getStreamKeys() {
+    return apiRequest('/stream-keys');
+}
+
+async function createStreamKey({ streamKey = null, label = null } = {}) {
+    return apiRequest('/stream-keys', {
+        method: 'POST',
+        body: {
+            ...(streamKey ? { streamKey } : {}),
+            ...(label ? { label } : {}),
+        },
+    });
+}
+
+async function updateStreamKeyLabel(key, label = null) {
+    if (!key) throw new Error('Stream key is required');
+
+    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, {
+        method: 'POST',
+        body: { label },
+    });
+}
+
+async function deleteStreamKey(key) {
+    if (!key) throw new Error('Stream key is required');
+
+    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
 }
 
 async function deleteOut(pipeId, outId) {

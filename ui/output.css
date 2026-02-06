@@ -1073,92 +1073,6 @@
       }
     }
   }
-  .checkbox {
-    @layer daisyui.l1.l2.l3 {
-      border: var(--border) solid var(--input-color, var(--color-base-content));
-      @supports (color: color-mix(in lab, red, red)) {
-        border: var(--border) solid var(--input-color, color-mix(in oklab, var(--color-base-content) 20%, #0000));
-      }
-      position: relative;
-      display: inline-block;
-      flex-shrink: 0;
-      cursor: pointer;
-      appearance: none;
-      border-radius: var(--radius-selector);
-      padding: calc(0.25rem * 1);
-      vertical-align: middle;
-      color: var(--color-base-content);
-      box-shadow: 0 1px oklch(0% 0 0 / calc(var(--depth) * 0.1)) inset, 0 0 #0000 inset, 0 0 #0000;
-      transition: background-color 0.2s, box-shadow 0.2s;
-      --size: calc(var(--size-selector, 0.25rem) * 6);
-      width: var(--size);
-      height: var(--size);
-      background-size: auto, calc(var(--noise) * 100%);
-      background-image: none, var(--fx-noise);
-      &:before {
-        --tw-content: "";
-        content: var(--tw-content);
-        display: block;
-        width: 100%;
-        height: 100%;
-        rotate: 45deg;
-        background-color: currentcolor;
-        opacity: 0%;
-        transition: clip-path 0.3s, opacity 0.1s, rotate 0.3s, translate 0.3s;
-        transition-delay: 0.1s;
-        clip-path: polygon(20% 100%, 20% 80%, 50% 80%, 50% 80%, 70% 80%, 70% 100%);
-        box-shadow: 0px 3px 0 0px oklch(100% 0 0 / calc(var(--depth) * 0.1)) inset;
-        font-size: 1rem;
-        line-height: 0.75;
-      }
-      &:focus-visible {
-        outline: 2px solid var(--input-color, currentColor);
-        outline-offset: 2px;
-      }
-      &:checked, &[aria-checked="true"] {
-        background-color: var(--input-color, #0000);
-        box-shadow: 0 0 #0000 inset, 0 8px 0 -4px oklch(100% 0 0 / calc(var(--depth) * 0.1)) inset, 0 1px oklch(0% 0 0 / calc(var(--depth) * 0.1));
-        &:before {
-          clip-path: polygon(20% 100%, 20% 80%, 50% 80%, 50% 0%, 70% 0%, 70% 100%);
-          opacity: 100%;
-        }
-        @media (forced-colors: active) {
-          &:before {
-            rotate: 0deg;
-            background-color: transparent;
-            --tw-content: "✔︎";
-            clip-path: none;
-          }
-        }
-        @media print {
-          &:before {
-            rotate: 0deg;
-            background-color: transparent;
-            --tw-content: "✔︎";
-            clip-path: none;
-          }
-        }
-      }
-      &:indeterminate {
-        background-color: var( --input-color, var(--color-base-content) );
-        @supports (color: color-mix(in lab, red, red)) {
-          background-color: var( --input-color, color-mix(in oklab, var(--color-base-content) 20%, #0000) );
-        }
-        &:before {
-          rotate: 0deg;
-          opacity: 100%;
-          translate: 0 -35%;
-          clip-path: polygon(20% 100%, 20% 80%, 50% 80%, 50% 80%, 80% 80%, 80% 100%);
-        }
-      }
-    }
-    &:disabled {
-      @layer daisyui.l1.l2 {
-        cursor: not-allowed;
-        opacity: 20%;
-      }
-    }
-  }
   .navbar {
     @layer daisyui.l1.l2.l3 {
       display: flex;
@@ -1184,9 +1098,6 @@
   }
   .fixed {
     position: fixed;
-  }
-  .static {
-    position: static;
   }
   .top-3 {
     top: calc(var(--spacing) * 3);
@@ -1368,6 +1279,9 @@
   }
   .mx-auto {
     margin-inline: auto;
+  }
+  .my-10 {
+    margin-block: calc(var(--spacing) * 10);
   }
   .label {
     @layer daisyui.l1.l2.l3 {
@@ -1868,14 +1782,8 @@
       --alert-color: var(--color-warning);
     }
   }
-  .text-accent {
-    color: var(--color-accent);
-  }
   .text-base-content {
     color: var(--color-base-content);
-  }
-  .text-error {
-    color: var(--color-error);
   }
   .prose {
     & :where(.btn-link):not(:where([class~="not-prose"], [class~="not-prose"] *)) {

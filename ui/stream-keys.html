@@ -6,7 +6,8 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
     <script type="text/javascript" src="toml-parser.min.js"></script>
-    <script type="text/javascript" src="tools.js"></script>
+    <script type="text/javascript" src="utils.js"></script>
+    <script type="text/javascript" src="api.js"></script>
 
     <script type="text/javascript" src="stream-keys.js" defer></script>
   </head>
@@ -51,6 +52,20 @@
       <span id="error-msg"></span>
     </div>
 
-    <div></div>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <!-- head -->
+        <thead>
+          <tr>
+            <th></th>
+            <th>Name</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody id="stream-keys"></tbody>
+      </table>
+    </div>
+
+    <button class="btn btn-accent mx-auto my-10 w-fit">Add Key</button>
   </body>
 </html>
