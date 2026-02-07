@@ -45,6 +45,14 @@ async function updateStreamKeyBtn(key, name) {
     renderKeysTable();
 }
 
+async function deleteStreamKeyBtn(key, name) {
+    if (!confirm(`Are you sure you want to delete key "${name}"`)) return;
+
+    const res = await deleteStreamKey(key);
+    if (res === null) return;
+    renderKeysTable();
+}
+
 async function copyKeyBtn(key) {
     if (copyText(key)) showCopiedNotification();
 }
@@ -65,7 +73,7 @@ async function renderKeysTable() {
                 <button class="btn btn-accent btn-xs ml-2" title="Edit"
                     onclick="updateStreamKeyBtn('${k.key}', '${k.label}')">✎</button>
                 <button class="btn btn-error btn-xs ml-2" title="Delete"
-                    onclick="deleteStreamKeyBtn('${k.key}')">✖</button>
+                    onclick="deleteStreamKeyBtn('${k.key}', '${k.label}')">✖</button>
             </td>
           </tr>`,
         )

@@ -135,8 +135,12 @@ app.delete('/stream-keys/:key', async (req, res) => {
             return res.status(404).json({ error: 'Stream key not found' });
         }
 
-        const url = `http://localhost:9997/v3/config/paths/remove/${encodeURIComponent(key)}`;
-        const resp = await fetch(url, { method: 'POST' });
+        const url = `http://localhost:9997/v3/config/paths/delete/${encodeURIComponent(key)}`;
+        const resp = await fetch(url, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: key }),
+        });
 
         let data = null;
         try {
