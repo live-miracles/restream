@@ -1102,6 +1102,9 @@
   .top-3 {
     top: calc(var(--spacing) * 3);
   }
+  .bottom-3 {
+    bottom: calc(var(--spacing) * 3);
+  }
   .left-1\/2 {
     left: calc(1/2 * 100%);
   }
@@ -1179,6 +1182,9 @@
         cursor: not-allowed;
       }
     }
+  }
+  .z-60 {
+    z-index: 60;
   }
   .z-999 {
     z-index: 999;
@@ -1663,6 +1669,12 @@
     --tw-border-style: solid;
     border-style: solid;
   }
+  .border-base-content\/5 {
+    border-color: var(--color-base-content);
+    @supports (color: color-mix(in lab, red, red)) {
+      border-color: color-mix(in oklab, var(--color-base-content) 5%, transparent);
+    }
+  }
   .border-gray-400 {
     border-color: var(--color-gray-400);
   }
@@ -1775,6 +1787,13 @@
       --alert-color: var(--color-error);
     }
   }
+  .alert-success {
+    @layer daisyui.l1.l2 {
+      color: var(--color-success-content);
+      --alert-border-color: var(--color-success);
+      --alert-color: var(--color-success);
+    }
+  }
   .alert-warning {
     @layer daisyui.l1.l2 {
       color: var(--color-warning-content);
@@ -1866,6 +1885,12 @@
       --btn-fg: var(--color-accent-content);
     }
   }
+  .btn-error {
+    @layer daisyui.l1.l2.l3 {
+      --btn-color: var(--color-error);
+      --btn-fg: var(--color-error-content);
+    }
+  }
   .input-error {
     @layer daisyui.l1.l2 {
       &, &:focus, &:focus-within {
@@ -1873,9 +1898,6 @@
       }
     }
   }
-}
-.table :where(th, td) {
-  padding: calc(var(--spacing) * 1);
 }
 @layer base {
   :root:has(input.theme-controller[value=dim]:checked),[data-theme=dim] {

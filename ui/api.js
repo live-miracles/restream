@@ -11,12 +11,13 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
     let data = null;
     try {
         data = await response.json();
-    } catch {
-        /* ignore non-JSON responses */
+    } catch (e) {
+        showErrorAlert('Error while parsing json: ' + e);
     }
 
     if (!response.ok) {
-        throw new Error(data?.error || `Request failed with ${response.status}`);
+        showErrorAlert(data?.error || `Request failed with ${response.status}`);
+        return null;
     }
 
     return data;
@@ -27,22 +28,20 @@ async function getStreamKeys() {
     return apiRequest('/stream-keys');
 }
 
-async function createStreamKey({ streamKey = null, label = null } = {}) {
-    return apiRequest('/stream-keys', {
-        method: 'POST',
-        body: {
-            ...(streamKey ? { streamKey } : {}),
-            ...(label ? { label } : {}),
-        },
-    });
+async function createStreamKey(name) {
+    if (!name) {
+        showErrorAlert('createStreamKey - Invalid name: ' + name);
+    }
+
+    return apiRequest('/stream-keys', { method: 'POST', body: { label: name } });
 }
 
-async function updateStreamKeyLabel(key, label = null) {
+async function updateStreamKey(key, name) {
     if (!key) throw new Error('Stream key is required');
 
     return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, {
         method: 'POST',
-        body: { label },
+        body: { label: name },
     });
 }
 

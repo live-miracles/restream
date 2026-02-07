@@ -72,10 +72,7 @@ function legacyCopy(text) {
     return success;
 }
 
-async function copyData(id) {
-    const elem = document.getElementById(id);
-    const text = elem.dataset.copy;
-
+async function copyText(text) {
     if (navigator.clipboard) {
         try {
             await navigator.clipboard.writeText(text);
@@ -248,6 +245,16 @@ function showErrorAlert(error, log = true) {
         if (alertId !== alertCount) return;
         errorAlertElem.classList.add('hidden');
     }, 5000);
+}
+
+function showCopiedNotification() {
+    const notification = document.getElementById('copied-notification');
+    if (!notification) return;
+
+    notification.classList.remove('hidden');
+    setTimeout(() => {
+        notification.classList.add('hidden');
+    }, 2000);
 }
 
 async function updateConfigs() {
