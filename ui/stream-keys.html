@@ -14,7 +14,7 @@
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
     <div class="navbar bg-base-100 shrink-0">
       <div class="flex-1">
-        <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">MLS</button>
+        <li><a href="/" id="server-name" class="btn btn-ghost text-xl">Restream</a></li>
       </div>
       <div class="flex-none">
         <ul class="menu menu-horizontal px-1">
@@ -27,7 +27,7 @@
     <div
       id="streaming-config-changed-alert"
       role="alert"
-      class="alert alert-warning fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+      class="alert alert-warning fixed top-3 left-1/2 z-999 hidden max-w-175 -translate-x-1/2 transform opacity-90">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
         <path
           stroke-linecap="round"
@@ -45,10 +45,7 @@
       <span>Copied</span>
     </div>
 
-    <div
-      role="alert"
-      id="error-alert"
-      class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+    <div role="alert" id="error-alert" class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-175 -translate-x-1/2 transform opacity-90">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
         <path
           stroke-linecap="round"

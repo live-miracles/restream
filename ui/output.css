@@ -1585,6 +1585,9 @@
   .w-full {
     width: 100%;
   }
+  .max-w-175 {
+    max-width: calc(var(--spacing) * 175);
+  }
   .max-w-\[700px\] {
     max-width: 700px;
   }
