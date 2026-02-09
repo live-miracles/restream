@@ -1,7 +1,3 @@
-let pipelines = [];
-let serverStats = {};
-let config = {};
-
 function getStatusColor(status) {
     switch (status) {
         case 'on':
@@ -45,45 +41,36 @@ function getServerStatsHtml() {
 }
 
 function renderPipelinesList(selectedPipeline) {
-    document.getElementById('on-pipes').innerHTML = pipelines.filter(
-        (p) => p.input.status === 'on',
-    ).length;
-    document.getElementById('on-outs').innerHTML = pipelines.reduce((sum, p) => {
-        return sum + p.outs.filter((o) => o.status === 'on').length;
-    }, 0);
-    document.getElementById('out-errors').innerHTML = pipelines.reduce((sum, p) => {
-        return sum + p.outs.filter((o) => o.status === 'error').length;
-    }, 0);
-    document.getElementById('out-warnings').innerHTML = pipelines.reduce((sum, p) => {
-        return sum + p.outs.filter((o) => o.status === 'warning').length;
-    }, 0);
+    // document.getElementById('on-pipes').innerHTML = pipelines.filter(
+    //     (p) => p.input.status === 'on',
+    // ).length;
+    // document.getElementById('on-outs').innerHTML = pipelines.reduce((sum, p) => {
+    //     return sum + p.outs.filter((o) => o.status === 'on').length;
+    // }, 0);
+    // document.getElementById('out-errors').innerHTML = pipelines.reduce((sum, p) => {
+    //     return sum + p.outs.filter((o) => o.status === 'error').length;
+    // }, 0);
+    // document.getElementById('out-warnings').innerHTML = pipelines.reduce((sum, p) => {
+    //     return sum + p.outs.filter((o) => o.status === 'warning').length;
+    // }, 0);
 
-    const addPipeBtn = document.getElementById('add-pipe-btn');
-    if (pipelines.length >= config['pipelines-limit']) {
-        addPipeBtn.classList.add('btn-disabled');
-        addPipeBtn.title = `Pipeline limit reached: ${config['pipelines-limit']} pipelines`;
-    } else {
-        addPipeBtn.classList.remove('btn-disabled');
-        addPipeBtn.title = '';
-    }
-
-    const html = pipelines
+    const html = config.pipelines
         .map((p) => {
             let outStatus = 'off';
-            if (p.outs.some((o) => o.status === 'error')) {
-                outStatus = 'error';
-            } else if (p.outs.some((o) => o.status === 'warning')) {
-                outStatus = 'warning';
-            } else if (p.outs.some((o) => o.status === 'on')) {
-                outStatus = 'on';
-            }
+            // if (p.outs.some((o) => o.status === 'error')) {
+            //     outStatus = 'error';
+            // } else if (p.outs.some((o) => o.status === 'warning')) {
+            //     outStatus = 'warning';
+            // } else if (p.outs.some((o) => o.status === 'on')) {
+            //     outStatus = 'on';
+            // }
             const style = p.id === selectedPipeline ? 'bg-base-100' : '';
 
             return `<li>
             <div class="flex items-center gap-2 ${style}" onclick=selectPipeline('${p.id}')>
               <div class="rounded-box h-5 w-5"
-                style="background: linear-gradient(90deg, ${getStatusColor(p.input.status)}, ${getStatusColor(p.input.status)} 45%, #242933 45%, #242933 55%, ${getStatusColor(outStatus)} 55%)"></div>
-              <a class="active">${p.name}</a> <div class="badge badge-sm">${p.outs.length}</div>
+                style="background: linear-gradient(90deg, ${getStatusColor('off')}, ${getStatusColor('off')} 45%, #242933 45%, #242933 55%, ${getStatusColor(outStatus)} 55%)"></div>
+              <a class="active">${p.name}</a> <div class="badge badge-sm">${p.outputs.length}</div>
             </div>
           </li>`;
         })
@@ -387,11 +374,6 @@ async function addOutBtn() {
 }
 
 async function addPipeBtn() {
-    if (pipelines.length >= config['pipelines-limit']) {
-        console.error(`Pipeline limit reached. Max pipelines: ${config['pipelines-limit']}`);
-        return;
-    }
-
     const pipeIds = pipelines.map((p) => p.id);
     let newId = 1;
     while (pipeIds.includes(String(newId))) {
@@ -526,7 +508,7 @@ function renderStatsColumn(selectedPipeline) {
 }
 
 function renderPipelines() {
-    const selectedPipeline = getUrlParam('pipeline');
+    const selectedPipeline = getUrlParam('p');
 
     const gridElem = document.querySelector('.grid');
     if (selectedPipeline) {
@@ -538,55 +520,56 @@ function renderPipelines() {
     }
 
     renderPipelinesList(selectedPipeline);
-    renderPipelineInfoColumn(selectedPipeline);
-    renderOutsColumn(selectedPipeline);
-    renderStatsColumn(selectedPipeline);
+    // renderPipelineInfoColumn(selectedPipeline);
+    // renderOutsColumn(selectedPipeline);
+    // renderStatsColumn(selectedPipeline);
 }
 
 function selectPipeline(id) {
-    try {
-        jsmpegStop();
-    } catch (e) {}
-    setUrlParam('pipeline', id);
+    setUrlParam('p', id);
     renderPipelines();
 }
 
-async function checkStreamingConfigs(secondTime = false) {
-    const config = await fetchConfigFile();
-    if (
-        !config.outs ||
-        !config.names ||
-        JSON.stringify({ outs: streamOutsConfig, names: streamNames }) === JSON.stringify(config)
-    ) {
+async function checkStreamingConfigs(etag, secondTime = false) {
+    const res = await getConfig(etag);
+    if (res === null || res.notModified);
+
+    if (res === null || res.notModified) {
         document.getElementById('streaming-config-changed-alert').classList.add('hidden');
         return;
     }
     if (secondTime) {
         document.getElementById('streaming-config-changed-alert').classList.remove('hidden');
     } else {
-        setTimeout(() => checkStreamingConfigs(true), 5000);
+        setTimeout(() => checkStreamingConfigs(etag, true), 5000);
     }
 }
 
-async function rerenderStatuses() {
-    statsJson = await fetchStats();
-    processes = await fetchProcesses();
-    serverStats = await fetchSystemStats();
-    pipelines = getPipelinesInfo();
-    renderPipelines();
+async function rerenderMetrics(config) {
+    // statsJson = await fetchStats();
+    // jobs = await fetchJobs();
+    // serverStats = await fetchSystemStats();
+    renderPipelines(config, jobs, metrics);
 }
 
-(async () => {
-    setVideoPlayers();
+async function fetchConfig() {
+    const res = await getConfig(etag);
+    if (res === null || res.notModified) return;
+    etag = res.etag;
+    config = res.data;
+}
 
+let etag = null;
+let config = {};
+let jobs = [];
+let metrics = {};
+
+(async () => {
     setServerConfig();
 
-    const streamConfig = await fetchConfigFile();
-    streamNames = streamConfig.names;
-    streamOutsConfig = streamConfig.outs;
-
-    await rerenderStatuses();
-    setInterval(rerenderStatuses, 5000);
+    await fetchConfig();
+    await rerenderMetrics(config);
+    setInterval(() => rerenderMetrics(config), 5000);
 
     setInterval(() => checkStreamingConfigs(false), 30000);
 })();

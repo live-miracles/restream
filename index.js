@@ -188,7 +188,7 @@ app.post('/pipelines', (req, res) => {
 
         const pipeline = db.createPipeline({ name, streamKey });
         // recompute global etag if available
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
         return res.status(201).json({ message: 'Pipeline created', pipeline });
     } catch (err) {
         return res.status(400).json({ error: err.message });
@@ -208,7 +208,7 @@ app.post('/pipelines/:id', (req, res) => {
         const updated = db.updatePipeline(id, { name, streamKey });
         if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
 
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
         return res.json({ message: 'Pipeline updated', pipeline: updated });
     } catch (err) {
         return res.status(400).json({ error: err.message });
@@ -225,7 +225,7 @@ app.delete('/pipelines/:id', (req, res) => {
         const ok = db.deletePipeline(id);
         if (!ok) return res.status(500).json({ error: 'Failed to delete pipeline' });
 
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
         return res.json({ message: `Pipeline ${id} deleted` });
     } catch (err) {
         return res.status(500).json({ error: err.toString() });
@@ -271,7 +271,7 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         const url = req.body?.url;
 
         const output = db.createOutput({ pipelineId: pid, type, url });
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
 
         return res.status(201).json({ message: 'Output created', output });
     } catch (err) {
@@ -296,7 +296,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         const updated = db.updateOutput(pid, oid, { type, url });
         if (!updated) return res.status(500).json({ error: 'Failed to update output' });
 
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
         return res.json({ message: 'Output updated', output: updated });
     } catch (err) {
         return res.status(400).json({ error: err.message || err.toString() });
@@ -317,7 +317,7 @@ app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         const ok = db.deleteOutput(pid, oid);
         if (!ok) return res.status(500).json({ error: 'Failed to delete output' });
 
-        if (typeof recomputeEtag === 'function') recomputeEtag();
+        recomputeEtag();
         return res.json({ message: `Output ${oid} from pipeline ${pid} deleted` });
     } catch (err) {
         return res.status(500).json({ error: err.toString() });

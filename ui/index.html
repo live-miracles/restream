@@ -6,7 +6,7 @@
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
     <script type="text/javascript" src="toml-parser.min.js"></script>
-    <script type="text/javascript" src="tools.js"></script>
+    <script type="text/javascript" src="utils.js"></script>
     <script type="text/javascript" src="pipeline.js"></script>
     <script type="text/javascript" src="api.js"></script>
     <script type="text/javascript" src="dashboard.js" defer></script>
@@ -27,7 +27,7 @@
     <div
       id="streaming-config-changed-alert"
       role="alert"
-      class="alert alert-warning fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+      class="alert alert-warning fixed top-3 left-1/2 z-999 hidden max-w-175 -translate-x-1/2 transform opacity-90">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
         <path
           stroke-linecap="round"
@@ -38,10 +38,7 @@
       <span>Warning: The streaming configurations were changed by someone. Please refresh the page.</span>
     </div>
 
-    <div
-      role="alert"
-      id="error-alert"
-      class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-[700px] -translate-x-1/2 transform opacity-90">
+    <div role="alert" id="error-alert" class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-175 -translate-x-1/2 transform opacity-90">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
         <path
           stroke-linecap="round"
@@ -53,11 +50,11 @@
     </div>
 
     <dialog id="edit-out-modal" class="modal">
-      <div class="modal-box max-w-[800px]">
+      <div class="modal-box max-w-200">
         <input type="text" id="out-pipe-id-input" class="hidden" />
         <input type="text" id="out-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 w-full max-w-[800px] space-y-3 px-4">
+        <div class="focus mx-auto mt-2 w-full max-w-200 space-y-3 px-4">
           <h2 class="text-xl font-bold">Edit Output "<span id="out-name-span"></span>"</h2>
 
           <fieldset class="fieldset inline-block w-64">
@@ -72,8 +69,7 @@
               <option selected="" value="source">Source</option>
               <option value="vertical">Vertical</option>
               <option value="720p">720p</option>
-              <option value="540p">540p</option>
-              <option value="576p">PAL-720x576</option>
+              <option value="720p">1080p</option>
             </select>
           </fieldset>
 
@@ -125,7 +121,7 @@
         </div>
         <ul class="menu rounded-box w-full" id="pipelines"></ul>
         <div class="mt-3 w-full text-center">
-          <button class="btn btn-xs btn-accent btn-outline btn-disabled" id="add-pipe-btn" onclick="addPipeBtn()">Add Pipeline</button>
+          <button class="btn btn-xs btn-accent btn-outline" id="add-pipe-btn" onclick="addPipeBtn()">Add Pipeline</button>
         </div>
       </div>
 

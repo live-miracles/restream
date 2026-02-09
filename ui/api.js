@@ -12,7 +12,8 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
     try {
         data = await response.json();
     } catch (e) {
-        showErrorAlert('Error while parsing json: ' + e);
+        showErrorAlert('Invalid JSON response: ' + e);
+        return null;
     }
 
     if (!response.ok) {
@@ -21,6 +22,33 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
     }
 
     return data;
+}
+
+async function getConfig(etag = null) {
+    const headers = {};
+
+    if (etag) headers['If-None-Match'] = `"${etag}"`;
+    const response = await fetch('/config', { method: 'GET', headers });
+
+    // 304 → cached version is still valid
+    if (response.status === 304) return { notModified: true, etag, data: null };
+
+    let data = null;
+    try {
+        data = await response.json();
+    } catch (e) {
+        showErrorAlert('Invalid JSON response: ' + e);
+        return null;
+    }
+
+    if (!response.ok) {
+        showErrorAlert(data?.error || `Request failed with ${response.status}`);
+        return null;
+    }
+
+    const newEtag = normalizeEtag(response.headers.get('ETag'));
+
+    return { notModified: false, etag: newEtag, data };
 }
 
 // ===== Keys API =====

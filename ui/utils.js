@@ -99,6 +99,11 @@ function getUrlParam(param) {
     return url.searchParams.get(param);
 }
 
+function normalizeEtag(s) {
+    if (!s) return null;
+    return s.replace(/^"(.*)"$/, '$1');
+}
+
 // ===== Fetching Data =====
 
 async function getServerConfig() {
