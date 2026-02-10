@@ -127,7 +127,30 @@
 
       <!-- Middle Column -->
       <div class="bg-base-200 hidden overflow-y-auto rounded-xl p-4 shadow" id="pipe-info-col">
-        <div class="stats server-stats shadow"></div>
+        <div class="stats shadow">
+          <div class="stats shadow">
+            <div class="stat p-3">
+              <div class="stat-title">CPU</div>
+              <div class="stat-value cpu-metric text-sm">...</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title">RAM</div>
+              <div class="stat-value ram-metric text-sm">...</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title">Disk</div>
+              <div class="stat-value disk-metric text-sm">...</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title">Download</div>
+              <div class="stat-value downlink-metric text-sm">...</div>
+            </div>
+            <div class="stat p-3">
+              <div class="stat-title">Upload</div>
+              <div class="stat-value uplink-metric text-sm">...</div>
+            </div>
+          </div>
+        </div>
 
         <div class="divider"></div>
 
@@ -139,22 +162,8 @@
             <span class="badge" id="input-time"></span>
           </div>
 
-          <div class="jsmpeg text-center" id="video-player">
-            <canvas width="300" height="169" id="video-canvas" class="inline border border-solid border-gray-400"></canvas>
-            <p id="player-controls">
-              <a href="javascript:void(0);" onclick="playVideo('player.php?appname=main&streamname=stream')" class="mx-1">
-                <i class="material-icons text-3xl">play_arrow</i>M</a
-              >
-              <a href="javascript:void(0);" onclick="playVideo('player.php?appname=backup&streamname=stream')" class="mx-1">
-                <i class="material-icons text-3xl">play_arrow</i>B</a
-              >
-              <a href="javascript:void(0);" onclick="playVideo('player.php?appname=distribute&streamname=stream')" class="mx-1">
-                <i class="material-icons text-3xl">play_arrow</i>D</a
-              >
-              <a href="javascript:void(0);" onclick="jsmpegStop()" class="mx-1"><i class="material-icons text-3xl">stop</i></a>
-              <a href="javascript:void(0);" onclick="jsmpegVolumeup()" class="mx-1"><i class="material-icons text-3xl">volume_up</i></a>
-              <a href="javascript:void(0);" onclick="jsmpegVolumedown()" class="mx-1"><i class="material-icons text-3xl">volume_down</i></a>
-            </p>
+          <div class="text-center" id="video-player">
+            <!-- TODO: add player -->
           </div>
 
           <div id="input-stats">
@@ -242,7 +251,7 @@
         <h2 class="mb-3 text-xl font-bold">Outputs</h2>
         <div class="space-y-3" id="outputs-list"></div>
         <div class="mt-3 w-full text-center">
-          <button class="btn btn-xs btn-accent btn-outline btn-disabled" id="add-out-btn" onclick="addOutBtn()">Add Output</button>
+          <button class="btn btn-xs btn-accent btn-outline" id="add-out-btn" onclick="addOutBtn()">Add Output</button>
         </div>
       </div>
 

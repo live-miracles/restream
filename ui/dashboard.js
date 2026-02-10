@@ -12,35 +12,7 @@ function getStatusColor(status) {
     }
 }
 
-function getServerStatsHtml() {
-    return `
-        <div class="stats shadow">
-          <div class="stat p-3">
-            <div class="stat-title">CPU</div>
-            <div class="stat-value text-sm">${serverStats.cpu}</div>
-          </div>
-          <div class="stat p-3">
-            <div class="stat-title">RAM</div>
-            <div class="stat-value text-sm">${serverStats.ram}</div>
-          </div>
-          <div class="stat p-3">
-            <div class="stat-title">Disk</div>
-            <div class="stat-value text-sm">${serverStats.disk}</div>
-          </div>
-          <div class="stat p-3">
-            <div class="stat-title">Download</div>
-            <div class="stat-value text-sm">${serverStats.downlink}</div>
-          </div>
-          <div class="stat p-3">
-            <div class="stat-title">Upload</div>
-            <div class="stat-value text-sm">${serverStats.uplink}</div>
-          </div>
-        </div>
-
-        <div class="divider"></div>`;
-}
-
-function renderPipelinesList(selectedPipeline) {
+function renderPipelinesList(selectedPipe) {
     // document.getElementById('on-pipes').innerHTML = pipelines.filter(
     //     (p) => p.input.status === 'on',
     // ).length;
@@ -54,7 +26,7 @@ function renderPipelinesList(selectedPipeline) {
     //     return sum + p.outs.filter((o) => o.status === 'warning').length;
     // }, 0);
 
-    const html = config.pipelines
+    const html = pipelines
         .map((p) => {
             let outStatus = 'off';
             // if (p.outs.some((o) => o.status === 'error')) {
@@ -64,13 +36,16 @@ function renderPipelinesList(selectedPipeline) {
             // } else if (p.outs.some((o) => o.status === 'on')) {
             //     outStatus = 'on';
             // }
-            const style = p.id === selectedPipeline ? 'bg-base-100' : '';
+            const style = p.id === selectedPipe ? 'bg-base-100' : '';
+            const inputColor = getStatusColor(p.input.status);
+            const outColor = getStatusColor(outStatus);
 
-            return `<li>
+            return `
+          <li>
             <div class="flex items-center gap-2 ${style}" onclick=selectPipeline('${p.id}')>
               <div class="rounded-box h-5 w-5"
-                style="background: linear-gradient(90deg, ${getStatusColor('off')}, ${getStatusColor('off')} 45%, #242933 45%, #242933 55%, ${getStatusColor(outStatus)} 55%)"></div>
-              <a class="active">${p.name}</a> <div class="badge badge-sm">${p.outputs.length}</div>
+                style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></div>
+              <a class="active">${p.name}</a> <div class="badge badge-sm">${p.outs.length}</div>
             </div>
           </li>`;
         })
@@ -78,19 +53,19 @@ function renderPipelinesList(selectedPipeline) {
     document.getElementById('pipelines').innerHTML = html;
 }
 
-function renderPipelineInfoColumn(selectedPipeline) {
-    if (!selectedPipeline) {
+function renderPipelineInfoColumn(selectedPipe) {
+    if (!selectedPipe) {
         document.getElementById('pipe-info-col').classList.add('hidden');
         return;
     } else {
         document.getElementById('pipe-info-col').classList.remove('hidden');
     }
 
-    document.querySelector('#pipe-info-col .server-stats').innerHTML = getServerStatsHtml();
+    document.querySelector('.cpu-metric').innerText = '...'; // TODO
 
-    const pipe = pipelines.find((p) => p.id === selectedPipeline);
+    const pipe = pipelines.find((p) => p.id === selectedPipe);
     if (!pipe) {
-        console.error('Pipeline not found:', selectedPipeline);
+        console.error('Pipeline not found:', selectedPipe);
         return;
     }
 
@@ -111,7 +86,7 @@ function renderPipelineInfoColumn(selectedPipeline) {
         deletePipeBtn.title = '';
     }
 
-    const serverUrl = 'rtmp://' + document.location.hostname + '/distribute/';
+    const serverUrl = 'rtmp://' + document.location.hostname + '/';
     document.getElementById('server-url').innerHTML = serverUrl;
     document.getElementById('server-url').dataset.copy = serverUrl;
     document.getElementById('stream-key').innerHTML = pipe.key.replace('stream', 'Stream ');
@@ -158,31 +133,18 @@ function stopOutBtn(pipeId, outId) {
     document.getElementById(`pipe${pipeId}-out${outId}-btn`).classList.add('btn-disabled');
 }
 
-function renderOutsColumn(selectedPipeline) {
-    if (!selectedPipeline) {
+function renderOutsColumn(selectedPipe) {
+    if (!selectedPipe) {
         document.getElementById('outs-col').classList.add('hidden');
         return;
     } else {
         document.getElementById('outs-col').classList.remove('hidden');
     }
 
-    const pipe = pipelines.find((p) => p.id === selectedPipeline);
+    const pipe = pipelines.find((p) => p.id === selectedPipe);
     if (!pipe) {
-        console.log(
-            pipelines,
-            pipelines.find((p) => p.id === '2'),
-        );
-        console.error('Pipeline not found:', selectedPipeline);
+        console.error('Pipeline not found:', selectedPipe);
         return;
-    }
-
-    const addOutBtn = document.getElementById('add-out-btn');
-    if (pipe.outs.length >= config['out-limit']) {
-        addOutBtn.classList.add('btn-disabled');
-        addOutBtn.title = `Output limit reached: ${config['out-limit']} outs`;
-    } else {
-        addOutBtn.classList.remove('btn-disabled');
-        addOutBtn.title = '';
     }
 
     const outsHtml = pipe.outs
@@ -204,8 +166,8 @@ function renderOutsColumn(selectedPipeline) {
                     <button id="pipe${pipe.id}-out${o.id}-btn" class="btn btn-xs ${o.status === 'off' ? 'btn-accent' : 'btn-accent btn-outline'}"
                         onclick="${o.status === 'off' ? 'startOutBtn' : 'stopOutBtn'}(${pipe.id}, ${o.id})">
                         ${o.status === 'off' ? 'start' : 'stop'}</button>
-                    Out ${o.id}: ${o.name} (${o.encoding})
-                    ${o.time !== 0 ? `<span class="badge badge-sm">${msToHHMMSS(o.time)}</span>` : ''}
+                    ${o.name}
+                    ${o.time !== null ? `<span class="badge badge-sm">${msToHHMMSS(o.time)}</span>` : ''}
                 </div>
                 <code title="${o.url}" class="text-sm opacity-70 truncate block">${o.url}</code>
             </div>
@@ -343,7 +305,7 @@ async function addOutBtn() {
 
     const pipe = pipelines.find((p) => p.id === pipeId);
     if (!pipe) {
-        console.error('Pipeline not found:', selectedPipeline);
+        console.error('Pipeline not found:', selectedPipe);
         return;
     }
 
@@ -400,7 +362,7 @@ async function editPipeBtn() {
 
     const pipe = pipelines.find((p) => p.id === String(pipeId));
     if (!pipe) {
-        console.error('Pipeline not found:', selectedPipeline);
+        console.error('Pipeline not found:', selectedPipe);
         return;
     }
 
@@ -454,8 +416,8 @@ async function deletePipeBtn() {
     renderPipelines();
 }
 
-function renderStatsColumn(selectedPipeline) {
-    if (selectedPipeline) {
+function renderStatsColumn(selectedPipe) {
+    if (selectedPipe) {
         document.getElementById('stats-col').classList.add('hidden');
         return;
     } else {
@@ -508,10 +470,10 @@ function renderStatsColumn(selectedPipeline) {
 }
 
 function renderPipelines() {
-    const selectedPipeline = getUrlParam('p');
+    const selectedPipe = getUrlParam('p');
 
     const gridElem = document.querySelector('.grid');
-    if (selectedPipeline) {
+    if (selectedPipe) {
         gridElem.classList.remove('grid-cols-[200px_1fr]');
         gridElem.classList.add('grid-cols-[200px_auto_1fr]');
     } else {
@@ -519,10 +481,10 @@ function renderPipelines() {
         gridElem.classList.add('grid-cols-[200px_1fr]');
     }
 
-    renderPipelinesList(selectedPipeline);
-    // renderPipelineInfoColumn(selectedPipeline);
-    // renderOutsColumn(selectedPipeline);
-    // renderStatsColumn(selectedPipeline);
+    renderPipelinesList(selectedPipe);
+    renderPipelineInfoColumn(selectedPipe);
+    renderOutsColumn(selectedPipe);
+    // renderStatsColumn(selectedPipe);
 }
 
 function selectPipeline(id) {
@@ -530,9 +492,8 @@ function selectPipeline(id) {
     renderPipelines();
 }
 
-async function checkStreamingConfigs(etag, secondTime = false) {
+async function checkStreamingConfigs(secondTime = false) {
     const res = await getConfig(etag);
-    if (res === null || res.notModified);
 
     if (res === null || res.notModified) {
         document.getElementById('streaming-config-changed-alert').classList.add('hidden');
@@ -541,15 +502,17 @@ async function checkStreamingConfigs(etag, secondTime = false) {
     if (secondTime) {
         document.getElementById('streaming-config-changed-alert').classList.remove('hidden');
     } else {
-        setTimeout(() => checkStreamingConfigs(etag, true), 5000);
+        setTimeout(() => checkStreamingConfigs(true), 5000);
     }
 }
 
-async function rerenderMetrics(config) {
+async function fetchAndRerender() {
     // statsJson = await fetchStats();
     // jobs = await fetchJobs();
     // serverStats = await fetchSystemStats();
-    renderPipelines(config, jobs, metrics);
+
+    pipelines = parsePipelinesInfo();
+    renderPipelines();
 }
 
 async function fetchConfig() {
@@ -563,13 +526,14 @@ let etag = null;
 let config = {};
 let jobs = [];
 let metrics = {};
+let pipelines = [];
 
 (async () => {
     setServerConfig();
 
     await fetchConfig();
-    await rerenderMetrics(config);
-    setInterval(() => rerenderMetrics(config), 5000);
+    await fetchAndRerender();
+    setInterval(() => fetchAndRerender(), 5000);
 
-    setInterval(() => checkStreamingConfigs(false), 30000);
+    setInterval(() => checkStreamingConfigs(), 30000);
 })();

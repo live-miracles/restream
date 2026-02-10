@@ -17,14 +17,14 @@ function clearAndAddChooseOption(selector) {
 }
 
 function msToHHMMSS(ms) {
-    const totalSeconds = Math.floor(ms / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
+    if (ms === null) return null;
 
-    return [hours, minutes.toString().padStart(2, '0'), seconds.toString().padStart(2, '0')].join(
-        ':',
-    );
+    const totalSecs = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+
+    return [hours, mins.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
 }
 
 function isValidUrl(str) {
