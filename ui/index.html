@@ -38,6 +38,13 @@
       <span>Warning: The streaming configurations were changed by someone. Please refresh the page.</span>
     </div>
 
+    <div id="copied-notification" role="alert" class="alert alert-success fixed bottom-3 left-1/2 z-60 hidden w-fit -translate-x-1/2 transform">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span>Copied</span>
+    </div>
+
     <div role="alert" id="error-alert" class="alert alert-error fixed top-3 left-1/2 z-999 hidden max-w-175 -translate-x-1/2 transform opacity-90">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
         <path
@@ -102,21 +109,21 @@
       </div>
     </dialog>
 
-    <div class="grid h-screen min-h-0 flex-1 grid-cols-[200px_auto_1fr] gap-4 p-4 pt-0">
+    <div class="grid h-screen min-h-0 flex-1 grid-cols-[auto_auto_1fr] gap-4 p-4 pt-0">
       <!-- Left Column -->
       <div class="bg-base-300 rounded-box w-full overflow-y-auto">
         <div id="pipe-overwiew" class="p-4">
           <div>
-            <div aria-label="status" class="status status-success"></div>
-            <span id="on-pipes"></span> pipes | <span id="on-outs"></span> outs
+            <span id="pipe-cnt"></span> Pipes
+            <div class="badge badge-sm badge-success ml-1 px-2" id="pipe-oks"></div>
+            <div class="badge badge-sm badge-warning ml-1 px-2" id="pipe-warnings"></div>
+            <div class="badge badge-sm badge-error ml-1 px-2" id="pipe-errors"></div>
           </div>
-          <div>
-            <div aria-label="status" class="status status-error"></div>
-            <span id="out-errors"></span> out errors
-          </div>
-          <div>
-            <div aria-label="status" class="status status-warning"></div>
-            <span id="out-warnings"></span> out warnings
+          <div class="mt-1">
+            <span id="out-cnt"></span> Outs
+            <div class="badge badge-sm badge-success ml-1 px-2" id="out-oks"></div>
+            <div class="badge badge-sm badge-warning ml-1 px-2" id="out-warnings"></div>
+            <div class="badge badge-sm badge-error ml-1 px-2" id="out-errors"></div>
           </div>
         </div>
         <ul class="menu rounded-box w-full" id="pipelines"></ul>

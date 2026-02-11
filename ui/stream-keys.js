@@ -54,7 +54,7 @@ async function deleteStreamKeyBtn(key, name) {
 }
 
 async function copyKeyBtn(key) {
-    if (copyText(key)) showCopiedNotification();
+    if (await copyText(key)) showCopiedNotification();
 }
 
 async function renderKeysTable() {

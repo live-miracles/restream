@@ -1,51 +1,57 @@
-function getStatusColor(status) {
-    switch (status) {
-        case 'on':
-            return 'green';
-        case 'warning':
-            return 'yellow';
-        case 'error':
-            return 'red';
-        case 'off':
-        default:
-            return 'grey';
-    }
-}
-
 function renderPipelinesList(selectedPipe) {
-    // document.getElementById('on-pipes').innerHTML = pipelines.filter(
-    //     (p) => p.input.status === 'on',
-    // ).length;
-    // document.getElementById('on-outs').innerHTML = pipelines.reduce((sum, p) => {
-    //     return sum + p.outs.filter((o) => o.status === 'on').length;
-    // }, 0);
-    // document.getElementById('out-errors').innerHTML = pipelines.reduce((sum, p) => {
-    //     return sum + p.outs.filter((o) => o.status === 'error').length;
-    // }, 0);
-    // document.getElementById('out-warnings').innerHTML = pipelines.reduce((sum, p) => {
-    //     return sum + p.outs.filter((o) => o.status === 'warning').length;
-    // }, 0);
+    document.getElementById('pipe-cnt').innerHTML = pipelines.length;
+    document.getElementById('pipe-oks').innerHTML = pipelines.filter(
+        (p) => p.input.status === 'on',
+    ).length;
+    document.getElementById('pipe-errors').innerHTML = pipelines.filter(
+        (p) => p.input.status === 'errors',
+    ).length;
+    document.getElementById('pipe-warnings').innerHTML = pipelines.filter(
+        (p) => p.input.status === 'warning',
+    ).length;
+
+    document.getElementById('out-cnt').innerHTML = pipelines.reduce((sum, p) => {
+        return sum + p.outs.length;
+    }, 0);
+    document.getElementById('out-oks').innerHTML = pipelines.reduce((sum, p) => {
+        return sum + p.outs.filter((o) => o.status === 'on').length;
+    }, 0);
+    document.getElementById('out-warnings').innerHTML = pipelines.reduce((sum, p) => {
+        return sum + p.outs.filter((o) => o.status === 'warning').length;
+    }, 0);
+    document.getElementById('out-errors').innerHTML = pipelines.reduce((sum, p) => {
+        return sum + p.outs.filter((o) => o.status === 'error').length;
+    }, 0);
 
     const html = pipelines
         .map((p) => {
             let outStatus = 'off';
-            // if (p.outs.some((o) => o.status === 'error')) {
-            //     outStatus = 'error';
-            // } else if (p.outs.some((o) => o.status === 'warning')) {
-            //     outStatus = 'warning';
-            // } else if (p.outs.some((o) => o.status === 'on')) {
-            //     outStatus = 'on';
-            // }
+            if (p.outs.some((o) => o.status === 'error')) {
+                outStatus = 'error';
+            } else if (p.outs.some((o) => o.status === 'warning')) {
+                outStatus = 'warning';
+            } else if (p.outs.some((o) => o.status === 'on')) {
+                outStatus = 'on';
+            }
             const style = p.id === selectedPipe ? 'bg-base-100' : '';
             const inputColor = getStatusColor(p.input.status);
             const outColor = getStatusColor(outStatus);
+
+            const outCnt = p.outs.length;
+            const outOks = p.outs.filter((o) => o.status === 'on').length;
+            const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
+            const outErrors = p.outs.filter((o) => o.status === 'error').length;
 
             return `
           <li>
             <div class="flex items-center gap-2 ${style}" onclick=selectPipeline('${p.id}')>
               <div class="rounded-box h-5 w-5"
                 style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></div>
-              <a class="active">${p.name}</a> <div class="badge badge-sm">${p.outs.length}</div>
+              <div class="badge badge-sm px-2">${outCnt}</div>
+              <div class="badge badge-sm badge-success px-2 ${outOks ? '' : 'hidden'}">${outOks}</div>
+              <div class="badge badge-sm badge-warning px-2 ${outWarnings ? '' : 'hidden'}">${outWarnings}</div>
+              <div class="badge badge-sm badge-error px-2 ${outErrors ? '' : 'hidden'}">${outErrors}</div>
+              <a class="active">${p.name}</a>
             </div>
           </li>`;
         })
@@ -61,8 +67,6 @@ function renderPipelineInfoColumn(selectedPipe) {
         document.getElementById('pipe-info-col').classList.remove('hidden');
     }
 
-    document.querySelector('.cpu-metric').innerText = '...'; // TODO
-
     const pipe = pipelines.find((p) => p.id === selectedPipe);
     if (!pipe) {
         console.error('Pipeline not found:', selectedPipe);
@@ -70,7 +74,7 @@ function renderPipelineInfoColumn(selectedPipe) {
     }
 
     document.getElementById('pipe-name').innerHTML = pipe.name;
-    if (pipe.input.time === 0) {
+    if (pipe.input.time === null) {
         document.getElementById('input-time').classList.add('hidden');
     } else {
         document.getElementById('input-time').classList.remove('hidden');
@@ -222,7 +226,7 @@ async function editOutBtn(pipeId, outId) {
 async function editOutFormBtn(event) {
     const pipeId = document.getElementById('out-pipe-id-input').value;
     const serverUrl = document.getElementById('out-server-url-input').value;
-    const rtmpKey = document.getElementById('out-rtmp-key-input').value;
+    const rtmpKey = document.getElementById('out-rtmp-key-input').value.trim();
     const outId = document.getElementById('out-id-input').value;
     const data = {
         name: document.getElementById('out-name-input').value,
@@ -236,8 +240,8 @@ async function editOutFormBtn(event) {
         data.url = data.url.replaceAll('${s_prp}', params.get('s_prp'));
     }
 
-    const isUrlValid = isValidUrl(data.url);
-    if (isUrlValid) {
+    const isRtmpValid = isValidRtmp(data.url);
+    if (isRtmpValid) {
         document.getElementById('out-rtmp-key-input').classList.remove('input-error');
     } else {
         document.getElementById('out-rtmp-key-input').classList.add('input-error');
@@ -250,7 +254,7 @@ async function editOutFormBtn(event) {
         document.getElementById('out-name-input').classList.add('input-error');
     }
 
-    if (!isUrlValid || !isOutNameValid) {
+    if (!isRtmpValid || !isOutNameValid) {
         event.preventDefault();
         return;
     }
@@ -424,8 +428,6 @@ function renderStatsColumn(selectedPipe) {
         document.getElementById('stats-col').classList.remove('hidden');
     }
 
-    document.querySelector('#stats-col .server-stats').innerHTML = getServerStatsHtml();
-
     const activeInputs = pipelines.filter((p) => p.input.video);
     const inputStatsHtml = activeInputs
         .map((p) => {
@@ -469,6 +471,10 @@ function renderStatsColumn(selectedPipe) {
         outputStatsHtml;
 }
 
+function renderServerMetrics() {
+    document.querySelectorAll('.cpu-metric').forEach((elem) => (elem.innerText = '...')); // TODO
+}
+
 function renderPipelines() {
     const selectedPipe = getUrlParam('p');
 
@@ -481,10 +487,11 @@ function renderPipelines() {
         gridElem.classList.add('grid-cols-[200px_1fr]');
     }
 
+    renderServerMetrics();
     renderPipelinesList(selectedPipe);
     renderPipelineInfoColumn(selectedPipe);
     renderOutsColumn(selectedPipe);
-    // renderStatsColumn(selectedPipe);
+    renderStatsColumn(selectedPipe);
 }
 
 function selectPipeline(id) {
