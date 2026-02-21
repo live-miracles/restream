@@ -9,6 +9,7 @@
     <script type="text/javascript" src="utils.js"></script>
     <script type="text/javascript" src="pipeline.js"></script>
     <script type="text/javascript" src="api.js"></script>
+    <script type="text/javascript" src="render.js" defer></script>
     <script type="text/javascript" src="dashboard.js" defer></script>
   </head>
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
@@ -109,18 +110,18 @@
       </div>
     </dialog>
 
-    <div class="grid h-screen min-h-0 flex-1 grid-cols-[auto_auto_1fr] gap-4 p-4 pt-0">
+    <div class="grid h-screen min-h-0 flex-1 gap-4 p-4 pt-0">
       <!-- Left Column -->
       <div class="bg-base-300 rounded-box w-full overflow-y-auto">
         <div id="pipe-overwiew" class="p-4">
           <div>
-            <span id="pipe-cnt"></span> Pipes
+            <span id="pipe-cnt"></span> Inputs
             <div class="badge badge-sm badge-success ml-1 px-2" id="pipe-oks"></div>
             <div class="badge badge-sm badge-warning ml-1 px-2" id="pipe-warnings"></div>
             <div class="badge badge-sm badge-error ml-1 px-2" id="pipe-errors"></div>
           </div>
           <div class="mt-1">
-            <span id="out-cnt"></span> Outs
+            <span id="out-cnt"></span> Outputs
             <div class="badge badge-sm badge-success ml-1 px-2" id="out-oks"></div>
             <div class="badge badge-sm badge-warning ml-1 px-2" id="out-warnings"></div>
             <div class="badge badge-sm badge-error ml-1 px-2" id="out-errors"></div>

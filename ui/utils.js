@@ -14,6 +14,14 @@ function msToHHMMSS(ms) {
     return [hours, mins.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
 }
 
+function setInnerHTML(id, text) {
+    document.getElementById(id).innerHTML = text;
+}
+
+function setInnerText(id, text) {
+    document.getElementById(id).innerText = text;
+}
+
 function isValidRtmp(str) {
     // YouTube backup URL is a little funny
     if (str.includes(' ')) return false;

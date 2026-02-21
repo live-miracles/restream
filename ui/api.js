@@ -51,7 +51,9 @@ async function getConfig(etag = null) {
     return { notModified: false, etag: newEtag, data };
 }
 
+// =====
 // ===== Keys API =====
+// =====
 async function getStreamKeys() {
     return apiRequest('/stream-keys');
 }
@@ -78,6 +80,10 @@ async function deleteStreamKey(key) {
 
     return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
 }
+
+// =====
+// ===== Pipelines API =====
+// =====
 
 async function deleteOut(pipeId, outId) {
     const data = new FormData();
