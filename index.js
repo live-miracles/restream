@@ -185,8 +185,9 @@ app.post('/pipelines', (req, res) => {
     try {
         const name = req.body?.name;
         const streamKey = req.body?.streamKey ?? null;
+        const encoding = req.body?.encoding;
 
-        const pipeline = db.createPipeline({ name, streamKey });
+        const pipeline = db.createPipeline({ name, streamKey, encoding });
         // recompute global etag if available
         recomputeEtag();
         return res.status(201).json({ message: 'Pipeline created', pipeline });
@@ -204,8 +205,9 @@ app.post('/pipelines/:id', (req, res) => {
 
         const name = req.body?.name ?? existing.name;
         const streamKey = req.body?.streamKey ?? existing.streamKey;
+        const encoding = req.body?.encoding ?? existing.encoding;
 
-        const updated = db.updatePipeline(id, { name, streamKey });
+        const updated = db.updatePipeline(id, { name, streamKey, encoding });
         if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
 
         recomputeEtag();

@@ -22,6 +22,7 @@ db.prepare(
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     stream_key TEXT,
+    encoding TEXT,
     created_at TEXT,
     updated_at TEXT,
     FOREIGN KEY(stream_key) REFERENCES stream_keys(key) ON DELETE SET NULL
@@ -108,16 +109,16 @@ const deleteStreamKeyStmt = db.prepare('DELETE FROM stream_keys WHERE key = ?');
 
 /* Pipeline statements */
 const insertPipeline = db.prepare(
-    'INSERT INTO pipelines (id, name, stream_key, created_at, updated_at) VALUES (@id, @name, @stream_key, @created_at, @updated_at)',
+    'INSERT INTO pipelines (id, name, stream_key, encoding, created_at, updated_at) VALUES (@id, @name, @stream_key, @encoding, @created_at, @updated_at)',
 );
 const getPipelineStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, created_at AS createdAt, updated_at AS updatedAt FROM pipelines WHERE id = ?',
+    'SELECT id, name, stream_key AS streamKey, encoding, created_at AS createdAt, updated_at AS updatedAt FROM pipelines WHERE id = ?',
 );
 const listPipelinesStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, created_at AS createdAt, updated_at AS updatedAt FROM pipelines ORDER BY created_at DESC',
+    'SELECT id, name, stream_key AS streamKey, encoding, created_at AS createdAt, updated_at AS updatedAt FROM pipelines ORDER BY created_at DESC',
 );
 const updatePipelineStmt = db.prepare(
-    'UPDATE pipelines SET name = @name, stream_key = @stream_key, updated_at = @updated_at WHERE id = @id',
+    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding, updated_at = @updated_at WHERE id = @id',
 );
 const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
