@@ -49,15 +49,15 @@ class Pipeline {
 
 // 3. Output model
 class Output {
-    constructor({ id, type, url } = {}) {
-        if (!type || typeof type !== 'string') {
-            throw new Error('Output.type is required');
+    constructor({ id, name, url } = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Output.name is required');
         }
         if (!url || typeof url !== 'string') {
             throw new Error('Output.url is required');
         }
         this.id = id || Date.now().toString();
-        this.type = type;
+        this.name = name;
         this.url = url;
     }
 }
@@ -267,10 +267,10 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         const pipeline = db.getPipeline(pid);
         if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
 
-        const type = req.body?.type;
+        const name = req.body?.name;
         const url = req.body?.url;
 
-        const output = db.createOutput({ pipelineId: pid, type, url });
+        const output = db.createOutput({ pipelineId: pid, name, url });
         recomputeEtag();
 
         return res.status(201).json({ message: 'Output created', output });
@@ -290,10 +290,10 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         const existing = db.getOutput(pid, oid);
         if (!existing) return res.status(404).json({ error: 'Output not found' });
 
-        const type = req.body?.type ?? existing.type;
+        const name = req.body?.name ?? existing.name;
         const url = req.body?.url ?? existing.url;
 
-        const updated = db.updateOutput(pid, oid, { type, url });
+        const updated = db.updateOutput(pid, oid, { name, url });
         if (!updated) return res.status(500).json({ error: 'Failed to update output' });
 
         recomputeEtag();
@@ -594,7 +594,7 @@ async function recomputeEtag() {
         for (const p of pipelines) {
             const outs = db
                 .listOutputs(p.id)
-                .map((o) => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+                .map((o) => ({ id: o.id, name: o.name, url: o.url, createdAt: o.createdAt }));
             // sort outputs by id for deterministic ordering
             outs.sort((a, b) => a.id.localeCompare(b.id));
             p.outputs = outs;
@@ -656,7 +656,7 @@ app.get('/config', async (req, res) => {
         for (const p of pipelines) {
             const outs = db
                 .listOutputs(p.id)
-                .map((o) => ({ id: o.id, type: o.type, url: o.url, createdAt: o.createdAt }));
+                .map((o) => ({ id: o.id, name: o.name, url: o.url, createdAt: o.createdAt }));
             outs.sort((a, b) => a.id.localeCompare(b.id));
             p.outputs = outs;
         }

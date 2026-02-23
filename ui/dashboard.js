@@ -281,6 +281,14 @@ async function fetchConfig() {
     config = res.data;
 }
 
+function showLoading() {
+    document.getElementById('saving-badge').checked = true;
+}
+
+function hideLoading() {
+    document.getElementById('saving-badge').checked = false;
+}
+
 let etag = null;
 let config = {};
 let jobs = [];

@@ -35,7 +35,7 @@ db.prepare(
   CREATE TABLE IF NOT EXISTS outputs (
     id TEXT PRIMARY KEY,
     pipeline_id TEXT NOT NULL,
-    type TEXT NOT NULL,
+    name TEXT NOT NULL,
     url TEXT NOT NULL,
     created_at TEXT,
     FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE
@@ -123,16 +123,16 @@ const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
 /* Output statements */
 const insertOutput = db.prepare(
-    'INSERT INTO outputs (id, pipeline_id, type, url, created_at) VALUES (@id, @pipeline_id, @type, @url, @created_at)',
+    'INSERT INTO outputs (id, pipeline_id, name, url, created_at) VALUES (@id, @pipeline_id, @name, @url, @created_at)',
 );
 const getOutputStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, type, url, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
+    'SELECT id, pipeline_id AS pipelineId, name, url, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
 );
 const listOutputsStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, type, url, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at DESC',
+    'SELECT id, pipeline_id AS pipelineId, name, url, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at DESC',
 );
 const updateOutputStmt = db.prepare(
-    'UPDATE outputs SET type = @type, url = @url WHERE id = @id AND pipeline_id = @pipeline_id',
+    'UPDATE outputs SET name = @name, url = @url WHERE id = @id AND pipeline_id = @pipeline_id',
 );
 const deleteOutputStmt = db.prepare('DELETE FROM outputs WHERE id = ? AND pipeline_id = ?');
 
@@ -225,12 +225,12 @@ module.exports = {
     },
 
     /* output helpers */
-    createOutput({ id, pipelineId, type, url, createdAt }) {
+    createOutput({ id, pipelineId, name, url, createdAt }) {
         if (!pipelineId) throw new Error('pipelineId is required');
-        if (!type || !url) throw new Error('Output.type and Output.url are required');
+        if (!name || !url) throw new Error('Output.name and Output.url are required');
         const oid = id || crypto.randomBytes(8).toString('hex');
         const now = createdAt || new Date().toISOString();
-        insertOutput.run({ id: oid, pipeline_id: pipelineId, type, url, created_at: now });
+        insertOutput.run({ id: oid, pipeline_id: pipelineId, name, url, created_at: now });
         return getOutputStmt.get(oid, pipelineId);
     },
     getOutput(pipelineId, id) {
@@ -239,8 +239,8 @@ module.exports = {
     listOutputs(pipelineId) {
         return listOutputsStmt.all(pipelineId);
     },
-    updateOutput(pipelineId, id, { type, url }) {
-        const info = updateOutputStmt.run({ id, pipeline_id: pipelineId, type, url });
+    updateOutput(pipelineId, id, { name, url }) {
+        const info = updateOutputStmt.run({ id, pipeline_id: pipelineId, name, url });
         return info.changes > 0 ? getOutputStmt.get(id, pipelineId) : null;
     },
     deleteOutput(pipelineId, id) {
