@@ -6,7 +6,9 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
         options.body = JSON.stringify(body);
     }
 
+    showLoading();
     const response = await fetch(url, options);
+    hideLoading();
 
     let data = null;
     try {
@@ -85,15 +87,13 @@ async function deleteStreamKey(key) {
 // ===== Pipelines API =====
 // =====
 
-async function deleteOut(pipeId, outId) {
-    const data = new FormData();
-    data.append('rtmp_url', '');
-    data.append('stream_id', pipeId);
-    data.append('output_id', outId);
-    data.append('resolution', '');
-    data.append('name_id', '');
+async function createPipeline(name) {
+    if (!name) {
+        showErrorAlert('Invalid pipeline name');
+        return;
+    }
 
-    return await fetchResponse('config.php?destadd', {}, data);
+    return apiRequest('/pipelines', { method: 'POST', body: { name } });
 }
 
 async function setOut(pipeId, outId, data) {
@@ -117,55 +117,4 @@ async function setPipeName(pipeId, name) {
         { 'Content-Type': 'application/json' },
         namesString,
     );
-}
-
-async function deletePipeOuts(pipeId, outsNum) {
-    if (outsNum < 0) {
-        console.error('Something went wrong', outsNum);
-        return { error: null, data: null };
-    }
-    if (outsNum === 0) {
-        return { error: null, data: null };
-    }
-    const outs = Array(outsNum)
-        .fill(0)
-        .map((_, j) => ({
-            name_id: '',
-            stream_id: pipeId,
-            output_id: String(j + 1),
-            resolution: '',
-            rtmp_url: '',
-        }));
-
-    return await fetchResponse(
-        `config.php?bulkset`,
-        { 'Content-Type': 'application/json' },
-        JSON.stringify(outs),
-    );
-}
-
-async function fetchResponse(url, headers = {}, body = undefined) {
-    try {
-        const response = await fetch(url, { method: 'POST', headers: headers, body: body });
-        const data = await response.text();
-
-        if (!response.ok) {
-            const errorMsg = 'Request ' + url + ' failed with error: ' + data;
-            showErrorAlert(errorMsg);
-            return {
-                error: errorMsg,
-                data: null,
-            };
-        }
-        return {
-            error: null,
-            data: data,
-        };
-    } catch (error) {
-        showErrorAlert(String(error));
-        return {
-            error: String(error),
-            data: null,
-        };
-    }
 }

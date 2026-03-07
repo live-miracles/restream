@@ -19,7 +19,7 @@ async function createStreamKeyBtn() {
     name = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '');
 
     if (!name) {
-        alert('Invalid stream key name');
+        showErrorAlert('Invalid stream key name');
         return;
     }
 
@@ -36,7 +36,7 @@ async function updateStreamKeyBtn(key, name) {
     newName = newName.trim().replace(/[^a-zA-Z0-9 _-]/g, '');
 
     if (!newName) {
-        alert('Invalid stream key name');
+        showErrorAlert('Invalid stream key name');
         return;
     }
 

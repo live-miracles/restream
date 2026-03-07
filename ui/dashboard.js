@@ -164,27 +164,15 @@ async function addPipeBtn() {
     const numbers = pipelines
         .filter((p) => p.name.startsWith('Pipeline '))
         .map((p) => parseInt(p.name.split(' ')[1]));
-    const maxNumber = Math.max(...numbers, 0);
-    const nextNumber = maxNumber + 1;
+    const nextNumber = Math.max(...numbers, 0) + 1;
 
-    showLoading();
     document.querySelector('#add-pipe-btn').disabled = true;
-    const event = processResponse(
-        await api('addEvent', { name: `Event ${nextNumber}`, status: '' }),
-    );
-    if (event === null) return;
-    config.events.push(event);
-    updateEventRoles(config);
-    selectEvent(event.id);
-    hideLoading();
+    const response = await createPipeline('Pipeline ' + nextNumber);
+    if (response === null) return;
 
-    const newName = 'Pipeline ' + pipeId;
-    const res = await setPipeName(pipeId, newName);
-    if (res.error) {
-        return;
-    }
-    streamNames[pipeId] = newName;
-    pipelines = getPipelinesInfo();
+    const pipe = response.pipeline;
+    config.pipelines.push(pipe);
+    pipelines = parsePipelinesInfo();
     renderPipelines();
 }
 
@@ -279,14 +267,6 @@ async function fetchConfig() {
     if (res === null || res.notModified) return;
     etag = res.etag;
     config = res.data;
-}
-
-function showLoading() {
-    document.getElementById('saving-badge').checked = true;
-}
-
-function hideLoading() {
-    document.getElementById('saving-badge').checked = false;
 }
 
 let etag = null;

@@ -13,57 +13,10 @@ const { createHash } = require('crypto');
 
 app.use(express.json());
 
-/* ======================
- * In-memory storage
- * ====================== */
-let jobs = {};
-
 const processes = new Map(); // runtime only: jobId -> ChildProcess
 
 /* ======================
- * Models
- * ====================== */
-
-// 1. StreamKey model
-class StreamKey {
-    constructor({ key, label = null, createdAt } = {}) {
-        this.key = key || crypto.randomBytes(12).toString('hex');
-        this.label = label ?? null;
-        this.createdAt = createdAt || new Date().toISOString();
-    }
-}
-
-// 2. Pipeline model
-class Pipeline {
-    constructor({ id, name, streamKey = null, createdAt, updatedAt } = {}) {
-        if (!name || typeof name !== 'string') {
-            throw new Error('Pipeline.name is required');
-        }
-        this.id = id || Date.now().toString();
-        this.name = name;
-        this.streamKey = streamKey;
-        this.createdAt = createdAt || new Date().toISOString();
-        this.updatedAt = updatedAt || null;
-    }
-}
-
-// 3. Output model
-class Output {
-    constructor({ id, name, url } = {}) {
-        if (!name || typeof name !== 'string') {
-            throw new Error('Output.name is required');
-        }
-        if (!url || typeof url !== 'string') {
-            throw new Error('Output.url is required');
-        }
-        this.id = id || Date.now().toString();
-        this.name = name;
-        this.url = url;
-    }
-}
-
-/* ======================
- * Stream Key APIs (updated to use SQLite)
+ * Stream Key APIs
  * ====================== */
 
 // create stream key
@@ -185,7 +138,7 @@ app.post('/pipelines', (req, res) => {
     try {
         const name = req.body?.name;
         const streamKey = req.body?.streamKey ?? null;
-        const encoding = req.body?.encoding;
+        const encoding = req.body?.encoding ?? null;
 
         const pipeline = db.createPipeline({ name, streamKey, encoding });
         // recompute global etag if available
@@ -248,20 +201,6 @@ app.get('/pipelines', (req, res) => {
  * Output APIs
  * ====================== */
 
-// list outputs for pipeline
-app.get('/pipelines/:id/outputs', (req, res) => {
-    try {
-        const pid = req.params.id;
-        const pipeline = db.getPipeline(pid);
-        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
-
-        const outputs = db.listOutputs(pid);
-        return res.json(outputs);
-    } catch (err) {
-        return res.status(500).json({ error: err.toString() });
-    }
-});
-
 // create output
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     try {
@@ -321,23 +260,6 @@ app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
 
         recomputeEtag();
         return res.json({ message: `Output ${oid} from pipeline ${pid} deleted` });
-    } catch (err) {
-        return res.status(500).json({ error: err.toString() });
-    }
-});
-
-// get output detail
-app.get('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
-    try {
-        const pid = req.params.pipelineId;
-        const oid = req.params.outputId;
-        const pipeline = db.getPipeline(pid);
-        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
-
-        const output = db.getOutput(pid, oid);
-        if (!output) return res.status(404).json({ error: 'Output not found' });
-
-        return res.json(output);
     } catch (err) {
         return res.status(500).json({ error: err.toString() });
     }
@@ -646,26 +568,11 @@ app.get('/config', async (req, res) => {
         }
 
         // build snapshot same as recomputeEtag logic
-        const streamKeys = db
-            .listStreamKeys()
-            .map((sk) => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
-        const pipelines = db.listPipelines().map((p) => ({
-            id: p.id,
-            name: p.name,
-            streamKey: p.streamKey,
-            createdAt: p.createdAt,
-        }));
-        for (const p of pipelines) {
-            const outs = db
-                .listOutputs(p.id)
-                .map((o) => ({ id: o.id, name: o.name, url: o.url, createdAt: o.createdAt }));
-            outs.sort((a, b) => a.id.localeCompare(b.id));
-            p.outputs = outs;
-        }
-        streamKeys.sort((a, b) => (a.key || '').localeCompare(b.key || ''));
-        pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+        const streamKeys = db.listStreamKeys();
+        const pipelines = db.listPipelines();
+        const outputs = db.listOutputs();
 
-        const snapshot = { streamKeys, pipelines };
+        const snapshot = { streamKeys, pipelines, outputs };
 
         // send ETag header (quoted per spec)
         if (etag) res.set('ETag', `"${etag}"`);

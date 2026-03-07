@@ -14,13 +14,28 @@
   </head>
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
     <div class="navbar bg-base-100 shrink-0">
+      <!-- LEFT -->
       <div class="flex-1">
         <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">Restream</button>
       </div>
+
+      <!-- CENTER -->
       <div class="flex-none">
+        <label class="swap">
+          <input id="saving-badge" type="checkbox" disabled />
+          <div class="swap-off"></div>
+          <div class="swap-on flex items-center gap-2">
+            <span class="loading loading-infinity loading-xs"></span>
+            Saving
+          </div>
+        </label>
+      </div>
+
+      <!-- RIGHT -->
+      <div class="flex flex-1 justify-end">
         <ul class="menu menu-horizontal px-1">
           <li><a href="/stream-keys.html" class="dynamic-params">Keys</a></li>
-          <li><a href="https://github.com/live-miracles/restream" target="_blank">GitHub</a></li>
+          <li><a href="https://github.com/live-miracles/restream">GitHub </a></li>
         </ul>
       </div>
     </div>

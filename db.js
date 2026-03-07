@@ -115,7 +115,7 @@ const getPipelineStmt = db.prepare(
     'SELECT id, name, stream_key AS streamKey, encoding, created_at AS createdAt, updated_at AS updatedAt FROM pipelines WHERE id = ?',
 );
 const listPipelinesStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding, created_at AS createdAt, updated_at AS updatedAt FROM pipelines ORDER BY created_at DESC',
+    'SELECT id, name, stream_key AS streamKey, encoding, created_at AS createdAt, updated_at AS updatedAt FROM pipelines',
 );
 const updatePipelineStmt = db.prepare(
     'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding, updated_at = @updated_at WHERE id = @id',
@@ -130,7 +130,7 @@ const getOutputStmt = db.prepare(
     'SELECT id, pipeline_id AS pipelineId, name, url, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
 );
 const listOutputsStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at DESC',
+    'SELECT id, pipeline_id AS pipelineId, name, url, created_at AS createdAt FROM outputs',
 );
 const updateOutputStmt = db.prepare(
     'UPDATE outputs SET name = @name, url = @url WHERE id = @id AND pipeline_id = @pipeline_id',
@@ -196,7 +196,7 @@ module.exports = {
     },
 
     /* pipeline helpers */
-    createPipeline({ id, name, streamKey = null, createdAt }) {
+    createPipeline({ id, name, streamKey = null, encoding = null, createdAt }) {
         if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
         const pid = id || crypto.randomBytes(8).toString('hex');
         const now = createdAt || new Date().toISOString();
@@ -204,6 +204,7 @@ module.exports = {
             id: pid,
             name,
             stream_key: streamKey,
+            encoding: encoding,
             created_at: now,
             updated_at: null,
         });
@@ -237,8 +238,8 @@ module.exports = {
     getOutput(pipelineId, id) {
         return getOutputStmt.get(id, pipelineId);
     },
-    listOutputs(pipelineId) {
-        return listOutputsStmt.all(pipelineId);
+    listOutputs() {
+        return listOutputsStmt.all();
     },
     updateOutput(pipelineId, id, { name, url }) {
         const info = updateOutputStmt.run({ id, pipeline_id: pipelineId, name, url });

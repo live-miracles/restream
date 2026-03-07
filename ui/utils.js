@@ -118,6 +118,14 @@ function showErrorAlert(error, log = true) {
     }, 5000);
 }
 
+function showLoading() {
+    document.getElementById('saving-badge').checked = true;
+}
+
+function hideLoading() {
+    document.getElementById('saving-badge').checked = false;
+}
+
 let copyCount = 0;
 function showCopiedNotification() {
     const notification = document.getElementById('copied-notification');

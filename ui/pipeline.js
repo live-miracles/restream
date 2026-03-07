@@ -49,19 +49,37 @@ function parsePipelinesInfo() {
             name: p.name,
             key: p.streamKey,
             input: { status: 'off', time: null, video: null, audio: null },
-            outs: p.outputs.map((out) => ({
-                id: out.id,
-                pipe: p.name,
-                name: out.name,
-                encoding: 'none',
-                url: out.url,
-                status: 'off', // status = processes?.includes(pipe.id + 'out' + out.out) ? 'error' : 'off';
-                time: null,
-                video: null,
-                audio: null,
-            })),
+            outs: [],
         }),
     );
+
+    config?.outputs.forEach((out) => {
+        let pipe = newPipelines.find((p) => p.id === out.pipelineId);
+
+        if (!pipe) {
+            console.error('Not found pipeline for output: ', out);
+            pipe = {
+                id: out.pipelineId,
+                name: 'Undefined',
+                key: null,
+                input: { status: 'off', time: null, video: null, audio: null },
+                outs: [],
+            };
+            newPipelines.push(pipe);
+        }
+
+        pipe.outs.push({
+            id: out.id,
+            pipe: pipe.name,
+            name: out.name,
+            encoding: 'none',
+            url: out.url,
+            status: 'off', // status = processes?.includes(pipe.id + 'out' + out.out) ? 'error' : 'off';
+            time: null,
+            video: null,
+            audio: null,
+        });
+    });
 
     // getRtmpStats('output').forEach((s) => {
     //     let pipe = newPipelines.find((p) => p.key === 'stream' + s.input);

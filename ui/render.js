@@ -22,6 +22,7 @@ function renderPipelinesList(selectedPipe) {
     );
 
     const html = pipelines
+        .sort((a, b) => a.name.localeCompare(b.name))
         .map((p) => {
             let outStatus = 'off';
             if (p.outs.some((o) => o.status === 'error')) {
@@ -91,7 +92,7 @@ function renderPipelineInfoColumn(selectedPipe) {
     const serverUrl = 'rtmp://' + document.location.hostname + '/';
     document.getElementById('server-url').innerHTML = serverUrl;
     document.getElementById('server-url').dataset.copy = serverUrl;
-    document.getElementById('stream-key').innerHTML = pipe.key.replace('stream', 'Stream ');
+    document.getElementById('stream-key').innerHTML = pipe.key;
     document.getElementById('stream-key').dataset.copy = pipe.key;
     document.getElementById('rtmp-url').innerHTML = serverUrl + pipe.key;
     document.getElementById('rtmp-url').dataset.copy = serverUrl + pipe.key;
