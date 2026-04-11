@@ -1,10 +1,5 @@
 {
     "server-name": "Server Name",
     "pipelines-limit": 25,
-    "out-limit": 95,
-    "mediamtx": {
-        "ingest": {
-            "host": "172.19.0.3"
-        }
-    }
+    "out-limit": 95
 }
