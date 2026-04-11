@@ -88,7 +88,7 @@ meta
 
 ## 3. Configuration
 
-Runtime config is loaded from `src/config/restream.json` (path overridable via `RESTREAM_CONFIG_PATH`). It is read fresh on every `/config` request and merged into the snapshot. See [CONFIGURATION.md](./CONFIGURATION.md) for all options.
+Runtime config is loaded from `src/config/restream.json` (path overridable via `RESTREAM_CONFIG_PATH`). It is read fresh on every `/config` request and merged into the snapshot. See [configuration.md](./configuration.md) for all options.
 
 ---
 
@@ -170,7 +170,6 @@ Client
   ▼
 Parallel fetch from MediaMTX API:
   ├── GET /v3/paths/list         → pathByName Map
-  ├── GET /v3/rtmpconns/list     → publisherByPath Map (state='publish')
   ├── GET /v3/rtspconns/list     → rtspConnectionRecords
   └── GET /v3/rtspsessions/list  → rtspSessionById Map
 
@@ -187,11 +186,9 @@ Load from DB:
 For each pipeline:
   ├── Input health:
   │     pathInfo = pathByName.get(streamKey)
-  │     publisher = publisherByPath.get(streamKey)
-  │     status = 'on'      if pathInfo.online && publisher
-  │            = 'warning' if pathInfo.online || pathInfo.ready (no publisher)
-  │            = 'off'     otherwise
-  │     publishStartedAt = publisher.created
+  │     status = 'on'  if pathInfo.online || pathInfo.ready
+  │            = 'off' otherwise
+  │     publishStartedAt = pathInfo.readyTime   (protocol-agnostic)
   │     video/audio = from pathInfo.tracks2 + ffprobe cache (if online)
   │
   └── For each output:
@@ -201,7 +198,7 @@ For each pipeline:
                = 'on'      if running AND rtspByReaderTag has reader_<pid>_<oid>
                = 'warning' if running AND no reader tag match
 
-200 { generatedAt, mediamtx: {...counts}, pipelines: {...} }
+200 { generatedAt, mediamtx: { pathCount, rtspConnCount }, pipelines: {...} }
 ```
 
 ### 4.4 Config Snapshot (`GET /config`)
@@ -350,10 +347,10 @@ See [health-mapping.md](./health-mapping.md) for full status derivation diagrams
 ```
 [Host]
   node src/index.js  :3030
-       │
-         └── MEDIAMTX_INTERNAL_HOST=localhost
-           MEDIAMTX_INTERNAL_API_PORT=9997
-           MEDIAMTX_INTERNAL_RTSP_PORT=8554
+    │
+    └── MEDIAMTX_INTERNAL_HOST=localhost
+        MEDIAMTX_INTERNAL_API_PORT=9997
+        MEDIAMTX_INTERNAL_RTSP_PORT=8554
 
 [Docker]
   mediamtx           :1935 :8554 :9997

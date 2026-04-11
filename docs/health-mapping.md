@@ -6,12 +6,11 @@ This document explains exactly how input and output health statuses are derived 
 
 ## 1. Data Sources
 
-The `/health` endpoint fetches four MediaMTX APIs in parallel, then merges with DB state:
+The `/health` endpoint fetches three MediaMTX APIs in parallel, then merges with DB state:
 
 | Source                      | What it provides                                         |
 |-----------------------------|----------------------------------------------------------|
-| `GET /v3/paths/list`        | Per-path: online, ready, bytesReceived, bytesSent, tracks2, readers list |
-| `GET /v3/rtmpconns/list`    | RTMP connections; filter `state='publish'` to find publishers |
+| `GET /v3/paths/list`        | Per-path: online, ready, readyTime, bytesReceived, bytesSent, tracks2, readers list |
 | `GET /v3/rtspconns/list`    | All RTSP connections including `query` field (contains `reader_id`) |
 | `GET /v3/rtspsessions/list` | RTSP sessions for fallback field lookup                  |
 | DB: `listPipelines()`       | Pipeline ↔ stream key mapping                            |
@@ -27,32 +26,24 @@ For each pipeline, the input status is derived from the pipeline's `streamKey`:
 ```mermaid
 flowchart TD
     A["pipeline.streamKey"] --> B["pathByName.get(streamKey)"]
-    A --> C["publisherByPath.get(streamKey)\n(rtmpconns where state='publish')"]
 
-    B --> D{pathInfo exists?}
-    C --> E{publisher exists?}
-
-    D -->|no| OFF["status = 'off'"]
-    D -->|yes| F{pathInfo.online\nAND publisher?}
-    E --> F
-
-    F -->|yes| ON["status = 'on'\npublishStartedAt = publisher.created"]
-    F -->|no| G{pathInfo.online\nOR pathInfo.ready?}
-    G -->|yes| WARN["status = 'warning'"]
-    G -->|no| OFF
+    B --> C{pathInfo exists?}
+    C -->|no| OFF["status = 'off'"]
+    C -->|yes| D{"pathInfo.online\nOR pathInfo.ready?"}
+    D -->|no| OFF
+    D -->|yes| ON["status = 'on'\npublishStartedAt = pathInfo.readyTime"]
 ```
 
 **Input status values:**
 
-| Value     | Condition                                                       |
-|-----------|-----------------------------------------------------------------|
-| `on`      | `pathInfo.online === true` AND RTMP publisher connection exists |
-| `warning` | `pathInfo.online || pathInfo.ready` but no publisher            |
-| `off`     | No path info, or path neither online nor ready                  |
+| Value | Condition                                                            |
+|-------|----------------------------------------------------------------------|
+| `on`  | Path exists AND (`pathInfo.online === true` OR `pathInfo.ready === true`) |
+| `off` | No path info, or path neither online nor ready                        |
 
 **Additional input fields from MediaMTX:**
 
-- `publishStartedAt` — `publisher.created` (ISO timestamp when RTMP publisher connected)
+- `publishStartedAt` — `pathInfo.readyTime` (ISO timestamp when the path became ready, covers all publisher protocols: RTMP, RTSP, SRT, WebRTC)
 - `video` — from `pathInfo.tracks2` (first H264 track) + `ffprobe` cache for FPS
 - `audio` — from `pathInfo.tracks2` (first non-video codec) + `ffprobe` cache
 - `readers` — `pathInfo.readers.length`
@@ -162,14 +153,14 @@ This means the output status reflects the **latest** job run, not any historical
 
 The split badge on each pipeline card in the dashboard maps statuses to colors:
 
-| Status    | Badge color |
-|-----------|-------------|
-| `on`      | Green       |
-| `warning` | Yellow      |
-| `error`   | Red         |
-| `off`     | Grey        |
+| Status    | Badge color | Applies to      |
+|-----------|-------------|-----------------|
+| `on`      | Green       | input + output  |
+| `warning` | Yellow      | output only     |
+| `error`   | Red         | output only     |
+| `off`     | Grey        | input + output  |
 
-The left half shows input status; the right half shows the aggregate of all output statuses for that pipeline (worst-case wins: `error` > `warning` > `on` > `off`).
+The left half shows input status (`on` / `off`); the right half shows the aggregate of all output statuses for that pipeline (worst-case wins: `error` > `warning` > `on` > `off`).
 
 ---
 

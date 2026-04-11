@@ -65,7 +65,7 @@ File: `src/config/restream.json`
       "rtspPort": "8554"
     },
     "ingest": {
-      "host": "172.19.0.2",
+      "host": "stream.example.com",
       "rtmpPort": "1935",
       "rtspPort": "8554",
       "srtPort": "8890"

@@ -75,14 +75,14 @@ Updates the label of an existing stream key.
 
 Deletes a stream key and removes its path from MediaMTX.
 
-> Note: MediaMTX path deletion failure is logged but does not block the DB deletion.
+> Note: If MediaMTX path deletion fails the request returns `500`. The DB row is **not** deleted until MediaMTX confirms success.
 
 **Response 200:**
 ```json
-{ "message": "Stream key deleted", "key": "mystream" }
+{ "message": "Stream key deleted" }
 ```
 
-**Errors:** `404` key not found.
+**Errors:** `404` key not found; `500` MediaMTX path deletion failed.
 
 ---
 
@@ -151,7 +151,7 @@ Deletes a pipeline. All running output jobs are stopped (SIGTERM) before deletio
 
 **Response 200:**
 ```json
-{ "message": "Pipeline deleted" }
+{ "message": "Pipeline <id> deleted" }
 ```
 
 **Errors:** `404` pipeline not found.
@@ -213,7 +213,7 @@ Deletes an output. Running job is stopped first.
 
 **Response 200:**
 ```json
-{ "message": "Output deleted" }
+{ "message": "Output <outputId> from pipeline <pipelineId> deleted" }
 ```
 
 **Errors:** `404` output or pipeline not found.
@@ -333,7 +333,7 @@ Returns the current ETag without a response body. Used to poll for changes witho
 
 ### `GET /health`
 
-Aggregates MediaMTX runtime state with DB job state. Calls four MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtmpconns/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`.
+Aggregates MediaMTX runtime state with DB job state. Calls three MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`.
 
 **Response 200:**
 ```json
@@ -341,7 +341,6 @@ Aggregates MediaMTX runtime state with DB job state. Calls four MediaMTX endpoin
   "generatedAt": "2026-04-10T11:31:36.879Z",
   "mediamtx": {
     "pathCount": 2,
-    "rtmpConnCount": 1,
     "rtspConnCount": 3
   },
   "pipelines": {
@@ -388,11 +387,10 @@ Aggregates MediaMTX runtime state with DB job state. Calls four MediaMTX endpoin
 ```
 
 **Input status values:**
-| Status    | Meaning                                              |
-|-----------|------------------------------------------------------|
-| `on`      | Path online **and** RTMP publisher present           |
-| `warning` | Path online or ready but no publisher                |
-| `off`     | No active path state for the stream key              |
+| Status | Meaning                                                |
+|--------|--------------------------------------------------------|
+| `on`   | `pathInfo.online === true` OR `pathInfo.ready === true` |
+| `off`  | No path info, or path neither online nor ready          |
 
 **Output status values:**
 | Status    | Meaning                                              |
