@@ -7,7 +7,6 @@ node_modules/
 .vscode/
 
 # Local/runtime files
-data.db
 .deps-stamp
 *.log
 *.pid
@@ -20,8 +19,6 @@ data.db
 test/artifacts/logs/
 test/artifacts/runs/
 
-# Database files
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+# Keep data directory, ignore its runtime content
+data/*
+!data/.gitkeep

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -150,10 +150,6 @@ async function shutdown(leaveRunning) {
 async function cleanStart() {
   console.log('== Clean start: tear down stale processes and state ==');
   await runCommand('bash', ['scripts/down.sh'], { allowFailure: true, stdio: 'inherit' });
-  await rm(resolvePath('data.db'), { force: true });
-  await rm(resolvePath('data.db-journal'), { force: true });
-  await rm(resolvePath('data.db-wal'), { force: true });
-  await rm(resolvePath('data.db-shm'), { force: true });
 
   await runCommand('docker', ['compose', 'up', '-d', 'mediamtx', 'nginx-rtmp'], { stdio: 'inherit' });
 

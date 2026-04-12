@@ -15,7 +15,7 @@ else
 fi
 
 echo "Cleaning up database files"
-rm -f data.db data.db-*
+rm -f data/data.db data/data.db-*
 
 echo "Stopping ffmpeg publishers (if present)"
 pkill -f "^ffmpeg .* -stream_loop" 2>/dev/null || true

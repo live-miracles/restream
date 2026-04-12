@@ -44,6 +44,7 @@ services:
             PORT: 3030
         volumes:
             - ./src/config/restream.json:/app/src/config/restream.json:ro
+            - ./data:/app/data
         depends_on:
             pause:
                 condition: service_started
