@@ -60,8 +60,6 @@ npm ci --omit=dev
 
 This installs:
 - `better-sqlite3` - Database
-- `body-parser` - HTTP middleware
-- `cors` - CORS support
 - `express` - Web framework
 
 ### Development Environment
