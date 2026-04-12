@@ -1,4 +1,4 @@
-.PHONY: run-host run-docker verify down deps format css security security-strict start-input probe-output run-4x3
+.PHONY: run-host run-docker down deps format css security security-strict start-input probe-output run-4x3
 
 OUTPUT_URL ?= rtmp://localhost:1936/live/test
 APP_PORT ?= 3030
@@ -50,7 +50,3 @@ probe-output:
 
 run-4x3: deps
 	node test/artifacts/run-4x3.mjs
-
-verify:
-	APP_PORT="$(APP_PORT)" MEDIAMTX_API_URL="$(MEDIAMTX_API_URL)" VERIFY_MEDIAMTX_RETRIES="$(VERIFY_MEDIAMTX_RETRIES)" VERIFY_APP_RETRIES="$(VERIFY_APP_RETRIES)" \
-		bash scripts/verify-container-profile.sh

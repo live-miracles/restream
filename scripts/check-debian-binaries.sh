@@ -103,7 +103,7 @@ check_cmd pkill procps
 check_cmd xargs findutils
 check_cmd seq coreutils
 
-# Docker + compose plugin are required for run-host/run-docker/verify/run-4x3.
+# Docker + compose plugin are required for run-host/run-docker/run-4x3.
 if have_cmd docker; then
   ok docker
   if docker compose version >/dev/null 2>&1; then

@@ -101,14 +101,6 @@ Node and MediaMTX both run in Docker. They share a pod-like network namespace, s
 make run-docker
 ```
 
-## Clean Verification Targets
-
-For clean startup checks of the containerized app:
-
-```sh
-make verify
-```
-
 ## Contribute
 
 After cloning, run:

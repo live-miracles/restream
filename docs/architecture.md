@@ -375,7 +375,6 @@ This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localh
 | `make run-host`       | Start docker services + node on host (dev)           |
 | `make run-docker`     | Full docker-compose stack                            |
 | `make down`           | Stop and remove docker containers                    |
-| `make verify`         | Clean startup check (container profile)              |
 | `make css`            | Rebuild `public/output.css` from `input.css`         |
 | `make format`         | Run prettier over all files                          |
 | `make security`       | npm audit + outdated packages                        |
