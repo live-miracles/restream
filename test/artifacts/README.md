@@ -36,6 +36,10 @@ This folder stores reusable test artifacts captured from ad-hoc testing sessions
 - Runs full 4x3 test flow end-to-end.
 - Waits for all expected inputs and outputs to reach active state.
 - Captures health snapshot.
+- `CLEAN_START=0` — skip stack teardown/relaunch and reuse a running stack.
+- `KEEP_RUNNING=1` — leave the app and input publishers alive after the run
+  so the dashboard and logs can be inspected without the EXIT trap tearing
+  everything down.
 
 6. wait-all-active.sh
 - Polls `/health` until all manifest inputs and outputs are `on`.
@@ -61,8 +65,14 @@ This folder stores reusable test artifacts captured from ad-hoc testing sessions
 
 ## One-Command Make Flow
 
-After app + media services are up, run:
+Full clean run (default):
 - make run-4x3
+
+Leave stack running after completion for inspection:
+- KEEP_RUNNING=1 make run-4x3
+
+Reuse an already-running stack (skip media-service restart):
+- CLEAN_START=0 make run-4x3
 
 ## Notes
 

@@ -52,7 +52,7 @@ probe-output:
 
 run-4x3: deps
 	chmod +x test/artifacts/*.sh
-	CLEAN_START=1 bash test/artifacts/run-4x3.sh
+	bash test/artifacts/run-4x3.sh
 
 verify:
 	APP_PORT="$(APP_PORT)" MEDIAMTX_API_URL="$(MEDIAMTX_API_URL)" VERIFY_MEDIAMTX_RETRIES="$(VERIFY_MEDIAMTX_RETRIES)" VERIFY_APP_RETRIES="$(VERIFY_APP_RETRIES)" \

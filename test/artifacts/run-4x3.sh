@@ -9,8 +9,12 @@ MANIFEST_PATH="${MANIFEST_PATH:-test/artifacts/session-4x3-last.json}"
 LOG_DIR="${LOG_DIR:-test/artifacts/logs}"
 APP_LOG_PATH="${APP_LOG_PATH:-test/artifacts/logs/app-under-test.log}"
 
-# Default to a true clean run unless explicitly disabled.
+# CLEAN_START=1 (default): tear down stale state and relaunch media services +
+# app before running.  Set to 0 to reuse an already-running stack.
 CLEAN_START="${CLEAN_START:-1}"
+# KEEP_RUNNING=1: skip teardown on exit so the app and input publishers stay
+# alive after the run completes (useful for inspecting the dashboard/logs).
+KEEP_RUNNING="${KEEP_RUNNING:-0}"
 
 app_pid=""
 
@@ -31,7 +35,16 @@ cleanup_app() {
     fi
 }
 
-trap 'cleanup_inputs; cleanup_app' EXIT
+cleanup_on_exit() {
+    if [[ "$KEEP_RUNNING" == "1" ]]; then
+        echo "== KEEP_RUNNING=1: leaving input publishers and app running =="
+        return
+    fi
+    cleanup_inputs
+    cleanup_app
+}
+
+trap cleanup_on_exit EXIT
 
 command -v curl >/dev/null || { echo "curl is required"; exit 1; }
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
