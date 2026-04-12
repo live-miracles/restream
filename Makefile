@@ -18,8 +18,6 @@ deps: .deps-stamp
 
 .deps-stamp: package-lock.json package.json
 	bash scripts/ensure-deps.sh
-	npm ci
-	@touch .deps-stamp
 
 format:
 	npx prettier --write .
