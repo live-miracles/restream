@@ -106,7 +106,7 @@ Validate pipeline + output exist in DB
 Check for existing running job (409 if found)
   │
   ▼
-Resolve probe URL: rtsp://<MEDIAMTX_INTERNAL_HOST>:<MEDIAMTX_INTERNAL_RTSP_PORT>/<streamKey>
+Resolve probe URL: rtsp://localhost:8554/<streamKey>
   │
   ▼
 ffprobe -rtsp_transport tcp <probeUrl>   (8 s timeout)
@@ -348,9 +348,9 @@ See [health-mapping.md](./health-mapping.md) for full status derivation diagrams
 [Host]
   node src/index.js  :3030
     │
-    └── MEDIAMTX_INTERNAL_HOST=localhost
-        MEDIAMTX_INTERNAL_API_PORT=9997
-        MEDIAMTX_INTERNAL_RTSP_PORT=8554
+    └── (connects to)
+        localhost:9997 (MediaMTX API)
+        localhost:8554 (MediaMTX RTSP)
 
 [Docker]
   mediamtx           :1935 :8554 :9997
@@ -359,13 +359,12 @@ See [health-mapping.md](./health-mapping.md) for full status derivation diagrams
 
 ### 7.2 Full Docker (`make run-docker`)
 
-All services in `docker-compose.yml`. Node talks to MediaMTX via Docker service name:
+All services are defined in `docker-compose.yml` under the `container` profile.
 
-```
-MEDIAMTX_INTERNAL_HOST=mediamtx
-MEDIAMTX_INTERNAL_API_PORT=9997
-MEDIAMTX_INTERNAL_RTSP_PORT=8554
-```
+`pause`, `app`, and `mediamtx-pod` share a single network namespace (`network_mode: service:pause`).
+This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localhost:8554` (RTSP).
+
+`nginx-rtmp` runs as a separate container with independent host port mappings.
 
 ---
 

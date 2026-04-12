@@ -13,13 +13,13 @@ Restream configuration uses two layers with precedence:
 | `PORT` | `3030` | Express listen port |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
 
-### MediaMTX Internal (backend to MediaMTX)
+### MediaMTX Backend (hardcoded localhost)
 
-| Variable | Default | Description |
-|---|---|---|
-| `MEDIAMTX_INTERNAL_HOST` | `localhost` | Hostname/IP used by backend for MediaMTX API and RTSP pull |
-| `MEDIAMTX_INTERNAL_API_PORT` | `9997` | MediaMTX API port |
-| `MEDIAMTX_INTERNAL_RTSP_PORT` | `8554` | MediaMTX RTSP port used by FFmpeg/ffprobe pull URLs |
+The backend assumes MediaMTX is always available on `localhost` with default ports:
+- API: `http://localhost:9997`
+- RTSP: `rtsp://localhost:8554`
+
+These are hardcoded in the application and cannot be overridden via environment variables.
 
 ### MediaMTX Ingest (publisher-facing URLs in UI)
 
@@ -59,11 +59,6 @@ File: `src/config/restream.json`
   "pipelines-limit": 25,
   "out-limit": 95,
   "mediamtx": {
-    "internal": {
-      "host": "localhost",
-      "apiPort": "9997",
-      "rtspPort": "8554"
-    },
     "ingest": {
       "host": "stream.example.com",
       "rtmpPort": "1935",
@@ -81,9 +76,6 @@ File: `src/config/restream.json`
 | `server-name` | string | `Server Name` | Display name in UI |
 | `pipelines-limit` | integer | `25` | Positive integer |
 | `out-limit` | integer | `95` | Positive integer |
-| `mediamtx.internal.host` | string | `localhost` | Backend internal host |
-| `mediamtx.internal.apiPort` | string | `9997` | Backend MediaMTX API port |
-| `mediamtx.internal.rtspPort` | string | `8554` | Backend MediaMTX RTSP pull port |
 | `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |
 | `mediamtx.ingest.rtmpPort` | string | `1935` | Publisher RTMP ingest port |
 | `mediamtx.ingest.rtspPort` | string | `8554` | Publisher RTSP ingest port |
@@ -95,12 +87,37 @@ UI ingest URLs are built in app code as:
 - RTSP: `rtsp://<ingest.host>:<ingest.rtspPort>/<streamKey>`
 - SRT: `srt://<ingest.host>:<ingest.srtPort>?streamid=publish:<streamKey>`
 
-Backend internal URLs are built as:
+Backend internal URLs are hardcoded as:
 
-- API: `http://<internal.host>:<internal.apiPort>`
-- RTSP base: `rtsp://<internal.host>:<internal.rtspPort>`
+- API: `http://localhost:9997`
+- RTSP base: `rtsp://localhost:8554`
 
-## 3. docker-compose Environment Example
+## 3. docker-compose Profiles
+
+The project uses one compose file with two profiles:
+
+- `host` profile: runs `mediamtx` in Docker for host-mode development.
+- `container` profile: runs `pause`, `app`, and `mediamtx-pod` for full Docker mode.
+
+`nginx-rtmp` has no profile and is available in both modes.
+
+### Host mode (`make run-host`)
+
+Starts `mediamtx` + `nginx-rtmp` in Docker and runs Node on host.
+
+```sh
+docker compose --profile host up -d mediamtx nginx-rtmp
+```
+
+### Container mode (`make run-docker`)
+
+Starts app + MediaMTX in a shared namespace through `pause`.
+
+```sh
+docker compose --profile container up -d pause mediamtx-pod nginx-rtmp app
+```
+
+### app container environment
 
 `app` service environment:
 
@@ -108,10 +125,9 @@ Backend internal URLs are built as:
 environment:
   NODE_ENV: production
   PORT: 3030
-  MEDIAMTX_INTERNAL_HOST: mediamtx
 ```
 
-`MEDIAMTX_INTERNAL_API_PORT` and `MEDIAMTX_INTERNAL_RTSP_PORT` can be omitted in compose when MediaMTX uses defaults (`9997` and `8554`).
+The app automatically connects to MediaMTX on `localhost:9997` (API) and `localhost:8554` (RTSP).
 
 Optional publisher-facing overrides:
 

@@ -63,17 +63,13 @@ function buildCommandPreview(cmd, args) {
 }
 
 function getMediamtxApiBaseUrl() {
-    const internal = getConfig()?.mediamtx?.internal || {};
-    const host = internal.host || 'localhost';
-    const apiPort = internal.apiPort || '9997';
-    return `http://${host}:${apiPort}`;
+    // MediaMTX internal API is always available on localhost:9997
+    return 'http://localhost:9997';
 }
 
 function getMediamtxRtspBaseUrl() {
-    const internal = getConfig()?.mediamtx?.internal || {};
-    const host = internal.host || 'localhost';
-    const rtspPort = internal.rtspPort || '8554';
-    return `rtsp://${host}:${rtspPort}`;
+    // MediaMTX RTSP input is always available on localhost:8554
+    return 'rtsp://localhost:8554';
 }
 
 function getCpuTotals() {

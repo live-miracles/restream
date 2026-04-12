@@ -34,6 +34,10 @@ test/artifacts/     — Reproducible test scripts and session recordings
 docker-compose.yml  — Full-stack compose (app + mediamtx + nginx-rtmp test sink)
 ```
 
+The compose file uses profiles:
+- `host`: MediaMTX in Docker with app on host (`make run-host`)
+- `container`: app + MediaMTX share a pod-like namespace via pause (`make run-docker`)
+
 ## Documentation
 
 | Document | Description |
@@ -91,7 +95,7 @@ make run-host
 
 ### 2) Full Docker (Node + MediaMTX)
 
-Node and MediaMTX both run in Docker and communicate via Docker service network.
+Node and MediaMTX both run in Docker. They share a pod-like network namespace, so the app reaches MediaMTX via `localhost`.
 
 ```sh
 make run-docker

@@ -8,7 +8,7 @@ APP_URL="${APP_URL:-http://localhost:3030/health}"
 APP_RETRIES="${VERIFY_APP_RETRIES:-30}"
 MEDIAMTX_API_URL="${MEDIAMTX_API_URL:-http://localhost:9997}"
 
-docker compose up -d --build --force-recreate --renew-anon-volumes mediamtx nginx-rtmp app
+docker compose --profile container up -d --build --force-recreate --renew-anon-volumes pause mediamtx-pod nginx-rtmp app
 "$ROOT_DIR/scripts/wait-mediamtx.sh" "$MEDIAMTX_API_URL"
 
 for i in $(seq 1 "$APP_RETRIES"); do

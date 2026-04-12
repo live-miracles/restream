@@ -83,7 +83,7 @@ flowchart TD
 Each FFmpeg output is launched with a unique `reader_id` embedded in its RTSP pull URL:
 
 ```
-rtsp://<MEDIAMTX_INTERNAL_HOST>:<MEDIAMTX_INTERNAL_RTSP_PORT>/<streamKey>?reader_id=reader_<pipelineId>_<outputId>
+rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>
 ```
 
 MediaMTX surfaces the full query string in `/v3/rtspconns/list` as `conn.query`. The health endpoint parses `reader_id` from each connection's query at run-time:
@@ -170,7 +170,7 @@ A running output stuck at `warning` means MediaMTX has no RTSP connection with t
 
 1. **MediaMTX version does not expose `query` on RTSP connections.** Check `/v3/rtspconns/list` manually — if `conn.query` is always empty, the query-param approach will not work. The server logs a `warn`-level entry if RTSP connections exist but `rtspByReaderTag` is empty.
 2. **FFmpeg failed to connect to RTSP.** Check `GET /pipelines/:pipelineId/outputs/:outputId/logs` or read `job_logs` from DB directly.
-3. **FFmpeg is running but using a different path.** Verify `MEDIAMTX_INTERNAL_HOST` and `MEDIAMTX_INTERNAL_RTSP_PORT` match MediaMTX's listening address.
+3. **FFmpeg is running but using a different path.** Verify MediaMTX is listening on `localhost:8554`.
 4. **Race condition at startup.** Status may briefly be `warning` for 1–2 poll cycles while MediaMTX registers the RTSP session.
 
 ---

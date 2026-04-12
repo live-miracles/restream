@@ -17,4 +17,4 @@ fi
 echo "Stopping ffmpeg publishers (if present)"
 pkill -f "^ffmpeg .* -stream_loop" 2>/dev/null || true
 
-docker compose stop mediamtx nginx-rtmp app 2>/dev/null || true
+docker compose --profile host --profile container stop mediamtx mediamtx-pod pause nginx-rtmp app 2>/dev/null || true

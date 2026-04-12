@@ -8,11 +8,6 @@ const DEFAULT_CONFIG = {
     'pipelines-limit': 25,
     'out-limit': 95,
     mediamtx: {
-        internal: {
-            host: 'localhost',
-            apiPort: '9997',
-            rtspPort: '8554',
-        },
         ingest: {
             host: null,
             rtmpPort: '1935',
@@ -50,14 +45,8 @@ function sanitizeConfig(config) {
     }
 
     const mediamtx = safe.mediamtx || {};
-    const internal = mediamtx.internal || {};
     const ingest = mediamtx.ingest || {};
     safe.mediamtx = {
-        internal: {
-            host: sanitizeHost(internal.host, DEFAULT_CONFIG.mediamtx.internal.host),
-            apiPort: sanitizePort(internal.apiPort, DEFAULT_CONFIG.mediamtx.internal.apiPort),
-            rtspPort: sanitizePort(internal.rtspPort, DEFAULT_CONFIG.mediamtx.internal.rtspPort),
-        },
         ingest: {
             host: sanitizeHost(ingest.host, DEFAULT_CONFIG.mediamtx.ingest.host),
             rtmpPort: sanitizePort(ingest.rtmpPort, DEFAULT_CONFIG.mediamtx.ingest.rtmpPort),
@@ -66,19 +55,7 @@ function sanitizeConfig(config) {
         },
     };
 
-    // ENV overrides (production precedence: env > file > defaults)
-    if (process.env.MEDIAMTX_INTERNAL_HOST) {
-        safe.mediamtx.internal.host = sanitizeHost(process.env.MEDIAMTX_INTERNAL_HOST, safe.mediamtx.internal.host);
-    }
-    if (process.env.MEDIAMTX_INTERNAL_API_PORT) {
-        safe.mediamtx.internal.apiPort = sanitizePort(process.env.MEDIAMTX_INTERNAL_API_PORT, safe.mediamtx.internal.apiPort);
-    }
-    if (process.env.MEDIAMTX_INTERNAL_RTSP_PORT) {
-        safe.mediamtx.internal.rtspPort = sanitizePort(
-            process.env.MEDIAMTX_INTERNAL_RTSP_PORT,
-            safe.mediamtx.internal.rtspPort,
-        );
-    }
+    // ENV overrides for ingest config (display only)
     if (process.env.MEDIAMTX_INGEST_HOST) {
         safe.mediamtx.ingest.host = sanitizeHost(process.env.MEDIAMTX_INGEST_HOST, safe.mediamtx.ingest.host);
     }

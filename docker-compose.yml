@@ -1,35 +1,69 @@
 services:
+    # Host profile: run MediaMTX with app on host machine.
+    mediamtx:
+        profiles: ['host']
+        image: bluenviron/mediamtx:1
+        container_name: mediamtx
+        ports:
+            - '1935:1935' # RTMP ingest (mediamtx)
+            - '8554:8554' # RTSP ingest and read (mediamtx)
+            - '8890:8890/udp' # SRT ingest (mediamtx)
+            - '8888:8888' # HTTP interface / HLS (mediamtx)
+            - '8889:8889' # WebRTC HTTP (mediamtx)
+            - '8189:8189/udp' # WebRTC ICE (mediamtx)
+            - '8189:8189/tcp' # WebRTC ICE (mediamtx)
+            - '9997:9997' # MediaMTX API
+        volumes:
+            - ./infra/mediamtx.yml:/mediamtx.yml
+
+    # Container profile: shared network namespace for app + MediaMTX.
+    pause:
+        profiles: ['container']
+        image: gcr.io/google_containers/pause:latest
+        container_name: restream-pause
+        ports:
+            - '3030:3030' # app
+            - '1935:1935' # RTMP ingest (mediamtx)
+            - '8554:8554' # RTSP ingest and read (mediamtx)
+            - '8890:8890/udp' # SRT ingest (mediamtx)
+            - '8888:8888' # HTTP interface / HLS (mediamtx)
+            - '8889:8889' # WebRTC HTTP (mediamtx)
+            - '8189:8189/udp' # WebRTC ICE (mediamtx)
+            - '8189:8189/tcp' # WebRTC ICE (mediamtx)
+            - '9997:9997' # MediaMTX API
+
+    # App uses pause network namespace so MediaMTX is reachable on localhost.
     app:
+        profiles: ['container']
         build:
             context: .
             dockerfile: Dockerfile
         container_name: restream-app
+        network_mode: service:pause
         environment:
             NODE_ENV: production
             PORT: 3030
-            MEDIAMTX_INTERNAL_HOST: mediamtx
-        ports:
-            - '3030:3030'
         volumes:
             - ./src/config/restream.json:/app/src/config/restream.json:ro
         depends_on:
-            - mediamtx
+            pause:
+                condition: service_started
+            mediamtx-pod:
+                condition: service_started
 
-    mediamtx:
+    # MediaMTX instance for container profile (joined to pause namespace).
+    mediamtx-pod:
+        profiles: ['container']
         image: bluenviron/mediamtx:1
-        container_name: mediamtx
-        ports:
-            - '1935:1935' # RTMP ingest
-            - '8554:8554' # RTSP ingest and read
-            - '8890:8890/udp' # SRT ingest
-            - '8888:8888' # HTTP interface / HLS
-            - '8889:8889' # WebRTC HTTP
-            - '8189:8189/udp' # WebRTC ICE
-            - '8189:8189/tcp' # WebRTC ICE
-            - '9997:9997' # API
+        container_name: mediamtx-pod
+        network_mode: service:pause
         volumes:
             - ./infra/mediamtx.yml:/mediamtx.yml
+        depends_on:
+            pause:
+                condition: service_started
 
+    # Available in both profiles as an external RTMP test sink.
     nginx-rtmp:
         image: tiangolo/nginx-rtmp:latest
         container_name: nginx-rtmp
