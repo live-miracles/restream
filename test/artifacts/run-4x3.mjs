@@ -1,0 +1,651 @@
+#!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+process.chdir(rootDir);
+
+const defaults = {
+  apiUrl: 'http://localhost:3030',
+  manifestPath: 'test/artifacts/session-4x3-manifest.json',
+  logDir: 'test/artifacts/logs',
+  appLogPath: 'test/artifacts/logs/app-under-test.log',
+  mediamtxApiUrl: 'http://localhost:9997',
+  verifyMediamtxRetries: 15,
+  verifyAppRetries: 30,
+  inputFile: 'test/colorbar-timer.mp4',
+  rtmpIngestBase: 'rtmp://localhost:1935',
+  rtspIngestBase: 'rtsp://localhost:8554',
+  srtIngestBase: 'srt://localhost:8890?streamid=publish:',
+  inputProtocols: 'rtmp,rtsp,srt',
+  maxRetries: 30,
+  retryDelaySec: 1,
+  timeoutSec: 180,
+  pollSec: 2,
+  outDir: 'test/artifacts/runs',
+};
+
+const config = {
+  apiUrl: process.env.API_URL || defaults.apiUrl,
+  manifestPath: resolvePath(process.env.MANIFEST_PATH || defaults.manifestPath),
+  logDir: resolvePath(process.env.LOG_DIR || defaults.logDir),
+  appLogPath: resolvePath(process.env.APP_LOG_PATH || defaults.appLogPath),
+  mediamtxApiUrl: process.env.MEDIAMTX_API_URL || defaults.mediamtxApiUrl,
+  verifyMediamtxRetries: Number(process.env.VERIFY_MEDIAMTX_RETRIES || defaults.verifyMediamtxRetries),
+  verifyAppRetries: Number(process.env.VERIFY_APP_RETRIES || defaults.verifyAppRetries),
+  inputFile: resolvePath(process.env.INPUT_FILE || defaults.inputFile),
+  rtmpIngestBase: process.env.RTMP_INGEST_BASE || defaults.rtmpIngestBase,
+  rtspIngestBase: process.env.RTSP_INGEST_BASE || defaults.rtspIngestBase,
+  srtIngestBase: process.env.SRT_INGEST_BASE || defaults.srtIngestBase,
+  inputProtocols: process.env.INPUT_PROTOCOLS || defaults.inputProtocols,
+  maxRetries: Number(process.env.MAX_RETRIES || defaults.maxRetries),
+  retryDelaySec: Number(process.env.RETRY_DELAY_SEC || defaults.retryDelaySec),
+  timeoutSec: Number(process.env.TIMEOUT_SEC || defaults.timeoutSec),
+  pollSec: Number(process.env.POLL_SEC || defaults.pollSec),
+  outDir: resolvePath(process.env.OUT_DIR || defaults.outDir),
+  cleanStart: readBooleanEnv('CLEAN_START', true),
+  keepRunning: readBooleanEnv('KEEP_RUNNING', false),
+};
+
+const ownedProcesses = [];
+let shutdownPromise = null;
+
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  printHelp();
+  process.exit(0);
+}
+
+registerSignalHandlers();
+
+try {
+  await main();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+} finally {
+  await shutdown(config.keepRunning);
+}
+
+async function main() {
+  const manifest = await loadManifest(config.manifestPath);
+
+  if (config.cleanStart) {
+    await cleanStart();
+  } else {
+    await ensureApiReachable();
+  }
+
+  console.log('== Step 1: Ensure 4x3 manifest resources ==');
+  const resolved = await ensureResources(manifest);
+
+  console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
+  await startInputPublishers(manifest);
+
+  console.log('== Step 3: Start outputs from manifest ==');
+  await startOutputs(resolved.outputs);
+
+  console.log('== Step 4: Wait for all manifest inputs/outputs active ==');
+  await waitForActive(resolved);
+
+  console.log('== Step 5: Capture health snapshot ==');
+  await captureHealthSnapshot();
+
+  console.log('== 4x3 run complete ==');
+}
+
+function resolvePath(targetPath) {
+  return path.isAbsolute(targetPath) ? targetPath : path.resolve(rootDir, targetPath);
+}
+
+function relativePath(targetPath) {
+  return path.relative(rootDir, targetPath) || '.';
+}
+
+function readBooleanEnv(name, defaultValue) {
+  const value = process.env[name];
+  if (value == null || value === '') {
+    return defaultValue;
+  }
+  return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
+}
+
+function printHelp() {
+  console.log(`Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  CLEAN_START=1    Tear down stale state and launch a fresh stack (default)\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})`);
+}
+
+function registerSignalHandlers() {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      void shutdown(config.keepRunning).finally(() => {
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      });
+    });
+  }
+}
+
+async function shutdown(leaveRunning) {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  shutdownPromise = (async () => {
+    if (leaveRunning) {
+      console.log('== KEEP_RUNNING=1: leaving input publishers and app running ==');
+      return;
+    }
+
+    for (const proc of ownedProcesses.reverse()) {
+      await terminateProcess(proc);
+    }
+  })();
+
+  return shutdownPromise;
+}
+
+async function cleanStart() {
+  console.log('== Clean start: tear down stale processes and state ==');
+  await runCommand('bash', ['scripts/down.sh'], { allowFailure: true, stdio: 'inherit' });
+  await rm(resolvePath('data.db'), { force: true });
+  await rm(resolvePath('data.db-journal'), { force: true });
+  await rm(resolvePath('data.db-wal'), { force: true });
+  await rm(resolvePath('data.db-shm'), { force: true });
+
+  await runCommand('docker', ['compose', 'up', '-d', 'mediamtx', 'nginx-rtmp'], { stdio: 'inherit' });
+  await waitForMediamtxReady();
+
+  await mkdir(config.logDir, { recursive: true });
+  await writeFile(config.appLogPath, '', 'utf8');
+
+  console.log('== Clean start: launch backend and wait for health ==');
+  const appPid = spawnDetachedProcess({
+    name: 'backend',
+    command: process.execPath,
+    args: ['src/index.js'],
+    logPath: config.appLogPath,
+  });
+  console.log(`Started backend pid=${appPid} log=${relativePath(config.appLogPath)}`);
+
+  await waitForApiHealth();
+}
+
+async function waitForMediamtxReady() {
+  for (let attempt = 1; attempt <= config.verifyMediamtxRetries; attempt += 1) {
+    try {
+      const response = await fetch(`${config.mediamtxApiUrl}/v3/config/global/get`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (response.ok) {
+        console.log(`MediaMTX is ready: ${config.mediamtxApiUrl}`);
+        return;
+      }
+    } catch {
+      // Retry.
+    }
+    await sleep(1000);
+  }
+  throw new Error(`MediaMTX API did not become ready in time: ${config.mediamtxApiUrl}`);
+}
+
+async function waitForApiHealth() {
+  for (let attempt = 1; attempt <= config.verifyAppRetries; attempt += 1) {
+    try {
+      const response = await fetch(`${config.apiUrl}/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Retry.
+    }
+    await sleep(1000);
+  }
+
+  const appLog = await safeReadFile(config.appLogPath);
+  throw new Error(`API did not become healthy at ${config.apiUrl}/health\nRecent app log:\n${tailText(appLog, 120)}`);
+}
+
+async function ensureApiReachable() {
+  try {
+    const response = await fetch(`${config.apiUrl}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+  } catch (error) {
+    throw new Error(`API is not reachable at ${config.apiUrl}. Start app first (for example: make run-host). ${String(error)}`);
+  }
+}
+
+async function loadManifest(manifestPath) {
+  const raw = await readFile(manifestPath, 'utf8');
+  const manifest = JSON.parse(raw);
+  if (!Array.isArray(manifest.pipelines) || manifest.pipelines.length === 0) {
+    throw new Error(`Manifest is empty or invalid: ${relativePath(manifestPath)}`);
+  }
+  return manifest;
+}
+
+async function ensureResources(manifest) {
+  const pipelineTargets = [];
+  const outputTargets = [];
+  let state = await fetchConfigState();
+
+  for (const pipelineDef of manifest.pipelines) {
+    let streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
+    if (!streamKey) {
+      await requestJson('/stream-keys', {
+        method: 'POST',
+        body: { streamKey: pipelineDef.streamKey, label: pipelineDef.name },
+        okStatuses: [201],
+      });
+      console.log(`Created stream key for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
+      state = await fetchConfigState();
+      streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
+    } else {
+      console.log(`Stream key exists for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
+    }
+
+    let pipeline = state.pipelines.find(
+      (item) => item.name === pipelineDef.name && item.streamKey === pipelineDef.streamKey,
+    );
+    if (!pipeline) {
+      const result = await requestJson('/pipelines', {
+        method: 'POST',
+        body: { name: pipelineDef.name, streamKey: pipelineDef.streamKey },
+        okStatuses: [201],
+      });
+      pipeline = result.json.pipeline;
+      console.log(`Created pipeline ${pipelineDef.name}: ${pipeline.id}`);
+      state = await fetchConfigState();
+    } else {
+      console.log(`Pipeline exists ${pipelineDef.name}: ${pipeline.id}`);
+    }
+
+    pipelineTargets.push({
+      name: pipelineDef.name,
+      streamKey: pipelineDef.streamKey,
+      pipelineId: pipeline.id,
+    });
+
+    for (const outputDef of pipelineDef.outputs) {
+      const encoding = outputDef.encoding || 'copy';
+      let output = state.outputs.find(
+        (item) =>
+          item.pipelineId === pipeline.id &&
+          item.name === outputDef.name &&
+          item.url === outputDef.url,
+      );
+
+      if (!output) {
+        const result = await requestJson(`/pipelines/${pipeline.id}/outputs`, {
+          method: 'POST',
+          body: { name: outputDef.name, url: outputDef.url, encoding },
+          okStatuses: [201],
+        });
+        output = result.json.output;
+        console.log(`  Created output ${outputDef.name}: ${output.id}`);
+        state = await fetchConfigState();
+      } else {
+        console.log(`  Output exists ${outputDef.name}: ${output.id}`);
+      }
+
+      outputTargets.push({
+        pipelineId: pipeline.id,
+        pipelineName: pipelineDef.name,
+        outputId: output.id,
+        outputName: outputDef.name,
+        outputUrl: outputDef.url,
+      });
+    }
+  }
+
+  console.log(`Manifest used (not modified): ${relativePath(config.manifestPath)}`);
+  console.log(`Pipelines in manifest: ${pipelineTargets.length}`);
+  console.log(`Outputs in manifest: ${outputTargets.length}`);
+
+  return { pipelines: pipelineTargets, outputs: outputTargets };
+}
+
+async function fetchConfigState() {
+  const [streamKeysResult, pipelinesResult, configResult] = await Promise.all([
+    requestJson('/stream-keys'),
+    requestJson('/pipelines'),
+    requestJson('/config'),
+  ]);
+
+  return {
+    streamKeys: Array.isArray(streamKeysResult.json) ? streamKeysResult.json : [],
+    pipelines: Array.isArray(pipelinesResult.json) ? pipelinesResult.json : [],
+    outputs: Array.isArray(configResult.json?.outputs) ? configResult.json.outputs : [],
+  };
+}
+
+async function startInputPublishers(manifest) {
+  await access(config.inputFile);
+  await mkdir(config.logDir, { recursive: true });
+
+  const protocols = config.inputProtocols
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (protocols.length === 0) {
+    throw new Error('No input protocols configured');
+  }
+
+  const streamKeys = manifest.pipelines.map((pipeline) => pipeline.streamKey);
+  if (streamKeys.length === 0) {
+    throw new Error(`No stream keys found in manifest: ${relativePath(config.manifestPath)}`);
+  }
+
+  for (const [index, streamKey] of streamKeys.entries()) {
+    const ordinal = index + 1;
+    const protocol = protocols[index % protocols.length];
+    const targetUrl = buildTargetUrl(protocol, streamKey);
+    const logPath = path.join(config.logDir, `input-${ordinal}-${protocol}.log`);
+    const args = buildFfmpegArgs(protocol, targetUrl);
+    const pid = spawnDetachedProcess({
+      name: `input-${ordinal}`,
+      command: 'ffmpeg',
+      args,
+      logPath,
+    });
+
+    console.log(`[${ordinal}/${streamKeys.length}] protocol=${protocol} streamKey=${streamKey} target=${targetUrl}`);
+    console.log(`  pid=${pid} log=${relativePath(logPath)}`);
+  }
+}
+
+function buildTargetUrl(protocol, streamKey) {
+  if (protocol === 'rtmp') {
+    return `${config.rtmpIngestBase}/${streamKey}`;
+  }
+  if (protocol === 'rtsp') {
+    return `${config.rtspIngestBase}/${streamKey}`;
+  }
+  if (protocol === 'srt') {
+    return `${config.srtIngestBase}${streamKey}`;
+  }
+  throw new Error(`Unsupported input protocol: ${protocol}`);
+}
+
+function buildFfmpegArgs(protocol, targetUrl) {
+  const baseArgs = ['-nostdin', '-re', '-stream_loop', '-1', '-i', relativePath(config.inputFile), '-map', '0', '-c', 'copy'];
+  if (protocol === 'rtmp') {
+    return [...baseArgs, '-f', 'flv', targetUrl];
+  }
+  if (protocol === 'rtsp') {
+    return [...baseArgs, '-f', 'rtsp', '-rtsp_transport', 'tcp', targetUrl];
+  }
+  if (protocol === 'srt') {
+    return [...baseArgs, '-f', 'mpegts', targetUrl];
+  }
+  throw new Error(`Unsupported input protocol: ${protocol}`);
+}
+
+async function startOutputs(outputs) {
+  let count = 0;
+  let ok = 0;
+
+  for (const target of outputs) {
+    count += 1;
+    let started = false;
+
+    for (let attempt = 1; attempt <= config.maxRetries; attempt += 1) {
+      const result = await requestJson(`/pipelines/${target.pipelineId}/outputs/${target.outputId}/start`, {
+        method: 'POST',
+        okStatuses: [200, 201, 409],
+      });
+      const errorMessage = result.json?.error || result.text || '';
+      const label = `${target.pipelineName}/${target.outputName}`;
+
+      if (result.status === 200 || result.status === 201) {
+        ok += 1;
+        started = true;
+        console.log(`[${count}] ${label} ${target.pipelineId}/${target.outputId} -> ${result.status} (attempt ${attempt})`);
+        break;
+      }
+
+      if (result.status === 409 && errorMessage.includes('already has a running job')) {
+        ok += 1;
+        started = true;
+        console.log(`[${count}] ${label} ${target.pipelineId}/${target.outputId} -> 409 already running (attempt ${attempt})`);
+        break;
+      }
+
+      if (result.status === 409 && errorMessage.includes('input is not available yet')) {
+        await sleep(config.retryDelaySec * 1000);
+        continue;
+      }
+
+      console.log(`[${count}] ${label} ${target.pipelineId}/${target.outputId} -> ${result.status} (attempt ${attempt})`);
+      if (errorMessage) {
+        console.log(errorMessage);
+      }
+      break;
+    }
+
+    if (!started) {
+      console.log(`[${count}] ${target.pipelineName}/${target.outputName} ${target.pipelineId}/${target.outputId} failed to start after ${config.maxRetries} attempts`);
+    }
+  }
+
+  console.log(`Started/Already-running outputs: ${ok}/${count}`);
+}
+
+async function waitForActive(resolved) {
+  const expectedInputs = resolved.pipelines.length;
+  const expectedOutputs = resolved.outputs.length;
+  const deadline = Date.now() + config.timeoutSec * 1000;
+
+  console.log(`Waiting for all streams green (inputs=${expectedInputs} outputs=${expectedOutputs})`);
+
+  while (Date.now() <= deadline) {
+    let health;
+    try {
+      health = (await requestJson('/health')).json;
+    } catch {
+      await sleep(config.pollSec * 1000);
+      continue;
+    }
+
+    const inputOn = resolved.pipelines.filter((target) => health.pipelines?.[target.pipelineId]?.input?.status === 'on').length;
+    const inputWarning = resolved.pipelines.filter((target) => health.pipelines?.[target.pipelineId]?.input?.status === 'warning').length;
+    const outputOn = resolved.outputs.filter((target) => health.pipelines?.[target.pipelineId]?.outputs?.[target.outputId]?.status === 'on').length;
+    const outputWarning = resolved.outputs.filter((target) => health.pipelines?.[target.pipelineId]?.outputs?.[target.outputId]?.status === 'warning').length;
+    const outputActive = outputOn + outputWarning;
+
+    console.log(`Status now: inputs on=${inputOn}/${expectedInputs} warning=${inputWarning} | outputs on=${outputOn}/${expectedOutputs} warning=${outputWarning} active=${outputActive}/${expectedOutputs}`);
+
+    if (inputOn === expectedInputs && outputOn === expectedOutputs) {
+      console.log('All expected inputs and outputs are green (on)');
+      return;
+    }
+
+    await sleep(config.pollSec * 1000);
+  }
+
+  const health = (await requestJson('/health')).json;
+  console.log('Timed out waiting for all manifest streams to become green');
+  console.log('---- Input status summary ----');
+  for (const target of resolved.pipelines) {
+    const input = health.pipelines?.[target.pipelineId]?.input;
+    console.log(`${target.pipelineId} input=${input?.status || 'missing'} online=${input?.online ?? 'null'} ready=${input?.ready ?? 'null'} readers=${input?.readers ?? 'null'}`);
+  }
+  console.log('---- Output mismatch details (non-on only) ----');
+  for (const target of resolved.outputs) {
+    const output = health.pipelines?.[target.pipelineId]?.outputs?.[target.outputId];
+    if (output?.status === 'on') {
+      continue;
+    }
+    console.log(`${target.pipelineId}/${target.outputId} status=${output?.status || 'missing'} jobStatus=${output?.jobStatus || 'null'} jobId=${output?.jobId || 'null'} bytesIn=${output?.bytesReceived || 0} bytesOut=${output?.bytesSent || 0} remote=${output?.remoteAddr || 'null'}`);
+  }
+  throw new Error('Timed out waiting for all manifest streams to become green');
+}
+
+async function captureHealthSnapshot() {
+  await mkdir(config.outDir, { recursive: true });
+  let health = null;
+
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    try {
+      health = (await requestJson('/health')).json;
+      break;
+    } catch {
+      await sleep(1000);
+    }
+  }
+
+  if (!health) {
+    throw new Error(`Failed to fetch ${config.apiUrl}/health after retries`);
+  }
+
+  const outFile = path.join(config.outDir, `health-${timestampUtc()}.json`);
+  await writeFile(outFile, `${JSON.stringify(health, null, 2)}\n`, 'utf8');
+
+  const inputOn = Object.values(health.pipelines || {}).filter((pipeline) => pipeline.input?.status === 'on').length;
+  const outputOn = Object.values(health.pipelines || {}).flatMap((pipeline) => Object.values(pipeline.outputs || {})).filter((output) => output.status === 'on').length;
+
+  console.log(`Saved health snapshot: ${relativePath(outFile)}`);
+  console.log(`Input ON count: ${inputOn}`);
+  console.log(`Output ON count: ${outputOn}`);
+}
+
+async function requestJson(route, options = {}) {
+  const url = route.startsWith('http') ? route : `${config.apiUrl}${route}`;
+  const method = options.method || 'GET';
+  const headers = { ...(options.headers || {}) };
+  let body = options.body;
+
+  if (body != null && typeof body !== 'string') {
+    body = JSON.stringify(body);
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers,
+    body,
+    signal: AbortSignal.timeout(options.timeoutMs || 8000),
+  });
+
+  const text = await response.text();
+  let json = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+
+  const okStatuses = options.okStatuses || [200];
+  if (!okStatuses.includes(response.status)) {
+    const details = json?.error || text || `HTTP ${response.status}`;
+    throw new Error(`${method} ${url} failed: ${details}`);
+  }
+
+  return { status: response.status, text, json };
+}
+
+function spawnDetachedProcess({ name, command, args, logPath }) {
+  const logFd = openSync(logPath, 'a');
+  const child = spawn(command, args, {
+    cwd: rootDir,
+    env: process.env,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+
+  closeSync(logFd);
+
+  child.unref();
+  ownedProcesses.push({ name, pid: child.pid });
+  return child.pid;
+}
+
+async function terminateProcess(proc) {
+  if (!proc?.pid) {
+    return;
+  }
+
+  try {
+    process.kill(proc.pid, 'SIGTERM');
+  } catch {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!isProcessAlive(proc.pid)) {
+      return;
+    }
+    await sleep(200);
+  }
+
+  try {
+    process.kill(proc.pid, 'SIGKILL');
+  } catch {
+    // Process already exited.
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runCommand(command, args, options = {}) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: rootDir,
+      env: process.env,
+      stdio: options.stdio || 'pipe',
+    });
+
+    let stderr = '';
+    if (child.stderr) {
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+    }
+
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0 || options.allowFailure) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(' ')} failed${stderr ? `: ${stderr.trim()}` : ''}`));
+    });
+  });
+}
+
+async function safeReadFile(filePath) {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function tailText(text, lineCount) {
+  return text.split('\n').slice(-lineCount).join('\n');
+}
+
+function timestampUtc() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

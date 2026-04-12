@@ -7,10 +7,7 @@
         "start": "node src/index.js",
         "dev": "npx nodemon --ignore 'test/artifacts/**' src/index.js",
         "test": "echo \"Error: no test specified\" && exit 1",
-        "test:setup:4x3": "bash test/artifacts/setup-4x3-copy.sh",
-        "test:start-inputs:4x3": "bash test/artifacts/start-inputs-from-manifest.sh test/artifacts/session-4x3-last.json",
-        "test:start-outputs:4x3": "bash test/artifacts/start-outputs-from-manifest.sh test/artifacts/session-4x3-last.json",
-        "test:health:snapshot": "bash test/artifacts/health-snapshot.sh"
+        "test:4x3": "node test/artifacts/run-4x3.mjs"
     },
     "keywords": [],
     "author": "",

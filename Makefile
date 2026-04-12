@@ -51,8 +51,7 @@ probe-output:
 	ffprobe -v error -rw_timeout 5000000 -probesize 65536 -analyzeduration 500000 -show_entries stream=index,codec_type,codec_name,width,height -of json $(OUTPUT_URL)
 
 run-4x3: deps
-	chmod +x test/artifacts/*.sh
-	bash test/artifacts/run-4x3.sh
+	node test/artifacts/run-4x3.mjs
 
 verify:
 	APP_PORT="$(APP_PORT)" MEDIAMTX_API_URL="$(MEDIAMTX_API_URL)" VERIFY_MEDIAMTX_RETRIES="$(VERIFY_MEDIAMTX_RETRIES)" VERIFY_APP_RETRIES="$(VERIFY_APP_RETRIES)" \
