@@ -48,6 +48,7 @@ The compose file uses profiles:
 | [docs/api-reference.md](docs/api-reference.md) | All REST endpoints with request/response shapes |
 | [docs/health-mapping.md](docs/health-mapping.md) | How input/output health statuses are derived |
 | [docs/configuration.md](docs/configuration.md) | All environment variables and config file options |
+| [docs/deployment-host.md](docs/deployment-host.md) | Production deployment guide on Linux hosts without containers |
 
 ## Installation
 
