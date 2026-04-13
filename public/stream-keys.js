@@ -61,19 +61,19 @@ async function renderKeysTable() {
     const keys = await getStreamKeys();
 
     document.querySelector('#stream-keys').innerHTML = keys
-        .sort((a, b) => a.label.localeCompare(b.label))
+        .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
         .map(
             (k, i) => `
           <tr>
             <th>${i + 1}</th>
-            <td>${k.label}</td>
-            <td>${maskKey(k.key)}</td>
+            <td>${escapeHtml(k.label || '')}</td>
+            <td>${escapeHtml(maskKey(k.key))}</td>
             <td>
-                <button class="btn btn-accent btn-xs" title="Copy" onclick="copyKeyBtn('${k.key}')">📋</button>
+                <button class="btn btn-accent btn-xs" title="Copy" onclick="copyKeyBtn(${escapeHtml(JSON.stringify(k.key))})">📋</button>
                 <button class="btn btn-accent btn-xs ml-2" title="Edit"
-                    onclick="updateStreamKeyBtn('${k.key}', '${k.label}')">✎</button>
+                    onclick="updateStreamKeyBtn(${escapeHtml(JSON.stringify(k.key))}, ${escapeHtml(JSON.stringify(k.label))})">✎</button>
                 <button class="btn btn-error btn-xs ml-2" title="Delete"
-                    onclick="deleteStreamKeyBtn('${k.key}', '${k.label}')">✖</button>
+                    onclick="deleteStreamKeyBtn(${escapeHtml(JSON.stringify(k.key))}, ${escapeHtml(JSON.stringify(k.label))})">✖</button>
             </td>
           </tr>`,
         )

@@ -55,7 +55,7 @@ function renderPipelinesList(selectedPipe) {
               <div class="badge badge-sm badge-warning px-2 ${outWarnings ? '' : 'hidden'}">${outWarnings}</div>
               <div class="badge badge-sm badge-error px-2 ${outErrors ? '' : 'hidden'}">${outErrors}</div>
               <div class="badge badge-sm px-2 ${outOffs ? '' : 'hidden'}">${outOffs}</div>
-              <a class="active">${p.name}</a>
+              <a class="active">${escapeHtml(p.name)}</a>
             </div>
           </li>`;
         })
@@ -77,12 +77,12 @@ function renderPipelineInfoColumn(selectedPipe) {
         return;
     }
 
-    document.getElementById('pipe-name').innerHTML = pipe.name;
+    document.getElementById('pipe-name').textContent = pipe.name;
     if (pipe.input.time === null) {
         document.getElementById('input-time').classList.add('hidden');
     } else {
         document.getElementById('input-time').classList.remove('hidden');
-        document.getElementById('input-time').innerHTML = msToHHMMSS(pipe.input.time);
+        document.getElementById('input-time').textContent = msToHHMMSS(pipe.input.time);
     }
 
     const deletePipeBtn = document.getElementById('delete-pipe-btn');
@@ -105,7 +105,7 @@ function renderPipelineInfoColumn(selectedPipe) {
     const maskedStreamKey = pipe.key ? maskSecret(pipe.key) : streamKey;
 
     // Display stream key
-    document.getElementById('stream-key').innerHTML = maskedStreamKey;
+    document.getElementById('stream-key').textContent = maskedStreamKey;
     document.getElementById('stream-key').dataset.copy = pipe.key || '';
 
     // Build and display all three ingest URLs
@@ -116,17 +116,17 @@ function renderPipelineInfoColumn(selectedPipe) {
 
     const rtmpBaseUrl = `rtmp://${ingestHost}:${rtmpPort}/`;
     const rtmpUrl = pipe.key ? rtmpBaseUrl + pipe.key : 'Assign a stream key to enable ingest';
-    document.getElementById('rtmp-url').innerHTML = pipe.key ? rtmpBaseUrl + maskedStreamKey : rtmpUrl;
+    document.getElementById('rtmp-url').textContent = pipe.key ? rtmpBaseUrl + maskedStreamKey : rtmpUrl;
     document.getElementById('rtmp-url').dataset.copy = pipe.key ? rtmpBaseUrl + pipe.key : '';
 
     const rtspBaseUrl = `rtsp://${ingestHost}:${rtspPort}/`;
     const rtspUrl = pipe.key ? rtspBaseUrl + pipe.key : 'Assign a stream key to enable ingest';
-    document.getElementById('rtsp-url').innerHTML = pipe.key ? rtspBaseUrl + maskedStreamKey : rtspUrl;
+    document.getElementById('rtsp-url').textContent = pipe.key ? rtspBaseUrl + maskedStreamKey : rtspUrl;
     document.getElementById('rtsp-url').dataset.copy = pipe.key ? rtspBaseUrl + pipe.key : '';
 
     const srtBaseUrl = `srt://${ingestHost}:${srtPort}?streamid=publish:`;
     const srtUrl = pipe.key ? srtBaseUrl + pipe.key : 'Assign a stream key to enable ingest';
-    document.getElementById('srt-url').innerHTML = pipe.key ? srtBaseUrl + maskedStreamKey : srtUrl;
+    document.getElementById('srt-url').textContent = pipe.key ? srtBaseUrl + maskedStreamKey : srtUrl;
     document.getElementById('srt-url').dataset.copy = pipe.key ? srtBaseUrl + pipe.key : '';
 
     const playerElem = document.getElementById('video-player');
@@ -143,34 +143,34 @@ function renderPipelineInfoColumn(selectedPipe) {
         const stats = pipe.stats || {};
         const hasAudioTrack = !!audio.codec;
 
-        document.getElementById('input-video-codec').innerHTML = video.codec || '--';
-        document.getElementById('input-video-resolution').innerHTML =
+        document.getElementById('input-video-codec').textContent = video.codec || '--';
+        document.getElementById('input-video-resolution').textContent =
             video.width && video.height ? video.width + 'x' + video.height : '--';
-        document.getElementById('input-video-fps').innerHTML =
+        document.getElementById('input-video-fps').textContent =
             video.fps !== null && video.fps !== undefined ? video.fps : '--';
-        document.getElementById('input-video-level').innerHTML = video.level || '--';
-        document.getElementById('input-video-profile').innerHTML = video.profile || '--';
+        document.getElementById('input-video-level').textContent = video.level || '--';
+        document.getElementById('input-video-profile').textContent = video.profile || '--';
 
-        document.getElementById('input-audio-codec').innerHTML =
+        document.getElementById('input-audio-codec').textContent =
             hasAudioTrack ? audio.codec : 'No audio track';
-        document.getElementById('input-audio-channels').innerHTML =
+        document.getElementById('input-audio-channels').textContent =
             hasAudioTrack ? audio.channels || '--' : '--';
-        document.getElementById('input-audio-sample-rate').innerHTML =
+        document.getElementById('input-audio-sample-rate').textContent =
             hasAudioTrack ? audio.sample_rate || '--' : '--';
-        document.getElementById('input-audio-profile').innerHTML =
+        document.getElementById('input-audio-profile').textContent =
             hasAudioTrack ? audio.profile || '--' : '--';
 
-        document.getElementById('input-total-bw').innerHTML =
+        document.getElementById('input-total-bw').textContent =
             stats.inputBitrateKbps !== null && stats.inputBitrateKbps !== undefined
                 ? Number(stats.inputBitrateKbps).toFixed(1)
                 : '--';
-        document.getElementById('output-total-bw').innerHTML =
+        document.getElementById('output-total-bw').textContent =
             stats.outputBitrateKbps !== null && stats.outputBitrateKbps !== undefined
                 ? Number(stats.outputBitrateKbps).toFixed(1)
                 : '--';
-        document.getElementById('input-reader-count').innerHTML =
+        document.getElementById('input-reader-count').textContent =
             stats.readerCount !== null && stats.readerCount !== undefined ? stats.readerCount : '--';
-        document.getElementById('input-output-count').innerHTML =
+        document.getElementById('input-output-count').textContent =
             stats.outputCount !== null && stats.outputCount !== undefined ? stats.outputCount : '--';
     }
 }
@@ -216,12 +216,12 @@ function renderOutsColumn(selectedPipe) {
                                         <button id="pipe${pipe.id}-out${o.id}-btn" class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'}"
                                                 onclick="${isRunning ? 'stopOutBtn' : 'startOutBtn'}('${pipe.id}', '${o.id}')">
                                                 ${isRunning ? 'stop' : 'start'}</button>
-                    ${o.name}
+                    ${escapeHtml(o.name)}
                     ${o.time !== null ? `<span class="badge badge-sm">${msToHHMMSS(o.time)}</span>` : ''}
                     ${throughputBadge}
                     ${volumeBadge}
                 </div>
-                <code title="${o.url}" class="text-sm opacity-70 truncate block">${o.url}</code>
+                <code title="${escapeHtml(o.url)}" class="text-sm opacity-70 truncate block">${escapeHtml(o.url)}</code>
             </div>
             <div class="flex items-center gap-2 w-fit">
                                 <button class="btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''}"
@@ -252,12 +252,12 @@ function renderStatsColumn(selectedPipe) {
             return `
       <tr class="${p.input.status === 'warning' ? 'bg-warning/10' : ''}">
         <td>${p.input.time !== null && p.input.time !== undefined ? msToHHMMSS(p.input.time) : '--'}</td>
-        <td>${p.name}</td>
+        <td>${escapeHtml(p.name)}</td>
                 <td>${inputBw !== null && inputBw !== undefined ? Number(inputBw).toFixed(1) : '--'}</td>
-                <td>${video.codec || '--'}</td>
+                <td>${escapeHtml(video.codec || '--')}</td>
                 <td>${video.width && video.height ? `${video.width}x${video.height}` : '--'}</td>
                 <td>${video.fps !== null && video.fps !== undefined ? video.fps : '--'}</td>
-                <td>${audio.codec || '--'}</td>
+                <td>${escapeHtml(audio.codec || '--')}</td>
                 <td>${audio.channels || '--'}</td>
                 <td>${audio.sample_rate || '--'}</td>
       </tr>`;
@@ -272,12 +272,12 @@ function renderStatsColumn(selectedPipe) {
             return `
       <tr class="${o.status === 'warning' ? 'bg-warning/10' : ''}">
                 <td>${o.time !== null && o.time !== undefined ? msToHHMMSS(o.time) : '--'}</td>
-        <td>${o.pipe}: ${o.name}</td>
+        <td>${escapeHtml(o.pipe)}: ${escapeHtml(o.name)}</td>
                 <td>${outputBw !== null && outputBw !== undefined ? Number(outputBw).toFixed(1) : '--'}</td>
-                <td>${video.codec || '--'}</td>
+                <td>${escapeHtml(video.codec || '--')}</td>
                 <td>${video.width && video.height ? `${video.width}x${video.height}` : '--'}</td>
                 <td>${video.fps !== null && video.fps !== undefined ? video.fps : '--'}</td>
-                <td>${audio.codec || '--'}</td>
+                <td>${escapeHtml(audio.codec || '--')}</td>
                 <td>${audio.channels || '--'}</td>
                 <td>${audio.sample_rate || '--'}</td>
       </tr>`;

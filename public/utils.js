@@ -15,6 +15,16 @@ function setInnerText(id, text) {
     elem.innerText = text;
 }
 
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function isValidRtmp(str) {
     // YouTube backup URL is a little funny
     if (str.includes(' ')) return false;
@@ -90,7 +100,7 @@ function setServerConfig(serverName) {
     const name = serverName || 'Restream';
     const viewName = document.querySelector('title').getAttribute('data-name');
     document.title = name + ': ' + viewName;
-    document.getElementById('server-name').innerHTML = 'Restream: ' + name;
+    document.getElementById('server-name').textContent = 'Restream: ' + name;
 }
 
 let alertCount = 0;
