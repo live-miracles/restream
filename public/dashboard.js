@@ -124,6 +124,7 @@ async function openOutModal(mode, pipe, output = null) {
 
     document.getElementById('out-rtmp-key-input').value = currentUrl.replace(serverSelect.value, '');
     document.getElementById('out-rtmp-key-input').classList.remove('input-error');
+    document.getElementById('out-rtmp-error').classList.add('hidden');
     document.getElementById('out-name-input').classList.remove('input-error');
     document.getElementById('edit-out-modal').showModal();
 }
@@ -167,8 +168,10 @@ async function editOutFormBtn(event) {
     const isRtmpValid = isValidRtmp(data.url);
     if (isRtmpValid) {
         document.getElementById('out-rtmp-key-input').classList.remove('input-error');
+        document.getElementById('out-rtmp-error').classList.add('hidden');
     } else {
         document.getElementById('out-rtmp-key-input').classList.add('input-error');
+        document.getElementById('out-rtmp-error').classList.remove('hidden');
     }
 
     const isOutNameValid = /^[a-zA-Z0-9_]*$/.test(data.name);

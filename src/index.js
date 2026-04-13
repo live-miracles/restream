@@ -782,6 +782,17 @@ app.get('/pipelines', (req, res) => {
  * Output APIs
  * ====================== */
 
+function validateOutputUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        return false;
+    }
+    return parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:';
+}
+
 // create output
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     try {
@@ -799,6 +810,10 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         const name = req.body?.name;
         const url = req.body?.url;
         const encoding = req.body?.encoding ?? 'source';
+
+        if (!validateOutputUrl(url)) {
+            return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
+        }
 
         const output = db.createOutput({ pipelineId: pid, name, url, encoding });
         recomputeConfigEtag();
@@ -824,6 +839,10 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         const name = req.body?.name ?? existing.name;
         const url = req.body?.url ?? existing.url;
         const encoding = req.body?.encoding ?? existing.encoding ?? 'source';
+
+        if (!validateOutputUrl(url)) {
+            return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
+        }
 
         const updated = db.updateOutput(pid, oid, { name, url, encoding });
         if (!updated) return res.status(500).json({ error: 'Failed to update output' });
