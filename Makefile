@@ -5,11 +5,11 @@ INGEST_URL ?= rtmp://localhost:1935/mystream
 OUTPUT_URL ?= rtmp://localhost:1936/live/test
 
 run-host: deps
-	docker compose --profile host up -d mediamtx nginx-rtmp
+	docker compose --profile host up -d
 	npm run dev
 
 run-docker:
-	docker compose --profile container up -d --build --force-recreate --renew-anon-volumes pause mediamtx-pod nginx-rtmp app
+	docker compose --profile container up -d --build --force-recreate --renew-anon-volumes
 
 deps: .deps-stamp
 
