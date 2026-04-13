@@ -69,6 +69,57 @@ function buildCommandPreview(cmd, args) {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
+function maskToken(value) {
+    const s = String(value ?? '');
+    if (!s) return '';
+    if (s.length <= 4) {
+        if (s.length === 1) return s;
+        return `${s[0]}...${s[s.length - 1]}`;
+    }
+    return `${s.slice(0, 2)}...${s.slice(-2)}`;
+}
+
+function redactSensitiveUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+
+    let parsed;
+    try {
+        parsed = new URL(rawUrl);
+    } catch {
+        return maskToken(rawUrl);
+    }
+
+    if (parsed.username) parsed.username = '[REDACTED]';
+    if (parsed.password) parsed.password = '[REDACTED]';
+
+    const sensitiveParams = /key|streamkey|stream_key|token|secret|pass|passphrase|signature|sig|auth|streamid/i;
+    for (const [paramKey] of parsed.searchParams.entries()) {
+        if (sensitiveParams.test(paramKey)) {
+            parsed.searchParams.set(paramKey, '[REDACTED]');
+        }
+    }
+
+    const protocol = String(parsed.protocol || '').toLowerCase();
+    if (['rtmp:', 'rtmps:', 'rtsp:', 'rtsps:', 'srt:'].includes(protocol)) {
+        const segments = parsed.pathname.split('/');
+        const lastIdx = segments.length - 1;
+        if (lastIdx >= 1 && segments[lastIdx]) {
+            segments[lastIdx] = maskToken(segments[lastIdx]);
+            parsed.pathname = segments.join('/');
+        }
+    }
+
+    parsed.hash = '';
+    return parsed.toString();
+}
+
+function redactFfmpegArgs(args) {
+    return (args || []).map((arg) => {
+        const s = String(arg ?? '');
+        return s.includes('://') ? redactSensitiveUrl(s) : s;
+    });
+}
+
 function getMediamtxApiBaseUrl() {
     // MediaMTX internal API is always available on localhost:9997
     return 'http://localhost:9997';
@@ -945,16 +996,17 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             outputUrl,
         ];
 
+        const redactedFfArgs = redactFfmpegArgs(ffArgs);
         log('debug', 'Crafted ffmpeg output command', {
             pipelineId: pid,
             outputId: oid,
-            probeInputUrl,
-            inputUrl,
+            probeInputUrl: redactSensitiveUrl(probeInputUrl),
+            inputUrl: redactSensitiveUrl(inputUrl),
             expectedReaderTag,
-            outputUrl,
+            outputUrl: redactSensitiveUrl(outputUrl),
             ffmpegCmd,
-            ffmpegArgs: ffArgs,
-            ffmpegCommandPreview: buildCommandPreview(ffmpegCmd, ffArgs),
+            ffmpegArgs: redactedFfArgs,
+            ffmpegCommandPreview: buildCommandPreview(ffmpegCmd, redactedFfArgs),
         });
 
         let child;
