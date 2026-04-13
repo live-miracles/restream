@@ -26,9 +26,9 @@ function renderPipelinesList(selectedPipe) {
         pipelines.reduce((sum, p) => sum + p.outs.filter((o) => o.status === 'error').length, 0),
     );
 
-    const html = pipelines
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((p) => {
+    const sortedPipelines = [...pipelines].sort((a, b) => a.name.localeCompare(b.name));
+    const html = sortedPipelines
+        .map((p, pipelineIndex) => {
             let outStatus = 'off';
             if (p.outs.some((o) => o.status === 'error')) {
                 outStatus = 'error';
@@ -48,7 +48,7 @@ function renderPipelinesList(selectedPipe) {
 
             return `
           <li>
-            <div class="flex items-center gap-2 ${style}" onclick=selectPipeline('${p.id}')>
+                        <div class="flex items-center gap-2 ${style} js-select-pipeline" data-pipeline-index="${pipelineIndex}">
               <div class="rounded-box h-5 w-5"
                 style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></div>
               <div class="badge badge-sm badge-success px-2 ${outOks ? '' : 'hidden'}">${outOks}</div>
@@ -60,7 +60,15 @@ function renderPipelinesList(selectedPipe) {
           </li>`;
         })
         .join('');
-    document.getElementById('pipelines').innerHTML = html;
+    const pipelinesList = document.getElementById('pipelines');
+    pipelinesList.innerHTML = html;
+    pipelinesList.querySelectorAll('.js-select-pipeline').forEach((el) => {
+        el.addEventListener('click', () => {
+            const idx = Number(el.dataset.pipelineIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= sortedPipelines.length) return;
+            selectPipeline(sortedPipelines[idx].id);
+        });
+    });
 }
 
 function renderPipelineInfoColumn(selectedPipe) {
@@ -190,7 +198,7 @@ function renderOutsColumn(selectedPipe) {
     }
 
     const outsHtml = pipe.outs
-        .map((o) => {
+        .map((o, outputIndex) => {
             const statusColor =
                 o.status === 'on'
                     ? 'status-primary'
@@ -200,22 +208,22 @@ function renderOutsColumn(selectedPipe) {
                         ? 'status-error'
                         : 'status-neutral';
 
-                        const isRunning = o.status === 'on' || o.status === 'warning';
-                        const throughputBadge = isRunning
-                            ? `<span class="badge badge-sm">${o.bitrateKbps !== null && o.bitrateKbps !== undefined ? `${Number(o.bitrateKbps).toFixed(1)} kb/s` : 'warming...'}</span>`
-                            : '';
-                        const volumeBadge = o.bytesSent
-                            ? `<span class="badge badge-sm">${(o.bytesSent / (1024 * 1024)).toFixed(1)} MB</span>`
-                            : '';
+            const isRunning = o.status === 'on' || o.status === 'warning';
+            const throughputBadge = isRunning
+                ? `<span class="badge badge-sm">${o.bitrateKbps !== null && o.bitrateKbps !== undefined ? `${Number(o.bitrateKbps).toFixed(1)} kb/s` : 'warming...'}</span>`
+                : '';
+            const volumeBadge = o.bytesSent
+                ? `<span class="badge badge-sm">${(o.bytesSent / (1024 * 1024)).toFixed(1)} MB</span>`
+                : '';
 
-                        return `
+            return `
           <div class="bg-base-100 px-3 py-2 shadow rounded-box grid grid-cols-[1fr_auto] gap-2 w-full">
             <div class="min-w-0">
                 <div class="font-semibold mr-3">
                     <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                                        <button id="pipe${pipe.id}-out${o.id}-btn" class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'}"
-                                                onclick="${isRunning ? 'stopOutBtn' : 'startOutBtn'}('${pipe.id}', '${o.id}')">
-                                                ${isRunning ? 'stop' : 'start'}</button>
+                    <button class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'} js-toggle-output"
+                        data-output-index="${outputIndex}">
+                        ${isRunning ? 'stop' : 'start'}</button>
                     ${escapeHtml(o.name)}
                     ${o.time !== null ? `<span class="badge badge-sm">${msToHHMMSS(o.time)}</span>` : ''}
                     ${throughputBadge}
@@ -224,15 +232,50 @@ function renderOutsColumn(selectedPipe) {
                 <code title="${escapeHtml(o.url)}" class="text-sm opacity-70 truncate block">${escapeHtml(o.url)}</code>
             </div>
             <div class="flex items-center gap-2 w-fit">
-                                <button class="btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''}"
-                                    onclick="editOutBtn('${pipe.id}', '${o.id}')">✎</button>
-                                <button class="btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''}"
-                                    onclick="deleteOutBtn('${pipe.id}', '${o.id}')">✖</button>
+                <button class="btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''} js-edit-output"
+                    data-output-index="${outputIndex}">✎</button>
+                <button class="btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''} js-delete-output"
+                    data-output-index="${outputIndex}">✖</button>
             </div>
           </div>`;
         })
         .join('');
-    document.getElementById('outputs-list').innerHTML = outsHtml;
+    const outputsList = document.getElementById('outputs-list');
+    outputsList.innerHTML = outsHtml;
+
+    outputsList.querySelectorAll('.js-toggle-output').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.dataset.outputIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= pipe.outs.length) return;
+            const out = pipe.outs[idx];
+            const isRunning = out.status === 'on' || out.status === 'warning';
+            if (isRunning) {
+                stopOutBtn(pipe.id, out.id);
+            } else {
+                startOutBtn(pipe.id, out.id);
+            }
+        });
+    });
+
+    outputsList.querySelectorAll('.js-edit-output').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            if (btn.classList.contains('btn-disabled')) return;
+            const idx = Number(btn.dataset.outputIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= pipe.outs.length) return;
+            const out = pipe.outs[idx];
+            editOutBtn(pipe.id, out.id);
+        });
+    });
+
+    outputsList.querySelectorAll('.js-delete-output').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            if (btn.classList.contains('btn-disabled')) return;
+            const idx = Number(btn.dataset.outputIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= pipe.outs.length) return;
+            const out = pipe.outs[idx];
+            deleteOutBtn(pipe.id, out.id);
+        });
+    });
 }
 
 function renderStatsColumn(selectedPipe) {

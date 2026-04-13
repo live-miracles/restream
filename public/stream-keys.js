@@ -60,8 +60,8 @@ async function copyKeyBtn(key) {
 async function renderKeysTable() {
     const keys = await getStreamKeys();
 
-    document.querySelector('#stream-keys').innerHTML = keys
-        .sort((a, b) => (a.label || '').localeCompare(b.label || ''))
+    const sortedKeys = [...keys].sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+    const tableHtml = sortedKeys
         .map(
             (k, i) => `
           <tr>
@@ -69,15 +69,46 @@ async function renderKeysTable() {
             <td>${escapeHtml(k.label || '')}</td>
             <td>${escapeHtml(maskKey(k.key))}</td>
             <td>
-                <button class="btn btn-accent btn-xs" title="Copy" onclick="copyKeyBtn(${escapeHtml(JSON.stringify(k.key))})">📋</button>
-                <button class="btn btn-accent btn-xs ml-2" title="Edit"
-                    onclick="updateStreamKeyBtn(${escapeHtml(JSON.stringify(k.key))}, ${escapeHtml(JSON.stringify(k.label))})">✎</button>
-                <button class="btn btn-error btn-xs ml-2" title="Delete"
-                    onclick="deleteStreamKeyBtn(${escapeHtml(JSON.stringify(k.key))}, ${escapeHtml(JSON.stringify(k.label))})">✖</button>
+                <button class="btn btn-accent btn-xs js-copy-key" title="Copy" data-key-index="${i}">📋</button>
+                <button class="btn btn-accent btn-xs ml-2 js-edit-key" title="Edit" data-key-index="${i}">✎</button>
+                <button class="btn btn-error btn-xs ml-2 js-delete-key" title="Delete" data-key-index="${i}">✖</button>
             </td>
           </tr>`,
         )
         .join('');
+
+    const streamKeysTable = document.querySelector('#stream-keys');
+    streamKeysTable.innerHTML = tableHtml;
+
+    const getKeyAt = (el) => {
+        const idx = Number(el.dataset.keyIndex);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= sortedKeys.length) return null;
+        return sortedKeys[idx];
+    };
+
+    streamKeysTable.querySelectorAll('.js-copy-key').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const row = getKeyAt(btn);
+            if (!row) return;
+            copyKeyBtn(row.key);
+        });
+    });
+
+    streamKeysTable.querySelectorAll('.js-edit-key').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const row = getKeyAt(btn);
+            if (!row) return;
+            updateStreamKeyBtn(row.key, row.label || '');
+        });
+    });
+
+    streamKeysTable.querySelectorAll('.js-delete-key').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const row = getKeyAt(btn);
+            if (!row) return;
+            deleteStreamKeyBtn(row.key, row.label || '');
+        });
+    });
 }
 
 (async () => {
