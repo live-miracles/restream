@@ -19,6 +19,7 @@ const processes = new Map(); // runtime only: jobId -> ChildProcess
 const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
 const appPort = Number(process.env.PORT || 3030);
+const appHost = getConfig().host;
 const execFileAsync = promisify(execFile);
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const probeCacheTtlMs = Number(process.env.PROBE_CACHE_TTL_MS || 30000);
@@ -1240,9 +1241,9 @@ app.get('/healthz', (req, res) => {
 
 app.use('/', express.static(path.join(__dirname, '..', 'public')));
 
-app.listen(appPort, () => {
+app.listen(appPort, appHost, () => {
     startMediamtxReadinessChecks();
-    console.log(`Controller running on ${appPort}`);
+    console.log(`Controller running on ${appHost}:${appPort}`);
 });
 
 // Etag-related, for the FE to check the last modified time of the entire config.

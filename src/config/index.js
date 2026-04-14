@@ -4,6 +4,7 @@ const path = require('path');
 const DEFAULT_CONFIG_PATH = path.join(__dirname, 'restream.json');
 
 const DEFAULT_CONFIG = {
+    host: '0.0.0.0',
     'server-name': 'Server Name',
     'pipelines-limit': 25,
     'out-limit': 95,
@@ -38,6 +39,7 @@ function sanitizePort(value, fallback) {
 
 function sanitizeConfig(config) {
     const safe = { ...DEFAULT_CONFIG, ...(config || {}) };
+    safe.host = sanitizeHost(safe.host, DEFAULT_CONFIG.host);
     safe['pipelines-limit'] = parsePositiveInt(safe['pipelines-limit'], DEFAULT_CONFIG['pipelines-limit']);
     safe['out-limit'] = parsePositiveInt(safe['out-limit'], DEFAULT_CONFIG['out-limit']);
     if (typeof safe['server-name'] !== 'string' || !safe['server-name'].trim()) {
@@ -67,6 +69,9 @@ function sanitizeConfig(config) {
     }
     if (process.env.MEDIAMTX_INGEST_SRT_PORT) {
         safe.mediamtx.ingest.srtPort = sanitizePort(process.env.MEDIAMTX_INGEST_SRT_PORT, safe.mediamtx.ingest.srtPort);
+    }
+    if (process.env.HOST) {
+        safe.host = sanitizeHost(process.env.HOST, safe.host);
     }
 
     return safe;
