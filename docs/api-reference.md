@@ -300,9 +300,9 @@ If-None-Match: "abc123..."
 **Response 200:**
 ```json
 {
-  "server-name": "My Server",
-  "pipelines-limit": 25,
-  "out-limit": 95,
+  "serverName": "My Server",
+  "pipelinesLimit": 25,
+  "outLimit": 95,
   "streamKeys": [ ... ],
   "pipelines": [ ... ],
   "outputs": [ ... ],

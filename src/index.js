@@ -574,7 +574,7 @@ app.get('/stream-keys', (req, res) => {
 app.post('/pipelines', (req, res) => {
     try {
         const runtimeConfig = getConfig();
-        const pipelineLimit = Number(runtimeConfig['pipelines-limit']);
+        const pipelineLimit = Number(runtimeConfig.pipelinesLimit);
         if (Number.isFinite(pipelineLimit) && db.listPipelines().length >= pipelineLimit) {
             return res.status(400).json({ error: `Pipeline limit reached: ${pipelineLimit}` });
         }
@@ -672,7 +672,7 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
 
         const runtimeConfig = getConfig();
-        const outLimit = Number(runtimeConfig['out-limit']);
+        const outLimit = Number(runtimeConfig.outLimit);
         const currentOutCount = db.listOutputs().filter((output) => output.pipelineId === pid).length;
         if (Number.isFinite(outLimit) && currentOutCount >= outLimit) {
             return res.status(400).json({ error: `Output limit reached for pipeline: ${outLimit}` });

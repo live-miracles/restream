@@ -187,7 +187,7 @@ async function renderKeysTable() {
 
 (async () => {
     const cfgRes = await getConfig();
-    setServerConfig(cfgRes?.data?.['server-name']);
+    setServerConfig(cfgRes?.data?.serverName);
 
     renderKeysTable();
 })();

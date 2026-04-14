@@ -17,7 +17,7 @@ src/
   db.js             — SQLite schema, migrations, and query helpers (data/data.db)
   config/
     index.js        — Config loader with sanitization
-    restream.json   — App config: server-name, pipelines-limit, out-limit
+    restream.json   — App config: host, serverName, pipelinesLimit, outLimit
 public/
   index.html        — Dashboard SPA shell
   stream-keys.html  — Stream key management page

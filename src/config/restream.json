@@ -1,5 +1,5 @@
 {
-    "server-name": "Server Name",
-    "pipelines-limit": 25,
-    "out-limit": 95
+    "serverName": "Server Name",
+    "pipelinesLimit": 25,
+    "outLimit": 95
 }

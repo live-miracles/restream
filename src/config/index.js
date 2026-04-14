@@ -5,15 +5,15 @@ const DEFAULT_CONFIG_PATH = path.join(__dirname, 'restream.json');
 
 const DEFAULT_CONFIG = {
     host: '0.0.0.0',
-    'server-name': 'Server Name',
-    'pipelines-limit': 25,
-    'out-limit': 95,
+    serverName: 'Server Name',
+    pipelinesLimit: 25,
+    outLimit: 95,
     mediamtx: {
         ingest: {
             host: null,
-            rtmpPort: '1935',
-            rtspPort: '8554',
-            srtPort: '8890',
+            rtmpPort: 1935,
+            rtspPort: 8554,
+            srtPort: 8890,
         },
     },
 };
@@ -40,10 +40,10 @@ function sanitizePort(value, fallback) {
 function sanitizeConfig(config) {
     const safe = { ...DEFAULT_CONFIG, ...(config || {}) };
     safe.host = sanitizeHost(safe.host, DEFAULT_CONFIG.host);
-    safe['pipelines-limit'] = parsePositiveInt(safe['pipelines-limit'], DEFAULT_CONFIG['pipelines-limit']);
-    safe['out-limit'] = parsePositiveInt(safe['out-limit'], DEFAULT_CONFIG['out-limit']);
-    if (typeof safe['server-name'] !== 'string' || !safe['server-name'].trim()) {
-        safe['server-name'] = DEFAULT_CONFIG['server-name'];
+    safe.pipelinesLimit = parsePositiveInt(safe.pipelinesLimit, DEFAULT_CONFIG.pipelinesLimit);
+    safe.outLimit = parsePositiveInt(safe.outLimit, DEFAULT_CONFIG.outLimit);
+    if (typeof safe.serverName !== 'string' || !safe.serverName.trim()) {
+        safe.serverName = DEFAULT_CONFIG.serverName;
     }
 
     const mediamtx = safe.mediamtx || {};

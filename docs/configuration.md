@@ -55,15 +55,15 @@ File: `src/config/restream.json`
 
 ```json
 {
-  "server-name": "Server Name",
-  "pipelines-limit": 25,
-  "out-limit": 95,
+  "serverName": "Server Name",
+  "pipelinesLimit": 25,
+  "outLimit": 95,
   "mediamtx": {
     "ingest": {
       "host": "stream.example.com",
-      "rtmpPort": "1935",
-      "rtspPort": "8554",
-      "srtPort": "8890"
+      "rtmpPort": 1935,
+      "rtspPort": 8554,
+      "srtPort": 8890
     }
   }
 }
@@ -73,13 +73,14 @@ File: `src/config/restream.json`
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `server-name` | string | `Server Name` | Display name in UI |
-| `pipelines-limit` | integer | `25` | Positive integer |
-| `out-limit` | integer | `95` | Positive integer |
+| `host` | string | `0.0.0.0` | Express bind host. Overridden by `HOST` env when set |
+| `serverName` | string | `Server Name` | Display name in UI |
+| `pipelinesLimit` | integer | `25` | Positive integer |
+| `outLimit` | integer | `95` | Positive integer |
 | `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |
-| `mediamtx.ingest.rtmpPort` | string | `1935` | Publisher RTMP ingest port |
-| `mediamtx.ingest.rtspPort` | string | `8554` | Publisher RTSP ingest port |
-| `mediamtx.ingest.srtPort` | string | `8890` | Publisher SRT ingest port |
+| `mediamtx.ingest.rtmpPort` | integer | `1935` | Publisher RTMP ingest port |
+| `mediamtx.ingest.rtspPort` | integer | `8554` | Publisher RTSP ingest port |
+| `mediamtx.ingest.srtPort` | integer | `8890` | Publisher SRT ingest port |
 
 UI ingest URLs are built in app code as:
 

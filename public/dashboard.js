@@ -239,8 +239,8 @@ async function addOutBtn() {
         return;
     }
 
-    if (config['out-limit'] && pipe.outs.length >= config['out-limit']) {
-        console.error(`Output limit reached. Max outputs per pipeline: ${config['out-limit']}`);
+    if (config.outLimit && pipe.outs.length >= config.outLimit) {
+        console.error(`Output limit reached. Max outputs per pipeline: ${config.outLimit}`);
         return;
     }
 
@@ -370,7 +370,7 @@ let health = {};
 (async () => {
     await fetchConfig();
     markUserConfigBaseline();
-    setServerConfig(config?.['server-name']);
+    setServerConfig(config?.serverName);
     await fetchAndRerender();
     setInterval(() => fetchAndRerender(), 5000);
     setInterval(() => checkStreamingConfigs(), 30000);
