@@ -1,5 +1,4 @@
 async function refreshDashboard() {
-    await fetchConfig();
     await fetchAndRerender();
 }
 
@@ -390,7 +389,6 @@ let pipelines = [];
 let health = {};
 
 (async () => {
-    await fetchConfig();
     markUserConfigBaseline();
     setServerConfig(config?.serverName);
     await fetchAndRerender();

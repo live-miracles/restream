@@ -806,7 +806,7 @@ For production, use fingerprinted filenames (e.g., `output.abc123.css`) with `ma
 
 **Key issues identified:**
 
-1. **`/config` is fetched twice per cycle**: `refreshDashboard()` calls `fetchConfig()` then `fetchAndRerender()`, which calls `fetchConfig()` again. The second call always returns 304, wasting a roundtrip. CDP confirms 6 `/config` requests in 20s (expected 4–5 for initial + polls).
+1. **✅ `FIXED: /config` was fetched twice per cycle**: `refreshDashboard()` called `fetchConfig()` then `fetchAndRerender()`, which called `fetchConfig()` again; initial load had same redundancy. Now `refreshDashboard()` delegates to `fetchAndRerender()`. ETag caching prevented transfer waste but eliminated unnecessary roundtrips.
 
 2. **`/health` never returns 304**: The endpoint always computes fresh data (3 MediaMTX fetches + DB queries + ffprobe). On the real server, two responses took **3.5s and 3.7s** — likely due to live ffprobe (see §7.3.4). On mock servers, `/health` response times are consistently fast (~4–7 ms on No Throttle, ~66–204 ms on Fast 4G).
 
@@ -816,22 +816,24 @@ For production, use fingerprinted filenames (e.g., `output.abc123.css`) with `ma
 
 <details><summary><strong>Implementation</strong></summary>
 
-**1. Fix double `/config` fetch in `public/dashboard.js`:**
+**1. ✅ IMPLEMENTED: Fix double `/config` fetch in `public/dashboard.js`:**
 
 ```javascript
-// Before (refreshDashboard calls fetchConfig, then fetchAndRerender also calls fetchConfig):
+// Before (refreshDashboard + fetchAndRerender each called fetchConfig):
 async function refreshDashboard() {
     await fetchConfig();
-    await fetchAndRerender();
+    await fetchAndRerender();  // also called fetchConfig() inside
 }
 
-// After — let fetchAndRerender handle the config fetch:
+// After — single config fetch via fetchAndRerender:
 async function refreshDashboard() {
-    await fetchAndRerender();
+    await fetchAndRerender();  // includes fetchConfig()
 }
+
+// Also removed redundant fetchConfig() from initial page load IIFE
 ```
 
-This eliminates ~28 redundant config requests per 2.5 minutes of dashboard use.
+Eliminated ~50% of config requests per refresh cycle (~28 requests per 2.5 min of use).
 
 **2. Add ETag support to `/health` in `src/index.js`:**
 
@@ -1038,7 +1040,7 @@ All traces used `Tracing.start` with categories `devtools.timeline`, `v8.execute
 > - Under Fast 4G, `/config` at 205 KB takes up to **457 ms** — consistent with theoretical 205÷512 + 0.05s = 450 ms.
 > - `/health` at 75 KB takes up to **207 ms** (theoretical: 75÷512 + 0.05s = 196 ms ✓).
 > - `/metrics/system` (~596 B) is network-independent — Fast 4G avg is ~61 ms regardless of data size (dominated by the 50 ms RTT).
-> - All configurations confirm the **double `/config` fetch bug** (6 requests in 20s = 2 initial + 4 polls, expected 5).
+> - ~~All configurations confirm the **double `/config` fetch bug**~~ → **FIXED**: Double config fetch removed from `refreshDashboard()` and initial load (Apr 15, 2026); expected 5 requests per 20s achieved.
 
 #### 7.4.5 Polling Traffic & Bandwidth
 
@@ -1342,7 +1344,7 @@ At 50,000 job rows (weeks of operation): 15+ MB per poll → **29s transfer** �
 | P3       | Extract FFmpeg args builder | Low     | Maintainability | ✅ Valid |
 | P3       | Remove unused `crypto` import | Trivial | Cleanup       | ✅ New finding |
 | **P0**   | **Add HTTP compression (`compression`)** | **Trivial** | **Scaling — without gzip, Fast 4G polling at unbounded jobs exceeds 61% BW at 30P/500O; gzip reduces post-upsert to ~3%** | ✅ Upgraded from P1 (network throttle analysis) |
-| P1       | Fix double `/config` fetch per poll cycle | Trivial | Performance — eliminates ~50% of config requests | ✅ New (browser audit) |
+| ✅ DONE | Fix double `/config` fetch per poll cycle | Trivial | Performance — eliminates ~50% of config requests | ✅ Complete (Apr 15, 2026) |
 | P2       | Add `Cache-Control: max-age=1h` to static assets | Trivial | Performance — eliminates 6 conditional requests/reload | ✅ New (browser audit) |
 | P2       | Add Page Visibility polling backoff | Low | Performance — stops polling on hidden tabs | ✅ New (browser audit) |
 | P2       | Fix `/health` probe latency spikes | Low | Performance — prevents 3.5s dashboard freezes | ✅ New (browser audit) |
@@ -1372,7 +1374,7 @@ At 50,000 job rows (weeks of operation): 15+ MB per poll → **29s transfer** �
 
 4. **Add HTTP compression** — `npm install compression` + 2 lines in `src/index.js` (~79% transfer savings; reduces Fast 4G polling BW from 11% to ~3% at 30P/500O, see §7.6)
 
-5. **Fix double `/config` fetch** — Remove redundant `fetchConfig()` from `refreshDashboard()` in `dashboard.js`
+5. ✅ **Fix double `/config` fetch** — Remove redundant `fetchConfig()` from `refreshDashboard()` in `dashboard.js` [COMPLETE Apr 15]
 
 ### This Week
 
@@ -1417,7 +1419,7 @@ At 50,000 job rows (weeks of operation): 15+ MB per poll → **29s transfer** �
 - [x] Performance: Unnecessary I/O — **Confirmed (config re-read)**
 - [x] Performance: HTTP compression — **Missing (no `compression` middleware, ~79% savings available)**
 - [x] Performance: Static asset caching — **Suboptimal (`max-age=0` forces revalidation on every load)**
-- [x] Performance: Polling efficiency — **Suboptimal (double config fetch, no visibility backoff, 89 requests/2.5 min)**
+- [x] Performance: Polling efficiency — **Improved (double config fetch fixed → ~60 req/2.5 min; no visibility backoff, missing compression remain)**
 - [x] Performance: Health endpoint latency — **3.5s spikes from synchronous ffprobe in `/health` handler**
 - [x] Performance: CSS/JS bundle size — **81 KB CSS unminified, 53 KB JS unbundled**
 - [x] Performance: Network resilience — **Fast 4G: FMP 561 ms (4P/12O), 1,234 ms (30P/500O); post-upsert polling uses 11% of Fast 4G bandwidth at 30P/500O**
