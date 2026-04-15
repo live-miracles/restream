@@ -78,22 +78,74 @@ db.prepare(
 `,
 ).run();
 
+// Add unique constraint to enforce 1 job per (pipeline_id, output_id)
 db.prepare(
-    `
-  CREATE INDEX IF NOT EXISTS idx_jobs_pipeline_output ON jobs(pipeline_id, output_id)
+        `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_output_unique
+    ON jobs(pipeline_id, output_id)
 `,
 ).run();
 
 /* job_logs table */
 db.prepare(
     `
-  CREATE TABLE IF NOT EXISTS job_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL,
-    ts TEXT,
-    message TEXT,
-    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-  )
+    CREATE TABLE IF NOT EXISTS job_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT,
+        pipeline_id TEXT,
+        output_id TEXT,
+        ts TEXT,
+        message TEXT
+    )
+`,
+).run();
+
+// Add decoupled columns for old schemas
+const jobLogsColumns = db.prepare(`PRAGMA table_info(job_logs)`).all();
+if (!jobLogsColumns.some((column) => column.name === 'pipeline_id')) {
+    db.prepare(`ALTER TABLE job_logs ADD COLUMN pipeline_id TEXT`).run();
+}
+if (!jobLogsColumns.some((column) => column.name === 'output_id')) {
+    db.prepare(`ALTER TABLE job_logs ADD COLUMN output_id TEXT`).run();
+}
+
+// Migrate old FK-based job_logs table to decoupled schema.
+// Upsert updates jobs.id, which conflicts with FK(job_logs.job_id -> jobs.id).
+const jobLogsForeignKeys = db.prepare(`PRAGMA foreign_key_list(job_logs)`).all();
+if (jobLogsForeignKeys.some((fk) => fk.table === 'jobs' && fk.from === 'job_id')) {
+    db.exec(`PRAGMA foreign_keys = OFF`);
+    db.exec(`BEGIN TRANSACTION`);
+    try {
+        db.exec(`
+      CREATE TABLE job_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT,
+        pipeline_id TEXT,
+        output_id TEXT,
+        ts TEXT,
+        message TEXT
+      )
+    `);
+        db.exec(`
+      INSERT INTO job_logs_new (id, job_id, pipeline_id, output_id, ts, message)
+      SELECT id, job_id, pipeline_id, output_id, ts, message
+      FROM job_logs
+    `);
+        db.exec(`DROP TABLE job_logs`);
+        db.exec(`ALTER TABLE job_logs_new RENAME TO job_logs`);
+        db.exec(`COMMIT`);
+    } catch (err) {
+        db.exec(`ROLLBACK`);
+        db.exec(`PRAGMA foreign_keys = ON`);
+        throw err;
+    }
+    db.exec(`PRAGMA foreign_keys = ON`);
+}
+
+// Create index for fast lookups of logs by output
+db.prepare(
+    `
+    CREATE INDEX IF NOT EXISTS idx_job_logs_output ON job_logs(pipeline_id, output_id, ts)
 `,
 ).run();
 
@@ -152,8 +204,16 @@ const deleteOutputStmt = db.prepare('DELETE FROM outputs WHERE id = ? AND pipeli
 
 /* Job statements */
 const insertJob = db.prepare(`
-  INSERT INTO jobs (id, pipeline_id, output_id, pid, status, started_at) 
-  VALUES (@id, @pipeline_id, @output_id, @pid, @status, @started_at)
+    INSERT INTO jobs (id, pipeline_id, output_id, pid, status, started_at, ended_at, exit_code, exit_signal)
+    VALUES (@id, @pipeline_id, @output_id, @pid, @status, @started_at, NULL, NULL, NULL)
+    ON CONFLICT(pipeline_id, output_id) DO UPDATE SET
+        id = excluded.id,
+        pid = excluded.pid,
+        status = excluded.status,
+        started_at = excluded.started_at,
+        ended_at = NULL,
+        exit_code = NULL,
+        exit_signal = NULL
 `);
 const getJobStmt = db.prepare(`
   SELECT id, pipeline_id AS pipelineId, output_id AS outputId, pid, status, started_at AS startedAt, ended_at AS endedAt, exit_code AS exitCode, exit_signal AS exitSignal
@@ -176,10 +236,19 @@ const listJobsStmt = db.prepare(`
 
 /* JobLog statements */
 const insertJobLog = db.prepare(`
-  INSERT INTO job_logs (job_id, ts, message) VALUES (@job_id, @ts, @message)
+    INSERT INTO job_logs (job_id, pipeline_id, output_id, ts, message) 
+    VALUES (@job_id, @pipeline_id, @output_id, @ts, @message)
 `);
 const listJobLogs = db.prepare(`
-  SELECT ts, message FROM job_logs WHERE job_id = ? ORDER BY id ASC
+    SELECT ts, message FROM job_logs WHERE job_id = ? ORDER BY id ASC
+`);
+const listJobLogsByOutput = db.prepare(`
+    SELECT ts, message FROM job_logs 
+    WHERE pipeline_id = ? AND output_id = ? 
+    ORDER BY ts DESC
+`);
+const deleteOldJobLogs = db.prepare(`
+    DELETE FROM job_logs WHERE ts < datetime('now', ?)
 `);
 
 /* Meta statements */
@@ -328,15 +397,27 @@ module.exports = {
     },
 
     /* job log helpers */
-    appendJobLog(jobId, message) {
+    appendJobLog(jobId, message, pipelineId = null, outputId = null) {
         try {
-            insertJobLog.run({ job_id: jobId, ts: new Date().toISOString(), message });
+            insertJobLog.run({ 
+                job_id: jobId, 
+                pipeline_id: pipelineId,
+                output_id: outputId,
+                ts: new Date().toISOString(), 
+                message 
+            });
         } catch (e) {
             /* ignore logging failures */
         }
     },
     listJobLogs(jobId) {
         return listJobLogs.all(jobId);
+    },
+    listJobLogsByOutput(pipelineId, outputId) {
+        return listJobLogsByOutput.all(pipelineId, outputId);
+    },
+    deleteJobLogsOlderThan(days = 7) {
+        deleteOldJobLogs.run(`-${days} days`);
     },
 
     /* meta helpers */

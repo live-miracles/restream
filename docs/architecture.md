@@ -62,6 +62,7 @@ jobs
   id          TEXT PK
   pipeline_id TEXT FK → pipelines.id ON DELETE CASCADE
   output_id   TEXT FK → outputs.id ON DELETE CASCADE
+  UNIQUE(pipeline_id, output_id)   -- enforced by unique index; one row per output
   pid         INTEGER        -- OS process ID of FFmpeg (null if proc died before record)
   status      TEXT           -- 'running' | 'stopped' | 'failed'
   started_at  TEXT
@@ -71,7 +72,9 @@ jobs
 
 job_logs
   id          INTEGER PK AUTOINCREMENT
-  job_id      TEXT FK → jobs.id ON DELETE CASCADE
+  job_id      TEXT           -- optional reference to current/previous job id
+  pipeline_id TEXT           -- direct lookup key for history by pipeline
+  output_id   TEXT           -- direct lookup key for history by output
   ts          TEXT
   message     TEXT           -- one line per stdout/stderr chunk or control event
 
@@ -136,6 +139,8 @@ db.createJob({ status: 'running', pid, startedAt })
 recomputeEtag()
 processes.set(jobId, child)
   │
+  └─ ON CONFLICT(pipeline_id, output_id): updates existing row (no jobs-table growth)
+  │
   ▼
 Wait 250 ms → check if job still 'running'
   │ failed immediately → 500 + last 100 log lines
@@ -183,7 +188,7 @@ Build rtspByReaderTag Map:
 Load from DB:
   ├── listPipelines()
   ├── listOutputs()
-  └── listJobs() → latestJobByOutputId Map (most recent per output)
+  └── listJobs() → jobByOutputId Map (one row per output due to upsert)
 
 For each pipeline:
   ├── Input health:
@@ -195,7 +200,7 @@ For each pipeline:
   │     video/audio = from pathInfo.tracks2 + ffprobe cache (if available)
   │
   └── For each output:
-        latestJob = latestJobByOutputId.get(outputId)
+      latestJob = jobByOutputId.get(outputId)
         status = 'error'   if latestJob.status === 'failed'
                = 'off'     if no running job
                = 'on'      if running AND rtspByReaderTag has reader_<pid>_<oid>

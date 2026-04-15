@@ -15,7 +15,7 @@ The `/health` endpoint fetches three MediaMTX APIs in parallel, then merges with
 | `GET /v3/rtspsessions/list` | RTSP sessions for fallback field lookup                  |
 | DB: `listPipelines()`       | Pipeline ↔ stream key mapping                            |
 | DB: `listOutputs()`         | Output ↔ pipeline mapping                                |
-| DB: `listJobs()`            | Latest job status per output                             |
+| DB: `listJobs()`            | One current job row per output (upsert model)            |
 
 ---
 
@@ -66,7 +66,7 @@ Output health combines the latest DB job state with live RTSP reader connection 
 
 ```mermaid
 flowchart TD
-    A["output.id"] --> B["latestJobByOutputId.get(outputId)"]
+  A["output.id"] --> B["jobByOutputId.get(outputId)"]
     B --> C{latest job\nstatus?}
 
     C -->|"failed"| ERR["status = 'error'"]
@@ -135,20 +135,16 @@ An earlier design inferred output→reader mapping by ordering (output N maps to
 
 ---
 
-## 4. `latestJobByOutputId` Map Construction
+## 4. `jobByOutputId` Map Construction
 
-Jobs are loaded with `db.listJobs()` (all jobs, ordered by `started_at DESC`). The map keeps only the single most-recent job per `outputId`:
+With upsert in place, `jobs` has at most one row per `(pipeline_id, output_id)`. `/health` now maps rows directly by `outputId` without timestamp reduction:
 
 ```
-for each job (newest-first):
-  key = job.outputId
-  if key not in map:
-    map.set(key, job)
-  else:
-    compare timestamps; keep whichever is newer
+for each job from db.listJobs():
+  map.set(job.outputId, job)
 ```
 
-This means the output status reflects the **latest** job run, not any historical failed run.
+This keeps `/health` processing bounded to output count and avoids scanning historical job rows.
 
 ---
 

@@ -378,10 +378,10 @@ function stopRunningJob(job, signal = 'SIGTERM') {
     if (proc && !proc.killed) {
         try {
             proc.kill(signal);
-            db.appendJobLog(job.id, `[control] requested ${signal}`);
+            db.appendJobLog(job.id, `[control] requested ${signal}`, job.pipelineId, job.outputId);
             return { stopped: true, reason: 'signal-sent' };
         } catch (err) {
-            db.appendJobLog(job.id, `[control] failed to send ${signal}: ${String(err)}`);
+            db.appendJobLog(job.id, `[control] failed to send ${signal}: ${String(err)}`, job.pipelineId, job.outputId);
             return { stopped: false, reason: 'signal-failed' };
         }
     }
@@ -392,7 +392,7 @@ function stopRunningJob(job, signal = 'SIGTERM') {
         exitCode: null,
         exitSignal: null,
     });
-    db.appendJobLog(job.id, '[control] process not found in memory; marked stopped');
+    db.appendJobLog(job.id, '[control] process not found in memory; marked stopped', job.pipelineId, job.outputId);
     return { stopped: true, reason: 'marked-stopped' };
 }
 
@@ -887,11 +887,11 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
         ffmpegProgressByJobId.set(job.id, {});
 
         const pushLog = (msg) => {
-            db.appendJobLog(job.id, msg);
+            db.appendJobLog(job.id, msg, pid, oid);
         };
 
         child.on('error', (err) => {
-            db.appendJobLog(job.id, `[error] ${String(err)}`);
+            db.appendJobLog(job.id, `[error] ${String(err)}`, pid, oid);
             log('error', 'ffmpeg child process error', {
                 pipelineId: pid,
                 outputId: oid,
@@ -1141,16 +1141,10 @@ app.get('/health', async (req, res) => {
         const outputs = db.listOutputs();
         const jobs = db.listJobs();
 
-        const latestJobByOutputId = new Map();
+        // With upsert, each output has exactly 1 job row, so no reduction needed
+        const jobByOutputId = new Map();
         for (const job of jobs) {
-            const prev = latestJobByOutputId.get(job.outputId);
-            if (!prev) {
-                latestJobByOutputId.set(job.outputId, job);
-                continue;
-            }
-            const prevTs = new Date(prev.startedAt || prev.endedAt || 0).getTime();
-            const curTs = new Date(job.startedAt || job.endedAt || 0).getTime();
-            if (curTs >= prevTs) latestJobByOutputId.set(job.outputId, job);
+            jobByOutputId.set(job.outputId, job);
         }
 
         const health = { pipelines: {} };
@@ -1218,7 +1212,7 @@ app.get('/health', async (req, res) => {
             const pipelineOutputs = outputs.filter((output) => output.pipelineId === pipeline.id);
 
             for (const output of pipelineOutputs) {
-                const latest = latestJobByOutputId.get(output.id) || null;
+                const latest = jobByOutputId.get(output.id) || null;
                 let readerConn = null;
                 let status = 'off';
                 const ffmpegProgress = latest?.id ? ffmpegProgressByJobId.get(latest.id) || null : null;
@@ -1294,6 +1288,15 @@ app.use('/', express.static(path.join(__dirname, '..', 'public')));
 app.listen(appPort, appHost, () => {
     startMediamtxReadinessChecks();
     console.log(`Controller running on ${appHost}:${appPort}`);
+    
+    // Start periodic cleanup of old job logs (7-day retention)
+    setInterval(() => {
+        try {
+            db.deleteJobLogsOlderThan(7);
+        } catch (err) {
+            console.error('Error cleaning up old job logs:', err);
+        }
+    }, 60 * 60 * 1000); // Run every hour
 });
 
 // Etag-related, for the FE to check the last modified time of the entire config.
