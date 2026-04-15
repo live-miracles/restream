@@ -815,7 +815,7 @@ For production, use fingerprinted filenames (e.g., `output.abc123.css`) with `ma
 
 3. **`/metrics/system` never returns 304**: Always returns 200 with fresh CPU/network data. This is expected for real-time metrics, but could use a short max-age.
 
-4. **No backoff on hidden tab**: If the user switches tabs, polling continues at the same 5s rate. The Page Visibility API could pause or reduce polling.
+4. **✅ FIXED: Hidden-tab polling backoff**: Polling no longer runs at full 5s cadence in background tabs. The dashboard now uses Page Visibility to back off refreshes when hidden and restore fast polling + immediate refresh when visible.
 
 <details><summary><strong>Implementation</strong></summary>
 
@@ -844,30 +844,26 @@ The health response already sets an ETag (Express auto-generates one). The front
 - Add ETag support to `getHealth()` in `api.js` (like `getConfig()` already does), or
 - Add `Cache-Control: max-age=3` to the `/health` response to reduce revalidation load
 
-**3. Add Page Visibility backoff in `public/dashboard.js`:**
+**3. ✅ IMPLEMENTED: Add Page Visibility backoff in `public/dashboard.js`:**
 
 ```javascript
-let pollInterval = null;
+const DASHBOARD_POLL_INTERVAL_MS = 5000;
+const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
 
-function startPolling() {
-    if (pollInterval) return;
-    pollInterval = setInterval(() => fetchAndRerender(), 5000);
-}
-
-function stopPolling() {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-}
-
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stopPolling();
-    else { fetchAndRerender(); startPolling(); }
+document.addEventListener('visibilitychange', async () => {
+    if (document.hidden) {
+        startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
+        return;
+    }
+    startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
+    await fetchAndRerender();
+    await checkStreamingConfigs();
 });
-
-// Replace the current setInterval:
-startPolling();
 ```
 
-**Effort:** ~25 lines across dashboard.js and api.js.
+Also, `checkStreamingConfigs()` now exits early while hidden to avoid background checks.
+
+**Effort:** ~35 lines in `public/dashboard.js`.
 
 </details>
 

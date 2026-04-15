@@ -588,6 +588,7 @@ async function deletePipeBtn() {
 }
 
 async function checkStreamingConfigs(secondTime = false, baselineEtag = userConfigEtag) {
+    if (document.hidden) return;
     const alertElem = document.getElementById('streaming-config-changed-alert');
     if (!alertElem) return;
 
@@ -655,13 +656,44 @@ let metrics = {};
 let pipelines = [];
 let health = {};
 
+const DASHBOARD_POLL_INTERVAL_MS = 5000;
+const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
+const STREAMING_CONFIG_CHECK_INTERVAL_MS = 30000;
+let dashboardPollTimer = null;
+let dashboardPollEveryMs = null;
+let streamingConfigCheckTimer = null;
+
+function startDashboardPolling(intervalMs) {
+    if (dashboardPollTimer && dashboardPollEveryMs === intervalMs) return;
+    if (dashboardPollTimer) clearInterval(dashboardPollTimer);
+    dashboardPollEveryMs = intervalMs;
+    dashboardPollTimer = setInterval(() => fetchAndRerender(), intervalMs);
+}
+
+function startStreamingConfigPolling() {
+    if (streamingConfigCheckTimer) return;
+    streamingConfigCheckTimer = setInterval(() => checkStreamingConfigs(), STREAMING_CONFIG_CHECK_INTERVAL_MS);
+}
+
+async function onVisibilityChange() {
+    if (document.hidden) {
+        startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
+        return;
+    }
+    startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
+    await fetchAndRerender();
+    await checkStreamingConfigs();
+}
+
 (async () => {
     markUserConfigBaseline();
     setServerConfig(config?.serverName);
     await fetchAndRerender();
-    setInterval(() => fetchAndRerender(), 5000);
-    setInterval(() => checkStreamingConfigs(), 30000);
+    startDashboardPolling(document.hidden ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS : DASHBOARD_POLL_INTERVAL_MS);
+    startStreamingConfigPolling();
 })();
+
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 document
     .getElementById('dismiss-streaming-config-alert-btn')
