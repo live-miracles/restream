@@ -250,6 +250,15 @@ const listJobLogsByOutput = db.prepare(`
 const deleteOldJobLogs = db.prepare(`
     DELETE FROM job_logs WHERE ts < datetime('now', ?)
 `);
+const deleteOldJobs = db.prepare(`
+    DELETE FROM jobs
+    WHERE (status IN ('stopped','failed') AND ended_at IS NOT NULL AND datetime(ended_at) < datetime('now', '-7 days'))
+       OR datetime(COALESCE(ended_at, started_at)) < datetime('now', '-30 days')
+`);
+const deleteOrphanedLogs = db.prepare(`
+    DELETE FROM job_logs
+    WHERE job_id IS NOT NULL AND job_id NOT IN (SELECT id FROM jobs)
+`);
 
 /* Meta statements */
 const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
@@ -418,6 +427,14 @@ module.exports = {
     },
     deleteJobLogsOlderThan(days = 7) {
         deleteOldJobLogs.run(`-${days} days`);
+    },
+    cleanupOldJobs() {
+        const tx = db.transaction(() => {
+            const jobResult = deleteOldJobs.run();
+            const logResult = deleteOrphanedLogs.run();
+            return { deletedJobs: jobResult.changes, deletedLogs: logResult.changes };
+        });
+        return tx();
     },
 
     /* meta helpers */

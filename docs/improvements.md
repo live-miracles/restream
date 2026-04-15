@@ -498,30 +498,32 @@ This removes stale entries for deleted stream keys. The 2× TTL threshold ensure
 
 ### 4.3 Missing Job Cleanup
 
-**Status:** ✅ Confirmed  
+**Status:** ✅ Implemented  
 **Location:** `src/db.js`
 
-No cleanup routine found. The `jobs` and `job_logs` tables grow unbounded. No `DELETE FROM jobs` query exists anywhere in the codebase.
+`jobs` and `job_logs` cleanup is now implemented.
 
-**Recommendation:** Add periodic cleanup:
+Implemented cleanup policy:
 
-- Delete jobs older than 30 days
-- Delete jobs with status `stopped` or `failed` older than 7 days
-- Run as part of startup or daily cron
+- Delete `stopped` / `failed` jobs older than 7 days
+- Delete any remaining stale jobs older than 30 days
+- Delete orphaned `job_logs` rows whose `job_id` no longer exists
+- Run cleanup at startup and once daily
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/db.js` — Add prepared statements:
+**File:** `src/db.js` — Added cleanup statements + transaction helper:
 
 ```javascript
 const deleteOldJobs = db.prepare(`
     DELETE FROM jobs
-    WHERE (status IN ('stopped','failed') AND datetime(endedAt) < datetime('now', '-7 days'))
-       OR datetime(COALESCE(endedAt, startedAt, createdAt)) < datetime('now', '-30 days')
+    WHERE (status IN ('stopped','failed') AND ended_at IS NOT NULL AND datetime(ended_at) < datetime('now', '-7 days'))
+       OR datetime(COALESCE(ended_at, started_at)) < datetime('now', '-30 days')
 `);
 
 const deleteOrphanedLogs = db.prepare(`
-    DELETE FROM job_logs WHERE jobId NOT IN (SELECT id FROM jobs)
+    DELETE FROM job_logs
+    WHERE job_id IS NOT NULL AND job_id NOT IN (SELECT id FROM jobs)
 `);
 
 function cleanupOldJobs() {
@@ -534,12 +536,14 @@ function cleanupOldJobs() {
 }
 ```
 
-**File:** `src/index.js` — Run at startup + daily interval:
+**File:** `src/index.js` — Runs at startup + daily interval:
 
 ```javascript
 // At startup:
 const cleaned = db.cleanupOldJobs();
-log('info', 'Job cleanup', cleaned);
+if (cleaned.deletedJobs || cleaned.deletedLogs) {
+    log('info', 'Job cleanup', cleaned);
+}
 
 // Daily sweep:
 setInterval(() => {
@@ -548,7 +552,9 @@ setInterval(() => {
 }, 24 * 60 * 60 * 1000);
 ```
 
-**Effort:** ~25 lines across two files.
+The existing hourly `deleteJobLogsOlderThan(7)` retention pass remains in place for time-based log pruning.
+
+**Implemented in:** current branch
 
 </details>
 

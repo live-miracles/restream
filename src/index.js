@@ -1406,6 +1406,28 @@ app.use('/', express.static(path.join(__dirname, '..', 'public'), {
 app.listen(appPort, appHost, () => {
     startMediamtxReadinessChecks();
     console.log(`Controller running on ${appHost}:${appPort}`);
+
+    // Run a startup cleanup pass for stale jobs and orphaned logs.
+    try {
+        const cleaned = db.cleanupOldJobs();
+        if (cleaned.deletedJobs || cleaned.deletedLogs) {
+            log('info', 'Job cleanup', cleaned);
+        }
+    } catch (err) {
+        console.error('Error during startup job cleanup:', err);
+    }
+
+    // Daily sweep for stale jobs and orphaned logs.
+    setInterval(() => {
+        try {
+            const result = db.cleanupOldJobs();
+            if (result.deletedJobs || result.deletedLogs) {
+                log('info', 'Periodic job cleanup', result);
+            }
+        } catch (err) {
+            console.error('Error during periodic job cleanup:', err);
+        }
+    }, 24 * 60 * 60 * 1000); // Run every day
     
     // Start periodic cleanup of old job logs (7-day retention)
     setInterval(() => {
