@@ -316,57 +316,54 @@ const { createHash } = crypto;
 
 ### 2.3 Magic Numbers
 
-**Status:** ✅ Confirmed (with nuance on 30000)
+**Status:** ✅ Implemented (except `PROBE_CACHE_TTL_MS` default literal)
 
 | Current    | Location           | Suggested Constant                            | Status |
 | ---------- | ------------------ | --------------------------------------------- | ------ |
-| `250` ms   | `src/index.js:967` | `JOB_STABILITY_CHECK_MS`                      | ✅ Confirmed |
-| `5000` ms  | `src/index.js:170` | `MEDIAMTX_CHECK_INTERVAL_MS`                  | ✅ Confirmed (also at lines 134, 360, 1003) |
-| `8000` ms  | `src/index.js:437` | `FFPROBE_TIMEOUT_MS`                          | ✅ Confirmed |
+| `250` ms   | `src/index.js` | `JOB_STABILITY_CHECK_MS`                      | ✅ Fixed |
+| `5000` ms  | `src/index.js` | `MEDIAMTX_CHECK_INTERVAL_MS`                  | ✅ Fixed |
+| `8000` ms  | `src/index.js` | `FFPROBE_TIMEOUT_MS`                          | ✅ Fixed |
 | `30000` ms | `src/index.js:23`  | `PROBE_CACHE_TTL_MS`                          | ⚠️ Partial — already env-configurable via `process.env.PROBE_CACHE_TTL_MS`, but the 30000 default is still a magic literal. Acceptable. |
-| `5000` ms  | `src/index.js:1003` | `SIGKILL_ESCALATION_MS` (NEW)                | ✅ New finding — SIGKILL escalation timeout in stop handler |
+| `5000` ms  | `src/index.js` | `SIGKILL_ESCALATION_MS`                       | Not implemented |
 
 <details><summary><strong>Implementation — Extract Magic Numbers</strong></summary>
 
-**File:** `src/index.js` — Add near the top (after line 22):
+**File:** `src/index.js` — Added timing constants near the top:
 
 ```javascript
 // ── Timing constants ──────────────────────────────────
-const JOB_STABILITY_CHECK_MS   = 250;
-const MEDIAMTX_CHECK_INTERVAL  = 5000;
-const FFPROBE_TIMEOUT_MS       = 8000;
-const SIGKILL_ESCALATION_MS    = 5000;
+const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
+const FFPROBE_TIMEOUT_MS = 8000;
+const JOB_STABILITY_CHECK_MS = 250;
 ```
 
-Then replace:
-| Line | Before | After |
-|------|--------|-------|
-| ~134, 170, 360, 1003 | `5000` (MediaMTX check) | `MEDIAMTX_CHECK_INTERVAL` |
-| ~437 | `8000` (ffprobe timeout) | `FFPROBE_TIMEOUT_MS` |
-| ~967 | `250` (stability check) | `JOB_STABILITY_CHECK_MS` |
-| ~1003 | `5000` (SIGKILL) | `SIGKILL_ESCALATION_MS` |
+Applied replacements:
+- MediaMTX readiness poll interval now uses `MEDIAMTX_CHECK_INTERVAL_MS`
+- MediaMTX fetch timeout now uses `MEDIAMTX_CHECK_INTERVAL_MS`
+- ffprobe timeout now uses `FFPROBE_TIMEOUT_MS`
+- job startup stability wait now uses `JOB_STABILITY_CHECK_MS`
 
-**Note:** `probeCacheTtlMs` is already env-configurable via `PROBE_CACHE_TTL_MS` — no change needed.
+`probeCacheTtlMs` remains env-configurable via `PROBE_CACHE_TTL_MS`; the `30000` default literal is still acceptable as a config default.
 
-**Effort:** 4 constant definitions + 6 literal replacements.
+**Implemented in:** `a2db339` (`refactor: extract magic timeout numbers to named constants`)
 
 </details>
 
 ### 2.4 Inconsistent Error Handling
 
-**Status:** ✅ Confirmed
+**Status:** ✅ Implemented
 
-Three patterns are used across routes:
+This was previously inconsistent across routes:
 
 - `err.message` (e.g., pipeline create/update at lines 608, 631)
 - `err.toString()` (e.g., stream key CRUD, pipeline delete at lines 503, 653)
 - `String(err)` (e.g., job start at line 985)
 
-**Recommendation:** Standardize on `err.message || String(err)` via a helper.
+This is now standardized on `errMsg(err)`.
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/index.js` — Add a helper:
+**File:** `src/index.js` — Added a shared helper:
 
 ```javascript
 function errMsg(err) {
@@ -374,12 +371,13 @@ function errMsg(err) {
 }
 ```
 
-Then replace all three patterns:
-- `err.message` → `errMsg(err)` (pipeline create/update at lines ~608, 631)
-- `err.toString()` → `errMsg(err)` (stream key CRUD, pipeline delete at lines ~503, 653)
-- `String(err)` → `errMsg(err)` (job start at line ~985)
+Applied at route handlers and runtime error paths, including:
+- stream key CRUD responses
+- pipeline/output CRUD responses
+- ffprobe / ffmpeg spawn failures
+- structured log/error payloads
 
-**Effort:** ~1 helper + 8–10 call-site replacements.
+**Implemented in:** `8326619` (`refactor: standardize error message extraction with consistent errMsg helper`)
 
 </details>
 
@@ -461,33 +459,33 @@ This avoids re-parsing JSON on every call while still detecting file changes via
 
 ### 4.2 Stream Probe Cache Memory Leak
 
-**Status:** ⚠️ Partial — bounded in practice  
+**Status:** ✅ Implemented  
 **Location:** `src/index.js:24`
 
-`streamProbeCache` adds entries on probe success (lines 323, 807) but has no eviction pass. However:
+`streamProbeCache` adds entries on probe success (lines 323, 807). Before this fix, it had no eviction pass. Even though:
 - TTL is checked on read (line 316: `if (cached && now - cached.ts < probeCacheTtlMs)`)
 - Key space is bounded by the number of stream keys in the system
 - Stale entries only waste memory for deleted stream keys
 
-Still worth adding periodic eviction for long-running instances.
+Periodic eviction has now been added for long-running instances.
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/index.js` — Add a periodic eviction sweep:
+**File:** `src/index.js` — Added a periodic eviction sweep:
 
 ```javascript
-// After streamProbeCache declaration (~line 24):
-setInterval(() => {
+const _probeEvictionTimer = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of streamProbeCache) {
         if (now - entry.ts > probeCacheTtlMs * 2) streamProbeCache.delete(key);
     }
 }, probeCacheTtlMs * 4); // sweep every ~2 minutes at default TTL
+_probeEvictionTimer.unref?.();
 ```
 
 This removes stale entries for deleted stream keys. The 2× TTL threshold ensures working entries are never evicted prematurely.
 
-**Effort:** ~5 lines.
+**Implemented in:** `c974e95` (`perf: add periodic eviction of stale probe cache entries to prevent memory leak`)
 
 </details>
 
@@ -553,10 +551,10 @@ setInterval(() => {
 
 ### 5.1 Race Condition in Job Start
 
-**Status:** ✅ Mitigated (single-instance)  
+**Status:** ✅ Mitigated (single-instance + DB uniqueness)  
 **Location:** `src/index.js` start handler
 
-**Implementation update (2026-04-15):** A per-output in-memory start lock was added in the backend start route, returning `409 Start already in progress for this output` when concurrent starts target the same `(pipelineId, outputId)`. This prevents duplicate ffmpeg spawns within a single server instance.
+**Implementation update (2026-04-15):** A per-output in-memory start lock was added in the backend start route, returning `409 Start already in progress for this output` when concurrent starts target the same `(pipelineId, outputId)`. In addition, the DB schema already enforces a single `jobs` row per `(pipeline_id, output_id)` via `idx_jobs_pipeline_output_unique`.
 
 Residual risk: in-memory locking is process-local; multi-instance deployments would require a shared/distributed lock strategy.
 
@@ -569,40 +567,28 @@ const job = db.createJob(...);                             // line 875
 
 ~88 lines of async work (including an 8-second ffprobe timeout) between the check and the insert. Two concurrent requests could both pass the check.
 
-**Fix:** Use DB unique partial index:
+**Current DB protection:**
 
 ```sql
-CREATE UNIQUE INDEX idx_job_running ON jobs(pipeline_id, output_id) WHERE status = 'running';
+CREATE UNIQUE INDEX idx_jobs_pipeline_output_unique ON jobs(pipeline_id, output_id);
 ```
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/db.js` — Add index in the schema setup (after `CREATE TABLE IF NOT EXISTS jobs`):
+**Files:** `src/index.js`, `src/db.js`
+
+Already present today:
 
 ```javascript
-db.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_running
-    ON jobs(pipelineId, outputId) WHERE status = 'running';
-`);
+db.prepare(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_output_unique
+    ON jobs(pipeline_id, output_id)
+`).run();
 ```
 
-**File:** `src/index.js` — Wrap the `createJob` call in a try/catch to handle the unique constraint violation:
+Combined with the in-memory start lock, this means the original recommendation to add a new uniqueness constraint is no longer needed for the current single-row job model.
 
-```javascript
-let job;
-try {
-    job = db.createJob(pid, oid, outputUrl, argsArray);
-} catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-        return res.status(409).json({ error: 'A job is already running for this output' });
-    }
-    throw err;
-}
-```
-
-This eliminates the race window entirely — the DB enforces at most one running job per pipeline+output pair, regardless of concurrent requests.
-
-**Effort:** ~10 lines. The existing `getRunningJobFor` check can remain as a fast-path to avoid unnecessary probing.
+Residual caveat: multi-instance deployments would still need cross-process coordination if multiple app servers can race before hitting the same database semantics.
 
 </details>
 
