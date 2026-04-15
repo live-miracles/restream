@@ -110,6 +110,10 @@ function buildCommandPreview(cmd, args) {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
+function errMsg(err) {
+    return (err && err.message) || String(err);
+}
+
 function maskToken(value) {
     const s = String(value ?? '');
     if (!s) return '';
@@ -190,7 +194,7 @@ async function checkMediamtxReadiness() {
             });
         }
     } catch (err) {
-        const errorMessage = String(err);
+        const errorMessage = errMsg(err);
         mediamtxReadiness.ready = false;
         mediamtxReadiness.checkedAt = checkedAt;
         mediamtxReadiness.error = errorMessage;
@@ -404,7 +408,7 @@ async function fetchMediamtxJson(endpoint) {
     try {
         data = await resp.json();
     } catch (err) {
-        throw new Error(`Invalid JSON from MediaMTX endpoint ${endpoint}: ${String(err)}`);
+        throw new Error(`Invalid JSON from MediaMTX endpoint ${endpoint}: ${errMsg(err)}`);
     }
     if (!resp.ok) {
         throw new Error(`MediaMTX ${endpoint} failed with status ${resp.status}`);
@@ -429,7 +433,7 @@ function stopRunningJob(job, signal = 'SIGTERM') {
             );
             return { stopped: true, reason: 'signal-sent' };
         } catch (err) {
-            db.appendJobLog(job.id, `[control] failed to send ${signal}: ${String(err)}`, job.pipelineId, job.outputId);
+            db.appendJobLog(job.id, `[control] failed to send ${signal}: ${errMsg(err)}`, job.pipelineId, job.outputId);
             return { stopped: false, reason: 'signal-failed' };
         }
     }
@@ -475,7 +479,7 @@ async function probeRtspInput(inputUrl) {
                 env: process.env,
             });
         } catch (err) {
-            resolve({ ok: false, error: `Failed to spawn ffprobe: ${String(err)}` });
+            resolve({ ok: false, error: `Failed to spawn ffprobe: ${errMsg(err)}` });
             return;
         }
 
@@ -500,7 +504,7 @@ async function probeRtspInput(inputUrl) {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
-            resolve({ ok: false, error: String(err) });
+            resolve({ ok: false, error: errMsg(err) });
         });
         child.on('exit', (code) => {
             if (settled) return;
@@ -558,7 +562,7 @@ app.post('/stream-keys', async (req, res) => {
             streamKey: sk,
         });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -578,7 +582,7 @@ app.post('/stream-keys/:key', (req, res) => {
         recomputeEtag();
         return res.json({ message: 'Stream key updated', streamKey: updated });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -622,7 +626,7 @@ app.delete('/stream-keys/:key', async (req, res) => {
         recomputeEtag();
         return res.json({ message: 'Stream key deleted' });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -632,7 +636,7 @@ app.get('/stream-keys', (req, res) => {
         const keys = db.listStreamKeys();
         return res.json(keys);
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -705,7 +709,7 @@ app.delete('/pipelines/:id', (req, res) => {
         recomputeEtag();
         return res.json({ message: `Pipeline ${id} deleted` });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -715,7 +719,7 @@ app.get('/pipelines', (req, res) => {
         const pipelines = db.listPipelines();
         return res.json(pipelines);
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -762,7 +766,7 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
 
         return res.status(201).json({ message: 'Output created', output });
     } catch (err) {
-        return res.status(400).json({ error: err.message || err.toString() });
+        return res.status(400).json({ error: err.message || errMsg(err) });
     }
 });
 
@@ -792,7 +796,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         recomputeEtag();
         return res.json({ message: 'Output updated', output: updated });
     } catch (err) {
-        return res.status(400).json({ error: err.message || err.toString() });
+        return res.status(400).json({ error: err.message || errMsg(err) });
     }
 });
 
@@ -817,7 +821,7 @@ app.delete('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         recomputeEtag();
         return res.json({ message: `Output ${oid} from pipeline ${pid} deleted` });
     } catch (err) {
-        return res.status(500).json({ error: err.toString() });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -921,7 +925,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
                 env: process.env,
             });
         } catch (err) {
-            return res.status(500).json({ error: 'Failed to spawn ffmpeg', detail: String(err) });
+            return res.status(500).json({ error: 'Failed to spawn ffmpeg', detail: errMsg(err) });
         }
 
         log('info', 'Spawned ffmpeg output process', {
@@ -952,13 +956,13 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
         pushLog(`[lifecycle] started status=running pid=${child.pid || 'null'}`);
 
         child.on('error', (err) => {
-            db.appendJobLog(job.id, `[error] ${String(err)}`, pid, oid);
+            db.appendJobLog(job.id, `[error] ${errMsg(err)}`, pid, oid);
             log('error', 'ffmpeg child process error', {
                 pipelineId: pid,
                 outputId: oid,
                 jobId: job.id,
                 childPid: child.pid || null,
-                error: String(err),
+                error: errMsg(err),
             });
             // mark failed
             db.updateJob(job.id, {
@@ -1047,7 +1051,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
 
         return res.status(201).json({ message: 'Job started', job });
     } catch (err) {
-        return res.status(500).json({ error: String(err) });
+        return res.status(500).json({ error: errMsg(err) });
     } finally {
         releaseOutputStartLock(pid, oid);
     }
@@ -1078,7 +1082,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
         recomputeEtag();
         return res.json({ message: 'Stopping job', jobId, result });
     } catch (err) {
-        return res.status(500).json({ error: String(err) });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -1106,7 +1110,7 @@ app.get('/pipelines/:pipelineId/outputs/:outputId/history', (req, res) => {
             logs,
         });
     } catch (err) {
-        return res.status(500).json({ error: String(err) });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -1167,7 +1171,7 @@ app.get('/metrics/system', (req, res) => {
             },
         });
     } catch (err) {
-        return res.status(500).json({ error: String(err) });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
@@ -1366,7 +1370,7 @@ app.get('/health', async (req, res) => {
         });
     } catch (err) {
         log('error', 'Failed to build health response', {
-            error: String(err),
+            error: errMsg(err),
         });
         return res.json({
             generatedAt: new Date().toISOString(),
@@ -1547,7 +1551,7 @@ app.get('/config', async (req, res) => {
         if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
         return res.json(snapshot);
     } catch (err) {
-        return res.status(500).json({ error: String(err) });
+        return res.status(500).json({ error: errMsg(err) });
     }
 });
 
