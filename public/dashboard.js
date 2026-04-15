@@ -37,6 +37,273 @@ function setOutputTogglePending(pipeId, outId, busy) {
     else pendingOutputToggles.delete(key);
 }
 
+const outputHistoryState = {
+    pipelineId: null,
+    outputId: null,
+    outputName: '',
+    mode: 'timeline',
+    logs: [],
+    redacted: true,
+    playing: false,
+    pollTimer: null,
+};
+
+function formatHistoryTime(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleString();
+}
+
+function inferIntentionalStop(logs, index) {
+    const entries = Array.isArray(logs) ? logs : [];
+    const target = entries[index];
+    if (!target) return false;
+
+    const targetMessage = String(target.message || '');
+    if (/requestedStop=true/.test(targetMessage)) return true;
+
+    const windowStart = Math.max(0, index - 4);
+    const windowEnd = Math.min(entries.length - 1, index + 6);
+    for (let i = windowStart; i <= windowEnd; i += 1) {
+        if (i === index) continue;
+        const msg = String(entries[i]?.message || '');
+        if (
+            msg.startsWith('[lifecycle] stop_requested') ||
+            msg.startsWith('[control] requested SIGTERM') ||
+            /received signal 15/i.test(msg)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function classifyHistoryEvent(log, logs = [], index = -1) {
+    const message = String(log?.message || '');
+
+    if (message.startsWith('[lifecycle] started')) {
+        return { type: 'started', label: 'Started', badgeClass: 'badge-success' };
+    }
+    if (message.startsWith('[lifecycle] stop_requested')) {
+        return { type: 'stopping', label: 'Stop requested', badgeClass: 'badge-warning' };
+    }
+    if (message.startsWith('[lifecycle] failed_on_error')) {
+        return { type: 'failed', label: 'Failed', badgeClass: 'badge-error' };
+    }
+    if (message.startsWith('[lifecycle] marked_stopped_no_process')) {
+        return { type: 'stopped', label: 'Stopped', badgeClass: 'badge-stopped' };
+    }
+    if (message.startsWith('[lifecycle] exited')) {
+        const failed = /status=failed/.test(message);
+        const requestedStop = inferIntentionalStop(logs, index);
+        return {
+            type: failed && !requestedStop ? 'failed' : 'stopped',
+            label: failed && requestedStop ? 'Stopped' : failed ? 'Exited (failed)' : 'Exited',
+            badgeClass: failed && !requestedStop ? 'badge-error' : 'badge-stopped',
+        };
+    }
+    if (message.startsWith('[exit]')) {
+        return { type: 'log', label: 'Log', badgeClass: 'badge-ghost' };
+    }
+
+    return { type: 'log', label: 'Log', badgeClass: 'badge-ghost' };
+}
+
+function getTimelineLogs(logs) {
+    const items = Array.isArray(logs) ? logs : [];
+    return items.filter((log) => String(log?.message || '').startsWith('[lifecycle]'));
+}
+
+function sanitizeLogMessage(msg) {
+    if (!outputHistoryState.redacted) return String(msg);
+    return String(msg)
+        // rtmp://host/live/STREAMKEY  →  rtmp://host/live/***
+        .replace(new RegExp('(rtmp://[^/]+/[^/]+/)([^\'\"\\s]+)', 'g'), '$1***')
+        // rtsp://host/STREAMKEY?params  →  rtsp://host/***
+        .replace(new RegExp('(rtsp://[^/]+/)([^\'\"\\s]+)', 'g'), '$1***');
+}
+
+function renderOutputHistory(scrollToTop = false) {
+    const list = document.getElementById('output-history-list');
+    const empty = document.getElementById('output-history-empty');
+    const timelineBtn = document.getElementById('output-history-mode-timeline');
+    const rawBtn = document.getElementById('output-history-mode-raw');
+
+    if (!list || !empty || !timelineBtn || !rawBtn) return;
+
+    const mode = outputHistoryState.mode;
+    timelineBtn.classList.toggle('btn-accent', mode === 'timeline');
+    timelineBtn.classList.toggle('btn-outline', mode !== 'timeline');
+    rawBtn.classList.toggle('btn-accent', mode === 'raw');
+    rawBtn.classList.toggle('btn-outline', mode !== 'raw');
+
+    list.replaceChildren();
+
+    if (!Array.isArray(outputHistoryState.logs) || outputHistoryState.logs.length === 0) {
+        empty.classList.remove('hidden');
+        return;
+    }
+
+    empty.classList.add('hidden');
+
+    if (mode === 'raw') {
+        for (const log of outputHistoryState.logs) {
+            const row = document.createElement('div');
+            row.className = 'rounded bg-base-100 p-2';
+
+            const header = document.createElement('div');
+            header.className = 'flex items-center justify-between gap-2';
+
+            const label = document.createElement('span');
+            label.className = 'badge badge-sm badge-ghost';
+            label.textContent = 'Log';
+
+            const ts = document.createElement('span');
+            ts.className = 'text-xs opacity-70';
+            ts.textContent = formatHistoryTime(log.ts);
+
+            header.appendChild(label);
+            header.appendChild(ts);
+
+            const msg = document.createElement('pre');
+            msg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
+            msg.textContent = sanitizeLogMessage(log.message || '');
+
+            row.appendChild(header);
+            row.appendChild(msg);
+            list.appendChild(row);
+        }
+        if (scrollToTop) list.scrollTop = 0;
+        return;
+    }
+
+    const timelineLogs = getTimelineLogs(outputHistoryState.logs);
+    timelineLogs.forEach((log, index) => {
+        const event = classifyHistoryEvent(log, timelineLogs, index);
+
+        const row = document.createElement('div');
+        row.className = 'rounded bg-base-100 p-2';
+
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between gap-2';
+
+        const badge = document.createElement('span');
+        badge.className = `badge badge-sm ${event.badgeClass}`;
+        badge.textContent = event.label;
+
+        const ts = document.createElement('span');
+        ts.className = 'text-xs opacity-70';
+        ts.textContent = formatHistoryTime(log.ts);
+
+        header.appendChild(badge);
+        header.appendChild(ts);
+
+        const details = document.createElement('pre');
+        details.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
+        details.textContent = sanitizeLogMessage(log.message || '');
+
+        row.appendChild(header);
+        row.appendChild(details);
+        list.appendChild(row);
+    });
+
+    if (scrollToTop) list.scrollTop = 0;
+}
+
+function setOutputHistoryMode(mode) {
+    outputHistoryState.mode = mode === 'raw' ? 'raw' : 'timeline';
+    renderOutputHistory(true);
+}
+
+function toggleHistoryRedaction() {
+    outputHistoryState.redacted = !outputHistoryState.redacted;
+    const btn = document.getElementById('output-history-redact');
+    if (btn) {
+        btn.title = outputHistoryState.redacted ? 'Show URLs' : 'Hide URLs';
+        btn.classList.toggle('btn-outline', outputHistoryState.redacted);
+        btn.classList.toggle('btn-warning', !outputHistoryState.redacted);
+    }
+    renderOutputHistory(false);
+}
+
+function stopHistoryPoll() {
+    if (outputHistoryState.pollTimer) {
+        clearInterval(outputHistoryState.pollTimer);
+        outputHistoryState.pollTimer = null;
+    }
+    outputHistoryState.playing = false;
+    updateHistoryPlayPauseBtn();
+}
+
+function updateHistoryPlayPauseBtn() {
+    const btn = document.getElementById('output-history-playpause');
+    if (!btn) return;
+    btn.textContent = outputHistoryState.playing ? '⏸ Pause' : '▶ Live';
+    btn.classList.toggle('btn-accent', outputHistoryState.playing);
+    btn.classList.toggle('btn-outline', !outputHistoryState.playing);
+}
+
+async function pollHistoryOnce() {
+    const { pipelineId, outputId } = outputHistoryState;
+    if (!pipelineId || !outputId) return;
+    const res = await getOutputHistory(pipelineId, outputId, 200);
+    if (res === null) return;
+    outputHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+    renderOutputHistory(false);
+}
+
+function toggleHistoryPlayPause() {
+    if (outputHistoryState.playing) {
+        stopHistoryPoll();
+    } else {
+        outputHistoryState.playing = true;
+        updateHistoryPlayPauseBtn();
+        pollHistoryOnce();
+        outputHistoryState.pollTimer = setInterval(pollHistoryOnce, 5000);
+    }
+}
+
+async function openOutputHistoryModal(pipeId, outId, outName = '') {
+    const modal = document.getElementById('output-history-modal');
+    const title = document.getElementById('output-history-title');
+    const loading = document.getElementById('output-history-loading');
+
+    if (!modal || !title || !loading) return;
+
+    stopHistoryPoll();
+
+    outputHistoryState.pipelineId = pipeId;
+    outputHistoryState.outputId = outId;
+    outputHistoryState.outputName = outName || outId;
+    outputHistoryState.mode = 'timeline';
+    outputHistoryState.logs = [];
+    outputHistoryState.redacted = true;
+
+    title.textContent = `History: ${outputHistoryState.outputName}`;
+    updateHistoryPlayPauseBtn();
+    const redactBtn = document.getElementById('output-history-redact');
+    if (redactBtn) {
+        redactBtn.title = 'Show URLs';
+        redactBtn.classList.add('btn-outline');
+        redactBtn.classList.remove('btn-warning');
+    }
+    loading.classList.remove('hidden');
+    renderOutputHistory();
+    modal.showModal();
+
+    const res = await getOutputHistory(pipeId, outId, 200);
+    loading.classList.add('hidden');
+    if (res === null) return;
+
+    outputHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+    renderOutputHistory(true);
+
+    // Stop polling when dialog closes
+    modal.addEventListener('close', stopHistoryPoll, { once: true });
+}
+
 async function startOutBtn(pipeId, outId, button = null) {
     if (isOutputToggleBusy(pipeId, outId)) return;
     setOutputTogglePending(pipeId, outId, true);

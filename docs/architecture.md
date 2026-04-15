@@ -76,7 +76,7 @@ job_logs
   pipeline_id TEXT           -- direct lookup key for history by pipeline
   output_id   TEXT           -- direct lookup key for history by output
   ts          TEXT
-  message     TEXT           -- one line per stdout/stderr chunk or control event
+  message     TEXT           -- one line per stdout/stderr chunk, control event, or lifecycle state change
 
 meta
   key         TEXT PK
@@ -86,6 +86,8 @@ meta
 ### 2.2 In-Memory State
 
 `processes` (`Map<jobId, ChildProcess>`) — runtime-only reference to live FFmpeg processes. Lost on server restart; DB `status` is authoritative.
+
+`stopRequestedJobIds` (`Set<jobId>`) — tracks IDs of jobs for which the user explicitly called `POST /stop`. Used by the exit handler to classify exit status as `stopped` vs `failed`. An entry is added on `/stop` and removed after the exit event fires.
 
 ---
 
@@ -139,6 +141,7 @@ spawn(ffmpegCmd, args)
   │
   ▼
 db.createJob({ status: 'running', pid, startedAt })
+db.appendJobLog(jobId, '[lifecycle] started status=running pid=<pid|null>')
 recomputeEtag()
 processes.set(jobId, child)
   │
@@ -153,6 +156,7 @@ Wait 250 ms → check if job still 'running'
 [Background] child 'exit' → db.updateJob({ status, exitCode, exitSignal })
                            → recomputeEtag()
                            → processes.delete(jobId)
+                           → stopRequestedJobIds.delete(jobId)
 ```
 
 ### 4.2 Output Stop (`POST /pipelines/:pipelineId/outputs/:outputId/stop`)
@@ -163,6 +167,10 @@ Client
   ▼
 db.getRunningJobFor(pipelineId, outputId)
   │ none → 404
+  ▼
+stopRequestedJobIds.add(jobId)
+db.appendJobLog(jobId, '[lifecycle] stop_requested signal=<signal> status=running')
+  │
   ▼
 processes.get(jobId) → send SIGTERM
   │ if process still alive after 5 s → SIGKILL (setTimeout)
@@ -214,7 +222,28 @@ When MediaMTX is unavailable:
 { generatedAt, status: 'degraded', pipelines: {} }
 ```
 
-### 4.4 Config Snapshot (`GET /config`)
+### 4.4 Output History (`GET /pipelines/:pipelineId/outputs/:outputId/history`)
+
+```
+Client
+  │
+  ▼
+Validate pipeline + output exist in DB
+  │
+  ▼
+Parse and clamp query limit (default 200, range 1..1000)
+  │
+  ▼
+db.listJobLogsByOutput(pipelineId, outputId)
+  │
+  ▼
+Return newest-first logs:
+  { pipelineId, outputId, logs: [{ ts, message }, ...] }
+```
+
+`job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.
+
+### 4.5 Config Snapshot (`GET /config`)
 
 ```
 Client (browser dashboard polls this)
@@ -238,7 +267,7 @@ Build snapshot:
 
 ETag is recomputed (SHA-256 of deterministic JSON snapshot) on every job/pipeline/output state change and persisted in the `meta` table so it survives restarts.
 
-### 4.5 Stream Key Creation (`POST /stream-keys`)
+### 4.6 Stream Key Creation (`POST /stream-keys`)
 
 ```
 Client
@@ -257,7 +286,7 @@ db.createStreamKey({ key, label, createdAt })
 201 { streamKey }
 ```
 
-### 4.6 Stream Key Deletion (`DELETE /stream-keys/:key`)
+### 4.7 Stream Key Deletion (`DELETE /stream-keys/:key`)
 
 ```
 Client
@@ -273,7 +302,7 @@ db.deleteStreamKey(key)
 200 { message }
 ```
 
-### 4.7 Pipeline/Output Deletion with Cascade Stop
+### 4.8 Pipeline/Output Deletion with Cascade Stop
 
 ```
 DELETE /pipelines/:id

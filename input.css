@@ -2,3 +2,10 @@
 @plugin 'daisyui' {
     themes: dim;
 }
+
+/* Timeline history badge override for stronger contrast in dim theme. */
+.badge-stopped {
+    border-color: color-mix(in oklab, #60a5fa 70%, transparent);
+    background-color: color-mix(in oklab, #60a5fa 30%, transparent);
+    color: #dbeafe;
+}

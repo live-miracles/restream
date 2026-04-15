@@ -25,6 +25,7 @@ const streamProbeCache = new Map(); // streamKey -> { ts, info }
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
 // NOTE: This is intentionally internal for now; a future API/WS endpoint can expose it.
 const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
+const stopRequestedJobIds = new Set(); // jobId values with user-initiated stop requests
 const outputStartLocks = new Set(); // pipelineId:outputId currently starting
 
 function outputStartKey(pipelineId, outputId) {
@@ -394,7 +395,14 @@ function stopRunningJob(job, signal = 'SIGTERM') {
     if (proc && !proc.killed) {
         try {
             proc.kill(signal);
+            stopRequestedJobIds.add(job.id);
             db.appendJobLog(job.id, `[control] requested ${signal}`, job.pipelineId, job.outputId);
+            db.appendJobLog(
+                job.id,
+                `[lifecycle] stop_requested signal=${signal} status=running`,
+                job.pipelineId,
+                job.outputId,
+            );
             return { stopped: true, reason: 'signal-sent' };
         } catch (err) {
             db.appendJobLog(job.id, `[control] failed to send ${signal}: ${String(err)}`, job.pipelineId, job.outputId);
@@ -409,6 +417,12 @@ function stopRunningJob(job, signal = 'SIGTERM') {
         exitSignal: null,
     });
     db.appendJobLog(job.id, '[control] process not found in memory; marked stopped', job.pipelineId, job.outputId);
+    db.appendJobLog(
+        job.id,
+        '[lifecycle] marked_stopped_no_process status=stopped',
+        job.pipelineId,
+        job.outputId,
+    );
     return { stopped: true, reason: 'marked-stopped' };
 }
 
@@ -911,6 +925,8 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             db.appendJobLog(job.id, msg, pid, oid);
         };
 
+        pushLog(`[lifecycle] started status=running pid=${child.pid || 'null'}`);
+
         child.on('error', (err) => {
             db.appendJobLog(job.id, `[error] ${String(err)}`, pid, oid);
             log('error', 'ffmpeg child process error', {
@@ -927,7 +943,9 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
                 exitCode: null,
                 exitSignal: null,
             });
+            pushLog('[lifecycle] failed_on_error status=failed exitCode=null exitSignal=null');
             recomputeEtag();
+            stopRequestedJobIds.delete(job.id);
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
         });
@@ -962,7 +980,10 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             });
 
         child.on('exit', (code, signal) => {
-            const st = code === 0 ? 'stopped' : 'failed';
+            const wasStopRequested = stopRequestedJobIds.has(job.id);
+            stopRequestedJobIds.delete(job.id);
+
+            const st = wasStopRequested || code === 0 ? 'stopped' : 'failed';
             log('info', 'ffmpeg child process exit', {
                 pipelineId: pid,
                 outputId: oid,
@@ -971,6 +992,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
                 code,
                 signal: signal || null,
                 finalStatus: st,
+                stopRequested: wasStopRequested,
             });
             db.updateJob(job.id, {
                 status: st,
@@ -978,6 +1000,9 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
                 exitCode: code,
                 exitSignal: signal || null,
             });
+            pushLog(
+                `[lifecycle] exited status=${st} requestedStop=${wasStopRequested} exitCode=${code ?? 'null'} exitSignal=${signal || 'null'}`,
+            );
             pushLog(`[exit] code=${code} signal=${signal}`);
             recomputeEtag();
             processes.delete(job.id);
@@ -1028,6 +1053,34 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
         }
         recomputeEtag();
         return res.json({ message: 'Stopping job', jobId, result });
+    } catch (err) {
+        return res.status(500).json({ error: String(err) });
+    }
+});
+
+app.get('/pipelines/:pipelineId/outputs/:outputId/history', (req, res) => {
+    try {
+        const pid = req.params.pipelineId;
+        const oid = req.params.outputId;
+
+        const pipeline = db.getPipeline(pid);
+        if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
+
+        const output = db.getOutput(pid, oid);
+        if (!output) return res.status(404).json({ error: 'Output not found' });
+
+        const requestedLimit = Number.parseInt(String(req.query.limit || '200'), 10);
+        const limit = Number.isFinite(requestedLimit)
+            ? Math.max(1, Math.min(requestedLimit, 1000))
+            : 200;
+
+        const logs = db.listJobLogsByOutput(pid, oid).slice(0, limit);
+
+        return res.json({
+            pipelineId: pid,
+            outputId: oid,
+            logs,
+        });
     } catch (err) {
         return res.status(500).json({ error: String(err) });
     }

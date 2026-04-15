@@ -203,3 +203,15 @@ async function stopOut(pipeId, outId) {
         { method: 'POST' },
     );
 }
+
+async function getOutputHistory(pipeId, outId, limit = 200) {
+    if (!pipeId || !outId) {
+        showErrorAlert('Pipeline id and output id are required');
+        return null;
+    }
+
+    const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+    return apiRequest(
+        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?limit=${encodeURIComponent(safeLimit)}`,
+    );
+}

@@ -285,6 +285,47 @@ Stops the running FFmpeg job via SIGTERM with a 5 s SIGKILL escalation.
 
 ---
 
+### `GET /pipelines/:pipelineId/outputs/:outputId/history?limit=200`
+
+Returns recent job logs for a specific output (newest first). This endpoint is intended for diagnostics and output history UI.
+
+**Query params:**
+- `limit` optional; default `200`; min `1`; max `1000`.
+
+**Response 200:**
+```json
+{
+  "pipelineId": "a1b2c3d4e5f6a7b8",
+  "outputId": "f8e7d6c5b4a3f2e1",
+  "logs": [
+    {
+      "ts": "2026-04-15T12:20:57.098Z",
+      "message": "[lifecycle] exited status=failed requestedStop=false exitCode=255 exitSignal=null"
+    },
+    {
+      "ts": "2026-04-15T12:20:57.098Z",
+      "message": "[exit] code=255 signal=null"
+    },
+    {
+      "ts": "2026-04-15T12:20:56.971Z",
+      "message": "[stderr] [flv @ ...] Non-monotonic DTS ..."
+    }
+  ]
+}
+```
+
+**Errors:** `404` output or pipeline not found.
+
+> Lifecycle enrichment: start/stop/status transitions now emit `[lifecycle] ...` messages in `job_logs`.
+> Current emitted formats:
+> - `[lifecycle] started status=running pid=<pid|null>`
+> - `[lifecycle] stop_requested signal=<signal> status=running`
+> - `[lifecycle] failed_on_error status=failed exitCode=null exitSignal=null`
+> - `[lifecycle] exited status=<stopped|failed> requestedStop=<true|false> exitCode=<code|null> exitSignal=<signal|null>`
+> - `[lifecycle] marked_stopped_no_process status=stopped`
+
+---
+
 ## 5. Config Snapshot
 
 ### `GET /config`

@@ -382,6 +382,15 @@ function renderOutsColumn(selectedPipe) {
             const actions = document.createElement('div');
             actions.className = 'flex items-center gap-2 w-fit';
 
+            const historyBtn = document.createElement('button');
+            historyBtn.className = 'btn btn-xs btn-accent btn-outline';
+            historyBtn.textContent = 'History';
+            historyBtn.addEventListener('click', () => {
+                if (typeof openOutputHistoryModal === 'function') {
+                    openOutputHistoryModal(pipe.id, o.id, o.name);
+                }
+            });
+
             const editBtn = document.createElement('button');
             editBtn.className = `btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''}`;
             editBtn.textContent = '✎';
@@ -398,6 +407,7 @@ function renderOutsColumn(selectedPipe) {
                 deleteOutBtn(pipe.id, o.id);
             });
 
+            actions.appendChild(historyBtn);
             actions.appendChild(editBtn);
             actions.appendChild(deleteBtn);
             row.appendChild(actions);
