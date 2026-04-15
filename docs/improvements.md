@@ -729,39 +729,44 @@ Static assets are identical across both mock servers (same `public/` directory).
 
 ### 7.3 Findings
 
-#### 7.3.1 No HTTP Compression ❌
+#### 7.3.1 HTTP Compression ✅ Implemented
 
-**Status:** ✅ Confirmed (CDP trace + curl)  
+**Status:** ✅ Implemented (`compression@1.8.1`, brotli enabled)  
 **Severity:** Medium  
-**Evidence:** `curl -sI -H 'Accept-Encoding: gzip' /output.css` returns no `Content-Encoding` header. CDP trace confirms: all static assets have `encoded === decoded` size (no compression). The `X-Powered-By: Express` header is also exposed (minor info leak).
+**Evidence (measured, Chrome MCP + curl):**
 
-Express does not include compression by default. CSS and JS assets are highly compressible (typically 70–85% reduction with gzip).
+| Asset | Before | After (br) | Saving |
+|-------|--------|-----------|--------|
+| `output.css` | 92,323 B | 15,390 B | **−83%** |
+| `render.js` | 25,789 B | 5,258 B | **−80%** |
+| `dashboard.js` | 22,169 B | 5,064 B | **−77%** |
+| `config` | 5,834 B | 1,064 B | **−82%** |
+| `health` | 3,032 B | 789 B | **−74%** |
+| **Total page load** | **~155 KB** | **~27 KB** | **−83%** |
 
-**Impact estimate:**
-| Asset | Raw | ~Gzipped | Saving |
-|-------|-----|----------|--------|
-| `output.css` | 81 KB | ~12 KB | ~69 KB |
-| `render.js` | 25 KB | ~7 KB | ~18 KB |
-| Other JS (4 files) | 28 KB | ~9 KB | ~19 KB |
-| `index.html` | 17 KB | ~4 KB | ~13 KB |
-| **Total** | **151 KB** | **~32 KB** | **~119 KB (~79%)** |
+All responses now return `Content-Encoding: br` with `Vary: Accept-Encoding`. SSE streams and responses with `x-no-compression` are excluded.
 
 <details><summary><strong>Implementation</strong></summary>
 
-```bash
-npm install compression
-```
-
-**File:** `src/index.js` — Add before `express.static()`:
+**File:** `src/index.js` — added immediately after `app.use(express.json())`:
 
 ```javascript
 const compression = require('compression');
-app.use(compression());
+app.use(compression({
+    threshold: 1024,
+    brotli: { enabled: true },
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) return false;
+        const contentType = res.getHeader('Content-Type');
+        if (typeof contentType === 'string' && contentType.includes('text/event-stream')) {
+            return false;
+        }
+        return compression.filter(req, res);
+    },
+}));
 ```
 
-Two lines. Gzip is applied to all text responses (HTML, CSS, JS, JSON).
-
-**Effort:** Trivial — 2 lines + 1 dependency.
+**Effort:** Trivial — 1 dependency, ~15 lines.
 
 </details>
 

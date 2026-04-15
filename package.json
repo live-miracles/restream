@@ -19,6 +19,7 @@
     },
     "dependencies": {
         "better-sqlite3": "12.6.0",
+        "compression": "^1.8.1",
         "express": "5.1.0"
     },
     "devDependencies": {

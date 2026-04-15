@@ -1,5 +1,6 @@
 /* top requires */
 const express = require('express');
+const compression = require('compression');
 const fetch = global.fetch || require('node-fetch'); // keep compatibility
 const db = require('./db');
 const { getConfig } = require('./config');
@@ -8,6 +9,18 @@ const os = require('os');
 
 const app = express();
 app.use(express.json());
+app.use(compression({
+    threshold: 1024,
+    brotli: { enabled: true },
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) return false;
+        const contentType = res.getHeader('Content-Type');
+        if (typeof contentType === 'string' && contentType.includes('text/event-stream')) {
+            return false;
+        }
+        return compression.filter(req, res);
+    },
+}));
 
 const { spawn } = require('child_process');
 const path = require('path');
