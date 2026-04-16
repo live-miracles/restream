@@ -410,12 +410,20 @@ Returns the current ETag without a response body. Used to poll for changes witho
 
 ### `GET /health`
 
-Aggregates MediaMTX runtime state with DB job state. Calls three MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`.
+Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling three MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`, then merging that runtime state with DB job state and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+
+`GET /health` itself does not call MediaMTX. It returns the most recent cached snapshot immediately.
+
+Headers:
+
+- `ETag` for the current snapshot content
+- Supports `If-None-Match` and returns `304 Not Modified` when unchanged
 
 **Response 200:**
 ```json
 {
   "generatedAt": "2026-04-10T11:31:36.879Z",
+  "ageMs": 412,
   "status": "ready",
   "mediamtx": {
     "pathCount": 2,
@@ -462,12 +470,34 @@ Aggregates MediaMTX runtime state with DB job state. Calls three MediaMTX endpoi
 }
 ```
 
-When MediaMTX is unavailable, `/health` returns a degraded payload:
+During startup, before MediaMTX is ready, `/health` returns an initialization snapshot:
 
 ```json
 {
   "generatedAt": "2026-04-10T11:31:36.879Z",
+  "ageMs": 87,
+  "status": "initializing",
+  "mediamtx": {
+    "pathCount": 0,
+    "rtspConnCount": 0,
+    "ready": false
+  },
+  "pipelines": {}
+}
+```
+
+If a collector cycle fails after startup, `/health` returns a degraded snapshot and may retain the last known pipeline data:
+
+```json
+{
+  "generatedAt": "2026-04-10T11:31:36.879Z",
+  "ageMs": 1011,
   "status": "degraded",
+  "mediamtx": {
+    "pathCount": 2,
+    "rtspConnCount": 3,
+    "ready": true
+  },
   "pipelines": {}
 }
 ```
@@ -477,6 +507,7 @@ When MediaMTX is unavailable, `/health` returns a degraded payload:
 |--------|------------------------------------------------------------------|
 | `on`   | `pathInfo.available === true` (fallback: deprecated `ready`) |
 | `warning` | `pathInfo.online === true` but path is not yet `available` |
+| `error` | Stream key is configured, path is neither online nor available, and the pipeline has previously been seen live |
 | `off`  | No path info, or path is neither online nor available |
 
 **Output status values:**

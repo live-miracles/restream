@@ -34,6 +34,7 @@ const appPort = Number(process.env.PORT || 3030);
 const appHost = getConfig().host;
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 const probeCacheTtlMs = Number(process.env.PROBE_CACHE_TTL_MS || 30000);
+const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
 
 // ── Timing constants ──────────────────────────────────
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
@@ -43,6 +44,10 @@ const JOB_STABILITY_CHECK_MS = 250;
 const streamProbeCache = new Map(); // streamKey -> { ts, info }
 const probeRefreshStartedAt = new Map(); // streamKey -> refresh start timestamp
 const pipelineInputStatusHistory = new Map(); // pipelineId -> last input status seen by /health
+let latestHealthSnapshot = null;
+let latestHealthSnapshotEtag = null;
+let healthCollectorInFlight = null;
+let healthCollectorTimer = null;
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
 // NOTE: This is intentionally internal for now; a future API/WS endpoint can expose it.
 const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
@@ -1420,13 +1425,40 @@ app.get('/metrics/system', (req, res) => {
     }
 });
 
-app.get('/health', async (req, res) => {
+function buildDefaultHealthSnapshot(status = 'initializing') {
+    return {
+        generatedAt: new Date().toISOString(),
+        status,
+        mediamtx: {
+            pathCount: 0,
+            rtspConnCount: 0,
+            ready: mediamtxReadiness.ready,
+        },
+        pipelines: {},
+    };
+}
+
+function getHealthSnapshotHashSource(snapshot) {
+    return {
+        status: snapshot?.status || 'initializing',
+        mediamtx: snapshot?.mediamtx || {
+            pathCount: 0,
+            rtspConnCount: 0,
+            ready: false,
+        },
+        pipelines: snapshot?.pipelines || {},
+    };
+}
+
+function setLatestHealthSnapshot(snapshot) {
+    latestHealthSnapshot = snapshot;
+    latestHealthSnapshotEtag = hashSnapshot(getHealthSnapshotHashSource(snapshot));
+    return latestHealthSnapshot;
+}
+
+async function buildHealthSnapshot() {
     if (!mediamtxReadiness.ready) {
-        return res.json({
-            generatedAt: new Date().toISOString(),
-            status: 'degraded',
-            pipelines: {},
-        });
+        return buildDefaultHealthSnapshot('initializing');
     }
 
     try {
@@ -1490,21 +1522,18 @@ app.get('/health', async (req, res) => {
         const outputs = db.listOutputs();
         const jobs = db.listJobs();
 
-        // With upsert, each output has exactly 1 job row, so no reduction needed
         const jobByOutputId = new Map();
         for (const job of jobs) {
             jobByOutputId.set(job.outputId, job);
         }
 
         const health = { pipelines: {} };
+        const nowMs = Date.now();
 
         for (const pipeline of pipelines) {
             const key = pipeline.streamKey || '';
             const pathInfo = key ? pathByName.get(key) : null;
             const readers = pathInfo?.readers || [];
-            // MediaMTX marks `ready` as deprecated; prefer `available` and fall back to `ready` for older versions.
-            // `available` (stream != nil): stream is ready and readable by consumers — the signal we care about.
-            // `online` (source != nil): a publisher is attached but stream may not be initialised yet.
             const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
             const pathOnline = !!pathInfo?.online;
             const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1;
@@ -1535,11 +1564,8 @@ app.get('/health', async (req, res) => {
             }
             pipelineInputStatusHistory.set(pipeline.id, inputStatus);
 
-            // Stale-while-revalidate for probe info: return cached data while fresh, or while
-            // a post-expiry refresh is actively in flight and still within the probe timeout window.
-            const _probeCached = key ? streamProbeCache.get(key) : null;
-            const nowMs = Date.now();
-            const probeCacheAgeMs = _probeCached ? (nowMs - _probeCached.ts) : Number.POSITIVE_INFINITY;
+            const cachedProbe = key ? streamProbeCache.get(key) : null;
+            const probeCacheAgeMs = cachedProbe ? (nowMs - cachedProbe.ts) : Number.POSITIVE_INFINITY;
             const probeCacheExpired = probeCacheAgeMs >= probeCacheTtlMs;
             let refreshStartedAt = key ? probeRefreshStartedAt.get(key) : null;
             if (key && pathAvailable && probeCacheExpired && (refreshStartedAt === undefined || refreshStartedAt === null)) {
@@ -1553,8 +1579,8 @@ app.get('/health', async (req, res) => {
             }
             const withinRefreshGraceWindow = refreshStartedAt !== undefined && refreshStartedAt !== null
                 && (nowMs - refreshStartedAt) < FFPROBE_TIMEOUT_MS;
-            const probeInfo = _probeCached && (!probeCacheExpired || withinRefreshGraceWindow)
-                ? _probeCached.info
+            const probeInfo = cachedProbe && (!probeCacheExpired || withinRefreshGraceWindow)
+                ? cachedProbe.info
                 : null;
 
             const firstVideoTrack = (pathInfo?.tracks2 || []).find((track) =>
@@ -1639,7 +1665,7 @@ app.get('/health', async (req, res) => {
             health.pipelines[pipeline.id] = pipelineHealth;
         }
 
-        return res.json({
+        return {
             generatedAt: new Date().toISOString(),
             status: 'ready',
             mediamtx: {
@@ -1648,17 +1674,82 @@ app.get('/health', async (req, res) => {
                 ready: mediamtxReadiness.ready,
             },
             ...health,
-        });
+        };
     } catch (err) {
         log('error', 'Failed to build health response', {
             error: errMsg(err),
         });
-        return res.json({
+
+        return {
             generatedAt: new Date().toISOString(),
             status: 'degraded',
-            pipelines: {},
-        });
+            mediamtx: {
+                pathCount: latestHealthSnapshot?.mediamtx?.pathCount || 0,
+                rtspConnCount: latestHealthSnapshot?.mediamtx?.rtspConnCount || 0,
+                ready: mediamtxReadiness.ready,
+            },
+            pipelines: latestHealthSnapshot?.pipelines || {},
+        };
     }
+}
+
+async function collectHealthSnapshot() {
+    if (healthCollectorInFlight) return healthCollectorInFlight;
+
+    healthCollectorInFlight = (async () => {
+        const snapshot = await buildHealthSnapshot();
+        return setLatestHealthSnapshot(snapshot);
+    })().finally(() => {
+        healthCollectorInFlight = null;
+    });
+
+    return healthCollectorInFlight;
+}
+
+function startHealthCollector() {
+    setLatestHealthSnapshot(buildDefaultHealthSnapshot('initializing'));
+
+    void collectHealthSnapshot().catch((err) => {
+        log('error', 'Initial health snapshot collection failed', {
+            error: errMsg(err),
+        });
+    });
+
+    if (healthCollectorTimer) {
+        clearInterval(healthCollectorTimer);
+    }
+
+    healthCollectorTimer = setInterval(() => {
+        void collectHealthSnapshot().catch((err) => {
+            log('error', 'Periodic health snapshot collection failed', {
+                error: errMsg(err),
+            });
+        });
+    }, healthSnapshotIntervalMs);
+    healthCollectorTimer.unref?.();
+}
+
+app.get('/health', async (req, res) => {
+    const snapshot = latestHealthSnapshot || await collectHealthSnapshot();
+    const etag = latestHealthSnapshotEtag || hashSnapshot(getHealthSnapshotHashSource(snapshot));
+    const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
+
+    if (ifNoneMatch && etag && ifNoneMatch === etag) {
+        res.set('ETag', `"${etag}"`);
+        return res.status(304).end();
+    }
+
+    if (etag) res.set('ETag', `"${etag}"`);
+
+    const generatedAtMs = Date.parse(snapshot.generatedAt);
+    const ageMs = Number.isFinite(generatedAtMs)
+        ? Math.max(0, Date.now() - generatedAtMs)
+        : null;
+
+    return res.json({
+        ...snapshot,
+        ageMs,
+    });
 });
 
 app.get('/healthz', (req, res) => {
@@ -1681,6 +1772,7 @@ app.use('/', express.static(path.join(__dirname, '..', 'public'), {
 async function startServer() {
     startMediamtxReadinessChecks();
     await bootstrapPipelineInputStatusHistory();
+    startHealthCollector();
 
     app.listen(appPort, appHost, () => {
         console.log(`Controller running on ${appHost}:${appPort}`);

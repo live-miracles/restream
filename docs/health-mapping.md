@@ -1,12 +1,12 @@
 # Health Mapping: Status Derivation and Reader Correlation
 
-This document explains exactly how input and output health statuses are derived in `GET /health`.
+This document explains exactly how input and output health statuses are derived for the periodic health collector that backs `GET /health`.
 
 ---
 
 ## 1. Data Sources
 
-The `/health` endpoint fetches three MediaMTX APIs in parallel, then merges with DB state:
+The background health collector fetches three MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs` plus an `ETag` header. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 | Source                      | What it provides                                         |
 |-----------------------------|----------------------------------------------------------|
@@ -17,7 +17,7 @@ The `/health` endpoint fetches three MediaMTX APIs in parallel, then merges with
 | DB: `listOutputs()`         | Output ↔ pipeline mapping                                |
 | DB: `listJobs()`            | One current job row per output (upsert model)            |
 
-`/health` also performs bounded DB writes for lifecycle bookkeeping:
+The collector loop also performs bounded DB writes for lifecycle bookkeeping:
 
 - marks `pipelines.input_ever_seen_live = 1` when a configured input first becomes available
 - appends pipeline-level history events (`pipeline_state`) only when status changes
@@ -62,7 +62,7 @@ flowchart TD
 
 **ffprobe caching:**
 
-When a path is available, the backend calls `ffprobe -rtsp_transport tcp rtsp://localhost:8554/<streamKey>` and caches the result in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
+When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe -rtsp_transport tcp rtsp://localhost:8554/<streamKey>` refreshes using stale-while-revalidate semantics. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
 
 ---
 
