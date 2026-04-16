@@ -25,6 +25,15 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
+function maskSecret(value) {
+    const s = String(value ?? '');
+    if (!s) return '';
+    if (s.length <= 4) {
+        return s.length === 1 ? s : `${s[0]}...${s[s.length - 1]}`;
+    }
+    return `${s.slice(0, 2)}...${s.slice(-2)}`;
+}
+
 function isValidRtmp(str) {
     // YouTube backup URL is a little funny
     if (str.includes(' ')) return false;

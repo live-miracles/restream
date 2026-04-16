@@ -1,16 +1,3 @@
-function maskKey(key) {
-    if (!key || key.length === 0) {
-        return '';
-    }
-    if (key.length <= 6) {
-        if (key.length === 1) {
-            return key;
-        }
-        return key[0] + '...' + key[key.length - 1];
-    }
-    return key.substring(0, 3) + '...' + key.substring(key.length - 3);
-}
-
 let currentEditingKey = null;
 let pendingDeleteKey = null;
 
@@ -140,7 +127,7 @@ async function renderKeysTable() {
           <tr>
             <th>${i + 1}</th>
             <td>${escapeHtml(k.label || '')}</td>
-            <td>${escapeHtml(maskKey(k.key))}</td>
+                        <td>${escapeHtml(maskSecret(k.key))}</td>
             <td>
                 <button class="btn btn-accent btn-xs js-copy-key" title="Copy" data-key-index="${i}">📋</button>
                 <button class="btn btn-accent btn-xs ml-2 js-edit-key" title="Edit" data-key-index="${i}">✎</button>

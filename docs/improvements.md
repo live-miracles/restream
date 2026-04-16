@@ -177,9 +177,9 @@ Still open:
 
 ### 1.4 Output URL Not Validated on Start (NEW)
 
-**Status:** ✅ Confirmed  
+**Status:** ✅ Implemented  
 **Severity:** Medium  
-**Location:** `src/index.js:813`
+**Location:** `src/index.js` start handler
 
 When starting an output job, the output URL stored in DB is passed directly to FFmpeg without re-validation. While `createOutput` and `updateOutput` validate RTMP/RTMPS protocol, the only check at start time is `if (!outputUrl)`. If a DB row is corrupted or manually edited, an arbitrary URL reaches FFmpeg.
 
@@ -187,33 +187,27 @@ When starting an output job, the output URL stored in DB is passed directly to F
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/index.js` — In the `POST .../start` handler, after fetching `outputUrl` (~line 813):
+**File:** `src/index.js` — The start handler now reuses `validateOutputUrl()` after fetching `outputUrl`:
 
 ```javascript
-const outputUrl = row.url;
-if (!outputUrl) return res.status(400).json({ error: 'Output has no URL configured' });
-
-// Re-validate protocol at start time (same check as createOutput/updateOutput)
-const ALLOWED_PROTOCOLS = ['rtmp:', 'rtmps:', 'srt:', 'rtsp:'];
-try {
-    const parsed = new URL(outputUrl);
-    if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
-        return res.status(400).json({ error: `Disallowed output protocol: ${parsed.protocol}` });
-    }
-} catch {
-    return res.status(400).json({ error: 'Invalid output URL' });
+const outputUrl = output.url;
+if (!outputUrl) return res.status(400).json({ error: 'Output URL is empty' });
+if (!validateOutputUrl(outputUrl)) {
+    return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
 }
 ```
 
-**Effort:** ~10 lines. Extract `ALLOWED_PROTOCOLS` as a constant shared with create/update validation.
+**Effort:** ~3 lines by reusing existing validation.
+
+**Implemented in:** current branch
 
 </details>
 
 ### 1.5 Pipeline Name Has No Input Validation (NEW)
 
-**Status:** ✅ Confirmed  
+**Status:** ✅ Implemented  
 **Severity:** Low  
-**Location:** `src/index.js:597-602`
+**Location:** `src/index.js` pipeline/output create and update handlers
 
 Pipeline name (`req.body?.name`) is only required to be truthy. There is no length limit, no character restriction, and no type check beyond the DB `NOT NULL` constraint. An attacker could submit extremely large strings.
 
@@ -221,12 +215,12 @@ Pipeline name (`req.body?.name`) is only required to be truthy. There is no leng
 
 <details><summary><strong>Implementation</strong></summary>
 
-**File:** `src/index.js` — Add a shared validator, then use it in pipeline create/update:
+**File:** `src/index.js` — Added a shared validator and applied it to both pipeline and output names:
 
 ```javascript
 const MAX_NAME_LENGTH = 128;
 
-function validateName(name, fieldLabel = 'name') {
+function validateName(name, fieldLabel = 'Name') {
     if (typeof name !== 'string' || !name.trim()) {
         return `${fieldLabel} is required and must be a non-empty string`;
     }
@@ -245,6 +239,8 @@ if (nameErr) return res.status(400).json({ error: nameErr });
 
 **Effort:** ~15 lines.
 
+**Implemented in:** current branch
+
 </details>
 
 ---
@@ -259,7 +255,7 @@ if (nameErr) return res.status(400).json({ error: nameErr });
 | --------------- | ------------------- | ----------------------- | ------ | ------------------------------------------------- |
 | `maskToken`     | `src/index.js:72`   | `public/render.js:206`  | Partial — backend copy is used for log/URL redaction, not UI display. Both needed but could share signature. | Acceptable as-is; different purposes |
 | `normalizeEtag` | `src/index.js:1302` | `public/utils.js:94`    | ✅ Confirmed duplicate, identical implementation. | Move to shared util or keep in frontend only       |
-| `maskKey` (NEW) | `public/render.js:206` | `public/stream-keys.js:1` | ✅ Third copy of mask logic with slightly different thresholds (≤6 vs ≤4). | Consolidate into `utils.js` |
+| `maskKey` (NEW) | `public/render.js:206` | `public/stream-keys.js:1` | ✅ Implemented — consolidated to shared `maskSecret()` in `public/utils.js`. | Fixed in current branch |
 
 <details><summary><strong>Implementation — Consolidate Mask Functions</strong></summary>
 
@@ -325,7 +321,7 @@ const { createHash } = crypto;
 | `5000` ms  | `src/index.js` | `MEDIAMTX_CHECK_INTERVAL_MS`                  | ✅ Fixed |
 | `8000` ms  | `src/index.js` | `FFPROBE_TIMEOUT_MS`                          | ✅ Fixed |
 | `30000` ms | `src/index.js:23`  | `PROBE_CACHE_TTL_MS`                          | ⚠️ Partial — already env-configurable via `process.env.PROBE_CACHE_TTL_MS`, but the 30000 default is still a magic literal. Acceptable. |
-| `5000` ms  | `src/index.js` | `SIGKILL_ESCALATION_MS`                       | Not implemented |
+| `5000` ms  | `src/index.js` | `SIGKILL_ESCALATION_MS`                       | ✅ Fixed |
 
 <details><summary><strong>Implementation — Extract Magic Numbers</strong></summary>
 
@@ -334,15 +330,18 @@ const { createHash } = crypto;
 ```javascript
 // ── Timing constants ──────────────────────────────────
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
+const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
 const FFPROBE_TIMEOUT_MS = 8000;
 const JOB_STABILITY_CHECK_MS = 250;
+const SIGKILL_ESCALATION_MS = 5000;
 ```
 
 Applied replacements:
 - MediaMTX readiness poll interval now uses `MEDIAMTX_CHECK_INTERVAL_MS`
-- MediaMTX fetch timeout now uses `MEDIAMTX_CHECK_INTERVAL_MS`
+- MediaMTX fetch timeout now uses `MEDIAMTX_FETCH_TIMEOUT_MS`
 - ffprobe timeout now uses `FFPROBE_TIMEOUT_MS`
 - job startup stability wait now uses `JOB_STABILITY_CHECK_MS`
+- forced stop escalation timeout now uses `SIGKILL_ESCALATION_MS`
 
 `probeCacheTtlMs` remains env-configurable via `PROBE_CACHE_TTL_MS`; the `30000` default literal is still acceptable as a config default.
 

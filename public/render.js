@@ -216,12 +216,6 @@ function renderPipelineInfoColumn(selectedPipe) {
         deletePipeBtn.title = '';
     }
 
-    const maskSecret = (value) => {
-        if (!value) return value;
-        if (value.length <= 6) return value;
-        return `${value.slice(0, 2)}...${value.slice(-2)}`;
-    };
-
     const ingestConfig = config?.ingest || {};
     const streamKey = pipe.key || 'Unassigned';
     const maskedStreamKey = pipe.key ? maskSecret(pipe.key) : streamKey;

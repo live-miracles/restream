@@ -41,6 +41,8 @@ const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
 const FFPROBE_TIMEOUT_MS = 8000;
 const JOB_STABILITY_CHECK_MS = 250;
+const SIGKILL_ESCALATION_MS = 5000;
+const MAX_NAME_LENGTH = 128;
 
 const streamProbeCache = new Map(); // streamKey -> { ts, info }
 const probeRefreshStartedAt = new Map(); // streamKey -> refresh start timestamp
@@ -126,6 +128,16 @@ function buildCommandPreview(cmd, args) {
 
 function errMsg(err) {
     return (err && err.message) || String(err);
+}
+
+function validateName(name, fieldLabel = 'Name') {
+    if (typeof name !== 'string' || !name.trim()) {
+        return `${fieldLabel} is required and must be a non-empty string`;
+    }
+    if (name.length > MAX_NAME_LENGTH) {
+        return `${fieldLabel} must be ${MAX_NAME_LENGTH} characters or fewer`;
+    }
+    return null;
 }
 
 function maskToken(value) {
@@ -816,6 +828,11 @@ app.post('/pipelines', async (req, res) => {
         const name = req.body?.name;
         const streamKey = req.body?.streamKey ?? null;
         const encoding = req.body?.encoding ?? null;
+        const nameError = validateName(name, 'Pipeline name');
+
+        if (nameError) {
+            return res.status(400).json({ error: nameError });
+        }
 
         const runtimeState = await resolveRuntimeInputState(streamKey, 0);
 
@@ -861,6 +878,11 @@ app.post('/pipelines/:id', async (req, res) => {
         const name = req.body?.name ?? existing.name;
         const streamKey = req.body?.streamKey ?? existing.streamKey;
         const encoding = req.body?.encoding ?? existing.encoding;
+        const nameError = validateName(name, 'Pipeline name');
+
+        if (nameError) {
+            return res.status(400).json({ error: nameError });
+        }
 
         // Block stream key change while any output has a running job.
         const streamKeyChanging = streamKey !== existing.streamKey;
@@ -977,6 +999,11 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         const name = req.body?.name;
         const url = req.body?.url;
         const encoding = req.body?.encoding ?? 'source';
+        const nameError = validateName(name, 'Output name');
+
+        if (nameError) {
+            return res.status(400).json({ error: nameError });
+        }
 
         if (!validateOutputUrl(url)) {
             return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
@@ -1006,6 +1033,11 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
         const name = req.body?.name ?? existing.name;
         const url = req.body?.url ?? existing.url;
         const encoding = req.body?.encoding ?? existing.encoding ?? 'source';
+        const nameError = validateName(name, 'Output name');
+
+        if (nameError) {
+            return res.status(400).json({ error: nameError });
+        }
 
         if (!validateOutputUrl(url)) {
             return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
@@ -1104,6 +1136,9 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
 
         const outputUrl = output.url;
         if (!outputUrl) return res.status(400).json({ error: 'Output URL is empty' });
+        if (!validateOutputUrl(outputUrl)) {
+            return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
+        }
 
         const ffArgs = [
             '-nostdin',
@@ -1304,7 +1339,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/stop', (req, res) => {
                 } catch (e) {
                     /* ignore */
                 }
-            }, MEDIAMTX_CHECK_INTERVAL_MS);
+            }, SIGKILL_ESCALATION_MS);
             proc.once('exit', () => clearTimeout(killTimeout));
         }
         recomputeEtag();
