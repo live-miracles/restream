@@ -42,6 +42,7 @@ const outputHistoryState = {
     outputId: null,
     outputName: '',
     mode: 'timeline',
+    order: 'desc',
     logs: [],
     redacted: true,
     playing: false,
@@ -161,19 +162,46 @@ function getPipelineTimelineLogs(logs) {
     });
 }
 
+function getOrderedOutputLogs(logs, order) {
+    const items = Array.isArray(logs) ? [...logs] : [];
+    items.sort((a, b) => {
+        const ta = Date.parse(a?.ts || '');
+        const tb = Date.parse(b?.ts || '');
+        const aMs = Number.isNaN(ta) ? 0 : ta;
+        const bMs = Number.isNaN(tb) ? 0 : tb;
+        return aMs - bMs;
+    });
+    return order === 'asc' ? items : items.reverse();
+}
+
+function setOutputHistoryOrder(order) {
+    const nextOrder = order === 'asc' ? 'asc' : 'desc';
+    if (outputHistoryState.order === nextOrder) return;
+    outputHistoryState.order = nextOrder;
+    renderOutputHistory(true);
+}
+
 function renderOutputHistory(scrollToTop = false) {
     const list = document.getElementById('output-history-list');
     const empty = document.getElementById('output-history-empty');
     const timelineBtn = document.getElementById('output-history-mode-timeline');
     const rawBtn = document.getElementById('output-history-mode-raw');
+    const newestBtn = document.getElementById('output-history-order-newest');
+    const oldestBtn = document.getElementById('output-history-order-oldest');
 
-    if (!list || !empty || !timelineBtn || !rawBtn) return;
+    if (!list || !empty || !timelineBtn || !rawBtn || !newestBtn || !oldestBtn) return;
 
     const mode = outputHistoryState.mode;
     timelineBtn.classList.toggle('btn-accent', mode === 'timeline');
     timelineBtn.classList.toggle('btn-outline', mode !== 'timeline');
     rawBtn.classList.toggle('btn-accent', mode === 'raw');
     rawBtn.classList.toggle('btn-outline', mode !== 'raw');
+
+    const newestFirst = outputHistoryState.order === 'desc';
+    newestBtn.classList.toggle('btn-accent', newestFirst);
+    newestBtn.classList.toggle('btn-outline', !newestFirst);
+    oldestBtn.classList.toggle('btn-accent', !newestFirst);
+    oldestBtn.classList.toggle('btn-outline', newestFirst);
 
     list.replaceChildren();
 
@@ -185,7 +213,8 @@ function renderOutputHistory(scrollToTop = false) {
     empty.classList.add('hidden');
 
     if (mode === 'raw') {
-        for (const log of outputHistoryState.logs) {
+        const rawLogs = getOrderedOutputLogs(outputHistoryState.logs, outputHistoryState.order);
+        for (const log of rawLogs) {
             const row = document.createElement('div');
             row.className = 'rounded bg-base-100 p-2';
 
@@ -215,7 +244,7 @@ function renderOutputHistory(scrollToTop = false) {
         return;
     }
 
-    const timelineLogs = getTimelineLogs(outputHistoryState.logs);
+    const timelineLogs = getOrderedOutputLogs(getTimelineLogs(outputHistoryState.logs), outputHistoryState.order);
     timelineLogs.forEach((log, index) => {
         const event = classifyHistoryEvent(log, timelineLogs, index);
 
@@ -249,8 +278,11 @@ function renderOutputHistory(scrollToTop = false) {
 }
 
 function setOutputHistoryMode(mode) {
-    outputHistoryState.mode = mode === 'raw' ? 'raw' : 'timeline';
-    renderOutputHistory(true);
+    const newMode = mode === 'raw' ? 'raw' : 'timeline';
+    if (outputHistoryState.mode === newMode) return;
+    outputHistoryState.mode = newMode;
+    // Refetch with the appropriate filter for the new mode
+    pollHistoryOnce().then(() => renderOutputHistory(true));
 }
 
 function toggleHistoryRedaction() {
@@ -290,9 +322,10 @@ function updateHistoryPlayPauseBtn() {
 }
 
 async function pollHistoryOnce() {
-    const { pipelineId, outputId } = outputHistoryState;
+    const { pipelineId, outputId, mode } = outputHistoryState;
     if (!pipelineId || !outputId) return;
-    const res = await getOutputHistory(pipelineId, outputId, 200);
+    const filter = mode === 'timeline' ? 'lifecycle' : null;
+    const res = await getOutputHistory(pipelineId, outputId, 200, filter);
     if (res === null) return;
     outputHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
     renderOutputHistory(false);
@@ -322,6 +355,7 @@ async function openOutputHistoryModal(pipeId, outId, outName = '') {
     outputHistoryState.outputId = outId;
     outputHistoryState.outputName = outName || outId;
     outputHistoryState.mode = 'timeline';
+    outputHistoryState.order = 'desc';
     outputHistoryState.logs = [];
     outputHistoryState.redacted = true;
 
@@ -337,7 +371,7 @@ async function openOutputHistoryModal(pipeId, outId, outName = '') {
     renderOutputHistory();
     modal.showModal();
 
-    const res = await getOutputHistory(pipeId, outId, 200);
+    const res = await getOutputHistory(pipeId, outId, 200, 'lifecycle');
     loading.classList.add('hidden');
     if (res === null) return;
 

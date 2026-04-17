@@ -270,6 +270,11 @@ const listJobLogsByOutput = db.prepare(`
     WHERE pipeline_id = ? AND output_id = ?
     ORDER BY ts DESC
 `);
+const listLifecycleLogsByOutput = db.prepare(`
+    SELECT ts, message, event_type AS eventType FROM job_logs
+    WHERE pipeline_id = ? AND output_id = ? AND message LIKE '[lifecycle]%'
+    ORDER BY ts ASC
+`);
 const listJobLogsByPipeline = db.prepare(`
     SELECT ts, message, event_type AS eventType FROM job_logs
     WHERE pipeline_id = ? AND output_id IS NULL
@@ -479,6 +484,9 @@ module.exports = {
     },
     listJobLogsByOutput(pipelineId, outputId) {
         return listJobLogsByOutput.all(pipelineId, outputId);
+    },
+    listLifecycleLogsByOutput(pipelineId, outputId) {
+        return listLifecycleLogsByOutput.all(pipelineId, outputId);
     },
     listJobLogsByPipeline(pipelineId) {
         return listJobLogsByPipeline.all(pipelineId);

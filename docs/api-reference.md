@@ -327,12 +327,17 @@ Stops the running FFmpeg job via SIGTERM with a 5 s SIGKILL escalation.
 
 ---
 
-### `GET /pipelines/:pipelineId/outputs/:outputId/history?limit=200`
+### `GET /pipelines/:pipelineId/outputs/:outputId/history?limit=200&filter=lifecycle`
 
-Returns recent job logs for a specific output (newest first). This endpoint is intended for diagnostics and output history UI.
+Returns recent job logs for a specific output. This endpoint is intended for diagnostics and output history UI.
 
 **Query params:**
 - `limit` optional; default `200`; min `1`; max `1000`.
+- `filter` optional; set to `lifecycle` to return only lifecycle events.
+
+Ordering behavior:
+- Default path (`filter` omitted): newest first.
+- Lifecycle path (`filter=lifecycle`): oldest first, full lifecycle sequence for timeline rendering.
 
 **Response 200:**
 ```json

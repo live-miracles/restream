@@ -202,6 +202,18 @@
               title="Show URLs"
               class="btn btn-xs btn-outline"
               onclick="toggleHistoryRedaction()">&#128065;</button>
+            <div class="join" role="tablist" aria-label="Output history order">
+            <button
+              id="output-history-order-newest"
+              type="button"
+              class="btn btn-xs join-item btn-accent"
+              onclick="setOutputHistoryOrder('desc')">Newest</button>
+            <button
+              id="output-history-order-oldest"
+              type="button"
+              class="btn btn-xs join-item btn-outline"
+              onclick="setOutputHistoryOrder('asc')">Oldest</button>
+            </div>
             <div class="join" role="tablist" aria-label="Output history mode">
             <button
               id="output-history-mode-timeline"

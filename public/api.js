@@ -235,10 +235,16 @@ async function stopOut(pipeId, outId) {
     );
 }
 
-async function getOutputHistory(pipeId, outId, limit = 200) {
+async function getOutputHistory(pipeId, outId, limit = 200, filter = null) {
     if (!pipeId || !outId) {
         showErrorAlert('Pipeline id and output id are required');
         return null;
+    }
+
+    if (filter === 'lifecycle') {
+        return apiRequest(
+            `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?filter=lifecycle`,
+        );
     }
 
     const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;

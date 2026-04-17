@@ -242,11 +242,14 @@ Validate pipeline + output exist in DB
 Parse and clamp query limit (default 200, range 1..1000)
   │
   ▼
-db.listJobLogsByOutput(pipelineId, outputId)
-  │
-  ▼
-Return newest-first logs:
-  { pipelineId, outputId, logs: [{ ts, message }, ...] }
+If query.filter === 'lifecycle':
+  db.listLifecycleLogsByOutput(pipelineId, outputId)
+  Return oldest-first lifecycle logs:
+    { pipelineId, outputId, logs: [{ ts, message }, ...] }
+Else:
+  db.listJobLogsByOutput(pipelineId, outputId)
+  Return newest-first logs (bounded by limit):
+    { pipelineId, outputId, logs: [{ ts, message }, ...] }
 ```
 
 `job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.

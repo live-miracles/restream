@@ -1606,12 +1606,18 @@ app.get('/pipelines/:pipelineId/outputs/:outputId/history', (req, res) => {
         const output = db.getOutput(pid, oid);
         if (!output) return res.status(404).json({ error: 'Output not found' });
 
-        const requestedLimit = Number.parseInt(String(req.query.limit || '200'), 10);
-        const limit = Number.isFinite(requestedLimit)
-            ? Math.max(1, Math.min(requestedLimit, 1000))
-            : 200;
+        const filterLifecycle = req.query.filter === 'lifecycle';
 
-        const logs = db.listJobLogsByOutput(pid, oid).slice(0, limit);
+        let logs;
+        if (filterLifecycle) {
+            logs = db.listLifecycleLogsByOutput(pid, oid);
+        } else {
+            const requestedLimit = Number.parseInt(String(req.query.limit || '200'), 10);
+            const limit = Number.isFinite(requestedLimit)
+                ? Math.max(1, Math.min(requestedLimit, 1000))
+                : 200;
+            logs = db.listJobLogsByOutput(pid, oid).slice(0, limit);
+        }
 
         return res.json({
             pipelineId: pid,
