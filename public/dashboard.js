@@ -576,8 +576,7 @@ function setOutputHistoryMode(mode) {
     const newMode = mode === 'raw' ? 'raw' : 'timeline';
     if (outputHistoryState.mode === newMode) return;
     outputHistoryState.mode = newMode;
-    // Refetch with the appropriate filter for the new mode
-    pollHistoryOnce().then(() => renderOutputHistory(true));
+    pollHistoryOnce(true);
 }
 
 function toggleHistoryRedaction() {
@@ -629,7 +628,7 @@ function updateHistoryPlayPauseBtn() {
     btn.classList.toggle('btn-outline', !outputHistoryState.playing);
 }
 
-async function pollHistoryOnce() {
+async function pollHistoryOnce(scrollToTop = false) {
     const { pipelineId, outputId, mode } = outputHistoryState;
     if (!pipelineId || !outputId) return;
     if (mode === 'timeline') {
@@ -641,7 +640,7 @@ async function pollHistoryOnce() {
         if (rawRes === null) return;
         outputHistoryState.rawLogs = Array.isArray(rawRes.logs) ? rawRes.logs : [];
     }
-    renderOutputHistory(false);
+    renderOutputHistory(scrollToTop);
 }
 
 function toggleHistoryPlayPause() {
