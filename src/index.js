@@ -54,6 +54,9 @@ let healthCollectorTimer = null;
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
 // NOTE: This is intentionally internal for now; a future API/WS endpoint can expose it.
 const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
+// Parsed output media info from FFmpeg stderr "Output #0" section.
+// Set once when FFmpeg first reports output stream details; cleared on exit/error.
+const ffmpegOutputMediaByJobId = new Map(); // jobId -> { video: {...}, audio: {...} }
 const stopRequestedJobIds = new Set(); // jobId values with user-initiated stop requests
 const outputStartLocks = new Set(); // pipelineId:outputId currently starting
 
@@ -466,6 +469,124 @@ function parseFfmpegBitrateToKbps(rateValue) {
     else if (unit === 'g') bps = value * 1000 * 1000 * 1000;
 
     return Number((bps / 1000).toFixed(1));
+}
+
+// Parse FFmpeg's "Output #0" stderr section to extract actual output stream media info.
+// FFmpeg prints these lines before encoding starts; we capture them once and discard the buffer.
+// Example lines:
+//   Stream #0:0: Video: h264 (libx264), yuv420p, 1280x720, q=-1--1, 3000 kb/s, 30 fps, 1k tbn
+//   Stream #0:1: Audio: aac, 48000 Hz, stereo, fltp, 128 kb/s
+// Returns { video: {...}, audio: {...} } once both are found, or null if not yet complete.
+function tryParseOutputMedia(stderrText) {
+    // Only look at the region after "Output #0" to avoid capturing input stream info.
+    const outputSectionIdx = stderrText.indexOf('Output #0');
+    if (outputSectionIdx === -1) return null;
+    const outputSection = stderrText.slice(outputSectionIdx);
+
+    let video = null;
+    let audio = null;
+
+    // Each output stream line starts with "    Stream #<n>:<m>" (possibly with lang tag "(eng)").
+    // We scan all Stream lines in the output section.
+    const streamLineRe = /Stream #\d+:\d+(?:\([^)]*\))?: (Video|Audio): (.+)/g;
+    let m;
+    while ((m = streamLineRe.exec(outputSection)) !== null) {
+        const type = m[1];
+        const rest = m[2];
+        if (type === 'Video' && !video) {
+            // e.g. "h264 (libx264) (avc1 / 0x31637661), yuv420p, 1280x720, q=-1--1, 3000 kb/s, 30 fps, 1k tbn"
+            const codecMatch = rest.match(/^(\w+)/);
+            // Anchor to pixel-format token (yuv420p, nv12, p010, gray, rgb*, bgr*) to avoid
+            // matching the RTMP/FLV hex codec tag "0x31637661" that appears earlier in the line.
+            const dimMatch = rest.match(/\b(?:yuv|nv|p0|gray|rgb|bgr)\w*(?:\([^)]*\))?,\s*(\d+)x(\d+)/i);
+            const fpsMatch = rest.match(/[\s,](\d+(?:\.\d+)?)\s*fps/);
+            video = {
+                codec: codecMatch ? codecMatch[1].toLowerCase() : null,
+                width: dimMatch ? Number(dimMatch[1]) : null,
+                height: dimMatch ? Number(dimMatch[2]) : null,
+                fps: fpsMatch ? Number(fpsMatch[1]) : null,
+                profile: null,
+                level: null,
+            };
+        } else if (type === 'Audio' && !audio) {
+            // e.g. "aac, 48000 Hz, stereo, fltp, 128 kb/s"
+            const codecMatch = rest.match(/^(\w+)/);
+            const rateMatch = rest.match(/(\d+)\s*Hz/);
+            const chMatch = rest.match(/\b(stereo|mono|5\.1|7\.1|quadraphonic)\b/i);
+            const chNumMatch = rest.match(/\b(\d+)\s*channels?\b/i);
+            let channels = null;
+            if (chMatch) {
+                const ch = chMatch[1].toLowerCase();
+                if (ch === 'stereo') channels = 2;
+                else if (ch === 'mono') channels = 1;
+                else if (ch === '5.1') channels = 6;
+                else if (ch === '7.1') channels = 8;
+                else if (ch === 'quadraphonic') channels = 4;
+            } else if (chNumMatch) {
+                channels = Number(chNumMatch[1]);
+            }
+            audio = {
+                codec: codecMatch ? codecMatch[1].toLowerCase() : null,
+                sample_rate: rateMatch ? Number(rateMatch[1]) : null,
+                channels,
+            };
+        }
+    }
+
+    // Only return once we have at least video info (audio may be absent for video-only streams).
+    if (!video) return null;
+    return { video, audio };
+}
+
+function deriveOutputMediaFromEncoding(encoding, inputMedia) {
+    const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
+    const inputVideo = inputMedia?.video || null;
+    const inputAudio = inputMedia?.audio || null;
+
+    if (normalizedEncoding === 'source') {
+        if (!inputVideo && !inputAudio) return null;
+        return {
+            video: inputVideo ? { ...inputVideo, bw: null } : null,
+            audio: inputAudio ? { ...inputAudio, bw: null } : null,
+        };
+    }
+
+    const inputFps = inputVideo?.fps ?? null;
+    const videoByEncoding = {
+        'vertical-crop': { codec: 'h264', width: 720, height: 1280, profile: null, level: null, fps: inputFps },
+        'vertical-rotate': { codec: 'h264', width: 720, height: 1280, profile: null, level: null, fps: inputFps },
+        '720p': { codec: 'h264', width: null, height: 720, profile: null, level: null, fps: inputFps },
+        '1080p': { codec: 'h264', width: null, height: 1080, profile: null, level: null, fps: inputFps },
+    };
+    const derivedVideo = videoByEncoding[normalizedEncoding] || null;
+    const derivedAudio = derivedVideo ? { codec: 'aac', channels: 2, sample_rate: 48000 } : null;
+
+    if (!derivedVideo && !derivedAudio) return null;
+    return { video: derivedVideo, audio: derivedAudio };
+}
+
+function resolveOutputMediaSnapshot({ encoding, latestJobId, inputMedia }) {
+    const ffmpegMedia = latestJobId ? ffmpegOutputMediaByJobId.get(latestJobId) || null : null;
+    if (ffmpegMedia) {
+        return {
+            media: ffmpegMedia,
+            mediaSource: 'ffmpeg',
+        };
+    }
+
+    const fallbackMedia = deriveOutputMediaFromEncoding(encoding, inputMedia);
+    if (fallbackMedia) {
+        const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
+        return {
+            media: fallbackMedia,
+            mediaSource: normalizedEncoding === 'source' ? 'fallback-source' : 'fallback-profile',
+        };
+    }
+
+    return {
+        media: null,
+        mediaSource: 'unknown',
+    };
 }
 
 function extractProbeMediaInfo(stdout) {
@@ -982,8 +1103,19 @@ function validateOutputUrl(url) {
     return parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:';
 }
 
-function buildFfmpegOutputArgs({ inputUrl, outputUrl }) {
-    return [
+const SUPPORTED_OUTPUT_ENCODINGS = new Set(['source', 'vertical-crop', 'vertical-rotate', '720p', '1080p']);
+
+function normalizeOutputEncoding(value) {
+    const normalized = String(value ?? 'source').trim().toLowerCase();
+    if (!normalized) return 'source';
+    if (normalized === 'vertical') return 'vertical-crop';
+    if (!SUPPORTED_OUTPUT_ENCODINGS.has(normalized)) return null;
+    return normalized;
+}
+
+function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
+    const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
+    const args = [
         '-nostdin',
         '-hide_banner',
         '-loglevel',
@@ -998,18 +1130,77 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl }) {
         'tcp',
         '-i',
         inputUrl,
-        '-c:v',
-        'copy',
-        '-c:a',
-        'copy',
-        '-flvflags',
-        'no_duration_filesize',
-        '-rtmp_live',
-        'live',
-        '-f',
-        'flv',
-        outputUrl,
     ];
+
+    if (normalizedEncoding === 'source') {
+        args.push('-c:v', 'copy', '-c:a', 'copy');
+    } else {
+        const profileByEncoding = {
+            'vertical-crop': {
+                vf: 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
+                videoBitrate: '2500k',
+                maxrate: '2800k',
+                bufsize: '4200k',
+            },
+            'vertical-rotate': {
+                vf: 'transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
+                videoBitrate: '2500k',
+                maxrate: '2800k',
+                bufsize: '4200k',
+            },
+            '720p': {
+                vf: 'scale=-2:720',
+                videoBitrate: '3000k',
+                maxrate: '3500k',
+                bufsize: '5000k',
+            },
+            '1080p': {
+                vf: 'scale=-2:1080',
+                videoBitrate: '5000k',
+                maxrate: '5800k',
+                bufsize: '8000k',
+            },
+        };
+
+        const profile = profileByEncoding[normalizedEncoding] || profileByEncoding['720p'];
+        args.push(
+            '-vf',
+            profile.vf,
+            '-c:v',
+            'libx264',
+            '-preset',
+            'veryfast',
+            '-pix_fmt',
+            'yuv420p',
+            '-profile:v',
+            'high',
+            '-level:v',
+            '4.1',
+            '-g',
+            '60',
+            '-keyint_min',
+            '60',
+            '-sc_threshold',
+            '0',
+            '-b:v',
+            profile.videoBitrate,
+            '-maxrate',
+            profile.maxrate,
+            '-bufsize',
+            profile.bufsize,
+            '-c:a',
+            'aac',
+            '-b:a',
+            '128k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+        );
+    }
+
+    args.push('-flvflags', 'no_duration_filesize', '-rtmp_live', 'live', '-f', 'flv', outputUrl);
+    return args;
 }
 
 // create output
@@ -1028,11 +1219,15 @@ app.post('/pipelines/:pipelineId/outputs', (req, res) => {
 
         const name = req.body?.name;
         const url = req.body?.url;
-        const encoding = req.body?.encoding ?? 'source';
+        const encoding = normalizeOutputEncoding(req.body?.encoding ?? 'source');
         const nameError = validateName(name, 'Output name');
 
         if (nameError) {
             return res.status(400).json({ error: nameError });
+        }
+
+        if (!encoding) {
+            return res.status(400).json({ error: 'Encoding must be one of: source, vertical-crop, vertical-rotate, 720p, 1080p' });
         }
 
         if (!validateOutputUrl(url)) {
@@ -1062,14 +1257,22 @@ app.post('/pipelines/:pipelineId/outputs/:outputId', (req, res) => {
 
         const name = req.body?.name ?? existing.name;
         const url = req.body?.url ?? existing.url;
-        const encoding = req.body?.encoding ?? existing.encoding ?? 'source';
+        const existingEncoding = normalizeOutputEncoding(existing.encoding) || 'source';
+        const encoding =
+            req.body?.encoding === undefined
+                ? existingEncoding
+                : normalizeOutputEncoding(req.body?.encoding);
         const nameError = validateName(name, 'Output name');
         const running = db.getRunningJobFor(pid, oid);
         const urlChanged = url !== existing.url;
-        const encodingChanged = encoding !== (existing.encoding ?? 'source');
+        const encodingChanged = encoding !== existingEncoding;
 
         if (nameError) {
             return res.status(400).json({ error: nameError });
+        }
+
+        if (!encoding) {
+            return res.status(400).json({ error: 'Encoding must be one of: source, vertical-crop, vertical-rotate, 720p, 1080p' });
         }
 
         // Running outputs can be renamed, but transport/encoding changes require a restart.
@@ -1180,7 +1383,8 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             return res.status(400).json({ error: 'Output URL must be a valid rtmp:// or rtmps:// URL' });
         }
 
-        const ffArgs = buildFfmpegOutputArgs({ inputUrl, outputUrl });
+        const outputEncoding = normalizeOutputEncoding(output.encoding) || 'source';
+        const ffArgs = buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding: outputEncoding });
 
         const redactedFfArgs = redactFfmpegArgs(ffArgs);
         log('debug', 'Crafted ffmpeg output command', {
@@ -1188,6 +1392,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             outputId: oid,
             inputUrl: redactSensitiveUrl(inputUrl),
             expectedReaderTag,
+            outputEncoding,
             outputUrl: redactSensitiveUrl(outputUrl),
             ffmpegCmd,
             ffmpegArgs: redactedFfArgs,
@@ -1253,6 +1458,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             stopRequestedJobIds.delete(job.id);
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
+            ffmpegOutputMediaByJobId.delete(job.id);
         });
 
         const progressStream = child.stdio[3];
@@ -1278,10 +1484,25 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             });
 
         // Persist stderr/error/exit for diagnostics; skip progress stream to avoid DB bloat.
+        // Also parse the "Output #0" section once to extract actual output stream media info.
+        let stderrBuf = '';
+        let outputMediaParsed = false;
         if (child.stderr)
             child.stderr.on('data', (d) => {
                 const s = d.toString();
                 pushLog(`[stderr] ${s}`);
+                if (outputMediaParsed) return;
+                stderrBuf += s;
+                const media = tryParseOutputMedia(stderrBuf);
+                    // Wait for "Stream mapping:" which appears after all Output #0 stream lines.
+                    // This prevents locking in a partial result when the audio stream line arrives
+                    // in a later stderr chunk than the video stream line.
+                    const streamMappingSeen = stderrBuf.includes('Stream mapping:');
+                    if (media && streamMappingSeen) {
+                    outputMediaParsed = true;
+                    ffmpegOutputMediaByJobId.set(job.id, media);
+                    stderrBuf = ''; // free memory
+                }
             });
 
         child.on('exit', (code, signal) => {
@@ -1312,6 +1533,7 @@ app.post('/pipelines/:pipelineId/outputs/:outputId/start', async (req, res) => {
             recomputeEtag();
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
+            ffmpegOutputMediaByJobId.delete(job.id);
         });
 
         // short delay to detect immediate exit/err
@@ -1655,7 +1877,7 @@ function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, probeInfo 
     };
 }
 
-function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag) {
+function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag, inputMedia) {
     let status = 'off';
     const ffmpegProgress = latestJob?.id ? ffmpegProgressByJobId.get(latestJob.id) || null : null;
 
@@ -1680,12 +1902,20 @@ function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag)
         });
     }
 
+    const outputMediaSnapshot = resolveOutputMediaSnapshot({
+        encoding: output?.encoding || 'source',
+        latestJobId: latestJob?.id || null,
+        inputMedia,
+    });
+
     return {
         status,
         jobId: latestJob?.id || null,
         totalSize: ffmpegProgress?.total_size || null,
         bitrate: ffmpegProgress?.bitrate || null,
         bitrateKbps: parseFfmpegBitrateToKbps(ffmpegProgress?.bitrate),
+        media: outputMediaSnapshot.media,
+        mediaSource: outputMediaSnapshot.mediaSource,
     };
 }
 
@@ -1715,6 +1945,12 @@ function buildPipelineHealthSnapshot(
     updatePipelineInputStatusHistory(pipeline.id, inputStatus);
 
     const probeInfo = getPipelineProbeInfo(streamKey, pathAvailable, nowMs);
+    const inputHealth = buildPipelineInputHealth({
+        streamKey,
+        pathInfo,
+        inputStatus,
+        probeInfo,
+    });
     const outputsHealth = {};
 
     for (const output of pipelineOutputs) {
@@ -1724,16 +1960,15 @@ function buildPipelineHealthSnapshot(
             output,
             latestJob,
             rtspByReaderTag,
+            {
+                video: inputHealth.video,
+                audio: inputHealth.audio,
+            },
         );
     }
 
     return {
-        input: buildPipelineInputHealth({
-            streamKey,
-            pathInfo,
-            inputStatus,
-            probeInfo,
-        }),
+        input: inputHealth,
         outputs: outputsHealth,
     };
 }

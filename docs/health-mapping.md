@@ -239,4 +239,5 @@ Frontend-only derived output stats and display values:
 | `out.status` (dashboard model) | Backend `/health` | UI treats backend `outputs[outputId].status` as source of truth. |
 | `out.bitrateKbps` | Backend `/health` | Direct passthrough from `outputs[outputId].bitrateKbps` (numeric). |
 | `pipe.stats.outputBitrateKbps` | Computed in UI | Sum of active `out.bitrateKbps` values for display. |
-| `out.video`, `out.audio` for `copy/source` | Reused from input | Output display reuses input media metadata; ffprobe influence is indirect via input fields. |
+| `out.video`, `out.audio` | Backend `/health` (`outputs[outputId].media`) | Output media is resolved server-side from parsed FFmpeg `Output #0` stream info, with fallback derivation when FFmpeg details are not yet available. |
+| `out.mediaSource` | Backend `/health` (`outputs[outputId].mediaSource`) | Source tag used by UI to distinguish confirmed FFmpeg media (`ffmpeg`) from fallback-derived values (`fallback-source`, `fallback-profile`, `unknown`). |

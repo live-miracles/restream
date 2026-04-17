@@ -206,7 +206,7 @@ Creates an output for a pipeline.
 {
   "name": "YouTube",
   "url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx",
-  "encoding": "source"   // "source" | "copy" — both mean pass-through (copy codec)
+  "encoding": "source"   // one of: source | vertical-crop | vertical-rotate | 720p | 1080p
 }
 ```
 
@@ -225,7 +225,7 @@ Creates an output for a pipeline.
 }
 ```
 
-**Errors:** `400` missing name/url; `404` pipeline not found.
+**Errors:** `400` missing/invalid name/url/encoding; `404` pipeline not found.
 
 ---
 
@@ -240,7 +240,7 @@ Updates an output.
 { "message": "Output updated", "output": { ... } }
 ```
 
-**Errors:** `404` output or pipeline not found.
+**Errors:** `400` invalid encoding; `404` output or pipeline not found; `409` cannot change URL/encoding while running.
 
 ---
 
@@ -269,7 +269,12 @@ Starts an FFmpeg job for this output. The full call flow is:
 4. Require `pipeline.streamKey`; resolve probe URL `rtsp://localhost:8554/<streamKey>`.
 5. Run `ffprobe -rtsp_transport tcp <probeUrl>` with 8 s timeout.
 6. Build tagged pull URL: `rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>`.
-7. Spawn FFmpeg: `ffmpeg -nostdin -hide_banner -loglevel info -nostats -stats_period 1 -progress pipe:3 -rtsp_transport tcp -i <taggedUrl> -c:v copy -c:a copy -flvflags no_duration_filesize -rtmp_live live -f flv <outputUrl>`.
+7. Spawn FFmpeg for the selected output encoding:
+  - `source`: codec copy (`-c:v copy -c:a copy`)
+  - `vertical-crop`: `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
+  - `vertical-rotate`: `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
+  - `720p`: `-vf scale=-2:720` + H.264/AAC encode
+  - `1080p`: `-vf scale=-2:1080` + H.264/AAC encode
 8. Persist job row in DB, return after 250 ms stability check.
 
 **Request body:** none
@@ -462,7 +467,23 @@ Headers:
           "jobId": "3f2e1d0c9b8a7f6e",
           "totalSize": "120000000",
           "bitrate": "1842.5kbits/s",
-          "bitrateKbps": 1842.5
+          "bitrateKbps": 1842.5,
+          "mediaSource": "ffmpeg",
+          "media": {
+            "video": {
+              "codec": "h264",
+              "width": 1280,
+              "height": 720,
+              "fps": 30,
+              "profile": null,
+              "level": null
+            },
+            "audio": {
+              "codec": "aac",
+              "sample_rate": 48000,
+              "channels": 2
+            }
+          }
         }
       }
     }
@@ -523,6 +544,16 @@ For each output, ffmpeg runtime progress contributes:
 - `totalSize` from ffmpeg `total_size` (raw cumulative bytes written)
 - `bitrate` from ffmpeg `bitrate` (raw ffmpeg rate string, for example `1842.5kbits/s`, kept for debugging)
 - `bitrateKbps` server-normalized numeric bitrate in Kbps for UI consumption
+
+Output media metadata is server-resolved and included as:
+
+- `mediaSource`: `ffmpeg` | `fallback-source` | `fallback-profile` | `unknown`
+- `media.video` / `media.audio`: codec/geometry/audio fields used by the dashboard
+
+When FFmpeg has not emitted full `Output #0` stream info yet, backend fallback rules apply:
+
+- `fallback-source`: copies media metadata from pipeline input for `source` outputs
+- `fallback-profile`: derives expected media from selected transcode profile
 
 ---
 

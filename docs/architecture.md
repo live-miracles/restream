@@ -55,7 +55,7 @@ outputs
   pipeline_id TEXT FK → pipelines.id ON DELETE CASCADE
   name        TEXT NOT NULL
   url         TEXT NOT NULL  -- destination RTMP URL
-  encoding    TEXT           -- 'source' | 'copy' (pass-through); future: transcode opts
+  encoding    TEXT           -- 'source' | 'vertical-crop' | 'vertical-rotate' | '720p' | '1080p'
   created_at  TEXT
 
 jobs
@@ -86,6 +86,10 @@ meta
 ### 2.2 In-Memory State
 
 `processes` (`Map<jobId, ChildProcess>`) — runtime-only reference to live FFmpeg processes. Lost on server restart; DB `status` is authoritative.
+
+`ffmpegProgressByJobId` (`Map<jobId, Record<string,string>>`) — latest parsed FFmpeg `-progress pipe:3` key/value block per running job.
+
+`ffmpegOutputMediaByJobId` (`Map<jobId, { video, audio }>` ) — parsed output media details extracted from FFmpeg stderr `Output #0` section.
 
 `stopRequestedJobIds` (`Set<jobId>`) — tracks IDs of jobs for which the user explicitly called `POST /stop`. Used by the exit handler to classify exit status as `stopped` vs `failed`. An entry is added on `/stop` and removed after the exit event fires.
 
@@ -126,12 +130,16 @@ Build tagged RTSP URL:
   │
   ▼
 Build FFmpeg args:
-  ffmpeg -nostdin
+  ffmpeg -nostdin -hide_banner -loglevel info
+         -nostats -stats_period 1 -progress pipe:3
          -rtsp_transport tcp
          -i <taggedRtspUrl>
-         -map 0:v:0
-         -map 0:a:0
-         -c:v copy -c:a copy
+         (profile by output encoding)
+           source: -c:v copy -c:a copy
+           vertical-crop: -vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 + libx264/aac
+           vertical-rotate: -vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 + libx264/aac
+           720p: -vf scale=-2:720 + libx264/aac
+           1080p: -vf scale=-2:1080 + libx264/aac
          -flvflags no_duration_filesize
          -rtmp_live live
          -f flv <outputUrl>

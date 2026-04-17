@@ -259,7 +259,7 @@ function renderPipelineInfoColumn(selectedPipe) {
         const stats = pipe.stats || {};
         const hasAudioTrack = !!audio.codec;
 
-        document.getElementById('input-video-codec').textContent = video.codec || '--';
+        document.getElementById('input-video-codec').textContent = formatCodecName(video.codec) || '--';
         document.getElementById('input-video-resolution').textContent =
             video.width && video.height ? video.width + 'x' + video.height : '--';
         document.getElementById('input-video-fps').textContent =
@@ -268,7 +268,7 @@ function renderPipelineInfoColumn(selectedPipe) {
         document.getElementById('input-video-profile').textContent = video.profile || '--';
 
         document.getElementById('input-audio-codec').textContent =
-            hasAudioTrack ? audio.codec : 'No audio track';
+            hasAudioTrack ? formatCodecName(audio.codec) || audio.codec : 'No audio track';
         document.getElementById('input-audio-channels').textContent =
             hasAudioTrack ? audio.channels || '--' : '--';
         document.getElementById('input-audio-sample-rate').textContent =
@@ -453,12 +453,16 @@ function renderStatsColumn(selectedPipe) {
         statsTable.appendChild(row);
     };
 
-    const appendRow = (values, warning = false) => {
+    const appendRow = (values, warning = false, dimmedValueIndices = []) => {
         const row = document.createElement('tr');
         if (warning) row.className = 'bg-warning/10';
         values.forEach((value) => {
             const cell = document.createElement('td');
             cell.textContent = value;
+            if (dimmedValueIndices.includes(row.children.length)) {
+                cell.style.opacity = '0.6';
+                cell.title = 'Estimated value (fallback), not yet confirmed from FFmpeg output stream';
+            }
             row.appendChild(cell);
         });
         statsTable.appendChild(row);
@@ -474,10 +478,10 @@ function renderStatsColumn(selectedPipe) {
                 p.input.time !== null && p.input.time !== undefined ? msToHHMMSS(p.input.time) : '--',
                 p.name,
                 inputBw !== null && inputBw !== undefined ? Number(inputBw).toFixed(1) : '--',
-                video.codec || '--',
+                formatCodecName(video.codec) || '--',
                 video.width && video.height ? `${video.width}x${video.height}` : '--',
                 video.fps !== null && video.fps !== undefined ? String(video.fps) : '--',
-                audio.codec || '--',
+                formatCodecName(audio.codec) || '--',
                 audio.channels ? String(audio.channels) : '--',
                 audio.sample_rate ? String(audio.sample_rate) : '--',
             ],
@@ -490,19 +494,21 @@ function renderStatsColumn(selectedPipe) {
         const outputBw = o.bitrateKbps;
         const video = o.video || {};
         const audio = o.audio || {};
+        const usesFallbackMedia = o.mediaSource === 'fallback-source' || o.mediaSource === 'fallback-profile';
         appendRow(
             [
                 o.time !== null && o.time !== undefined ? msToHHMMSS(o.time) : '--',
                 `${o.pipe}: ${o.name}`,
                 outputBw !== null && outputBw !== undefined ? Number(outputBw).toFixed(1) : '--',
-                video.codec || '--',
+                formatCodecName(video.codec) || '--',
                 video.width && video.height ? `${video.width}x${video.height}` : '--',
                 video.fps !== null && video.fps !== undefined ? String(video.fps) : '--',
-                audio.codec || '--',
+                formatCodecName(audio.codec) || '--',
                 audio.channels ? String(audio.channels) : '--',
                 audio.sample_rate ? String(audio.sample_rate) : '--',
             ],
             o.status === 'warning',
+            usesFallbackMedia ? [3, 4, 5, 6, 7, 8] : [],
         );
     });
 }

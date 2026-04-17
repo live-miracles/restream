@@ -573,7 +573,8 @@ async function openOutModal(mode, pipe, output = null) {
     document.getElementById('out-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
     document.getElementById('out-name-input').value = output?.name || `Out_${pipe.outs.length + 1}`;
     const encodingSelect = document.getElementById('out-encoding-input');
-    const resolvedEncoding = output?.encoding || 'source';
+    const rawEncoding = String(output?.encoding || 'source').trim().toLowerCase();
+    const resolvedEncoding = rawEncoding;
     if (![...encodingSelect.options].some((opt) => opt.value === resolvedEncoding)) {
         const customOpt = document.createElement('option');
         customOpt.value = resolvedEncoding;

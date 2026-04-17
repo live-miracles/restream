@@ -63,6 +63,12 @@ if (!outputColumns.some((column) => column.name === 'encoding')) {
     db.prepare(`ALTER TABLE outputs ADD COLUMN encoding TEXT`).run();
 }
 
+function normalizeOutputEncodingValue(encoding) {
+    const normalized = String(encoding ?? 'source').trim().toLowerCase();
+    if (!normalized) return 'source';
+    return normalized;
+}
+
 db.prepare(`CREATE INDEX IF NOT EXISTS idx_outputs_pipeline ON outputs(pipeline_id)`).run();
 
 /* jobs table */
@@ -369,7 +375,7 @@ module.exports = {
             pipeline_id: pipelineId,
             name,
             url,
-            encoding,
+            encoding: normalizeOutputEncodingValue(encoding),
             created_at: now,
         });
         return getOutputStmt.get(oid, pipelineId);
@@ -389,7 +395,7 @@ module.exports = {
             pipeline_id: pipelineId,
             name,
             url,
-            encoding,
+            encoding: normalizeOutputEncodingValue(encoding),
         });
         return info.changes > 0 ? getOutputStmt.get(id, pipelineId) : null;
     },

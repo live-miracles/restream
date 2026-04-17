@@ -109,9 +109,9 @@ function parsePipelinesInfo() {
         const outputBitrateKbps = outHealth?.bitrateKbps ?? null;
 
         const encoding = out.encoding || 'source';
-        const isCopy = encoding === 'copy' || encoding === 'source';
-        const outVideo = isCopy ? pipe.input.video : null;
-        const outAudio = isCopy ? pipe.input.audio : null;
+        const outVideo = outHealth?.media?.video ?? null;
+        const outAudio = outHealth?.media?.audio ?? null;
+        const mediaSource = outHealth?.mediaSource || 'unknown';
 
         let outTime = null;
         if (status === 'on' && latestJob?.startedAt) {
@@ -128,6 +128,7 @@ function parsePipelinesInfo() {
             time: outTime,
             video: outVideo,
             audio: outAudio,
+            mediaSource,
             job: latestJob || null,
             totalSize: outputTotalSize,
             bitrateKbps: outputBitrateKbps,

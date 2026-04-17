@@ -38,5 +38,6 @@ Docker mode (backend in container):
 ## Notes
 
 - session-4x3-manifest.json is not rewritten by the runner.
+- If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
 - Logs go to test/artifacts/logs.
 - Health snapshots go to test/artifacts/runs.

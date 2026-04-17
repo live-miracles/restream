@@ -48,6 +48,20 @@ function sanitizeLogMessage(msg, redacted = true) {
         );
 }
 
+function formatCodecName(codec) {
+    if (!codec) return null;
+    const c = String(codec).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (c === 'h264' || c === 'avc' || c === 'avc1') return 'H.264';
+    if (c === 'h265' || c === 'hevc' || c === 'hvc1') return 'H.265';
+    if (c === 'aac') return 'AAC';
+    if (c === 'mp3' || c === 'mp3float') return 'MP3';
+    if (c === 'opus') return 'Opus';
+    if (c === 'vp8') return 'VP8';
+    if (c === 'vp9') return 'VP9';
+    if (c === 'av1') return 'AV1';
+    return codec;
+}
+
 function isValidRtmp(str) {
     // YouTube backup URL is a little funny
     if (str.includes(' ')) return false;

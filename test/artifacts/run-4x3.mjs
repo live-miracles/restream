@@ -51,6 +51,11 @@ const config = {
   keepRunning: readBooleanEnv('KEEP_RUNNING', false),
 };
 
+const outputEncodingDefaults = ['source', 'vertical-crop', 'vertical-rotate', '720p', '1080p'];
+const supportedOutputEncodings = new Set(outputEncodingDefaults);
+const nonSourceOutputEncodings = outputEncodingDefaults.filter((encoding) => encoding !== 'source');
+const outputEncodingUsage = new Map(outputEncodingDefaults.map((encoding) => [encoding, 0]));
+
 const ownedProcesses = [];
 let shutdownPromise = null;
 
@@ -216,7 +221,7 @@ async function ensureResources(manifest) {
   const outputTargets = [];
   let state = await fetchConfigState();
 
-  for (const pipelineDef of manifest.pipelines) {
+  for (const [pipelineIndex, pipelineDef] of manifest.pipelines.entries()) {
     let streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
     if (!streamKey) {
       await requestJson('/stream-keys', {
@@ -253,9 +258,9 @@ async function ensureResources(manifest) {
       pipelineId: pipeline.id,
     });
 
-    for (const outputDef of pipelineDef.outputs) {
+    for (const [outputIndex, outputDef] of pipelineDef.outputs.entries()) {
       const outputUrl = normalizeOutputUrl(outputDef.url);
-      const encoding = outputDef.encoding || 'copy';
+      const encoding = resolveOutputEncoding(outputDef.encoding, pipelineIndex, outputIndex);
       let output = state.outputs.find(
         (item) =>
           item.pipelineId === pipeline.id &&
@@ -306,6 +311,23 @@ async function ensureResources(manifest) {
   console.log(`Outputs in manifest: ${outputTargets.length}`);
 
   return { pipelines: pipelineTargets, outputs: outputTargets };
+}
+
+function resolveOutputEncoding(encodingValue, pipelineIndex, outputIndex) {
+  const normalized = String(encodingValue || '').trim().toLowerCase();
+  if (normalized) {
+    if (!supportedOutputEncodings.has(normalized)) {
+      throw new Error(`Unsupported output encoding in manifest: ${encodingValue}`);
+    }
+    outputEncodingUsage.set(normalized, (outputEncodingUsage.get(normalized) || 0) + 1);
+    return normalized;
+  }
+
+  const selectedFallback =
+    nonSourceOutputEncodings.find((encoding) => (outputEncodingUsage.get(encoding) || 0) < 1) ||
+    'source';
+  outputEncodingUsage.set(selectedFallback, (outputEncodingUsage.get(selectedFallback) || 0) + 1);
+  return selectedFallback;
 }
 
 async function fetchConfigState() {
