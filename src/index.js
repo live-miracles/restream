@@ -1630,10 +1630,42 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
     const outputs = db.listOutputsForPipeline(pipelineId);
     if (outputs.length === 0) return;
 
+    const restartMode = cfg.inputRecoveryRestartMode === 'all' ? 'all' : 'failedOnly';
+    const eligibleOutputs = [];
+    const skippedOutputs = [];
+
+    outputs.forEach((output) => {
+        if (restartMode === 'all') {
+            eligibleOutputs.push(output);
+            return;
+        }
+
+        const latestJob = db.listJobsForOutput(pipelineId, output.id)[0] || null;
+        if (latestJob?.status === 'failed') {
+            eligibleOutputs.push(output);
+            return;
+        }
+
+        skippedOutputs.push({
+            outputId: output.id,
+            status: latestJob?.status || 'never_started',
+        });
+    });
+
+    if (eligibleOutputs.length === 0) {
+        log('info', 'Skipped input recovery restarts; no eligible outputs', {
+            pipelineId,
+            restartMode,
+            totalOutputs: outputs.length,
+            skipped: skippedOutputs,
+        });
+        return;
+    }
+
     const initialDelayMs = Number(cfg.inputRecoveryRestartDelayMs || 0);
     const staggerMs = Number(cfg.inputRecoveryRestartStaggerMs || 0);
 
-    outputs.forEach((output, index) => {
+    eligibleOutputs.forEach((output, index) => {
         const delayMs = initialDelayMs + (index * staggerMs);
         const state = getOutputRestartState(pipelineId, output.id);
         clearOutputRestartTimer(state);
@@ -1650,7 +1682,11 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
 
     log('info', 'Scheduled output restarts after input recovery', {
         pipelineId,
-        outputCount: outputs.length,
+        restartMode,
+        totalOutputs: outputs.length,
+        scheduledOutputCount: eligibleOutputs.length,
+        skippedOutputCount: skippedOutputs.length,
+        skipped: skippedOutputs,
         initialDelayMs,
         staggerMs,
     });

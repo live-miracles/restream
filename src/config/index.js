@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
         backoffMaxDelayMs: 60000,
         resetFailureCountAfterMs: 30000,
         restartOnInputRecovery: true,
+        inputRecoveryRestartMode: 'failedOnly',
         inputRecoveryRestartDelayMs: 1000,
         inputRecoveryRestartStaggerMs: 250,
     },
@@ -48,6 +49,16 @@ function parseBoolean(value, fallback) {
     const normalized = String(value).trim().toLowerCase();
     if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
     if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
+function parseInputRecoveryRestartMode(value, fallback) {
+    if (value === undefined || value === null) return fallback;
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === 'all') return 'all';
+    if (normalized === 'failedonly' || normalized === 'failed_only' || normalized === 'failed-only') {
+        return 'failedOnly';
+    }
     return fallback;
 }
 
@@ -83,6 +94,7 @@ function sanitizeConfig(config) {
         backoffMaxDelayMs: parsePositiveInt(outputRecovery.backoffMaxDelayMs, DEFAULT_CONFIG.outputRecovery.backoffMaxDelayMs),
         resetFailureCountAfterMs: parsePositiveInt(outputRecovery.resetFailureCountAfterMs, DEFAULT_CONFIG.outputRecovery.resetFailureCountAfterMs),
         restartOnInputRecovery: parseBoolean(outputRecovery.restartOnInputRecovery, DEFAULT_CONFIG.outputRecovery.restartOnInputRecovery),
+        inputRecoveryRestartMode: parseInputRecoveryRestartMode(outputRecovery.inputRecoveryRestartMode, DEFAULT_CONFIG.outputRecovery.inputRecoveryRestartMode),
         inputRecoveryRestartDelayMs: parsePositiveInt(outputRecovery.inputRecoveryRestartDelayMs, DEFAULT_CONFIG.outputRecovery.inputRecoveryRestartDelayMs),
         inputRecoveryRestartStaggerMs: parseNonNegativeInt(outputRecovery.inputRecoveryRestartStaggerMs, DEFAULT_CONFIG.outputRecovery.inputRecoveryRestartStaggerMs),
     };
@@ -143,6 +155,9 @@ function sanitizeConfig(config) {
     if (process.env.OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY) {
         safe.outputRecovery.restartOnInputRecovery = parseBoolean(process.env.OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY, safe.outputRecovery.restartOnInputRecovery);
     }
+    if (process.env.OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_MODE) {
+        safe.outputRecovery.inputRecoveryRestartMode = parseInputRecoveryRestartMode(process.env.OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_MODE, safe.outputRecovery.inputRecoveryRestartMode);
+    }
     if (process.env.OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_DELAY_MS) {
         safe.outputRecovery.inputRecoveryRestartDelayMs = parsePositiveInt(process.env.OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_DELAY_MS, safe.outputRecovery.inputRecoveryRestartDelayMs);
     }
@@ -202,6 +217,7 @@ function toPublicConfig(config) {
             backoffMaxDelayMs: safe.outputRecovery.backoffMaxDelayMs,
             resetFailureCountAfterMs: safe.outputRecovery.resetFailureCountAfterMs,
             restartOnInputRecovery: safe.outputRecovery.restartOnInputRecovery,
+            inputRecoveryRestartMode: safe.outputRecovery.inputRecoveryRestartMode,
             inputRecoveryRestartDelayMs: safe.outputRecovery.inputRecoveryRestartDelayMs,
             inputRecoveryRestartStaggerMs: safe.outputRecovery.inputRecoveryRestartStaggerMs,
         },

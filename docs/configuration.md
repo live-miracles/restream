@@ -60,7 +60,8 @@ These are hardcoded in the application and cannot be overridden via environment 
 | `OUTPUT_RECOVERY_BACKOFF_BASE_DELAY_MS` | `2000` | Initial backoff delay |
 | `OUTPUT_RECOVERY_BACKOFF_MAX_DELAY_MS` | `60000` | Maximum backoff delay cap |
 | `OUTPUT_RECOVERY_RESET_FAILURE_COUNT_AFTER_MS` | `30000` | Reset failure streak if an output ran at least this long before failing |
-| `OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY` | `true` | Restart all outputs for a pipeline when input transitions back to `on` |
+| `OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY` | `true` | Enable output restart scheduling when input transitions back to `on` |
+| `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_MODE` | `failedOnly` | `failedOnly` restarts only outputs whose latest job status is `failed`; `all` restarts every output |
 | `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_DELAY_MS` | `1000` | Delay before the first output restart on input recovery |
 | `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_STAGGER_MS` | `250` | Per-output stagger when restarting outputs on input recovery |
 
@@ -98,6 +99,7 @@ File: `src/config/restream.json`
     "backoffMaxDelayMs": 60000,
     "resetFailureCountAfterMs": 30000,
     "restartOnInputRecovery": true,
+    "inputRecoveryRestartMode": "failedOnly",
     "inputRecoveryRestartDelayMs": 1000,
     "inputRecoveryRestartStaggerMs": 250
   },
@@ -127,7 +129,8 @@ File: `src/config/restream.json`
 | `outputRecovery.backoffBaseDelayMs` | integer | `2000` | Base delay for exponential backoff |
 | `outputRecovery.backoffMaxDelayMs` | integer | `60000` | Maximum backoff delay |
 | `outputRecovery.resetFailureCountAfterMs` | integer | `30000` | Failure streak reset threshold for long-running jobs |
-| `outputRecovery.restartOnInputRecovery` | boolean | `true` | Restart all pipeline outputs when input comes back |
+| `outputRecovery.restartOnInputRecovery` | boolean | `true` | Enable restart scheduling when pipeline input comes back |
+| `outputRecovery.inputRecoveryRestartMode` | string | `failedOnly` | Recovery restart mode: `failedOnly` or `all` |
 | `outputRecovery.inputRecoveryRestartDelayMs` | integer | `1000` | Initial delay before recovery restart |
 | `outputRecovery.inputRecoveryRestartStaggerMs` | integer | `250` | Stagger between output restarts during recovery |
 | `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |
