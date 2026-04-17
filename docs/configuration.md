@@ -61,7 +61,7 @@ These are hardcoded in the application and cannot be overridden via environment 
 | `OUTPUT_RECOVERY_BACKOFF_MAX_DELAY_MS` | `60000` | Maximum backoff delay cap |
 | `OUTPUT_RECOVERY_RESET_FAILURE_COUNT_AFTER_MS` | `30000` | Reset failure streak if an output ran at least this long before failing |
 | `OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY` | `true` | Enable output restart scheduling when input transitions back to `on` |
-| `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_MODE` | `failedOnly` | `failedOnly` restarts only outputs whose latest job status is `failed`; `all` restarts every output |
+| `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_MODE` | `inputUnavailableOnly` | `inputUnavailableOnly` restarts only outputs likely stopped by input unavailability; `failedOnly` restarts failed outputs plus input-unavailable stops; `all` restarts every output |
 | `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_DELAY_MS` | `1000` | Delay before the first output restart on input recovery |
 | `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_STAGGER_MS` | `250` | Per-output stagger when restarting outputs on input recovery |
 
@@ -77,6 +77,7 @@ These are hardcoded in the application and cannot be overridden via environment 
   - With defaults: `3 * 1000ms + (2000 + 4000 + 8000 + 16000 + 32000) = 65000ms` total delayed wait.
 - `OUTPUT_RECOVERY_RESET_FAILURE_COUNT_AFTER_MS` resets the failure streak when a run survives at least that duration before failing.
   - This means retries can continue across long runtimes instead of permanently exhausting after one early burst.
+- `inputUnavailableOnly` and `failedOnly` input-recovery selection correlate output exits with the most recent `on -> non-on` input transition using a built-in grace window of `max(3 * HEALTH_SNAPSHOT_INTERVAL_MS, 15000ms)`.
 - `outputRecovery` in `src/config/restream.json` is optional. If omitted, built-in defaults are still active and env overrides still apply.
 
 ## 2. Application Config File
@@ -99,7 +100,7 @@ File: `src/config/restream.json`
     "backoffMaxDelayMs": 60000,
     "resetFailureCountAfterMs": 30000,
     "restartOnInputRecovery": true,
-    "inputRecoveryRestartMode": "failedOnly",
+    "inputRecoveryRestartMode": "inputUnavailableOnly",
     "inputRecoveryRestartDelayMs": 1000,
     "inputRecoveryRestartStaggerMs": 250
   },
@@ -130,7 +131,7 @@ File: `src/config/restream.json`
 | `outputRecovery.backoffMaxDelayMs` | integer | `60000` | Maximum backoff delay |
 | `outputRecovery.resetFailureCountAfterMs` | integer | `30000` | Failure streak reset threshold for long-running jobs |
 | `outputRecovery.restartOnInputRecovery` | boolean | `true` | Enable restart scheduling when pipeline input comes back |
-| `outputRecovery.inputRecoveryRestartMode` | string | `failedOnly` | Recovery restart mode: `failedOnly` or `all` |
+| `outputRecovery.inputRecoveryRestartMode` | string | `inputUnavailableOnly` | Recovery restart mode: `inputUnavailableOnly`, `failedOnly`, or `all` |
 | `outputRecovery.inputRecoveryRestartDelayMs` | integer | `1000` | Initial delay before recovery restart |
 | `outputRecovery.inputRecoveryRestartStaggerMs` | integer | `250` | Stagger between output restarts during recovery |
 | `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |

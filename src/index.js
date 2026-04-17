@@ -43,10 +43,12 @@ const FFPROBE_TIMEOUT_MS = 8000;
 const JOB_STABILITY_CHECK_MS = 250;
 const SIGKILL_ESCALATION_MS = 5000;
 const MAX_NAME_LENGTH = 128;
+const INPUT_UNAVAILABLE_EXIT_GRACE_FLOOR_MS = 15000;
 
 const streamProbeCache = new Map(); // streamKey -> { ts, info }
 const probeRefreshStartedAt = new Map(); // streamKey -> refresh start timestamp
 const pipelineInputStatusHistory = new Map(); // pipelineId -> last input status seen by /health
+const pipelineLastInputUnavailableAtMs = new Map(); // pipelineId -> timestamp of latest observed non-on transition
 let latestHealthSnapshot = null;
 let latestHealthSnapshotEtag = null;
 let healthCollectorInFlight = null;
@@ -89,6 +91,87 @@ function releaseOutputStartLock(pipelineId, outputId) {
 
 function getOutputRecoveryConfig() {
     return getConfig().outputRecovery || {};
+}
+
+function getInputUnavailableExitGraceMs() {
+    return Math.max(healthSnapshotIntervalMs * 3, INPUT_UNAVAILABLE_EXIT_GRACE_FLOOR_MS);
+}
+
+function parseLifecycleExitMessage(message) {
+    if (typeof message !== 'string' || !message.includes('[lifecycle] exited')) return null;
+
+    const read = (key) => {
+        const m = message.match(new RegExp(`${key}=([^\\s]+)`));
+        return m ? m[1] : null;
+    };
+
+    return {
+        status: read('status'),
+        requestedStop: read('requestedStop') === 'true',
+        exitCode: read('exitCode'),
+        exitSignal: read('exitSignal'),
+    };
+}
+
+function getLatestLifecycleExitEventForOutput(pipelineId, outputId) {
+    const lifecycleLogs = db.listLifecycleLogsByOutput(pipelineId, outputId);
+    for (let i = lifecycleLogs.length - 1; i >= 0; i -= 1) {
+        const entry = lifecycleLogs[i];
+        if (typeof entry?.message === 'string' && entry.message.includes('[lifecycle] exited')) {
+            return entry;
+        }
+    }
+    return null;
+}
+
+function isLatestJobLikelyInputUnavailableStop(pipelineId, outputId, latestJob) {
+    if (!latestJob || latestJob.status === 'running') {
+        return { matched: false, reason: 'no_terminal_job' };
+    }
+
+    if (latestJob.status !== 'stopped') {
+        return { matched: false, reason: 'job_not_stopped' };
+    }
+
+    const lastInputUnavailableAtMs = pipelineLastInputUnavailableAtMs.get(pipelineId);
+    if (!Number.isFinite(lastInputUnavailableAtMs)) {
+        return { matched: false, reason: 'no_input_unavailable_transition' };
+    }
+
+    const exitEvent = getLatestLifecycleExitEventForOutput(pipelineId, outputId);
+    const parsedExit = parseLifecycleExitMessage(exitEvent?.message || '');
+    if (!parsedExit) {
+        return { matched: false, reason: 'missing_lifecycle_exit_log' };
+    }
+
+    if (parsedExit.requestedStop) {
+        return { matched: false, reason: 'requested_stop' };
+    }
+
+    if (parsedExit.status && parsedExit.status !== 'stopped') {
+        return { matched: false, reason: 'lifecycle_not_stopped' };
+    }
+
+    const endedAtMs = Date.parse(latestJob.endedAt || exitEvent.ts || '');
+    if (!Number.isFinite(endedAtMs)) {
+        return { matched: false, reason: 'missing_job_end_time' };
+    }
+
+    const graceMs = getInputUnavailableExitGraceMs();
+    const deltaMs = Math.abs(endedAtMs - lastInputUnavailableAtMs);
+    if (deltaMs > graceMs) {
+        return { matched: false, reason: 'outside_grace_window', deltaMs, graceMs };
+    }
+
+    return {
+        matched: true,
+        reason: 'near_input_unavailable_transition',
+        deltaMs,
+        graceMs,
+        exitStatus: parsedExit.status,
+        exitCode: parsedExit.exitCode,
+        exitSignal: parsedExit.exitSignal,
+    };
 }
 
 function getOutputRestartState(pipelineId, outputId) {
@@ -1078,6 +1161,7 @@ app.post('/pipelines', async (req, res) => {
         );
         // Seed baseline in-memory input state at creation time.
         pipelineInputStatusHistory.set(pipelineWithState.id, runtimeState.status);
+        pipelineLastInputUnavailableAtMs.delete(pipelineWithState.id);
         db.appendPipelineEvent(
             pipelineWithState.id,
             `[input_state] initial_state=${runtimeState.status}`,
@@ -1139,6 +1223,7 @@ app.post('/pipelines/:id', async (req, res) => {
         if (streamKeyChanging) {
             // New stream key starts a fresh lifecycle baseline derived from current runtime state.
             pipelineInputStatusHistory.set(id, initialInputStatus || 'off');
+            pipelineLastInputUnavailableAtMs.delete(id);
             db.appendPipelineEvent(id, '[input_state] reset due to stream_key change', 'pipeline_state');
             db.appendPipelineEvent(
                 id,
@@ -1177,6 +1262,7 @@ app.delete('/pipelines/:id', (req, res) => {
         const ok = db.deletePipeline(id);
         if (!ok) return res.status(500).json({ error: 'Failed to delete pipeline' });
         pipelineInputStatusHistory.delete(id);
+        pipelineLastInputUnavailableAtMs.delete(id);
         for (const output of outputs) {
             clearOutputRestartState(id, output.id);
         }
@@ -1630,7 +1716,9 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
     const outputs = db.listOutputsForPipeline(pipelineId);
     if (outputs.length === 0) return;
 
-    const restartMode = cfg.inputRecoveryRestartMode === 'all' ? 'all' : 'failedOnly';
+    const restartMode = cfg.inputRecoveryRestartMode === 'all'
+        ? 'all'
+        : (cfg.inputRecoveryRestartMode === 'failedOnly' ? 'failedOnly' : 'inputUnavailableOnly');
     const eligibleOutputs = [];
     const skippedOutputs = [];
 
@@ -1641,7 +1729,27 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
         }
 
         const latestJob = db.listJobsForOutput(pipelineId, output.id)[0] || null;
-        if (latestJob?.status === 'failed') {
+        const inputUnavailableMatch = isLatestJobLikelyInputUnavailableStop(
+            pipelineId,
+            output.id,
+            latestJob,
+        );
+
+        if (restartMode === 'inputUnavailableOnly') {
+            if (inputUnavailableMatch.matched) {
+                eligibleOutputs.push(output);
+                return;
+            }
+
+            skippedOutputs.push({
+                outputId: output.id,
+                status: latestJob?.status || 'never_started',
+                reason: inputUnavailableMatch.reason,
+            });
+            return;
+        }
+
+        if (latestJob?.status === 'failed' || inputUnavailableMatch.matched) {
             eligibleOutputs.push(output);
             return;
         }
@@ -1649,6 +1757,7 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
         skippedOutputs.push({
             outputId: output.id,
             status: latestJob?.status || 'never_started',
+            reason: inputUnavailableMatch.reason,
         });
     });
 
@@ -1687,6 +1796,7 @@ function restartPipelineOutputsOnInputRecovery(pipelineId) {
         scheduledOutputCount: eligibleOutputs.length,
         skippedOutputCount: skippedOutputs.length,
         skipped: skippedOutputs,
+        inputUnavailableExitGraceMs: getInputUnavailableExitGraceMs(),
         initialDelayMs,
         staggerMs,
     });
@@ -2415,6 +2525,14 @@ function updatePipelineInputStatusHistory(pipelineId, inputStatus) {
             `[input_state] ${previousInputStatus} -> ${inputStatus}`,
             'pipeline_state',
         );
+    }
+
+    if (
+        previousInputStatus !== undefined
+        && previousInputStatus === 'on'
+        && inputStatus !== 'on'
+    ) {
+        pipelineLastInputUnavailableAtMs.set(pipelineId, Date.now());
     }
 
     pipelineInputStatusHistory.set(pipelineId, inputStatus);

@@ -17,7 +17,7 @@ const DEFAULT_CONFIG = {
         backoffMaxDelayMs: 60000,
         resetFailureCountAfterMs: 30000,
         restartOnInputRecovery: true,
-        inputRecoveryRestartMode: 'failedOnly',
+        inputRecoveryRestartMode: 'inputUnavailableOnly',
         inputRecoveryRestartDelayMs: 1000,
         inputRecoveryRestartStaggerMs: 250,
     },
@@ -56,6 +56,13 @@ function parseInputRecoveryRestartMode(value, fallback) {
     if (value === undefined || value === null) return fallback;
     const normalized = String(value).trim().toLowerCase();
     if (normalized === 'all') return 'all';
+    if (
+        normalized === 'inputunavailableonly'
+        || normalized === 'input_unavailable_only'
+        || normalized === 'input-unavailable-only'
+    ) {
+        return 'inputUnavailableOnly';
+    }
     if (normalized === 'failedonly' || normalized === 'failed_only' || normalized === 'failed-only') {
         return 'failedOnly';
     }
