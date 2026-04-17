@@ -242,14 +242,18 @@ Validate pipeline + output exist in DB
 Parse and clamp query limit (default 200, range 1..1000)
   │
   ▼
-If query.filter === 'lifecycle':
-  db.listLifecycleLogsByOutput(pipelineId, outputId)
-  Return oldest-first lifecycle logs:
-    { pipelineId, outputId, logs: [{ ts, message }, ...] }
-Else:
-  db.listJobLogsByOutput(pipelineId, outputId)
-  Return newest-first logs (bounded by limit):
-    { pipelineId, outputId, logs: [{ ts, message }, ...] }
+Parse optional history filters:
+  - since / until timestamps
+  - order (asc|desc)
+  - prefix families (stderr, exit, control, ...)
+  - filter=lifecycle shortcut
+  │
+  ▼
+db.listJobLogsByOutputFiltered(pipelineId, outputId, filters)
+  │
+  ▼
+Return filtered logs:
+  { pipelineId, outputId, logs: [{ ts, message }, ...] }
 ```
 
 `job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.
@@ -391,6 +395,28 @@ These values are stored as numeric Kbps in the dashboard model. At render time, 
 For outputs, bitrate is server-provided from ffmpeg progress (`bitrate`) in raw ffmpeg format (for example `1842.5kbits/s`) and is not delta-computed in the browser.
 
 The backend also emits `outputs[*].bitrateKbps` (numeric Kbps) by parsing ffmpeg progress once on the server. The frontend uses `bitrateKbps` for per-output and aggregate output bitrate, keeping UI logic agnostic of ffmpeg-specific string formats.
+
+### 5.4 Output History Modal
+
+Each output card exposes a history modal with two modes:
+
+**Timeline mode** (default)
+- On open, fetches only `filter=lifecycle` logs (lifecycle events only, oldest-first).
+- Polls on the same interval as the main dashboard poll.
+- Each lifecycle event row has a collapsible context section that loads surrounding `stderr`/`exit`/`control` logs on demand when expanded.
+- Context fetch is bounded: at most 50 rows, at most 5 minutes before the event, floored to the previous lifecycle event's timestamp. Result is cached per event key for the modal session.
+
+**Raw mode**
+- Fetches up to 1000 rows ordered newest/oldest (user-selectable).
+- Find-in-page search: all rows render regardless of query; matching rows are highlighted inline and assigned a sequential match index. The `n/m` counter and up/down navigation (Enter / Shift+Enter) move between matches only. Scrolls active match into view. Non-matching rows remain visible for context.
+
+**Frontend constants** (in `dashboard.js`):
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `OUTPUT_HISTORY_RAW_LIMIT` | 1000 | Max rows fetched in raw mode |
+| `OUTPUT_HISTORY_CONTEXT_LIMIT` | 50 | Max rows per context on-demand fetch |
+| `OUTPUT_HISTORY_CONTEXT_WINDOW_MS` | 5 min | Look-back window for context fetch |
 
 ---
 

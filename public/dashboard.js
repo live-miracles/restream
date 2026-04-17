@@ -43,7 +43,13 @@ const outputHistoryState = {
     outputName: '',
     mode: 'timeline',
     order: 'desc',
-    logs: [],
+    lifecycleLogs: [],
+    rawLogs: [],
+    rawQuery: '',
+    rawMatchIndex: 0,
+    expandedContextKeys: new Set(),
+    contextLogsByKey: new Map(),
+    contextLoadingKeys: new Set(),
     redacted: true,
     playing: false,
     pollTimer: null,
@@ -61,6 +67,9 @@ const pipelineHistoryState = {
 
 const OUTPUT_HISTORY_POLL_INTERVAL_MS = 5000;
 const OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS = 30000;
+const OUTPUT_HISTORY_RAW_LIMIT = 1000;
+const OUTPUT_HISTORY_CONTEXT_WINDOW_MS = 5 * 60 * 1000;
+const OUTPUT_HISTORY_CONTEXT_LIMIT = 50;
 
 function formatHistoryTime(ts) {
     if (!ts) return '--';
@@ -174,6 +183,167 @@ function getOrderedOutputLogs(logs, order) {
     return order === 'asc' ? items : items.reverse();
 }
 
+function parseHistoryTimeMs(ts) {
+    const value = Date.parse(ts || '');
+    return Number.isNaN(value) ? null : value;
+}
+
+function getOutputHistoryContextKey(log) {
+    return `${log?.ts || ''}::${log?.message || ''}`;
+}
+
+function getRawHistorySearchValue() {
+    return String(outputHistoryState.rawQuery || '').trim().toLowerCase();
+}
+
+function getFilteredRawOutputLogs() {
+    return getOrderedOutputLogs(outputHistoryState.rawLogs, outputHistoryState.order);
+}
+
+function getMatchingRawOutputLogs() {
+    const query = getRawHistorySearchValue();
+    if (!query) return [];
+    return getFilteredRawOutputLogs().filter((log) => {
+        const haystack = `${log?.ts || ''}\n${log?.message || ''}`.toLowerCase();
+        return haystack.includes(query);
+    });
+}
+
+function getTimelineContextLogs(log) {
+    return outputHistoryState.contextLogsByKey.get(getOutputHistoryContextKey(log)) || [];
+}
+
+function getTimelineContextRange(log) {
+    const targetMs = parseHistoryTimeMs(log?.ts);
+    if (targetMs === null) return null;
+
+    const lifecycleLogsAsc = getOrderedOutputLogs(outputHistoryState.lifecycleLogs, 'asc');
+    const targetIndex = lifecycleLogsAsc.findIndex(
+        (entry) => entry?.ts === log?.ts && String(entry?.message || '') === String(log?.message || ''),
+    );
+    const previousLifecycle = targetIndex > 0 ? lifecycleLogsAsc[targetIndex - 1] : null;
+    const previousLifecycleMs = parseHistoryTimeMs(previousLifecycle?.ts);
+    const lowerBoundMs = Math.max(
+        previousLifecycleMs === null ? Number.NEGATIVE_INFINITY : previousLifecycleMs,
+        targetMs - OUTPUT_HISTORY_CONTEXT_WINDOW_MS,
+    );
+    const sinceMs = Number.isFinite(lowerBoundMs) ? lowerBoundMs : targetMs - OUTPUT_HISTORY_CONTEXT_WINDOW_MS;
+
+    return {
+        since: new Date(sinceMs).toISOString(),
+        until: new Date(targetMs).toISOString(),
+    };
+}
+
+async function ensureOutputHistoryContext(log) {
+    const contextKey = getOutputHistoryContextKey(log);
+    if (!contextKey || outputHistoryState.contextLoadingKeys.has(contextKey) || outputHistoryState.contextLogsByKey.has(contextKey)) {
+        return;
+    }
+
+    const range = getTimelineContextRange(log);
+    if (!range) {
+        outputHistoryState.contextLogsByKey.set(contextKey, []);
+        return;
+    }
+
+    outputHistoryState.contextLoadingKeys.add(contextKey);
+    renderOutputHistory(false);
+
+    const res = await getOutputHistory(outputHistoryState.pipelineId, outputHistoryState.outputId, {
+        since: range.since,
+        until: range.until,
+        order: 'asc',
+        limit: OUTPUT_HISTORY_CONTEXT_LIMIT,
+        prefixes: ['stderr', 'exit', 'control'],
+    });
+
+    outputHistoryState.contextLoadingKeys.delete(contextKey);
+    outputHistoryState.contextLogsByKey.set(contextKey, Array.isArray(res?.logs) ? res.logs : []);
+    renderOutputHistory(false);
+}
+
+function toggleOutputHistoryContext(log) {
+    const contextKey = getOutputHistoryContextKey(log);
+    if (!contextKey) return;
+    if (outputHistoryState.expandedContextKeys.has(contextKey)) {
+        outputHistoryState.expandedContextKeys.delete(contextKey);
+    } else {
+        outputHistoryState.expandedContextKeys.add(contextKey);
+        ensureOutputHistoryContext(log);
+    }
+    renderOutputHistory(false);
+}
+
+function setOutputHistorySearch(query) {
+    outputHistoryState.rawQuery = String(query || '');
+    outputHistoryState.rawMatchIndex = 0;
+    renderOutputHistory(true);
+}
+
+function onOutputHistorySearchKeydown(event) {
+    if (!event || event.key !== 'Enter') return;
+    event.preventDefault();
+    navigateOutputHistorySearch(event.shiftKey ? -1 : 1);
+}
+
+function renderHighlightedLogMessage(container, text, query) {
+    container.replaceChildren();
+    if (!query) {
+        container.textContent = text;
+        return;
+    }
+
+    const source = String(text || '');
+    const lowerSource = source.toLowerCase();
+    const needle = String(query || '').toLowerCase();
+    if (!needle) {
+        container.textContent = source;
+        return;
+    }
+
+    let cursor = 0;
+    while (cursor < source.length) {
+        const idx = lowerSource.indexOf(needle, cursor);
+        if (idx < 0) {
+            container.appendChild(document.createTextNode(source.slice(cursor)));
+            break;
+        }
+
+        if (idx > cursor) {
+            container.appendChild(document.createTextNode(source.slice(cursor, idx)));
+        }
+
+        const mark = document.createElement('mark');
+        mark.className = 'rounded bg-amber-400 px-0.5 text-gray-900';
+        mark.textContent = source.slice(idx, idx + needle.length);
+        container.appendChild(mark);
+
+        cursor = idx + needle.length;
+    }
+}
+
+function focusOutputHistoryRawMatch() {
+    const list = document.getElementById('output-history-list');
+    if (!list) return;
+    const target = list.querySelector(`[data-raw-match-index="${outputHistoryState.rawMatchIndex}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: 'nearest' });
+}
+
+function navigateOutputHistorySearch(direction) {
+    if (outputHistoryState.mode !== 'raw') return;
+    const matchingLogs = getMatchingRawOutputLogs();
+    if (matchingLogs.length === 0) return;
+
+    const count = matchingLogs.length;
+    const current = Number.isInteger(outputHistoryState.rawMatchIndex) ? outputHistoryState.rawMatchIndex : 0;
+    const next = (current + direction + count) % count;
+    outputHistoryState.rawMatchIndex = next;
+    renderOutputHistory(false);
+    focusOutputHistoryRawMatch();
+}
+
 function setOutputHistoryOrder(order) {
     const nextOrder = order === 'asc' ? 'asc' : 'desc';
     if (outputHistoryState.order === nextOrder) return;
@@ -184,12 +354,17 @@ function setOutputHistoryOrder(order) {
 function renderOutputHistory(scrollToTop = false) {
     const list = document.getElementById('output-history-list');
     const empty = document.getElementById('output-history-empty');
+    const searchWrap = document.getElementById('output-history-search-wrap');
+    const searchInput = document.getElementById('output-history-search');
+    const searchStatus = document.getElementById('output-history-search-status');
+    const searchPrevBtn = document.getElementById('output-history-search-prev');
+    const searchNextBtn = document.getElementById('output-history-search-next');
     const timelineBtn = document.getElementById('output-history-mode-timeline');
     const rawBtn = document.getElementById('output-history-mode-raw');
     const newestBtn = document.getElementById('output-history-order-newest');
     const oldestBtn = document.getElementById('output-history-order-oldest');
 
-    if (!list || !empty || !timelineBtn || !rawBtn || !newestBtn || !oldestBtn) return;
+    if (!list || !empty || !timelineBtn || !rawBtn || !newestBtn || !oldestBtn || !searchWrap || !searchInput || !searchStatus || !searchPrevBtn || !searchNextBtn) return;
 
     const mode = outputHistoryState.mode;
     timelineBtn.classList.toggle('btn-accent', mode === 'timeline');
@@ -203,9 +378,35 @@ function renderOutputHistory(scrollToTop = false) {
     oldestBtn.classList.toggle('btn-accent', !newestFirst);
     oldestBtn.classList.toggle('btn-outline', newestFirst);
 
+    searchWrap.classList.toggle('hidden', mode !== 'raw');
+    if (searchInput.value !== outputHistoryState.rawQuery) {
+        searchInput.value = outputHistoryState.rawQuery;
+    }
+
+    const rawMatchingLogs = mode === 'raw' ? getMatchingRawOutputLogs() : [];
+    const hasSearchQuery = getRawHistorySearchValue().length > 0;
+    if (mode === 'raw' && hasSearchQuery && rawMatchingLogs.length > 0) {
+        if (outputHistoryState.rawMatchIndex < 0 || outputHistoryState.rawMatchIndex >= rawMatchingLogs.length) {
+            outputHistoryState.rawMatchIndex = 0;
+        }
+        searchStatus.textContent = `${outputHistoryState.rawMatchIndex + 1}/${rawMatchingLogs.length}`;
+    } else if (mode === 'raw' && hasSearchQuery) {
+        searchStatus.textContent = '0/0';
+    } else {
+        searchStatus.textContent = '';
+    }
+
+    const canNavigateMatches = mode === 'raw' && hasSearchQuery && rawMatchingLogs.length > 0;
+    searchPrevBtn.disabled = !canNavigateMatches;
+    searchNextBtn.disabled = !canNavigateMatches;
+
     list.replaceChildren();
 
-    if (!Array.isArray(outputHistoryState.logs) || outputHistoryState.logs.length === 0) {
+    const hasLogs = mode === 'raw'
+        ? Array.isArray(outputHistoryState.rawLogs) && outputHistoryState.rawLogs.length > 0
+        : Array.isArray(outputHistoryState.lifecycleLogs) && outputHistoryState.lifecycleLogs.length > 0;
+
+    if (!hasLogs) {
         empty.classList.remove('hidden');
         return;
     }
@@ -213,10 +414,24 @@ function renderOutputHistory(scrollToTop = false) {
     empty.classList.add('hidden');
 
     if (mode === 'raw') {
-        const rawLogs = getOrderedOutputLogs(outputHistoryState.logs, outputHistoryState.order);
-        for (const log of rawLogs) {
+        const rawLogs = getFilteredRawOutputLogs();
+        empty.textContent = 'No history available yet.';
+        const hasQuery = hasSearchQuery;
+        let matchCounter = 0;
+        for (let i = 0; i < rawLogs.length; i += 1) {
+            const log = rawLogs[i];
+            const haystack = `${log?.ts || ''}\n${log?.message || ''}`.toLowerCase();
+            const isMatch = hasQuery && haystack.includes(getRawHistorySearchValue());
+            const matchIndex = isMatch ? matchCounter++ : -1;
             const row = document.createElement('div');
-            row.className = 'rounded bg-base-100 p-2';
+            row.className = 'rounded border border-transparent bg-base-100 p-2';
+            if (isMatch) {
+                row.dataset.rawMatchIndex = String(matchIndex);
+                if (matchIndex === outputHistoryState.rawMatchIndex) {
+                    row.classList.remove('border-transparent');
+                    row.classList.add('border-success');
+                }
+            }
 
             const header = document.createElement('div');
             header.className = 'flex items-center justify-between gap-2';
@@ -234,7 +449,8 @@ function renderOutputHistory(scrollToTop = false) {
 
             const msg = document.createElement('pre');
             msg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-            msg.textContent = sanitizeLogMessage(log.message || '', outputHistoryState.redacted);
+            const safeMessage = sanitizeLogMessage(log.message || '', outputHistoryState.redacted);
+            renderHighlightedLogMessage(msg, safeMessage, hasQuery ? getRawHistorySearchValue() : '');
 
             row.appendChild(header);
             row.appendChild(msg);
@@ -244,9 +460,15 @@ function renderOutputHistory(scrollToTop = false) {
         return;
     }
 
-    const timelineLogs = getOrderedOutputLogs(getTimelineLogs(outputHistoryState.logs), outputHistoryState.order);
+    empty.textContent = 'No history available yet.';
+
+    const timelineLogs = getOrderedOutputLogs(outputHistoryState.lifecycleLogs, outputHistoryState.order);
     timelineLogs.forEach((log, index) => {
         const event = classifyHistoryEvent(log, timelineLogs, index);
+        const contextLogs = getTimelineContextLogs(log);
+        const contextKey = getOutputHistoryContextKey(log);
+        const expanded = outputHistoryState.expandedContextKeys.has(contextKey);
+        const contextLoading = outputHistoryState.contextLoadingKeys.has(contextKey);
 
         const row = document.createElement('div');
         row.className = 'rounded bg-base-100 p-2';
@@ -254,15 +476,36 @@ function renderOutputHistory(scrollToTop = false) {
         const header = document.createElement('div');
         header.className = 'flex items-center justify-between gap-2';
 
+        const left = document.createElement('div');
+        left.className = 'flex items-center gap-2';
+
         const badge = document.createElement('span');
         badge.className = `badge badge-sm ${event.badgeClass}`;
         badge.textContent = event.label;
+
+        {
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'btn btn-ghost btn-xs btn-square text-lg leading-none';
+            if (contextLoading) {
+                toggle.textContent = '…';
+                toggle.disabled = true;
+            } else {
+                toggle.textContent = expanded ? '▾' : '▸';
+            }
+            toggle.title = expanded ? 'Hide context' : 'Show context';
+            toggle.setAttribute('aria-label', expanded ? 'Hide context' : 'Show context');
+            toggle.onclick = () => toggleOutputHistoryContext(log);
+            left.appendChild(toggle);
+        }
+
+        left.appendChild(badge);
 
         const ts = document.createElement('span');
         ts.className = 'text-xs opacity-70';
         ts.textContent = formatHistoryTime(log.ts);
 
-        header.appendChild(badge);
+        header.appendChild(left);
         header.appendChild(ts);
 
         const details = document.createElement('pre');
@@ -271,6 +514,49 @@ function renderOutputHistory(scrollToTop = false) {
 
         row.appendChild(header);
         row.appendChild(details);
+
+        if (expanded) {
+            const contextBox = document.createElement('div');
+            contextBox.className = 'mt-2 rounded border border-base-300 bg-base-200 p-2';
+
+            const contextTitle = document.createElement('div');
+            contextTitle.className = 'mb-2 text-xs font-medium opacity-70';
+            contextTitle.textContent = `stderr / exit / control before event (${contextLogs.length})`;
+            contextBox.appendChild(contextTitle);
+
+            if (contextLoading) {
+                const loadingRow = document.createElement('div');
+                loadingRow.className = 'text-xs opacity-70';
+                loadingRow.textContent = 'Loading context...';
+                contextBox.appendChild(loadingRow);
+            } else if (contextLogs.length === 0) {
+                const emptyRow = document.createElement('div');
+                emptyRow.className = 'text-xs opacity-70';
+                emptyRow.textContent = 'No stderr, exit, or control logs in the bounded window before this event.';
+                contextBox.appendChild(emptyRow);
+            } else {
+                const orderedContextLogs = getOrderedOutputLogs(contextLogs, outputHistoryState.order);
+                for (const contextLog of orderedContextLogs) {
+                    const contextRow = document.createElement('div');
+                    contextRow.className = 'mb-2 last:mb-0';
+
+                    const contextTs = document.createElement('div');
+                    contextTs.className = 'text-[11px] opacity-60';
+                    contextTs.textContent = formatHistoryTime(contextLog.ts);
+
+                    const contextMsg = document.createElement('pre');
+                    contextMsg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
+                    contextMsg.textContent = sanitizeLogMessage(contextLog.message || '', outputHistoryState.redacted);
+
+                    contextRow.appendChild(contextTs);
+                    contextRow.appendChild(contextMsg);
+                    contextBox.appendChild(contextRow);
+                }
+            }
+
+            row.appendChild(contextBox);
+        }
+
         list.appendChild(row);
     });
 
@@ -324,10 +610,15 @@ function updateHistoryPlayPauseBtn() {
 async function pollHistoryOnce() {
     const { pipelineId, outputId, mode } = outputHistoryState;
     if (!pipelineId || !outputId) return;
-    const filter = mode === 'timeline' ? 'lifecycle' : null;
-    const res = await getOutputHistory(pipelineId, outputId, 200, filter);
-    if (res === null) return;
-    outputHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+    if (mode === 'timeline') {
+        const lifecycleRes = await getOutputHistory(pipelineId, outputId, { filter: 'lifecycle' });
+        if (lifecycleRes === null) return;
+        outputHistoryState.lifecycleLogs = Array.isArray(lifecycleRes.logs) ? lifecycleRes.logs : [];
+    } else {
+        const rawRes = await getOutputHistory(pipelineId, outputId, { limit: OUTPUT_HISTORY_RAW_LIMIT });
+        if (rawRes === null) return;
+        outputHistoryState.rawLogs = Array.isArray(rawRes.logs) ? rawRes.logs : [];
+    }
     renderOutputHistory(false);
 }
 
@@ -356,7 +647,13 @@ async function openOutputHistoryModal(pipeId, outId, outName = '') {
     outputHistoryState.outputName = outName || outId;
     outputHistoryState.mode = 'timeline';
     outputHistoryState.order = 'desc';
-    outputHistoryState.logs = [];
+    outputHistoryState.lifecycleLogs = [];
+    outputHistoryState.rawLogs = [];
+    outputHistoryState.rawQuery = '';
+    outputHistoryState.rawMatchIndex = 0;
+    outputHistoryState.expandedContextKeys = new Set();
+    outputHistoryState.contextLogsByKey = new Map();
+    outputHistoryState.contextLoadingKeys = new Set();
     outputHistoryState.redacted = true;
 
     title.textContent = `History: ${outputHistoryState.outputName}`;
@@ -371,11 +668,11 @@ async function openOutputHistoryModal(pipeId, outId, outName = '') {
     renderOutputHistory();
     modal.showModal();
 
-    const res = await getOutputHistory(pipeId, outId, 200, 'lifecycle');
+    const lifecycleRes = await getOutputHistory(pipeId, outId, { filter: 'lifecycle' });
     loading.classList.add('hidden');
-    if (res === null) return;
+    if (lifecycleRes === null) return;
 
-    outputHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+    outputHistoryState.lifecycleLogs = Array.isArray(lifecycleRes.logs) ? lifecycleRes.logs : [];
     renderOutputHistory(true);
 
     // Stop polling when dialog closes

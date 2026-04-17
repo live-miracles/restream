@@ -275,6 +275,42 @@ const listLifecycleLogsByOutput = db.prepare(`
     WHERE pipeline_id = ? AND output_id = ? AND message LIKE '[lifecycle]%'
     ORDER BY ts ASC
 `);
+function listJobLogsByOutputFiltered(pipelineId, outputId, { since = null, until = null, limit = null, order = 'desc', prefixes = [] } = {}) {
+    const clauses = ['pipeline_id = ?', 'output_id = ?'];
+    const params = [pipelineId, outputId];
+
+    if (since) {
+        clauses.push('ts >= ?');
+        params.push(since);
+    }
+    if (until) {
+        clauses.push('ts < ?');
+        params.push(until);
+    }
+
+    if (Array.isArray(prefixes) && prefixes.length > 0) {
+        const prefixClauses = [];
+        for (const prefix of prefixes) {
+            prefixClauses.push('message LIKE ?');
+            params.push(`${prefix}%`);
+        }
+        clauses.push(`(${prefixClauses.join(' OR ')})`);
+    }
+
+    const normalizedOrder = order === 'asc' ? 'ASC' : 'DESC';
+    let sql = `
+        SELECT ts, message, event_type AS eventType FROM job_logs
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY ts ${normalizedOrder}
+    `;
+
+    if (Number.isFinite(limit) && limit > 0) {
+        sql += '\nLIMIT ?';
+        params.push(limit);
+    }
+
+    return db.prepare(sql).all(...params);
+}
 const listJobLogsByPipeline = db.prepare(`
     SELECT ts, message, event_type AS eventType FROM job_logs
     WHERE pipeline_id = ? AND output_id IS NULL
@@ -484,6 +520,9 @@ module.exports = {
     },
     listJobLogsByOutput(pipelineId, outputId) {
         return listJobLogsByOutput.all(pipelineId, outputId);
+    },
+    listJobLogsByOutputFiltered(pipelineId, outputId, filters = {}) {
+        return listJobLogsByOutputFiltered(pipelineId, outputId, filters);
     },
     listLifecycleLogsByOutput(pipelineId, outputId) {
         return listLifecycleLogsByOutput.all(pipelineId, outputId);

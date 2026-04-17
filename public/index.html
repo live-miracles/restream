@@ -234,6 +234,22 @@
             <span class="loading loading-dots loading-sm"></span>
             Loading history...
           </div>
+          <div id="output-history-search-wrap" class="hidden mb-3 flex-shrink-0">
+            <div class="relative w-full">
+              <input
+                id="output-history-search"
+                type="text"
+                class="input input-sm input-bordered w-full pr-40"
+                placeholder="Search raw logs"
+                oninput="setOutputHistorySearch(this.value)"
+                onkeydown="onOutputHistorySearchKeydown(event)">
+              <div class="absolute inset-y-0 right-2 flex items-center gap-1" id="output-history-search-controls">
+                <span id="output-history-search-status" class="text-xs opacity-70 min-w-12 text-right"></span>
+                <button id="output-history-search-prev" type="button" class="btn btn-ghost btn-xs btn-square" title="Previous match" onclick="navigateOutputHistorySearch(-1)">&#9650;</button>
+                <button id="output-history-search-next" type="button" class="btn btn-ghost btn-xs btn-square" title="Next match" onclick="navigateOutputHistorySearch(1)">&#9660;</button>
+              </div>
+            </div>
+          </div>
           <div id="output-history-empty" class="hidden text-sm opacity-70 flex-shrink-0">No history available yet.</div>
           <div id="output-history-list" class="flex-1 min-h-0 space-y-2 overflow-auto"></div>
         </div>

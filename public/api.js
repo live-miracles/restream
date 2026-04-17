@@ -235,21 +235,38 @@ async function stopOut(pipeId, outId) {
     );
 }
 
-async function getOutputHistory(pipeId, outId, limit = 200, filter = null) {
+async function getOutputHistory(pipeId, outId, options = {}) {
     if (!pipeId || !outId) {
         showErrorAlert('Pipeline id and output id are required');
         return null;
     }
 
+    const query = new URLSearchParams();
+    const {
+        limit = 200,
+        filter = null,
+        since = null,
+        until = null,
+        order = null,
+        prefixes = null,
+    } = options || {};
+
     if (filter === 'lifecycle') {
-        return apiRequest(
-            `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?filter=lifecycle`,
-        );
+        query.set('filter', 'lifecycle');
+    } else {
+        const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+        query.set('limit', String(safeLimit));
     }
 
-    const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+    if (since) query.set('since', String(since));
+    if (until) query.set('until', String(until));
+    if (order) query.set('order', String(order));
+    if (Array.isArray(prefixes) && prefixes.length > 0) {
+        query.set('prefix', prefixes.join(','));
+    }
+
     return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?limit=${encodeURIComponent(safeLimit)}`,
+        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?${query.toString()}`,
     );
 }
 

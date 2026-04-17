@@ -334,10 +334,23 @@ Returns recent job logs for a specific output. This endpoint is intended for dia
 **Query params:**
 - `limit` optional; default `200`; min `1`; max `1000`.
 - `filter` optional; set to `lifecycle` to return only lifecycle events.
+- `since` optional; inclusive lower timestamp bound (ISO 8601).
+- `until` optional; exclusive upper timestamp bound (ISO 8601).
+- `order` optional; `asc` or `desc`.
+- `prefix` optional; comma-separated or repeated list of message families: `lifecycle`, `stderr`, `exit`, `control`, `config`, `input_state`.
 
 Ordering behavior:
 - Default path (`filter` omitted): newest first.
 - Lifecycle path (`filter=lifecycle`): oldest first, full lifecycle sequence for timeline rendering.
+
+Filtering behavior:
+- `since` and `until` constrain the returned time window.
+- `prefix` filters by message prefix when `filter` is omitted.
+- `filter=lifecycle` is equivalent to a lifecycle-only prefix filter and ignores `prefix`.
+
+Guardrails:
+- Any requested history window is capped server-side to 24 hours.
+- Requests that include high-volume families (`stderr`, `exit`, `control`) are capped to a 10 minute window when both `since` and `until` are provided.
 
 **Response 200:**
 ```json
@@ -361,7 +374,7 @@ Ordering behavior:
 }
 ```
 
-**Errors:** `404` output or pipeline not found.
+**Errors:** `400` invalid `limit`, `since`, `until`, `order`, or `prefix`, or requested window too large; `404` output or pipeline not found.
 
 > Lifecycle enrichment: start/stop/status transitions now emit `[lifecycle] ...` messages in `job_logs`.
 > Current emitted formats:

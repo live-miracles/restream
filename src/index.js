@@ -1213,6 +1213,59 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
     return args;
 }
 
+const HISTORY_MESSAGE_PREFIXES = {
+    lifecycle: '[lifecycle]',
+    stderr: '[stderr]',
+    exit: '[exit]',
+    control: '[control]',
+    config: '[config]',
+    input_state: '[input_state]',
+};
+const HISTORY_MAX_LIMIT = 1000;
+const HISTORY_MAX_RANGE_MS = 24 * 60 * 60 * 1000;
+const HISTORY_MAX_HIGH_VOLUME_RANGE_MS = 10 * 60 * 1000;
+const HISTORY_HIGH_VOLUME_PREFIXES = new Set(['[stderr]', '[exit]', '[control]']);
+
+function parseHistoryTimestamp(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = new Date(String(value));
+    if (Number.isNaN(parsed.getTime())) return undefined;
+    return parsed.toISOString();
+}
+
+function parseHistoryOrder(value, defaultValue = 'desc') {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === 'asc' || normalized === 'desc') return normalized;
+    return null;
+}
+
+function parseHistoryLimit(value, defaultValue = 200) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(1, Math.min(parsed, HISTORY_MAX_LIMIT));
+}
+
+function parseHistoryPrefixes(value) {
+    if (value === undefined || value === null || value === '') return [];
+
+    const rawValues = Array.isArray(value) ? value : [value];
+    const tokens = rawValues
+        .flatMap((entry) => String(entry).split(','))
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+
+    const prefixes = [];
+    for (const token of tokens) {
+        const mappedPrefix = HISTORY_MESSAGE_PREFIXES[token];
+        if (!mappedPrefix) return null;
+        if (!prefixes.includes(mappedPrefix)) prefixes.push(mappedPrefix);
+    }
+
+    return prefixes;
+}
+
 // create output
 app.post('/pipelines/:pipelineId/outputs', (req, res) => {
     try {
@@ -1607,16 +1660,65 @@ app.get('/pipelines/:pipelineId/outputs/:outputId/history', (req, res) => {
         if (!output) return res.status(404).json({ error: 'Output not found' });
 
         const filterLifecycle = req.query.filter === 'lifecycle';
+        const since = parseHistoryTimestamp(req.query.since);
+        if (since === undefined) return res.status(400).json({ error: 'Invalid since timestamp' });
+
+        const until = parseHistoryTimestamp(req.query.until);
+        if (until === undefined) return res.status(400).json({ error: 'Invalid until timestamp' });
+        if (since && until && since >= until) {
+            return res.status(400).json({ error: 'since must be earlier than until' });
+        }
+
+        const order = parseHistoryOrder(req.query.order, filterLifecycle ? 'asc' : 'desc');
+        if (!order) return res.status(400).json({ error: 'order must be asc or desc' });
+
+        const prefixes = filterLifecycle ? ['[lifecycle]'] : parseHistoryPrefixes(req.query.prefix);
+        if (prefixes === null) {
+            return res.status(400).json({
+                error: 'prefix must be a comma-separated list of lifecycle, stderr, exit, control, config, input_state',
+            });
+        }
+
+        const sinceMs = since ? Date.parse(since) : null;
+        const untilMs = until ? Date.parse(until) : null;
+        const rangeMs = sinceMs !== null && untilMs !== null ? untilMs - sinceMs : null;
+        if (rangeMs !== null) {
+            if (rangeMs > HISTORY_MAX_RANGE_MS) {
+                return res.status(400).json({ error: 'Requested history window is too large' });
+            }
+            const requestsHighVolumePrefixes = prefixes.some((prefix) => HISTORY_HIGH_VOLUME_PREFIXES.has(prefix));
+            if (requestsHighVolumePrefixes && rangeMs > HISTORY_MAX_HIGH_VOLUME_RANGE_MS) {
+                return res.status(400).json({
+                    error: 'Requested stderr/exit/control history window is too large',
+                });
+            }
+        }
 
         let logs;
         if (filterLifecycle) {
-            logs = db.listLifecycleLogsByOutput(pid, oid);
+            const requestedLimit = parseHistoryLimit(req.query.limit, null);
+            if (requestedLimit === null && req.query.limit !== undefined) {
+                return res.status(400).json({ error: 'limit must be an integer between 1 and 1000' });
+            }
+            logs = db.listJobLogsByOutputFiltered(pid, oid, {
+                since,
+                until,
+                limit: requestedLimit,
+                order,
+                prefixes,
+            });
         } else {
-            const requestedLimit = Number.parseInt(String(req.query.limit || '200'), 10);
-            const limit = Number.isFinite(requestedLimit)
-                ? Math.max(1, Math.min(requestedLimit, 1000))
-                : 200;
-            logs = db.listJobLogsByOutput(pid, oid).slice(0, limit);
+            const limit = parseHistoryLimit(req.query.limit, 200);
+            if (limit === null) {
+                return res.status(400).json({ error: 'limit must be an integer between 1 and 1000' });
+            }
+            logs = db.listJobLogsByOutputFiltered(pid, oid, {
+                since,
+                until,
+                limit,
+                order,
+                prefixes,
+            });
         }
 
         return res.json({
