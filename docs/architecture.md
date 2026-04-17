@@ -162,6 +162,11 @@ Wait 250 ms → check if job still 'running'
   ▼
 [Background] child stdout/stderr → db.appendJobLog()
 [Background] child 'exit' → db.updateJob({ status, exitCode, exitSignal })
+              → if failed and not user-stop:
+                register failureCount
+                schedule auto-retry based on outputRecovery config
+                append [lifecycle] retry_decision failureCount=<n> scheduled=<true|false>
+                if scheduled=false append [lifecycle] retry_exhausted ... action=give_up
                            → recomputeEtag()
                            → processes.delete(jobId)
                            → stopRequestedJobIds.delete(jobId)
@@ -256,7 +261,7 @@ Return filtered logs:
   { pipelineId, outputId, logs: [{ ts, message }, ...] }
 ```
 
-`job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.
+`job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `retry_decision`, `retry_exhausted`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.
 
 ### 4.5 Config Snapshot (`GET /config`)
 
@@ -403,6 +408,7 @@ Each output card exposes a history modal with two modes:
 **Timeline mode** (default)
 - On open, fetches only `filter=lifecycle` logs (lifecycle events only, oldest-first).
 - Polls on the same interval as the main dashboard poll.
+- `retry_exhausted` is rendered as a terminal error badge (`Retry exhausted`) so operators can distinguish "will retry" from "gave up".
 - Each lifecycle event row has a collapsible context section that loads surrounding `stderr`/`exit`/`control` logs on demand when expanded.
 - Context fetch is bounded: at most 50 rows, at most 5 minutes before the event, floored to the previous lifecycle event's timestamp. Result is cached per event key for the modal session.
 

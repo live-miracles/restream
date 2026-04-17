@@ -115,6 +115,9 @@ function classifyHistoryEvent(log, logs = [], index = -1) {
     if (message.startsWith('[lifecycle] failed_on_error')) {
         return { type: 'failed', label: 'Failed', badgeClass: 'badge-error' };
     }
+    if (message.startsWith('[lifecycle] retry_exhausted')) {
+        return { type: 'retry_exhausted', label: 'Retry exhausted', badgeClass: 'badge-error' };
+    }
     if (message.startsWith('[lifecycle] marked_stopped_no_process')) {
         return { type: 'stopped', label: 'Stopped', badgeClass: 'badge-stopped' };
     }

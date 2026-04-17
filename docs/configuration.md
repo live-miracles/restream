@@ -49,15 +49,58 @@ These are hardcoded in the application and cannot be overridden via environment 
 |---|---|---|
 | `PROBE_CACHE_TTL_MS` | `30000` | ffprobe cache TTL in ms |
 
+### Output Recovery
+
+| Variable | Default | Description |
+|---|---|---|
+| `OUTPUT_RECOVERY_ENABLED` | `true` | Enable automatic output restart and input recovery restart logic |
+| `OUTPUT_RECOVERY_IMMEDIATE_RETRIES` | `3` | Number of fixed-delay retries before exponential backoff |
+| `OUTPUT_RECOVERY_IMMEDIATE_DELAY_MS` | `1000` | Delay between fixed-delay retries |
+| `OUTPUT_RECOVERY_BACKOFF_RETRIES` | `5` | Number of exponential-backoff retries after immediate retries |
+| `OUTPUT_RECOVERY_BACKOFF_BASE_DELAY_MS` | `2000` | Initial backoff delay |
+| `OUTPUT_RECOVERY_BACKOFF_MAX_DELAY_MS` | `60000` | Maximum backoff delay cap |
+| `OUTPUT_RECOVERY_RESET_FAILURE_COUNT_AFTER_MS` | `30000` | Reset failure streak if an output ran at least this long before failing |
+| `OUTPUT_RECOVERY_RESTART_ON_INPUT_RECOVERY` | `true` | Restart all outputs for a pipeline when input transitions back to `on` |
+| `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_DELAY_MS` | `1000` | Delay before the first output restart on input recovery |
+| `OUTPUT_RECOVERY_INPUT_RECOVERY_RESTART_STAGGER_MS` | `250` | Per-output stagger when restarting outputs on input recovery |
+
+### Output Recovery Semantics
+
+- Total retry budget per failure streak is `immediateRetries + backoffRetries`.
+- `failureCount` counts failures, not retries. The first failed run is `failureCount=1`.
+- Retry is scheduled only while `failureCount <= totalRetries`.
+- When the next failure exceeds the retry budget, the job logs:
+  - `[lifecycle] retry_decision failureCount=<n> scheduled=false`
+  - `[lifecycle] retry_exhausted failureCount=<n> totalRetries=<m> action=give_up`
+- Maximum wait time for one contiguous failure streak is bounded by configured delays.
+  - With defaults: `3 * 1000ms + (2000 + 4000 + 8000 + 16000 + 32000) = 65000ms` total delayed wait.
+- `OUTPUT_RECOVERY_RESET_FAILURE_COUNT_AFTER_MS` resets the failure streak when a run survives at least that duration before failing.
+  - This means retries can continue across long runtimes instead of permanently exhausting after one early burst.
+- `outputRecovery` in `src/config/restream.json` is optional. If omitted, built-in defaults are still active and env overrides still apply.
+
 ## 2. Application Config File
 
 File: `src/config/restream.json`
+
+`outputRecovery` is optional in this file; this example shows all available fields.
 
 ```json
 {
   "serverName": "Server Name",
   "pipelinesLimit": 25,
   "outLimit": 95,
+  "outputRecovery": {
+    "enabled": true,
+    "immediateRetries": 3,
+    "immediateDelayMs": 1000,
+    "backoffRetries": 5,
+    "backoffBaseDelayMs": 2000,
+    "backoffMaxDelayMs": 60000,
+    "resetFailureCountAfterMs": 30000,
+    "restartOnInputRecovery": true,
+    "inputRecoveryRestartDelayMs": 1000,
+    "inputRecoveryRestartStaggerMs": 250
+  },
   "mediamtx": {
     "ingest": {
       "host": "stream.example.com",
@@ -77,6 +120,16 @@ File: `src/config/restream.json`
 | `serverName` | string | `Server Name` | Display name in UI |
 | `pipelinesLimit` | integer | `25` | Positive integer |
 | `outLimit` | integer | `95` | Positive integer |
+| `outputRecovery.enabled` | boolean | `true` | Master switch for output auto-restart logic |
+| `outputRecovery.immediateRetries` | integer | `3` | Fixed-delay retry attempts after failed output exits |
+| `outputRecovery.immediateDelayMs` | integer | `1000` | Delay for fixed-delay retries |
+| `outputRecovery.backoffRetries` | integer | `5` | Exponential-backoff retry attempts after immediate retries |
+| `outputRecovery.backoffBaseDelayMs` | integer | `2000` | Base delay for exponential backoff |
+| `outputRecovery.backoffMaxDelayMs` | integer | `60000` | Maximum backoff delay |
+| `outputRecovery.resetFailureCountAfterMs` | integer | `30000` | Failure streak reset threshold for long-running jobs |
+| `outputRecovery.restartOnInputRecovery` | boolean | `true` | Restart all pipeline outputs when input comes back |
+| `outputRecovery.inputRecoveryRestartDelayMs` | integer | `1000` | Initial delay before recovery restart |
+| `outputRecovery.inputRecoveryRestartStaggerMs` | integer | `250` | Stagger between output restarts during recovery |
 | `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |
 | `mediamtx.ingest.rtmpPort` | integer | `1935` | Publisher RTMP ingest port |
 | `mediamtx.ingest.rtspPort` | integer | `8554` | Publisher RTSP ingest port |
