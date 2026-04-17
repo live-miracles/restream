@@ -441,6 +441,78 @@ function togglePipelineHistoryPlayPause() {
     }
 }
 
+// --- Publisher quality modal ---
+
+let publisherQualityModalPipeId = null;
+
+function renderPublisherQualityModal() {
+    const modal = document.getElementById('publisher-quality-modal');
+    if (!modal || !modal.open) return;
+
+    const pipe = (pipelines || []).find((p) => p.id === publisherQualityModalPipeId);
+    const publisher = pipe?.input?.publisher || null;
+
+    const subtitle = document.getElementById('publisher-quality-subtitle');
+    const tbody = document.getElementById('publisher-quality-rows');
+    if (!subtitle || !tbody) return;
+
+    if (!publisher) {
+        subtitle.textContent = 'No active publisher.';
+        tbody.replaceChildren();
+        return;
+    }
+
+    const proto = typeof normalizePublisherProtocolLabel === 'function'
+        ? normalizePublisherProtocolLabel(publisher.protocol)
+        : String(publisher.protocol || '').toUpperCase();
+    subtitle.textContent = `${proto} · ${publisher.remoteAddr || 'unknown'}`;
+
+    const rows = typeof getPublisherQualityMetrics === 'function'
+        ? getPublisherQualityMetrics(publisher)
+        : [];
+
+    tbody.replaceChildren();
+    for (const row of rows) {
+        const tr = document.createElement('tr');
+        const tdLabel = document.createElement('td');
+        tdLabel.textContent = row.label;
+        const tdValue = document.createElement('td');
+        tdValue.className = 'text-right font-mono';
+        tdValue.textContent = row.displayValue;
+        const tdStatus = document.createElement('td');
+        tdStatus.className = 'text-right';
+        const badge = document.createElement('span');
+        badge.className = `badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}`;
+        badge.textContent = row.isAlert ? 'Alert' : 'OK';
+        tdStatus.appendChild(badge);
+        tr.appendChild(tdLabel);
+        tr.appendChild(tdValue);
+        tr.appendChild(tdStatus);
+        tbody.appendChild(tr);
+    }
+
+    if (rows.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'text-center opacity-50 text-sm py-4';
+        td.textContent = 'No quality metrics available for this protocol.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    }
+}
+
+function openPublisherQualityModal(pipeId) {
+    const modal = document.getElementById('publisher-quality-modal');
+    if (!modal) return;
+    publisherQualityModalPipeId = pipeId;
+    const pipe = (pipelines || []).find((p) => p.id === pipeId);
+    const title = document.getElementById('publisher-quality-title');
+    if (title) title.textContent = `Publisher Quality — ${pipe?.name || pipeId}`;
+    modal.showModal();
+    renderPublisherQualityModal();
+}
+
 async function openPipelineHistoryModal(pipeId, pipeName = '') {
     const modal = document.getElementById('pipeline-history-modal');
     const title = document.getElementById('pipeline-history-title');
@@ -824,6 +896,7 @@ async function fetchAndRerender() {
     pipelines = parsePipelinesInfo();
     renderPipelines();
     renderMetrics();
+    renderPublisherQualityModal();
 }
 
 async function fetchConfig() {

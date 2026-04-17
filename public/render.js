@@ -177,6 +177,62 @@ function renderPipelinesList(selectedPipe) {
     });
 }
 
+function normalizePublisherProtocolLabel(protocol) {
+    const map = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT', webrtc: 'WebRTC' };
+    return map[protocol] || String(protocol || '').toUpperCase();
+}
+
+function getPublisherQualityMetrics(publisher) {
+    if (!publisher) return [];
+
+    const q = publisher.quality || {};
+    const metrics = [];
+
+    const addNumericMetric = ({ code, label, rawValue, alertCheck, formatter }) => {
+        if (rawValue === null || rawValue === undefined) return;
+        const num = Number(rawValue) || 0;
+        const rounded = Math.round(num);
+        metrics.push({
+            code,
+            label,
+            value: rounded,
+            displayValue: formatter ? formatter(num) : String(rounded),
+            isAlert: !!alertCheck(rounded),
+        });
+    };
+
+    // Ingest-side RTP metrics (RTSP / WebRTC publisher → MediaMTX)
+    addNumericMetric({ code: 'rtp_loss', label: 'Packets lost (inbound RTP)', rawValue: q.inboundRTPPacketsLost, alertCheck: (v) => v >= 100 });
+    addNumericMetric({ code: 'rtp_err', label: 'Packets in error (inbound RTP)', rawValue: q.inboundRTPPacketsInError, alertCheck: (v) => v >= 20 });
+    addNumericMetric({ code: 'jitter', label: 'Jitter (inbound RTP)', rawValue: q.inboundRTPPacketsJitter, alertCheck: (v) => v >= 30 });
+
+    // Ingest-side SRT metrics (SRT publisher → MediaMTX)
+    addNumericMetric({ code: 'rtt', label: 'RTT (ms)', rawValue: q.msRTT, alertCheck: (v) => v >= 200 });
+    addNumericMetric({ code: 'srt_recv_rate', label: 'Receive rate (Mbps)', rawValue: q.mbpsReceiveRate, alertCheck: () => false, formatter: (v) => v.toFixed(2) });
+    addNumericMetric({ code: 'srt_loss', label: 'Packets lost (SRT received)', rawValue: q.packetsReceivedLoss, alertCheck: (v) => v >= 100 });
+    addNumericMetric({ code: 'srt_drop', label: 'Packets dropped (SRT received)', rawValue: q.packetsReceivedDrop, alertCheck: (v) => v >= 10 });
+    addNumericMetric({ code: 'srt_retrans', label: 'Packets retransmitted (SRT)', rawValue: q.packetsReceivedRetrans, alertCheck: (v) => v >= 200 });
+    addNumericMetric({ code: 'srt_undecrypt', label: 'Packets undecrypted (SRT)', rawValue: q.packetsReceivedUndecrypt, alertCheck: (v) => v > 0 });
+
+    if (publisher.protocol === 'webrtc' && q.peerConnectionEstablished !== undefined) {
+        metrics.push({
+            code: 'webrtc_peer',
+            label: 'Peer connection established',
+            value: q.peerConnectionEstablished ? 1 : 0,
+            displayValue: q.peerConnectionEstablished ? 'Yes' : 'No',
+            isAlert: false,
+        });
+    }
+
+    return metrics;
+}
+
+function getPublisherQualityAlerts(publisher) {
+    return getPublisherQualityMetrics(publisher)
+        .filter((metric) => metric.isAlert)
+        .map((metric) => ({ code: metric.code, label: `${metric.label}: ${metric.displayValue}` }));
+}
+
 function renderPipelineInfoColumn(selectedPipe) {
     if (!selectedPipe) {
         document.getElementById('pipe-info-col').classList.add('hidden');
@@ -200,11 +256,11 @@ function renderPipelineInfoColumn(selectedPipe) {
             }
         };
     }
-    if (pipe.input.time === null) {
-        document.getElementById('input-time').classList.add('hidden');
-    } else {
-        document.getElementById('input-time').classList.remove('hidden');
-        document.getElementById('input-time').textContent = msToHHMMSS(pipe.input.time);
+    const inputTimeElem = document.getElementById('input-time');
+    if (inputTimeElem) {
+        // Keep legacy node hidden; uptime badge is rendered in the publisher meta row.
+        inputTimeElem.classList.add('hidden');
+        inputTimeElem.textContent = pipe.input.time === null ? '' : msToHHMMSS(pipe.input.time);
     }
 
     const deletePipeBtn = document.getElementById('delete-pipe-btn');
@@ -282,6 +338,60 @@ function renderPipelineInfoColumn(selectedPipe) {
             stats.readerCount !== null && stats.readerCount !== undefined ? stats.readerCount : '--';
         document.getElementById('input-output-count').textContent =
             stats.outputCount !== null && stats.outputCount !== undefined ? stats.outputCount : '--';
+    }
+
+    // Publisher meta badges (protocol, remote addr, unexpected readers, quality alerts)
+    let publisherMeta = document.getElementById('publisher-meta');
+    if (!publisherMeta) {
+        publisherMeta = document.createElement('div');
+        publisherMeta.id = 'publisher-meta';
+        publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
+        const inputStatsElem = document.getElementById('input-stats');
+        inputStatsElem.parentNode.insertBefore(publisherMeta, inputStatsElem);
+    }
+    publisherMeta.replaceChildren();
+
+    if (pipe.input.time !== null) {
+        const uptimeBadge = document.createElement('span');
+        uptimeBadge.className = 'badge text-sm px-3';
+        uptimeBadge.textContent = msToHHMMSS(pipe.input.time);
+        publisherMeta.appendChild(uptimeBadge);
+    }
+
+    const publisher = pipe.input.publisher;
+    if (publisher) {
+        const protoBadge = document.createElement('span');
+        protoBadge.className = 'badge badge-info text-sm px-3';
+        protoBadge.textContent = normalizePublisherProtocolLabel(publisher.protocol);
+        publisherMeta.appendChild(protoBadge);
+
+        if (publisher.remoteAddr) {
+            const addrBadge = document.createElement('span');
+            addrBadge.className = 'badge badge-outline font-mono text-sm px-3';
+            addrBadge.textContent = publisher.remoteAddr;
+            publisherMeta.appendChild(addrBadge);
+        }
+
+        const qualityAlerts = getPublisherQualityAlerts(publisher);
+        const isHealthy = qualityAlerts.length === 0;
+        const qualityBtn = document.createElement('button');
+        qualityBtn.type = 'button';
+        qualityBtn.className = `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`;
+        qualityBtn.textContent = isHealthy ? 'Healthy' : 'Unhealthy';
+        qualityBtn.addEventListener('click', () => {
+            if (typeof openPublisherQualityModal === 'function') {
+                openPublisherQualityModal(pipe.id);
+            }
+        });
+        publisherMeta.appendChild(qualityBtn);
+    }
+
+    const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
+    if (unexpectedCount > 0) {
+        const urBadge = document.createElement('span');
+        urBadge.className = 'badge badge-sm badge-error';
+        urBadge.textContent = `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}`;
+        publisherMeta.appendChild(urBadge);
     }
 }
 
@@ -367,29 +477,32 @@ function renderOutsColumn(selectedPipe) {
             heading.appendChild(toggleBtn);
 
             const outputName = document.createElement('span');
-            outputName.className = 'whitespace-nowrap';
+            outputName.className = 'min-w-0 truncate';
             outputName.textContent = o.name;
             heading.appendChild(outputName);
+
+            const metadataRow = document.createElement('div');
+            metadataRow.className = 'mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap';
 
             if (o.time !== null) {
                 const timeBadge = document.createElement('span');
                 timeBadge.className = 'badge badge-sm whitespace-nowrap';
                 timeBadge.textContent = msToHHMMSS(o.time);
-                heading.appendChild(timeBadge);
+                metadataRow.appendChild(timeBadge);
             }
 
             if (isRunning) {
                 const throughputBadge = document.createElement('span');
                 throughputBadge.className = 'badge badge-sm whitespace-nowrap';
                 setBadgeBitrateWithSubtleUnit(throughputBadge, o.bitrateKbps);
-                heading.appendChild(throughputBadge);
+                metadataRow.appendChild(throughputBadge);
             }
 
             if (o.totalSize) {
                 const volumeBadge = document.createElement('span');
                 volumeBadge.className = 'badge badge-sm whitespace-nowrap';
                 volumeBadge.textContent = `${(Number(o.totalSize) / (1024 * 1024)).toFixed(1)} MB`;
-                heading.appendChild(volumeBadge);
+                metadataRow.appendChild(volumeBadge);
             }
 
             const outputUrl = document.createElement('code');
@@ -429,6 +542,7 @@ function renderOutsColumn(selectedPipe) {
             actions.appendChild(deleteBtn);
 
             content.appendChild(heading);
+            if (metadataRow.childElementCount > 0) content.appendChild(metadataRow);
             content.appendChild(outputUrl);
             row.appendChild(content);
             row.appendChild(actions);
@@ -635,11 +749,9 @@ function renderPipelines() {
 
     const gridElem = document.querySelector('.grid');
     if (selectedPipe) {
-        gridElem.classList.remove('grid-cols-[auto_1fr]');
-        gridElem.classList.add('grid-cols-[auto_auto_1fr]');
+        gridElem.style.gridTemplateColumns = 'minmax(15rem, 18rem) minmax(28rem, 1fr) minmax(24rem, 30rem)';
     } else {
-        gridElem.classList.remove('grid-cols-[auto_auto_1fr]');
-        gridElem.classList.add('grid-cols-[auto_1fr]');
+        gridElem.style.gridTemplateColumns = 'minmax(15rem, 18rem) minmax(0, 1fr)';
     }
 
     renderPipelinesList(selectedPipe);

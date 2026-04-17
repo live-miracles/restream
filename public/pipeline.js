@@ -39,6 +39,8 @@ function parsePipelinesInfo() {
 
     config?.pipelines.forEach((p) => {
         const inputBytesReceived = healthByPipeline[p.id]?.input?.bytesReceived || 0;
+        const inputPublisher = healthByPipeline[p.id]?.input?.publisher || null;
+        const unexpectedReadersCount = Number(healthByPipeline[p.id]?.input?.unexpectedReaders?.count || 0);
         const inputVideo = healthByPipeline[p.id]?.input?.video
             ? { ...healthByPipeline[p.id].input.video }
             : null;
@@ -68,6 +70,8 @@ function parsePipelinesInfo() {
                 bytesSent: healthByPipeline[p.id]?.input?.bytesSent || 0,
                 readers: healthByPipeline[p.id]?.input?.readers || 0,
                 bitrateKbps: inputKbps,
+                publisher: inputPublisher,
+                unexpectedReadersCount,
             },
             outs: [],
             stats: {
@@ -76,6 +80,7 @@ function parsePipelinesInfo() {
                 readerCount: healthByPipeline[p.id]?.input?.readers || 0,
                 outputCount: 0,
                 readerMismatch: false,
+                unexpectedReadersCount,
             },
         });
     });
@@ -92,7 +97,16 @@ function parsePipelinesInfo() {
                 id: out.pipelineId,
                 name: 'Undefined',
                 key: null,
-                input: { status: 'off', time: null, video: null, audio: null, bitrateKbps: null, readers: 0 },
+                input: {
+                    status: 'off',
+                    time: null,
+                    video: null,
+                    audio: null,
+                    bitrateKbps: null,
+                    readers: 0,
+                    publisher: null,
+                    unexpectedReadersCount: 0,
+                },
                 outs: [],
                 stats: {
                     inputBitrateKbps: null,
@@ -100,6 +114,7 @@ function parsePipelinesInfo() {
                     readerCount: 0,
                     outputCount: 0,
                     readerMismatch: false,
+                    unexpectedReadersCount: 0,
                 },
             };
             newPipelines.push(pipe);
@@ -152,6 +167,7 @@ function parsePipelinesInfo() {
             readerCount,
             outputCount,
             readerMismatch: readerCount !== outputCount,
+            unexpectedReadersCount: Number(pipe.input.unexpectedReadersCount || 0),
         };
     });
 

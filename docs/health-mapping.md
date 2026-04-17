@@ -6,16 +6,19 @@ This document explains exactly how input and output health statuses are derived 
 
 ## 1. Data Sources
 
-The background health collector fetches three MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs` plus an `ETag` header. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+The background health collector fetches multiple MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs` plus an `ETag` header. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
-| Source                      | What it provides                                         |
-|-----------------------------|----------------------------------------------------------|
-| `GET /v3/paths/list`        | Per-path: online, available, availableTime (plus deprecated ready/readyTime), bytesReceived, bytesSent, tracks2, readers list |
-| `GET /v3/rtspconns/list`    | All RTSP connections including `query` field (contains `reader_id`) |
-| `GET /v3/rtspsessions/list` | RTSP sessions for fallback field lookup                  |
-| DB: `listPipelines()`       | Pipeline ↔ stream key mapping                            |
-| DB: `listOutputs()`         | Output ↔ pipeline mapping                                |
-| DB: `listJobs()`            | One current job row per output (upsert model)            |
+| Source | What it provides |
+|---|---|
+| `GET /v3/paths/list` | Per-path: online, available, availableTime (plus deprecated ready/readyTime), bytesReceived, bytesSent, tracks2, readers list |
+| `GET /v3/rtspconns/list` | RTSP control connections including `query` (`reader_id`) for output correlation |
+| `GET /v3/rtspsessions/list` | RTSP sessions for publish-side RTP quality and session fallback lookup |
+| `GET /v3/rtmpconns/list` | RTMP publisher sessions (state/path/remote and byte counters) |
+| `GET /v3/srtconns/list` | SRT publisher sessions and ingest quality counters (RTT/loss/retrans/drop/undecrypt/rate) |
+| `GET /v3/webrtcsessions/list` | WebRTC publish sessions and ingest RTP quality counters |
+| DB: `listPipelines()` | Pipeline ↔ stream key mapping |
+| DB: `listOutputs()` | Output ↔ pipeline mapping |
+| DB: `listJobs()` | One current job row per output (upsert model) |
 
 The collector loop also performs bounded DB writes for lifecycle bookkeeping:
 
@@ -63,6 +66,17 @@ flowchart TD
 **ffprobe caching:**
 
 When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe -rtsp_transport tcp rtsp://localhost:8554/<streamKey>` refreshes using stale-while-revalidate semantics. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
+
+The probe URL includes a dedicated reader tag (`reader_id=probe_<streamKey>`). This allows the health collector to explicitly ignore internal probe readers when computing unexpected-reader alerts.
+
+### 2.1 Publisher And Reader-Safety Signals
+
+The input health payload now also includes:
+
+- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTSP/RTMP/SRT/WebRTC)
+- `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
+
+`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. Reader types outside managed RTSP outputs are treated as unexpected by design.
 
 ---
 

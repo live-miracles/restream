@@ -666,6 +666,16 @@ function getPipelineRtspUrl(streamKey) {
     return `${getMediamtxRtspBaseUrl()}/${streamKey}`;
 }
 
+function generateProbeReaderTag(streamKey) {
+    const suffix = String(streamKey || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `probe_${suffix}`;
+}
+
+function getPipelineProbeRtspUrl(streamKey) {
+    const probeTag = generateProbeReaderTag(streamKey);
+    return `${getMediamtxRtspBaseUrl()}/${streamKey}?reader_id=${encodeURIComponent(probeTag)}`;
+}
+
 function generateReaderTag(pipelineId, outputId) {
     return `reader_${pipelineId}_${outputId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -1704,6 +1714,9 @@ function buildDefaultHealthSnapshot(status = 'initializing') {
         mediamtx: {
             pathCount: 0,
             rtspConnCount: 0,
+            rtmpConnCount: 0,
+            srtConnCount: 0,
+            webrtcSessionCount: 0,
             ready: mediamtxReadiness.ready,
         },
         pipelines: {},
@@ -1716,6 +1729,9 @@ function getHealthSnapshotHashSource(snapshot) {
         mediamtx: snapshot?.mediamtx || {
             pathCount: 0,
             rtspConnCount: 0,
+            rtmpConnCount: 0,
+            srtConnCount: 0,
+            webrtcSessionCount: 0,
             ready: false,
         },
         pipelines: snapshot?.pipelines || {},
@@ -1754,6 +1770,7 @@ function indexRtspConnectionsByReaderTag(rtspConns, rtspSessions) {
             path: conn?.path || session?.path || null,
             query: conn?.query || session?.query || null,
             remoteAddr: conn?.remoteAddr || session?.remoteAddr || null,
+            userAgent: conn?.userAgent || conn?.useragent || null,
             bytesReceived: conn?.bytesReceived || session?.bytesReceived || 0,
             bytesSent: conn?.bytesSent || session?.bytesSent || 0,
         };
@@ -1772,12 +1789,122 @@ function indexRtspConnectionsByReaderTag(rtspConns, rtspSessions) {
         rtspByReaderTag.set(readerTag, [conn]);
     }
 
-    return { rtspConnectionRecords, rtspByReaderTag };
+    const rtspConnectionById = new Map(rtspConnectionRecords.map((conn) => [conn.id, conn]));
+
+    // Also index sessions directly so path readers reported as 'rtspSession' type can be resolved.
+    const rtspSessionRecordById = new Map(
+        (rtspSessions.items || []).map((session) => [
+            session.id,
+            {
+                id: session?.id || null,
+                sessionId: session?.id || null,
+                path: session?.path || null,
+                query: session?.query || null,
+                remoteAddr: session?.remoteAddr || null,
+                userAgent: session?.userAgent || session?.useragent || null,
+                bytesReceived: session?.bytesReceived || 0,
+                bytesSent: session?.bytesSent || 0,
+            },
+        ]),
+    );
+
+    return { rtspConnectionRecords, rtspByReaderTag, rtspConnectionById, rtspSessionRecordById };
+}
+
+function getSessionBytesIn(record) {
+    return record?.inboundBytes || record?.bytesReceived || 0;
+}
+
+function getSessionBytesOut(record) {
+    return record?.outboundBytes || record?.bytesSent || 0;
+}
+
+function indexPublishersByPath(rtspSessions, rtmpConns, srtConns, webrtcSessions) {
+    const publisherByPath = new Map();
+
+    const setPublisher = (pathName, publisher) => {
+        if (!pathName) return;
+        if (publisherByPath.has(pathName)) return;
+        publisherByPath.set(pathName, publisher);
+    };
+
+    for (const session of (rtspSessions.items || [])) {
+        if (session?.state !== 'publish') continue;
+
+        setPublisher(session?.path, {
+            id: session?.id || null,
+            protocol: 'rtsp',
+            state: session?.state || null,
+            remoteAddr: session?.remoteAddr || null,
+            bytesReceived: getSessionBytesIn(session),
+            bytesSent: getSessionBytesOut(session),
+            quality: {
+                inboundRTPPacketsLost: session?.inboundRTPPacketsLost || 0,
+                inboundRTPPacketsInError: session?.inboundRTPPacketsInError || 0,
+                inboundRTPPacketsJitter: session?.inboundRTPPacketsJitter || 0,
+            },
+        });
+    }
+
+    for (const conn of (rtmpConns.items || [])) {
+        if (conn?.state !== 'publish') continue;
+
+        setPublisher(conn?.path, {
+            id: conn?.id || null,
+            protocol: 'rtmp',
+            state: conn?.state || null,
+            remoteAddr: conn?.remoteAddr || null,
+            bytesReceived: getSessionBytesIn(conn),
+            bytesSent: getSessionBytesOut(conn),
+            quality: {},
+        });
+    }
+
+    for (const conn of (srtConns.items || [])) {
+        if (conn?.state !== 'publish') continue;
+
+        setPublisher(conn?.path, {
+            id: conn?.id || null,
+            protocol: 'srt',
+            state: conn?.state || null,
+            remoteAddr: conn?.remoteAddr || null,
+            bytesReceived: getSessionBytesIn(conn),
+            bytesSent: getSessionBytesOut(conn),
+            quality: {
+                msRTT: conn?.msRTT || 0,
+                packetsReceivedLoss: conn?.packetsReceivedLoss || 0,
+                packetsReceivedRetrans: conn?.packetsReceivedRetrans || 0,
+                packetsReceivedUndecrypt: conn?.packetsReceivedUndecrypt || 0,
+                packetsReceivedDrop: conn?.packetsReceivedDrop || 0,
+                mbpsReceiveRate: conn?.mbpsReceiveRate ?? null,
+            },
+        });
+    }
+
+    for (const session of (webrtcSessions.items || [])) {
+        if (session?.state !== 'publish') continue;
+
+        setPublisher(session?.path, {
+            id: session?.id || null,
+            protocol: 'webrtc',
+            state: session?.state || null,
+            remoteAddr: session?.remoteAddr || null,
+            bytesReceived: getSessionBytesIn(session),
+            bytesSent: getSessionBytesOut(session),
+            quality: {
+                peerConnectionEstablished: !!session?.peerConnectionEstablished,
+                inboundRTPPacketsLost: session?.inboundRTPPacketsLost || 0,
+                inboundRTPPacketsJitter: session?.inboundRTPPacketsJitter || 0,
+            },
+        });
+    }
+
+    return publisherByPath;
 }
 
 function startPipelineProbeRefresh(streamKey, nowMs) {
     probeRefreshStartedAt.set(streamKey, nowMs);
-    getCachedRtspProbeInfo(streamKey, getPipelineRtspUrl(streamKey))
+    getCachedRtspProbeInfo(streamKey, getPipelineProbeRtspUrl(streamKey))
         .catch(() => {})
         .finally(() => {
             probeRefreshStartedAt.delete(streamKey);
@@ -1842,7 +1969,7 @@ function updatePipelineInputStatusHistory(pipelineId, inputStatus) {
     pipelineInputStatusHistory.set(pipelineId, inputStatus);
 }
 
-function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, probeInfo }) {
+function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, probeInfo, publisher }) {
     const readers = pathInfo?.readers || [];
     const firstVideoTrack = findFirstVideoTrack(pathInfo);
     const firstAudioTrack = findFirstAudioTrack(pathInfo);
@@ -1851,6 +1978,7 @@ function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, probeInfo 
         status: inputStatus,
         publishStartedAt: pathInfo?.availableTime || pathInfo?.readyTime || null,
         streamKey: streamKey || null,
+        publisher: publisher || null,
         readers: readers.length,
         bytesReceived: pathInfo?.bytesReceived || 0,
         bytesSent: pathInfo?.bytesSent || 0,
@@ -1919,12 +2047,76 @@ function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag,
     };
 }
 
+function buildUnexpectedReaders(pathInfo, pipelineOutputs, rtspConnectionById, streamKey, rtspSessionRecordById) {
+    const readers = pathInfo?.readers || [];
+    const expectedReaderTags = new Set(
+        (pipelineOutputs || []).map((output) => generateReaderTag(output.pipelineId, output.id)),
+    );
+    if (streamKey) {
+        expectedReaderTags.add(generateProbeReaderTag(streamKey));
+    }
+    const unexpectedReaders = [];
+
+    for (const reader of readers) {
+        const readerType = String(reader?.type || 'unknown');
+        const readerId = reader?.id || null;
+
+        // MediaMTX paths API reports our managed ffmpeg RTSP readers as 'rtspSession'.
+        // Other reader types (rtmpConn, srtConn, webRTCSession, hlsMuxer) are always unexpected
+        // since our outputs only read via RTSP.
+        if (readerType !== 'rtspSession' && readerType !== 'rtspConn') {
+            unexpectedReaders.push({
+                id: readerId,
+                type: readerType,
+                reason: 'non_managed_reader_type',
+            });
+            continue;
+        }
+
+        // Resolve the record: prefer session lookup for 'rtspSession', fall back to connection lookup.
+        const rtspConn =
+            readerId
+                ? (readerType === 'rtspSession'
+                    ? (rtspSessionRecordById?.get(readerId) || rtspConnectionById.get(readerId) || null)
+                    : (rtspConnectionById.get(readerId) || null))
+                : null;
+        const readerTag = getReaderIdFromQuery(rtspConn?.query || null);
+        const userAgent = String(rtspConn?.userAgent || '').toLowerCase();
+
+        if (readerTag && expectedReaderTags.has(readerTag)) {
+            continue;
+        }
+
+        // ffprobe readers are internal probes and should not be surfaced as unexpected.
+        if (!readerTag && userAgent.includes('ffprobe')) {
+            continue;
+        }
+
+        unexpectedReaders.push({
+            id: readerId,
+            type: readerType,
+            query: rtspConn?.query || null,
+            remoteAddr: rtspConn?.remoteAddr || null,
+            userAgent: rtspConn?.userAgent || null,
+            reason: readerTag ? 'unknown_reader_tag' : 'missing_reader_tag',
+        });
+    }
+
+    return {
+        count: unexpectedReaders.length,
+        readers: unexpectedReaders,
+    };
+}
+
 function buildPipelineHealthSnapshot(
     pipeline,
     pathInfo,
     pipelineOutputs,
     jobByOutputId,
     rtspByReaderTag,
+    rtspConnectionById,
+    rtspSessionRecordById,
+    publisherByPath,
     nowMs,
 ) {
     const streamKey = pipeline.streamKey || '';
@@ -1945,12 +2137,15 @@ function buildPipelineHealthSnapshot(
     updatePipelineInputStatusHistory(pipeline.id, inputStatus);
 
     const probeInfo = getPipelineProbeInfo(streamKey, pathAvailable, nowMs);
+    const publisher = streamKey ? (publisherByPath.get(streamKey) || null) : null;
     const inputHealth = buildPipelineInputHealth({
         streamKey,
         pathInfo,
         inputStatus,
         probeInfo,
+        publisher,
     });
+    inputHealth.unexpectedReaders = buildUnexpectedReaders(pathInfo, pipelineOutputs, rtspConnectionById, streamKey, rtspSessionRecordById);
     const outputsHealth = {};
 
     for (const output of pipelineOutputs) {
@@ -1979,16 +2174,22 @@ async function buildHealthSnapshot() {
     }
 
     try {
-        const [paths, rtspConns, rtspSessions] = await Promise.all([
+        const [paths, rtspConns, rtspSessions, rtmpConns, srtConns, webrtcSessions] = await Promise.all([
             fetchMediamtxJson('/v3/paths/list'),
             fetchMediamtxJson('/v3/rtspconns/list'),
             fetchMediamtxJson('/v3/rtspsessions/list'),
+            fetchMediamtxJson('/v3/rtmpconns/list'),
+            fetchMediamtxJson('/v3/srtconns/list'),
+            fetchMediamtxJson('/v3/webrtcsessions/list'),
         ]);
 
         log('debug', 'Fetched MediaMTX health sources', {
             pathCount: paths.itemCount || 0,
             rtspConnCount: rtspConns.itemCount || 0,
             rtspSessionCount: rtspSessions.itemCount || 0,
+            rtmpConnCount: rtmpConns.itemCount || 0,
+            srtConnCount: srtConns.itemCount || 0,
+            webrtcSessionCount: webrtcSessions.itemCount || 0,
             rtspConnSummaries: (rtspConns.items || []).slice(0, 20).map((conn) => ({
                 id: conn?.id || null,
                 state: conn?.state || null,
@@ -2002,7 +2203,8 @@ async function buildHealthSnapshot() {
         });
 
         const pathByName = new Map((paths.items || []).map((item) => [item.name, item]));
-        const { rtspByReaderTag } = indexRtspConnectionsByReaderTag(rtspConns, rtspSessions);
+        const { rtspByReaderTag, rtspConnectionById, rtspSessionRecordById } = indexRtspConnectionsByReaderTag(rtspConns, rtspSessions);
+        const publisherByPath = indexPublishersByPath(rtspSessions, rtmpConns, srtConns, webrtcSessions);
 
         if ((rtspConns.items || []).length > 0 && rtspByReaderTag.size === 0) {
             log('warn', 'MediaMTX RTSP payload has no reader_id query for active readers', {
@@ -2037,6 +2239,9 @@ async function buildHealthSnapshot() {
                 pipelineOutputs,
                 jobByOutputId,
                 rtspByReaderTag,
+                rtspConnectionById,
+                rtspSessionRecordById,
+                publisherByPath,
                 nowMs,
             );
         }
@@ -2047,6 +2252,9 @@ async function buildHealthSnapshot() {
             mediamtx: {
                 pathCount: paths.itemCount || 0,
                 rtspConnCount: rtspConns.itemCount || 0,
+                rtmpConnCount: rtmpConns.itemCount || 0,
+                srtConnCount: srtConns.itemCount || 0,
+                webrtcSessionCount: webrtcSessions.itemCount || 0,
                 ready: mediamtxReadiness.ready,
             },
             ...health,
@@ -2062,6 +2270,9 @@ async function buildHealthSnapshot() {
             mediamtx: {
                 pathCount: latestHealthSnapshot?.mediamtx?.pathCount || 0,
                 rtspConnCount: latestHealthSnapshot?.mediamtx?.rtspConnCount || 0,
+                rtmpConnCount: latestHealthSnapshot?.mediamtx?.rtmpConnCount || 0,
+                srtConnCount: latestHealthSnapshot?.mediamtx?.srtConnCount || 0,
+                webrtcSessionCount: latestHealthSnapshot?.mediamtx?.webrtcSessionCount || 0,
                 ready: mediamtxReadiness.ready,
             },
             pipelines: latestHealthSnapshot?.pipelines || {},
