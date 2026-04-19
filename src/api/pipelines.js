@@ -16,6 +16,38 @@ function registerPipelineApi({
     recomputeEtag,
     validateName,
 }) {
+    async function mutateMediamtxPath(key, action) {
+        const methodByAction = {
+            add: 'POST',
+            delete: 'DELETE',
+        };
+
+        const method = methodByAction[action];
+        if (!method) {
+            throw new Error(`Unsupported MediaMTX path action: ${action}`);
+        }
+
+        const url = `${getMediamtxApiBaseUrl()}/v3/config/paths/${action}/${encodeURIComponent(key)}`;
+        const resp = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: key }),
+        });
+
+        let data = null;
+        try {
+            data = await resp.json();
+        } catch (e) {
+            /* ignore parse errors */
+        }
+
+        if (!resp.ok || data?.error) {
+            throw new Error(data?.error || `MediaMTX returned ${resp.status}`);
+        }
+
+        return data;
+    }
+
     app.post('/stream-keys', async (req, res) => {
         try {
             const key = req.body?.streamKey || crypto.randomBytes(12).toString('hex');
@@ -25,25 +57,7 @@ function registerPipelineApi({
                 return res.status(409).json({ error: 'Stream key already exists' });
             }
 
-            const url = `${getMediamtxApiBaseUrl()}/v3/config/paths/add/${encodeURIComponent(key)}`;
-            const resp = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: key }),
-            });
-
-            let data = null;
-            try {
-                data = await resp.json();
-            } catch (e) {
-                /* ignore parse errors */
-            }
-
-            if (!resp.ok || data?.error) {
-                return res
-                    .status(500)
-                    .json({ error: data?.error || `MediaMTX returned ${resp.status}` });
-            }
+            await mutateMediamtxPath(key, 'add');
 
             const streamKey = db.createStreamKey({
                 key,
@@ -85,25 +99,7 @@ function registerPipelineApi({
                 return res.status(404).json({ error: 'Stream key not found' });
             }
 
-            const url = `${getMediamtxApiBaseUrl()}/v3/config/paths/delete/${encodeURIComponent(key)}`;
-            const resp = await fetch(url, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: key }),
-            });
-
-            let data = null;
-            try {
-                data = await resp.json();
-            } catch (e) {
-                /* ignore parse errors */
-            }
-
-            if (!resp.ok || data?.error) {
-                return res
-                    .status(500)
-                    .json({ error: data?.error || `MediaMTX returned ${resp.status}` });
-            }
+            await mutateMediamtxPath(key, 'delete');
 
             const deleted = db.deleteStreamKey(key);
             if (!deleted) {

@@ -162,10 +162,11 @@ Wait 250 ms → check if job still 'running'
   ▼
 [Background] child stdout/stderr → db.appendJobLog()
 [Background] child 'exit' → db.updateJob({ status, exitCode, exitSignal })
-              → if failed and not user-stop:
+              → if unexpected terminal exit and not user-stop:
                 register failureCount
                 schedule auto-retry based on outputRecovery config
                 append [lifecycle] retry_decision failureCount=<n> scheduled=<true|false>
+                input-unavailable clean stops append [lifecycle] retry_suppressed ... instead
                 if scheduled=false append [lifecycle] retry_exhausted ... action=give_up
                            → recomputeEtag()
                            → processes.delete(jobId)

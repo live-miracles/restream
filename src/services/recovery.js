@@ -164,6 +164,7 @@ function createOutputRecoveryService({
         if (proc && !proc.killed) {
             try {
                 proc.kill(signal);
+                armStopSignalEscalation(proc);
                 markStopRequested(job.id);
                 db.appendJobLog(
                     job.id,
@@ -425,11 +426,7 @@ function createOutputRecoveryService({
             }
 
             const latestJob = db.listJobsForOutput(pipelineId, output.id)[0] || null;
-            const inputUnavailableMatch = isLatestJobLikelyInputUnavailableStop(
-                pipelineId,
-                output.id,
-                latestJob,
-            );
+            const inputUnavailableMatch = isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob);
 
             if (restartMode === 'inputUnavailableOnly') {
                 if (inputUnavailableMatch.matched) {
@@ -504,7 +501,6 @@ function createOutputRecoveryService({
     }
 
     return {
-        armStopSignalEscalation,
         clearOutputRestartState,
         consumeStopRequested,
         getOutputDesiredState,

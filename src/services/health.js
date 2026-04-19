@@ -72,37 +72,7 @@ function createHealthMonitorService({
     }, probeCacheTtlMs * 4);
     probeEvictionTimer.unref?.();
 
-    function parseLifecycleExitMessage(message) {
-        if (typeof message !== 'string' || !message.includes('[lifecycle] exited')) return null;
-
-        const read = (key) => {
-            const match = message.match(new RegExp(`${key}=([^\\s]+)`));
-            return match ? match[1] : null;
-        };
-
-        return {
-            status: read('status'),
-            requestedStop: read('requestedStop') === 'true',
-            exitCode: read('exitCode'),
-            exitSignal: read('exitSignal'),
-        };
-    }
-
-    function getLatestLifecycleExitEventForOutput(pipelineId, outputId) {
-        const lifecycleLogs = db.listLifecycleLogsByOutput(pipelineId, outputId);
-        for (let i = lifecycleLogs.length - 1; i >= 0; i -= 1) {
-            const entry = lifecycleLogs[i];
-            if (
-                typeof entry?.message === 'string' &&
-                entry.message.includes('[lifecycle] exited')
-            ) {
-                return entry;
-            }
-        }
-        return null;
-    }
-
-    function isLatestJobLikelyInputUnavailableStop(pipelineId, outputId, latestJob) {
+    function isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob) {
         if (!latestJob || latestJob.status === 'running') {
             return { matched: false, reason: 'no_terminal_job' };
         }
@@ -116,21 +86,7 @@ function createHealthMonitorService({
             return { matched: false, reason: 'no_input_unavailable_transition' };
         }
 
-        const exitEvent = getLatestLifecycleExitEventForOutput(pipelineId, outputId);
-        const parsedExit = parseLifecycleExitMessage(exitEvent?.message || '');
-        if (!parsedExit) {
-            return { matched: false, reason: 'missing_lifecycle_exit_log' };
-        }
-
-        if (parsedExit.requestedStop) {
-            return { matched: false, reason: 'requested_stop' };
-        }
-
-        if (parsedExit.status && parsedExit.status !== 'stopped') {
-            return { matched: false, reason: 'lifecycle_not_stopped' };
-        }
-
-        const endedAtMs = Date.parse(latestJob.endedAt || exitEvent.ts || '');
+        const endedAtMs = Date.parse(latestJob.endedAt || '');
         if (!Number.isFinite(endedAtMs)) {
             return { matched: false, reason: 'missing_job_end_time' };
         }
@@ -146,9 +102,9 @@ function createHealthMonitorService({
             reason: 'near_input_unavailable_transition',
             deltaMs,
             graceMs,
-            exitStatus: parsedExit.status,
-            exitCode: parsedExit.exitCode,
-            exitSignal: parsedExit.exitSignal,
+            exitStatus: latestJob.status,
+            exitCode: latestJob.exitCode ?? null,
+            exitSignal: latestJob.exitSignal || null,
         };
     }
 

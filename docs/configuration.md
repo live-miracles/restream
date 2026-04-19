@@ -73,6 +73,7 @@ These are hardcoded in the application and cannot be overridden via environment 
 - Output control is intent-driven: each output persists `desiredState` as either `running` or `stopped`.
 - Manual stop sets `desiredState=stopped`, clears pending retry timers, and suppresses retry and input-recovery restarts until a later start sets `desiredState=running` again.
 - Newly created outputs default to `desiredState=stopped`; they do not auto-start until explicitly started.
+- Unrequested terminal exits retry while `desiredState=running`, including clean `exitCode=0` exits, except when the exit is correlated to a recent `on -> non-on` input transition.
 - When the next failure exceeds the retry budget, the job logs:
   - `[lifecycle] retry_decision failureCount=<n> scheduled=false`
   - `[lifecycle] retry_exhausted failureCount=<n> totalRetries=<m> action=give_up`
@@ -128,7 +129,7 @@ File: `src/config/restream.json`
 | `pipelinesLimit` | integer | `25` | Positive integer |
 | `outLimit` | integer | `95` | Positive integer |
 | `outputRecovery.enabled` | boolean | `true` | Master switch for output auto-restart logic |
-| `outputRecovery.immediateRetries` | integer | `3` | Fixed-delay retry attempts after failed output exits |
+| `outputRecovery.immediateRetries` | integer | `3` | Fixed-delay retry attempts after eligible unexpected output exits |
 | `outputRecovery.immediateDelayMs` | integer | `1000` | Delay for fixed-delay retries |
 | `outputRecovery.backoffRetries` | integer | `5` | Exponential-backoff retry attempts after immediate retries |
 | `outputRecovery.backoffBaseDelayMs` | integer | `2000` | Base delay for exponential backoff |

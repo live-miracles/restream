@@ -43,7 +43,6 @@ function createOutputLifecycleService({
         SIGKILL_ESCALATION_MS,
     });
     const {
-        armStopSignalEscalation,
         clearOutputRestartState,
         consumeStopRequested,
         getOutputDesiredState,
@@ -273,14 +272,23 @@ function createOutputLifecycleService({
             ffmpegProgressByJobId.delete(job.id);
             ffmpegOutputMediaByJobId.delete(job.id);
 
-            if (st === 'failed' && !wasStopRequested) {
+            const latestJob = db.listJobsForOutput(pipelineId, outputId)[0] || null;
+            const inputUnavailableMatch =
+                !wasStopRequested && st === 'stopped'
+                    ? isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob)
+                    : { matched: false, reason: 'not_applicable' };
+            const shouldScheduleRetry =
+                !wasStopRequested &&
+                (st === 'failed' || (st === 'stopped' && !inputUnavailableMatch.matched));
+
+            if (shouldScheduleRetry) {
                 const failureCount = registerOutputFailure(pipelineId, outputId);
                 const restartDecision = scheduleOutputRestart({
                     pipelineId,
                     outputId,
                     failureCount,
                     trigger: 'auto-retry',
-                    reason: 'output_failed',
+                    reason: st === 'failed' ? 'output_failed' : 'unexpected_clean_exit',
                     lastError: `exit code=${code ?? 'null'} signal=${signal || 'null'}`,
                 });
                 pushLog(
@@ -294,6 +302,10 @@ function createOutputLifecycleService({
                         `[lifecycle] retry_exhausted failureCount=${failureCount} totalRetries=${totalRetries} action=give_up`,
                     );
                 }
+            } else if (!wasStopRequested && st === 'stopped' && inputUnavailableMatch.matched) {
+                pushLog(
+                    `[lifecycle] retry_suppressed reason=input_unavailable_clean_exit matchReason=${inputUnavailableMatch.reason} exitCode=${code ?? 'null'} exitSignal=${signal || 'null'}`,
+                );
             }
         });
 
@@ -330,7 +342,6 @@ function createOutputLifecycleService({
             }
 
             const result = stopRunningJob(runningJob);
-            armStopSignalEscalation(processes.get(runningJob.id));
             return { action: 'stop_requested', desiredState, job: runningJob, result };
         }
 

@@ -412,6 +412,7 @@ Guardrails:
 > - `[lifecycle] stop_requested signal=<signal> status=running`
 > - `[lifecycle] auto_start_suppressed desiredState=stopped trigger=<trigger> reason=<reason>`
 > - `[lifecycle] retry_decision failureCount=<n> scheduled=<true|false> reason=<reason>`
+> - `[lifecycle] retry_suppressed reason=input_unavailable_clean_exit matchReason=<reason> exitCode=<code|null> exitSignal=<signal|null>`
 > - `[lifecycle] failed_on_error status=failed exitCode=null exitSignal=null`
 > - `[lifecycle] exited status=<stopped|failed> requestedStop=<true|false> exitCode=<code|null> exitSignal=<signal|null>`
 > - `[lifecycle] marked_stopped_no_process status=stopped`

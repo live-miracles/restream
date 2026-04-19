@@ -91,7 +91,7 @@ async function main() {
     await verifyDesiredStateForOutputs(resolved.outputs, 'stopped');
 
     console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
-    await startInputPublishers(manifest);
+    const inputPublishers = await startInputPublishers(manifest);
 
     console.log('== Step 3: Start outputs from manifest ==');
     await startOutputs(resolved.outputs);
@@ -110,6 +110,19 @@ async function main() {
 
     console.log('== Step 7: Verify stop is idempotent and start restores desiredState ==');
     await verifyIdempotentOutputStopStart(resolved.outputs[0]);
+
+    console.log('== Step 8: Verify output retry recovers after RTMP sink outage ==');
+    await verifyOutputRetryOnSinkRecovery(resolved.outputs[0], resolved);
+
+    console.log('== Step 9: Verify output retry recovers after unexpected SIGQUIT ==');
+    await verifyOutputRetryOnUnexpectedCleanExit(resolved.outputs[0], resolved);
+
+    console.log('== Step 10: Verify input recovery restarts outputs with desiredState=running ==');
+    await verifyInputRecoveryRestart(
+        resolved.pipelines[0],
+        resolved.outputs.filter((target) => target.pipelineId === resolved.pipelines[0]?.pipelineId),
+        inputPublishers,
+    );
 
     console.log('== 4x3 run complete ==');
 }
@@ -385,24 +398,63 @@ async function startInputPublishers(manifest) {
         throw new Error(`No stream keys found in manifest: ${relativePath(config.manifestPath)}`);
     }
 
+    const publisherTargets = [];
+
     for (const [index, streamKey] of streamKeys.entries()) {
         const ordinal = index + 1;
         const protocol = protocols[index % protocols.length];
         const targetUrl = buildTargetUrl(protocol, streamKey);
         const logPath = path.join(config.logDir, `input-${ordinal}-${protocol}.log`);
-        const args = buildFfmpegArgs(protocol, targetUrl);
-        const pid = spawnDetachedProcess({
-            name: `input-${ordinal}`,
-            command: 'ffmpeg',
-            args,
+        const publisherTarget = {
+            ordinal,
+            pipelineName: manifest.pipelines[index]?.name || `Pipeline ${ordinal}`,
+            streamKey,
+            protocol,
+            targetUrl,
             logPath,
-        });
+            pid: null,
+        };
+        const pid = spawnInputPublisher(publisherTarget);
 
         console.log(
             `[${ordinal}/${streamKeys.length}] protocol=${protocol} streamKey=${streamKey} target=${targetUrl}`,
         );
         console.log(`  pid=${pid} log=${relativePath(logPath)}`);
+        publisherTargets.push(publisherTarget);
     }
+
+    return publisherTargets;
+}
+
+function spawnInputPublisher(target) {
+    const pid = spawnDetachedProcess({
+        name: `input-${target.ordinal}`,
+        command: 'ffmpeg',
+        args: buildFfmpegArgs(target.protocol, target.targetUrl),
+        logPath: target.logPath,
+    });
+    target.pid = pid;
+    return pid;
+}
+
+async function stopInputPublisher(target) {
+    if (!target?.pid) return;
+    await terminateProcess(target);
+    target.pid = null;
+}
+
+async function restartInputPublisher(target) {
+    if (!target) {
+        throw new Error('No publisher target available for restart');
+    }
+    if (target.pid && isProcessAlive(target.pid)) {
+        await stopInputPublisher(target);
+    }
+    const pid = spawnInputPublisher(target);
+    console.log(
+        `Restarted input publisher ${target.pipelineName} protocol=${target.protocol} streamKey=${target.streamKey} pid=${pid}`,
+    );
+    return pid;
 }
 
 function buildTargetUrl(protocol, streamKey) {
@@ -620,6 +672,391 @@ async function verifyIdempotentOutputStopStart(target) {
     await waitForActive({
         pipelines: [{ pipelineId: target.pipelineId }],
         outputs: [target],
+    });
+}
+
+function findLatestJobForOutput(state, pipelineId, outputId) {
+    return (
+        state.jobs.find(
+            (item) => item.pipelineId === pipelineId && item.outputId === outputId,
+        ) || null
+    );
+}
+
+async function waitForRunningJobStability(target, minAgeMs = 5000) {
+    const label = `${target.pipelineName}/${target.outputName}`;
+
+    await pollUntil(
+        async () => {
+            const state = await fetchConfigState();
+            const output = state.outputs.find(
+                (item) => item.pipelineId === target.pipelineId && item.id === target.outputId,
+            );
+            const latestJob = findLatestJobForOutput(state, target.pipelineId, target.outputId);
+            if (output?.desiredState !== 'running' || latestJob?.status !== 'running') {
+                return false;
+            }
+            const startedAtMs = Date.parse(latestJob.startedAt || '');
+            if (!Number.isFinite(startedAtMs)) {
+                return false;
+            }
+            return Date.now() - startedAtMs >= minAgeMs;
+        },
+        minAgeMs + 30000,
+        500,
+        `${label} running job stable for ${minAgeMs}ms`,
+    );
+}
+
+async function fetchOutputHistory(target, options = {}) {
+    const query = new URLSearchParams();
+    const {
+        since = null,
+        until = null,
+        order = 'asc',
+        limit = 200,
+        filter = null,
+    } = options;
+
+    if (filter) query.set('filter', filter);
+    if (since) query.set('since', since);
+    if (until) query.set('until', until);
+    if (order) query.set('order', order);
+    if (limit) query.set('limit', String(limit));
+
+    const result = await requestJson(
+        `/pipelines/${target.pipelineId}/outputs/${target.outputId}/history?${query.toString()}`,
+    );
+    return Array.isArray(result.json?.logs) ? result.json.logs : [];
+}
+
+async function verifyOutputRetryOnSinkRecovery(target, resolved) {
+    if (!target) {
+        throw new Error('No output target available for output retry verification');
+    }
+
+    const label = `${target.pipelineName}/${target.outputName}`;
+    const failureSince = new Date().toISOString();
+
+    console.log('Stopping nginx-rtmp container to force output delivery failures');
+    await runCommand('docker', ['compose', 'stop', 'nginx-rtmp'], { stdio: 'inherit' });
+
+    await pollUntil(
+        async () => {
+            const state = await fetchConfigState();
+            const output = state.outputs.find(
+                (item) => item.pipelineId === target.pipelineId && item.id === target.outputId,
+            );
+            const latestJob = findLatestJobForOutput(state, target.pipelineId, target.outputId);
+            return output?.desiredState === 'running' && latestJob?.status === 'failed';
+        },
+        30000,
+        500,
+        `${label} to fail while desiredState stays running`,
+    );
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(target, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some(
+                (log) =>
+                    String(log.message || '').startsWith('[lifecycle] retry_decision') &&
+                    /scheduled=true/.test(String(log.message || '')),
+            );
+        },
+        30000,
+        500,
+        `${label} auto-retry decision after sink outage`,
+    );
+
+    console.log('Restarting nginx-rtmp container to allow auto-retry recovery');
+    await runCommand('docker', ['compose', 'up', '-d', 'nginx-rtmp'], { stdio: 'inherit' });
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(target, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some(
+                (log) =>
+                    String(log.message || '').startsWith('[lifecycle] started') &&
+                    /trigger=auto-retry/.test(String(log.message || '')),
+            );
+        },
+        90000,
+        1000,
+        `${label} auto-retry restart after sink recovery`,
+    );
+
+    await waitForActive(resolved);
+}
+
+function getExpectedReaderTag(pipelineId, outputId) {
+    return `reader_${pipelineId}_${outputId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function listFfmpegProcesses() {
+    return await new Promise((resolve, reject) => {
+        const child = spawn('ps', ['-eo', 'pid=,args='], {
+            cwd: rootDir,
+            env: process.env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (chunk) => {
+            stdout += chunk.toString();
+        });
+
+        child.stderr.on('data', (chunk) => {
+            stderr += chunk.toString();
+        });
+
+        child.on('error', reject);
+        child.on('close', (code) => {
+            if (code !== 0) {
+                reject(new Error(`ps -eo pid=,args= failed${stderr ? `: ${stderr.trim()}` : ''}`));
+                return;
+            }
+
+            const processes = stdout
+                .split('\n')
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .map((line) => {
+                    const match = line.match(/^(\d+)\s+(.*)$/);
+                    if (!match) {
+                        return null;
+                    }
+                    return {
+                        pid: Number(match[1]),
+                        command: match[2],
+                    };
+                })
+                .filter(Boolean);
+
+            resolve(processes);
+        });
+    });
+}
+
+async function findOutputFfmpegProcess(target) {
+    const readerTag = getExpectedReaderTag(target.pipelineId, target.outputId);
+    const processes = await listFfmpegProcesses();
+    const matches = processes.filter(
+        (proc) => proc.command.includes('ffmpeg') && proc.command.includes(readerTag),
+    );
+
+    if (matches.length === 0) {
+        throw new Error(
+            `No running FFmpeg process found for ${target.pipelineName}/${target.outputName} using reader tag ${readerTag}`,
+        );
+    }
+
+    if (matches.length > 1) {
+        throw new Error(
+            `Multiple FFmpeg processes matched ${target.pipelineName}/${target.outputName} using reader tag ${readerTag}: ${matches.map((proc) => proc.pid).join(', ')}`,
+        );
+    }
+
+    return {
+        pid: matches[0].pid,
+        readerTag,
+        command: matches[0].command,
+    };
+}
+
+async function requestUnexpectedSigquitExit(target) {
+    const match = await findOutputFfmpegProcess(target);
+    const pid = Number(match.pid);
+
+    if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error(
+            `No running FFmpeg pid available for ${target.pipelineName}/${target.outputName}`,
+        );
+    }
+
+    process.kill(pid, 'SIGQUIT');
+    return match;
+}
+
+function isUnexpectedSigquitExitLog(message) {
+    const text = String(message || '');
+    if (!text.startsWith('[lifecycle] exited')) {
+        return false;
+    }
+
+    if (!/status=failed/.test(text) || !/requestedStop=false/.test(text)) {
+        return false;
+    }
+
+    return /exitSignal=SIGQUIT/.test(text) || /exitCode=255\b/.test(text);
+}
+
+async function verifyOutputRetryOnUnexpectedCleanExit(target, resolved) {
+    if (!target) {
+        throw new Error('No output target available for clean-exit retry verification');
+    }
+
+    const label = `${target.pipelineName}/${target.outputName}`;
+
+    await waitForRunningJobStability(target, 5000);
+
+    const failureSince = new Date().toISOString();
+
+    const sigquitTarget = await requestUnexpectedSigquitExit(target);
+    console.log(
+        `Sent SIGQUIT to ${target.pipelineName}/${target.outputName} ${target.pipelineId}/${target.outputId}`,
+    );
+    console.log(
+        `  ffmpeg pid=${sigquitTarget.pid} readerTag=${sigquitTarget.readerTag} to verify auto-retry after external termination`,
+    );
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(target, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some((log) => isUnexpectedSigquitExitLog(log.message));
+        },
+        30000,
+        500,
+        `${label} unexpected SIGQUIT exit`,
+    );
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(target, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some(
+                (log) =>
+                    String(log.message || '').startsWith('[lifecycle] retry_decision') &&
+                    /scheduled=true/.test(String(log.message || '')),
+            );
+        },
+        15000,
+        500,
+        `${label} sigquit auto-retry decision`,
+    );
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(target, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some(
+                (log) =>
+                    String(log.message || '').startsWith('[lifecycle] started') &&
+                    /trigger=auto-retry/.test(String(log.message || '')),
+            );
+        },
+        45000,
+        1000,
+        `${label} sigquit auto-retry restart`,
+    );
+
+    await waitForActive(resolved);
+}
+
+async function verifyInputRecoveryRestart(pipelineTarget, pipelineOutputs, inputPublishers) {
+    if (!pipelineTarget) {
+        throw new Error('No pipeline target available for input recovery verification');
+    }
+    if (!Array.isArray(pipelineOutputs) || pipelineOutputs.length === 0) {
+        throw new Error('No output targets available for input recovery verification');
+    }
+
+    const publisherTarget = (inputPublishers || []).find(
+        (item) => item.streamKey === pipelineTarget.streamKey,
+    );
+    if (!publisherTarget) {
+        throw new Error(
+            `No input publisher target found for pipeline ${pipelineTarget.name || pipelineTarget.pipelineId}`,
+        );
+    }
+
+    const targetOutput = pipelineOutputs[0];
+    const label = `${targetOutput.pipelineName}/${targetOutput.outputName}`;
+    const failureSince = new Date().toISOString();
+
+    console.log(
+        `Stopping input publisher for ${pipelineTarget.name || pipelineTarget.pipelineId} to verify input-recovery restart`,
+    );
+    await stopInputPublisher(publisherTarget);
+
+    await pollUntil(
+        async () => {
+            const health = (await requestJson('/health')).json;
+            return health.pipelines?.[pipelineTarget.pipelineId]?.input?.status !== 'on';
+        },
+        30000,
+        500,
+        `${pipelineTarget.name || pipelineTarget.pipelineId} input to leave on-state`,
+    );
+
+    await pollUntil(
+        async () => {
+            const state = await fetchConfigState();
+            const output = state.outputs.find(
+                (item) =>
+                    item.pipelineId === targetOutput.pipelineId && item.id === targetOutput.outputId,
+            );
+            const latestJob = findLatestJobForOutput(
+                state,
+                targetOutput.pipelineId,
+                targetOutput.outputId,
+            );
+            return output?.desiredState === 'running' && latestJob && latestJob.status !== 'running';
+        },
+        45000,
+        500,
+        `${label} to stop while preserving desiredState=running`,
+    );
+
+    await restartInputPublisher(publisherTarget);
+
+    await pollUntil(
+        async () => {
+            const logs = await fetchOutputHistory(targetOutput, {
+                since: failureSince,
+                filter: 'lifecycle',
+                order: 'asc',
+                limit: 200,
+            });
+            return logs.some(
+                (log) =>
+                    String(log.message || '').startsWith('[lifecycle] started') &&
+                    /trigger=input-recovery/.test(String(log.message || '')),
+            );
+        },
+        90000,
+        1000,
+        `${label} input-recovery restart`,
+    );
+
+    await waitForActive({
+        pipelines: [pipelineTarget],
+        outputs: pipelineOutputs,
     });
 }
 

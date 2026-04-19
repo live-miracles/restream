@@ -193,6 +193,33 @@ function registerOutputApi({
     stopRunningJob,
     validateName,
 }) {
+    async function applyOutputStateChange(pid, oid, options) {
+        const {
+            desiredState,
+            stateReason,
+            resetReason,
+            trigger,
+            reconcileReason,
+        } = options;
+
+        const desiredStateChange = setOutputDesiredState(pid, oid, desiredState, {
+            source: 'api',
+            reason: stateReason,
+        });
+        recomputeConfigEtag();
+
+        resetOutputFailureCount(pid, oid, resetReason);
+
+        const reconciliation = await reconcileOutput(pid, oid, {
+            trigger,
+            reason: reconcileReason,
+            source: 'api',
+        });
+        recomputeEtag();
+
+        return { desiredStateChange, reconciliation };
+    }
+
     app.post('/pipelines/:pipelineId/outputs', (req, res) => {
         try {
             const pid = req.params.pipelineId;
@@ -329,15 +356,13 @@ function registerOutputApi({
             const output = db.getOutput(pid, oid);
             if (!output) return res.status(404).json({ error: 'Output not found' });
 
-            setOutputDesiredState(pid, oid, 'running', { source: 'api', reason: 'manual_start' });
-            recomputeConfigEtag();
-            resetOutputFailureCount(pid, oid, 'manual_start');
-            const reconciliation = await reconcileOutput(pid, oid, {
+            const { reconciliation } = await applyOutputStateChange(pid, oid, {
+                desiredState: 'running',
+                stateReason: 'manual_start',
+                resetReason: 'manual_start',
                 trigger: 'manual',
-                reason: 'manual_request',
-                source: 'api',
+                reconcileReason: 'manual_request',
             });
-            recomputeEtag();
 
             if (reconciliation.action === 'started') {
                 return res.status(201).json({
@@ -392,18 +417,13 @@ function registerOutputApi({
             const output = db.getOutput(pid, oid);
             if (!output) return res.status(404).json({ error: 'Output not found' });
 
-            const desiredStateChange = setOutputDesiredState(pid, oid, 'stopped', {
-                source: 'api',
-                reason: 'manual_stop',
-            });
-            resetOutputFailureCount(pid, oid, 'manual_stop');
-            const reconciliation = await reconcileOutput(pid, oid, {
+            const { desiredStateChange, reconciliation } = await applyOutputStateChange(pid, oid, {
+                desiredState: 'stopped',
+                stateReason: 'manual_stop',
+                resetReason: 'manual_stop',
                 trigger: 'manual-stop',
-                reason: 'desired_stopped',
-                source: 'api',
+                reconcileReason: 'desired_stopped',
             });
-            recomputeConfigEtag();
-            recomputeEtag();
 
             if (reconciliation.action === 'stop_requested') {
                 return res.json({
