@@ -1,21 +1,25 @@
 import { getOutputHistory, getPipelineHistory } from '../core/api.js';
+import {
+    historyConstants,
+    outputHistoryState,
+    pipelineHistoryState,
+} from './state.js';
+import {
+    focusOutputHistoryRawMatch,
+    getMatchingRawOutputLogs,
+    getOutputHistoryContextKey,
+    getTimelineContextRange,
+    renderOutputHistory as renderOutputHistoryView,
+    renderPipelineHistory as renderPipelineHistoryView,
+    setHistoryRenderCallbacks,
+} from './render.js';
 
-const outputHistoryState = window.outputHistoryState;
-    const pipelineHistoryState = window.pipelineHistoryState;
-    const {
-        OUTPUT_HISTORY_POLL_INTERVAL_MS,
-        OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS,
-        OUTPUT_HISTORY_RAW_LIMIT,
-        OUTPUT_HISTORY_CONTEXT_LIMIT,
-    } = window.historyConstants;
-    const {
-        focusOutputHistoryRawMatch,
-        getMatchingRawOutputLogs,
-        getOutputHistoryContextKey,
-        getTimelineContextRange,
-        renderOutputHistory: renderOutputHistoryView,
-        renderPipelineHistory: renderPipelineHistoryView,
-    } = window.historyRender;
+const {
+    OUTPUT_HISTORY_POLL_INTERVAL_MS,
+    OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS,
+    OUTPUT_HISTORY_RAW_LIMIT,
+    OUTPUT_HISTORY_CONTEXT_LIMIT,
+} = historyConstants;
 
     async function ensureOutputHistoryContext(log) {
         // Timeline rows only fetch nearby stderr/exit/control logs on demand so the main history
@@ -29,7 +33,7 @@ const outputHistoryState = window.outputHistoryState;
             return;
         }
 
-        const range = getTimelineContextRange(outputHistoryState, window.historyConstants, log);
+        const range = getTimelineContextRange(outputHistoryState, historyConstants, log);
         if (!range) {
             outputHistoryState.contextLogsByKey.set(contextKey, []);
             return;
@@ -105,7 +109,7 @@ const outputHistoryState = window.outputHistoryState;
     }
 
     function renderOutputHistory(scrollToTop = false, anchorContextKey = null) {
-        renderOutputHistoryView(outputHistoryState, window.historyConstants, {
+        renderOutputHistoryView(outputHistoryState, historyConstants, {
             scrollToTop,
             anchorContextKey,
         });
@@ -356,15 +360,29 @@ const outputHistoryState = window.outputHistoryState;
         }
     }
 
-    window.openOutputHistoryModal = openOutputHistoryModal;
-    window.toggleHistoryPlayPause = toggleHistoryPlayPause;
-    window.toggleHistoryRedaction = toggleHistoryRedaction;
-    window.setOutputHistoryMode = setOutputHistoryMode;
-    window.setOutputHistoryOrder = setOutputHistoryOrder;
-    window.toggleOutputHistoryContext = toggleOutputHistoryContext;
-    window.setOutputHistorySearch = setOutputHistorySearch;
-    window.onOutputHistorySearchKeydown = onOutputHistorySearchKeydown;
-    window.navigateOutputHistorySearch = navigateOutputHistorySearch;
-    window.openPipelineHistoryModal = openPipelineHistoryModal;
-    window.togglePipelineHistoryPlayPause = togglePipelineHistoryPlayPause;
-    window.syncHistoryPollingWithVisibility = syncHistoryPollingWithVisibility;
+setHistoryRenderCallbacks({
+    toggleOutputHistoryContext,
+});
+
+window.toggleHistoryPlayPause = toggleHistoryPlayPause;
+window.toggleHistoryRedaction = toggleHistoryRedaction;
+window.setOutputHistoryMode = setOutputHistoryMode;
+window.setOutputHistoryOrder = setOutputHistoryOrder;
+window.setOutputHistorySearch = setOutputHistorySearch;
+window.onOutputHistorySearchKeydown = onOutputHistorySearchKeydown;
+window.navigateOutputHistorySearch = navigateOutputHistorySearch;
+window.togglePipelineHistoryPlayPause = togglePipelineHistoryPlayPause;
+
+export {
+    openOutputHistoryModal,
+    openPipelineHistoryModal,
+    syncHistoryPollingWithVisibility,
+    toggleHistoryPlayPause,
+    toggleHistoryRedaction,
+    setOutputHistoryMode,
+    setOutputHistoryOrder,
+    setOutputHistorySearch,
+    onOutputHistorySearchKeydown,
+    navigateOutputHistorySearch,
+    togglePipelineHistoryPlayPause,
+};

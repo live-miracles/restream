@@ -21,13 +21,14 @@ This file is now a short current-state backlog. The earlier audit turned into a 
 - Backend helper-boundary refactor: shared runtime helpers extracted into `src/utils/{app,ffmpeg,mediamtx,retry}.js`.
 - Frontend ES-module migration across dashboard/history/stream-keys with explicit imports and shared state in `public/js/core/state.js`.
 - Stream-key create/delete now uses compensating MediaMTX rollback so DB write failures do not leave path config mutated on their own.
+- Dashboard/history frontend loading now uses page entry modules plus explicit import/callback wiring instead of ordered `<script type="module">` tags and internal `window.*` handoffs.
 
 ## Architecture Follow-Ups From 2026-04-19 Review
 
 | Item | Status | Notes |
 | --- | --- | --- |
 | 2. Reconcile MediaMTX + SQLite stream-key mutations | Fixed | Create/delete now roll back the MediaMTX path change if the DB phase fails after the control-plane mutation succeeds. |
-| 3. Replace order-dependent frontend `window.*` module handoffs | Active | History and dashboard features still rely on manual script order instead of the module graph. |
+| 3. Replace order-dependent frontend `window.*` module handoffs | Fixed | Dashboard and history features now load through page entry modules; internal module calls use imports or registered callbacks, leaving `window.*` only for markup-bound handlers. |
 | 4. Add shared snapshot identity across `/config` and `/health` | Active | The frontend still merges separate server snapshots without a version token proving they are from the same moment. |
 | 5. Replace history log-message parsing with typed event payloads | Active | History badges still depend on backend log prose like `[lifecycle] ...` and `[input_state] ...`. |
 | 6. Make delete flows wait for process teardown before final removal | Active | Delete responses still remove DB state before FFmpeg is guaranteed to be gone. |

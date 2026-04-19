@@ -2,7 +2,10 @@ import { getStreamKeys, startOut, stopOut, createPipeline, updatePipeline, delet
 import { getUrlParam, isValidRtmp, setUrlParam } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard, syncUserConfigBaseline } from './dashboard.js';
-import { renderPipelines } from './render.js';
+import {
+    getPublisherQualityMetrics,
+    normalizePublisherProtocolLabel,
+} from './publisher-quality.js';
 
 async function updateLocalConfigBaseline() {
     await syncUserConfigBaseline();
@@ -51,16 +54,10 @@ function setOutputToggleBusy(button, busy) {
             return;
         }
 
-        const proto =
-            typeof window.normalizePublisherProtocolLabel === 'function'
-                ? window.normalizePublisherProtocolLabel(publisher.protocol)
-                : String(publisher.protocol || '').toUpperCase();
+        const proto = normalizePublisherProtocolLabel(publisher.protocol);
         subtitle.textContent = `${proto} · ${publisher.remoteAddr || 'unknown'}`;
 
-        const rows =
-            typeof window.getPublisherQualityMetrics === 'function'
-                ? window.getPublisherQualityMetrics(publisher)
-                : [];
+        const rows = getPublisherQualityMetrics(publisher);
 
         tbody.replaceChildren();
         for (const row of rows) {
@@ -434,20 +431,28 @@ function setOutputToggleBusy(button, busy) {
 
         setUrlParam('p', null);
         await refreshDashboard();
-    await updateLocalConfigBaseline();
-        renderPipelines();
+        await updateLocalConfigBaseline();
     }
 
-    window.isOutputToggleBusy = isOutputToggleBusy;
-    window.openPublisherQualityModal = openPublisherQualityModal;
-    window.renderPublisherQualityModal = renderPublisherQualityModal;
-    window.startOutBtn = startOutBtn;
-    window.stopOutBtn = stopOutBtn;
-    window.pipeFormBtn = pipeFormBtn;
-    window.editOutBtn = editOutBtn;
-    window.editOutFormBtn = editOutFormBtn;
-    window.deleteOutBtn = deleteOutBtn;
-    window.addOutBtn = addOutBtn;
-    window.addPipeBtn = addPipeBtn;
-    window.editPipeBtn = editPipeBtn;
-    window.deletePipeBtn = deletePipeBtn;
+window.pipeFormBtn = pipeFormBtn;
+window.editOutFormBtn = editOutFormBtn;
+window.addOutBtn = addOutBtn;
+window.addPipeBtn = addPipeBtn;
+window.editPipeBtn = editPipeBtn;
+window.deletePipeBtn = deletePipeBtn;
+
+export {
+    isOutputToggleBusy,
+    openPublisherQualityModal,
+    renderPublisherQualityModal,
+    startOutBtn,
+    stopOutBtn,
+    pipeFormBtn,
+    editOutBtn,
+    editOutFormBtn,
+    deleteOutBtn,
+    addOutBtn,
+    addPipeBtn,
+    editPipeBtn,
+    deletePipeBtn,
+};

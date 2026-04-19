@@ -1,4 +1,4 @@
-import { setMetricsBitrateWithSubtleUnit, setMetricsValueWithSubtleUnit } from './render.js';
+import { setMetricsBitrateWithSubtleUnit, setMetricsValueWithSubtleUnit } from './metric-format.js';
 import { state } from '../core/state.js';
 
 const HEALTH_RECOVERY_BANNER_MS = 6000;
@@ -140,6 +140,4 @@ const HEALTH_RECOVERY_BANNER_MS = 6000;
         .getElementById('dismiss-health-banner-btn')
         ?.addEventListener('click', dismissHealthBanner);
 
-    window.dismissHealthBanner = dismissHealthBanner;
-    window.renderHealthBanner = renderHealthBanner;
-    window.renderServerMetrics = renderServerMetrics;
+export { dismissHealthBanner, renderHealthBanner, renderServerMetrics };

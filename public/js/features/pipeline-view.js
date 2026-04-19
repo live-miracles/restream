@@ -1,108 +1,25 @@
 import { formatCodecName, maskSecret, msToHHMMSS, sanitizeLogMessage } from '../core/utils.js';
-import { setBadgeBitrateWithSubtleUnit, setBitrateWithSubtleUnit } from './render.js';
+import { setBadgeBitrateWithSubtleUnit, setBitrateWithSubtleUnit } from './metric-format.js';
 import { state } from '../core/state.js';
+import {
+    getPublisherQualityAlerts,
+    normalizePublisherProtocolLabel,
+} from './publisher-quality.js';
 
-function normalizePublisherProtocolLabel(protocol) {
-        const map = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT', webrtc: 'WebRTC' };
-        return map[protocol] || String(protocol || '').toUpperCase();
-    }
+const pipelineViewDependencies = {
+    openPipelineHistoryModal: null,
+    openPublisherQualityModal: null,
+    isOutputToggleBusy: null,
+    startOutBtn: null,
+    stopOutBtn: null,
+    openOutputHistoryModal: null,
+    editOutBtn: null,
+    deleteOutBtn: null,
+};
 
-    function getPublisherQualityMetrics(publisher) {
-        if (!publisher) return [];
-
-        const q = publisher.quality || {};
-        const metrics = [];
-
-        const addNumericMetric = ({ code, label, rawValue, alertCheck, formatter }) => {
-            if (rawValue === null || rawValue === undefined) return;
-            const num = Number(rawValue) || 0;
-            const rounded = Math.round(num);
-            metrics.push({
-                code,
-                label,
-                value: rounded,
-                displayValue: formatter ? formatter(num) : String(rounded),
-                isAlert: !!alertCheck(rounded),
-            });
-        };
-
-        addNumericMetric({
-            code: 'rtp_loss',
-            label: 'Packets lost (inbound RTP)',
-            rawValue: q.inboundRTPPacketsLost,
-            alertCheck: (v) => v >= 100,
-        });
-        addNumericMetric({
-            code: 'rtp_err',
-            label: 'Packets in error (inbound RTP)',
-            rawValue: q.inboundRTPPacketsInError,
-            alertCheck: (v) => v >= 20,
-        });
-        addNumericMetric({
-            code: 'jitter',
-            label: 'Jitter (inbound RTP)',
-            rawValue: q.inboundRTPPacketsJitter,
-            alertCheck: (v) => v >= 30,
-        });
-        addNumericMetric({
-            code: 'rtt',
-            label: 'RTT (ms)',
-            rawValue: q.msRTT,
-            alertCheck: (v) => v >= 200,
-        });
-        addNumericMetric({
-            code: 'srt_recv_rate',
-            label: 'Receive rate (Mbps)',
-            rawValue: q.mbpsReceiveRate,
-            alertCheck: () => false,
-            formatter: (v) => v.toFixed(2),
-        });
-        addNumericMetric({
-            code: 'srt_loss',
-            label: 'Packets lost (SRT received)',
-            rawValue: q.packetsReceivedLoss,
-            alertCheck: (v) => v >= 100,
-        });
-        addNumericMetric({
-            code: 'srt_drop',
-            label: 'Packets dropped (SRT received)',
-            rawValue: q.packetsReceivedDrop,
-            alertCheck: (v) => v >= 10,
-        });
-        addNumericMetric({
-            code: 'srt_retrans',
-            label: 'Packets retransmitted (SRT)',
-            rawValue: q.packetsReceivedRetrans,
-            alertCheck: (v) => v >= 200,
-        });
-        addNumericMetric({
-            code: 'srt_undecrypt',
-            label: 'Packets undecrypted (SRT)',
-            rawValue: q.packetsReceivedUndecrypt,
-            alertCheck: (v) => v > 0,
-        });
-
-        if (publisher.protocol === 'webrtc' && q.peerConnectionEstablished !== undefined) {
-            metrics.push({
-                code: 'webrtc_peer',
-                label: 'Peer connection established',
-                value: q.peerConnectionEstablished ? 1 : 0,
-                displayValue: q.peerConnectionEstablished ? 'Yes' : 'No',
-                isAlert: false,
-            });
-        }
-
-        return metrics;
-    }
-
-    function getPublisherQualityAlerts(publisher) {
-        return getPublisherQualityMetrics(publisher)
-            .filter((metric) => metric.isAlert)
-            .map((metric) => ({
-                code: metric.code,
-                label: `${metric.label}: ${metric.displayValue}`,
-            }));
-    }
+function setPipelineViewDependencies(dependencies) {
+    Object.assign(pipelineViewDependencies, dependencies || {});
+}
 
     function renderPipelineInfoColumn(selectedPipe) {
         if (!selectedPipe) {
@@ -122,9 +39,7 @@ function normalizePublisherProtocolLabel(protocol) {
         const historyBtn = document.getElementById('pipe-history-btn');
         if (historyBtn) {
             historyBtn.onclick = () => {
-                if (typeof window.openPipelineHistoryModal === 'function') {
-                    window.openPipelineHistoryModal(pipe.id, pipe.name);
-                }
+                pipelineViewDependencies.openPipelineHistoryModal?.(pipe.id, pipe.name);
             };
         }
         const inputTimeElem = document.getElementById('input-time');
@@ -260,9 +175,7 @@ function normalizePublisherProtocolLabel(protocol) {
             qualityBtn.className = `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`;
             qualityBtn.textContent = isHealthy ? 'Healthy' : 'Unhealthy';
             qualityBtn.addEventListener('click', () => {
-                if (typeof window.openPublisherQualityModal === 'function') {
-                    window.openPublisherQualityModal(pipe.id);
-                }
+                pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
             });
             publisherMeta.appendChild(qualityBtn);
         }
@@ -328,9 +241,7 @@ function normalizePublisherProtocolLabel(protocol) {
             toggleBtn.className = `btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'}`;
             toggleBtn.dataset.outputIndex = String(outputIndex);
             toggleBtn.textContent = isRunning ? 'stop' : 'start';
-            const toggleBusy =
-                typeof window.isOutputToggleBusy === 'function' &&
-                window.isOutputToggleBusy(pipe.id, o.id);
+            const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
             toggleBtn.disabled = !!toggleBusy;
             toggleBtn.classList.toggle('btn-disabled', !!toggleBusy);
             toggleBtn.addEventListener('click', async () => {
@@ -342,18 +253,15 @@ function normalizePublisherProtocolLabel(protocol) {
                 try {
                     const running = out.status === 'on' || out.status === 'warning';
                     if (running) {
-                        if (typeof window.stopOutBtn === 'function') {
-                            await window.stopOutBtn(pipe.id, out.id, toggleBtn);
-                        }
+                        await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, toggleBtn);
                     } else {
-                        if (typeof window.startOutBtn === 'function') {
-                            await window.startOutBtn(pipe.id, out.id, toggleBtn);
-                        }
+                        await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, toggleBtn);
                     }
                 } finally {
-                    const stillBusy =
-                        typeof window.isOutputToggleBusy === 'function' &&
-                        window.isOutputToggleBusy(pipe.id, out.id);
+                    const stillBusy = pipelineViewDependencies.isOutputToggleBusy?.(
+                        pipe.id,
+                        out.id,
+                    );
                     if (!stillBusy) {
                         toggleBtn.disabled = false;
                         toggleBtn.classList.remove('btn-disabled');
@@ -411,18 +319,14 @@ function normalizePublisherProtocolLabel(protocol) {
             historyBtn.className = 'btn btn-xs btn-accent btn-outline';
             historyBtn.textContent = 'History';
             historyBtn.addEventListener('click', () => {
-                if (typeof window.openOutputHistoryModal === 'function') {
-                    window.openOutputHistoryModal(pipe.id, o.id, o.name);
-                }
+                pipelineViewDependencies.openOutputHistoryModal?.(pipe.id, o.id, o.name);
             });
 
             const editBtn = document.createElement('button');
             editBtn.className = 'btn btn-xs btn-accent btn-outline';
             editBtn.textContent = '✎';
             editBtn.addEventListener('click', () => {
-                if (typeof window.editOutBtn === 'function') {
-                    window.editOutBtn(pipe.id, o.id);
-                }
+                pipelineViewDependencies.editOutBtn?.(pipe.id, o.id);
             });
 
             const deleteBtn = document.createElement('button');
@@ -430,9 +334,7 @@ function normalizePublisherProtocolLabel(protocol) {
             deleteBtn.textContent = '✖';
             deleteBtn.addEventListener('click', () => {
                 if (deleteBtn.classList.contains('btn-disabled')) return;
-                if (typeof window.deleteOutBtn === 'function') {
-                    window.deleteOutBtn(pipe.id, o.id);
-                }
+                pipelineViewDependencies.deleteOutBtn?.(pipe.id, o.id);
             });
 
             actions.appendChild(historyBtn);
@@ -448,8 +350,8 @@ function normalizePublisherProtocolLabel(protocol) {
         });
     }
 
-    window.normalizePublisherProtocolLabel = normalizePublisherProtocolLabel;
-    window.getPublisherQualityMetrics = getPublisherQualityMetrics;
-    window.getPublisherQualityAlerts = getPublisherQualityAlerts;
-    window.renderPipelineInfoColumn = renderPipelineInfoColumn;
-    window.renderOutsColumn = renderOutsColumn;
+export {
+    renderPipelineInfoColumn,
+    renderOutsColumn,
+    setPipelineViewDependencies,
+};

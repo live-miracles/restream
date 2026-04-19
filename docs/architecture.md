@@ -403,7 +403,7 @@ setInterval(fetchAndRerender, <pollInterval>)   repeats above on interval
 setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
 ```
 
-`public/index.html` and `public/stream-keys.html` load frontend scripts as ES modules (`<script type="module">`). Cross-file dependencies are imported explicitly, while HTML-bound handlers used by inline attributes (`onclick` and `data-*` hooks) remain exposed on `window`.
+`public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 
 ### 5.5 Frontend Module Conventions
 

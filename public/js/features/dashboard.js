@@ -2,7 +2,16 @@ import { getConfig, getConfigVersion, getHealth, getSystemMetrics } from '../cor
 import { parsePipelinesInfo } from '../core/pipeline.js';
 import { setServerConfig } from '../core/utils.js';
 import { renderPipelines, renderMetrics } from './render.js';
+import { syncHistoryPollingWithVisibility } from '../history/controller.js';
 import { state } from '../core/state.js';
+
+const dashboardHooks = {
+    afterRender: null,
+};
+
+function setDashboardHooks(hooks) {
+    Object.assign(dashboardHooks, hooks || {});
+}
 
 async function refreshDashboard() {
     await fetchAndRerender();
@@ -103,7 +112,7 @@ async function fetchAndRerender() {
     state.pipelines = parsePipelinesInfo(state.config, state.health);
     renderPipelines();
     renderMetrics();
-    window.renderPublisherQualityModal?.();
+    dashboardHooks.afterRender?.();
 }
 
 async function fetchConfig() {
@@ -162,13 +171,11 @@ function startStreamingConfigPolling() {
 async function onVisibilityChange() {
     if (document.hidden) {
         startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
-        if (typeof window.syncHistoryPollingWithVisibility === 'function')
-            await window.syncHistoryPollingWithVisibility();
+        await syncHistoryPollingWithVisibility();
         return;
     }
     startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
-    if (typeof window.syncHistoryPollingWithVisibility === 'function')
-        await window.syncHistoryPollingWithVisibility();
+    await syncHistoryPollingWithVisibility();
     await fetchAndRerender();
     await checkStreamingConfigs();
 }
@@ -188,7 +195,9 @@ document
     .getElementById('dismiss-streaming-config-alert-btn')
     ?.addEventListener('click', dismissStreamingConfigAlert);
 
-window.markUserConfigBaseline = markUserConfigBaseline;
-window.syncUserConfigBaseline = syncUserConfigBaseline;
-
-export { refreshDashboard, markUserConfigBaseline, syncUserConfigBaseline };
+export {
+    refreshDashboard,
+    markUserConfigBaseline,
+    syncUserConfigBaseline,
+    setDashboardHooks,
+};

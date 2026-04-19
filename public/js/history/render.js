@@ -1,5 +1,13 @@
 import { sanitizeLogMessage } from '../core/utils.js';
 
+const historyRenderCallbacks = {
+    toggleOutputHistoryContext: null,
+};
+
+function setHistoryRenderCallbacks(callbacks) {
+    Object.assign(historyRenderCallbacks, callbacks || {});
+}
+
 function formatHistoryTime(ts) {
         if (!ts) return '--';
         const d = new Date(ts);
@@ -414,7 +422,7 @@ function formatHistoryTime(ts) {
             }
             toggle.title = expanded ? 'Hide context' : 'Show context';
             toggle.setAttribute('aria-label', expanded ? 'Hide context' : 'Show context');
-            toggle.onclick = () => window.toggleOutputHistoryContext(log);
+            toggle.onclick = () => historyRenderCallbacks.toggleOutputHistoryContext?.(log);
             left.appendChild(toggle);
 
             left.appendChild(badge);
@@ -540,11 +548,12 @@ function formatHistoryTime(ts) {
         if (scrollToTop) list.scrollTop = 0;
     }
 
-    window.historyRender = {
-        focusOutputHistoryRawMatch,
-        getMatchingRawOutputLogs,
-        getOutputHistoryContextKey,
-        getTimelineContextRange,
-        renderOutputHistory,
-        renderPipelineHistory,
-    };
+export {
+    focusOutputHistoryRawMatch,
+    getMatchingRawOutputLogs,
+    getOutputHistoryContextKey,
+    getTimelineContextRange,
+    renderOutputHistory,
+    renderPipelineHistory,
+    setHistoryRenderCallbacks,
+};
