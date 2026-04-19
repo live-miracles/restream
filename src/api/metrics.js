@@ -2,8 +2,12 @@ const fs = require('fs');
 const os = require('os');
 const { errMsg } = require('../utils/app');
 
-function getCpuTotals() {
-    const totals = os.cpus().reduce(
+const SYSTEM_METRICS_SAMPLE_INTERVAL_MS = Number(
+    process.env.SYSTEM_METRICS_SAMPLE_INTERVAL_MS || 1000,
+);
+
+function getCpuTotals(cpuInfo = os.cpus()) {
+    const totals = cpuInfo.reduce(
         (acc, cpu) => {
             const times = cpu.times || {};
             const total =
@@ -19,6 +23,20 @@ function getCpuTotals() {
         { total: 0, idle: 0 },
     );
     return totals;
+}
+
+function getMemoryUsage() {
+    const totalBytes = os.totalmem();
+    const freeBytes = os.freemem();
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+    const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
+
+    return {
+        totalBytes,
+        usedBytes,
+        freeBytes,
+        usedPercent,
+    };
 }
 
 function getNetworkTotals() {
@@ -70,68 +88,92 @@ function getDiskUsage(pathname = '/') {
     }
 }
 
-function registerSystemMetricsApi({ app }) {
-    let systemMetricsSample = {
-        ts: Date.now(),
-        cpu: getCpuTotals(),
+function captureSystemMetricsSample(now = Date.now()) {
+    const cpuInfo = os.cpus();
+    return {
+        ts: now,
+        cpu: getCpuTotals(cpuInfo),
         net: getNetworkTotals(),
+        cores: cpuInfo.length,
+        load1: Number(os.loadavg()[0].toFixed(2)),
+        memory: getMemoryUsage(),
+        disk: getDiskUsage('/'),
     };
+}
+
+function buildSystemMetricsSnapshot(previousSample, currentSample) {
+    const dtSec = Math.max((currentSample.ts - previousSample.ts) / 1000, 0.001);
+    const cpuTotalDiff = currentSample.cpu.total - previousSample.cpu.total;
+    const cpuIdleDiff = currentSample.cpu.idle - previousSample.cpu.idle;
+    let cpuUsagePercent = 0;
+    if (cpuTotalDiff > 0) {
+        cpuUsagePercent = Math.max(
+            0,
+            Math.min(100, ((cpuTotalDiff - cpuIdleDiff) / cpuTotalDiff) * 100),
+        );
+    }
+
+    const rxDiff = Math.max(0, currentSample.net.rx - previousSample.net.rx);
+    const txDiff = Math.max(0, currentSample.net.tx - previousSample.net.tx);
+    const downloadBytesPerSec = rxDiff / dtSec;
+    const uploadBytesPerSec = txDiff / dtSec;
+
+    return {
+        generatedAt: new Date(currentSample.ts).toISOString(),
+        cpu: {
+            usagePercent: Number(cpuUsagePercent.toFixed(2)),
+            cores: currentSample.cores,
+            load1: currentSample.load1,
+        },
+        memory: {
+            totalBytes: currentSample.memory.totalBytes,
+            usedBytes: currentSample.memory.usedBytes,
+            freeBytes: currentSample.memory.freeBytes,
+            usedPercent:
+                currentSample.memory.usedPercent !== null
+                    ? Number(currentSample.memory.usedPercent.toFixed(2))
+                    : null,
+        },
+        disk: currentSample.disk,
+        network: {
+            downloadBytesPerSec: Number(downloadBytesPerSec.toFixed(2)),
+            uploadBytesPerSec: Number(uploadBytesPerSec.toFixed(2)),
+            downloadKbps: Number(((downloadBytesPerSec * 8) / 1000).toFixed(2)),
+            uploadKbps: Number(((uploadBytesPerSec * 8) / 1000).toFixed(2)),
+        },
+    };
+}
+
+function registerSystemMetricsApi({ app }) {
+    let previousSystemMetricsSample = captureSystemMetricsSample();
+    let latestSystemMetricsSnapshot = buildSystemMetricsSnapshot(
+        previousSystemMetricsSample,
+        previousSystemMetricsSample,
+    );
+
+    function refreshSystemMetricsSnapshot() {
+        const currentSample = captureSystemMetricsSample();
+        latestSystemMetricsSnapshot = buildSystemMetricsSnapshot(
+            previousSystemMetricsSample,
+            currentSample,
+        );
+        previousSystemMetricsSample = currentSample;
+    }
+
+    refreshSystemMetricsSnapshot();
+
+    const systemMetricsTimer = setInterval(() => {
+        try {
+            refreshSystemMetricsSnapshot();
+        } catch {
+            /* ignore sampling failures and keep the last good snapshot */
+        }
+    }, SYSTEM_METRICS_SAMPLE_INTERVAL_MS);
+    systemMetricsTimer.unref?.();
 
     app.get('/metrics/system', (req, res) => {
         try {
-            const now = Date.now();
-            const dtSec = Math.max((now - systemMetricsSample.ts) / 1000, 0.001);
-
-            const currentCpu = getCpuTotals();
-            const currentNet = getNetworkTotals();
-            const memTotal = os.totalmem();
-            const memFree = os.freemem();
-            const memUsed = Math.max(0, memTotal - memFree);
-            const memUsedPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : null;
-            const disk = getDiskUsage('/');
-
-            const cpuTotalDiff = currentCpu.total - systemMetricsSample.cpu.total;
-            const cpuIdleDiff = currentCpu.idle - systemMetricsSample.cpu.idle;
-            let cpuUsagePercent = 0;
-            if (cpuTotalDiff > 0) {
-                cpuUsagePercent = Math.max(
-                    0,
-                    Math.min(100, ((cpuTotalDiff - cpuIdleDiff) / cpuTotalDiff) * 100),
-                );
-            }
-
-            const rxDiff = Math.max(0, currentNet.rx - systemMetricsSample.net.rx);
-            const txDiff = Math.max(0, currentNet.tx - systemMetricsSample.net.tx);
-            const downloadBytesPerSec = rxDiff / dtSec;
-            const uploadBytesPerSec = txDiff / dtSec;
-
-            systemMetricsSample = {
-                ts: now,
-                cpu: currentCpu,
-                net: currentNet,
-            };
-
-            return res.json({
-                generatedAt: new Date(now).toISOString(),
-                cpu: {
-                    usagePercent: Number(cpuUsagePercent.toFixed(2)),
-                    cores: os.cpus().length,
-                    load1: Number(os.loadavg()[0].toFixed(2)),
-                },
-                memory: {
-                    totalBytes: memTotal,
-                    usedBytes: memUsed,
-                    freeBytes: memFree,
-                    usedPercent: memUsedPercent !== null ? Number(memUsedPercent.toFixed(2)) : null,
-                },
-                disk,
-                network: {
-                    downloadBytesPerSec: Number(downloadBytesPerSec.toFixed(2)),
-                    uploadBytesPerSec: Number(uploadBytesPerSec.toFixed(2)),
-                    downloadKbps: Number(((downloadBytesPerSec * 8) / 1000).toFixed(2)),
-                    uploadKbps: Number(((uploadBytesPerSec * 8) / 1000).toFixed(2)),
-                },
-            });
+            return res.json(latestSystemMetricsSnapshot);
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
         }

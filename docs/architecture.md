@@ -395,7 +395,7 @@ Page load
   ▼
 fetchConfig()          GET /config (with If-None-Match ETag)
 fetchHealth()          GET /health
-fetchSystemMetrics()   GET /metrics/system
+fetchSystemMetrics()   GET /metrics/system (latest fixed background sample)
   │
   ▼
 parsePipelinesInfo()   merges config.pipelines + config.outputs + config.jobs
@@ -409,6 +409,8 @@ renderMetrics()        DOM update for system metrics (CPU, mem, disk, net)
 setInterval(fetchAndRerender, <pollInterval>)   repeats above on interval
 setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
 ```
+
+`GET /metrics/system` no longer advances the rate-calculation baseline on every request. A server-side timer samples CPU and network counters on a fixed cadence, and dashboard polls just read the latest completed sample.
 
 `public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 

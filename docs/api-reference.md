@@ -668,7 +668,7 @@ Readiness endpoint used by launch scripts and infra probes.
 
 ### `GET /metrics/system`
 
-Returns host system metrics. Throughput and CPU values are computed against the previous sample.
+Returns host system metrics from a fixed background sampler. Throughput and CPU values are computed against the previous timer sample, not against the previous HTTP request, so concurrent clients see the same rates for the same sample window.
 
 **Response 200:**
 ```json
