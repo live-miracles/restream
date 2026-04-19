@@ -9,12 +9,40 @@ const dashboardHooks = {
     afterRender: null,
 };
 
+let dashboardRefreshInFlight = null;
+let dashboardRefreshQueued = false;
+
 function setDashboardHooks(hooks) {
     Object.assign(dashboardHooks, hooks || {});
 }
 
 async function refreshDashboard() {
-    await fetchAndRerender();
+    await requestDashboardRefresh();
+}
+
+async function requestDashboardRefresh() {
+    if (dashboardRefreshInFlight) {
+        dashboardRefreshQueued = true;
+        return dashboardRefreshInFlight;
+    }
+
+    let lastRefreshPromise = null;
+
+    do {
+        dashboardRefreshQueued = false;
+        lastRefreshPromise = fetchAndRerender();
+        dashboardRefreshInFlight = lastRefreshPromise;
+
+        try {
+            await lastRefreshPromise;
+        } finally {
+            if (dashboardRefreshInFlight === lastRefreshPromise) {
+                dashboardRefreshInFlight = null;
+            }
+        }
+    } while (dashboardRefreshQueued);
+
+    return lastRefreshPromise;
 }
 
 function resolveConfigSnapshotVersion(result) {
@@ -208,7 +236,7 @@ function startDashboardPolling(intervalMs) {
     if (dashboardPollTimer && dashboardPollEveryMs === intervalMs) return;
     if (dashboardPollTimer) clearInterval(dashboardPollTimer);
     dashboardPollEveryMs = intervalMs;
-    dashboardPollTimer = setInterval(() => fetchAndRerender(), intervalMs);
+    dashboardPollTimer = setInterval(() => requestDashboardRefresh(), intervalMs);
 }
 
 function startStreamingConfigPolling() {
@@ -227,12 +255,12 @@ async function onVisibilityChange() {
     }
     startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
     await syncHistoryPollingWithVisibility();
-    await fetchAndRerender();
+    await requestDashboardRefresh();
     await checkStreamingConfigs();
 }
 
 (async () => {
-    await fetchAndRerender();
+    await requestDashboardRefresh();
     markUserConfigBaseline();
     startDashboardPolling(
         document.hidden ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS : DASHBOARD_POLL_INTERVAL_MS,

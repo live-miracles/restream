@@ -26,6 +26,7 @@ This file is now a short current-state backlog. The earlier audit turned into a 
 - History endpoints and stored `job_logs` entries now carry stable `eventType` codes plus structured `eventData`, so timeline rendering no longer depends on parsing backend prose.
 - Output and pipeline delete routes now wait for process teardown before removing DB state, returning `409` instead of deleting underneath a still-running ffmpeg process.
 - `/metrics/system` now serves a fixed background sample, so CPU and network deltas are stable across concurrent clients instead of depending on the last request.
+- Dashboard refreshes and pipeline-history live polling now coalesce overlapping requests, so slow refreshes do not stack and overwrite newer UI state out of order.
 
 ## Architecture Follow-Ups From 2026-04-19 Review
 
@@ -51,6 +52,7 @@ This file is now a short current-state backlog. The earlier audit turned into a 
 
 | Priority | Item | Why it still matters | Notes |
 | --- | --- | --- | --- |
+| P0 | Make FFmpeg supervision restart-safe and detach-capable | Running-job truth, stderr, and progress still depend on in-memory maps, so a controller restart cannot reliably verify or observe pre-existing FFmpeg runs. | Short term: add startup reconciliation for stale `running` rows. Long term: move to detached run manifests / leases with file-backed progress and stderr, plus PID+start-time validation on startup. |
 | P0 | Add API authentication | The API is still open to anyone who can reach it. | Keep this simple: shared secret header or basic auth is enough. |
 | P0 | Add rate limiting | Prevents accidental or hostile request floods against write endpoints. | `express-rate-limit` is still the shortest path. |
 | P0 | Mask secrets in API/config responses by default | Frontend masking exists, but raw secret exposure should not be the default server behavior. | Add an explicit unmasked/admin path only if needed. |

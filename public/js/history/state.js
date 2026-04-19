@@ -27,6 +27,7 @@ const pipelineHistoryState = {
     playing: false,
     pollTimer: null,
     pollEveryMs: null,
+    isPolling: false,
 };
 
 // Hidden tabs back off polling to reduce network churn while still keeping history views fresh

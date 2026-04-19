@@ -406,11 +406,13 @@ renderPipelines()      DOM update for pipeline cards and output tables
 renderMetrics()        DOM update for system metrics (CPU, mem, disk, net)
   │
   ▼
-setInterval(fetchAndRerender, <pollInterval>)   repeats above on interval
+setInterval(requestDashboardRefresh, <pollInterval>)   repeats above on interval
 setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
 ```
 
 `GET /metrics/system` no longer advances the rate-calculation baseline on every request. A server-side timer samples CPU and network counters on a fixed cadence, and dashboard polls just read the latest completed sample.
+
+Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibility refreshes, and mutation-driven refreshes all funnel through a single in-flight gate, so a slow refresh cannot overlap with another full `fetchAndRerender()` pass and later overwrite fresher state.
 
 `public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 
@@ -460,7 +462,7 @@ Each output card exposes a history modal with two modes:
 
 **Timeline mode** (default)
 - On open, fetches only `filter=lifecycle` logs (lifecycle events only, oldest-first).
-- Polls on the same interval as the main dashboard poll.
+- Polls on the same interval as the main dashboard poll, but uses a guarded timeout loop so only one history request is in flight at a time.
 - `retry_exhausted` is rendered as a terminal error badge (`Retry exhausted`) so operators can distinguish "will retry" from "gave up".
 - Each lifecycle event row has a collapsible context section that loads surrounding `stderr`/`exit`/`control` logs on demand when expanded.
 - Context fetch is bounded: at most 50 rows, at most 5 minutes before the event, floored to the previous lifecycle event's timestamp. Result is cached per event key for the modal session.
@@ -476,6 +478,8 @@ Each output card exposes a history modal with two modes:
 | `OUTPUT_HISTORY_RAW_LIMIT` | 1000 | Max rows fetched in raw mode |
 | `OUTPUT_HISTORY_CONTEXT_LIMIT` | 50 | Max rows per context on-demand fetch |
 | `OUTPUT_HISTORY_CONTEXT_WINDOW_MS` | 5 min | Look-back window for context fetch |
+
+The pipeline-history modal uses the same single-flight polling rule in live mode: if one poll is still running, another is not started on top of it.
 
 ### 5.5.1 Module Migration Troubleshooting
 

@@ -263,10 +263,11 @@ const {
 
     function stopPipelineHistoryPoll() {
         if (pipelineHistoryState.pollTimer) {
-            clearInterval(pipelineHistoryState.pollTimer);
+            clearTimeout(pipelineHistoryState.pollTimer);
             pipelineHistoryState.pollTimer = null;
         }
         pipelineHistoryState.pollEveryMs = null;
+        pipelineHistoryState.isPolling = false;
         pipelineHistoryState.playing = false;
         updatePipelineHistoryPlayPauseBtn();
     }
@@ -274,9 +275,26 @@ const {
     function startPipelineHistoryPolling(intervalMs) {
         if (pipelineHistoryState.pollTimer && pipelineHistoryState.pollEveryMs === intervalMs)
             return;
-        if (pipelineHistoryState.pollTimer) clearInterval(pipelineHistoryState.pollTimer);
+        if (pipelineHistoryState.pollTimer) clearTimeout(pipelineHistoryState.pollTimer);
         pipelineHistoryState.pollEveryMs = intervalMs;
-        pipelineHistoryState.pollTimer = setInterval(pollPipelineHistoryOnce, intervalMs);
+
+        const scheduleNextPoll = () => {
+            if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
+                return;
+            }
+            pipelineHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
+        };
+
+        const pollWithGuard = async () => {
+            if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
+                return;
+            }
+
+            await pollPipelineHistoryOnce();
+            scheduleNextPoll();
+        };
+
+        scheduleNextPoll();
     }
 
     function updatePipelineHistoryPlayPauseBtn() {
@@ -289,11 +307,17 @@ const {
 
     async function pollPipelineHistoryOnce() {
         const { pipelineId } = pipelineHistoryState;
-        if (!pipelineId) return;
-        const res = await getPipelineHistory(pipelineId, 200);
-        if (res === null) return;
-        pipelineHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
-        renderPipelineHistory(false);
+        if (!pipelineId || pipelineHistoryState.isPolling) return;
+
+        pipelineHistoryState.isPolling = true;
+        try {
+            const res = await getPipelineHistory(pipelineId, 200);
+            if (res === null) return;
+            pipelineHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+            renderPipelineHistory(false);
+        } finally {
+            pipelineHistoryState.isPolling = false;
+        }
     }
 
     function togglePipelineHistoryPlayPause() {
