@@ -42,6 +42,23 @@ place.
 
 ---
 
+## 1.1 Browser Shell Routing
+
+The static UI now has paired desktop and mobile shells for the main operator flows:
+
+- dashboard: `/` or `/index.html` for desktop, `/mobile/dashboard.html` for mobile
+- stream keys: `/stream-keys.html` for desktop, `/mobile/keys.html` for mobile
+
+Request routing is handled in two layers:
+
+1. The Node server checks `?view=mobile` or `?view=desktop` first.
+2. If no explicit override is present, the server uses `Sec-CH-UA-Mobile` when available and falls back to user-agent matching before redirecting to the preferred shell.
+3. The browser-side `device-route.js` module preserves the explicit override across same-origin navigation and performs a client-side shell redirect when the loaded document does not match the current device heuristics.
+
+Legacy aliases `/mobile-dashboard.html` and `/mobile-keys.html` still redirect to the grouped mobile files so older links do not break.
+
+---
+
 ## 2. Data Model
 
 ### 2.1 Entities (SQLite)

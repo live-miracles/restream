@@ -7,7 +7,8 @@
         "start": "node src/index.js",
         "dev": "npx nodemon --ignore 'test/artifacts/**' src/index.js",
         "test": "echo \"Error: no test specified\" && exit 1",
-        "test:4x3": "node test/artifacts/run-4x3.mjs"
+        "test:4x3": "node test/artifacts/run-4x3.mjs",
+        "test:mobile:cdp": "node test/artifacts/mobile-cdp/capture-mobile-layout.mjs"
     },
     "keywords": [],
     "author": "",
@@ -28,6 +29,7 @@
         "nodemon": "3.1.11",
         "prettier": "3.7.4",
         "prettier-plugin-tailwindcss": "0.7.2",
+        "puppeteer-core": "^24.42.0",
         "tailwindcss": "4.1.18"
     }
 }

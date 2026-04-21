@@ -127,6 +127,51 @@ registerSystemMetricsApi({ app });
 
 // ── Static UI ─────────────────────────────────────────
 const publicDir = path.join(__dirname, '..', 'public');
+const experienceRoutes = new Map([
+    ['/', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/index.html', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/stream-keys.html', { mobile: '/mobile/keys.html', desktop: '/stream-keys.html' }],
+    ['/mobile', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/mobile/', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/mobile/dashboard.html', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/mobile/keys.html', { mobile: '/mobile/keys.html', desktop: '/stream-keys.html' }],
+    ['/mobile-dashboard.html', { mobile: '/mobile/dashboard.html', desktop: '/' }],
+    ['/mobile-keys.html', { mobile: '/mobile/keys.html', desktop: '/stream-keys.html' }],
+]);
+const mobileUserAgentPattern = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+
+function getRequestedExperience(req) {
+    const view = String(req.query.view || '').toLowerCase();
+    return view === 'mobile' || view === 'desktop' ? view : null;
+}
+
+function isLikelyMobileRequest(req) {
+    const uaMobile = req.get('sec-ch-ua-mobile');
+    if (uaMobile === '?1') return true;
+    if (uaMobile === '?0') return false;
+    return mobileUserAgentPattern.test(req.get('user-agent') || '');
+}
+
+app.use((req, res, next) => {
+    const variants = experienceRoutes.get(req.path);
+    if (!variants) {
+        next();
+        return;
+    }
+
+    const requestedExperience = getRequestedExperience(req);
+    const preferredExperience = requestedExperience || (isLikelyMobileRequest(req) ? 'mobile' : 'desktop');
+    const targetPath = variants[preferredExperience];
+    if (!targetPath || targetPath === req.path) {
+        next();
+        return;
+    }
+
+    const query = new URLSearchParams(req.query);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    res.redirect(302, `${targetPath}${suffix}`);
+});
+
 app.use(
     '/',
     express.static(publicDir, {

@@ -14,6 +14,8 @@ Each page should load a small entry module via `<script type="module">`:
 
 - `public/index.html` loads `public/js/features/dashboard-entry.js`
 - `public/stream-keys.html` loads `public/js/features/stream-keys-page.js`
+- `public/mobile/dashboard.html` loads `public/js/features/mobile/dashboard.js`
+- `public/mobile/keys.html` loads `public/js/features/mobile/keys-page.js`
 
 Because files are modules:
 
@@ -24,6 +26,10 @@ Because files are modules:
 Do not rebuild the old dashboard-style ordered script list in HTML. If one module needs another,
 express that in the import graph or with an explicit callback registration step in the entry
 module.
+
+Mobile pages should stay isolated from desktop layout code. Reuse shared modules from
+`public/js/core/` for API access and state shape, but keep mobile-specific DOM structure,
+event wiring, and styling in dedicated mobile assets.
 
 ## 3. Shared State Contract
 
@@ -75,6 +81,10 @@ After frontend module changes, run:
 1. syntax checks for modified module files
 2. dashboard load + pipeline selection in browser
 3. stream-keys page load and key actions
-4. console review for runtime errors
+4. mobile dashboard load + tab/output actions via the CDP device runner (`npm run test:mobile:cdp -- --device "iPhone 14 Pro" --url "http://localhost:3030/mobile/dashboard.html?tab=outputs" --wait-for ".output-card"`)
+5. mobile keys page load and key actions via the CDP device runner (`npm run test:mobile:cdp -- --device "iPhone 14 Pro" --url "http://localhost:3030/mobile/keys.html" --wait-for "#mobile-keys-list"`)
+6. console review for runtime errors
 
 This keeps migration failures visible before commit.
+
+Dashboard and keys shells now auto-select mobile vs desktop for the main page routes. Use `?view=mobile`, `?view=desktop`, or `?view=auto` when you need to pin a specific shell during verification.

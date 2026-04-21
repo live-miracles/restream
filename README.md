@@ -41,6 +41,10 @@ src/
 public/
   index.html        — Dashboard SPA shell
   stream-keys.html  — Stream key management page
+  mobile/
+    dashboard.html  — Mobile dashboard shell with touch-first status cards, output controls, and ingest details
+    keys.html       — Mobile stream key management page
+    mobile.css      — Mobile-only stylesheet for separate dashboard/key pages
   js/
     core/
       api.js            — All API calls (relative paths, never direct to MediaMTX)
@@ -54,6 +58,9 @@ public/
     features/
       dashboard.js      — Event handlers, modals, polling orchestration
       editor.js         — Output/pipeline modal edit interactions
+      mobile/
+        dashboard.js    — Mobile dashboard rendering, polling, hero stats, and output controls
+        keys-page.js    — Mobile stream key page interactions
       pipeline-view.js  — Pipeline detail rendering helpers
       render.js         — DOM rendering: pipeline cards, stats, output tables
       metrics.js        — System metrics fetch + render helpers
@@ -109,6 +116,7 @@ This additionally installs:
 - `tailwindcss` - CSS framework
 - `@tailwindcss/cli` - Tailwind CLI
 - `daisyui` - UI component library
+- `puppeteer-core` - Chrome CDP device emulation for mobile layout checks
 
 ### CI/Testing Environment
 For continuous integration and testing pipelines:
@@ -116,6 +124,16 @@ For continuous integration and testing pipelines:
 ```sh
 npm ci
 ```
+
+For mobile layout checks, use the CDP runner with a real device preset instead of the editor-integrated browser:
+
+```sh
+npm run test:mobile:cdp -- --device "iPhone 14 Pro" --url "http://localhost:3030/mobile/dashboard.html?tab=outputs" --wait-for ".output-card"
+```
+
+The runner expects a local Chrome or Chromium binary. Override the default path with `CHROME_BIN=/path/to/chrome` when `/usr/bin/google-chrome` is not correct for your machine.
+
+Dashboard and keys shells are selected automatically for the main page routes. Use `?view=mobile`, `?view=desktop`, or `?view=auto` to override the automatic choice for the current browser tab.
 
 ## Run Modes
 

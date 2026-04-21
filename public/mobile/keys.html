@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en" data-theme="dim">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-name="Mobile Keys">Mobile Keys</title>
+    <link rel="icon" type="image/png" href="../logo.png" />
+    <link rel="stylesheet" type="text/css" href="../output.css" />
+    <link rel="stylesheet" type="text/css" href="mobile.css?v=20260420-separate-mobile-v4" />
+    <script type="module" src="../js/core/device-route.js"></script>
+    <script type="module" src="../js/features/mobile/keys-page.js?v=20260420-separate-mobile-v3"></script>
+  </head>
+  <body class="mobile-page">
+    <div id="copied-notification" class="mobile-toast hidden" role="status">
+      <span>Copied</span>
+    </div>
+
+    <div id="error-alert" class="mobile-toast hidden" role="alert">
+      <span id="error-msg"></span>
+    </div>
+
+    <main class="mobile-shell">
+      <header class="mobile-topbar glass-panel">
+        <div>
+          <p class="mobile-kicker">Restream mobile</p>
+          <h1 id="server-name" class="mobile-brand">Restream</h1>
+          <p class="mobile-subtitle">Manage ingest credentials without dragging the desktop table layout onto a phone.</p>
+        </div>
+
+        <div class="mobile-topbar__actions">
+          <label class="mobile-saving-indicator">
+            <input id="saving-badge" type="checkbox" disabled />
+            <span class="mobile-saving-dot"></span>
+            <span class="mobile-saving-text--idle">Live</span>
+            <span class="mobile-saving-text--active">Saving</span>
+          </label>
+        </div>
+      </header>
+
+      <section class="mobile-section glass-panel">
+        <div class="mobile-section__heading">
+          <div>
+            <h2>Stream Keys</h2>
+            <p>Short labels, readable tokens, and direct actions sized for touch.</p>
+          </div>
+          <button id="mobile-add-key-button" class="mobile-control mobile-control--primary" type="button">Add Key</button>
+        </div>
+
+        <div class="mobile-card-list" id="mobile-keys-list"></div>
+      </section>
+
+      <div class="bottom-dock">
+        <nav class="bottom-dock__nav glass-panel" aria-label="Primary mobile navigation">
+          <a class="dock-link" href="/mobile/dashboard.html">Dashboard</a>
+          <a class="dock-link is-active" href="/mobile/keys.html">Keys</a>
+          <a class="dock-link" href="https://github.com/live-miracles/restream">GitHub</a>
+        </nav>
+      </div>
+    </main>
+
+    <dialog id="mobile-key-modal" class="mobile-dialog">
+      <div class="mobile-modal-panel">
+        <h2 id="mobile-key-dialog-title">Add Stream Key</h2>
+        <p id="mobile-key-dialog-subtitle">Give the key a descriptive label so the mobile list stays scannable.</p>
+
+        <label class="mobile-field">
+          <span class="mobile-field__label">Label</span>
+          <input id="mobile-key-label-input" class="mobile-input" type="text" placeholder="e.g. Sunday Service" />
+        </label>
+
+        <div class="mobile-modal-actions">
+          <form method="dialog">
+            <button class="mobile-control mobile-control--ghost" type="submit">Cancel</button>
+          </form>
+          <button id="mobile-key-submit-button" class="mobile-control mobile-control--primary" type="button">Create</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="mobile-delete-key-modal" class="mobile-dialog">
+      <div class="mobile-modal-panel">
+        <h2>Delete Stream Key?</h2>
+        <p id="mobile-delete-key-copy">This action cannot be undone.</p>
+
+        <div class="mobile-modal-actions">
+          <form method="dialog">
+            <button class="mobile-control mobile-control--ghost" type="submit">Cancel</button>
+          </form>
+          <button id="mobile-delete-key-confirm" class="mobile-control mobile-control--danger" type="button">Delete</button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

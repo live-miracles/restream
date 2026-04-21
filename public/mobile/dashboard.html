@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-theme="dim">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-name="Mobile Dashboard">Mobile Dashboard</title>
+    <link rel="icon" type="image/png" href="../logo.png" />
+    <link rel="stylesheet" type="text/css" href="../output.css" />
+    <link rel="stylesheet" type="text/css" href="mobile.css?v=20260420-separate-mobile-v4" />
+    <script type="module" src="../js/core/device-route.js"></script>
+    <script type="module" src="../js/features/mobile/dashboard.js?v=20260420-separate-mobile-v5"></script>
+  </head>
+  <body class="mobile-page">
+    <div class="mobile-banner-stack">
+      <div id="health-banner" class="mobile-banner hidden" role="alert">
+        <span id="health-banner-text">Service is degraded: runtime telemetry is temporarily unavailable.</span>
+        <button id="dismiss-health-banner-btn" class="mobile-banner__dismiss" type="button" aria-label="Dismiss health banner">
+          ×
+        </button>
+      </div>
+    </div>
+
+    <div id="copied-notification" class="mobile-toast hidden" role="status">
+      <span>Copied</span>
+    </div>
+
+    <div id="error-alert" class="mobile-toast hidden" role="alert">
+      <span id="error-msg"></span>
+    </div>
+
+    <main class="mobile-shell">
+      <header class="mobile-topbar glass-panel">
+        <div>
+          <p class="mobile-kicker">Restream mobile</p>
+          <h1 id="server-name" class="mobile-brand">Restream</h1>
+          <p class="mobile-subtitle">Fast checks, output control, and copy-ready ingest details without forcing a desktop workflow onto a phone.</p>
+        </div>
+
+        <div class="mobile-topbar__actions">
+          <label class="mobile-saving-indicator">
+            <input id="saving-badge" type="checkbox" disabled />
+            <span class="mobile-saving-dot"></span>
+            <span class="mobile-saving-text--idle">Live</span>
+            <span class="mobile-saving-text--active">Saving</span>
+          </label>
+        </div>
+      </header>
+
+      <section class="mobile-section mobile-section--hero glass-panel">
+        <div class="hero-badges" id="mobile-hero-badges"></div>
+        <div class="metric-grid" id="mobile-hero-metrics"></div>
+      </section>
+
+      <section class="mobile-section glass-panel">
+        <div class="mobile-section__heading">
+          <div>
+            <h2>Pipelines</h2>
+            <p>Swipe through channels, tap to focus one.</p>
+          </div>
+        </div>
+
+        <div class="pipeline-rail" id="mobile-pipeline-rail"></div>
+      </section>
+
+      <section class="mobile-section glass-panel">
+        <div id="mobile-selection-header"></div>
+
+        <div class="quick-actions" id="mobile-quick-actions"></div>
+
+        <div class="mobile-tab-strip" id="mobile-tab-strip" role="tablist" aria-label="Pipeline sections">
+          <button class="mobile-tab" type="button" data-mobile-tab="overview" aria-selected="true">Overview</button>
+          <button class="mobile-tab" type="button" data-mobile-tab="outputs" aria-selected="false">Outputs</button>
+          <button class="mobile-tab" type="button" data-mobile-tab="ingest" aria-selected="false">Ingest</button>
+        </div>
+
+        <section class="mobile-pane" id="mobile-pane-overview"></section>
+        <section class="mobile-pane hidden" id="mobile-pane-outputs"></section>
+        <section class="mobile-pane hidden" id="mobile-pane-ingest"></section>
+      </section>
+
+      <div class="bottom-dock">
+        <nav class="bottom-dock__nav glass-panel" aria-label="Primary mobile navigation">
+          <a class="dock-link is-active" href="/mobile/dashboard.html">Dashboard</a>
+          <a class="dock-link" href="/mobile/keys.html">Keys</a>
+          <a class="dock-link" href="https://github.com/live-miracles/restream">GitHub</a>
+        </nav>
+      </div>
+    </main>
+
+    <dialog id="mobile-stop-outputs-dialog" class="mobile-dialog">
+      <div class="mobile-modal-panel">
+        <h2 id="mobile-stop-outputs-dialog-title">Stop outputs?</h2>
+        <p id="mobile-stop-outputs-dialog-body">Stopping outputs disconnects viewers on every live destination until you start them again.</p>
+
+        <div class="mobile-modal-input-group" style="margin-top: 1rem;">
+          <label for="mobile-stop-outputs-input" class="mobile-label" style="font-size: 0.8rem; margin-bottom: 0.5rem; display: block; color: var(--color-text-secondary);">Type <strong id="mobile-stop-outputs-pipeline-name" style="color: var(--color-text-primary);">Pipeline 1</strong> to confirm</label>
+          <input type="text" id="mobile-stop-outputs-input" class="mobile-input form-control" autocomplete="off" spellcheck="false" style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <div class="mobile-modal-actions">
+          <form method="dialog">
+            <button class="mobile-control mobile-control--ghost" type="submit">Cancel</button>
+          </form>
+          <button id="mobile-stop-outputs-confirm-button" class="mobile-control mobile-control--danger" type="button">Stop outputs</button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

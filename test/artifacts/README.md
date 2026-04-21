@@ -6,6 +6,7 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 
 - run-4x3.mjs
 - session-4x3-manifest.json
+- mobile-cdp/capture-mobile-layout.mjs
 
 ## What The Runner Does
 
@@ -37,6 +38,20 @@ Reuse an already-running stack (skip media-service restart):
 Docker mode (backend in container):
 - make run-docker
 - CLEAN_START=0 RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
+
+## Mobile CDP Layout Checks
+
+Use Chrome DevTools Protocol device emulation instead of the VS Code integrated browser for mobile layout validation.
+
+Examples:
+- `npm run test:mobile:cdp -- --device "iPhone 14 Pro" --url "http://localhost:3030/mobile/dashboard.html?tab=outputs" --wait-for ".output-card"`
+- `npm run test:mobile:cdp -- --device "Pixel 7" --url "http://localhost:3030/mobile/keys.html" --wait-for "#mobile-keys-list"`
+- `npm run test:mobile:cdp -- --list-devices`
+
+Notes:
+- Screenshots are written to `test/artifacts/screenshots/mobile-cdp/` by default.
+- Override the Chrome binary with `CHROME_BIN=/path/to/chrome` if `/usr/bin/google-chrome` is not correct on your machine.
+- Use `--click <selector>` when a layout state needs an interaction before capture, for example switching to the outputs tab.
 
 ## Notes
 
