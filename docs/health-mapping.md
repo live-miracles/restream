@@ -76,7 +76,7 @@ The input health payload now also includes:
 - `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTSP/RTMP/SRT)
 - `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
 
-`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. Reader types outside managed RTSP outputs are treated as unexpected by design.
+`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It reflects unexpected RTSP readers after excluding expected managed output readers and internal probes; non-RTSP reader types (for example, HLS preview via the app proxy) are ignored and do not contribute to this count.
 
 ---
 

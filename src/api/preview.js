@@ -79,6 +79,89 @@ function isManifestResponse(pathName, contentType) {
     return pathName.toLowerCase().endsWith('.m3u8') || /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i.test(contentType || '');
 }
 
+function toNodeReadable(body) {
+    if (!body) return null;
+    if (typeof body.pipe === 'function') return body;
+    if (typeof body.getReader === 'function') return Readable.fromWeb(body);
+    if (typeof body[Symbol.asyncIterator] === 'function') return Readable.from(body);
+    return Readable.from(body);
+}
+
+function runCleanupOnce(cleanup) {
+    let cleanedUp = false;
+    return () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        cleanup?.();
+    };
+}
+
+async function readManifestBufferWithLimit({ body, maxBytes, abortController }) {
+    if (!body) return Buffer.alloc(0);
+
+    if (typeof body.getReader === 'function') {
+        const reader = body.getReader();
+        const chunks = [];
+        let totalBytes = 0;
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+                totalBytes += chunk.length;
+                if (totalBytes > maxBytes) {
+                    abortController?.abort();
+                    await reader.cancel('manifest limit exceeded').catch(() => {});
+                    return null;
+                }
+
+                chunks.push(chunk);
+            }
+
+            return Buffer.concat(chunks, totalBytes);
+        } finally {
+            try {
+                reader.releaseLock();
+            } catch (_) {
+                // Ignore release failures after cancel/close.
+            }
+        }
+    }
+
+    const nodeStream = toNodeReadable(body);
+    const chunks = [];
+    let totalBytes = 0;
+
+    try {
+        for await (const value of nodeStream) {
+            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            totalBytes += chunk.length;
+            if (totalBytes > maxBytes) {
+                abortController?.abort();
+                if (typeof nodeStream.destroy === 'function' && !nodeStream.destroyed) {
+                    nodeStream.destroy();
+                }
+                return null;
+            }
+
+            chunks.push(chunk);
+        }
+
+        return Buffer.concat(chunks, totalBytes);
+    } finally {
+        if (
+            nodeStream &&
+            typeof nodeStream.destroy === 'function' &&
+            !nodeStream.readableEnded &&
+            !nodeStream.destroyed
+        ) {
+            nodeStream.destroy();
+        }
+    }
+}
+
 async function fetchUpstreamAsset({
     req,
     res,
@@ -97,46 +180,74 @@ async function fetchUpstreamAsset({
         if (!res.writableEnded) abortController.abort();
     };
     res.on('close', abortOnClientClose);
+    const cleanup = () => {
+        clearTimeout(timeout);
+        res.off('close', abortOnClientClose);
+    };
 
     try {
-        return await fetch(upstreamUrl, {
+        const upstreamResponse = await fetch(upstreamUrl, {
             headers: buildForwardRequestHeaders(req),
             signal: abortController.signal,
         });
+
+        return {
+            abortController,
+            cleanup,
+            upstreamResponse,
+        };
     } catch (err) {
+        cleanup();
         log('warn', 'HLS preview proxy upstream request failed', {
             streamKey,
             assetPath,
             error: err?.message || String(err),
         });
         return null;
-    } finally {
-        clearTimeout(timeout);
-        res.off('close', abortOnClientClose);
     }
 }
 
-async function streamUpstreamResponse({ upstreamResponse, res, pathName }) {
+async function streamUpstreamResponse({ upstreamResponse, res, pathName, abortController, cleanup }) {
+    const finalize = runCleanupOnce(cleanup);
     const contentType = upstreamResponse.headers.get('content-type') || '';
     if (isManifestResponse(pathName, contentType)) {
-        const buffer = Buffer.from(await upstreamResponse.arrayBuffer());
-        if (buffer.length > MAX_HLS_MANIFEST_BYTES) {
-            res.removeHeader('content-type');
-            return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
+        try {
+            const buffer = await readManifestBufferWithLimit({
+                body: upstreamResponse.body,
+                maxBytes: MAX_HLS_MANIFEST_BYTES,
+                abortController,
+            });
+            if (!buffer) {
+                res.removeHeader('content-type');
+                res.removeHeader('content-length');
+                return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
+            }
+            return res.send(buffer);
+        } finally {
+            finalize();
         }
-        return res.send(buffer);
     }
 
     if (!upstreamResponse.body) {
-        return res.end();
+        try {
+            return res.end();
+        } finally {
+            finalize();
+        }
     }
 
-    if (typeof upstreamResponse.body.pipe === 'function') {
-        upstreamResponse.body.pipe(res);
-        return;
-    }
-
-    Readable.fromWeb(upstreamResponse.body).pipe(res);
+    const bodyStream = toNodeReadable(upstreamResponse.body);
+    bodyStream.once('error', (err) => {
+        finalize();
+        if (res.headersSent || res.writableEnded) {
+            res.destroy(err);
+            return;
+        }
+        res.status(502).json({ error: 'Failed to stream preview asset' });
+    });
+    res.once('close', finalize);
+    res.once('finish', finalize);
+    bodyStream.pipe(res);
 }
 
 function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, buildMediamtxPath }) {
@@ -154,7 +265,7 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
         const query = req.originalUrl.includes('?')
             ? req.originalUrl.slice(req.originalUrl.indexOf('?'))
             : '';
-        const upstreamResponse = await fetchUpstreamAsset({
+        const upstreamResult = await fetchUpstreamAsset({
             req,
             res,
             fetch,
@@ -166,13 +277,17 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
             buildMediamtxPath,
         });
 
-        if (!upstreamResponse) {
+        if (!upstreamResult) {
             return res.status(502).json({ error: 'Failed to fetch preview asset' });
         }
+
+        const { abortController, cleanup, upstreamResponse } = upstreamResult;
 
         res.status(upstreamResponse.status);
         copyAllowedUpstreamHeaders(upstreamResponse, res);
         return streamUpstreamResponse({
+            abortController,
+            cleanup,
             upstreamResponse,
             res,
             pathName: parsedAsset.rawPath,

@@ -121,3 +121,34 @@ test('rejects oversized manifest responses from upstream', async () => {
     const res = await request(app).get('/preview/hls/abc123').expect(502);
     assert.equal(res.body.error, 'Preview manifest exceeds safe proxy size limit');
 });
+
+test('stops reading oversized manifests once the byte limit is exceeded', async () => {
+    let chunkCount = 0;
+    let cancelled = false;
+    const chunk = new TextEncoder().encode('A'.repeat(400 * 1024));
+    const stream = new ReadableStream({
+        pull(controller) {
+            chunkCount += 1;
+            controller.enqueue(chunk);
+            if (chunkCount >= 10) controller.close();
+        },
+        cancel() {
+            cancelled = true;
+        },
+    });
+
+    const { app } = createHarness({
+        fetchImpl: async () =>
+            new Response(stream, {
+                status: 200,
+                headers: {
+                    'content-type': 'application/vnd.apple.mpegurl',
+                },
+            }),
+    });
+
+    const res = await request(app).get('/preview/hls/abc123').expect(502);
+    assert.equal(res.body.error, 'Preview manifest exceeds safe proxy size limit');
+    assert.ok(chunkCount < 10);
+    assert.equal(cancelled, true);
+});
