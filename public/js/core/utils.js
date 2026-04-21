@@ -169,6 +169,46 @@ function getUrlParam(param) {
     return url.searchParams.get(param);
 }
 
+const SELECTED_PIPELINE_STORAGE_KEY = 'dashboard:selected-pipeline';
+
+function readSelectedPipelineHint() {
+    try {
+        const rawValue = window.sessionStorage.getItem(SELECTED_PIPELINE_STORAGE_KEY);
+        if (!rawValue) return null;
+
+        const parsed = JSON.parse(rawValue);
+        if (!parsed || typeof parsed !== 'object') return null;
+
+        return {
+            id: typeof parsed.id === 'string' ? parsed.id : null,
+            key: typeof parsed.key === 'string' ? parsed.key : null,
+            name: typeof parsed.name === 'string' ? parsed.name : null,
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function writeSelectedPipelineHint(pipe) {
+    try {
+        if (!pipe) {
+            window.sessionStorage.removeItem(SELECTED_PIPELINE_STORAGE_KEY);
+            return;
+        }
+
+        window.sessionStorage.setItem(
+            SELECTED_PIPELINE_STORAGE_KEY,
+            JSON.stringify({
+                id: pipe.id || null,
+                key: pipe.key || null,
+                name: pipe.name || null,
+            }),
+        );
+    } catch (_) {
+        // Ignore storage failures so dashboard rendering continues.
+    }
+}
+
 function normalizeEtag(s) {
     if (!s) return null;
     return s.replace(/^"(.*)"$/, '$1');
@@ -247,6 +287,7 @@ export {
     copyData,
     setUrlParam,
     getUrlParam,
+    readSelectedPipelineHint,
     normalizeEtag,
     setServerConfig,
     showErrorAlert,
@@ -254,4 +295,5 @@ export {
     hideLoading,
     showCopiedNotification,
     getStatusColor,
+    writeSelectedPipelineHint,
 };

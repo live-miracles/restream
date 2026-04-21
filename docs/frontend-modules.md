@@ -78,3 +78,32 @@ After frontend module changes, run:
 4. console review for runtime errors
 
 This keeps migration failures visible before commit.
+
+## 7. Input Preview Responsibility
+
+- `public/js/features/pipeline-view.js` owns rendering and teardown for the dashboard input
+	preview player in `#video-player`.
+- Dashboard refresh flows should reconcile stale selected pipeline ids after config reloads or
+	restarts so bookmarked `?p=` state does not leave the UI pinned to a missing pipeline.
+
+- Preview source URLs should be generated as same-origin app routes (`/preview/hls/...`) and
+	not hardcoded to direct MediaMTX browser URLs.
+- Browser playback should prefer the bundled `hls.js` runtime when MSE playback is supported and
+	only fall back to native HLS when `hls.js` is unavailable.
+- The dashboard preview is muted and should prefer the proxy-generated video-only manifest to
+	avoid browser-specific audio decoder failures on the full master playlist.
+- When adding future preview enhancements, keep selection/change teardown logic
+	in this module so dashboard polling does not leak stale playback elements.
+
+## 8. Ingest URL Panel Behavior
+
+- `public/js/features/pipeline-view.js` owns the dashboard ingest card UI in `public/index.html`.
+- Stream key and publish URL values are hidden by default and revealed only by explicit user
+	action (`View Key` / `View URL`).
+- `Copy Key` and `Copy URL` actions remain available without forcing reveal.
+- Publish URL rendering is protocol-aware (`RTMP`, `RTSP`, `SRT`) and should prioritize the
+	operator-facing fields each protocol typically needs.
+- Current reveal behavior by protocol:
+	- RTMP: server URL, stream key, host, port, app name
+	- RTSP: full URL remains primary, with credentials, host, port, and stream path called out when useful
+	- SRT: host, port, streamid, latency, mode, and common query params

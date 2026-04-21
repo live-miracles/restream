@@ -1,4 +1,12 @@
-import { formatCodecName, getStatusColor, getUrlParam, msToHHMMSS, setInnerText, setUrlParam } from '../core/utils.js';
+import {
+    formatCodecName,
+    getStatusColor,
+    getUrlParam,
+    msToHHMMSS,
+    setInnerText,
+    setUrlParam,
+    writeSelectedPipelineHint,
+} from '../core/utils.js';
 import { renderPipelineInfoColumn, renderOutsColumn } from './pipeline-view.js';
 import { renderHealthBanner, renderServerMetrics } from './metrics.js';
 import { state } from '../core/state.js';
@@ -214,8 +222,17 @@ function renderStatsColumn(selectedPipe) {
     });
 }
 
-function renderPipelines() {
+function getRenderableSelectedPipe() {
     const selectedPipe = getUrlParam('p');
+    if (!selectedPipe) return null;
+    return state.pipelines.some((pipe) => pipe.id === selectedPipe) ? selectedPipe : null;
+}
+
+function renderPipelines() {
+    const selectedPipe = getRenderableSelectedPipe();
+    writeSelectedPipelineHint(
+        selectedPipe ? state.pipelines.find((pipe) => pipe.id === selectedPipe) || null : null,
+    );
 
     const gridElem = document.querySelector('.grid');
     if (selectedPipe) {

@@ -1,4 +1,4 @@
-import { formatCodecName, maskSecret, msToHHMMSS, sanitizeLogMessage } from '../core/utils.js';
+import { copyData, formatCodecName, msToHHMMSS, sanitizeLogMessage } from '../core/utils.js';
 import { setBadgeBitrateWithSubtleUnit, setBitrateWithSubtleUnit } from './metric-format.js';
 import { state } from '../core/state.js';
 import {
@@ -21,6 +21,310 @@ const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
 const HLS_RUNTIME_URL = '/vendor/hls.min.js';
 
 let hlsRuntimePromise = null;
+
+const ingestUiState = {
+    selectedProtocol: 'rtmp',
+    keyVisible: false,
+    urlVisible: false,
+};
+
+const PROTOCOL_LABELS = {
+    rtmp: 'RTMP',
+    rtsp: 'RTSP',
+    srt: 'SRT',
+};
+
+const PROTOCOL_DEFAULT_PORTS = {
+    rtmp: '1935',
+    rtsp: '8554',
+    srt: '8890',
+};
+
+function safeDecodeUrlComponent(value) {
+    if (!value) return '';
+
+    try {
+        return decodeURIComponent(value);
+    } catch (_err) {
+        return value;
+    }
+}
+
+function formatPortDisplay(parsedDetails) {
+    if (!parsedDetails?.port) return '';
+    if (parsedDetails.hasExplicitPort) return parsedDetails.port;
+    return `${parsedDetails.port} (default)`;
+}
+
+function parseProtocolAwareIngestUrl(protocol, rawUrl) {
+    if (typeof rawUrl !== 'string' || rawUrl.trim() === '') return null;
+
+    try {
+        const parsed = new URL(rawUrl);
+        const scheme = parsed.protocol.replace(/:$/, '');
+        const hasExplicitPort = parsed.port !== '';
+        const host = parsed.hostname || '';
+        const port = parsed.port || PROTOCOL_DEFAULT_PORTS[protocol] || '';
+        const authority = host ? `${host}${port ? `:${port}` : ''}` : '';
+        const pathSegments = parsed.pathname
+            .split('/')
+            .filter(Boolean)
+            .map((segment) => safeDecodeUrlComponent(segment));
+        const pathname = pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '';
+        const queryEntries = Array.from(parsed.searchParams.entries());
+        const details = {
+            rawUrl,
+            scheme,
+            host,
+            port,
+            authority,
+            hasExplicitPort,
+            application: '',
+            credentials: '',
+            endpoint: authority,
+            latency: '',
+            maxbw: '',
+            mode: '',
+            otherParams: '',
+            passphrase: '',
+            path: pathname || '/',
+            pbkeylen: '',
+            queryEntries,
+            serverUrl: '',
+            streamId: '',
+            streamKey: '',
+        };
+
+        if (protocol === 'srt') {
+            const streamId = parsed.searchParams.get('streamid') || '';
+            const knownParams = new Set(['streamid', 'latency', 'mode', 'passphrase', 'pbkeylen', 'maxbw']);
+            details.streamId = streamId;
+            details.latency = parsed.searchParams.get('latency') || '';
+            details.mode = parsed.searchParams.get('mode') || '';
+            details.passphrase = parsed.searchParams.get('passphrase') || '';
+            details.pbkeylen = parsed.searchParams.get('pbkeylen') || '';
+            details.maxbw = parsed.searchParams.get('maxbw') || '';
+            details.otherParams = queryEntries
+                .filter(([key]) => !knownParams.has(key))
+                .map(([key, value]) => `${key}=${value}`)
+                .join(' · ');
+
+            if (streamId.startsWith('publish:')) {
+                const publishPath = streamId.slice('publish:'.length);
+                const segments = publishPath.split('/').filter(Boolean);
+                details.streamKey = segments.length > 0 ? segments[segments.length - 1] : '';
+            }
+
+            return details;
+        }
+
+        details.credentials = parsed.username
+            ? parsed.password
+                ? `${safeDecodeUrlComponent(parsed.username)}:${safeDecodeUrlComponent(parsed.password)}`
+                : safeDecodeUrlComponent(parsed.username)
+            : '';
+
+        if (pathSegments.length > 1) {
+            details.streamKey = pathSegments[pathSegments.length - 1];
+            details.application = pathSegments.slice(0, -1).join('/');
+        } else {
+            details.streamKey = pathSegments[0] || '';
+        }
+
+        if (protocol === 'rtmp') {
+            details.serverUrl = `${scheme}://${authority}${details.application ? `/${details.application}` : ''}`;
+        }
+
+        return details;
+    } catch (_err) {
+        return null;
+    }
+}
+
+function buildProtocolDetailModel(protocol, parsedDetails) {
+    if (!parsedDetails) {
+        return {
+            heading: 'Operator Fields',
+            note: '',
+            rows: [],
+        };
+    }
+
+    if (protocol === 'rtmp') {
+        return {
+            heading: 'Operator Fields',
+            note:
+                parsedDetails.scheme === 'rtmps'
+                    ? 'Push ingest over TLS. Most encoders want Server URL plus Stream Key.'
+                    : 'Push ingest. Most encoders want Server URL plus Stream Key.',
+            rows: [
+                {
+                    label: 'Server URL',
+                    value: parsedDetails.serverUrl,
+                    wide: true,
+                },
+                {
+                    label: 'Stream Key',
+                    value: parsedDetails.streamKey,
+                    wide: true,
+                },
+                {
+                    label: 'Host',
+                    value: parsedDetails.host,
+                },
+                {
+                    label: 'Port',
+                    value: formatPortDisplay(parsedDetails),
+                    copyValue: parsedDetails.port,
+                },
+                {
+                    label: 'App Name',
+                    value: parsedDetails.application,
+                },
+            ].filter((row) => row.value),
+        };
+    }
+
+    if (protocol === 'rtsp') {
+        return {
+            heading: 'Operator Fields',
+            note: parsedDetails.credentials
+                ? 'Use the full URL above. Embedded credentials are plaintext unless you use RTSPS or another secure tunnel.'
+                : '',
+            rows: [
+                parsedDetails.credentials
+                    ? {
+                          label: 'Credentials',
+                          value: parsedDetails.credentials,
+                      }
+                    : null,
+                {
+                    label: 'Host',
+                    value: parsedDetails.host,
+                },
+                {
+                    label: 'Port',
+                    value: formatPortDisplay(parsedDetails),
+                    copyValue: parsedDetails.port,
+                },
+                {
+                    label: 'Stream Path',
+                    value: `${parsedDetails.path}${new URL(parsedDetails.rawUrl).search || ''}`,
+                    wide: true,
+                },
+            ].filter(Boolean),
+        };
+    }
+
+    return {
+        heading: 'Operator Fields',
+        note: 'Most SRT setups need Host, Port, and Stream ID. Latency is the main operator tuning knob for unstable networks.',
+        rows: [
+            {
+                label: 'Host',
+                value: parsedDetails.host,
+            },
+            {
+                label: 'Port',
+                value: formatPortDisplay(parsedDetails),
+                copyValue: parsedDetails.port,
+            },
+            {
+                label: 'Stream ID',
+                value: parsedDetails.streamId,
+                wide: true,
+            },
+            parsedDetails.latency
+                ? {
+                      label: 'Latency',
+                      value: `${parsedDetails.latency} ms`,
+                      copyValue: parsedDetails.latency,
+                  }
+                : null,
+            {
+                label: 'Mode',
+                value: parsedDetails.mode || 'caller (default)',
+                copyValue: parsedDetails.mode || 'caller',
+            },
+            parsedDetails.passphrase
+                ? {
+                      label: 'Passphrase',
+                      value: parsedDetails.passphrase,
+                  }
+                : null,
+            parsedDetails.pbkeylen
+                ? {
+                      label: 'PB Key Len',
+                      value: `${parsedDetails.pbkeylen} bytes`,
+                      copyValue: parsedDetails.pbkeylen,
+                  }
+                : null,
+            parsedDetails.maxbw
+                ? {
+                      label: 'Max BW',
+                      value: `${parsedDetails.maxbw} B/s`,
+                      copyValue: parsedDetails.maxbw,
+                  }
+                : null,
+            parsedDetails.otherParams
+                ? {
+                      label: 'Other Params',
+                      value: parsedDetails.otherParams,
+                      wide: true,
+                  }
+                : null,
+        ].filter(Boolean),
+    };
+}
+
+function renderProtocolDetails(gridEl, protocol, parsedDetails) {
+    const headingEl = document.getElementById('ingest-url-details-heading');
+    const noteEl = document.getElementById('ingest-url-details-note');
+    if (!gridEl) return;
+    gridEl.replaceChildren();
+
+    const detailModel = buildProtocolDetailModel(protocol, parsedDetails);
+
+    if (headingEl) {
+        headingEl.textContent = detailModel.heading;
+    }
+
+    if (noteEl) {
+        noteEl.textContent = detailModel.note || '';
+        noteEl.classList.toggle('hidden', !detailModel.note);
+    }
+
+    detailModel.rows.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = `grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 rounded-xl bg-base-200/55 px-3 py-2.5 ${item.wide ? 'sm:col-span-2' : ''}`;
+
+        const label = document.createElement('div');
+        label.className = 'min-w-0 text-xs font-semibold text-base-content/60';
+        label.textContent = item.label;
+
+        const value = document.createElement('code');
+        value.id = `ingest-detail-${protocol}-${index}`;
+        value.className = 'col-span-2 block break-all font-mono text-[0.94rem] leading-6 text-base-content/90';
+        value.textContent = item.value || '--';
+        value.dataset.copy = item.copyValue || item.value || '';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'btn btn-xs btn-outline btn-accent row-span-1 shrink-0 self-start rounded-lg px-3 shadow-none';
+        copyBtn.textContent = 'Copy';
+        copyBtn.setAttribute('aria-label', `Copy ${item.label}`);
+        copyBtn.disabled = !item.value;
+        copyBtn.classList.toggle('btn-disabled', !item.value);
+        copyBtn.onclick = () => {
+            copyData(value.id);
+        };
+
+        row.appendChild(label);
+        row.appendChild(copyBtn);
+        row.appendChild(value);
+        gridEl.appendChild(row);
+    });
+}
 
 function canUseNativeHls(video) {
     return Boolean(
@@ -340,33 +644,124 @@ function setPipelineViewDependencies(dependencies) {
             deletePipeBtn.title = '';
         }
 
-        const streamKey = pipe.key || 'Unassigned';
-        const maskedStreamKey = pipe.key ? maskSecret(pipe.key) : streamKey;
-
-        document.getElementById('stream-key').textContent = maskedStreamKey;
-        document.getElementById('stream-key').dataset.copy = pipe.key || '';
+        const streamKey = pipe.key || '';
+        const streamKeyValue = document.getElementById('stream-key');
+        const streamKeySurface = document.getElementById('stream-key-surface');
+        const streamKeyVisibilityBtn = document.getElementById('stream-key-visibility-btn');
+        if (streamKeyValue) {
+            streamKeyValue.dataset.copy = streamKey;
+            streamKeyValue.textContent = ingestUiState.keyVisible ? streamKey || 'Unassigned' : '';
+        }
+        if (streamKeySurface) {
+            streamKeySurface.classList.toggle('hidden', !ingestUiState.keyVisible || !streamKey);
+        }
+        if (streamKeyVisibilityBtn) {
+            streamKeyVisibilityBtn.disabled = !streamKey;
+            streamKeyVisibilityBtn.classList.toggle('btn-disabled', !streamKey);
+            streamKeyVisibilityBtn.textContent = ingestUiState.keyVisible ? 'Hide Key' : 'View Key';
+            streamKeyVisibilityBtn.onclick = () => {
+                if (!pipe.key) return;
+                ingestUiState.keyVisible = !ingestUiState.keyVisible;
+                renderPipelineInfoColumn(selectedPipe);
+            };
+        }
 
         const ingestUrls = pipe.ingestUrls || {};
+        const availableProtocols = ['rtmp', 'rtsp', 'srt'].filter((protocol) => {
+            const url = ingestUrls[protocol];
+            return typeof url === 'string' && url.trim() !== '';
+        });
 
-        const setIngestUrlRow = (rowId, valueId, url) => {
-            const row = document.getElementById(rowId);
-            const valueEl = document.getElementById(valueId);
-            if (!row || !valueEl) return false;
-
-            const hasUrl = typeof url === 'string' && url.trim() !== '';
-            row.classList.toggle('hidden', !hasUrl);
-            valueEl.textContent = hasUrl ? maskSecret(url) : '';
-            valueEl.dataset.copy = hasUrl ? url : '';
-            return hasUrl;
-        };
-
-        const hasRtmpUrl = setIngestUrlRow('ingest-url-rtmp-row', 'rtmp-url', ingestUrls.rtmp);
-        const hasRtspUrl = setIngestUrlRow('ingest-url-rtsp-row', 'rtsp-url', ingestUrls.rtsp);
-        const hasSrtUrl = setIngestUrlRow('ingest-url-srt-row', 'srt-url', ingestUrls.srt);
-        const ingestHeaderRow = document.getElementById('ingest-urls-header-row');
-        if (ingestHeaderRow) {
-            ingestHeaderRow.classList.toggle('hidden', !(hasRtmpUrl || hasRtspUrl || hasSrtUrl));
+        if (!availableProtocols.includes(ingestUiState.selectedProtocol)) {
+            ingestUiState.selectedProtocol = availableProtocols[0] || 'rtmp';
         }
+
+        ['rtmp', 'rtsp', 'srt'].forEach((protocol) => {
+            const btn = document.getElementById(`ingest-protocol-${protocol}`);
+            if (!btn) return;
+
+            const isAvailable = availableProtocols.includes(protocol);
+            const isActive = ingestUiState.selectedProtocol === protocol;
+
+            btn.disabled = !isAvailable;
+            btn.classList.toggle('btn-disabled', !isAvailable);
+            btn.classList.remove(
+                'border-accent/35',
+                'bg-accent/18',
+                'text-accent',
+                'border-base-content/10',
+                'bg-base-100/70',
+                'text-base-content/80',
+                'opacity-60',
+            );
+            if (isActive && isAvailable) {
+                btn.classList.add('border-accent/35', 'bg-accent/18', 'text-accent');
+            } else {
+                btn.classList.add('border-base-content/10', 'bg-base-100/70', 'text-base-content/80');
+            }
+            if (!isAvailable) {
+                btn.classList.add('opacity-60');
+            }
+            btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            btn.onclick = () => {
+                if (!isAvailable) return;
+                ingestUiState.selectedProtocol = protocol;
+                renderPipelineInfoColumn(selectedPipe);
+            };
+        });
+
+        const selectedProtocol = ingestUiState.selectedProtocol;
+        const selectedUrl = ingestUrls[selectedProtocol] || '';
+
+        const ingestUrlSection = document.getElementById('ingest-url-section');
+        if (ingestUrlSection) {
+            ingestUrlSection.classList.toggle('hidden', availableProtocols.length === 0);
+        }
+
+        const ingestUrlTitle = document.getElementById('ingest-url-title');
+        if (ingestUrlTitle) {
+            const protocolLabel = PROTOCOL_LABELS[selectedProtocol] || 'Publish';
+            ingestUrlTitle.textContent = `${protocolLabel} Publish URL`;
+        }
+
+        const ingestUrlValue = document.getElementById('ingest-url');
+        const ingestUrlSurface = document.getElementById('ingest-url-surface');
+        if (ingestUrlValue) {
+            ingestUrlValue.dataset.copy = selectedUrl;
+            ingestUrlValue.textContent = ingestUiState.urlVisible ? selectedUrl || '--' : '';
+        }
+        if (ingestUrlSurface) {
+            ingestUrlSurface.classList.toggle('hidden', !ingestUiState.urlVisible || !selectedUrl);
+        }
+
+        const ingestUrlVisibilityBtn = document.getElementById('ingest-url-visibility-btn');
+        if (ingestUrlVisibilityBtn) {
+            ingestUrlVisibilityBtn.disabled = !selectedUrl;
+            ingestUrlVisibilityBtn.classList.toggle('btn-disabled', !selectedUrl);
+            ingestUrlVisibilityBtn.textContent = ingestUiState.urlVisible ? 'Hide URL' : 'View URL';
+            ingestUrlVisibilityBtn.onclick = () => {
+                if (!selectedUrl) return;
+                ingestUiState.urlVisible = !ingestUiState.urlVisible;
+                renderPipelineInfoColumn(selectedPipe);
+            };
+        }
+
+        const ingestUrlCopyBtn = document.getElementById('ingest-url-copy-btn');
+        if (ingestUrlCopyBtn) {
+            ingestUrlCopyBtn.disabled = !selectedUrl;
+            ingestUrlCopyBtn.classList.toggle('btn-disabled', !selectedUrl);
+        }
+
+        const ingestUrlDetails = document.getElementById('ingest-url-details');
+        const ingestDetailsGrid = document.getElementById('ingest-details-grid');
+        const parsedIngestDetails = parseProtocolAwareIngestUrl(selectedProtocol, selectedUrl);
+        if (ingestUrlDetails) {
+            ingestUrlDetails.classList.toggle(
+                'hidden',
+                !ingestUiState.urlVisible || !selectedUrl || !parsedIngestDetails,
+            );
+        }
+        renderProtocolDetails(ingestDetailsGrid, selectedProtocol, parsedIngestDetails);
 
         const playerElem = document.getElementById('video-player');
         const inputStatsElem = document.getElementById('input-stats');
