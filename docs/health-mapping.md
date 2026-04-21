@@ -33,17 +33,18 @@ For each pipeline, the input status is derived from the pipeline's `streamKey`:
 
 ```mermaid
 flowchart TD
-  A["pipeline.streamKey"] --> B["pathByName.get(streamKey)"]
+  A["pipeline.streamKey"] --> B["effectivePath = live/<streamKey>"]
+  B --> C["pathByName.get(effectivePath)"]
 
-  B --> C{has stream key?}
-  C -->|no| OFF["status = 'off'"]
-  C -->|yes| D{"pathInfo.available?"}
-  D -->|yes| ON["status = 'on'\npublishStartedAt = pathInfo.availableTime"]
-  D -->|no| E{"pathInfo.online?"}
-  E -->|yes| WARN["status = 'warning'"]
-  E -->|no| F{"inputEverSeenLive == 1?"}
-  F -->|yes| ERR["status = 'error'"]
-  F -->|no| OFF
+  C --> D{has stream key?}
+  D -->|no| OFF["status = 'off'"]
+  D -->|yes| E{"pathInfo.available?"}
+  E -->|yes| ON["status = 'on'\npublishStartedAt = pathInfo.availableTime"]
+  E -->|no| F{"pathInfo.online?"}
+  F -->|yes| WARN["status = 'warning'"]
+  F -->|no| G{"inputEverSeenLive == 1?"}
+  G -->|yes| ERR["status = 'error'"]
+  G -->|no| OFF
 ```
 
 **Input status values:**
@@ -65,7 +66,7 @@ flowchart TD
 
 **ffprobe caching:**
 
-When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe -rtsp_transport tcp rtsp://localhost:8554/<streamKey>` refreshes using stale-while-revalidate semantics. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
+When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe -rtsp_transport tcp rtsp://localhost:8554/live/<streamKey>` refreshes using stale-while-revalidate semantics. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
 
 The probe URL includes a dedicated reader tag (`reader_id=probe_<streamKey>`). This allows the health collector to explicitly ignore internal probe readers when computing unexpected-reader alerts.
 
@@ -108,7 +109,7 @@ flowchart TD
 Each FFmpeg output is launched with a unique `reader_id` embedded in its RTSP pull URL:
 
 ```
-rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>
+rtsp://localhost:8554/live/<streamKey>?reader_id=reader_<pipelineId>_<outputId>
 ```
 
 MediaMTX surfaces the full query string in `/v3/rtspconns/list` as `conn.query`. The health endpoint parses `reader_id` from each connection's query at run-time:

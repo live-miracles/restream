@@ -2,222 +2,23 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
-const projectRoot = path.join(__dirname, '..');
+const { setupDatabaseSchema } = require('./schema');
+const projectRoot = path.join(__dirname, '..', '..');
 const dataDir = path.join(projectRoot, 'data');
 const dbPath = path.join(dataDir, 'data.db');
 
 fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(dbPath);
-db.pragma('foreign_keys = ON');
-
-/* stream_keys table */
-db.prepare(
-    `
-  CREATE TABLE IF NOT EXISTS stream_keys (
-    key TEXT PRIMARY KEY,
-    label TEXT,
-    created_at TEXT
-  )
-`,
-).run();
-
-/* pipelines table */
-db.prepare(
-    `
-  CREATE TABLE IF NOT EXISTS pipelines (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    stream_key TEXT,
-    encoding TEXT,
-    input_ever_seen_live INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT,
-    updated_at TEXT,
-    FOREIGN KEY(stream_key) REFERENCES stream_keys(key) ON DELETE SET NULL
-  )
-`,
-).run();
-
-const pipelineColumns = db.prepare(`PRAGMA table_info(pipelines)`).all();
-if (!pipelineColumns.some((column) => column.name === 'input_ever_seen_live')) {
-    db.prepare(`ALTER TABLE pipelines ADD COLUMN input_ever_seen_live INTEGER NOT NULL DEFAULT 0`).run();
-}
-
-/* outputs table */
-db.prepare(
-    `
-  CREATE TABLE IF NOT EXISTS outputs (
-    id TEXT PRIMARY KEY,
-    pipeline_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    encoding TEXT,
-    created_at TEXT,
-    FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE
-  )
-`,
-).run();
-
-const outputColumns = db.prepare(`PRAGMA table_info(outputs)`).all();
-if (!outputColumns.some((column) => column.name === 'encoding')) {
-    db.prepare(`ALTER TABLE outputs ADD COLUMN encoding TEXT`).run();
-}
+setupDatabaseSchema(db);
 
 function normalizeOutputEncodingValue(encoding) {
-    const normalized = String(encoding ?? 'source').trim().toLowerCase();
+    const normalized = String(encoding ?? 'source')
+        .trim()
+        .toLowerCase();
     if (!normalized) return 'source';
     return normalized;
 }
-
-db.prepare(`CREATE INDEX IF NOT EXISTS idx_outputs_pipeline ON outputs(pipeline_id)`).run();
-
-/* jobs table */
-db.prepare(
-    `
-  CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    pipeline_id TEXT NOT NULL,
-    output_id TEXT NOT NULL,
-    pid INTEGER,
-    status TEXT NOT NULL, -- running | stopped | failed
-    started_at TEXT,
-    ended_at TEXT,
-    exit_code INTEGER,
-    exit_signal TEXT,
-    FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE,
-    FOREIGN KEY(output_id) REFERENCES outputs(id) ON DELETE CASCADE
-  )
-`,
-).run();
-
-// Deduplicate legacy jobs rows before creating a unique index.
-const duplicateJobPairs = db
-    .prepare(
-        `
-    SELECT pipeline_id AS pipelineId, output_id AS outputId, COUNT(*) AS count
-    FROM jobs
-    GROUP BY pipeline_id, output_id
-    HAVING COUNT(*) > 1
-`,
-    )
-    .all();
-
-if (duplicateJobPairs.length > 0) {
-    const selectJobToKeep = db.prepare(
-        `
-      SELECT id
-      FROM jobs
-      WHERE pipeline_id = ? AND output_id = ?
-      ORDER BY
-        CASE WHEN started_at IS NULL THEN 1 ELSE 0 END,
-        started_at DESC,
-        CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END,
-        ended_at DESC,
-        rowid DESC
-      LIMIT 1
-  `,
-    );
-    const deleteDuplicateJobs = db.prepare(
-        `
-      DELETE FROM jobs
-      WHERE pipeline_id = ? AND output_id = ? AND id != ?
-  `,
-    );
-    const dedupeJobs = db.transaction((pairs) => {
-        for (const pair of pairs) {
-            const kept = selectJobToKeep.get(pair.pipelineId, pair.outputId);
-            if (!kept?.id) continue;
-            deleteDuplicateJobs.run(pair.pipelineId, pair.outputId, kept.id);
-        }
-    });
-    dedupeJobs(duplicateJobPairs);
-}
-
-// Add unique constraint to enforce 1 job per (pipeline_id, output_id)
-db.prepare(
-    `
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_output_unique
-    ON jobs(pipeline_id, output_id)
-`,
-).run();
-
-/* job_logs table */
-db.prepare(
-    `
-    CREATE TABLE IF NOT EXISTS job_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT,
-        pipeline_id TEXT,
-        output_id TEXT,
-        event_type TEXT,
-        ts TEXT,
-        message TEXT
-    )
-`,
-).run();
-
-// Add decoupled columns for old schemas
-const jobLogsColumns = db.prepare(`PRAGMA table_info(job_logs)`).all();
-if (!jobLogsColumns.some((column) => column.name === 'pipeline_id')) {
-    db.prepare(`ALTER TABLE job_logs ADD COLUMN pipeline_id TEXT`).run();
-}
-if (!jobLogsColumns.some((column) => column.name === 'output_id')) {
-    db.prepare(`ALTER TABLE job_logs ADD COLUMN output_id TEXT`).run();
-}
-if (!jobLogsColumns.some((column) => column.name === 'event_type')) {
-    db.prepare(`ALTER TABLE job_logs ADD COLUMN event_type TEXT`).run();
-}
-
-// Migrate old FK-based job_logs table to decoupled schema.
-// Upsert updates jobs.id, which conflicts with FK(job_logs.job_id -> jobs.id).
-const jobLogsForeignKeys = db.prepare(`PRAGMA foreign_key_list(job_logs)`).all();
-if (jobLogsForeignKeys.some((fk) => fk.table === 'jobs' && fk.from === 'job_id')) {
-    db.exec(`PRAGMA foreign_keys = OFF`);
-    db.exec(`BEGIN TRANSACTION`);
-    try {
-        db.exec(`
-      CREATE TABLE job_logs_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT,
-        pipeline_id TEXT,
-        output_id TEXT,
-        event_type TEXT,
-        ts TEXT,
-        message TEXT
-      )
-    `);
-        db.exec(`
-      INSERT INTO job_logs_new (id, job_id, pipeline_id, output_id, event_type, ts, message)
-      SELECT id, job_id, pipeline_id, output_id, NULL, ts, message
-      FROM job_logs
-    `);
-        db.exec(`DROP TABLE job_logs`);
-        db.exec(`ALTER TABLE job_logs_new RENAME TO job_logs`);
-        db.exec(`COMMIT`);
-    } catch (err) {
-        db.exec(`ROLLBACK`);
-        db.exec(`PRAGMA foreign_keys = ON`);
-        throw err;
-    }
-    db.exec(`PRAGMA foreign_keys = ON`);
-}
-
-// Create index for fast lookups of logs by output
-db.prepare(
-    `
-    CREATE INDEX IF NOT EXISTS idx_job_logs_output ON job_logs(pipeline_id, output_id, ts)
-`,
-).run();
-
-/* meta table */
-db.prepare(
-    `
-  CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  )
-`,
-).run();
 
 /* StreamKey statements */
 const insertStreamKey = db.prepare(
@@ -252,19 +53,22 @@ const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
 /* Output statements */
 const insertOutput = db.prepare(
-    'INSERT INTO outputs (id, pipeline_id, name, url, encoding, created_at) VALUES (@id, @pipeline_id, @name, @url, @encoding, @created_at)',
+    'INSERT INTO outputs (id, pipeline_id, name, url, desired_state, encoding, created_at) VALUES (@id, @pipeline_id, @name, @url, @desired_state, @encoding, @created_at)',
 );
 const getOutputStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, encoding, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
 );
 const listOutputsStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, encoding, created_at AS createdAt FROM outputs',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs',
 );
 const listOutputsForPipelineStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, encoding, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at ASC, id ASC',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at ASC, id ASC',
 );
 const updateOutputStmt = db.prepare(
     'UPDATE outputs SET name = @name, url = @url, encoding = @encoding WHERE id = @id AND pipeline_id = @pipeline_id',
+);
+const setOutputDesiredStateStmt = db.prepare(
+    'UPDATE outputs SET desired_state = @desired_state WHERE id = @id AND pipeline_id = @pipeline_id',
 );
 const deleteOutputStmt = db.prepare('DELETE FROM outputs WHERE id = ? AND pipeline_id = ?');
 
@@ -302,23 +106,27 @@ const listJobsStmt = db.prepare(`
 
 /* JobLog statements */
 const insertJobLog = db.prepare(`
-    INSERT INTO job_logs (job_id, pipeline_id, output_id, event_type, ts, message)
-    VALUES (@job_id, @pipeline_id, @output_id, @event_type, @ts, @message)
+    INSERT INTO job_logs (job_id, pipeline_id, output_id, event_type, event_data, ts, message)
+    VALUES (@job_id, @pipeline_id, @output_id, @event_type, @event_data, @ts, @message)
 `);
 const listJobLogs = db.prepare(`
-    SELECT ts, message, event_type AS eventType FROM job_logs WHERE job_id = ? ORDER BY id ASC
+    SELECT ts, message, event_type AS eventType, event_data AS eventData FROM job_logs WHERE job_id = ? ORDER BY id ASC
 `);
 const listJobLogsByOutput = db.prepare(`
-    SELECT ts, message, event_type AS eventType FROM job_logs
+    SELECT ts, message, event_type AS eventType, event_data AS eventData FROM job_logs
     WHERE pipeline_id = ? AND output_id = ?
     ORDER BY ts DESC
 `);
 const listLifecycleLogsByOutput = db.prepare(`
-    SELECT ts, message, event_type AS eventType FROM job_logs
-    WHERE pipeline_id = ? AND output_id = ? AND message LIKE '[lifecycle]%'
+    SELECT ts, message, event_type AS eventType, event_data AS eventData FROM job_logs
+    WHERE pipeline_id = ? AND output_id = ? AND (event_type LIKE 'lifecycle.%' OR message LIKE '[lifecycle]%')
     ORDER BY ts ASC
 `);
-function listJobLogsByOutputFiltered(pipelineId, outputId, { since = null, until = null, limit = null, order = 'desc', prefixes = [] } = {}) {
+function listJobLogsByOutputFiltered(
+    pipelineId,
+    outputId,
+    { since = null, until = null, limit = null, order = 'desc', prefixes = [] } = {},
+) {
     const clauses = ['pipeline_id = ?', 'output_id = ?'];
     const params = [pipelineId, outputId];
 
@@ -342,7 +150,7 @@ function listJobLogsByOutputFiltered(pipelineId, outputId, { since = null, until
 
     const normalizedOrder = order === 'asc' ? 'ASC' : 'DESC';
     let sql = `
-        SELECT ts, message, event_type AS eventType FROM job_logs
+        SELECT ts, message, event_type AS eventType, event_data AS eventData FROM job_logs
         WHERE ${clauses.join(' AND ')}
         ORDER BY ts ${normalizedOrder}
     `;
@@ -355,7 +163,7 @@ function listJobLogsByOutputFiltered(pipelineId, outputId, { since = null, until
     return db.prepare(sql).all(...params);
 }
 const listJobLogsByPipeline = db.prepare(`
-    SELECT ts, message, event_type AS eventType FROM job_logs
+    SELECT ts, message, event_type AS eventType, event_data AS eventData FROM job_logs
     WHERE pipeline_id = ? AND output_id IS NULL
     ORDER BY ts DESC
 `);
@@ -376,6 +184,37 @@ const setMetaStmt = db.prepare(`
 `);
 
 /* Exported DB helpers */
+
+function serializeEventData(eventData) {
+    if (eventData === null || eventData === undefined) return null;
+    try {
+        return JSON.stringify(eventData);
+    } catch {
+        return null;
+    }
+}
+
+function parseLogRow(row) {
+    if (!row) return row;
+
+    let eventData = null;
+    if (typeof row.eventData === 'string' && row.eventData.length > 0) {
+        try {
+            eventData = JSON.parse(row.eventData);
+        } catch {
+            eventData = null;
+        }
+    }
+
+    return {
+        ...row,
+        eventData,
+    };
+}
+
+function parseLogRows(rows) {
+    return rows.map(parseLogRow);
+}
 
 module.exports = {
     /* stream key helpers */
@@ -420,10 +259,7 @@ module.exports = {
     listPipelines() {
         return listPipelinesStmt.all();
     },
-    updatePipeline(
-        id,
-        { name, streamKey, encoding = null, inputEverSeenLive = 0, updatedAt },
-    ) {
+    updatePipeline(id, { name, streamKey, encoding = null, inputEverSeenLive = 0, updatedAt }) {
         const now = updatedAt || new Date().toISOString();
         const info = updatePipelineStmt.run({
             id,
@@ -445,7 +281,15 @@ module.exports = {
     },
 
     /* output helpers */
-    createOutput({ id, pipelineId, name, url, encoding = 'source', createdAt }) {
+    createOutput({
+        id,
+        pipelineId,
+        name,
+        url,
+        desiredState = 'stopped',
+        encoding = 'source',
+        createdAt,
+    }) {
         if (!pipelineId) throw new Error('pipelineId is required');
         if (!name || !url) throw new Error('Output.name and Output.url are required');
         const oid = id || crypto.randomBytes(8).toString('hex');
@@ -455,6 +299,7 @@ module.exports = {
             pipeline_id: pipelineId,
             name,
             url,
+            desired_state: desiredState === 'running' ? 'running' : 'stopped',
             encoding: normalizeOutputEncodingValue(encoding),
             created_at: now,
         });
@@ -478,6 +323,16 @@ module.exports = {
             encoding: normalizeOutputEncodingValue(encoding),
         });
         return info.changes > 0 ? getOutputStmt.get(id, pipelineId) : null;
+    },
+    setOutputDesiredState(pipelineId, id, desiredState) {
+        const info = setOutputDesiredStateStmt.run({
+            id,
+            pipeline_id: pipelineId,
+            desired_state: desiredState === 'running' ? 'running' : 'stopped',
+        });
+        return info.changes > 0
+            ? getOutputStmt.get(id, pipelineId)
+            : getOutputStmt.get(id, pipelineId);
     },
     deleteOutput(pipelineId, id) {
         const info = deleteOutputStmt.run(id, pipelineId);
@@ -526,13 +381,21 @@ module.exports = {
     },
 
     /* job log helpers */
-    appendJobLog(jobId, message, pipelineId = null, outputId = null, eventType = 'output_log') {
+    appendJobLog(
+        jobId,
+        message,
+        pipelineId = null,
+        outputId = null,
+        eventType = 'output.log',
+        eventData = null,
+    ) {
         try {
             insertJobLog.run({
                 job_id: jobId,
                 pipeline_id: pipelineId,
                 output_id: outputId,
                 event_type: eventType,
+                event_data: serializeEventData(eventData),
                 ts: new Date().toISOString(),
                 message,
             });
@@ -540,13 +403,19 @@ module.exports = {
             /* ignore logging failures */
         }
     },
-    appendPipelineEvent(pipelineId, message, eventType = 'pipeline_event') {
+    appendPipelineEvent(
+        pipelineId,
+        message,
+        eventType = 'pipeline.event',
+        eventData = null,
+    ) {
         try {
             insertJobLog.run({
                 job_id: null,
                 pipeline_id: pipelineId,
                 output_id: null,
                 event_type: eventType,
+                event_data: serializeEventData(eventData),
                 ts: new Date().toISOString(),
                 message,
             });
@@ -555,19 +424,19 @@ module.exports = {
         }
     },
     listJobLogs(jobId) {
-        return listJobLogs.all(jobId);
+        return parseLogRows(listJobLogs.all(jobId));
     },
     listJobLogsByOutput(pipelineId, outputId) {
-        return listJobLogsByOutput.all(pipelineId, outputId);
+        return parseLogRows(listJobLogsByOutput.all(pipelineId, outputId));
     },
     listJobLogsByOutputFiltered(pipelineId, outputId, filters = {}) {
-        return listJobLogsByOutputFiltered(pipelineId, outputId, filters);
+        return parseLogRows(listJobLogsByOutputFiltered(pipelineId, outputId, filters));
     },
     listLifecycleLogsByOutput(pipelineId, outputId) {
-        return listLifecycleLogsByOutput.all(pipelineId, outputId);
+        return parseLogRows(listLifecycleLogsByOutput.all(pipelineId, outputId));
     },
     listJobLogsByPipeline(pipelineId) {
-        return listJobLogsByPipeline.all(pipelineId);
+        return parseLogRows(listJobLogsByPipeline.all(pipelineId));
     },
     deleteJobLogsOlderThan(days = 7) {
         deleteOldJobLogs.run(`-${days} days`);

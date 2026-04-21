@@ -7,3 +7,5 @@ stable
 *.min.css
 *.min.js
 v
+*.md
+*.yml

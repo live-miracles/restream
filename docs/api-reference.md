@@ -12,13 +12,20 @@ All request/response bodies are JSON. All timestamps are ISO 8601 UTC strings.
 
 Returns all stream keys ordered by creation date descending.
 
+`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`.
+
 **Response 200:**
 ```json
 [
   {
     "key": "c1518f5ef0d917ef1b6547d7",
     "label": "English Feed",
-    "createdAt": "2026-04-10T10:59:00.000Z"
+    "createdAt": "2026-04-10T10:59:00.000Z",
+    "ingestUrls": {
+      "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
+      "rtsp": "rtsp://stream.example.com:8554/live/c1518f5ef0d917ef1b6547d7",
+      "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
+    }
   }
 ]
 ```
@@ -28,6 +35,11 @@ Returns all stream keys ordered by creation date descending.
 ### `POST /stream-keys`
 
 Creates a stream key and registers the corresponding path in MediaMTX.
+
+The MediaMTX path is always provisioned as `live/<streamKey>`.
+
+> Note: If MediaMTX path registration succeeds but the SQLite insert fails, the API now attempts a
+> compensating MediaMTX path delete before returning `500`.
 
 **Request body:**
 ```json
@@ -44,12 +56,17 @@ Creates a stream key and registers the corresponding path in MediaMTX.
   "streamKey": {
     "key": "mystream",
     "label": "English Feed",
-    "createdAt": "2026-04-10T10:59:00.000Z"
+    "createdAt": "2026-04-10T10:59:00.000Z",
+    "ingestUrls": {
+      "rtmp": "rtmp://stream.example.com:1935/live/mystream",
+      "rtsp": "rtsp://stream.example.com:8554/live/mystream",
+      "srt": "srt://stream.example.com:8890?streamid=publish:live/mystream"
+    }
   }
 }
 ```
 
-**Errors:** `409` key already exists; `500` MediaMTX path registration failed.
+**Errors:** `409` key already exists; `500` MediaMTX registration failed, SQLite insert failed, or rollback failed.
 
 ---
 
@@ -77,12 +94,14 @@ Deletes a stream key and removes its path from MediaMTX.
 
 > Note: If MediaMTX path deletion fails the request returns `500`. The DB row is **not** deleted until MediaMTX confirms success.
 
+> If MediaMTX deletion succeeds but the SQLite delete fails, the API attempts a compensating path re-add before returning `500`.
+
 **Response 200:**
 ```json
 { "message": "Stream key deleted" }
 ```
 
-**Errors:** `404` key not found; `500` MediaMTX path deletion failed.
+**Errors:** `404` key not found; `500` MediaMTX deletion failed, SQLite delete failed, or rollback failed.
 
 ---
 
@@ -157,7 +176,7 @@ Pipeline-level history entries are stored in `job_logs` with:
 
 - `pipeline_id = :pipelineId`
 - `output_id IS NULL`
-- optional `event_type` values such as `pipeline_config` and `pipeline_state`
+- typed `eventType` values such as `pipeline.config.stream_key_changed` and `pipeline.input_state.transitioned`
 
 **Response 200:**
 ```json
@@ -166,13 +185,15 @@ Pipeline-level history entries are stored in `job_logs` with:
   "logs": [
     {
       "ts": "2026-04-16T05:30:00.000Z",
-      "message": "[input_state] off -> on",
-      "eventType": "pipeline_state"
+      "eventType": "pipeline.input_state.transitioned",
+      "eventData": { "from": "off", "to": "on" },
+      "message": "[input_state] off -> on"
     },
     {
       "ts": "2026-04-16T05:25:00.000Z",
-      "message": "[config] stream_key changed from ab...cd to ef...12",
-      "eventType": "pipeline_config"
+      "eventType": "pipeline.config.stream_key_changed",
+      "eventData": { "fromMasked": "ab...cd", "toMasked": "ef...12" },
+      "message": "[config] stream_key changed from ab...cd to ef...12"
     }
   ]
 }
@@ -184,14 +205,14 @@ Pipeline-level history entries are stored in `job_logs` with:
 
 ### `DELETE /pipelines/:id`
 
-Deletes a pipeline. All running output jobs are stopped (SIGTERM) before deletion. Outputs and jobs cascade-delete via SQLite FK.
+Deletes a pipeline. All running output jobs are stopped and the API waits for those processes to exit before deletion. Outputs and jobs cascade-delete via SQLite FK only after teardown completes.
 
 **Response 200:**
 ```json
 { "message": "Pipeline <id> deleted" }
 ```
 
-**Errors:** `404` pipeline not found.
+**Errors:** `404` pipeline not found; `409` one or more running outputs failed to stop before delete.
 
 ---
 
@@ -219,6 +240,7 @@ Creates an output for a pipeline.
     "pipelineId": "a1b2c3d4e5f6a7b8",
     "name": "YouTube",
     "url": "rtmp://...",
+    "desiredState": "stopped",
     "encoding": "source",
     "createdAt": "2026-04-10T11:05:00.000Z"
   }
@@ -246,14 +268,14 @@ Updates an output.
 
 ### `DELETE /pipelines/:pipelineId/outputs/:outputId`
 
-Deletes an output. Running job is stopped first.
+Deletes an output. If a job is running, the API sends a stop signal and waits for the process to exit before removing the DB row.
 
 **Response 200:**
 ```json
 { "message": "Output <outputId> from pipeline <pipelineId> deleted" }
 ```
 
-**Errors:** `404` output or pipeline not found.
+**Errors:** `404` output or pipeline not found; `409` running process did not stop before delete.
 
 ---
 
@@ -261,28 +283,30 @@ Deletes an output. Running job is stopped first.
 
 ### `POST /pipelines/:pipelineId/outputs/:outputId/start`
 
-Starts an FFmpeg job for this output. The full call flow is:
+Sets this output's desired state to `running` and reconciles runtime toward that state. The full call flow is:
 
-1. Acquire in-memory start lock for `(pipelineId, outputId)` — 409 if another start is already in progress.
-2. Validate pipeline + output exist.
-3. Check for an existing running job — 409 if found.
-4. Require `pipeline.streamKey`; resolve probe URL `rtsp://localhost:8554/<streamKey>`.
-5. Run `ffprobe -rtsp_transport tcp <probeUrl>` with 8 s timeout.
-6. Build tagged pull URL: `rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>`.
-7. Spawn FFmpeg for the selected output encoding:
+1. Persist `outputs.desiredState='running'`.
+2. Acquire an in-memory start lock for `(pipelineId, outputId)` if a start is needed.
+3. Validate pipeline + output exist.
+4. Check for an existing running job.
+5. Require `pipeline.streamKey`; resolve probe URL `rtsp://localhost:8554/<streamKey>`.
+6. Run `ffprobe -rtsp_transport tcp <probeUrl>` with 8 s timeout.
+7. Build tagged pull URL: `rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>`.
+8. Spawn FFmpeg for the selected output encoding:
   - `source`: codec copy (`-c:v copy -c:a copy`)
   - `vertical-crop`: `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
   - `vertical-rotate`: `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
   - `720p`: `-vf scale=-2:720` + H.264/AAC encode
   - `1080p`: `-vf scale=-2:1080` + H.264/AAC encode
-8. Persist job row in DB, return after 250 ms stability check.
+9. Persist job row in DB, return after 250 ms stability check.
 
 **Request body:** none
 
 **Response 201:**
 ```json
 {
-  "message": "Job started",
+  "message": "Output started",
+  "desiredState": "running",
   "job": {
     "id": "3f2e1d0c9b8a7f6e",
     "pipelineId": "a1b2c3d4e5f6a7b8",
@@ -297,24 +321,35 @@ Starts an FFmpeg job for this output. The full call flow is:
 }
 ```
 
+**Response 409:**
+```json
+{
+  "error": "Pipeline input is not available yet",
+  "message": "Output desired state set to running; waiting for input",
+  "desiredState": "running",
+  "detail": "Publisher connected, stream not ready yet"
+}
+```
+
 **Errors:**
 - `400` no input URL available
 - `404` pipeline or output not found
 - `409` start already in progress for this output
-- `409` output already has a running job
-- `409` RTSP input not available yet (ffprobe failed)
+- `409` pipeline input not available yet; desired state is still updated to `running`
 - `500` FFmpeg failed to start (includes last 100 log lines)
 
 ---
 
 ### `POST /pipelines/:pipelineId/outputs/:outputId/stop`
 
-Stops the running FFmpeg job via SIGTERM with a 5 s SIGKILL escalation.
+Sets this output's desired state to `stopped`, clears pending retry timers, and reconciles runtime toward that state. If a process is running, it is stopped via SIGTERM with a 5 s SIGKILL escalation.
 
 **Response 200:**
 ```json
 {
-  "message": "Stopping job",
+  "message": "Output desired state set to stopped",
+  "desiredState": "stopped",
+  "previousState": "running",
   "jobId": "3f2e1d0c9b8a7f6e",
   "result": {
     "stopped": true,
@@ -323,7 +358,22 @@ Stops the running FFmpeg job via SIGTERM with a 5 s SIGKILL escalation.
 }
 ```
 
-**Errors:** `404` no running job for this output.
+If no process is running, the output intent is still updated and the response remains `200`:
+
+```json
+{
+  "message": "Output desired state set to stopped",
+  "desiredState": "stopped",
+  "previousState": "running",
+  "jobId": null,
+  "result": {
+    "stopped": false,
+    "reason": "already_stopped"
+  }
+}
+```
+
+**Errors:** `404` output or pipeline not found.
 
 ---
 
@@ -360,14 +410,25 @@ Guardrails:
   "logs": [
     {
       "ts": "2026-04-15T12:20:57.098Z",
+      "eventType": "lifecycle.exited",
+      "eventData": {
+        "status": "failed",
+        "requestedStop": false,
+        "exitCode": 255,
+        "exitSignal": null
+      },
       "message": "[lifecycle] exited status=failed requestedStop=false exitCode=255 exitSignal=null"
     },
     {
       "ts": "2026-04-15T12:20:57.098Z",
+      "eventType": "output.exit",
+      "eventData": { "code": 255, "signal": null },
       "message": "[exit] code=255 signal=null"
     },
     {
       "ts": "2026-04-15T12:20:56.971Z",
+      "eventType": "output.stderr",
+      "eventData": null,
       "message": "[stderr] [flv @ ...] Non-monotonic DTS ..."
     }
   ]
@@ -376,13 +437,10 @@ Guardrails:
 
 **Errors:** `400` invalid `limit`, `since`, `until`, `order`, or `prefix`, or requested window too large; `404` output or pipeline not found.
 
-> Lifecycle enrichment: start/stop/status transitions now emit `[lifecycle] ...` messages in `job_logs`.
-> Current emitted formats:
-> - `[lifecycle] started status=running pid=<pid|null>`
-> - `[lifecycle] stop_requested signal=<signal> status=running`
-> - `[lifecycle] failed_on_error status=failed exitCode=null exitSignal=null`
-> - `[lifecycle] exited status=<stopped|failed> requestedStop=<true|false> exitCode=<code|null> exitSignal=<signal|null>`
-> - `[lifecycle] marked_stopped_no_process status=stopped`
+> History enrichment: timeline-relevant rows now include stable `eventType` codes and structured
+> `eventData` payloads. The human-readable `message` is still stored and returned for raw log
+> inspection, but clients should key timeline behavior off the typed fields instead of parsing the
+> prose message.
 
 ---
 
@@ -392,9 +450,20 @@ Guardrails:
 
 Returns the full state snapshot used by the dashboard. Supports conditional GET via `If-None-Match` / ETag.
 
+Response headers now include a shared `X-Snapshot-Version` token that identifies the config/jobs
+state version represented by this snapshot. The dashboard compares that token with the health
+response before committing a render.
+
 **Request headers (optional):**
 ```
 If-None-Match: "abc123..."
+```
+
+**Response headers:**
+```
+ETag: "..."                 // config + jobs snapshot hash
+X-Config-ETag: "..."        // config-only snapshot hash
+X-Snapshot-Version: "..."   // shared config/jobs state version used to align /config and /health
 ```
 
 **Response 200:**
@@ -403,16 +472,43 @@ If-None-Match: "abc123..."
   "serverName": "My Server",
   "pipelinesLimit": 25,
   "outLimit": 95,
-  "streamKeys": [ ... ],
-  "pipelines": [ ... ],
+  "outputRecovery": {
+    "enabled": true,
+    "immediateRetries": 3,
+    "immediateDelayMs": 1000,
+    "backoffRetries": 5,
+    "backoffBaseDelayMs": 2000,
+    "backoffMaxDelayMs": 60000,
+    "resetFailureCountAfterMs": 30000,
+    "restartOnInputRecovery": true,
+    "inputRecoveryRestartMode": "inputUnavailableOnly",
+    "inputRecoveryRestartDelayMs": 1000,
+    "inputRecoveryRestartStaggerMs": 250
+  },
+  "ingestHost": null,
+  "pipelines": [
+    {
+      "id": "a1b2c3d4e5f6a7b8",
+      "name": "Pipeline 1",
+      "streamKey": "c1518f5ef0d917ef1b6547d7",
+      "ingestUrls": {
+        "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
+        "rtsp": "rtsp://stream.example.com:8554/live/c1518f5ef0d917ef1b6547d7",
+        "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
+      }
+    }
+  ],
   "outputs": [ ... ],
   "jobs": [ ... ]
 }
 ```
 
+Each output now includes `desiredState`, which is the persistent operator intent (`running` or `stopped`).
+
 **Response headers:**
 ```
 ETag: "abc123def456..."
+X-Config-ETag: "7890abcd1234..."
 ```
 
 **Response 304:** ETag matches — no body, no change.
@@ -425,7 +521,7 @@ ETag: "abc123def456..."
 
 Returns the current ETag without a response body. Used to poll for changes without downloading the full config.
 
-**Response 200** (no body) + `ETag` header.
+**Response 200** (no body) + `ETag` and `X-Config-ETag` headers.
 
 ---
 
@@ -433,7 +529,7 @@ Returns the current ETag without a response body. Used to poll for changes witho
 
 ### `GET /health`
 
-Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling three MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`, then merging that runtime state with DB job state and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`, `/v3/rtmpconns/list`, `/v3/srtconns/list`, and `/v3/webrtcsessions/list`, then merging that runtime state with DB job state and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 `GET /health` itself does not call MediaMTX. It returns the most recent cached snapshot immediately.
 
@@ -451,6 +547,9 @@ Headers:
   "mediamtx": {
     "pathCount": 2,
     "rtspConnCount": 3,
+    "rtmpConnCount": 1,
+    "srtConnCount": 0,
+    "webrtcSessionCount": 0,
     "ready": true
   },
   "pipelines": {
@@ -519,6 +618,9 @@ During startup, before MediaMTX is ready, `/health` returns an initialization sn
   "mediamtx": {
     "pathCount": 0,
     "rtspConnCount": 0,
+    "rtmpConnCount": 0,
+    "srtConnCount": 0,
+    "webrtcSessionCount": 0,
     "ready": false
   },
   "pipelines": {}
@@ -586,7 +688,7 @@ Readiness endpoint used by launch scripts and infra probes.
 
 ### `GET /metrics/system`
 
-Returns host system metrics. Throughput and CPU values are computed against the previous sample.
+Returns host system metrics from a fixed background sampler. Throughput and CPU values are computed against the previous timer sample, not against the previous HTTP request, so concurrent clients see the same rates for the same sample window.
 
 **Response 200:**
 ```json

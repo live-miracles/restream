@@ -1,3 +1,6 @@
+import { getStreamKeys, createStreamKey, updateStreamKey, deleteStreamKey, getConfig } from '../core/api.js';
+import { escapeHtml, maskSecret, copyText, showErrorAlert, setServerConfig, showCopiedNotification } from '../core/utils.js';
+
 let currentEditingKey = null;
 let pendingDeleteKey = null;
 
@@ -167,7 +170,6 @@ async function renderKeysTable() {
             const row = getKeyAt(btn);
             if (!row) return;
             openDeleteConfirmModal(row.key, row.label || '(untitled)');
-
         });
     });
 }
@@ -178,3 +180,6 @@ async function renderKeysTable() {
 
     renderKeysTable();
 })();
+
+// HTML data-* handler — keep accessible as a global
+window.openAddKeyModal = openAddKeyModal;

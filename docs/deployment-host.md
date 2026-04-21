@@ -212,6 +212,15 @@ Upgrade process:
 2. Run `npm ci --omit=dev`.
 3. Restart `restream.service`.
 4. Run smoke tests.
+5. Validate dashboard and stream-keys pages after a normal refresh.
+
+### Frontend Cache Note
+
+Static UI assets use split cache policy: HTML documents are served with `Cache-Control: no-store`, while JS/CSS are served with `Cache-Control: public, max-age=0, must-revalidate` plus ETag/Last-Modified. During rollout verification:
+
+- use a normal refresh first (the browser should revalidate and fetch current JS/CSS)
+- verify the latest JS is loaded before debugging runtime behavior
+- if an upstream proxy/CDN overrides cache policy, force refresh once and fix proxy cache rules
 
 ## 12. Security Baseline
 

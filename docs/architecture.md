@@ -20,6 +20,16 @@ Browser ──► Node API :3030 ──► SQLite (data/data.db)
                     └──► MediaMTX API :9997 (health, path config, connection stats)
 ```
 
+Stream-key create/delete is a cross-system operation touching both SQLite and MediaMTX path
+configuration. The API now treats the SQLite write as the second phase and compensates by rolling
+back the MediaMTX mutation if that DB phase fails, so the two control-plane stores do not drift on
+single-request errors.
+
+Pipeline and output deletion now also avoid split-brain windows between DB state and live FFmpeg
+processes. If a delete targets a running job, the API waits for teardown to complete before
+removing rows; if teardown times out or fails, the delete returns `409` and leaves the resources in
+place.
+
 ### Runtime Components
 
 | Component          | Role                                      | Default port(s)         |
@@ -75,8 +85,10 @@ job_logs
   job_id      TEXT           -- optional reference to current/previous job id
   pipeline_id TEXT           -- direct lookup key for history by pipeline
   output_id   TEXT           -- direct lookup key for history by output
+  event_type  TEXT           -- stable event code, e.g. lifecycle.started or pipeline.input_state.transitioned
+  event_data  TEXT           -- optional JSON payload for structured event details
   ts          TEXT
-  message     TEXT           -- one line per stdout/stderr chunk, control event, or lifecycle state change
+  message     TEXT           -- human-readable line kept for raw logs and operator inspection
 
 meta
   key         TEXT PK
@@ -162,10 +174,11 @@ Wait 250 ms → check if job still 'running'
   ▼
 [Background] child stdout/stderr → db.appendJobLog()
 [Background] child 'exit' → db.updateJob({ status, exitCode, exitSignal })
-              → if failed and not user-stop:
+              → if unexpected terminal exit and not user-stop:
                 register failureCount
                 schedule auto-retry based on outputRecovery config
                 append [lifecycle] retry_decision failureCount=<n> scheduled=<true|false>
+                input-unavailable clean stops append [lifecycle] retry_suppressed ... instead
                 if scheduled=false append [lifecycle] retry_exhausted ... action=give_up
                            → recomputeEtag()
                            → processes.delete(jobId)
@@ -202,7 +215,10 @@ Client
 Parallel fetch from MediaMTX API:
   ├── GET /v3/paths/list         → pathByName Map
   ├── GET /v3/rtspconns/list     → rtspConnectionRecords
-  └── GET /v3/rtspsessions/list  → rtspSessionById Map
+  ├── GET /v3/rtspsessions/list  → rtspSessionById Map
+  ├── GET /v3/rtmpconns/list     → RTMP publishers by path
+  ├── GET /v3/srtconns/list      → SRT publishers by path
+  └── GET /v3/webrtcsessions/list → WebRTC publishers by path
 
 Build rtspByReaderTag Map:
   for each RTSP connection:
@@ -230,9 +246,9 @@ For each pipeline:
                = 'on'      if running AND rtspByReaderTag has reader_<pid>_<oid>
                = 'warning' if running AND no reader tag match
 
-200 { generatedAt, status: 'ready', mediamtx: { pathCount, rtspConnCount, ready }, pipelines: {...} }
+200 { generatedAt, status: 'ready', mediamtx: { pathCount, rtspConnCount, rtmpConnCount, srtConnCount, webrtcSessionCount, ready }, pipelines: {...} }
 When MediaMTX is unavailable:
-{ generatedAt, status: 'degraded', pipelines: {} }
+{ generatedAt, status: 'degraded', mediamtx: { ...counts, ready }, pipelines: {} }
 ```
 
 ### 4.4 Output History (`GET /pipelines/:pipelineId/outputs/:outputId/history`)
@@ -278,7 +294,7 @@ Server reads ETag from db.getEtag()
 Build snapshot:
   { ...runtimeConfig,       ← from src/config/restream.json
     streamKeys,             ← db.listStreamKeys()
-    pipelines,              ← db.listPipelines()
+    pipelines,              ← db.listPipelines() + per-pipeline ingestUrls
     outputs,                ← db.listOutputs()
     jobs }                  ← db.listJobs()
 
@@ -306,6 +322,8 @@ db.createStreamKey({ key, label, createdAt })
 201 { streamKey }
 ```
 
+`<key>` above is provisioned as effective path `live/<streamKey>` in MediaMTX.
+
 ### 4.7 Stream Key Deletion (`DELETE /stream-keys/:key`)
 
 ```
@@ -322,6 +340,8 @@ db.deleteStreamKey(key)
 200 { message }
 ```
 
+Deletion targets the same effective path (`live/<streamKey>`).
+
 ### 4.8 Pipeline/Output Deletion with Cascade Stop
 
 ```
@@ -335,6 +355,20 @@ DELETE /pipelines/:pipelineId/outputs/:outputId
   └── db.deleteOutput(pipelineId, outputId)
 ```
 
+### 4.9 Backend Module Boundaries
+
+Recent backend refactors moved reusable runtime helpers out of bootstrap wiring and into dedicated utility modules.
+
+| File | Role |
+|---|---|
+| `src/index.js` | Composes services/routes and wires shared runtime maps and dependencies |
+| `src/utils/app.js` | Shared app helpers (`log`, `validateName`, `createHttpError`, token masking) |
+| `src/utils/ffmpeg.js` | FFmpeg argument/profile construction and progress/media parsing helpers |
+| `src/utils/mediamtx.js` | MediaMTX URL/tag helpers for path and reader correlation |
+| `src/utils/retry.js` | Retry/backoff decision helpers used by output recovery flows |
+
+This was a structure/maintainability change only; API behavior and external contracts remained the same.
+
 ---
 
 ## 5. Frontend Architecture
@@ -345,11 +379,15 @@ DELETE /pipelines/:pipelineId/outputs/:outputId
 |-----------------------|---------------------------------------------------------------|
 | `public/index.html`   | Dashboard SPA shell                                           |
 | `public/stream-keys.html` | Stream key management page                               |
-| `public/api.js`       | All API calls as relative paths (never direct to MediaMTX)   |
-| `public/dashboard.js` | Event handlers, modal logic, polling orchestration           |
-| `public/pipeline.js`  | `parsePipelinesInfo()` — merges config + health into view model |
-| `public/render.js`    | DOM rendering — pipeline cards, stats tables, output rows     |
-| `public/utils.js`     | `setServerConfig()`, `formatTime()`, `copyData()`, etc.       |
+| `public/js/core/state.js` | Shared mutable UI state (`config`, `health`, `pipelines`, `metrics`) |
+| `public/js/core/api.js`       | All API calls as relative paths (never direct to MediaMTX)   |
+| `public/js/features/dashboard.js` | Polling orchestration and config/version drift detection      |
+| `public/js/core/pipeline.js`  | `parsePipelinesInfo()` — merges config + health into view model |
+| `public/js/features/render.js`    | DOM rendering — pipeline cards, stats tables, output rows     |
+| `public/js/features/editor.js`    | Pipeline/output edit flows and start/stop controls             |
+| `public/js/features/pipeline-view.js` | Selected-pipeline detail + outputs column renderers       |
+| `public/js/history/controller.js` | Output/pipeline history modal control and polling            |
+| `public/js/core/utils.js`     | `setServerConfig()`, `formatTime()`, `copyData()`, etc.       |
 | `public/output.css`   | Compiled Tailwind + DaisyUI output (do not edit manually)     |
 | `input.css`           | Tailwind source (project root, compiled with `make css`)      |
 
@@ -361,7 +399,7 @@ Page load
   ▼
 fetchConfig()          GET /config (with If-None-Match ETag)
 fetchHealth()          GET /health
-fetchSystemMetrics()   GET /metrics/system
+fetchSystemMetrics()   GET /metrics/system (latest fixed background sample)
   │
   ▼
 parsePipelinesInfo()   merges config.pipelines + config.outputs + config.jobs
@@ -372,9 +410,24 @@ renderPipelines()      DOM update for pipeline cards and output tables
 renderMetrics()        DOM update for system metrics (CPU, mem, disk, net)
   │
   ▼
-setInterval(fetchAndRerender, <pollInterval>)   repeats above on interval
+setInterval(requestDashboardRefresh, <pollInterval>)   repeats above on interval
 setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
 ```
+
+`GET /metrics/system` no longer advances the rate-calculation baseline on every request. A server-side timer samples CPU and network counters on a fixed cadence, and dashboard polls just read the latest completed sample.
+
+Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibility refreshes, and mutation-driven refreshes all funnel through a single in-flight gate, so a slow refresh cannot overlap with another full `fetchAndRerender()` pass and later overwrite fresher state.
+
+`public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
+
+### 5.5 Frontend Module Conventions
+
+See [frontend-modules.md](./frontend-modules.md) for implementation-level rules and examples. In short:
+
+- Import dependencies explicitly; do not rely on implicit globals.
+- Keep shared mutable dashboard state in `public/js/core/state.js`.
+- Expose `window.*` only for handlers invoked directly by HTML attributes or legacy hooks.
+- Prefer normal module exports/imports for all other cross-file calls.
 
 #### External-change detection (`checkStreamingConfigs`)
 
@@ -383,13 +436,19 @@ The dashboard tracks two ETag variables:
 | Variable | Updated by | Purpose |
 |---|---|---|
 | `etag` | every `fetchConfig()` (background poll) | keeps conditional GET efficient |
-| `userEtag` | only after this tab successfully mutates config | marks last change *this user* made |
+| `userConfigEtag` | only after this tab successfully mutates config | marks last change *this user* made |
 
-Every 30 s, `checkStreamingConfigs` calls `GET /config` with `If-None-Match: userEtag`. If the server returns 200 (current ETag differs from `userEtag`), a mutation happened that this tab did not initiate. After a 5 s confirmation re-check, the `#streaming-config-changed-alert` warning banner is shown, prompting the user to refresh. A 304 keeps the banner hidden.
+Every 30 s, `checkStreamingConfigs` calls `GET /config` with `If-None-Match: userConfigEtag`. If the server returns 200 (current ETag differs from `userConfigEtag`), a mutation happened that this tab did not initiate. After a 5 s confirmation re-check, the `#streaming-config-changed-alert` warning banner is shown, prompting the user to refresh. A 304 keeps the banner hidden. Delayed re-checks are canceled when this tab updates its own baseline ETag, and stale re-checks (queued with an old baseline) are ignored so local edits do not trigger false warnings. After successful local mutations, the client re-syncs baseline from `HEAD /config/version` before storing `userConfigEtag`.
+
+The dashboard now also checks a shared `X-Snapshot-Version` token returned by both `/config` and
+`/health`. That token represents the config/jobs version seen by each endpoint. Health snapshots
+refresh themselves when their cached token is behind the current config/jobs state, and the client
+retries a refresh if the two responses still disagree, preventing mixed-moment merges after rapid
+mutations.
 
 ### 5.3 Throughput Computation (client-side)
 
-`pipeline.js` maintains `throughputState.inputBytes` for input throughput only. On each poll cycle, `computeKbps(stateMap, key, totalBytes, nowMs)` computes input bitrate from the delta of `input.bytesReceived` between cycles:
+`public/js/core/pipeline.js` maintains `throughputState.inputBytes` for input throughput only. On each poll cycle, `computeKbps(stateMap, key, totalBytes, nowMs)` computes input bitrate from the delta of `input.bytesReceived` between cycles:
 
 ```
 kbps = (deltaBytes × 8) / (deltaMs / 1000) / 1000
@@ -407,7 +466,7 @@ Each output card exposes a history modal with two modes:
 
 **Timeline mode** (default)
 - On open, fetches only `filter=lifecycle` logs (lifecycle events only, oldest-first).
-- Polls on the same interval as the main dashboard poll.
+- Polls on the same interval as the main dashboard poll, but uses a guarded timeout loop so only one history request is in flight at a time.
 - `retry_exhausted` is rendered as a terminal error badge (`Retry exhausted`) so operators can distinguish "will retry" from "gave up".
 - Each lifecycle event row has a collapsible context section that loads surrounding `stderr`/`exit`/`control` logs on demand when expanded.
 - Context fetch is bounded: at most 50 rows, at most 5 minutes before the event, floored to the previous lifecycle event's timestamp. Result is cached per event key for the modal session.
@@ -416,13 +475,24 @@ Each output card exposes a history modal with two modes:
 - Fetches up to 1000 rows ordered newest/oldest (user-selectable).
 - Find-in-page search: all rows render regardless of query; matching rows are highlighted inline and assigned a sequential match index. The `n/m` counter and up/down navigation (Enter / Shift+Enter) move between matches only. Scrolls active match into view. Non-matching rows remain visible for context.
 
-**Frontend constants** (in `dashboard.js`):
+**Frontend constants** (in `public/js/history/state.js`):
 
 | Constant | Value | Purpose |
 |---|---|---|
 | `OUTPUT_HISTORY_RAW_LIMIT` | 1000 | Max rows fetched in raw mode |
 | `OUTPUT_HISTORY_CONTEXT_LIMIT` | 50 | Max rows per context on-demand fetch |
 | `OUTPUT_HISTORY_CONTEXT_WINDOW_MS` | 5 min | Look-back window for context fetch |
+
+The pipeline-history modal uses the same single-flight polling rule in live mode: if one poll is still running, another is not started on top of it.
+
+### 5.5.1 Module Migration Troubleshooting
+
+If a page renders partially after a refactor, check these first:
+
+1. `ReferenceError` in browser console (usually an implicit-global access that should be an import or `window.*`).
+2. HTML handlers (`onclick`, `data-*`) still pointing to a function that is no longer exported to `window`.
+3. Shared state reads/writes still referencing old globals instead of `public/js/core/state.js`.
+4. Stale browser JS from upstream cache/proxy; normal reload should revalidate, hard-refresh only if intermediaries ignore cache headers.
 
 ---
 

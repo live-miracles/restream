@@ -1,20 +1,91 @@
+import { showLoading, hideLoading, showErrorAlert, normalizeEtag } from './utils.js';
+
+let activeMutationRequestCount = 0;
+
+function isMutationMethod(method) {
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    return normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS';
+}
+
+function beginMutationRequest() {
+    activeMutationRequestCount += 1;
+    if (activeMutationRequestCount === 1) {
+        showLoading();
+    }
+}
+
+function endMutationRequest() {
+    if (activeMutationRequestCount <= 0) {
+        activeMutationRequestCount = 0;
+        return;
+    }
+
+    activeMutationRequestCount -= 1;
+    if (activeMutationRequestCount === 0) {
+        hideLoading();
+    }
+}
+
+function getSnapshotVersion(response, fallback = null) {
+    return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
+}
+
+function buildEtagHeaders(etag) {
+    const headers = {};
+    if (etag) headers['If-None-Match'] = `"${etag}"`;
+    return headers;
+}
+
+async function fetchWithEtag(
+    url,
+    { etag = null, method = 'GET', networkErrorMessage = null } = {},
+) {
+    const options = {
+        method,
+        headers: buildEtagHeaders(etag),
+        cache: 'no-store',
+    };
+
+    if (!networkErrorMessage) {
+        return fetch(url, options);
+    }
+
+    try {
+        return await fetch(url, options);
+    } catch (e) {
+        showErrorAlert(networkErrorMessage + e);
+        return null;
+    }
+}
+
+async function parseJsonResponse(response) {
+    try {
+        return await response.json();
+    } catch (e) {
+        showErrorAlert('Invalid JSON response: ' + e);
+        return null;
+    }
+}
+
 async function apiRequest(url, { method = 'GET', body = null } = {}) {
-    const options = { method };
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    const options = { method: normalizedMethod };
 
     if (body !== null) {
         options.headers = { 'Content-Type': 'application/json' };
         options.body = JSON.stringify(body);
     }
 
+    const showMutationLoading = isMutationMethod(normalizedMethod);
     let response = null;
-    showLoading();
+    if (showMutationLoading) beginMutationRequest();
     try {
         response = await fetch(url, options);
     } catch (e) {
         showErrorAlert('Network request failed: ' + e);
         return null;
     } finally {
-        hideLoading();
+        if (showMutationLoading) endMutationRequest();
     }
 
     let data = null;
@@ -34,21 +105,20 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
 }
 
 async function getConfig(etag = null) {
-    const headers = {};
-
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    const response = await fetch('/config', { method: 'GET', headers, cache: 'no-store' });
+    const response = await fetchWithEtag('/config', { etag });
 
     // 304 → cached version is still valid
-    if (response.status === 304) return { notModified: true, etag, data: null };
-
-    let data = null;
-    try {
-        data = await response.json();
-    } catch (e) {
-        showErrorAlert('Invalid JSON response: ' + e);
-        return null;
+    if (response.status === 304) {
+        return {
+            notModified: true,
+            etag,
+            snapshotVersion: getSnapshotVersion(response, etag),
+            data: null,
+        };
     }
+
+    const data = await parseJsonResponse(response);
+    if (data === null) return null;
 
     if (!response.ok) {
         showErrorAlert(data?.error || `Request failed with ${response.status}`);
@@ -58,14 +128,17 @@ async function getConfig(etag = null) {
     const newEtag = normalizeEtag(response.headers.get('ETag'));
     const configEtag = normalizeEtag(response.headers.get('X-Config-ETag'));
 
-    return { notModified: false, etag: newEtag, configEtag: configEtag || newEtag, data };
+    return {
+        notModified: false,
+        etag: newEtag,
+        configEtag: configEtag || newEtag,
+        snapshotVersion: getSnapshotVersion(response, newEtag),
+        data,
+    };
 }
 
 async function getConfigVersion(etag = null) {
-    const headers = {};
-
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    const response = await fetch('/config/version', { method: 'HEAD', headers, cache: 'no-store' });
+    const response = await fetchWithEtag('/config/version', { etag, method: 'HEAD' });
 
     if (response.status === 304) return { notModified: true, etag };
     if (!response.ok) {
@@ -78,26 +151,23 @@ async function getConfigVersion(etag = null) {
 }
 
 async function getHealth(etag = null) {
-    const headers = {};
+    const response = await fetchWithEtag('/health', {
+        etag,
+        networkErrorMessage: 'Network request failed: ',
+    });
+    if (!response) return null;
 
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    let response = null;
-    try {
-        response = await fetch('/health', { method: 'GET', headers, cache: 'no-store' });
-    } catch (e) {
-        showErrorAlert('Network request failed: ' + e);
-        return null;
+    if (response.status === 304) {
+        return {
+            notModified: true,
+            etag,
+            snapshotVersion: getSnapshotVersion(response, null),
+            data: null,
+        };
     }
 
-    if (response.status === 304) return { notModified: true, etag, data: null };
-
-    let data = null;
-    try {
-        data = await response.json();
-    } catch (e) {
-        showErrorAlert('Invalid JSON response: ' + e);
-        return null;
-    }
+    const data = await parseJsonResponse(response);
+    if (data === null) return null;
 
     if (!response.ok) {
         showErrorAlert(data?.error || `Request failed with ${response.status}`);
@@ -107,6 +177,8 @@ async function getHealth(etag = null) {
     return {
         notModified: false,
         etag: normalizeEtag(response.headers.get('ETag')),
+        snapshotVersion:
+            getSnapshotVersion(response, null) || normalizeEtag(data?.snapshotVersion),
         data,
     };
 }
@@ -200,10 +272,13 @@ async function updateOutput(pipeId, outId, data) {
         return null;
     }
 
-    return apiRequest(`/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`, {
-        method: 'POST',
-        body: data,
-    });
+    return apiRequest(
+        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`,
+        {
+            method: 'POST',
+            body: data,
+        },
+    );
 }
 
 async function deleteOutput(pipeId, outId) {
@@ -212,9 +287,12 @@ async function deleteOutput(pipeId, outId) {
         return null;
     }
 
-    return apiRequest(`/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`, {
-        method: 'DELETE',
-    });
+    return apiRequest(
+        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`,
+        {
+            method: 'DELETE',
+        },
+    );
 }
 
 async function startOut(pipeId, outId) {
@@ -287,3 +365,25 @@ async function getPipelineHistory(pipeId, limit = 200) {
         `/pipelines/${encodeURIComponent(pipeId)}/history?limit=${encodeURIComponent(safeLimit)}`,
     );
 }
+
+export {
+    apiRequest,
+    getConfig,
+    getConfigVersion,
+    getHealth,
+    getSystemMetrics,
+    getStreamKeys,
+    createStreamKey,
+    updateStreamKey,
+    deleteStreamKey,
+    createPipeline,
+    updatePipeline,
+    deletePipeline,
+    createOutput,
+    updateOutput,
+    deleteOutput,
+    startOut,
+    stopOut,
+    getOutputHistory,
+    getPipelineHistory,
+};
