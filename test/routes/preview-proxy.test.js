@@ -3,22 +3,7 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const request = require('supertest');
 
-const { buildVideoOnlyManifest, registerPreviewProxyRoutes } = require('../../src/api/preview');
-
-test('builds a video-only manifest from the first stream variant', () => {
-    const manifest = buildVideoOnlyManifest(`#EXTM3U
-#EXT-X-VERSION:9
-#EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio2",AUTOSELECT=YES,DEFAULT=YES,URI="audio2_stream.m3u8"
-#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.640028,mp4a.40.2",AUDIO="audio"
-video1_stream.m3u8
-`);
-
-    assert.equal(
-        manifest,
-        '#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.640028"\nvideo1_stream.m3u8\n',
-    );
-});
+const { registerPreviewProxyRoutes } = require('../../src/api/preview');
 
 function createHarness({ fetchImpl } = {}) {
     const app = express();
@@ -69,15 +54,14 @@ test('proxies wildcard asset route to expected upstream path', async () => {
     assert.equal(calls[0].url, 'http://localhost:8888/live/abc123/chunk_1.ts');
 });
 
-test('serves a generated video-only manifest for preview playback', async () => {
+test('proxies explicit manifest asset paths unchanged', async () => {
     const { app, calls } = createHarness({
         fetchImpl: async () =>
             new Response(`#EXTM3U
 #EXT-X-VERSION:9
 #EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio2",AUTOSELECT=YES,DEFAULT=YES,URI="audio2_stream.m3u8"
 #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.640028,mp4a.40.2",AUDIO="audio"
-video1_stream.m3u8
+stream_variant.m3u8
 `, {
                 status: 200,
                 headers: {
@@ -86,13 +70,12 @@ video1_stream.m3u8
             }),
     });
 
-    const res = await request(app).get('/preview/hls/abc123/video-only.m3u8').expect(200);
-    assert.match(res.text, /video1_stream\.m3u8/);
-    assert.doesNotMatch(res.text, /audio2_stream\.m3u8/);
-    assert.doesNotMatch(res.text, /AUDIO="audio"/);
-    assert.doesNotMatch(res.text, /mp4a\.40\.2/);
+    const res = await request(app).get('/preview/hls/abc123/stream_variant.m3u8').expect(200);
+    assert.match(res.text, /stream_variant\.m3u8/);
+    assert.match(res.text, /AUDIO="audio"/);
+    assert.match(res.text, /mp4a\.40\.2/);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'http://localhost:8888/live/abc123/index.m3u8');
+    assert.equal(calls[0].url, 'http://localhost:8888/live/abc123/stream_variant.m3u8');
 });
 
 test('rejects invalid stream key', async () => {

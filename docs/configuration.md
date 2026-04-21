@@ -218,7 +218,7 @@ environment:
 Dashboard input preview uses an app-level HLS proxy endpoint instead of sending browser traffic directly
 to MediaMTX.
 
-- Browser URL shape: `/preview/hls/<streamKey>/video-only.m3u8`
+- Browser URL shape: `/preview/hls/<streamKey>/index.m3u8`
 - App proxy upstream: `http://localhost:8888/live/<streamKey>/...`
 
 Why this exists:
@@ -230,9 +230,11 @@ Why this exists:
 Notes:
 
 - The proxy validates stream keys and asset paths before forwarding.
-- The dashboard preview intentionally uses a generated video-only manifest because some Chromium
-  builds reject the input AAC track during decoder initialization; the proxy strips audio metadata
-  from the synthetic manifest so browsers only see the video track.
+- The dashboard preview now uses the normal proxied HLS master manifest unchanged.
+- The backend no longer rewrites preview manifests; `.m3u8` requests are forwarded as plain
+  pass-through proxy responses after validation.
+- Current Chromium plus bundled `hls.js` playback works against that unchanged master manifest in
+  this repository's preview flow.
 - MediaMTX is configured for preview responsiveness with `hlsAlwaysRemux: yes` and
   `hlsVariant: mpegts`.
 - That combination reduces first-preview cold-start time because HLS muxers are already active,

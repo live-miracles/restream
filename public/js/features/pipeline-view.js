@@ -380,7 +380,7 @@ function loadHlsRuntime() {
 }
 
 function buildInputPreviewUrl(streamKey) {
-    return `/preview/hls/${encodeURIComponent(streamKey)}/video-only.m3u8`;
+    return `/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`;
 }
 
 function clearInputPreview(playerElem) {

@@ -90,8 +90,7 @@ This keeps migration failures visible before commit.
 	not hardcoded to direct MediaMTX browser URLs.
 - Browser playback should prefer the bundled `hls.js` runtime when MSE playback is supported and
 	only fall back to native HLS when `hls.js` is unavailable.
-- The dashboard preview is muted and should prefer the proxy-generated video-only manifest to
-	avoid browser-specific audio decoder failures on the full master playlist.
+- The dashboard preview is muted and should use the normal proxied HLS master manifest.
 - When adding future preview enhancements, keep selection/change teardown logic
 	in this module so dashboard polling does not leak stale playback elements.
 
