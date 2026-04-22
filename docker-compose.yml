@@ -5,7 +5,8 @@ services:
         image: bluenviron/mediamtx:1
         container_name: mediamtx
         network_mode: host
-        # In case you cannot use host networking, you can uncomment the below
+        # In case you cannot use host networking, disable/remove network_mode: host
+        # and then uncomment the below bridge-network fallback settings.
         # environment:
         #     # Override mediamtx.yml setting for app to reach MTX
         #     MTX_APIADDRESS: "0.0.0.0:9997"

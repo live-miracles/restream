@@ -155,6 +155,7 @@ Build FFmpeg args:
          protocol-specific output flags:
            rtmp/rtmps: -flvflags no_duration_filesize -rtmp_live live -f flv <outputUrl>
            srt: -f mpegts <outputUrl>
+           rtsp/rtsps: -f rtsp -rtsp_transport tcp <outputUrl>
   │
   ▼
 spawn(ffmpegCmd, args)

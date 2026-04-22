@@ -455,6 +455,27 @@ async function stopInputPublisher(target) {
     target.pid = null;
 }
 
+function getIngestTargetMarkers(streamKey, matchedManagedPublishers) {
+    const markers = new Set();
+    const normalizedStreamKey = String(streamKey || '').trim();
+
+    if (normalizedStreamKey) {
+        const normalizedRtmpBase = String(config.rtmpOutputBase).replace(/\/+$/, '');
+        markers.add(`${normalizedRtmpBase}/${normalizedStreamKey}`);
+        markers.add(`/live/${normalizedStreamKey}`);
+        markers.add(`streamid=publish:live/${normalizedStreamKey}`);
+        markers.add(`streamid=${encodeURIComponent(`publish:live/${normalizedStreamKey}`)}`);
+    }
+
+    for (const target of matchedManagedPublishers || []) {
+        const targetUrl = String(target?.targetUrl || '').trim();
+        if (!targetUrl) continue;
+        markers.add(targetUrl);
+    }
+
+    return [...markers].filter(Boolean);
+}
+
 async function stopAllInputPublishersForStreamKey(streamKey, inputPublishers) {
     const matchedManagedPublishers = (inputPublishers || []).filter(
         (target) => target?.streamKey === streamKey,
@@ -465,12 +486,20 @@ async function stopAllInputPublishersForStreamKey(streamKey, inputPublishers) {
     }
 
     const inputFileMarker = relativePath(config.inputFile);
+    const ingestTargetMarkers = getIngestTargetMarkers(streamKey, matchedManagedPublishers);
     const processes = await listFfmpegProcesses();
     const stalePublishers = processes.filter(
-        (proc) =>
-            proc.command.includes('ffmpeg') &&
-            proc.command.includes(inputFileMarker) &&
-            proc.command.includes(streamKey),
+        (proc) => {
+            const hasIngestTargetMarker = ingestTargetMarkers.some((marker) =>
+                proc.command.includes(marker),
+            );
+
+            return (
+                proc.command.includes('ffmpeg') &&
+                proc.command.includes(inputFileMarker) &&
+                hasIngestTargetMarker
+            );
+        },
     );
 
     for (const proc of stalePublishers) {

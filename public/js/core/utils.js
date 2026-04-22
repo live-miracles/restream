@@ -37,10 +37,10 @@ function maskSecret(value) {
         return `${token.slice(0, 2)}...${token.slice(-2)}`;
     };
 
-    const isRtmpLike = /^(rtmps?|rtsp):\/\//i.test(s);
+    const isRtmpLike = /^(rtmps?|rtsps?):\/\//i.test(s);
     if (isRtmpLike) {
         return s.replace(
-            /^((?:rtmps?|rtsp):\/\/[^/\s?#]+(?:\/[^/\s?#]+)*\/)([^/\s?#]+)([?#].*)?$/i,
+            /^((?:rtmps?|rtsps?):\/\/[^/\s?#]+(?:\/[^/\s?#]+)*\/)([^/\s?#]+)([?#].*)?$/i,
             (full, prefix, secret, suffix) => `${prefix}${maskToken(secret)}${suffix || ''}`,
         );
     }
@@ -70,7 +70,7 @@ function maskSecret(value) {
 
 function sanitizeLogMessage(msg, redacted = true) {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:rtmps?|rtsp|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+    return String(msg).replace(/((?:rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
         maskSecret(url || full),
     );
 }

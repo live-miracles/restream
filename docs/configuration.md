@@ -177,10 +177,11 @@ stack directly, so MediaMTX's default loopback bindings (`apiAddress: 127.0.0.1:
 `hlsAddress: 127.0.0.1:8888` from `infra/mediamtx.yml`) are accessible on the host's own localhost
 without any env overrides or port mappings.
 
-If host networking is unavailable (e.g. Docker Desktop on macOS/Windows), uncomment the
-`environment` and `ports` blocks in `docker-compose.yml` to revert to the bridge-networking
-fallback, which overrides `MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888`
-and exposes them via `127.0.0.1:9997:9997` and `127.0.0.1:8888:8888`.
+If host networking is unavailable (e.g. Docker Desktop on macOS/Windows), disable/remove
+`network_mode: host` and uncomment the `environment` and `ports` blocks in
+`docker-compose.yml` to revert to the bridge-networking fallback, which overrides
+`MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888` and exposes them via
+`127.0.0.1:9997:9997` and `127.0.0.1:8888:8888`.
 
 ### Container mode (`make run-docker`)
 
