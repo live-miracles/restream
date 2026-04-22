@@ -2511,9 +2511,6 @@
   .inline {
     display: inline;
   }
-  .inline-block {
-    display: inline-block;
-  }
   .table {
     display: table;
   }
@@ -2561,11 +2558,8 @@
   .w-6 {
     width: calc(var(--spacing) * 6);
   }
-  .w-40 {
-    width: calc(var(--spacing) * 40);
-  }
-  .w-64 {
-    width: calc(var(--spacing) * 64);
+  .w-\[min\(94vw\,1120px\)\] {
+    width: min(94vw, 1120px);
   }
   .w-fit {
     width: fit-content;
@@ -2582,9 +2576,6 @@
   .max-w-175 {
     max-width: calc(var(--spacing) * 175);
   }
-  .max-w-200 {
-    max-width: calc(var(--spacing) * 200);
-  }
   .max-w-\[18rem\] {
     max-width: 18rem;
   }
@@ -2593,6 +2584,9 @@
   }
   .max-w-md {
     max-width: var(--container-md);
+  }
+  .max-w-none {
+    max-width: none;
   }
   .max-w-xl {
     max-width: var(--container-xl);
@@ -2628,26 +2622,11 @@
   .transform {
     transform: var(--tw-rotate-x,) var(--tw-rotate-y,) var(--tw-rotate-z,) var(--tw-skew-x,) var(--tw-skew-y,);
   }
-  .link {
-    @layer daisyui.l1.l2.l3 {
-      cursor: pointer;
-      text-decoration-line: underline;
-      &:focus {
-        --tw-outline-style: none;
-        outline-style: none;
-        @media (forced-colors: active) {
-          outline: 2px solid transparent;
-          outline-offset: 2px;
-        }
-      }
-      &:focus-visible {
-        outline: 2px solid currentColor;
-        outline-offset: 2px;
-      }
-    }
-  }
   .cursor-pointer {
     cursor: pointer;
+  }
+  .grid-cols-1 {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
   }
   .grid-cols-\[88px_auto\] {
     grid-template-columns: 88px auto;
@@ -2723,6 +2702,9 @@
   .overflow-x-auto {
     overflow-x: auto;
   }
+  .overflow-x-hidden {
+    overflow-x: hidden;
+  }
   .overflow-y-auto {
     overflow-y: auto;
   }
@@ -2747,9 +2729,21 @@
   .rounded-xl {
     border-radius: var(--radius-xl);
   }
+  .rounded-l-none {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  .rounded-r-none {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
   .border {
     border-style: var(--tw-border-style);
     border-width: 1px;
+  }
+  .border-r-0 {
+    border-right-style: var(--tw-border-style);
+    border-right-width: 0px;
   }
   .badge-ghost {
     @layer daisyui.l1.l2 {
@@ -2905,6 +2899,16 @@
   }
   .p-4 {
     padding: calc(var(--spacing) * 4);
+  }
+  .select-sm {
+    @layer daisyui.l1.l2 {
+      --size: calc(var(--size-field, 0.25rem) * 8);
+      font-size: 0.75rem;
+      option {
+        padding-inline: calc(0.25rem * 2.5);
+        padding-block: calc(0.25rem * 1);
+      }
+    }
   }
   .table-sm {
     @layer daisyui.l1.l2 {
@@ -3307,6 +3311,16 @@
   .sm\:grid-cols-2 {
     @media (width >= 40rem) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .md\:gap-3 {
+    @media (width >= 48rem) {
+      gap: calc(var(--spacing) * 3);
+    }
+  }
+  .md\:px-4 {
+    @media (width >= 48rem) {
+      padding-inline: calc(var(--spacing) * 4);
     }
   }
 }
