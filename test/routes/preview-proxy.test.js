@@ -152,3 +152,25 @@ test('stops reading oversized manifests once the byte limit is exceeded', async 
     assert.ok(chunkCount < 10);
     assert.equal(cancelled, true);
 });
+
+test('returns 502 when manifest read fails mid-stream', async () => {
+    const stream = new ReadableStream({
+        start(controller) {
+            controller.enqueue(new TextEncoder().encode('#EXTM3U\n'));
+            controller.error(new Error('upstream reset'));
+        },
+    });
+
+    const { app } = createHarness({
+        fetchImpl: async () =>
+            new Response(stream, {
+                status: 200,
+                headers: {
+                    'content-type': 'application/vnd.apple.mpegurl',
+                },
+            }),
+    });
+
+    const res = await request(app).get('/preview/hls/abc123').expect(502);
+    assert.equal(res.body.error, 'Failed to read preview manifest');
+});

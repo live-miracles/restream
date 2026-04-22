@@ -28,6 +28,8 @@ const ingestUiState = {
     urlVisible: false,
 };
 
+let ingestVisibilityPipeId = null;
+
 const PROTOCOL_LABELS = {
     rtmp: 'RTMP',
     rtsp: 'RTSP',
@@ -610,8 +612,15 @@ function setPipelineViewDependencies(dependencies) {
 
     function renderPipelineInfoColumn(selectedPipe) {
         if (!selectedPipe) {
+            ingestVisibilityPipeId = null;
             document.getElementById('pipe-info-col').classList.add('hidden');
             return;
+        }
+
+        if (selectedPipe !== ingestVisibilityPipeId) {
+            ingestVisibilityPipeId = selectedPipe;
+            ingestUiState.keyVisible = false;
+            ingestUiState.urlVisible = false;
         }
 
         document.getElementById('pipe-info-col').classList.remove('hidden');

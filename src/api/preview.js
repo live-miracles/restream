@@ -207,7 +207,14 @@ async function fetchUpstreamAsset({
     }
 }
 
-async function streamUpstreamResponse({ upstreamResponse, res, pathName, abortController, cleanup }) {
+async function streamUpstreamResponse({
+    upstreamResponse,
+    res,
+    pathName,
+    abortController,
+    cleanup,
+    log,
+}) {
     const finalize = runCleanupOnce(cleanup);
     const contentType = upstreamResponse.headers.get('content-type') || '';
     if (isManifestResponse(pathName, contentType)) {
@@ -223,6 +230,18 @@ async function streamUpstreamResponse({ upstreamResponse, res, pathName, abortCo
                 return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
             }
             return res.send(buffer);
+        } catch (err) {
+            log?.('warn', 'HLS preview proxy manifest read failed', {
+                pathName,
+                error: err?.message || String(err),
+            });
+            if (res.headersSent || res.writableEnded) {
+                res.destroy(err);
+                return;
+            }
+            res.removeHeader('content-type');
+            res.removeHeader('content-length');
+            return res.status(502).json({ error: 'Failed to read preview manifest' });
         } finally {
             finalize();
         }
@@ -288,6 +307,7 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
         return streamUpstreamResponse({
             abortController,
             cleanup,
+            log,
             upstreamResponse,
             res,
             pathName: parsedAsset.rawPath,
