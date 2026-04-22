@@ -81,8 +81,10 @@ This keeps migration failures visible before commit.
 
 ## 7. Input Preview Responsibility
 
-- `public/js/features/pipeline-view.js` owns rendering and teardown for the dashboard input
+- `public/js/features/input-preview.js` owns rendering and teardown for the dashboard input
 	preview player in `#video-player`.
+- `public/js/features/pipeline-view.js` orchestrates when preview rendering is invoked for the
+	selected pipeline.
 - Dashboard refresh flows should reconcile stale selected pipeline ids after config reloads or
 	restarts so bookmarked `?p=` state does not leave the UI pinned to a missing pipeline.
 
@@ -91,12 +93,15 @@ This keeps migration failures visible before commit.
 - Browser playback should prefer the bundled `hls.js` runtime when MSE playback is supported and
 	only fall back to native HLS when `hls.js` is unavailable.
 - The dashboard preview is muted and should use the normal proxied HLS master manifest.
-- When adding future preview enhancements, keep selection/change teardown logic
-	in this module so dashboard polling does not leak stale playback elements.
+- When adding future preview enhancements, keep selection/change teardown logic in
+	`pipeline-view.js` and player/runtime lifecycle logic in `input-preview.js` so dashboard polling
+	does not leak stale playback elements.
 
 ## 8. Ingest URL Panel Behavior
 
-- `public/js/features/pipeline-view.js` owns the dashboard ingest card UI in `public/index.html`.
+- `public/js/features/pipeline-view.js` owns dashboard ingest card orchestration in `public/index.html`.
+- `public/js/features/ingest-url-details.js` owns protocol-aware ingest URL parsing and detail row
+	rendering for RTMP/RTSP/SRT.
 - Stream key and publish URL values are hidden by default and revealed only by explicit user
 	action (`View Key` / `View URL`).
 - `Copy Key` and `Copy URL` actions remain available without forcing reveal.
