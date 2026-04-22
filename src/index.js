@@ -19,6 +19,7 @@ const { log } = require('./utils/app');
 const { buildMediamtxPath, getMediamtxHlsBaseUrl } = require('./utils/mediamtx');
 
 const app = express();
+const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 app.use(express.json());
 app.use(
     compression({
@@ -145,7 +146,7 @@ app.use(
         setHeaders: (res, filePath) => {
             const ext = path.extname(filePath).toLowerCase();
             if (ext === '.js') {
-                res.setHeader('Cache-Control', 'no-store');
+                res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
             }
         },
     }),
@@ -167,9 +168,9 @@ app.use(
                 return;
             }
 
-            // Long-lived dashboard tabs can retain stale module state; bypass cache for reloads.
+            // Revalidate JS/CSS on reload while still allowing browser/proxy caching.
             if (ext === '.js' || ext === '.css') {
-                res.setHeader('Cache-Control', 'no-store');
+                res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
             }
         },
     }),
