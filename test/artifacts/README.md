@@ -20,6 +20,7 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 9. Verifies output auto-retry after an unexpected FFmpeg `SIGKILL` while desired state remains `running`.
 10. Verifies input recovery restarts outputs whose desired state remains `running`.
 11. Verifies SRT output loopback by temporarily repointing one output to another pipeline's SRT ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
+12. Verifies RTSP output loopback by temporarily repointing one output to another pipeline's RTSP ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
 
 ## Primary Entry Points
 
@@ -45,4 +46,4 @@ Docker mode (backend in container):
 - If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
 - Logs go to test/artifacts/logs.
 - Health snapshots go to test/artifacts/runs.
-- During loopback verification, the runner logs the exact source output and target pipeline selection as a structured `[srt-loopback] selection ...` line for auditability.
+- During loopback verification, the runner logs the exact source output and target pipeline selection as a structured `[srt-loopback] selection ...` or `[rtsp-loopback] selection ...` line for auditability.

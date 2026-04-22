@@ -26,7 +26,7 @@ const defaults = {
     outDir: 'test/artifacts/runs',
 };
 
-const SRT_LOOPBACK_TIMEOUT_SEC = 10;
+const LOOPBACK_TIMEOUT_SEC = 10;
 
 const config = {
     apiUrl: process.env.API_URL || defaults.apiUrl,
@@ -124,6 +124,11 @@ async function main() {
         '== Step 11: Verify SRT output loopback activates target pipeline input via MediaMTX ==',
     );
     await verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers);
+
+    console.log(
+        '== Step 12: Verify RTSP output loopback activates target pipeline input via MediaMTX ==',
+    );
+    await verifyRtspOutputLoopbackToPipelineInput(resolved, inputPublishers);
 
     console.log('== 4x3 run complete ==');
 }
@@ -1095,7 +1100,7 @@ async function verifyInputRecoveryRestart(pipelineTarget, pipelineOutputs, input
 function selectLoopbackTargetPipeline(resolved) {
     const pipelines = resolved?.pipelines || [];
     if (pipelines.length < 2) {
-        throw new Error('SRT loopback stage requires at least two pipelines in the 4x3 manifest');
+        throw new Error('Loopback stage requires at least two pipelines in the 4x3 manifest');
     }
     return pipelines[1];
 }
@@ -1104,9 +1109,7 @@ function selectLoopbackSourceOutput(resolved, targetPipelineId) {
     const outputs = resolved?.outputs || [];
     const candidates = outputs.filter((output) => output.pipelineId !== targetPipelineId);
     if (candidates.length === 0) {
-        throw new Error(
-            'No source output available outside the selected SRT loopback target pipeline',
-        );
+        throw new Error('No source output available outside the selected loopback target pipeline');
     }
 
     return candidates[0];
@@ -1118,29 +1121,58 @@ async function fetchConfigPipelineById(pipelineId) {
     return pipelines.find((pipeline) => pipeline.id === pipelineId) || null;
 }
 
-function resolveLoopbackSrtUrlFromPayload(ingestSrtUrl, streamKey) {
+function resolveLoopbackUrlFromPayload(ingestUrl, streamKey, protocol) {
+    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
+        throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
+    }
+
     let parsed;
     try {
-        parsed = new URL(ingestSrtUrl);
+        parsed = new URL(ingestUrl);
     } catch {
-        throw new Error(`Target SRT ingest URL is invalid: ${String(ingestSrtUrl || '')}`);
-    }
-
-    if (parsed.protocol !== 'srt:') {
-        throw new Error(`Target ingest URL is not SRT: ${ingestSrtUrl}`);
-    }
-
-    const streamIdRaw = parsed.searchParams.get('streamid') || '';
-    const streamIdDecoded = decodeURIComponent(streamIdRaw);
-    const expectedStreamId = `publish:live/${streamKey}`;
-    if (streamIdDecoded !== expectedStreamId) {
         throw new Error(
-            `Target SRT ingest URL streamid mismatch: expected ${expectedStreamId}, got ${streamIdDecoded || 'missing'}`,
+            `Target ${normalizedProtocol.toUpperCase()} ingest URL is invalid: ${String(ingestUrl || '')}`,
+        );
+    }
+
+    if (normalizedProtocol === 'srt') {
+        if (parsed.protocol !== 'srt:') {
+            throw new Error(`Target ingest URL is not SRT: ${ingestUrl}`);
+        }
+
+        const streamIdRaw = parsed.searchParams.get('streamid') || '';
+        const streamIdDecoded = decodeURIComponent(streamIdRaw);
+        const expectedStreamId = `publish:live/${streamKey}`;
+        if (streamIdDecoded !== expectedStreamId) {
+            throw new Error(
+                `Target SRT ingest URL streamid mismatch: expected ${expectedStreamId}, got ${streamIdDecoded || 'missing'}`,
+            );
+        }
+
+        // Preserve payload formatting exactly to avoid introducing URI re-encoding differences.
+        return String(ingestUrl);
+    }
+
+    if (parsed.protocol !== 'rtsp:' && parsed.protocol !== 'rtsps:') {
+        throw new Error(`Target ingest URL is not RTSP/RTSPS: ${ingestUrl}`);
+    }
+
+    const pathSegments = String(parsed.pathname || '')
+        .split('/')
+        .filter(Boolean);
+    const lastPathSegment =
+        pathSegments.length > 0
+            ? decodeURIComponent(pathSegments[pathSegments.length - 1])
+            : '';
+    if (lastPathSegment !== streamKey) {
+        throw new Error(
+            `Target RTSP ingest URL path mismatch: expected terminal path segment ${streamKey}, got ${lastPathSegment || 'missing'}`,
         );
     }
 
     // Preserve payload formatting exactly to avoid introducing URI re-encoding differences.
-    return String(ingestSrtUrl);
+    return String(ingestUrl);
 }
 
 async function stopOutputForMutation(target) {
@@ -1224,7 +1256,7 @@ async function waitForPipelineInputStatus(pipelineTarget, expectedStatus, timeou
     );
 }
 
-async function waitForPipelineInputNotOn(pipelineTarget, timeoutMs, label) {
+async function waitForPipelineInputNotOn(pipelineTarget, timeoutMs, label, logPrefix = 'loopback') {
     let lastStatus = 'missing';
     let lastOnline = null;
     let lastReady = null;
@@ -1246,7 +1278,7 @@ async function waitForPipelineInputNotOn(pipelineTarget, timeoutMs, label) {
     );
 
     console.log(
-        `[srt-loopback] target input transitioned off on-state: status=${lastStatus} online=${lastOnline} ready=${lastReady} readers=${lastReaders}`,
+        `[${logPrefix}] target input transitioned off on-state: status=${lastStatus} online=${lastOnline} ready=${lastReady} readers=${lastReaders}`,
     );
 }
 
@@ -1283,31 +1315,39 @@ async function waitForOutputUrl(outputTarget, expectedUrl, timeoutMs, label) {
     );
 }
 
-async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers) {
+async function verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, protocol) {
+    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
+        throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
+    }
+
+    const protocolLabel = normalizedProtocol.toUpperCase();
+    const logPrefix = `${normalizedProtocol}-loopback`;
     const targetPipeline = selectLoopbackTargetPipeline(resolved);
     const sourceOutput = selectLoopbackSourceOutput(resolved, targetPipeline.pipelineId);
     if (sourceOutput.pipelineId === targetPipeline.pipelineId) {
         throw new Error(
-            `SRT loopback source output pipeline must differ from target pipeline: ${sourceOutput.pipelineId}`,
+            `${protocolLabel} loopback source output pipeline must differ from target pipeline: ${sourceOutput.pipelineId}`,
         );
     }
     const sourceOriginalUrl = sourceOutput.outputUrl;
 
     const targetConfigPipeline = await fetchConfigPipelineById(targetPipeline.pipelineId);
-    const targetIngestSrtUrl = targetConfigPipeline?.ingestUrls?.srt;
-    if (!targetIngestSrtUrl) {
+    const targetIngestUrl = targetConfigPipeline?.ingestUrls?.[normalizedProtocol];
+    if (!targetIngestUrl) {
         throw new Error(
-            `Selected target pipeline is missing SRT ingest URL: ${targetPipeline.pipelineId}`,
+            `Selected target pipeline is missing ${protocolLabel} ingest URL: ${targetPipeline.pipelineId}`,
         );
     }
 
-    const loopbackSrtUrl = resolveLoopbackSrtUrlFromPayload(
-        targetIngestSrtUrl,
+    const loopbackUrl = resolveLoopbackUrlFromPayload(
+        targetIngestUrl,
         targetPipeline.streamKey,
+        normalizedProtocol,
     );
 
     console.log(
-        `[srt-loopback] selection ${JSON.stringify({
+        `[${logPrefix}] selection ${JSON.stringify({
             sourceOutput: {
                 pipelineId: sourceOutput.pipelineId,
                 outputId: sourceOutput.outputId,
@@ -1318,7 +1358,7 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
                 pipelineId: targetPipeline.pipelineId,
                 pipelineName: targetPipeline.name,
                 streamKey: targetPipeline.streamKey,
-                ingestSrtUrl: loopbackSrtUrl,
+                ingestUrl: loopbackUrl,
             },
         })}`,
     );
@@ -1338,7 +1378,7 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
 
     try {
         console.log(
-            '[srt-loopback] 1/5 stop target external publisher and verify input leaves on-state',
+            `[${logPrefix}] 1/5 stop target external publisher and verify input leaves on-state`,
         );
         const stopSummary = await stopAllInputPublishersForStreamKey(
             targetPipeline.streamKey,
@@ -1346,59 +1386,64 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
         );
         targetPublisherStopped = true;
         console.log(
-            `[srt-loopback] stopped publishers for streamKey=${targetPipeline.streamKey} managed=${stopSummary.managedStopped} stale=${stopSummary.staleStopped}`,
+            `[${logPrefix}] stopped publishers for streamKey=${targetPipeline.streamKey} managed=${stopSummary.managedStopped} stale=${stopSummary.staleStopped}`,
         );
 
         await waitForPipelineInputNotOn(
             targetPipeline,
-            SRT_LOOPBACK_TIMEOUT_SEC * 1000,
-            `${targetPipeline.name || targetPipeline.pipelineId} input to leave on-state for loopback publish`,
+            LOOPBACK_TIMEOUT_SEC * 1000,
+            `${targetPipeline.name || targetPipeline.pipelineId} input to leave on-state for ${normalizedProtocol} loopback publish`,
+            logPrefix,
         );
 
-        console.log('[srt-loopback] 2/5 stop source output and verify output=off');
+        console.log(`[${logPrefix}] 2/5 stop source output and verify output=off`);
         await stopOutputForMutation(sourceOutput);
         await waitForOutputStatus(
             sourceOutput,
             'off',
-            SRT_LOOPBACK_TIMEOUT_SEC * 1000,
+            LOOPBACK_TIMEOUT_SEC * 1000,
             `${sourceOutput.pipelineName}/${sourceOutput.outputName} to stop before URL mutation`,
         );
 
-        console.log('[srt-loopback] 3/5 repoint source output to target SRT ingest and start');
-        await updateOutputUrl(sourceOutput, loopbackSrtUrl);
+        console.log(
+            `[${logPrefix}] 3/5 repoint source output to target ${protocolLabel} ingest and start`,
+        );
+        await updateOutputUrl(sourceOutput, loopbackUrl);
         await startOutputWithRetry(sourceOutput);
         sourceMutated = true;
 
-        console.log('[srt-loopback] 4/5 verify target pipeline input=on');
-        const timeoutMs = SRT_LOOPBACK_TIMEOUT_SEC * 1000;
+        console.log(`[${logPrefix}] 4/5 verify target pipeline input=on`);
+        const timeoutMs = LOOPBACK_TIMEOUT_SEC * 1000;
         try {
             await waitForPipelineInputStatus(
                 targetPipeline,
                 'on',
                 timeoutMs,
-                `${targetPipeline.name || targetPipeline.pipelineId} input to become on via loopback`,
+                `${targetPipeline.name || targetPipeline.pipelineId} input to become on via ${normalizedProtocol} loopback`,
             );
         } catch (_error) {
             const health = (await requestJson('/health')).json;
             const summary = getHealthLoopbackSummary(health || {}, sourceOutput, targetPipeline);
             throw new Error(
-                `Timed out waiting for SRT loopback activation (${SRT_LOOPBACK_TIMEOUT_SEC}s): ${JSON.stringify(summary)}`,
+                `Timed out waiting for ${protocolLabel} loopback activation (${LOOPBACK_TIMEOUT_SEC}s): ${JSON.stringify(summary)}`,
             );
         }
 
         console.log(
-            `[srt-loopback] activation passed sourceOutput=${sourceOutput.pipelineId}/${sourceOutput.outputId} targetPipeline=${targetPipeline.pipelineId}`,
+            `[${logPrefix}] activation passed sourceOutput=${sourceOutput.pipelineId}/${sourceOutput.outputId} targetPipeline=${targetPipeline.pipelineId}`,
         );
         return;
     } finally {
         if (sourceMutated) {
-            console.log('[srt-loopback] 5/5 restore source output URL and restart target publisher');
+            console.log(
+                `[${logPrefix}] 5/5 restore source output URL and restart target publisher`,
+            );
             try {
                 await stopOutputForMutation(sourceOutput);
                 await waitForOutputStatus(
                     sourceOutput,
                     'off',
-                    SRT_LOOPBACK_TIMEOUT_SEC * 1000,
+                    LOOPBACK_TIMEOUT_SEC * 1000,
                     `${sourceOutput.pipelineName}/${sourceOutput.outputName} to stop before restoring URL`,
                 );
             } catch (error) {
@@ -1410,7 +1455,7 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
                 await waitForOutputUrl(
                     sourceOutput,
                     sourceOriginalUrl,
-                    SRT_LOOPBACK_TIMEOUT_SEC * 1000,
+                    LOOPBACK_TIMEOUT_SEC * 1000,
                     `${sourceOutput.pipelineName}/${sourceOutput.outputName} URL to restore`,
                 );
             } catch (error) {
@@ -1424,7 +1469,7 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
                 await waitForOutputStatus(
                     sourceOutput,
                     'on',
-                    SRT_LOOPBACK_TIMEOUT_SEC * 1000,
+                    LOOPBACK_TIMEOUT_SEC * 1000,
                     `${sourceOutput.pipelineName}/${sourceOutput.outputName} to return on-state after restore`,
                 );
             } catch (error) {
@@ -1453,9 +1498,19 @@ async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers)
         }
 
         if (cleanupErrors.length > 0) {
-            throw new Error(`SRT loopback cleanup failed: ${cleanupErrors.join(' | ')}`);
+            throw new Error(
+                `${protocolLabel} loopback cleanup failed: ${cleanupErrors.join(' | ')}`,
+            );
         }
     }
+}
+
+async function verifySrtOutputLoopbackToPipelineInput(resolved, inputPublishers) {
+    await verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, 'srt');
+}
+
+async function verifyRtspOutputLoopbackToPipelineInput(resolved, inputPublishers) {
+    await verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, 'rtsp');
 }
 
 async function waitForActive(resolved) {
