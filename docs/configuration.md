@@ -237,14 +237,11 @@ Notes:
   pass-through proxy responses after validation.
 - Current Chromium plus bundled `hls.js` playback works against that unchanged master manifest in
   this repository's preview flow.
-- MediaMTX is configured for preview responsiveness with `hlsAlwaysRemux: yes` and
+- MediaMTX is configured for lower idle resource usage with `hlsAlwaysRemux: no` and
   `hlsVariant: mpegts`.
-- That combination reduces first-preview cold-start time because HLS muxers are already active,
-  instead of being created only when the first viewer clicks Play.
-- The tradeoff is resource consumption: MediaMTX keeps muxers warm for ready paths, which raises
-  steady CPU/RAM use compared with on-demand low-latency HLS.
-- If an operator prefers lower idle resource usage over fast first preview, the opposite tuning is
-  `hlsAlwaysRemux: no` with `hlsVariant: lowLatency`, but that increases first-view startup delay.
+- This avoids maintaining active HLS muxers for all ready paths and reduces steady CPU/RAM use.
+- The tradeoff is slower first-preview startup because muxers are created on demand when a viewer
+  clicks Play.
 - In HTTPS deployments, terminate TLS on the dashboard origin and keep preview requests
   same-origin so browsers do not hit mixed-content blocks.
 - The dashboard preview player is lazy-loaded: selecting a pipeline does not request HLS

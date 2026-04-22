@@ -114,12 +114,18 @@ test('rejects oversized manifest responses from upstream', async () => {
                 status: 200,
                 headers: {
                     'content-type': 'application/vnd.apple.mpegurl',
+                    'cache-control': 'public, max-age=60',
+                    etag: '"upstream-manifest"',
+                    'last-modified': 'Mon, 01 Jan 2024 00:00:00 GMT',
                 },
             }),
     });
 
     const res = await request(app).get('/preview/hls/abc123').expect(502);
     assert.equal(res.body.error, 'Preview manifest exceeds safe proxy size limit');
+    assert.notEqual(res.headers.etag, '"upstream-manifest"');
+    assert.equal(res.headers['cache-control'], undefined);
+    assert.equal(res.headers['last-modified'], undefined);
 });
 
 test('stops reading oversized manifests once the byte limit is exceeded', async () => {
@@ -167,10 +173,41 @@ test('returns 502 when manifest read fails mid-stream', async () => {
                 status: 200,
                 headers: {
                     'content-type': 'application/vnd.apple.mpegurl',
+                    'cache-control': 'public, max-age=60',
+                    etag: '"upstream-manifest"',
                 },
             }),
     });
 
     const res = await request(app).get('/preview/hls/abc123').expect(502);
     assert.equal(res.body.error, 'Failed to read preview manifest');
+    assert.notEqual(res.headers.etag, '"upstream-manifest"');
+    assert.equal(res.headers['cache-control'], undefined);
+});
+
+test('returns 502 without forwarded metadata when asset stream fails before headers are sent', async () => {
+    const stream = new ReadableStream({
+        start(controller) {
+            controller.error(new Error('asset stream failed'));
+        },
+    });
+
+    const { app } = createHarness({
+        fetchImpl: async () =>
+            new Response(stream, {
+                status: 200,
+                headers: {
+                    'content-type': 'video/mp2t',
+                    'cache-control': 'public, max-age=60',
+                    etag: '"upstream-asset"',
+                    'content-range': 'bytes 0-10/10',
+                },
+            }),
+    });
+
+    const res = await request(app).get('/preview/hls/abc123/chunk_1.ts').expect(502);
+    assert.equal(res.body.error, 'Failed to stream preview asset');
+    assert.notEqual(res.headers.etag, '"upstream-asset"');
+    assert.equal(res.headers['cache-control'], undefined);
+    assert.equal(res.headers['content-range'], undefined);
 });

@@ -76,14 +76,12 @@ sudo chown restream:restream /etc/restream/mediamtx.yml
 
 4. Preview latency versus resource use:
 
-- The checked-in `mediamtx.yml` keeps HLS muxers warm with `hlsAlwaysRemux: yes` and uses
+- The checked-in `mediamtx.yml` keeps HLS muxers on-demand with `hlsAlwaysRemux: no` and uses
   `hlsVariant: mpegts`.
-- This reduces first-preview startup delay in the dashboard, since MediaMTX does not need to spin
-  up a fresh HLS muxer on the first viewer request.
-- The tradeoff is higher steady resource use on the MediaMTX side, because ready paths continue to
-  maintain preview-ready HLS state even when nobody is watching.
-- On smaller hosts, operators can switch back to on-demand low-latency HLS, but they should
-  expect slower first preview loads.
+- This reduces steady CPU/RAM use when many inputs are idle, because MediaMTX does not maintain
+  active HLS muxers for every ready path.
+- The tradeoff is slower first-preview startup delay in the dashboard, since MediaMTX must spin up
+  a fresh HLS muxer on the first viewer request.
 
 5. Open ingest ports to publishers as needed:
 

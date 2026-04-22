@@ -9,7 +9,7 @@ const { errMsg } = require('./app');
 
 const fetch = global.fetch || require('node-fetch');
 
-// MediaMTX API and RTSP are always on localhost with hardcoded ports.
+// MediaMTX API, RTSP, and HLS are always on localhost with hardcoded ports.
 const MEDIAMTX_API_BASE = 'http://localhost:9997';
 const MEDIAMTX_RTSP_BASE = 'rtsp://localhost:8554';
 const MEDIAMTX_HLS_BASE = 'http://localhost:8888';

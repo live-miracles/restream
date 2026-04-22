@@ -8,6 +8,15 @@ const MAX_HLS_ASSET_PATH_CHARS = 512;
 const MAX_HLS_ASSET_SEGMENTS = 16;
 const HLS_PROXY_TIMEOUT_MS = 30000;
 const MAX_HLS_MANIFEST_BYTES = 1024 * 1024;
+const FORWARDED_RESPONSE_HEADERS = [
+    'content-type',
+    'cache-control',
+    'etag',
+    'last-modified',
+    'accept-ranges',
+    'content-range',
+    'content-length',
+];
 
 function parseHlsAssetPath(rawAssetPath) {
     const assetPath = typeof rawAssetPath === 'string' && rawAssetPath.trim()
@@ -57,22 +66,18 @@ function buildForwardRequestHeaders(req) {
 }
 
 function copyAllowedUpstreamHeaders(upstreamResponse, res) {
-    const passthroughHeaders = [
-        'content-type',
-        'cache-control',
-        'etag',
-        'last-modified',
-        'accept-ranges',
-        'content-range',
-        'content-length',
-    ];
-
-    passthroughHeaders.forEach((headerName) => {
+    FORWARDED_RESPONSE_HEADERS.forEach((headerName) => {
         const headerValue = upstreamResponse.headers.get(headerName);
         if (headerValue) res.setHeader(headerName, headerValue);
     });
 
     res.setHeader('x-content-type-options', 'nosniff');
+}
+
+function clearForwardedUpstreamHeaders(res) {
+    FORWARDED_RESPONSE_HEADERS.forEach((headerName) => {
+        res.removeHeader(headerName);
+    });
 }
 
 function isManifestResponse(pathName, contentType) {
@@ -225,8 +230,7 @@ async function streamUpstreamResponse({
                 abortController,
             });
             if (!buffer) {
-                res.removeHeader('content-type');
-                res.removeHeader('content-length');
+                clearForwardedUpstreamHeaders(res);
                 return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
             }
             return res.send(buffer);
@@ -239,8 +243,7 @@ async function streamUpstreamResponse({
                 res.destroy(err);
                 return;
             }
-            res.removeHeader('content-type');
-            res.removeHeader('content-length');
+            clearForwardedUpstreamHeaders(res);
             return res.status(502).json({ error: 'Failed to read preview manifest' });
         } finally {
             finalize();
@@ -262,6 +265,7 @@ async function streamUpstreamResponse({
             res.destroy(err);
             return;
         }
+        clearForwardedUpstreamHeaders(res);
         res.status(502).json({ error: 'Failed to stream preview asset' });
     });
     res.once('close', finalize);

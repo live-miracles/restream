@@ -19,11 +19,9 @@ hls: yes           # HTTP HLS on port 8888
 hlsAddress: 127.0.0.1:8888
 webrtc: no
 
-# Keep HLS muxers warm and use compatibility-oriented MPEG-TS packaging so first preview loads
-# do not block on on-demand muxer startup.
-# Tradeoff: lower cold-start latency and broader browser compatibility, but higher steady CPU/RAM
-# use because muxers stay active for ready paths even before a viewer asks for preview.
-hlsAlwaysRemux: yes
+# Keep HLS muxers on-demand to reduce steady CPU/RAM use when many inputs are idle.
+# Tradeoff: first preview request may take longer while MediaMTX starts a fresh HLS muxer.
+hlsAlwaysRemux: no
 hlsVariant: mpegts
 
 # ── Backend API ─────────────────────────────────────────────────────────────
