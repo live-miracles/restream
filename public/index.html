@@ -118,15 +118,15 @@
     </dialog>
 
     <dialog id="edit-out-modal" class="modal">
-      <div class="modal-box w-[min(94vw,1120px)] max-w-none overflow-x-hidden">
+      <div class="modal-box max-w-160 overflow-x-hidden">
         <input type="text" id="out-mode-input" class="hidden" />
         <input type="text" id="out-pipe-id-input" class="hidden" />
         <input type="text" id="out-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 w-full space-y-3 px-2 md:px-4">
+        <div class="focus mx-auto mt-1 w-full flex flex-col gap-1 px-2 md:px-4">
           <h2 class="text-xl font-bold" id="out-modal-title">Edit Output</h2>
 
-          <div class="space-y-3">
+          <div class="flex flex-col gap-1">
             <fieldset class="fieldset w-full">
               <legend class="fieldset-legend">Output Name</legend>
               <input type="text" id="out-name-input" class="input input-sm w-full" placeholder="Type here" />
@@ -181,25 +181,25 @@
           <fieldset class="fieldset hidden" id="out-rtmp-operator-fields">
             <legend class="fieldset-legend">Operator Fields (RTMP)</legend>
             <div class="rounded-2xl border border-base-content/8 bg-base-100/65 p-2">
-              <div class="grid gap-2" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+                <div class="grid gap-1" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Host</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Host</div>
                   <input type="text" id="out-rtmp-host-input" class="input input-sm w-full" placeholder="localhost" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Port</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Port</div>
                   <input type="text" id="out-rtmp-port-input" class="input input-sm w-full" placeholder="1935" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">App Path</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">App Path</div>
                   <input type="text" id="out-rtmp-app-path-input" class="input input-sm w-full" placeholder="/live" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2" style="grid-column: 1 / -1;">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Stream Key</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Stream Key</div>
                   <input type="text" id="out-rtmp-stream-key-input" class="input input-sm w-full" placeholder="test" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2" style="grid-column: 1 / -1;">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Extra Query</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Extra Query</div>
                   <input type="text" id="out-rtmp-extra-query-input" class="input input-sm w-full" placeholder="token=abc123" />
                 </div>
               </div>
@@ -209,21 +209,21 @@
           <fieldset class="fieldset hidden" id="out-rtsp-operator-fields">
             <legend class="fieldset-legend">Operator Fields (RTSP)</legend>
             <div class="rounded-2xl border border-base-content/8 bg-base-100/65 p-2">
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Host</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Host</div>
                   <input type="text" id="out-rtsp-host-input" class="input input-sm w-full" placeholder="localhost" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Port</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Port</div>
                   <input type="text" id="out-rtsp-port-input" class="input input-sm w-full" placeholder="554" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2 sm:col-span-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Path</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Path</div>
                   <input type="text" id="out-rtsp-path-input" class="input input-sm w-full" placeholder="/live/stream" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2 sm:col-span-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Extra Query</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Extra Query</div>
                   <input type="text" id="out-rtsp-extra-query-input" class="input input-sm w-full" placeholder="timeout=30&pkt_size=1316" />
                 </div>
               </div>
@@ -233,21 +233,21 @@
           <fieldset class="fieldset hidden" id="out-srt-operator-fields">
             <legend class="fieldset-legend">Operator Fields (SRT)</legend>
             <div class="rounded-2xl border border-base-content/8 bg-base-100/65 p-2">
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Host</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Host</div>
                   <input type="text" id="out-srt-host-input" class="input input-sm w-full" placeholder="localhost" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Port</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Port</div>
                   <input type="text" id="out-srt-port-input" class="input input-sm w-full" placeholder="6000" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2 sm:col-span-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Stream ID</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Stream ID</div>
                   <input type="text" id="out-srt-streamid-input" class="input input-sm w-full" placeholder="publish:live/my-key" />
                 </div>
                 <div class="rounded-xl bg-base-200/55 p-2 sm:col-span-2">
-                  <div class="mb-2 text-xs font-semibold text-base-content/60">Extra Query</div>
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Extra Query</div>
                   <input type="text" id="out-srt-extra-query-input" class="input input-sm w-full" placeholder="latency=120&mode=caller" />
                 </div>
               </div>
@@ -255,10 +255,10 @@
           </fieldset>
         </div>
 
-        <div class="modal-action">
+          <div class="modal-action mt-1">
           <form method="dialog">
-            <button class="btn mx-2">Cancel</button>
-            <button type="button" class="btn btn-accent" id="out-submit-btn" onclick="editOutFormBtn(event)">Update</button>
+              <button class="btn btn-sm mx-2">Cancel</button>
+              <button type="button" class="btn btn-sm btn-accent" id="out-submit-btn" onclick="editOutFormBtn(event)">Update</button>
           </form>
         </div>
       </div>
