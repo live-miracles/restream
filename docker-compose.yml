@@ -4,17 +4,19 @@ services:
         profiles: ['host']
         image: bluenviron/mediamtx:1
         container_name: mediamtx
-        environment:
-            # Override mediamtx.yml setting for app to reach MTX
-            MTX_APIADDRESS: "0.0.0.0:9997"
-            # Host profile needs externally bound HLS while base config stays localhost-only.
-            MTX_HLSADDRESS: "0.0.0.0:8888"
-        ports:
-            - '1935:1935' # RTMP ingest (mediamtx)
-            - '8554:8554' # RTSP ingest and read (mediamtx)
-            - '8890:8890/udp' # SRT ingest (mediamtx)
-            - '127.0.0.1:8888:8888' # HTTP interface / HLS (host-local only)
-            - '127.0.0.1:9997:9997' # MediaMTX API (host-local only)
+        network_mode: host
+        # In case you cannot use host networking, you can uncomment the below
+        # environment:
+        #     # Override mediamtx.yml setting for app to reach MTX
+        #     MTX_APIADDRESS: "0.0.0.0:9997"
+        #     # Host profile needs externally bound HLS while base config stays localhost-only.
+        #     MTX_HLSADDRESS: "0.0.0.0:8888"
+        # ports:
+        #     - '1935:1935' # RTMP ingest (mediamtx)
+        #     - '8554:8554' # RTSP ingest and read (mediamtx)
+        #     - '8890:8890/udp' # SRT ingest (mediamtx)
+        #     - '127.0.0.1:8888:8888' # HTTP interface / HLS (host-local only)
+        #     - '127.0.0.1:9997:9997' # MediaMTX API (host-local only)
         volumes:
             - ./infra/mediamtx.yml:/mediamtx.yml
 
@@ -28,7 +30,6 @@ services:
             - '1935:1935' # RTMP ingest (mediamtx)
             - '8554:8554' # RTSP ingest and read (mediamtx)
             - '8890:8890/udp' # SRT ingest (mediamtx)
-            - '8888:8888' # HTTP interface / HLS (mediamtx)
 
     # App uses pause network namespace so MediaMTX is reachable on localhost.
     app:

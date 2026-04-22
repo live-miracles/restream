@@ -172,11 +172,15 @@ Starts `mediamtx` + `nginx-rtmp` in Docker and runs Node on host.
 docker compose --profile host up -d mediamtx nginx-rtmp
 ```
 
-MediaMTX config binds API and HLS to localhost by default (`apiAddress: 127.0.0.1:9997`,
-`hlsAddress: 127.0.0.1:8888`). Compose host profile overrides those inside the mediamtx container with
-`MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888` so host-mode development can reach both services.
-Host exposure remains local-only via `127.0.0.1:9997:9997` (API) and
-`127.0.0.1:8888:8888` (HLS) port mappings.
+The host profile runs MediaMTX with `network_mode: host`. The container shares the host's network
+stack directly, so MediaMTX's default loopback bindings (`apiAddress: 127.0.0.1:9997`,
+`hlsAddress: 127.0.0.1:8888` from `infra/mediamtx.yml`) are accessible on the host's own localhost
+without any env overrides or port mappings.
+
+If host networking is unavailable (e.g. Docker Desktop on macOS/Windows), uncomment the
+`environment` and `ports` blocks in `docker-compose.yml` to revert to the bridge-networking
+fallback, which overrides `MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888`
+and exposes them via `127.0.0.1:9997:9997` and `127.0.0.1:8888:8888`.
 
 ### Container mode (`make run-docker`)
 
