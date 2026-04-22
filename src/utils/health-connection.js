@@ -131,15 +131,26 @@ function buildUnexpectedReaders({
         expectedReaderTags.add(generateProbeReaderTag(streamKey));
     }
     const unexpectedReaders = [];
+    let ignoredInternalHlsMuxer = false;
 
     for (const reader of readers) {
         const readerType = String(reader?.type || 'unknown');
         const readerId = reader?.id || null;
+        const normalizedReaderType = readerType.toLowerCase();
+
+        if (normalizedReaderType === 'hlsmuxer' && !ignoredInternalHlsMuxer) {
+            // MediaMTX exposes one internal HLS muxer reader per ready path when HLS is enabled.
+            // Ignore this single internal reader to avoid noisy dashboard warnings.
+            ignoredInternalHlsMuxer = true;
+            continue;
+        }
 
         if (readerType !== 'rtspSession' && readerType !== 'rtspConn') {
-            // "Unexpected readers" is a managed-output guardrail: only RTSP readers can be
-            // correlated to output jobs through reader_id tags. Other protocols (for example
-            // HLS preview via app proxy) are intentionally ignored here.
+            unexpectedReaders.push({
+                id: readerId,
+                type: readerType,
+                reason: 'non_managed_reader_type',
+            });
             continue;
         }
 

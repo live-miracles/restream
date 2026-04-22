@@ -69,9 +69,10 @@ sudo cp /opt/restream/infra/mediamtx.yml /etc/restream/mediamtx.yml
 sudo chown restream:restream /etc/restream/mediamtx.yml
 ```
 
-3. Ensure API binding remains local-only:
+3. Ensure API and HLS bindings remain local-only:
 
 - `apiAddress: 127.0.0.1:9997`
+- `hlsAddress: 127.0.0.1:8888`
 
 4. Preview latency versus resource use:
 

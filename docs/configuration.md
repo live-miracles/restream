@@ -18,6 +18,7 @@ Restream configuration uses two layers with precedence:
 The backend assumes MediaMTX is always available on `localhost` with default ports:
 - API: `http://localhost:9997`
 - RTSP: `rtsp://localhost:8554`
+- HLS: `http://localhost:8888`
 
 These are hardcoded in the application and cannot be overridden via environment variables.
 
@@ -171,10 +172,11 @@ Starts `mediamtx` + `nginx-rtmp` in Docker and runs Node on host.
 docker compose --profile host up -d mediamtx nginx-rtmp
 ```
 
-MediaMTX config binds API to localhost by default (`apiAddress: 127.0.0.1:9997`). Compose however overrides with
-`MTX_APIADDRESS=0.0.0.0:9997` inside the mediamtx container (`host` profile) so that `localhost:9997` from host works.
-Without this Node will not be able to access the MediaMTX API. Host exposure remains local-only via
-`127.0.0.1:9997:9997` port mapping. Container mode does not have this issue.
+MediaMTX config binds API and HLS to localhost by default (`apiAddress: 127.0.0.1:9997`,
+`hlsAddress: 127.0.0.1:8888`). Compose host profile overrides those inside the mediamtx container with
+`MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888` so host-mode development can reach both services.
+Host exposure remains local-only via `127.0.0.1:9997:9997` (API) and
+`127.0.0.1:8888:8888` (HLS) port mappings.
 
 ### Container mode (`make run-docker`)
 
