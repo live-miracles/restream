@@ -17,7 +17,7 @@ const defaults = {
     appLogPath: 'test/artifacts/logs/app-under-test.log',
     verifyAppRetries: 30,
     inputFile: 'test/colorbar-timer.mp4',
-    rtmpOutputBase: 'rtmp://localhost:1936/live',
+    rtmpOutputBase: '',
     inputProtocols: 'rtmp,rtsp,srt',
     maxRetries: 30,
     retryDelaySec: 1,
@@ -151,7 +151,7 @@ function readBooleanEnv(name, defaultValue) {
 
 function printHelp() {
     console.log(
-        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  CLEAN_START=1    Tear down stale state and launch a fresh stack (default)\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL    nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE Base URL used for RTMP outputs (default: ${defaults.rtmpOutputBase})`,
+        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  CLEAN_START=1    Tear down stale state and launch a fresh stack (default)\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL    nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE Base URL used to normalize RTMP output URLs (if set)`,
     );
 }
 
@@ -563,6 +563,10 @@ function buildFfmpegArgs(protocol, targetUrl) {
 
 function normalizeOutputUrl(outputUrl) {
     if (!outputUrl || typeof outputUrl !== 'string') {
+        return outputUrl;
+    }
+
+    if (!config.rtmpOutputBase) {
         return outputUrl;
     }
 
