@@ -1,18 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_PORT="${APP_PORT:-3030}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-if command -v fuser >/dev/null 2>&1; then
-  echo "Stopping backend on :$APP_PORT (if present)"
-  fuser -k "$APP_PORT"/tcp 2>/dev/null || true
-else
-  pids="$(lsof -ti tcp:"$APP_PORT" 2>/dev/null || true)"
-  if [[ -n "$pids" ]]; then
-    echo "Stopping backend PIDs: $pids"
-    echo "$pids" | xargs -r kill || true
+MEDIAMTX_PIDFILE="$ROOT_DIR/.mediamtx.pid"
+APP_PIDFILE="$ROOT_DIR/.app.pid"
+
+kill_pid_file() {
+  local pidfile="$1"
+  local name="$2"
+  local port="$3"
+  if [[ -f "$pidfile" ]]; then
+    local pid="$(cat "$pidfile")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "Stopping $name (PID=$pid)"
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
+    rm -f "$pidfile"
   fi
-fi
+  if nc -z localhost "$port" 2>/dev/null; then
+    echo "Port $port still in use, force-killing..."
+    fuser -k "$port/tcp" 2>/dev/null || true
+    sleep 1
+    if nc -z localhost "$port" 2>/dev/null; then
+      echo "WARNING: port $port still in use"
+    fi
+  fi
+}
+
+docker compose --profile "*" down --timeout 1 -v --remove-orphans 2>/dev/null || true
+
+kill_pid_file "$MEDIAMTX_PIDFILE" "MediaMTX" "8888"
+kill_pid_file "$APP_PIDFILE" "App" "3030"
 
 echo "Cleaning up database files"
 rm -f data/data.db data/data.db-*
@@ -20,4 +44,3 @@ rm -f data/data.db data/data.db-*
 echo "Stopping ffmpeg publishers (if present)"
 pkill -f "^ffmpeg .* -stream_loop" 2>/dev/null || true
 
-docker compose --profile "*" down --timeout 1 -v --remove-orphans 2>/dev/null || true

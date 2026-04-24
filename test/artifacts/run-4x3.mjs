@@ -43,7 +43,6 @@ const config = {
     timeoutSec: Number(process.env.TIMEOUT_SEC || defaults.timeoutSec),
     pollSec: Number(process.env.POLL_SEC || defaults.pollSec),
     outDir: resolvePath(process.env.OUT_DIR || defaults.outDir),
-    cleanStart: readBooleanEnv('CLEAN_START', true),
     keepRunning: readBooleanEnv('KEEP_RUNNING', false),
 };
 
@@ -74,11 +73,8 @@ try {
 async function main() {
     const manifest = await loadManifest(config.manifestPath);
 
-    if (config.cleanStart) {
-        await cleanStart();
-    } else {
-        await ensureApiReachable();
-    }
+    console.log('== Verify app is running (run "make run-host" first) ==');
+    await ensureApiReachable();
 
     console.log('== Step 1: Ensure 4x3 manifest resources ==');
     const resolved = await ensureResources(manifest);
@@ -151,7 +147,7 @@ function readBooleanEnv(name, defaultValue) {
 
 function printHelp() {
     console.log(
-        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  CLEAN_START=1    Tear down stale state and launch a fresh stack (default)\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL    nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE Base URL used to normalize RTMP output URLs (if set)`,
+        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL    nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE Base URL used to normalize RTMP output URLs (if set)`,
     );
 }
 
@@ -182,29 +178,6 @@ async function shutdown(leaveRunning) {
     })();
 
     return shutdownPromise;
-}
-
-async function cleanStart() {
-    console.log('== Clean start: tear down stale processes and state ==');
-    await runCommand('bash', ['scripts/down.sh'], { allowFailure: true, stdio: 'inherit' });
-
-    await runCommand('docker', ['compose', 'up', '-d', 'mediamtx', 'nginx-rtmp'], {
-        stdio: 'inherit',
-    });
-
-    await mkdir(config.logDir, { recursive: true });
-    await writeFile(config.appLogPath, '', 'utf8');
-
-    console.log('== Clean start: launch backend and wait for health ==');
-    const appPid = spawnDetachedProcess({
-        name: 'backend',
-        command: process.execPath,
-        args: ['src/index.js'],
-        logPath: config.appLogPath,
-    });
-    console.log(`Started backend pid=${appPid} log=${relativePath(config.appLogPath)}`);
-
-    await waitForApiHealth();
 }
 
 async function waitForApiHealth() {

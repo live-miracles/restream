@@ -85,55 +85,58 @@ The compose file uses profiles:
 
 ## Installation
 
-### Production Environment
-For production deployments, install only runtime dependencies:
+All environments use `make deps` to install Node.js dependencies and download MediaMTX:
 
 ```sh
-npm ci --omit=dev
-```
-
-This installs:
-- `better-sqlite3` - Database
-- `express` - Web framework
-
-### Development Environment
-For local development with code formatting, CSS building, and live reload:
-
-```sh
-npm ci
-```
-
-This additionally installs:
-- `nodemon` - Auto-reload on file changes
-- `prettier` - Code formatter
-- `tailwindcss` - CSS framework
-- `@tailwindcss/cli` - Tailwind CLI
-- `daisyui` - UI component library
-
-### CI/Testing Environment
-For continuous integration and testing pipelines:
-
-```sh
-npm ci
+make deps           # production (no dev dependencies)
+DEV=1 make deps     # development (with nodemon, prettier, tailwindcss)
 ```
 
 ## Run Modes
 
-### 1) Host Node + Docker MediaMTX
 
-Node runs on host and talks to MediaMTX via localhost.
+### Host Mode (no Docker)
+
+
+Node.js app and MediaMTX both run as host processes. MediaMTX is managed by the project scripts and downloaded automatically if missing.
 
 ```sh
 make run-host
 ```
 
-### 2) Full Docker (Node + MediaMTX)
+**Hot-reload:**
+- By default, `make run-host` runs the app with plain `node`.
+- To enable hot-reload (auto-restart on file changes), run with `DEV=1`:
+  ```sh
+  DEV=1 make run-host
+  ```
+- This uses `npm run dev` (nodemon) instead of `node` for the app process.
 
-Node and MediaMTX both run in Docker. They share a pod-like network namespace, so the app reaches MediaMTX via `localhost`.
+
+**Details:**
+- MediaMTX is started as a background process by `scripts/up.sh`.
+- Logs: `log/mediamtx.log` (MediaMTX), `log/app.log` (Node app)
+- PID files: `.mediamtx.pid` (MediaMTX), `.app.pid` (Node app)
+- To stop all processes and clean up, run:
+  ```sh
+  make down
+  ```
+
+**Optional: RTMP test sink**
+- nginx-rtmp runs in DEV mode for local RTMP testing:
+  ```sh
+  DEV=1 make run-host
+  ```
+
+
+### Docker Mode (all containers)
+
+App, MediaMTX, and nginx-rtmp all run as containers. Use this for a fully containerized stack.
 
 ```sh
 make run-docker
 ```
+See updated docs/configuration.md for more details.
 
 ## Contribute
 
@@ -141,12 +144,7 @@ After cloning, run:
 
 ```sh
 git config core.hooksPath .githooks
-```
-
-Then install dependencies:
-
-```sh
-npm ci
+DEV=1 make deps
 ```
 
 ## Links

@@ -6,8 +6,13 @@ node_modules/
 .idea/
 .vscode/
 
+# Downloaded binaries
+bin/
+
+# Log files
+log/
+
 # Local/runtime files
-.deps-stamp
 *.log
 *.pid
 

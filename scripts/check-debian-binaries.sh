@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Checks external binaries required by this repository's make targets,
-# scripts, npm scripts, and runtime spawning paths.
+# Checks external binaries required by this repository's make targets
+# and scripts (including down.sh, up.sh, and runtime spawning paths).
+# MediaMTX binary is downloaded by: make deps (or --install flag).
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -10,6 +11,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 INSTALL_MISSING=0
+MEDIAMTX_VERSION="${MEDIAMTX_VERSION:-1.17.1}"
 
 usage() {
   cat <<'EOF'
@@ -90,15 +92,23 @@ echo "== Debian binary preflight for restream =="
 echo
 
 # Core CLI and runtime dependencies.
+# Core toolchain.
 check_cmd make make
 check_cmd node nodejs "project requires Node >=20.19.0"
 check_cmd npm npm "project requires npm >=10"
 check_cmd npx npm
 check_cmd curl curl
+
+echo
+# Media processing.
 check_cmd ffmpeg ffmpeg
 check_cmd ffprobe ffmpeg
 
-# Used by shell scripts and host cleanup paths.
+echo
+# Process management (used by up.sh and down.sh).
+check_cmd setsid util-linux
+check_cmd nohup coreutils
+check_cmd kill procps
 check_cmd pkill procps
 check_cmd xargs findutils
 check_cmd seq coreutils
@@ -150,6 +160,35 @@ if have_cmd npm; then
   fi
 fi
 
+MEDIAMTX_DIR="$(dirname "$0")/../bin/mediamtx"
+MEDIAMTX_BINARY="$MEDIAMTX_DIR/mediamtx"
+
+if [[ "$INSTALL_MISSING" == "1" && ! -x "$MEDIAMTX_BINARY" ]]; then
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64) ARCH_NAME="amd64" ;;
+    aarch64) ARCH_NAME="arm64" ;;
+    armv7l) ARCH_NAME="armv7" ;;
+    *)
+      fail "mediamtx (unsupported architecture: $ARCH)"
+      exit 1
+      ;;
+  esac
+  FILENAME="mediamtx_v${MEDIAMTX_VERSION}_linux_${ARCH_NAME}.tar.gz"
+  URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${FILENAME}"
+  echo "Downloading MediaMTX v${MEDIAMTX_VERSION} for linux/${ARCH_NAME}..."
+  mkdir -p "$MEDIAMTX_DIR"
+  curl -fsSL "$URL" -o "/tmp/$FILENAME"
+  tar -xzf "/tmp/$FILENAME" -C "$MEDIAMTX_DIR"
+  rm -f "/tmp/$FILENAME"
+  chmod +x "$MEDIAMTX_BINARY"
+  ok "mediamtx (downloaded v${MEDIAMTX_VERSION})"
+elif [[ -x "$MEDIAMTX_BINARY" ]]; then
+  ok "mediamtx (present)"
+else
+  warn "mediamtx (run --install to download)"
+fi
+
 echo
 if [[ "${#missing[@]}" -eq 0 ]]; then
   printf "%bAll required binaries are present.%b\n" "$GREEN" "$NC"
@@ -194,12 +233,13 @@ if [[ "$INSTALL_MISSING" == "1" && "${#missing[@]}" -gt 0 ]]; then
   fi
   echo
   warn "Re-running checks after install..."
-  exec "$0"
+  exec "$0" --install
 fi
 
 echo
 warn "Notes:"
 echo "  - For Node 20+ on older Debian releases, use NodeSource or nvm if apt is behind."
 echo "  - Docker compose plugin package name may vary by distro/repo setup."
+echo "  - MediaMTX binary is downloaded by: make deps (or --install flag)."
 
-exit 1
+exit 0
