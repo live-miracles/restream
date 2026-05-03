@@ -52,4 +52,5 @@ probe-output:
 	-probesize 10M -analyzeduration 10M $(OUTPUT_URL)
 
 run-4x3:
+	docker compose up -d nginx-rtmp
 	node test/artifacts/run-4x3.mjs
