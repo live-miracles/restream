@@ -32,7 +32,8 @@ Start one supported stack first:
 Preferred runner entry point (also starts `nginx-rtmp` if needed):
 - make run-4x3
 
-Equivalent bare runner:
+Direct runner once `nginx-rtmp` is already running:
+- docker compose up -d nginx-rtmp
 - npm run test:4x3
 
 Leave input publishers and resources created by the current run in place after completion for inspection:
@@ -45,6 +46,7 @@ Docker mode output URL normalization:
 
 - session-4x3-manifest.json is not rewritten by the runner.
 - `make run-4x3` no longer starts the app or MediaMTX; it assumes `make run-host` or `make run-docker` is already running.
+- `make run-4x3` starts `nginx-rtmp` for you; `npm run test:4x3` expects that sink container to already be running.
 - `make run-4x3` and `npm run test:4x3` still require host `node`, host `ffmpeg`, and Docker with the compose plugin because the runner starts local publishers and manages the `nginx-rtmp` sink.
 - If the prestarted stack is host mode, it also still depends on the `make deps` outputs (`node_modules/` and `bin/mediamtx/mediamtx`).
 - `CLEAN_START` is no longer supported.

@@ -258,11 +258,13 @@ start_app() {
 
     echo "App process is already bound to :$APP_PORT but not healthy." >&2
     show_recent_log "$APP_LOGFILE"
+    cleanup_mediamtx_if_started_here
     return 1
   fi
 
   if port_has_any_pid "$APP_PORT"; then
     describe_port_conflict "$APP_PORT" 'app'
+    cleanup_mediamtx_if_started_here
     return 1
   fi
 

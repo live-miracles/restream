@@ -224,7 +224,7 @@ async function shutdown(leaveRunning) {
 async function waitForApiHealth() {
     for (let attempt = 1; attempt <= config.verifyAppRetries; attempt += 1) {
         try {
-            const response = await fetch(`${config.apiUrl}/health`, {
+            const response = await fetch(`${config.apiUrl}/healthz`, {
                 signal: AbortSignal.timeout(5000),
             });
             if (response.ok) {
@@ -238,13 +238,13 @@ async function waitForApiHealth() {
 
     const appLog = await safeReadFile(config.appLogPath);
     throw new Error(
-        `API did not become healthy at ${config.apiUrl}/health\nRecent app log:\n${tailText(appLog, 120)}`,
+        `API did not become ready at ${config.apiUrl}/healthz\nRecent app log:\n${tailText(appLog, 120)}`,
     );
 }
 
 async function ensureApiReachable() {
     try {
-        const response = await fetch(`${config.apiUrl}/health`, {
+        const response = await fetch(`${config.apiUrl}/healthz`, {
             signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) {
@@ -252,7 +252,7 @@ async function ensureApiReachable() {
         }
     } catch (error) {
         throw new Error(
-            `API is not reachable at ${config.apiUrl}. Start app first (for example: make run-host or make run-docker). ${String(error)}`,
+            `API readiness is not reachable at ${config.apiUrl}/healthz. Start app first (for example: make run-host or make run-docker). ${String(error)}`,
         );
     }
 }

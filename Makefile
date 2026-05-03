@@ -1,4 +1,4 @@
-.PHONY: check check-dev-deps deps run-host run-docker down format css security security-strict start-input probe-output run-4x3
+.PHONY: check check-dev-deps check-host-deps deps run-host run-docker down format css security security-strict start-input probe-output run-4x3
 
 DEPS_STAMP := .deps-stamp
 NEEDS_NODE := security security-strict
@@ -23,16 +23,19 @@ check:
 check-dev-deps: check
 	@test "$$(cat $(DEPS_STAMP) 2>/dev/null)" = "dev" || (echo "Dev dependencies are required. Run 'DEV=1 make deps'."; exit 1)
 
+check-host-deps: check
+	@test ! scripts/check-debian-binaries.sh -nt $(DEPS_STAMP) || (echo "Host dependency checks changed. Run 'make deps' again."; exit 1)
+
 deps:
 	scripts/check-debian-binaries.sh --install
 	npm ci $(NPM_FLAGS)
 	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
 
-run-host: $(if $(filter 1,$(DEV)),check-dev-deps,check)
+run-host: $(if $(filter 1,$(DEV)),check-dev-deps,check) check-host-deps
 	scripts/up.sh
 
 run-docker:
-	docker compose up -d --build --force-recreate --renew-anon-volumes
+	docker compose up -d --build --force-recreate --renew-anon-volumes --remove-orphans
 
 down:
 	scripts/down.sh
