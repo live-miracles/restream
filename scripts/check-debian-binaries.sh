@@ -112,6 +112,7 @@ check_cmd kill procps
 check_cmd pkill procps
 check_cmd xargs findutils
 check_cmd seq coreutils
+check_cmd nc netcat-openbsd
 
 # Docker + compose plugin are required for run-host/run-docker/run-4x3.
 if have_cmd docker; then
