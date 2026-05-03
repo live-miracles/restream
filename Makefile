@@ -1,49 +1,68 @@
-.PHONY: run-host run-docker down deps format css security security-strict start-input probe-output run-4x3
+.PHONY: check check-dev-deps deps run-host run-docker down format css security security-strict start-input probe-output run-4x3
+
+DEPS_STAMP := .deps-stamp
+NEEDS_NODE := security security-strict
+NEEDS_DEV_DEPS := format css
+
+$(NEEDS_NODE): check
+$(NEEDS_DEV_DEPS): check-dev-deps
 
 INGEST_ARGS ?= -f flv # -f rtsp -rtsp_transport tcp # -f mpegts
 INGEST_URL ?= rtmp://localhost:1935/mystream
 OUTPUT_URL ?= rtmp://localhost:1936/live/test
 
-run-host: deps
-	docker compose --profile host up -d --remove-orphans
-	npm run dev
+NPM_FLAGS := $(if $(DEV),,--omit=dev)
+DEPS_MODE := $(if $(DEV),dev,prod)
+
+check:
+	@test -d node_modules || (echo "Run 'make deps' first. 'DEV=1 make deps' for dev dependencies."; exit 1)
+	@test -f $(DEPS_STAMP) || (echo "Dependency metadata missing. Run 'make deps' again."; exit 1)
+	@test ! package.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
+	@test ! package-lock.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
+
+check-dev-deps: check
+	@test "$$(cat $(DEPS_STAMP) 2>/dev/null)" = "dev" || (echo "Dev dependencies are required. Run 'DEV=1 make deps'."; exit 1)
+
+deps:
+	scripts/check-debian-binaries.sh --install
+	npm ci $(NPM_FLAGS)
+	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
+
+run-host: $(if $(filter 1,$(DEV)),check-dev-deps,check)
+	scripts/up.sh
 
 run-docker:
-	docker compose --profile container up -d --build --force-recreate --renew-anon-volumes
+	docker compose up -d --build --force-recreate --renew-anon-volumes
 
-deps: .deps-stamp
-
-.deps-stamp: package-lock.json package.json
-	bash scripts/ensure-deps.sh
+down:
+	scripts/down.sh
 
 format:
 	npx prettier --write .
 
 css:
-	npx @tailwindcss/cli -i ./input.css -o ./public/output.css
+	npx @tailwindcss/cli -i input.css -o public/output.css
 
-security: deps
-	@echo "Running npm vulnerability audit (all dependencies)..."
+security:
+	@echo "Running npm vulnerability audit..."
 	npm audit || true
-	@echo "Checking for outdated packages (version drift)..."
+	@echo "Checking for outdated packages..."
 	npm outdated || true
 
-security-strict: deps
+security-strict:
 	npm audit --audit-level=low
 
 start-input:
 	ffmpeg -re -stream_loop -1 \
-		-i ./test/colorbar-timer.mp4 \
+		-i test/colorbar-timer.mp4 \
 		-c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency \
 		-c:a aac -b:a 128k -ac 2 \
 		$(INGEST_ARGS) "$(INGEST_URL)"
-
-down:
-	bash scripts/down.sh
 
 probe-output:
 	ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height -of json \
 	-probesize 10M -analyzeduration 10M $(OUTPUT_URL)
 
-run-4x3: deps
+run-4x3:
+	docker compose up -d nginx-rtmp
 	node test/artifacts/run-4x3.mjs
