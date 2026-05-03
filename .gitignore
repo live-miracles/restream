@@ -24,6 +24,9 @@ log/
 test/artifacts/logs/
 test/artifacts/runs/
 
+# Generated deployment assets
+build/deploy/
+
 # Keep data directory, ignore its runtime content
 data/*
 !data/.gitkeep

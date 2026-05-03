@@ -1,0 +1,26 @@
+[Unit]
+Description=Restream Control Plane
+After=network-online.target mediamtx.service
+Wants=network-online.target
+Requires=mediamtx.service
+
+[Service]
+Type=simple
+User=restream
+Group=restream
+WorkingDirectory=/opt/restream
+Environment=NODE_ENV=production
+Environment=PORT=3030
+Environment=RESTREAM_CONFIG_PATH=/etc/restream/restream.json
+Environment=FFMPEG_PATH=/usr/bin/ffmpeg
+Environment=FFPROBE_PATH=/usr/bin/ffprobe
+ExecStart=/usr/bin/node /opt/restream/src/index.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/restream /opt/restream/data
+
+[Install]
+WantedBy=multi-user.target

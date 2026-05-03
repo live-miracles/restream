@@ -1,4 +1,6 @@
-.PHONY: deps run-host run-docker down format css security security-strict start-input probe-output run-4x3
+.PHONY: deps build install-system run-host run-docker down format css security security-strict start-input probe-output run-4x3
+
+BUILD_DIR ?= build/deploy
 
 NEEDS_NODE := run-host format css security security-strict
 $(NEEDS_NODE): check
@@ -15,6 +17,14 @@ check:
 deps:
 	scripts/check-debian-binaries.sh --install
 	npm ci $(NPM_FLAGS)
+
+build:
+	BUILD_DIR="$(BUILD_DIR)" \
+	bash scripts/build.sh
+
+install-system:
+	BUILD_DIR="$(BUILD_DIR)" \
+	bash scripts/install-system.sh
 
 run-host:
 	scripts/up.sh

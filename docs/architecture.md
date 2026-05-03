@@ -544,6 +544,8 @@ This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localh
 | Command               | Purpose                                              |
 |-----------------------|------------------------------------------------------|
 | `make deps`           | Run Linux preflight, install Node deps, download MediaMTX |
+| `make build`          | Stage a deployment bundle under `build/deploy/` with runtime app files and production `node_modules` |
+| `make install-system` | Copy the staged deployment bundle into live `/opt`, `/etc`, and systemd paths using `sudo` |
 | `make run-host`       | Start MediaMTX + app as host processes; `DEV=1` switches the app to nodemon hot reload |
 | `make run-docker`     | Start the full Docker stack (`pause`, `app`, `mediamtx`, `nginx-rtmp`) |
 | `make down`           | Stop host processes and containers, then clean local database files |

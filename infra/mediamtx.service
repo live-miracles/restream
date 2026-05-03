@@ -1,0 +1,16 @@
+[Unit]
+Description=MediaMTX Streaming Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=restream
+Group=restream
+ExecStart=/usr/local/bin/mediamtx /etc/restream/mediamtx.yml
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

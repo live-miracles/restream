@@ -61,7 +61,7 @@ public/
   output.css        — Compiled Tailwind + DaisyUI (do not edit manually)
 input.css           — Tailwind CSS source (compile with `make css`)
 docs/               — Architecture, API reference, health mapping, config guide
-infra/              — Deployment/runtime configs (MediaMTX, nginx-rtmp test sink)
+infra/              — Deployment/runtime configs (MediaMTX, nginx-rtmp, systemd unit files)
 test/artifacts/     — Reproducible test scripts and session recordings
 docker-compose.yml  — Full-stack compose (app + mediamtx + nginx-rtmp test sink)
 ```

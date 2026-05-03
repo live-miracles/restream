@@ -13,6 +13,13 @@ No Docker or container runtime is required.
 
 This guide intentionally avoids `make deps` and `make run-host`. Those helpers target local workstation flows and still perform broader preflight checks for optional Docker-backed targets such as `nginx-rtmp`, `make run-docker`, and `make run-4x3`.
 
+To reduce copy/paste, this guide uses two targets:
+
+- `make build` stages a deployment bundle under `build/deploy/`
+- `make install-system` copies that bundle into the live `/opt/restream`, `/etc/restream`, and `/etc/systemd/system` paths using `sudo`
+
+The bundle contains the runtime app files (`src/`, `public/`, package files, and production-only `node_modules/`) plus the default config and systemd unit files. The source-of-truth files live in `src/config/restream.json`, `infra/mediamtx.yml`, `infra/restream.service`, and `infra/mediamtx.service`.
+
 ## 2. Host Requirements
 
 Minimum recommended:
@@ -34,12 +41,13 @@ Software:
 
 ```sh
 sudo useradd --system --home /opt/restream --shell /usr/sbin/nologin restream
-sudo mkdir -p /opt/restream /var/lib/restream /var/log/restream /etc/restream
-sudo chown -R restream:restream /opt/restream /var/lib/restream /var/log/restream /etc/restream
+sudo mkdir -p /opt/restream-src /opt/restream /var/lib/restream /var/log/restream /etc/restream
+sudo chown -R restream:restream /opt/restream-src /opt/restream /var/lib/restream /var/log/restream /etc/restream
 ```
 
 Recommended layout:
 
+- Source checkout: `/opt/restream-src`
 - App: `/opt/restream`
 - Data: `/var/lib/restream`
 - Logs: journald + `/var/log/restream` (optional)
@@ -48,29 +56,54 @@ Recommended layout:
 ## 4. Install Application
 
 ```sh
-sudo -u restream git clone https://github.com/live-miracles/restream /opt/restream
-cd /opt/restream
-sudo -u restream npm ci --omit=dev
+sudo -u restream git clone https://github.com/live-miracles/restream /opt/restream-src
+cd /opt/restream-src
+sudo -u restream make build
+make install-system
 ```
 
-Set config file:
+This stages the default deployment files at `/opt/restream-src/build/deploy/`:
+
+- `opt/restream/` — runtime app bundle with `src/`, `public/`, package files, and production `node_modules/`
+- `etc/restream/restream.json`
+- `etc/restream/mediamtx.yml`
+- `etc/systemd/system/restream.service`
+- `etc/systemd/system/mediamtx.service`
+
+`make build` runs `npm ci --omit=dev` inside the staged app bundle, so deployment artifacts do not include development dependencies.
+
+`make install-system` copies that staged bundle into:
+
+- `/opt/restream`
+- `/etc/restream`
+- `/etc/systemd/system`
+
+The staged config and unit files come directly from these repo files:
+
+- `infra/restream.service`
+- `infra/mediamtx.service`
+
+Adjust values in `/etc/restream/restream.json` for server name and limits after `make install-system` if needed.
+
+If you want to review or customize the staged files before installing them, inspect `build/deploy/` first and then run `make install-system`.
+
+Set config file manually instead of `make install-system`:
 
 ```sh
-sudo -u restream cp src/config/restream.json /etc/restream/restream.json
+sudo install -m 0644 build/deploy/etc/restream/restream.json /etc/restream/restream.json
+sudo chown restream:restream /etc/restream/restream.json
 ```
-
-Adjust values in `/etc/restream/restream.json` for server name and limits.
 
 ## 5. Install and Configure MediaMTX
 
 1. Install the MediaMTX binary from official [releases](https://github.com/bluenviron/mediamtx/releases).
 
    For a systemd-managed host, placing it at `/usr/local/bin/mediamtx` is the simplest option.
-   If you want to mirror the repo-managed layout used by `scripts/up.sh`, place it at `/opt/restream/bin/mediamtx/mediamtx` and adjust the systemd `ExecStart` line accordingly.
-2. Place config:
+  If you want to mirror the repo-managed layout used by `scripts/up.sh`, place it at `/opt/restream/bin/mediamtx/mediamtx` and edit the staged `mediamtx.service` file before installing it.
+2. Place config manually instead of `make install-system`:
 
 ```sh
-sudo cp /opt/restream/infra/mediamtx.yml /etc/restream/mediamtx.yml
+sudo install -m 0644 /opt/restream-src/build/deploy/etc/restream/mediamtx.yml /etc/restream/mediamtx.yml
 sudo chown restream:restream /etc/restream/mediamtx.yml
 ```
 
@@ -96,60 +129,24 @@ sudo chown restream:restream /etc/restream/mediamtx.yml
 
 ## 6. Systemd Unit: MediaMTX
 
-Create `/etc/systemd/system/mediamtx.service`:
+`make install-system` installs the generated unit into `/etc/systemd/system/mediamtx.service`.
 
-```ini
-[Unit]
-Description=MediaMTX Streaming Server
-After=network-online.target
-Wants=network-online.target
+Install the generated unit manually instead:
 
-[Service]
-Type=simple
-User=restream
-Group=restream
-ExecStart=/usr/local/bin/mediamtx /etc/restream/mediamtx.yml
-Restart=always
-RestartSec=2
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo install -m 0644 /opt/restream-src/build/deploy/etc/systemd/system/mediamtx.service /etc/systemd/system/mediamtx.service
 ```
 
-If you chose the repo-managed binary path instead, change `ExecStart` to `/opt/restream/bin/mediamtx/mediamtx /etc/restream/mediamtx.yml`.
+If you chose the repo-managed binary path instead, update `build/deploy/etc/systemd/system/mediamtx.service` before installing the unit.
 
 ## 7. Systemd Unit: Restream
 
-Create `/etc/systemd/system/restream.service`:
+`make install-system` installs the generated unit into `/etc/systemd/system/restream.service`.
 
-```ini
-[Unit]
-Description=Restream Control Plane
-After=network-online.target mediamtx.service
-Wants=network-online.target
-Requires=mediamtx.service
+Install the generated unit manually instead:
 
-[Service]
-Type=simple
-User=restream
-Group=restream
-WorkingDirectory=/opt/restream
-Environment=NODE_ENV=production
-Environment=PORT=3030
-Environment=RESTREAM_CONFIG_PATH=/etc/restream/restream.json
-Environment=FFMPEG_PATH=/usr/bin/ffmpeg
-Environment=FFPROBE_PATH=/usr/bin/ffprobe
-ExecStart=/usr/bin/node /opt/restream/src/index.js
-Restart=always
-RestartSec=2
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=/var/lib/restream /opt/restream/data
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo install -m 0644 /opt/restream-src/build/deploy/etc/systemd/system/restream.service /etc/systemd/system/restream.service
 ```
 
 Link runtime DB path to persistent storage (optional but recommended):
@@ -225,12 +222,13 @@ cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
 
 Upgrade process:
 
-1. Pull latest code in `/opt/restream`.
-2. Run `npm ci --omit=dev`.
-3. Upgrade the MediaMTX binary if the release version changed.
-4. Restart `mediamtx.service` and `restream.service`.
-5. Run smoke tests.
-6. Validate dashboard and stream-keys pages after a normal refresh.
+1. Pull latest code in `/opt/restream-src`.
+2. Run `make build`.
+3. Run `make install-system`.
+4. Upgrade the MediaMTX binary if the release version changed.
+5. Restart `mediamtx.service` and `restream.service`.
+6. Run smoke tests.
+7. Validate dashboard and stream-keys pages after a normal refresh.
 
 ### Frontend Cache Note
 
