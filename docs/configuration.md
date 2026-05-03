@@ -155,40 +155,55 @@ Backend internal URLs are hardcoded as:
 - API: `http://localhost:9997`
 - RTSP base: `rtsp://localhost:8554`
 
-## 3. docker-compose Profiles
 
-The project uses one compose file with two profiles:
+## 3. Run Modes
 
-- `host` profile: runs `mediamtx` in Docker for host-mode development.
-- `container` profile: runs `pause`, `app`, and `mediamtx-pod` for full Docker mode.
+There are two supported modes:
 
-`nginx-rtmp` has no profile and is available in both modes.
+### Host Mode (app + MediaMTX on host)
 
-### Host mode (`make run-host`)
+This section covers the local helper scripts. For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
 
-Starts `mediamtx` + `nginx-rtmp` in Docker and runs Node on host.
+MediaMTX and the Node.js app run as host processes.
 
 ```sh
-docker compose --profile host up -d mediamtx nginx-rtmp
+make run-host
 ```
 
-The host profile runs MediaMTX with `network_mode: host`. The container shares the host's network
-stack directly, so MediaMTX's default loopback bindings (`apiAddress: 127.0.0.1:9997`,
-`hlsAddress: 127.0.0.1:8888` from `infra/mediamtx.yml`) are accessible on the host's own localhost
-without any env overrides or port mappings.
+Before running host mode, install the host dependencies with `make deps`. Re-run it whenever `package.json` or `package-lock.json` changes.
 
-If host networking is unavailable (e.g. Docker Desktop on macOS/Windows), disable/remove
-`network_mode: host` and uncomment the `environment` and `ports` blocks in
-`docker-compose.yml` to revert to the bridge-networking fallback, which overrides
-`MTX_APIADDRESS=0.0.0.0:9997` and `MTX_HLSADDRESS=0.0.0.0:8888` and exposes them via
-`127.0.0.1:9997:9997` and `127.0.0.1:8888:8888`.
+**With hot reload (DEV mode):**
+```sh
+DEV=1 make deps
+DEV=1 make run-host
+```
 
-### Container mode (`make run-docker`)
+This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`. It does not start any Docker services.
 
-Starts app + MediaMTX in a shared namespace through `pause`.
+**Details:**
+- Host mode does not use Docker, including `DEV=1`.
+- MediaMTX is downloaded by running `make deps` into `bin/mediamtx/`.
+- `DEV=1 make run-host` requires the `DEV=1 make deps` install because nodemon comes from dev dependencies.
+- The helper scripts are Linux-oriented: `make deps` installs Debian/Ubuntu packages and downloads a Linux MediaMTX release.
+- On macOS/Windows, the blocker is this Linux-only host-process workflow rather than Docker host networking. Use `make run-docker` there unless you are manually provisioning equivalent host binaries.
+- MediaMTX is started as a background process; logs are written to `log/mediamtx.log` and PID to `.mediamtx.pid`.
+- Node app is started as a background process; logs are in `log/app.log` and PID in `.app.pid`.
+- To stop all processes and clean up, run `make down` (kills processes, removes PID files, stops Docker containers).
+- If you previously used Docker for MediaMTX in host mode, see the migration note below.
+
+**Migration Note:**
+As of April 2026, `make run-host` no longer runs MediaMTX in Docker. It is now managed as a host process. Remove any old containers and use `make down` to clean up lingering processes.
+
+If you encounter port conflicts, check for running MediaMTX or Node processes and use `make down`.
+
+If you prefer a fully containerized stack, use Docker mode (`make run-docker`).
+
+### Docker Mode (all containers)
+
+App, MediaMTX, and nginx-rtmp all run as containers. Use this for a fully containerized stack.
 
 ```sh
-docker compose --profile container up -d --build --force-recreate --renew-anon-volumes pause mediamtx-pod nginx-rtmp app
+make run-docker
 ```
 
 ### app container environment

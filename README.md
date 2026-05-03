@@ -68,9 +68,9 @@ docker-compose.yml  — Full-stack compose (app + mediamtx + nginx-rtmp test sin
 
 SQLite runtime files are stored under `data/` (for example `data/data.db`).
 
-The compose file uses profiles:
-- `host`: MediaMTX in Docker with app on host (`make run-host`)
-- `container`: app + MediaMTX share a pod-like namespace via pause (`make run-docker`)
+The repository supports two runtime layouts:
+- `make run-host`: `scripts/up.sh` launches MediaMTX and the Node app as host processes.
+- `make run-docker`: `docker-compose.yml` launches `pause`, `app`, `mediamtx`, and `nginx-rtmp` as containers.
 
 ## Documentation
 
@@ -85,55 +85,65 @@ The compose file uses profiles:
 
 ## Installation
 
-### Production Environment
-For production deployments, install only runtime dependencies:
+For Linux host-mode workflows, `make deps` runs the preflight helper, installs Node.js dependencies, and downloads MediaMTX into `bin/mediamtx/`:
 
 ```sh
-npm ci --omit=dev
+make deps           # production (no dev dependencies)
+DEV=1 make deps     # development (with nodemon, prettier, tailwindcss)
 ```
 
-This installs:
-- `better-sqlite3` - Database
-- `express` - Web framework
+Re-run `make deps` whenever `package.json` or `package-lock.json` changes. Commands that rely on dev dependencies, including `DEV=1 make run-host`, `make format`, and `make css`, require the `DEV=1 make deps` install.
 
-### Development Environment
-For local development with code formatting, CSS building, and live reload:
+`make deps` may invoke `apt-get`/`sudo` to install missing OS packages. It targets Debian/Ubuntu-style Linux hosts because it installs Linux packages and downloads a Linux MediaMTX binary.
 
-```sh
-npm ci
-```
+If you only use Docker mode, skip `make deps` and go straight to `make run-docker`.
 
-This additionally installs:
-- `nodemon` - Auto-reload on file changes
-- `prettier` - Code formatter
-- `tailwindcss` - CSS framework
-- `@tailwindcss/cli` - Tailwind CLI
-- `daisyui` - UI component library
-
-### CI/Testing Environment
-For continuous integration and testing pipelines:
-
-```sh
-npm ci
-```
+`make run-4x3` directly requires host `node`, host `ffmpeg`, Docker with the compose plugin for `nginx-rtmp`, and an already-running app stack. If that stack is running in host mode, it also depends on the `make deps` outputs (`node_modules/` and `bin/mediamtx/mediamtx`); a Docker-mode stack does not.
 
 ## Run Modes
 
-### 1) Host Node + Docker MediaMTX
 
-Node runs on host and talks to MediaMTX via localhost.
+### Host Mode (app + MediaMTX on host)
+
+
+Node.js app and MediaMTX both run as host processes. Core host mode does not start any containers; MediaMTX is managed by the project scripts after `make deps` downloads it.
 
 ```sh
 make run-host
 ```
 
-### 2) Full Docker (Node + MediaMTX)
+**Hot-reload:**
+- By default, `make run-host` runs the app with plain `node`.
+- To enable hot-reload (auto-restart on file changes), run with `DEV=1`:
+  ```sh
+  DEV=1 make deps
+  DEV=1 make run-host
+  ```
+- This uses `npm run dev` (nodemon) instead of `node` for the app process.
+- It does not start any Docker services.
 
-Node and MediaMTX both run in Docker. They share a pod-like network namespace, so the app reaches MediaMTX via `localhost`.
+
+**Details:**
+- MediaMTX is started as a background process by `scripts/up.sh`.
+- Logs: `log/mediamtx.log` (MediaMTX), `log/app.log` (Node app)
+- PID files: `.mediamtx.pid` (MediaMTX), `.app.pid` (Node app)
+- To stop host processes, stop lingering test containers, and clean local runtime state, run:
+  ```sh
+  make down
+  ```
+
+
+### Docker Mode (all containers)
+
+App, MediaMTX, and nginx-rtmp all run as containers. `pause`, `app`, and `mediamtx` share a pod-like network namespace so the app can keep using `localhost` for MediaMTX.
 
 ```sh
 make run-docker
 ```
+
+Docker mode does not require the host `node_modules/` tree or the host-downloaded `bin/mediamtx/mediamtx` binary.
+
+See updated docs/configuration.md for more details.
 
 ## Contribute
 
@@ -141,12 +151,7 @@ After cloning, run:
 
 ```sh
 git config core.hooksPath .githooks
-```
-
-Then install dependencies:
-
-```sh
-npm ci
+DEV=1 make deps
 ```
 
 ## Links
