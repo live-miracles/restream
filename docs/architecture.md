@@ -38,7 +38,7 @@ place.
 | SQLite (`data/data.db`) | Persistent state (keys, pipelines, jobs)  | —                       |
 | MediaMTX           | RTMP ingest, RTSP relay, path management  | `1935`, `8554`, `9997`  |
 | FFmpeg             | Per-output RTSP→RTMP push process         | spawned on demand       |
-| nginx-rtmp         | Local test RTMP sink (docker-compose only)| `1936` RTMP, `8081` HTTP|
+| nginx-rtmp         | Local test RTMP sink for Docker/test workflows | `1936` RTMP, `8081` HTTP|
 
 ---
 
@@ -513,26 +513,26 @@ See [health-mapping.md](./health-mapping.md) for full status derivation diagrams
 
 ## 7. Deployment Topologies
 
-### 7.1 Host Node + Docker MediaMTX (`make run-host`)
+### 7.1 Host Processes (`make run-host`)
 
 ```
 [Host]
-  node src/index.js  :3030
+  bin/mediamtx/mediamtx :1935 :8554 :8888 :9997
+  node src/index.js     :3030
     │
     └── (connects to)
         localhost:9997 (MediaMTX API)
         localhost:8554 (MediaMTX RTSP)
-
-[Docker]
-  mediamtx           :1935 :8554 :9997
-  nginx-rtmp         :1936 (RTMP test sink)
 ```
+
+`scripts/up.sh` backgrounds both host processes, writes logs to `log/mediamtx.log` and `log/app.log`, and records PIDs in `.mediamtx.pid` and `.app.pid`.
+With `DEV=1`, the app process switches to `npm run dev` for hot reload; `make run-host` still does not start any containers.
 
 ### 7.2 Full Docker (`make run-docker`)
 
-All services are defined in `docker-compose.yml` under the `container` profile.
+All services are defined in `docker-compose.yml` without profiles.
 
-`pause`, `app`, and `mediamtx-pod` share a single network namespace (`network_mode: service:pause`).
+`pause`, `app`, and `mediamtx` share a single network namespace (`network_mode: service:pause`).
 This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localhost:8554` (RTSP).
 
 `nginx-rtmp` runs as a separate container with independent host port mappings.
@@ -543,9 +543,11 @@ This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localh
 
 | Command               | Purpose                                              |
 |-----------------------|------------------------------------------------------|
-| `make run-host`       | Start docker services + node on host (dev)           |
-| `make run-docker`     | Full docker-compose stack                            |
-| `make down`           | Stop docker services and clean local database files  |
+| `make deps`           | Run Linux preflight, install Node deps, download MediaMTX |
+| `make run-host`       | Start MediaMTX + app as host processes; `DEV=1` switches the app to nodemon hot reload |
+| `make run-docker`     | Start the full Docker stack (`pause`, `app`, `mediamtx`, `nginx-rtmp`) |
+| `make down`           | Stop host processes and containers, then clean local database files |
+| `make run-4x3`        | Start `nginx-rtmp` and run the artifact suite against an already-running app |
 | `make css`            | Rebuild `public/output.css` from `input.css`         |
 | `make format`         | Run prettier over all files                          |
 | `make security`       | npm audit + outdated packages                        |

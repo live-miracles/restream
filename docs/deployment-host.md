@@ -11,6 +11,8 @@ This guide deploys Restream directly on a Linux host using native services only.
 
 No Docker or container runtime is required.
 
+This guide intentionally avoids `make deps` and `make run-host`. Those helpers target local workstation flows and still perform broader preflight checks for optional Docker-backed targets such as `nginx-rtmp`, `make run-docker`, and `make run-4x3`.
+
 ## 2. Host Requirements
 
 Minimum recommended:
@@ -61,7 +63,10 @@ Adjust values in `/etc/restream/restream.json` for server name and limits.
 
 ## 5. Install and Configure MediaMTX
 
-1. Install MediaMTX binary in `/usr/local/bin/` from official [releases](https://github.com/bluenviron/mediamtx/releases).
+1. Install the MediaMTX binary from official [releases](https://github.com/bluenviron/mediamtx/releases).
+
+   For a systemd-managed host, placing it at `/usr/local/bin/mediamtx` is the simplest option.
+   If you want to mirror the repo-managed layout used by `scripts/up.sh`, place it at `/opt/restream/bin/mediamtx/mediamtx` and adjust the systemd `ExecStart` line accordingly.
 2. Place config:
 
 ```sh
@@ -111,6 +116,8 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 ```
+
+If you chose the repo-managed binary path instead, change `ExecStart` to `/opt/restream/bin/mediamtx/mediamtx /etc/restream/mediamtx.yml`.
 
 ## 7. Systemd Unit: Restream
 
@@ -220,9 +227,10 @@ Upgrade process:
 
 1. Pull latest code in `/opt/restream`.
 2. Run `npm ci --omit=dev`.
-3. Restart `restream.service`.
-4. Run smoke tests.
-5. Validate dashboard and stream-keys pages after a normal refresh.
+3. Upgrade the MediaMTX binary if the release version changed.
+4. Restart `mediamtx.service` and `restream.service`.
+5. Run smoke tests.
+6. Validate dashboard and stream-keys pages after a normal refresh.
 
 ### Frontend Cache Note
 

@@ -160,7 +160,9 @@ Backend internal URLs are hardcoded as:
 
 There are two supported modes:
 
-### Host Mode (no Docker)
+### Host Mode (app + MediaMTX on host)
+
+This section covers the local helper scripts. For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
 
 MediaMTX and the Node.js app run as host processes.
 
@@ -168,15 +170,16 @@ MediaMTX and the Node.js app run as host processes.
 make run-host
 ```
 
-**With RTMP test sink (DEV mode):**
+**With hot reload (DEV mode):**
 ```sh
 DEV=1 make run-host
 ```
 
-This also starts nginx-rtmp container for local RTMP testing.
+This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`. It does not start any Docker services.
 
 **Details:**
-- MediaMTX is downloaded by running `make deps`.
+- Host mode does not use Docker, including `DEV=1`.
+- MediaMTX is downloaded by running `make deps` into `bin/mediamtx/`.
 - MediaMTX is started as a background process; logs are written to `log/mediamtx.log` and PID to `.mediamtx.pid`.
 - Node app is started as a background process; logs are in `log/app.log` and PID in `.app.pid`.
 - To stop all processes and clean up, run `make down` (kills processes, removes PID files, stops Docker containers).
@@ -187,7 +190,7 @@ As of April 2026, `make run-host` no longer runs MediaMTX in Docker. It is now m
 
 If you encounter port conflicts, check for running MediaMTX or Node processes and use `make down`.
 
-If host networking is unavailable (e.g. Docker Desktop on macOS/Windows), you may need to adapt the setup or use Docker mode (`make run-docker`).
+If you prefer a fully containerized stack, use Docker mode (`make run-docker`).
 
 ### Docker Mode (all containers)
 

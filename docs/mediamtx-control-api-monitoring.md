@@ -177,8 +177,9 @@ Supported workaround at configuration level:
 
 Operational notes for this repo:
 
-- In container profile (shared network namespace), `authHTTPAddress: http://localhost:3030/...` works.
-- In host profile (MediaMTX in its own container), callback routing to the app requires host-accessible addressing (for example `host.docker.internal`) instead of container-local `localhost`.
+- In current host mode, MediaMTX and the app both run on the same host, so `authHTTPAddress: http://localhost:3030/...` works directly.
+- In Docker mode, `pause`, `app`, and `mediamtx` share a network namespace, so `localhost` also works there.
+- If MediaMTX is moved back into a separate container or a separate host in the future, the callback must use an address reachable from the MediaMTX process rather than assuming `localhost`.
 - This adds an auth round-trip for each connection attempt, so availability of the callback endpoint becomes part of ingest reliability.
 
 ### Recordings Runtime

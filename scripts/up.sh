@@ -55,8 +55,3 @@ start_app() {
 
 start_mediamtx
 start_app
-
-if [[ "${DEV:-0}" == "1" ]]; then
-  echo "Starting nginx-rtmp for RTMP testing..."
-  docker compose up -d nginx-rtmp
-fi

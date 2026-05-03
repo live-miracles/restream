@@ -68,9 +68,9 @@ docker-compose.yml  — Full-stack compose (app + mediamtx + nginx-rtmp test sin
 
 SQLite runtime files are stored under `data/` (for example `data/data.db`).
 
-The compose file uses profiles:
-- `host`: MediaMTX in Docker with app on host (`make run-host`)
-- `container`: app + MediaMTX share a pod-like namespace via pause (`make run-docker`)
+The repository supports two runtime layouts:
+- `make run-host`: `scripts/up.sh` launches MediaMTX and the Node app as host processes.
+- `make run-docker`: `docker-compose.yml` launches `pause`, `app`, `mediamtx`, and `nginx-rtmp` as containers.
 
 ## Documentation
 
@@ -85,20 +85,22 @@ The compose file uses profiles:
 
 ## Installation
 
-All environments use `make deps` to install Node.js dependencies and download MediaMTX:
+For local Debian/Ubuntu workflows, `make deps` runs the preflight helper, installs Node.js dependencies, and downloads MediaMTX into `bin/mediamtx/`:
 
 ```sh
 make deps           # production (no dev dependencies)
 DEV=1 make deps     # development (with nodemon, prettier, tailwindcss)
 ```
 
+`make deps` may invoke `apt-get`/`sudo` to install missing OS packages. Docker/Compose are still checked because optional workflows such as `make run-docker` and `make run-4x3` still use Docker-backed services, including `nginx-rtmp`.
+
 ## Run Modes
 
 
-### Host Mode (no Docker)
+### Host Mode (app + MediaMTX on host)
 
 
-Node.js app and MediaMTX both run as host processes. MediaMTX is managed by the project scripts and downloaded automatically if missing.
+Node.js app and MediaMTX both run as host processes. Core host mode does not start any containers; MediaMTX is managed by the project scripts after `make deps` downloads it.
 
 ```sh
 make run-host
@@ -111,27 +113,22 @@ make run-host
   DEV=1 make run-host
   ```
 - This uses `npm run dev` (nodemon) instead of `node` for the app process.
+- It does not start any Docker services.
 
 
 **Details:**
 - MediaMTX is started as a background process by `scripts/up.sh`.
 - Logs: `log/mediamtx.log` (MediaMTX), `log/app.log` (Node app)
 - PID files: `.mediamtx.pid` (MediaMTX), `.app.pid` (Node app)
-- To stop all processes and clean up, run:
+- To stop host processes, stop lingering test containers, and clean local runtime state, run:
   ```sh
   make down
-  ```
-
-**Optional: RTMP test sink**
-- nginx-rtmp runs in DEV mode for local RTMP testing:
-  ```sh
-  DEV=1 make run-host
   ```
 
 
 ### Docker Mode (all containers)
 
-App, MediaMTX, and nginx-rtmp all run as containers. Use this for a fully containerized stack.
+App, MediaMTX, and nginx-rtmp all run as containers. `pause`, `app`, and `mediamtx` share a pod-like network namespace so the app can keep using `localhost` for MediaMTX.
 
 ```sh
 make run-docker

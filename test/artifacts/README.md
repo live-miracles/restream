@@ -10,7 +10,7 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 ## What The Runner Does
 
 1. Loads session-4x3-manifest.json as the tracked source of truth.
-2. Optionally does a clean start of the local stack.
+2. Verifies the target app stack is already running.
 3. Ensures missing stream keys, pipelines, and outputs exist.
 4. Starts ffmpeg input publishers for the manifest stream keys.
 5. Starts outputs for the resolved pipeline/output IDs.
@@ -24,25 +24,27 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 
 ## Primary Entry Points
 
-Full clean run (default):
+Start one supported stack first:
+- Host mode: `make run-host`
+- Docker mode: `make run-docker`
+
+Preferred runner entry point (also starts `nginx-rtmp` if needed):
 - make run-4x3
 
-Equivalent npm script:
+Equivalent bare runner:
 - npm run test:4x3
 
-Leave stack running after completion for inspection:
+Leave input publishers running after completion for inspection:
 - KEEP_RUNNING=1 make run-4x3
 
-Reuse an already-running stack (skip media-service restart):
-- CLEAN_START=0 make run-4x3
-
-Docker mode (backend in container):
-- make run-docker
-- CLEAN_START=0 RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
+Docker mode output URL normalization:
+- RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
 
 ## Notes
 
 - session-4x3-manifest.json is not rewritten by the runner.
+- `make run-4x3` no longer starts the app or MediaMTX; it assumes `make run-host` or `make run-docker` is already running.
+- `CLEAN_START` is no longer supported.
 - If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
 - Logs go to test/artifacts/logs.
 - Health snapshots go to test/artifacts/runs.
