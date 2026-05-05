@@ -4,7 +4,7 @@
 #             RTSP  rtsp://<host>:8554/<streamKey>
 #             SRT   srt://<host>:8890?streamid=publish:<streamKey>
 #
-# Viewing:    RTSP    rtsp://<host>:8554/<streamKey>
+# Viewing:    RTSP    rtsp://localhost:8554/<streamKey>  (localhost only)
 #
 # Internal:   API     http://localhost:9997  (used by restream backend)
 
@@ -31,17 +31,26 @@ api: yes
 apiAddress: 127.0.0.1:9997   # used by restream for /v3/paths and /v3/*conns
 
 # ── Access control ──────────────────────────────────────────────────────────
-# Allow any client to publish, read, and use the API without authentication.
-# Restrict this in production by replacing 'any' with named users.
+# Allow any client to publish without authentication.
+# Restrict read, playback, and API access to localhost unless you replace 'any'
+# with named users for authenticated external readers or API clients.
 authInternalUsers:
+    # 1. Localhost: Allowed to read, publish, and access the API
     - user: any
       pass:
-      ips: []
+      ips: ['127.0.0.1', '::1']
       permissions:
           - action: publish
           - action: read
           - action: playback
           - action: api
+
+    # 2. Outsiders (Any IP): Allowed ONLY to publish
+    - user: any
+      pass:
+      ips: []
+      permissions:
+          - action: publish
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 # No explicit paths needed — MediaMTX accepts any path on demand.
