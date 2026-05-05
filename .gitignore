@@ -20,9 +20,17 @@ log/
 *.log
 *.pid
 
+# Runtime SQLite databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
 # Environment files
 .env
 .env.*
+!.env.example
+!.env.sample
 
 # Local TLS material
 *.crt
