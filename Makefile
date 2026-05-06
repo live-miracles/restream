@@ -31,20 +31,14 @@ deps:
 	npm ci $(NPM_FLAGS)
 	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
 
-run-host: $(if $(filter 1,$(DEV)),check-dev-deps,check) check-host-deps
-	scripts/up.sh
-
 run-docker:
 	docker compose up -d --build --force-recreate --renew-anon-volumes --remove-orphans
 
-down:
-	scripts/down.sh
-
 format:
-	npx prettier --write .
+	npm run format
 
 css:
-	npx @tailwindcss/cli -i input.css -o public/output.css
+	npm run css
 
 security:
 	@echo "Running npm vulnerability audit..."

@@ -31,7 +31,7 @@ services:
         container_name: mediamtx
         network_mode: service:pause
         volumes:
-            - ./infra/mediamtx.yml:/mediamtx.yml
+            - ./mediamtx.yml:/mediamtx.yml
         depends_on:
             - pause
 
@@ -42,4 +42,4 @@ services:
             - '1936:1935'
             - '8081:80'
         volumes:
-            - ./infra/nginx-rtmp.conf:/opt/nginx/conf/nginx.conf:ro
+            - ./test/nginx-rtmp.conf:/opt/nginx/conf/nginx.conf:ro
