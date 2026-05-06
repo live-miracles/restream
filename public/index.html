@@ -138,6 +138,7 @@
 
                 <select class="select select-sm w-full" id="out-protocol-input">
                   <option selected="" value="rtmp">RTMP</option>
+                  <option value="hls">HLS</option>
                   <option value="rtsp">RTSP</option>
                   <option value="srt">SRT</option>
                 </select>
@@ -168,7 +169,7 @@
           <fieldset class="fieldset">
             <legend class="fieldset-legend" id="out-url-input-label">Stream Key or Custom URL</legend>
             <input type="text" id="out-rtmp-key-input" class="input input-sm w-full" placeholder="Type here" />
-            <p id="out-rtmp-error" class="text-error hidden text-sm">URL must start with rtmp://, rtmps://, rtsp://, rtsps://, or srt://</p>
+            <p id="out-rtmp-error" class="text-error hidden text-sm">URL must start with rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https:// for an HLS playlist URL</p>
             <p id="out-running-edit-hint" class="text-warning hidden text-sm">Output is running. Only name can be edited.</p>
           </fieldset>
 

@@ -1,6 +1,11 @@
 const { normalizeOutputEncoding } = require('./ffmpeg');
 
 function computeInputStatus({ hasKey, pathAvailable, pathOnline, hasEverSeenLive }) {
+    // Status priority is deliberate:
+    // - hasKey + pathAvailable => on
+    // - hasKey + pathOnline but not available yet => warning during startup
+    // - hasKey + hasEverSeenLive but no longer online => error regression
+    // - otherwise => off
     if (hasKey && pathAvailable) return 'on';
     if (hasKey && pathOnline) return 'warning';
     if (hasKey && hasEverSeenLive) return 'error';
@@ -39,6 +44,36 @@ function parseFfmpegBitrateToKbps(rateValue) {
     else if (unit === 'g') bps = value * 1000 * 1000 * 1000;
 
     return Number((bps / 1000).toFixed(1));
+}
+
+function parseFfmpegTotalSizeBytes(sizeValue) {
+    if (sizeValue === null || sizeValue === undefined) return null;
+    const raw = String(sizeValue).trim();
+    if (!raw || raw.toUpperCase() === 'N/A') return null;
+
+    const bytes = Number(raw);
+    if (!Number.isFinite(bytes) || bytes < 0) return null;
+    return Math.trunc(bytes);
+}
+
+function parseFfmpegProgressFrame(frameValue) {
+    if (frameValue === null || frameValue === undefined) return null;
+    const raw = String(frameValue).trim();
+    if (!raw || raw.toUpperCase() === 'N/A') return null;
+
+    const frame = Number(raw);
+    if (!Number.isFinite(frame) || frame < 0) return null;
+    return Math.trunc(frame);
+}
+
+function parseFfmpegProgressFps(fpsValue) {
+    if (fpsValue === null || fpsValue === undefined) return null;
+    const raw = String(fpsValue).trim();
+    if (!raw || raw.toUpperCase() === 'N/A') return null;
+
+    const fps = Number(raw);
+    if (!Number.isFinite(fps) || fps < 0) return null;
+    return Number(fps.toFixed(2));
 }
 
 function deriveOutputMediaFromEncoding(encoding, inputMedia) {
@@ -228,5 +263,8 @@ module.exports = {
     getSessionBytesOut,
     mergeProbeMediaInfo,
     parseFfmpegBitrateToKbps,
+    parseFfmpegProgressFps,
+    parseFfmpegProgressFrame,
+    parseFfmpegTotalSizeBytes,
     resolveOutputMediaSnapshot,
 };

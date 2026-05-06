@@ -37,6 +37,19 @@ const ingestUiState = {
 
 let ingestVisibilityPipeId = null;
 
+function createOutputMetricBadge(text, title) {
+    const badge = document.createElement('span');
+    badge.className = 'badge badge-sm whitespace-nowrap';
+    badge.textContent = text;
+    badge.title = title;
+    return badge;
+}
+
+function formatProgressFps(value) {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return Number.isInteger(value) ? `${value} FPS` : `${value.toFixed(1)} FPS`;
+}
+
 function setPipelineViewDependencies(dependencies) {
     Object.assign(pipelineViewDependencies, dependencies || {});
 }
@@ -409,23 +422,50 @@ function setPipelineViewDependencies(dependencies) {
             metadataRow.style.gridColumn = '1 / -1';
 
             if (o.time !== null) {
-                const timeBadge = document.createElement('span');
-                timeBadge.className = 'badge badge-sm whitespace-nowrap';
-                timeBadge.textContent = msToHHMMSS(o.time);
+                const timeBadge = createOutputMetricBadge(
+                    msToHHMMSS(o.time),
+                    'Output uptime in the current session',
+                );
                 metadataRow.appendChild(timeBadge);
             }
 
-            if (isRunning) {
-                const throughputBadge = document.createElement('span');
-                throughputBadge.className = 'badge badge-sm whitespace-nowrap';
-                setBadgeBitrateWithSubtleUnit(throughputBadge, o.bitrateKbps);
-                metadataRow.appendChild(throughputBadge);
+            const outputProgressFrame = Number(o.progressFrame);
+            if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
+                const frameBadge = createOutputMetricBadge(
+                    `Frame ${Math.trunc(outputProgressFrame)}`,
+                    'Output frame count from FFmpeg progress',
+                );
+                metadataRow.appendChild(frameBadge);
             }
 
-            if (o.totalSize) {
-                const volumeBadge = document.createElement('span');
-                volumeBadge.className = 'badge badge-sm whitespace-nowrap';
-                volumeBadge.textContent = `${(Number(o.totalSize) / (1024 * 1024)).toFixed(1)} MB`;
+            const outputProgressFps = Number(o.progressFps);
+            const outputFpsText = formatProgressFps(outputProgressFps);
+            if (outputFpsText) {
+                const fpsBadge = createOutputMetricBadge(
+                    outputFpsText,
+                    'Output FPS from FFmpeg progress',
+                );
+                metadataRow.appendChild(fpsBadge);
+            }
+
+            if (isRunning) {
+                const outputBitrateKbps = Number(o.bitrateKbps);
+                if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
+                    const throughputBadge = createOutputMetricBadge(
+                        '',
+                        'Output bitrate from FFmpeg progress',
+                    );
+                    setBadgeBitrateWithSubtleUnit(throughputBadge, outputBitrateKbps);
+                    metadataRow.appendChild(throughputBadge);
+                }
+            }
+
+            const outputTotalSizeBytes = Number(o.totalSize);
+            if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+                const volumeBadge = createOutputMetricBadge(
+                    `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+                    'Output total size from FFmpeg progress',
+                );
                 metadataRow.appendChild(volumeBadge);
             }
 

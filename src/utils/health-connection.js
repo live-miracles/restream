@@ -140,7 +140,8 @@ function buildUnexpectedReaders({
 
         if (normalizedReaderType === 'hlsmuxer' && !ignoredInternalHlsMuxer) {
             // MediaMTX exposes one internal HLS muxer reader per ready path when HLS is enabled.
-            // Ignore this single internal reader to avoid noisy dashboard warnings.
+            // Ignore exactly one: readers like [hlsMuxer, reader_pipelineA, reader_pipelineB]
+            // should still report zero unexpected readers when both pipeline readers are managed.
             ignoredInternalHlsMuxer = true;
             continue;
         }
@@ -159,6 +160,8 @@ function buildUnexpectedReaders({
                 ? rtspSessionRecordById?.get(readerId) || rtspConnectionById.get(readerId) || null
                 : rtspConnectionById.get(readerId) || null
             : null;
+        // RTSP readers can show up either as a session id or a bare connection id depending on the
+        // MediaMTX surface that reported them, so try both maps before treating the reader as unknown.
         const readerTag = getReaderIdFromQuery(rtspConn?.query || null);
         const userAgent = String(rtspConn?.userAgent || '').toLowerCase();
 

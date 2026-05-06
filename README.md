@@ -1,6 +1,6 @@
 # Restream
 
-A streaming control plane built on [MediaMTX](https://github.com/bluenviron/mediamtx). Takes RTMP ingest, manages stream keys and pipelines, and drives multiple FFmpeg output jobs to external platforms (YouTube, Facebook, etc.) via a browser dashboard.
+A streaming control plane built on [MediaMTX](https://github.com/bluenviron/mediamtx). Takes RTMP ingest, manages stream keys and pipelines, and drives multiple FFmpeg output jobs to external platforms over RTMP, RTSP, SRT, and HLS upload endpoints via a browser dashboard.
 
 ## How It Works
 

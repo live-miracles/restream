@@ -25,9 +25,44 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
+function isLikelyHlsOutputUrl(str) {
+    try {
+        const parsed = new URL(str);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return false;
+        }
+        if (/\.m3u8$/i.test(parsed.pathname || '')) {
+            return true;
+        }
+        for (const value of parsed.searchParams.values()) {
+            if (/\.m3u8$/i.test(String(value || '').trim())) {
+                return true;
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
+}
+
 function maskSecret(value) {
     const s = String(value ?? '');
     if (!s) return '';
+
+    let parsed = null;
+    try {
+        parsed = new URL(s);
+    } catch {
+        parsed = null;
+    }
+
+    if (
+        parsed &&
+        (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+        !isLikelyHlsOutputUrl(s)
+    ) {
+        return s;
+    }
 
     const maskToken = (token) => {
         if (!token) return '';
@@ -65,13 +100,30 @@ function maskSecret(value) {
         });
     }
 
+    if (parsed && isLikelyHlsOutputUrl(s)) {
+        const sensitiveParams =
+            /key|streamkey|stream_key|token|secret|pass|passphrase|signature|sig|auth|streamid|cid/i;
+
+        if (parsed.username) parsed.username = '[REDACTED]';
+        if (parsed.password) parsed.password = '[REDACTED]';
+
+        for (const [paramKey, paramValue] of parsed.searchParams.entries()) {
+            if (sensitiveParams.test(paramKey)) {
+                parsed.searchParams.set(paramKey, maskToken(paramValue));
+            }
+        }
+
+        return parsed.toString();
+    }
+
     return maskToken(s);
 }
 
 function sanitizeLogMessage(msg, redacted = true) {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
-        maskSecret(url || full),
+    return String(msg).replace(
+        /((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi,
+        (full, url) => maskSecret(url || full),
     );
 }
 
@@ -101,7 +153,8 @@ function isValidOutput(str) {
                 parsed.protocol === 'rtmps:' ||
                 parsed.protocol === 'rtsp:' ||
                 parsed.protocol === 'rtsps:' ||
-                parsed.protocol === 'srt:')
+                parsed.protocol === 'srt:' ||
+                isLikelyHlsOutputUrl(str))
         );
     } catch {
         return false;
@@ -285,6 +338,7 @@ export {
     msToHHMMSS,
     setInnerText,
     escapeHtml,
+    isLikelyHlsOutputUrl,
     maskSecret,
     sanitizeLogMessage,
     formatCodecName,

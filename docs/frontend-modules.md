@@ -120,8 +120,9 @@ This keeps migration failures visible before commit.
 
 - Output history opens with URL redaction enabled by default. The eye toggle reveals or re-hides
 	URLs in both timeline and raw modes.
-- Redaction must mask RTMP/RTSP/SRT URL secrets consistently, including SRT `streamid`
-	segments used for publish routing.
+- Redaction must mask RTMP/RTSP/SRT/HLS URL secrets consistently, including SRT `streamid`
+	segments used for publish routing and HLS query params such as `cid`, `token`, and similar
+	upload credentials.
 - Output configuration edits (name, URL, encoding) should emit a `Config` timeline event in
 	output history (`[lifecycle] config_created` and `[lifecycle] config_changed`).
 - Pipeline input-state transitions to `on` should include publisher protocol and remote address in
@@ -130,28 +131,37 @@ This keeps migration failures visible before commit.
 ## 10. Output Modal Protocol Behavior
 
 - `public/js/features/editor.js` owns protocol-aware behavior for the output add/edit modal.
-- Protocol selector currently supports `RTMP`, `RTSP`, and `SRT`.
+- Protocol selector currently supports `RTMP`, `HLS`, `RTSP`, and `SRT`.
 - Server URL presets are protocol-aware:
 	- RTMP: known platform endpoints plus `Custom`
+	- HLS: `YouTube HLS`, `YT Backup HLS`, plus `Custom`
 	- RTSP: `Custom` only
 	- SRT: `Custom` only
-- For new outputs in RTMP mode, the Server URL preset defaults to `YouTube` (stream key remains editable).
+- For new outputs in RTMP mode, the Server URL preset defaults to `YouTube`.
+- For new outputs in HLS mode, the Server URL preset defaults to `YouTube HLS`.
 - Protocol, encoding, and server selector controls should remain grouped into one compact row in
 	the modal header area.
 - Operator fields are protocol-specific and switch live with the protocol selector.
 - RTMP operator fields should be shown when RTMP uses `Custom` server URL, and hidden when a
 	predefined RTMP server preset is selected.
+- HLS does not use separate host/port operator cards. In preset-backed HLS mode the modal accepts
+	a stream key only; in custom HLS mode it accepts a full `http://` or `https://` playlist URL.
 - URL input label should stay minimal to avoid operator confusion:
-	- `Stream Key` for RTMP preset servers
-	- `Custom URL` for RTMP custom mode, RTSP, and SRT
+	- `Stream Key` for RTMP and HLS preset servers
+	- `Custom URL` for RTMP custom mode, HLS custom mode, RTSP, and SRT
 - Operator field cards should keep compact padding/gaps while preserving clear label-to-input
 	spacing for readability.
 - Users can still paste a full output URL directly; the modal should best-effort parse that URL
-	and repopulate protocol/operator fields when possible.
+	and repopulate protocol/operator fields when possible, including known HLS preset URL shapes.
+- In HLS mode, an explicit `Custom` Server URL choice should stay custom while the user pastes or
+	edits a full `http://` or `https://` playlist URL. The modal should not snap back to a known HLS
+	preset unless the user explicitly selects that preset.
 - Protocol switches should normalize the URL input so stale values from another protocol are not
-	left behind (for example, `rtsp://...` should not remain after switching back to `RTMP`).
+	left behind (for example, `rtsp://...` should not remain after switching back to `RTMP`, and a
+	raw HLS playlist URL should not remain when switching back into preset-backed HLS mode).
 - Protocol switches should seed a protocol-specific custom default URL and hydrate operator fields
-	from that URL immediately.
+	from that URL immediately. The HLS custom default URL shape is
+	`http://<host>/hls/<token>/out.m3u8`.
 - Default protocol ports in operator fields are:
 	- RTMP: `1935`
 	- RTSP: `554`

@@ -12,6 +12,8 @@ function getOutputRecoveryConfig() {
 
 function getRetryDelayMs(failureCount) {
     // Retry policy is split into fixed-delay attempts first, then capped exponential backoff.
+    // Example with immediateRetries=2, immediateDelayMs=1000, backoffBaseDelayMs=2000:
+    // failures 1-2 wait 1s, failure 3 waits 2s, failure 4 waits 4s, then clamp at maxDelay.
     const cfg = getOutputRecoveryConfig();
     const immediateRetries = Number(cfg.immediateRetries || 0);
     const immediateDelayMs = Number(cfg.immediateDelayMs || 1000);

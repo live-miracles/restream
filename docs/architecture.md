@@ -456,9 +456,14 @@ kbps = (deltaBytes × 8) / (deltaMs / 1000) / 1000
 
 These values are stored as numeric Kbps in the dashboard model. At render time, the UI formats bitrate display with adaptive units (`kb/s`, `mb/s`, `gb/s`) while preserving Kbps as the transport unit in API/model fields.
 
-For outputs, bitrate is server-provided from ffmpeg progress (`bitrate`) in raw ffmpeg format (for example `1842.5kbits/s`) and is not delta-computed in the browser.
+For outputs, progress is server-provided from ffmpeg and is not delta-computed in the browser.
 
-The backend also emits `outputs[*].bitrateKbps` (numeric Kbps) by parsing ffmpeg progress once on the server. The frontend uses `bitrateKbps` for per-output and aggregate output bitrate, keeping UI logic agnostic of ffmpeg-specific string formats.
+The backend emits `outputs[*].bitrate` (raw ffmpeg string), `bitrateKbps` (numeric Kbps),
+`totalSize` (numeric bytes), `progressFrame`, and `progressFps` by parsing ffmpeg progress once on
+the server. The frontend uses `bitrateKbps` for per-output and aggregate bitrate, and uses
+`totalSize`, `progressFrame`, and `progressFps` directly for output badges, keeping UI logic
+agnostic of ffmpeg-specific string formats. When ffmpeg reports `N/A` (common with HLS uploads),
+the backend normalizes those values to `null` before they reach the dashboard.
 
 ### 5.4 Output History Modal
 

@@ -126,7 +126,10 @@ generateReaderTag(pipelineId, outputId)
   → "reader_" + (pipelineId + "_" + outputId).replace(/[^a-zA-Z0-9_-]/g, '_')
 ```
 
-If `rtspByReaderTag.get(expectedTag)` returns at least one connection, status is `on`. Output counters and bitrate are sourced from ffmpeg progress keyed by `jobId`: `total_size` (raw), `bitrate` (raw), and `bitrateKbps` (server-normalized numeric Kbps).
+If `rtspByReaderTag.get(expectedTag)` returns at least one connection, status is `on`. Output
+progress is sourced from ffmpeg progress keyed by `jobId`: `total_size`, `bitrate`, `frame`, and
+`fps`. The backend normalizes those values into `/health` as `totalSize`, `bitrate`,
+`bitrateKbps`, `progressFrame`, and `progressFps`, converting ffmpeg `N/A` values to `null`.
 
 ```mermaid
 flowchart LR
@@ -242,16 +245,30 @@ Frontend-only derived input stats:
 |---|---|---|
 | `outputs[outputId].status` (backend `/health`) | Mixed | Base from latest DB job status, then runtime `on/warning` from MediaMTX reader-tag match. |
 | `outputs[outputId].jobId` | DB | Latest job row ID for this output. |
-| `outputs[outputId].totalSize` | ffmpeg progress | Raw ffmpeg `total_size` from in-memory progress map for the running `jobId`. |
-| `outputs[outputId].bitrate` | ffmpeg progress | Raw ffmpeg `bitrate` string from in-memory progress map for the running `jobId`. |
-| `outputs[outputId].bitrateKbps` | Server-normalized | Parsed from ffmpeg `bitrate` into numeric Kbps in backend health aggregation. |
+| `outputs[outputId].totalSize` | Server-normalized ffmpeg progress | Parsed from ffmpeg `total_size` into a numeric byte count; `N/A` becomes `null`. |
+| `outputs[outputId].bitrate` | ffmpeg progress | Raw ffmpeg `bitrate` string from in-memory progress map for the running `jobId`, or `null` when unavailable. |
+| `outputs[outputId].bitrateKbps` | Server-normalized | Parsed from ffmpeg `bitrate` into numeric Kbps in backend health aggregation; `N/A` becomes `null`. |
+| `outputs[outputId].progressFrame` | Server-normalized ffmpeg progress | Parsed from ffmpeg `frame` into an integer frame count; `N/A` becomes `null`. |
+| `outputs[outputId].progressFps` | Server-normalized ffmpeg progress | Parsed from ffmpeg `fps` into a numeric FPS value; `N/A` becomes `null`. |
 
 Frontend-only derived output stats and display values:
 
 | Field | Source | Notes |
 |---|---|---|
 | `out.status` (dashboard model) | Backend `/health` | UI treats backend `outputs[outputId].status` as source of truth. |
+| `out.totalSize` | Backend `/health` | Direct passthrough from `outputs[outputId].totalSize` (numeric bytes or `null`). |
 | `out.bitrateKbps` | Backend `/health` | Direct passthrough from `outputs[outputId].bitrateKbps` (numeric). |
+| `out.progressFrame` | Backend `/health` | Direct passthrough from `outputs[outputId].progressFrame` (integer or `null`). |
+| `out.progressFps` | Backend `/health` | Direct passthrough from `outputs[outputId].progressFps` (numeric or `null`). |
+| `out.time` | Computed in UI | Wall-clock uptime since the latest output job `startedAt`. |
 | `pipe.stats.outputBitrateKbps` | Computed in UI | Sum of active `out.bitrateKbps` values for display. |
 | `out.video`, `out.audio` | Backend `/health` (`outputs[outputId].media`) | Output media is resolved server-side from parsed FFmpeg `Output #0` stream info, with fallback derivation when FFmpeg details are not yet available. |
 | `out.mediaSource` | Backend `/health` (`outputs[outputId].mediaSource`) | Source tag used by UI to distinguish confirmed FFmpeg media (`ffmpeg`) from fallback-derived values (`fallback-source`, `fallback-profile`, `unknown`). |
+
+Notes on HLS outputs:
+
+- Transcoded HLS outputs can emit `progressFrame` and `progressFps` normally.
+- HLS `source` copy outputs may omit `frame` and `fps` in ffmpeg progress, so those fields can
+  remain `null` even while the output is healthy.
+- HLS uploads commonly report `N/A` for `bitrate` and `total_size`; the backend converts those to
+  `null` before the dashboard sees them.

@@ -30,6 +30,13 @@ Software:
 - MediaMTX
 - git (for deployment from source)
 
+FFmpeg version note:
+
+- Ubuntu 24.04 currently ships FFmpeg `6.1.1` in the standard `apt` repositories.
+- Restream's HLS upload outputs use FFmpeg's HLS muxer with `-method PUT -http_persistent 1`.
+- On FFmpeg `6.1.x`, transient loss of the HLS upload HTTP sink can trigger an upstream HLS retry-path bug. In observed runs, HLS `source` copy outputs usually fail cleanly with a muxer error, while transcoded HLS outputs can terminate with `SIGSEGV` before Restream retries them.
+- Restream's output recovery still restarts the output, but FFmpeg `7.1+` includes the upstream fix and is preferred for HLS upload deployments.
+
 ## 3. Create Service User and Paths
 
 ```sh
