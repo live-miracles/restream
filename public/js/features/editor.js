@@ -300,6 +300,37 @@ function parseRtspOperatorFields(rawUrl) {
     };
 }
 
+function parseHlsOperatorFields(rawUrl) {
+    const parsed = safeParseUrl(rawUrl);
+    const token = getDefaultOutputToken(rawUrl);
+    if (
+        !parsed ||
+        (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+        !isLikelyHlsOutputUrl(rawUrl)
+    ) {
+        return {
+            scheme: 'http',
+            host: getDefaultOutputHost(),
+            port: '',
+            path: `/hls/${token}/out.m3u8`,
+            extraQuery: '',
+        };
+    }
+
+    const queryEntries = [];
+    parsed.searchParams.forEach((value, key) => {
+        queryEntries.push(`${key}=${value}`);
+    });
+
+    return {
+        scheme: parsed.protocol === 'https:' ? 'https' : 'http',
+        host: parsed.hostname || getDefaultOutputHost(),
+        port: parsed.port || '',
+        path: parsed.pathname || `/hls/${token}/out.m3u8`,
+        extraQuery: queryEntries.join('&'),
+    };
+}
+
 function buildRtspUrlFromOperatorFields() {
     const host = document.getElementById('out-rtsp-host-input')?.value.trim() || '';
     const port = document.getElementById('out-rtsp-port-input')?.value.trim() || '554';
@@ -387,6 +418,38 @@ function buildRtmpUrlFromOperatorFields() {
     return `rtmp://${host}:${port}${normalizedAppPath}/${streamKey}${qs ? `?${qs}` : ''}`;
 }
 
+function buildHlsUrlFromOperatorFields() {
+    const schemeValue = document.getElementById('out-hls-scheme-input')?.value.trim() || 'http';
+    const host = document.getElementById('out-hls-host-input')?.value.trim() || '';
+    const port = document.getElementById('out-hls-port-input')?.value.trim() || '';
+    const path =
+        document.getElementById('out-hls-path-input')?.value.trim() || '/hls/test/out.m3u8';
+    const extraQueryRaw = document.getElementById('out-hls-extra-query-input')?.value.trim() || '';
+
+    if (!host) return '';
+
+    const scheme = schemeValue === 'https' ? 'https' : 'http';
+    const origin = `${scheme}://${host}${port ? `:${port}` : ''}`;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+    const query = new URLSearchParams();
+    if (extraQueryRaw) {
+        for (const segment of extraQueryRaw.split('&')) {
+            const part = segment.trim();
+            if (!part) continue;
+            const eqIdx = part.indexOf('=');
+            if (eqIdx < 0) {
+                query.set(part, '');
+            } else {
+                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
+            }
+        }
+    }
+
+    const qs = query.toString();
+    return `${origin}${normalizedPath}${qs ? `?${qs}` : ''}`;
+}
+
 function isCustomOutputServerSelected(protocol = 'rtmp') {
     const serverSelect = document.getElementById('out-server-url-input');
     if (!protocolUsesOutputServerPresets(protocol)) return true;
@@ -401,11 +464,13 @@ function isCustomRtmpServerSelected() {
 function applyOutputProtocolUi(protocol) {
     const urlLabel = document.getElementById('out-url-input-label');
     const rtmpOperatorFields = document.getElementById('out-rtmp-operator-fields');
+    const hlsOperatorFields = document.getElementById('out-hls-operator-fields');
     const rtspOperatorFields = document.getElementById('out-rtsp-operator-fields');
     const srtOperatorFields = document.getElementById('out-srt-operator-fields');
     const serverSelect = document.getElementById('out-server-url-input');
 
     const showRtmpOperatorFields = protocol === 'rtmp' && isCustomOutputServerSelected(protocol);
+    const showHlsOperatorFields = protocol === 'hls' && isCustomOutputServerSelected(protocol);
     const isPresetBackedMode =
         protocolUsesOutputServerPresets(protocol) && !isCustomOutputServerSelected(protocol);
 
@@ -414,6 +479,9 @@ function applyOutputProtocolUi(protocol) {
     }
     if (rtmpOperatorFields) {
         rtmpOperatorFields.classList.toggle('hidden', !showRtmpOperatorFields);
+    }
+    if (hlsOperatorFields) {
+        hlsOperatorFields.classList.toggle('hidden', !showHlsOperatorFields);
     }
     if (rtspOperatorFields) {
         rtspOperatorFields.classList.toggle('hidden', protocol !== 'rtsp');
@@ -436,87 +504,83 @@ function getEffectiveOutputUrlFromModal() {
         return rawInput;
     }
 
-    if (protocol === 'rtmp' && isCustomOutputServerSelected(protocol)) {
-        return buildRtmpUrlFromOperatorFields() || rawInput;
-    }
-
-    if (protocol === 'srt') {
-        return buildSrtUrlFromOperatorFields() || rawInput;
-    }
-    if (protocol === 'rtsp') {
-        return buildRtspUrlFromOperatorFields() || rawInput;
-    }
-
-    if (protocol === 'hls' && isCustomOutputServerSelected(protocol)) {
-        return rawInput;
+    const operatorProtocol = OUTPUT_OPERATOR_PROTOCOLS[protocol];
+    if (
+        operatorProtocol &&
+        (!protocolUsesOutputServerPresets(protocol) || isCustomOutputServerSelected(protocol))
+    ) {
+        return operatorProtocol.build() || rawInput;
     }
 
     return resolvePresetOutputUrl(serverUrl, rawInput);
 }
 
-function syncSrtOperatorFieldsFromRawInput(rawInput) {
-    const parsed = parseSrtOperatorFields(rawInput);
-    const hostInput = document.getElementById('out-srt-host-input');
-    const portInput = document.getElementById('out-srt-port-input');
-    const streamIdInput = document.getElementById('out-srt-streamid-input');
-    const extraQueryInput = document.getElementById('out-srt-extra-query-input');
+const OUTPUT_OPERATOR_PROTOCOLS = {
+    rtmp: {
+        fieldIds: {
+            host: 'out-rtmp-host-input',
+            port: 'out-rtmp-port-input',
+            appPath: 'out-rtmp-app-path-input',
+            streamKey: 'out-rtmp-stream-key-input',
+            extraQuery: 'out-rtmp-extra-query-input',
+        },
+        parse: parseRtmpOperatorFields,
+        build: buildRtmpUrlFromOperatorFields,
+        shouldSyncRaw: isCustomRtmpServerSelected,
+    },
+    rtsp: {
+        fieldIds: {
+            host: 'out-rtsp-host-input',
+            port: 'out-rtsp-port-input',
+            path: 'out-rtsp-path-input',
+            extraQuery: 'out-rtsp-extra-query-input',
+        },
+        parse: parseRtspOperatorFields,
+        build: buildRtspUrlFromOperatorFields,
+        shouldSyncRaw: () => true,
+    },
+    srt: {
+        fieldIds: {
+            host: 'out-srt-host-input',
+            port: 'out-srt-port-input',
+            streamId: 'out-srt-streamid-input',
+            extraQuery: 'out-srt-extra-query-input',
+        },
+        parse: parseSrtOperatorFields,
+        build: buildSrtUrlFromOperatorFields,
+        shouldSyncRaw: () => true,
+    },
+    hls: {
+        fieldIds: {
+            scheme: 'out-hls-scheme-input',
+            host: 'out-hls-host-input',
+            port: 'out-hls-port-input',
+            path: 'out-hls-path-input',
+            extraQuery: 'out-hls-extra-query-input',
+        },
+        parse: parseHlsOperatorFields,
+        build: buildHlsUrlFromOperatorFields,
+        shouldSyncRaw: () => isCustomOutputServerSelected('hls'),
+    },
+};
 
-    if (hostInput) hostInput.value = parsed.host;
-    if (portInput) portInput.value = parsed.port;
-    if (streamIdInput) streamIdInput.value = parsed.streamId;
-    if (extraQueryInput) extraQueryInput.value = parsed.extraQuery;
+function syncOperatorFieldsFromRawInput(protocol, rawInput) {
+    const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
+    if (!config) return;
+
+    const parsed = config.parse(rawInput);
+    Object.entries(config.fieldIds).forEach(([key, fieldId]) => {
+        const field = document.getElementById(fieldId);
+        if (field) field.value = parsed[key] ?? '';
+    });
 }
 
-function syncRtmpOperatorFieldsFromRawInput(rawInput) {
-    const parsed = parseRtmpOperatorFields(rawInput);
-    const hostInput = document.getElementById('out-rtmp-host-input');
-    const portInput = document.getElementById('out-rtmp-port-input');
-    const appPathInput = document.getElementById('out-rtmp-app-path-input');
-    const streamKeyInput = document.getElementById('out-rtmp-stream-key-input');
-    const extraQueryInput = document.getElementById('out-rtmp-extra-query-input');
-
-    if (hostInput) hostInput.value = parsed.host;
-    if (portInput) portInput.value = parsed.port;
-    if (appPathInput) appPathInput.value = parsed.appPath;
-    if (streamKeyInput) streamKeyInput.value = parsed.streamKey;
-    if (extraQueryInput) extraQueryInput.value = parsed.extraQuery;
-}
-
-function syncRtspOperatorFieldsFromRawInput(rawInput) {
-    const parsed = parseRtspOperatorFields(rawInput);
-    const hostInput = document.getElementById('out-rtsp-host-input');
-    const portInput = document.getElementById('out-rtsp-port-input');
-    const pathInput = document.getElementById('out-rtsp-path-input');
-    const extraQueryInput = document.getElementById('out-rtsp-extra-query-input');
-
-    if (hostInput) hostInput.value = parsed.host;
-    if (portInput) portInput.value = parsed.port;
-    if (pathInput) pathInput.value = parsed.path;
-    if (extraQueryInput) extraQueryInput.value = parsed.extraQuery;
-}
-
-function syncRawInputFromSrtOperatorFields() {
+function syncRawInputFromOperatorFields(protocol) {
     const rawInput = document.getElementById('out-rtmp-key-input');
-    if (!rawInput) return;
-    const crafted = buildSrtUrlFromOperatorFields();
-    if (crafted) {
-        rawInput.value = crafted;
-    }
-}
+    const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
+    if (!rawInput || !config) return;
 
-function syncRawInputFromRtspOperatorFields() {
-    const rawInput = document.getElementById('out-rtmp-key-input');
-    if (!rawInput) return;
-    const crafted = buildRtspUrlFromOperatorFields();
-    if (crafted) {
-        rawInput.value = crafted;
-    }
-}
-
-function syncRawInputFromRtmpOperatorFields() {
-    const rawInput = document.getElementById('out-rtmp-key-input');
-    if (!rawInput) return;
-    const crafted = buildRtmpUrlFromOperatorFields();
+    const crafted = config.build();
     if (crafted) {
         rawInput.value = crafted;
     }
@@ -526,19 +590,6 @@ function setupOutputModalProtocolHandlers() {
     const protocolSelect = document.getElementById('out-protocol-input');
     const serverSelect = document.getElementById('out-server-url-input');
     const rawInput = document.getElementById('out-rtmp-key-input');
-    const rtmpHostInput = document.getElementById('out-rtmp-host-input');
-    const rtmpPortInput = document.getElementById('out-rtmp-port-input');
-    const rtmpAppPathInput = document.getElementById('out-rtmp-app-path-input');
-    const rtmpStreamKeyInput = document.getElementById('out-rtmp-stream-key-input');
-    const rtmpExtraQueryInput = document.getElementById('out-rtmp-extra-query-input');
-    const rtspHostInput = document.getElementById('out-rtsp-host-input');
-    const rtspPortInput = document.getElementById('out-rtsp-port-input');
-    const rtspPathInput = document.getElementById('out-rtsp-path-input');
-    const rtspExtraQueryInput = document.getElementById('out-rtsp-extra-query-input');
-    const srtHostInput = document.getElementById('out-srt-host-input');
-    const srtPortInput = document.getElementById('out-srt-port-input');
-    const srtStreamIdInput = document.getElementById('out-srt-streamid-input');
-    const srtExtraQueryInput = document.getElementById('out-srt-extra-query-input');
 
     if (!protocolSelect || !serverSelect || !rawInput) return;
 
@@ -567,18 +618,21 @@ function setupOutputModalProtocolHandlers() {
             populateOutputServerOptions('rtmp', selectedServer);
             if (selectedServer) {
                 rawInput.value = normalizedRaw || getDefaultOutputToken(previousRaw);
-                syncRtmpOperatorFieldsFromRawInput(`${selectedServer}${rawInput.value}`);
+                syncOperatorFieldsFromRawInput('rtmp', `${selectedServer}${rawInput.value}`);
             } else {
                 const sourceUrl =
                     isAbsoluteUrl(normalizedRaw)
                         ? normalizedRaw
                         : buildDefaultCustomOutputUrl('rtmp', normalizedRaw);
                 rawInput.value = sourceUrl;
-                syncRtmpOperatorFieldsFromRawInput(sourceUrl);
-                syncRawInputFromRtmpOperatorFields();
+                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
+                syncRawInputFromOperatorFields('rtmp');
             }
             applyOutputProtocolUi('rtmp');
-        } else if (protocol === 'hls') {
+            return;
+        }
+
+        if (protocol === 'hls') {
             const matchedPreset = isLikelyHlsOutputUrl(previousRaw)
                 ? matchOutputServerPreset('hls', previousRaw)
                 : null;
@@ -595,32 +649,24 @@ function setupOutputModalProtocolHandlers() {
                     isLikelyHlsOutputUrl(previousRaw)
                         ? previousRaw
                         : buildDefaultCustomOutputUrl('hls', previousRaw);
+                syncOperatorFieldsFromRawInput('hls', rawInput.value);
             }
             applyOutputProtocolUi('hls');
-        } else {
-            populateOutputServerOptions(protocol, '');
-            applyOutputProtocolUi(protocol);
-
-            if (protocol === 'srt') {
-                const parsed = safeParseUrl(previousRaw);
-                const sourceUrl = parsed?.protocol === 'srt:'
-                    ? previousRaw
-                    : buildDefaultCustomOutputUrl('srt', previousRaw);
-                rawInput.value = sourceUrl;
-                syncSrtOperatorFieldsFromRawInput(sourceUrl);
-                syncRawInputFromSrtOperatorFields();
-            } else if (protocol === 'rtsp') {
-                const parsed = safeParseUrl(previousRaw);
-                const sourceUrl =
-                    parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'
-                        ? previousRaw
-                        : buildDefaultCustomOutputUrl('rtsp', previousRaw);
-                rawInput.value = sourceUrl;
-                syncRtspOperatorFieldsFromRawInput(sourceUrl);
-                syncRawInputFromRtspOperatorFields();
-            }
+            return;
         }
 
+        populateOutputServerOptions(protocol, '');
+        applyOutputProtocolUi(protocol);
+
+        const parsed = safeParseUrl(previousRaw);
+        const sourceUrl =
+            (protocol === 'srt' && parsed?.protocol === 'srt:') ||
+            (protocol === 'rtsp' && (parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'))
+                ? previousRaw
+                : buildDefaultCustomOutputUrl(protocol, previousRaw);
+        rawInput.value = sourceUrl;
+        syncOperatorFieldsFromRawInput(protocol, sourceUrl);
+        syncRawInputFromOperatorFields(protocol);
     };
 
     serverSelect.onchange = () => {
@@ -630,18 +676,21 @@ function setupOutputModalProtocolHandlers() {
             if (serverSelect.value) {
                 rawInput.value =
                     extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
-                syncRtmpOperatorFieldsFromRawInput(`${serverSelect.value}${rawInput.value}`);
+                syncOperatorFieldsFromRawInput('rtmp', `${serverSelect.value}${rawInput.value}`);
             } else {
                 const sourceUrl =
                     detectOutputProtocol(rawValue) === 'rtmp' && isAbsoluteUrl(rawValue)
                         ? rawValue
                         : buildDefaultCustomOutputUrl('rtmp', rawValue);
                 rawInput.value = sourceUrl;
-                syncRtmpOperatorFieldsFromRawInput(sourceUrl);
-                syncRawInputFromRtmpOperatorFields();
+                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
+                syncRawInputFromOperatorFields('rtmp');
             }
             applyOutputProtocolUi('rtmp');
-        } else if (protocol === 'hls') {
+            return;
+        }
+
+        if (protocol === 'hls') {
             const rawValue = rawInput.value.trim();
             if (serverSelect.value) {
                 rawInput.value =
@@ -651,8 +700,10 @@ function setupOutputModalProtocolHandlers() {
                     isLikelyHlsOutputUrl(rawValue)
                         ? rawValue
                         : buildDefaultCustomOutputUrl('hls', rawValue);
+                syncOperatorFieldsFromRawInput('hls', rawInput.value);
             }
             applyOutputProtocolUi('hls');
+            return;
         }
     };
 
@@ -672,63 +723,47 @@ function setupOutputModalProtocolHandlers() {
 
         const protocol = protocolSelect.value || 'rtmp';
         if (protocol === 'hls' && isAbsoluteUrl(rawValue)) {
-            if (isCustomOutputServerSelected('hls')) {
-                applyOutputProtocolUi('hls');
-                return;
+            if (!isCustomOutputServerSelected('hls')) {
+                const matchedPreset = matchOutputServerPreset('hls', rawValue);
+                if (matchedPreset) {
+                    serverSelect.value = matchedPreset.value;
+                    rawInput.value = matchedPreset.inputValue;
+                } else if (serverSelect.value) {
+                    serverSelect.value = '';
+                }
             }
 
-            const matchedPreset = matchOutputServerPreset('hls', rawValue);
-            if (matchedPreset) {
-                serverSelect.value = matchedPreset.value;
-                rawInput.value = matchedPreset.inputValue;
-            } else if (serverSelect.value) {
-                serverSelect.value = '';
+            if (isCustomOutputServerSelected('hls')) {
+                syncOperatorFieldsFromRawInput('hls', rawValue);
             }
             applyOutputProtocolUi('hls');
             return;
         }
 
-        if (protocol === 'rtmp') {
-            const sourceUrl = serverSelect.value ? `${serverSelect.value}${rawValue}` : rawValue;
-            syncRtmpOperatorFieldsFromRawInput(sourceUrl);
-        } else if (protocol === 'srt') {
-            syncSrtOperatorFieldsFromRawInput(rawValue);
-        } else if (protocol === 'rtsp') {
-            syncRtspOperatorFieldsFromRawInput(rawValue);
+        if (OUTPUT_OPERATOR_PROTOCOLS[protocol]) {
+            const sourceUrl =
+                protocol === 'rtmp' && serverSelect.value
+                    ? `${serverSelect.value}${rawValue}`
+                    : rawValue;
+            syncOperatorFieldsFromRawInput(protocol, sourceUrl);
         }
     };
 
-    const syncFromRtmp = () => {
-        if ((protocolSelect.value || 'rtmp') !== 'rtmp') return;
-        if (!isCustomRtmpServerSelected()) return;
-        syncRawInputFromRtmpOperatorFields();
-    };
+    Object.entries(OUTPUT_OPERATOR_PROTOCOLS).forEach(([protocol, config]) => {
+        Object.values(config.fieldIds).forEach((fieldId) => {
+            const field = document.getElementById(fieldId);
+            if (!field) return;
 
-    const syncFromRtsp = () => {
-        if ((protocolSelect.value || 'rtmp') !== 'rtsp') return;
-        syncRawInputFromRtspOperatorFields();
-    };
+            const syncFromField = () => {
+                if ((protocolSelect.value || 'rtmp') !== protocol) return;
+                if (!config.shouldSyncRaw()) return;
+                syncRawInputFromOperatorFields(protocol);
+            };
 
-    const syncFromSrt = () => {
-        if ((protocolSelect.value || 'rtmp') !== 'srt') return;
-        syncRawInputFromSrtOperatorFields();
-    };
-
-    if (rtmpHostInput) rtmpHostInput.oninput = syncFromRtmp;
-    if (rtmpPortInput) rtmpPortInput.oninput = syncFromRtmp;
-    if (rtmpAppPathInput) rtmpAppPathInput.oninput = syncFromRtmp;
-    if (rtmpStreamKeyInput) rtmpStreamKeyInput.oninput = syncFromRtmp;
-    if (rtmpExtraQueryInput) rtmpExtraQueryInput.oninput = syncFromRtmp;
-
-    if (rtspHostInput) rtspHostInput.oninput = syncFromRtsp;
-    if (rtspPortInput) rtspPortInput.oninput = syncFromRtsp;
-    if (rtspPathInput) rtspPathInput.oninput = syncFromRtsp;
-    if (rtspExtraQueryInput) rtspExtraQueryInput.oninput = syncFromRtsp;
-
-    if (srtHostInput) srtHostInput.oninput = syncFromSrt;
-    if (srtPortInput) srtPortInput.oninput = syncFromSrt;
-    if (srtStreamIdInput) srtStreamIdInput.oninput = syncFromSrt;
-    if (srtExtraQueryInput) srtExtraQueryInput.oninput = syncFromSrt;
+            field.oninput = syncFromField;
+            field.onchange = syncFromField;
+        });
+    });
 }
 
 function setOutputToggleBusy(button, busy) {
@@ -974,16 +1009,12 @@ function setOutputToggleBusy(button, busy) {
 
         const outUrlInput = document.getElementById('out-rtmp-key-input');
         outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
-        if (detectedProtocol === 'rtmp') {
-            syncRtmpOperatorFieldsFromRawInput(
-                matchedPreset
+        if (OUTPUT_OPERATOR_PROTOCOLS[detectedProtocol]) {
+            const sourceUrl =
+                detectedProtocol === 'rtmp' && matchedPreset
                     ? resolvePresetOutputUrl(matchedPreset.value, outUrlInput.value)
-                    : outUrlInput.value,
-            );
-        } else if (detectedProtocol === 'srt') {
-            syncSrtOperatorFieldsFromRawInput(currentUrl);
-        } else if (detectedProtocol === 'rtsp') {
-            syncRtspOperatorFieldsFromRawInput(currentUrl);
+                    : currentUrl;
+            syncOperatorFieldsFromRawInput(detectedProtocol, sourceUrl);
         }
         applyOutputProtocolUi(detectedProtocol);
         document.getElementById('out-rtmp-key-input').classList.remove('input-error');

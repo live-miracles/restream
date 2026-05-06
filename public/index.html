@@ -248,6 +248,36 @@
               </div>
             </div>
           </fieldset>
+          <fieldset class="fieldset hidden" id="out-hls-operator-fields">
+            <legend class="fieldset-legend">Operator Fields (HLS)</legend>
+            <div class="rounded-2xl border border-base-content/8 bg-base-100/65 p-2">
+                <div class="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                <div class="rounded-xl bg-base-200/55 p-2">
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Scheme</div>
+                  <select id="out-hls-scheme-input" class="select select-sm w-full">
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                  </select>
+                </div>
+                <div class="rounded-xl bg-base-200/55 p-2">
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Host</div>
+                  <input type="text" id="out-hls-host-input" class="input input-sm w-full" placeholder="localhost" />
+                </div>
+                <div class="rounded-xl bg-base-200/55 p-2">
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Port</div>
+                  <input type="text" id="out-hls-port-input" class="input input-sm w-full" placeholder="optional" />
+                </div>
+                <div class="rounded-xl bg-base-200/55 p-2">
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Path</div>
+                  <input type="text" id="out-hls-path-input" class="input input-sm w-full" placeholder="/hls/test/out.m3u8" />
+                </div>
+                <div class="rounded-xl bg-base-200/55 p-2 sm:col-span-2">
+                    <div class="mb-2 text-xs font-semibold text-base-content/60" style="margin-bottom: 0.35rem;">Extra Query</div>
+                  <input type="text" id="out-hls-extra-query-input" class="input input-sm w-full" placeholder="token=abc123" />
+                </div>
+              </div>
+            </div>
+          </fieldset>
         </div>
 
           <div class="modal-action mt-1">
