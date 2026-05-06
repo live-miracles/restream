@@ -10,39 +10,49 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 ## What The Runner Does
 
 1. Loads session-4x3-manifest.json as the tracked source of truth.
-2. Optionally does a clean start of the local stack.
-3. Ensures missing stream keys, pipelines, and outputs exist.
-4. Starts ffmpeg input publishers for the manifest stream keys.
-5. Starts outputs for the resolved pipeline/output IDs.
-6. Waits for manifest-scoped inputs and outputs to become `on`.
-7. Captures a `/health` snapshot into test/artifacts/runs.
-8. Verifies output auto-retry by dropping and restoring the RTMP output sink.
-9. Verifies output auto-retry after an unexpected FFmpeg `SIGKILL` while desired state remains `running`.
-10. Verifies input recovery restarts outputs whose desired state remains `running`.
-11. Verifies SRT output loopback by temporarily repointing one output to another pipeline's SRT ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
-12. Verifies RTSP output loopback by temporarily repointing one output to another pipeline's RTSP ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
+2. Verifies the target app stack is already running.
+3. Verifies the local runner prerequisites (`ffmpeg` and `docker compose`) are available.
+4. Ensures missing stream keys, pipelines, and outputs exist without mutating conflicting existing outputs.
+5. Starts ffmpeg input publishers for the manifest stream keys.
+6. Starts outputs for the resolved pipeline/output IDs.
+7. Waits for manifest-scoped inputs and outputs to become `on`.
+8. Captures a `/health` snapshot into test/artifacts/runs.
+9. Verifies output auto-retry by dropping and restoring the RTMP output sink.
+10. Verifies output auto-retry after an unexpected FFmpeg `SIGKILL` while desired state remains `running`.
+11. Verifies input recovery restarts outputs whose desired state remains `running`.
+12. Verifies SRT output loopback by temporarily repointing one output to another pipeline's SRT ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
+13. Verifies RTSP output loopback by temporarily repointing one output to another pipeline's RTSP ingest URL, confirming the target pipeline input turns `on`, then restoring original publisher/output state.
 
 ## Primary Entry Points
 
-Full clean run (default):
+Start one supported stack first:
+- Host mode: `make run-host`
+- Docker mode: `make run-docker`
+
+Preferred runner entry point (also starts `nginx-rtmp` if needed):
 - make run-4x3
 
-Equivalent npm script:
+Direct runner once `nginx-rtmp` is already running:
+- docker compose up -d nginx-rtmp
 - npm run test:4x3
 
-Leave stack running after completion for inspection:
+Leave input publishers and resources created by the current run in place after completion for inspection:
 - KEEP_RUNNING=1 make run-4x3
 
-Reuse an already-running stack (skip media-service restart):
-- CLEAN_START=0 make run-4x3
-
-Docker mode (backend in container):
-- make run-docker
-- CLEAN_START=0 RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
+Docker mode output URL normalization:
+- RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
 
 ## Notes
 
 - session-4x3-manifest.json is not rewritten by the runner.
+- `make run-4x3` no longer starts the app or MediaMTX; it assumes `make run-host` or `make run-docker` is already running.
+- `make run-4x3` starts `nginx-rtmp` for you; `npm run test:4x3` expects that sink container to already be running.
+- `make run-4x3` and `npm run test:4x3` still require host `node`, host `ffmpeg`, and Docker with the compose plugin because the runner starts local publishers and manages the `nginx-rtmp` sink.
+- If the prestarted stack is host mode, it also still depends on the `make deps` outputs (`node_modules/` and `bin/mediamtx/mediamtx`).
+- `CLEAN_START` is no longer supported.
+- If a manifest output name already exists with different settings, the runner stops with a conflict instead of rewriting that output in place.
+- When `KEEP_RUNNING` is unset or `0`, shutdown removes only the stream keys, pipelines, and outputs created during the current run.
+- SRT/RTSP loopback activation and restore checks use a fixed 30-second window.
 - If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
 - Logs go to test/artifacts/logs.
 - Health snapshots go to test/artifacts/runs.

@@ -1,10 +1,18 @@
 # Dependencies
 node_modules/
+mediamtx
+mediamtx.exe
 
 # Local OS/editor files
 .DS_Store
 .idea/
 .vscode/
+
+# Downloaded binaries
+bin/
+
+# Log files
+log/
 
 # Local/runtime files
 .deps-stamp

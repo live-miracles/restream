@@ -26,7 +26,7 @@ const defaults = {
     outDir: 'test/artifacts/runs',
 };
 
-const LOOPBACK_TIMEOUT_SEC = 10;
+const LOOPBACK_TIMEOUT_SEC = 30;
 
 const config = {
     apiUrl: process.env.API_URL || defaults.apiUrl,
@@ -43,7 +43,6 @@ const config = {
     timeoutSec: Number(process.env.TIMEOUT_SEC || defaults.timeoutSec),
     pollSec: Number(process.env.POLL_SEC || defaults.pollSec),
     outDir: resolvePath(process.env.OUT_DIR || defaults.outDir),
-    cleanStart: readBooleanEnv('CLEAN_START', true),
     keepRunning: readBooleanEnv('KEEP_RUNNING', false),
 };
 
@@ -54,6 +53,7 @@ const outputEncodingUsage = new Map(outputEncodingDefaults.map((encoding) => [en
 
 const ownedProcesses = [];
 let shutdownPromise = null;
+let cleanupTargets = createCleanupTargets();
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
     printHelp();
@@ -68,23 +68,34 @@ try {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
 } finally {
-    await shutdown(config.keepRunning);
+    try {
+        await shutdown(config.keepRunning);
+    } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+    }
 }
 
 async function main() {
+    cleanupTargets = createCleanupTargets();
     const manifest = await loadManifest(config.manifestPath);
 
-    if (config.cleanStart) {
-        await cleanStart();
-    } else {
-        await ensureApiReachable();
-    }
+    console.log('== Verify local 4x3 prerequisites ==');
+    await ensureRunnerPrerequisites();
+
+    console.log('== Verify app is running (run "make run-host" or "make run-docker" first) ==');
+    await ensureApiReachable();
 
     console.log('== Step 1: Ensure 4x3 manifest resources ==');
-    const resolved = await ensureResources(manifest);
+    const resolved = await ensureResources(manifest, cleanupTargets);
 
-    console.log('== Step 1b: Verify new outputs default to desiredState=stopped ==');
-    await verifyDesiredStateForOutputs(resolved.outputs, 'stopped');
+    const newlyCreatedOutputs = resolved.outputs.filter((target) => target.wasCreated);
+    if (newlyCreatedOutputs.length > 0) {
+        console.log('== Step 1b: Verify newly created outputs default to desiredState=stopped ==');
+        await verifyDesiredStateForOutputs(newlyCreatedOutputs, 'stopped');
+    } else {
+        console.log('== Step 1b: No new outputs were created; skipping default desiredState check ==');
+    }
 
     console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
     const inputPublishers = await startInputPublishers(manifest);
@@ -141,6 +152,25 @@ function relativePath(targetPath) {
     return path.relative(rootDir, targetPath) || '.';
 }
 
+function createCleanupTargets() {
+    return {
+        streamKeys: [],
+        pipelines: [],
+        outputs: [],
+    };
+}
+
+function trackUnique(targets, item, keyFn) {
+    const key = keyFn(item);
+    const index = targets.findIndex((existing) => keyFn(existing) === key);
+    if (index >= 0) {
+        targets[index] = { ...targets[index], ...item };
+        return targets[index];
+    }
+    targets.push(item);
+    return item;
+}
+
 function readBooleanEnv(name, defaultValue) {
     const value = process.env[name];
     if (value == null || value === '') {
@@ -151,16 +181,21 @@ function readBooleanEnv(name, defaultValue) {
 
 function printHelp() {
     console.log(
-        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  CLEAN_START=1    Tear down stale state and launch a fresh stack (default)\n  KEEP_RUNNING=1   Leave backend and publishers running after the run\n  MANIFEST_PATH    Path to the tracked 4x3 manifest\n  API_URL          Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL    nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE Base URL used to normalize RTMP output URLs (if set)`,
+        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1    Leave input publishers and manifest-scoped test resources in place after the run\n  MANIFEST_PATH     Path to the tracked 4x3 manifest\n  API_URL           Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL     nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE  Base URL used to normalize RTMP output URLs (if set)`,
     );
 }
 
 function registerSignalHandlers() {
     for (const signal of ['SIGINT', 'SIGTERM']) {
         process.on(signal, () => {
-            void shutdown(config.keepRunning).finally(() => {
-                process.exit(signal === 'SIGINT' ? 130 : 143);
-            });
+            void shutdown(config.keepRunning)
+                .catch((error) => {
+                    console.error(error instanceof Error ? error.message : String(error));
+                    process.exitCode = 1;
+                })
+                .finally(() => {
+                    process.exit(signal === 'SIGINT' ? 130 : 143);
+                });
         });
     }
 }
@@ -172,45 +207,24 @@ async function shutdown(leaveRunning) {
 
     shutdownPromise = (async () => {
         if (leaveRunning) {
-            console.log('== KEEP_RUNNING=1: leaving input publishers and app running ==');
+            console.log('== KEEP_RUNNING=1: leaving input publishers and manifest-scoped test resources in place; app stack was not started by this runner ==');
             return;
         }
 
         for (const proc of ownedProcesses.reverse()) {
             await terminateProcess(proc);
         }
+
+        await cleanupTestResources(cleanupTargets);
     })();
 
     return shutdownPromise;
 }
 
-async function cleanStart() {
-    console.log('== Clean start: tear down stale processes and state ==');
-    await runCommand('bash', ['scripts/down.sh'], { allowFailure: true, stdio: 'inherit' });
-
-    await runCommand('docker', ['compose', 'up', '-d', 'mediamtx', 'nginx-rtmp'], {
-        stdio: 'inherit',
-    });
-
-    await mkdir(config.logDir, { recursive: true });
-    await writeFile(config.appLogPath, '', 'utf8');
-
-    console.log('== Clean start: launch backend and wait for health ==');
-    const appPid = spawnDetachedProcess({
-        name: 'backend',
-        command: process.execPath,
-        args: ['src/index.js'],
-        logPath: config.appLogPath,
-    });
-    console.log(`Started backend pid=${appPid} log=${relativePath(config.appLogPath)}`);
-
-    await waitForApiHealth();
-}
-
 async function waitForApiHealth() {
     for (let attempt = 1; attempt <= config.verifyAppRetries; attempt += 1) {
         try {
-            const response = await fetch(`${config.apiUrl}/health`, {
+            const response = await fetch(`${config.apiUrl}/healthz`, {
                 signal: AbortSignal.timeout(5000),
             });
             if (response.ok) {
@@ -224,13 +238,13 @@ async function waitForApiHealth() {
 
     const appLog = await safeReadFile(config.appLogPath);
     throw new Error(
-        `API did not become healthy at ${config.apiUrl}/health\nRecent app log:\n${tailText(appLog, 120)}`,
+        `API did not become ready at ${config.apiUrl}/healthz\nRecent app log:\n${tailText(appLog, 120)}`,
     );
 }
 
 async function ensureApiReachable() {
     try {
-        const response = await fetch(`${config.apiUrl}/health`, {
+        const response = await fetch(`${config.apiUrl}/healthz`, {
             signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) {
@@ -238,7 +252,26 @@ async function ensureApiReachable() {
         }
     } catch (error) {
         throw new Error(
-            `API is not reachable at ${config.apiUrl}. Start app first (for example: make run-host). ${String(error)}`,
+            `API readiness is not reachable at ${config.apiUrl}/healthz. Start app first (for example: make run-host or make run-docker). ${String(error)}`,
+        );
+    }
+}
+
+async function ensureRunnerPrerequisites() {
+    await assertCommandAvailable('ffmpeg', ['-version'], 'Install ffmpeg before running the 4x3 suite.');
+    await assertCommandAvailable(
+        'docker',
+        ['compose', 'version'],
+        'Install Docker with the compose plugin before running the 4x3 suite.',
+    );
+}
+
+async function assertCommandAvailable(command, args, helpText) {
+    try {
+        await runCommand(command, args, { stdio: 'ignore' });
+    } catch (error) {
+        throw new Error(
+            `${helpText} Failed prerequisite check: ${command} ${args.join(' ')}. ${String(error?.message || error)}`,
         );
     }
 }
@@ -252,13 +285,15 @@ async function loadManifest(manifestPath) {
     return manifest;
 }
 
-async function ensureResources(manifest) {
-    const pipelineTargets = [];
-    const outputTargets = [];
+async function ensureResources(manifest, trackedTargets = createCleanupTargets()) {
+    const pipelineTargets = trackedTargets.pipelines;
+    const outputTargets = trackedTargets.outputs;
+    const streamKeyTargets = trackedTargets.streamKeys;
     let state = await fetchConfigState();
 
     for (const [pipelineIndex, pipelineDef] of manifest.pipelines.entries()) {
         let streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
+        let streamKeyWasCreated = false;
         if (!streamKey) {
             await requestJson('/stream-keys', {
                 method: 'POST',
@@ -268,13 +303,25 @@ async function ensureResources(manifest) {
             console.log(`Created stream key for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
             state = await fetchConfigState();
             streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
+            streamKeyWasCreated = true;
         } else {
             console.log(`Stream key exists for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
         }
 
+        trackUnique(
+            streamKeyTargets,
+            {
+                key: pipelineDef.streamKey,
+                label: pipelineDef.name,
+                wasCreated: streamKeyWasCreated,
+            },
+            (item) => item.key,
+        );
+
         let pipeline = state.pipelines.find(
             (item) => item.name === pipelineDef.name && item.streamKey === pipelineDef.streamKey,
         );
+        let pipelineWasCreated = false;
         if (!pipeline) {
             const result = await requestJson('/pipelines', {
                 method: 'POST',
@@ -284,24 +331,32 @@ async function ensureResources(manifest) {
             pipeline = result.json.pipeline;
             console.log(`Created pipeline ${pipelineDef.name}: ${pipeline.id}`);
             state = await fetchConfigState();
+            pipelineWasCreated = true;
         } else {
             console.log(`Pipeline exists ${pipelineDef.name}: ${pipeline.id}`);
         }
 
-        pipelineTargets.push({
-            name: pipelineDef.name,
-            streamKey: pipelineDef.streamKey,
-            pipelineId: pipeline.id,
-        });
+        trackUnique(
+            pipelineTargets,
+            {
+                name: pipelineDef.name,
+                streamKey: pipelineDef.streamKey,
+                pipelineId: pipeline.id,
+                wasCreated: pipelineWasCreated,
+            },
+            (item) => item.pipelineId,
+        );
 
         for (const [outputIndex, outputDef] of pipelineDef.outputs.entries()) {
             const outputUrl = normalizeOutputUrl(outputDef.url);
             const encoding = resolveOutputEncoding(outputDef.encoding);
+            let wasCreated = false;
             let output = state.outputs.find(
                 (item) =>
                     item.pipelineId === pipeline.id &&
                     item.name === outputDef.name &&
-                    item.url === outputUrl,
+                    item.url === outputUrl &&
+                    normalizeOutputEncodingValue(item.encoding) === encoding,
             );
 
             if (!output) {
@@ -310,17 +365,9 @@ async function ensureResources(manifest) {
                 );
 
                 if (outputWithSameName) {
-                    const result = await requestJson(
-                        `/pipelines/${pipeline.id}/outputs/${outputWithSameName.id}`,
-                        {
-                            method: 'POST',
-                            body: { name: outputDef.name, url: outputUrl, encoding },
-                            okStatuses: [200],
-                        },
+                    throw new Error(
+                        `Refusing to mutate existing output ${pipelineDef.name}/${outputDef.name}. Expected url=${outputUrl} encoding=${encoding}, found url=${outputWithSameName.url} encoding=${normalizeOutputEncodingValue(outputWithSameName.encoding)}. Remove the conflicting output or run against a clean test stack.`,
                     );
-                    output = result.json.output;
-                    console.log(`  Updated output ${outputDef.name}: ${output.id} -> ${outputUrl}`);
-                    state = await fetchConfigState();
                 } else {
                     const result = await requestJson(`/pipelines/${pipeline.id}/outputs`, {
                         method: 'POST',
@@ -328,6 +375,7 @@ async function ensureResources(manifest) {
                         okStatuses: [201],
                     });
                     output = result.json.output;
+                    wasCreated = true;
                     console.log(`  Created output ${outputDef.name}: ${output.id}`);
                     state = await fetchConfigState();
                 }
@@ -335,13 +383,18 @@ async function ensureResources(manifest) {
                 console.log(`  Output exists ${outputDef.name}: ${output.id}`);
             }
 
-            outputTargets.push({
-                pipelineId: pipeline.id,
-                pipelineName: pipelineDef.name,
-                outputId: output.id,
-                outputName: outputDef.name,
-                outputUrl,
-            });
+            trackUnique(
+                outputTargets,
+                {
+                    pipelineId: pipeline.id,
+                    pipelineName: pipelineDef.name,
+                    outputId: output.id,
+                    outputName: outputDef.name,
+                    outputUrl,
+                    wasCreated,
+                },
+                (item) => `${item.pipelineId}:${item.outputId}`,
+            );
         }
     }
 
@@ -349,13 +402,130 @@ async function ensureResources(manifest) {
     console.log(`Pipelines in manifest: ${pipelineTargets.length}`);
     console.log(`Outputs in manifest: ${outputTargets.length}`);
 
-    return { pipelines: pipelineTargets, outputs: outputTargets };
+    return trackedTargets;
+}
+
+async function cleanupTestResources(targets) {
+    const pipelineTargets = Array.isArray(targets?.pipelines)
+        ? targets.pipelines.filter((target) => target?.wasCreated)
+        : [];
+    const outputTargets = Array.isArray(targets?.outputs)
+        ? targets.outputs.filter((target) => target?.wasCreated)
+        : [];
+    const streamKeyTargets = Array.isArray(targets?.streamKeys)
+        ? targets.streamKeys.filter((target) => target?.wasCreated)
+        : [];
+
+    if (
+        pipelineTargets.length === 0 &&
+        outputTargets.length === 0 &&
+        streamKeyTargets.length === 0
+    ) {
+        return;
+    }
+
+    console.log('== Cleanup test resources (outputs, pipelines, stream keys) ==');
+
+    const cleanupErrors = [];
+    let state = await fetchConfigState();
+
+    for (const target of [...outputTargets].reverse()) {
+        const output = state.outputs.find(
+            (item) => item.pipelineId === target.pipelineId && item.id === target.outputId,
+        );
+        if (!output) {
+            continue;
+        }
+
+        try {
+            await requestJson(`/pipelines/${target.pipelineId}/outputs/${target.outputId}`, {
+                method: 'DELETE',
+                okStatuses: [200],
+            });
+            console.log(
+                `Deleted test output ${target.pipelineName}/${target.outputName} ${target.pipelineId}/${target.outputId}`,
+            );
+            state = await fetchConfigState();
+        } catch (error) {
+            cleanupErrors.push(
+                `delete output ${target.pipelineId}/${target.outputId}: ${String(error?.message || error)}`,
+            );
+        }
+    }
+
+    const manifestOutputIdsByPipeline = new Map();
+    for (const target of outputTargets) {
+        const ids = manifestOutputIdsByPipeline.get(target.pipelineId) || new Set();
+        ids.add(target.outputId);
+        manifestOutputIdsByPipeline.set(target.pipelineId, ids);
+    }
+
+    for (const target of [...pipelineTargets].reverse()) {
+        const pipeline = state.pipelines.find((item) => item.id === target.pipelineId);
+        if (!pipeline) {
+            continue;
+        }
+
+        const remainingOutputs = state.outputs.filter((item) => item.pipelineId === target.pipelineId);
+        const manifestOutputIds = manifestOutputIdsByPipeline.get(target.pipelineId) || new Set();
+        const nonManifestOutputs = remainingOutputs.filter((item) => !manifestOutputIds.has(item.id));
+
+        if (nonManifestOutputs.length > 0) {
+            console.log(
+                `Skipping pipeline cleanup for ${target.name} ${target.pipelineId}; non-test outputs remain: ${nonManifestOutputs.map((item) => item.id).join(', ')}`,
+            );
+            continue;
+        }
+
+        try {
+            await requestJson(`/pipelines/${target.pipelineId}`, {
+                method: 'DELETE',
+                okStatuses: [200],
+            });
+            console.log(`Deleted test pipeline ${target.name} ${target.pipelineId}`);
+            state = await fetchConfigState();
+        } catch (error) {
+            cleanupErrors.push(
+                `delete pipeline ${target.pipelineId}: ${String(error?.message || error)}`,
+            );
+        }
+    }
+
+    for (const target of [...streamKeyTargets].reverse()) {
+        const streamKey = state.streamKeys.find((item) => item.key === target.key);
+        if (!streamKey) {
+            continue;
+        }
+
+        const stillReferenced = state.pipelines.some((item) => item.streamKey === target.key);
+        if (stillReferenced) {
+            console.log(`Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`);
+            continue;
+        }
+
+        try {
+            await requestJson(`/stream-keys/${encodeURIComponent(target.key)}`, {
+                method: 'DELETE',
+                okStatuses: [200],
+            });
+            console.log(`Deleted test stream key ${target.key}`);
+            state = await fetchConfigState();
+        } catch (error) {
+            cleanupErrors.push(
+                `delete stream key ${target.key}: ${String(error?.message || error)}`,
+            );
+        }
+    }
+
+    cleanupTargets = createCleanupTargets();
+
+    if (cleanupErrors.length > 0) {
+        throw new Error(`Test resource cleanup failed: ${cleanupErrors.join(' | ')}`);
+    }
 }
 
 function resolveOutputEncoding(encodingValue) {
-    const normalized = String(encodingValue || '')
-        .trim()
-        .toLowerCase();
+    const normalized = normalizeOutputEncodingValue(encodingValue);
     if (normalized) {
         if (!supportedOutputEncodings.has(normalized)) {
             throw new Error(`Unsupported output encoding in manifest: ${encodingValue}`);
@@ -369,6 +539,12 @@ function resolveOutputEncoding(encodingValue) {
         'source';
     outputEncodingUsage.set(selectedFallback, (outputEncodingUsage.get(selectedFallback) || 0) + 1);
     return selectedFallback;
+}
+
+function normalizeOutputEncodingValue(encodingValue) {
+    return String(encodingValue || '')
+        .trim()
+        .toLowerCase();
 }
 
 async function fetchConfigState() {
