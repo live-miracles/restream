@@ -1,5 +1,13 @@
-import { getStreamKeys, createStreamKey, updateStreamKey, deleteStreamKey, getConfig } from '../core/api.js';
-import { escapeHtml, maskSecret, copyText, showErrorAlert, setServerConfig, showCopiedNotification } from '../core/utils.js';
+// Stream-keys management page controller.
+// Fetches, renders, and handles CRUD interactions for stream keys. Delegates label
+// validation and display formatting to stream-keys-state.mjs.
+import { getStreamKeys, createStreamKey, updateStreamKey, deleteStreamKey, getConfig } from '../client.js';
+import { copyText, showErrorAlert, setServerConfig, showCopiedNotification } from '../utils.js';
+import {
+    getStreamKeyLabelError,
+    normalizeStreamKeyLabel,
+    prepareStreamKeysTable,
+} from './stream-keys-state.mjs';
 
 let currentEditingKey = null;
 let pendingDeleteKey = null;
@@ -65,16 +73,11 @@ async function confirmDeleteKey() {
 
 async function submitKeyForm() {
     const input = document.querySelector('#key-label-input');
-    let label = input.value.trim().replace(/[^a-zA-Z0-9 _-]/g, '');
+    const label = normalizeStreamKeyLabel(input.value);
+    const labelError = getStreamKeyLabelError(label);
 
-    if (!label || label.length === 0) {
-        showErrorAlert('Label is required. Please enter a descriptive name.');
-        input.focus();
-        return;
-    }
-
-    if (label.length < 2) {
-        showErrorAlert('Label must be at least 2 characters.');
+    if (labelError) {
+        showErrorAlert(labelError);
         input.focus();
         return;
     }
@@ -122,23 +125,7 @@ async function copyKeyBtn(key) {
 
 async function renderKeysTable() {
     const keys = await getStreamKeys();
-
-    const sortedKeys = [...keys].sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-    const tableHtml = sortedKeys
-        .map(
-            (k, i) => `
-          <tr>
-            <th>${i + 1}</th>
-            <td>${escapeHtml(k.label || '')}</td>
-                        <td>${escapeHtml(maskSecret(k.key))}</td>
-            <td>
-                <button class="btn btn-accent btn-xs js-copy-key" title="Copy" data-key-index="${i}">📋</button>
-                <button class="btn btn-accent btn-xs ml-2 js-edit-key" title="Edit" data-key-index="${i}">✎</button>
-                <button class="btn btn-error btn-xs ml-2 js-delete-key" title="Delete" data-key-index="${i}">✖</button>
-            </td>
-          </tr>`,
-        )
-        .join('');
+        const { sortedKeys, tableHtml } = prepareStreamKeysTable(keys);
 
     const streamKeysTable = document.querySelector('#stream-keys');
     streamKeysTable.innerHTML = tableHtml;

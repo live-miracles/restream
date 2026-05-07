@@ -1,8 +1,23 @@
+// Publisher connection quality helpers.
+// Derives display labels, numeric metrics (bitrate, FPS, dropped frames), and alert
+// thresholds from the raw MediaMTX publisher record for the active input stream.
+/**
+ * Maps a raw MediaMTX publisher protocol key to a short uppercase display label.
+ * @param {string} protocol - e.g. `'rtsp'`, `'rtmp'`, `'srt'`.
+ * @returns {string}
+ */
 function normalizePublisherProtocolLabel(protocol) {
     const map = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT' };
     return map[protocol] || String(protocol || '').toUpperCase();
 }
 
+/**
+ * Derives a flat array of numeric quality metrics from a MediaMTX publisher object.
+ * Each element describes one signal (packet loss, jitter, RTT, etc.) and whether
+ * its current value exceeds an alert threshold.
+ * @param {object|null} publisher - MediaMTX publisher record from the health API.
+ * @returns {Array<{code: string, label: string, value: number, displayValue: string, isAlert: boolean}>}
+ */
 function getPublisherQualityMetrics(publisher) {
     if (!publisher) return [];
 
@@ -81,6 +96,12 @@ function getPublisherQualityMetrics(publisher) {
     return metrics;
 }
 
+/**
+ * Returns only the metrics that are currently above their alert threshold,
+ * formatted as `{code, label}` pairs suitable for banner display.
+ * @param {object|null} publisher - MediaMTX publisher record.
+ * @returns {Array<{code: string, label: string}>}
+ */
 function getPublisherQualityAlerts(publisher) {
     return getPublisherQualityMetrics(publisher)
         .filter((metric) => metric.isAlert)

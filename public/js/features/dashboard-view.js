@@ -1,15 +1,168 @@
+// Dashboard view helpers.
+// Owns banner state, system metrics DOM, pipeline-list rendering, and selected-pipeline layout.
+// Called by dashboard.js after refresh/state reconciliation completes.
+
+import { state } from '../client.js';
 import {
     formatCodecName,
     getStatusColor,
     getUrlParam,
     msToHHMMSS,
-    setInnerText,
-    setUrlParam,
     writeSelectedPipelineHint,
-} from '../core/utils.js';
-import { renderPipelineInfoColumn, renderOutsColumn } from './pipeline-view.js';
-import { renderHealthBanner, renderServerMetrics } from './metrics.js';
-import { state } from '../core/state.js';
+    setInnerText,
+    setMetricsBitrateWithSubtleUnit,
+    setMetricsValueWithSubtleUnit,
+    HEALTH_RECOVERY_BANNER_MS,
+} from '../utils.js';
+import { renderPipelineInfoColumn, renderOutsColumn } from './view.js';
+
+let previousHealthStatus = null;
+let recoveryBannerTimer = null;
+let activeHealthBannerState = 'hidden';
+let dismissedHealthBannerState = null;
+let selectPipelineHandler = null;
+let dashboardViewControlsBound = false;
+
+function setDashboardViewHandlers(handlers = {}) {
+    if (typeof handlers.selectPipeline === 'function') {
+        selectPipelineHandler = handlers.selectPipeline;
+    }
+}
+
+function bindDashboardViewControls() {
+    if (dashboardViewControlsBound) return;
+
+    document.getElementById('dismiss-health-banner-btn')?.addEventListener('click', dismissHealthBanner);
+    dashboardViewControlsBound = true;
+}
+
+function clearRecoveryBannerTimer() {
+    if (recoveryBannerTimer) {
+        clearTimeout(recoveryBannerTimer);
+        recoveryBannerTimer = null;
+    }
+}
+
+function dismissHealthBanner() {
+    const banner = document.getElementById('health-banner');
+    if (!banner || activeHealthBannerState === 'hidden') return;
+
+    dismissedHealthBannerState = activeHealthBannerState;
+    clearRecoveryBannerTimer();
+    banner.classList.add('hidden');
+}
+
+function getHealthBannerState(currentStatus) {
+    if (currentStatus === 'degraded') return 'degraded';
+    if (previousHealthStatus === 'degraded') return 'recovered';
+    return 'hidden';
+}
+
+function setMetricPlaceholders() {
+    const setAll = (selector, value) =>
+        document.querySelectorAll(selector).forEach((elem) => {
+            elem.innerText = value;
+        });
+
+    setAll('.cpu-metric', '...');
+    setAll('.ram-metric', '...');
+    setAll('.disk-metric', '...');
+    setAll('.downlink-metric', '...');
+    setAll('.uplink-metric', '...');
+}
+
+function getMetricParts(metrics) {
+    const toGiB = (bytes) => (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
+
+    return {
+        cpuParts:
+            metrics?.cpu?.usagePercent !== null && metrics?.cpu?.usagePercent !== undefined
+                ? { valueText: metrics.cpu.usagePercent.toFixed(1), unitText: '%' }
+                : null,
+        ramParts:
+            metrics?.memory?.usedBytes !== null && metrics?.memory?.totalBytes !== null
+                ? {
+                      valueText: `${toGiB(metrics.memory.usedBytes)}/${toGiB(metrics.memory.totalBytes)}`,
+                      unitText: 'G',
+                  }
+                : null,
+        diskParts:
+            metrics?.disk?.usedPercent !== null && metrics?.disk?.usedPercent !== undefined
+                ? { valueText: metrics.disk.usedPercent.toFixed(1), unitText: '%' }
+                : null,
+        downKbps: metrics?.network?.downloadKbps,
+        upKbps: metrics?.network?.uploadKbps,
+    };
+}
+
+function renderServerMetrics() {
+    if (!state.metrics || Object.keys(state.metrics).length === 0) {
+        setMetricPlaceholders();
+        return;
+    }
+
+    const { cpuParts, ramParts, diskParts, downKbps, upKbps } = getMetricParts(state.metrics);
+
+    setMetricsValueWithSubtleUnit('.cpu-metric', cpuParts);
+    setMetricsValueWithSubtleUnit('.ram-metric', ramParts);
+    setMetricsValueWithSubtleUnit('.disk-metric', diskParts);
+    setMetricsBitrateWithSubtleUnit('.downlink-metric', downKbps);
+    setMetricsBitrateWithSubtleUnit('.uplink-metric', upKbps);
+}
+
+function renderHealthBanner() {
+    const banner = document.getElementById('health-banner');
+    const text = document.getElementById('health-banner-text');
+    if (!banner || !text) return;
+
+    const currentStatus = state.health?.status || null;
+    const bannerState = getHealthBannerState(currentStatus);
+
+    if (bannerState !== activeHealthBannerState) {
+        activeHealthBannerState = bannerState;
+        if (dismissedHealthBannerState && dismissedHealthBannerState !== bannerState) {
+            dismissedHealthBannerState = null;
+        }
+    }
+
+    if (bannerState === 'degraded') {
+        clearRecoveryBannerTimer();
+
+        banner.classList.remove('alert-success');
+        banner.classList.add('alert-warning');
+        text.innerText = 'Service is degraded: runtime telemetry is temporarily unavailable.';
+        if (dismissedHealthBannerState === bannerState) {
+            banner.classList.add('hidden');
+        } else {
+            banner.classList.remove('hidden');
+        }
+        previousHealthStatus = currentStatus;
+        return;
+    }
+
+    if (bannerState === 'recovered') {
+        banner.classList.remove('alert-warning');
+        banner.classList.add('alert-success');
+        text.innerText = 'Service recovered: runtime telemetry is available again.';
+
+        if (dismissedHealthBannerState === bannerState) {
+            banner.classList.add('hidden');
+        } else {
+            banner.classList.remove('hidden');
+            clearRecoveryBannerTimer();
+            recoveryBannerTimer = setTimeout(() => {
+                banner.classList.add('hidden');
+            }, HEALTH_RECOVERY_BANNER_MS);
+        }
+
+        previousHealthStatus = currentStatus;
+        return;
+    }
+
+    clearRecoveryBannerTimer();
+    banner.classList.add('hidden');
+    previousHealthStatus = currentStatus;
+}
 
 function isOutputIntentStopped(output) {
     return output?.desiredState === 'stopped';
@@ -123,7 +276,7 @@ function renderPipelinesList(selectedPipe) {
         row.addEventListener('click', () => {
             const idx = Number(row.dataset.pipelineIndex);
             if (!Number.isInteger(idx) || idx < 0 || idx >= sortedPipelines.length) return;
-            selectPipeline(sortedPipelines[idx].id);
+            selectPipelineHandler?.(sortedPipelines[idx].id);
         });
 
         li.appendChild(row);
@@ -256,21 +409,17 @@ function renderMetrics() {
     renderServerMetrics();
 }
 
-function selectPipeline(id) {
-    setUrlParam('p', id);
-    renderPipelines();
-}
-
-// HTML-bound handler — keep accessible as a global
-window.selectPipeline = selectPipeline;
-
 export {
+    bindDashboardViewControls,
+    dismissHealthBanner,
     isOutputIntentStopped,
     isOutputRunning,
     isOutputUnexpectedlyDown,
-    renderPipelinesList,
-    renderStatsColumn,
-    renderPipelines,
+    renderHealthBanner,
     renderMetrics,
-    selectPipeline,
+    renderPipelines,
+    renderPipelinesList,
+    renderServerMetrics,
+    renderStatsColumn,
+    setDashboardViewHandlers,
 };

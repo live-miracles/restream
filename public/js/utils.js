@@ -1,19 +1,9 @@
-function msToHHMMSS(ms) {
-    if (ms === null) return null;
+// Shared browser utilities.
+// Covers: HTML escaping, URL helpers, token masking, health constants, metric and codec
+// formatting, clipboard copy, error/loading UI helpers, and selected-pipeline storage.
+// No imports — this module is a leaf dependency loaded by all other frontend modules.
 
-    const totalSecs = Math.floor(ms / 1000);
-    const hours = Math.floor(totalSecs / 3600);
-    const mins = Math.floor((totalSecs % 3600) / 60);
-    const secs = totalSecs % 60;
-
-    return [hours, mins.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
-}
-
-function setInnerText(id, text) {
-    const elem = document.getElementById(id);
-    if (!elem) return;
-    elem.innerText = text;
-}
+const HEALTH_RECOVERY_BANNER_MS = 6000;
 
 function escapeHtml(str) {
     if (str == null) return '';
@@ -45,6 +35,14 @@ function isLikelyHlsOutputUrl(str) {
     }
 }
 
+function maskToken(token) {
+    if (!token) return '';
+    if (token.length <= 4) {
+        return token.length === 1 ? token : `${token[0]}...${token[token.length - 1]}`;
+    }
+    return `${token.slice(0, 2)}...${token.slice(-2)}`;
+}
+
 function maskSecret(value) {
     const s = String(value ?? '');
     if (!s) return '';
@@ -63,14 +61,6 @@ function maskSecret(value) {
     ) {
         return s;
     }
-
-    const maskToken = (token) => {
-        if (!token) return '';
-        if (token.length <= 4) {
-            return token.length === 1 ? token : `${token[0]}...${token[token.length - 1]}`;
-        }
-        return `${token.slice(0, 2)}...${token.slice(-2)}`;
-    };
 
     const isRtmpLike = /^(rtmps?|rtsps?):\/\//i.test(s);
     if (isRtmpLike) {
@@ -159,6 +149,28 @@ function isValidOutput(str) {
     } catch {
         return false;
     }
+}
+
+function normalizeEtag(s) {
+    if (!s) return null;
+    return s.replace(/^"(.*)"$/, '$1');
+}
+
+function msToHHMMSS(ms) {
+    if (ms === null) return null;
+
+    const totalSecs = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+
+    return [hours, mins.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
+}
+
+function setInnerText(id, text) {
+    const elem = document.getElementById(id);
+    if (!elem) return;
+    elem.textContent = text;
 }
 
 function legacyCopy(text) {
@@ -269,11 +281,6 @@ function writeSelectedPipelineHint(pipe) {
     }
 }
 
-function normalizeEtag(s) {
-    if (!s) return null;
-    return s.replace(/^"(.*)"$/, '$1');
-}
-
 function setServerConfig(serverName) {
     const name = serverName || 'Restream';
     const viewName = document.querySelector('title').getAttribute('data-name');
@@ -287,7 +294,7 @@ function showErrorAlert(error) {
     const errorMsgElem = document.getElementById('error-msg');
     if (!errorAlertElem) return;
     errorAlertElem.classList.remove('hidden');
-    if (errorMsgElem) errorMsgElem.innerText = error;
+    if (errorMsgElem) errorMsgElem.textContent = error;
     console.error(error);
     const alertId = ++alertCount;
     setTimeout(() => {
@@ -334,7 +341,73 @@ function getStatusColor(status) {
 // HTML-bound handler — keep accessible as a global
 window.copyData = copyData;
 
+function formatBitrateKbpsParts(kbps) {
+    const value = Number(kbps);
+    if (!Number.isFinite(value) || value < 0) return null;
+    if (value >= 1000 * 1000) {
+        return { valueText: (value / (1000 * 1000)).toFixed(2), unitText: 'Gb/s' };
+    }
+    if (value >= 1000) {
+        return { valueText: (value / 1000).toFixed(1), unitText: 'Mb/s' };
+    }
+    return { valueText: value.toFixed(1), unitText: 'Kb/s' };
+}
+
+function setMetricValueWithSubtleUnit(target, parts, fallback = '--') {
+    if (!target) return;
+
+    if (!parts) {
+        target.textContent = fallback;
+        return;
+    }
+
+    const valueSpan = document.createElement('span');
+    valueSpan.textContent = parts.valueText;
+
+    const unitSpan = document.createElement('span');
+    unitSpan.className = 'ml-1 text-xs opacity-70';
+    unitSpan.textContent = parts.unitText;
+
+    target.replaceChildren(valueSpan, unitSpan);
+}
+
+function setBitrateWithSubtleUnit(elemId, kbps, fallback = '--') {
+    const target = document.getElementById(elemId);
+    if (!target) return;
+
+    const parts = formatBitrateKbpsParts(kbps);
+    setMetricValueWithSubtleUnit(target, parts, fallback);
+}
+
+function setBadgeBitrateWithSubtleUnit(badgeElem, kbps, fallback = 'warming...') {
+    if (!badgeElem) return;
+
+    const parts = formatBitrateKbpsParts(kbps);
+    if (!parts) {
+        badgeElem.textContent = fallback;
+        return;
+    }
+
+    badgeElem.textContent = `${parts.valueText} ${parts.unitText}`;
+}
+
+function setMetricsBitrateWithSubtleUnit(selector, kbps, fallback = '--') {
+    const targets = document.querySelectorAll(selector);
+    const parts = formatBitrateKbpsParts(kbps);
+
+    targets.forEach((target) => {
+        setMetricValueWithSubtleUnit(target, parts, fallback);
+    });
+}
+
+function setMetricsValueWithSubtleUnit(selector, parts, fallback = '--') {
+    document.querySelectorAll(selector).forEach((target) => {
+        setMetricValueWithSubtleUnit(target, parts, fallback);
+    });
+}
+
 export {
+    HEALTH_RECOVERY_BANNER_MS,
     msToHHMMSS,
     setInnerText,
     escapeHtml,
@@ -357,4 +430,10 @@ export {
     showCopiedNotification,
     getStatusColor,
     writeSelectedPipelineHint,
+    formatBitrateKbpsParts,
+    setMetricValueWithSubtleUnit,
+    setBitrateWithSubtleUnit,
+    setBadgeBitrateWithSubtleUnit,
+    setMetricsBitrateWithSubtleUnit,
+    setMetricsValueWithSubtleUnit,
 };

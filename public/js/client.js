@@ -1,10 +1,66 @@
+// API client and shared dashboard state.
+// Owns the mutable state object that all dashboard modules read, the fetch wrappers for
+// every backend endpoint, and the adaptive polling loop primitive. Loaded as a singleton
+// ESM module so all importers share the same state reference.
+
 import { showLoading, hideLoading, showErrorAlert, normalizeEtag } from './utils.js';
+
+// ES modules share a single module instance so all imports reference the same object.
+export const state = {
+    config: {},
+    health: {},
+    pipelines: [],
+    metrics: {},
+};
 
 let activeMutationRequestCount = 0;
 
 function isMutationMethod(method) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
     return normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS';
+}
+
+function buildEtagHeaders(etag) {
+    const headers = {};
+    if (etag) headers['If-None-Match'] = `"${etag}"`;
+    return headers;
+}
+
+function getSnapshotVersion(response, fallback = null) {
+    return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
+}
+
+function buildOutputHistoryPath(pipeId, outId, options = {}) {
+    const query = new URLSearchParams();
+    const {
+        limit = 200,
+        filter = null,
+        since = null,
+        until = null,
+        order = null,
+        prefixes = null,
+    } = options || {};
+
+    if (filter === 'lifecycle') {
+        query.set('filter', 'lifecycle');
+    } else {
+        const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+        query.set('limit', String(safeLimit));
+    }
+
+    if (since) query.set('since', String(since));
+    if (until) query.set('until', String(until));
+    if (order) query.set('order', String(order));
+    if (Array.isArray(prefixes) && prefixes.length > 0) {
+        query.set('prefix', prefixes.join(','));
+    }
+
+    return `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?${query.toString()}`;
+}
+
+function buildPipelineHistoryPath(pipeId, limit = 200) {
+    const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+    return `/pipelines/${encodeURIComponent(pipeId)}/history?limit=${encodeURIComponent(safeLimit)}`;
 }
 
 function beginMutationRequest() {
@@ -24,16 +80,6 @@ function endMutationRequest() {
     if (activeMutationRequestCount === 0) {
         hideLoading();
     }
-}
-
-function getSnapshotVersion(response, fallback = null) {
-    return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
-}
-
-function buildEtagHeaders(etag) {
-    const headers = {};
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    return headers;
 }
 
 async function fetchWithEtag(
@@ -187,9 +233,8 @@ async function getSystemMetrics() {
     return apiRequest('/metrics/system');
 }
 
-// =====
-// ===== Keys API =====
-// =====
+// Keys API
+
 async function getStreamKeys() {
     return apiRequest('/stream-keys');
 }
@@ -217,9 +262,7 @@ async function deleteStreamKey(key) {
     return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
 }
 
-// =====
-// ===== Pipelines API =====
-// =====
+// Pipelines API
 
 async function createPipeline({ name, streamKey = null, encoding = null }) {
     if (!name) {
@@ -325,33 +368,7 @@ async function getOutputHistory(pipeId, outId, options = {}) {
         return null;
     }
 
-    const query = new URLSearchParams();
-    const {
-        limit = 200,
-        filter = null,
-        since = null,
-        until = null,
-        order = null,
-        prefixes = null,
-    } = options || {};
-
-    if (filter === 'lifecycle') {
-        query.set('filter', 'lifecycle');
-    } else {
-        const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
-        query.set('limit', String(safeLimit));
-    }
-
-    if (since) query.set('since', String(since));
-    if (until) query.set('until', String(until));
-    if (order) query.set('order', String(order));
-    if (Array.isArray(prefixes) && prefixes.length > 0) {
-        query.set('prefix', prefixes.join(','));
-    }
-
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?${query.toString()}`,
-    );
+    return apiRequest(buildOutputHistoryPath(pipeId, outId, options));
 }
 
 async function getPipelineHistory(pipeId, limit = 200) {
@@ -360,19 +377,113 @@ async function getPipelineHistory(pipeId, limit = 200) {
         return null;
     }
 
-    const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/history?limit=${encodeURIComponent(safeLimit)}`,
-    );
+    return apiRequest(buildPipelineHistoryPath(pipeId, limit));
+}
+
+function createAdaptivePollLoop({
+    run,
+    getVisibleInterval,
+    getHiddenInterval,
+    isEnabled = () => true,
+}) {
+    let pollTimer = null;
+    let pollIntervalMs = null;
+    let pollInFlight = false;
+
+    function clearPollTimer() {
+        if (!pollTimer) return;
+        clearTimeout(pollTimer);
+        pollTimer = null;
+    }
+
+    async function tick() {
+        pollTimer = null;
+        if (!isEnabled() || pollIntervalMs == null) return;
+
+        if (pollInFlight) {
+            scheduleNextPoll(pollIntervalMs);
+            return;
+        }
+
+        pollInFlight = true;
+        try {
+            await run();
+        } finally {
+            pollInFlight = false;
+        }
+
+        if (isEnabled() && pollIntervalMs != null) {
+            scheduleNextPoll(pollIntervalMs);
+        }
+    }
+
+    function scheduleNextPoll(intervalMs) {
+        if (!isEnabled()) {
+            stop();
+            return;
+        }
+
+        if (pollTimer && pollIntervalMs === intervalMs) return;
+
+        clearPollTimer();
+        pollIntervalMs = intervalMs;
+        pollTimer = setTimeout(tick, intervalMs);
+    }
+
+    function start() {
+        scheduleNextPoll(document.hidden ? getHiddenInterval() : getVisibleInterval());
+    }
+
+    function stop() {
+        clearPollTimer();
+        pollIntervalMs = null;
+    }
+
+    async function syncWithVisibility({ pollImmediatelyOnVisible = false } = {}) {
+        if (!isEnabled()) {
+            stop();
+            return;
+        }
+
+        const intervalMs = document.hidden ? getHiddenInterval() : getVisibleInterval();
+        scheduleNextPoll(intervalMs);
+
+        if (!document.hidden && pollImmediatelyOnVisible) {
+            await run();
+            if (isEnabled()) {
+                scheduleNextPoll(intervalMs);
+            }
+        }
+    }
+
+    function getState() {
+        return {
+            timer: pollTimer,
+            intervalMs: pollIntervalMs,
+            isPolling: pollInFlight,
+        };
+    }
+
+    return {
+        start,
+        stop,
+        syncWithVisibility,
+        getState,
+    };
 }
 
 export {
     apiRequest,
+    buildEtagHeaders,
+    buildOutputHistoryPath,
+    buildPipelineHistoryPath,
     getConfig,
     getConfigVersion,
     getHealth,
+    getSnapshotVersion,
     getSystemMetrics,
     getStreamKeys,
+    isMutationMethod,
     createStreamKey,
     updateStreamKey,
     deleteStreamKey,
@@ -386,4 +497,5 @@ export {
     stopOut,
     getOutputHistory,
     getPipelineHistory,
+    createAdaptivePollLoop,
 };

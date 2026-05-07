@@ -1,26 +1,133 @@
-import { getConfig, getConfigVersion, getHealth, getSystemMetrics } from '../core/api.js';
-import { parsePipelinesInfo } from '../core/pipeline.js';
-import { getUrlParam, readSelectedPipelineHint, setServerConfig } from '../core/utils.js';
-import { renderPipelines, renderMetrics } from './render.js';
-import { syncHistoryPollingWithVisibility } from '../history/controller.js';
-import { state } from '../core/state.js';
+// Dashboard controller.
+// Drives the main dashboard poll loop, reconciles config and health snapshots into shared state,
+// and hands DOM rendering to dashboard-view.js.
 
-const dashboardHooks = {
-    afterRender: null,
-};
+import { createAdaptivePollLoop, getConfig, getConfigVersion, getHealth, getSystemMetrics, state } from '../client.js';
+import { parsePipelinesInfo } from '../pipeline.js';
+import {
+    getUrlParam,
+    readSelectedPipelineHint,
+    setServerConfig,
+    setUrlParam,
+} from '../utils.js';
+import {
+    bindDashboardViewControls,
+    dismissHealthBanner,
+    isOutputIntentStopped,
+    isOutputRunning,
+    isOutputUnexpectedlyDown,
+    renderHealthBanner,
+    renderMetrics,
+    renderPipelines,
+    renderPipelinesList,
+    renderServerMetrics,
+    renderStatsColumn,
+    setDashboardViewHandlers,
+} from './dashboard-view.js';
+import {
+    setDashboardActionHandlers,
+    syncDashboardVisibilityDependents,
+} from './dashboard-actions.js';
+import { renderPublisherQualityModal } from './editor.js';
+
+function selectPipeline(id) {
+    setUrlParam('p', id);
+    renderPipelines();
+}
+
+// HTML-bound handler — keep accessible as a global
+setDashboardViewHandlers({ selectPipeline });
+window.selectPipeline = selectPipeline;
+
+function resolveConfigSnapshotVersion(result, currentVersion) {
+    if (!result) return currentVersion;
+    return result.snapshotVersion || result.etag || currentVersion;
+}
+
+function resolveHealthSnapshotVersion(result, currentVersion) {
+    if (!result) return currentVersion;
+    return result.snapshotVersion || currentVersion;
+}
+
+function applyConfigSlice(result, current) {
+    if (!result) return current;
+
+    const next = {
+        ...current,
+        etag: result.etag || current.etag,
+        configEtag: result.configEtag || current.configEtag,
+        configSnapshotVersion: resolveConfigSnapshotVersion(result, current.configSnapshotVersion),
+        config: current.config,
+        serverName: null,
+    };
+
+    if (!result.notModified) {
+        next.config = result.data;
+        next.serverName = result.data?.serverName || null;
+    }
+
+    return next;
+}
+
+function applyHealthSlice(result, current) {
+    if (!result) return current;
+
+    const next = {
+        ...current,
+        healthEtag: result.etag || current.healthEtag,
+        healthSnapshotVersion: resolveHealthSnapshotVersion(result, current.healthSnapshotVersion),
+        health: current.health,
+    };
+
+    if (!result.notModified) {
+        next.health = result.data;
+    }
+
+    return next;
+}
+
+function applyMetricsSlice(result, currentMetrics) {
+    if (result === null) return currentMetrics;
+    return result;
+}
+
+function resolveSelectedPipelineId({
+    selectedPipelineId,
+    previousPipelines = [],
+    nextPipelines = [],
+    persistedHint = null,
+}) {
+    if (!selectedPipelineId) return selectedPipelineId;
+    if (nextPipelines.some((pipeline) => pipeline.id === selectedPipelineId)) {
+        return selectedPipelineId;
+    }
+
+    const previousSelection =
+        previousPipelines.find((pipeline) => pipeline.id === selectedPipelineId) || null;
+    if (!previousSelection && !persistedHint) {
+        return null;
+    }
+
+    const replacement = nextPipelines.find((pipeline) => {
+        if (previousSelection?.key && pipeline.key === previousSelection.key) return true;
+        if (previousSelection?.name && pipeline.name === previousSelection.name) return true;
+        if (persistedHint?.name && pipeline.name === persistedHint.name) return true;
+        return false;
+    });
+
+    return replacement?.id || null;
+}
 
 let dashboardRefreshInFlight = null;
 let dashboardRefreshQueued = false;
-
-function setDashboardHooks(hooks) {
-    Object.assign(dashboardHooks, hooks || {});
-}
 
 async function refreshDashboard() {
     await requestDashboardRefresh();
 }
 
 async function requestDashboardRefresh() {
+    // Coalesce overlapping refresh requests so poll ticks, visibility changes, and manual actions
+    // never interleave partial renders against different snapshot versions.
     if (dashboardRefreshInFlight) {
         dashboardRefreshQueued = true;
         return dashboardRefreshInFlight;
@@ -45,43 +152,39 @@ async function requestDashboardRefresh() {
     return lastRefreshPromise;
 }
 
-function resolveConfigSnapshotVersion(result) {
-    if (!result) return configSnapshotVersion;
-    return result.snapshotVersion || result.etag || configSnapshotVersion;
+function applyConfigResult(result) {
+    const next = applyConfigSlice(result, {
+        etag,
+        configEtag,
+        configSnapshotVersion,
+        config: state.config,
+    });
+
+    etag = next.etag;
+    configEtag = next.configEtag;
+    configSnapshotVersion = next.configSnapshotVersion;
+    if (!result || result.notModified) return;
+
+    state.config = next.config;
+    setServerConfig(next.serverName);
 }
 
-function resolveHealthSnapshotVersion(result) {
-    if (!result) return healthSnapshotVersion;
-    return result.snapshotVersion || healthSnapshotVersion;
+function applyHealthResult(result) {
+    const next = applyHealthSlice(result, {
+        healthEtag,
+        healthSnapshotVersion,
+        health: state.health,
+    });
+
+    healthEtag = next.healthEtag;
+    healthSnapshotVersion = next.healthSnapshotVersion;
+    if (!result || result.notModified) return;
+
+    state.health = next.health;
 }
 
-function applyConfigSlice(result) {
-    if (!result) return;
-
-    if (result.etag) etag = result.etag;
-    if (result.configEtag) configEtag = result.configEtag;
-    configSnapshotVersion = resolveConfigSnapshotVersion(result);
-
-    if (result.notModified) return;
-
-    state.config = result.data;
-    setServerConfig(state.config?.serverName);
-}
-
-function applyHealthSlice(result) {
-    if (!result) return;
-
-    if (result.etag) healthEtag = result.etag;
-    healthSnapshotVersion = resolveHealthSnapshotVersion(result);
-
-    if (result.notModified) return;
-
-    state.health = result.data;
-}
-
-function applyMetricsSlice(result) {
-    if (result === null) return;
-    state.metrics = result;
+function applyMetricsResult(result) {
+    state.metrics = applyMetricsSlice(result, state.metrics);
 }
 
 function replaceUrlParam(param, value) {
@@ -95,26 +198,19 @@ function replaceUrlParam(param, value) {
 }
 
 function reconcileSelectedPipeline(previousPipelines = []) {
+    // Preserve the user's context when possible, but fall back cleanly if the selected pipeline
+    // disappeared or the stored hint no longer points at a live entry.
     const selectedPipeId = getUrlParam('p');
-    if (!selectedPipeId) return;
-    if (state.pipelines.some((pipe) => pipe.id === selectedPipeId)) return;
-
-    const previousSelectionById = previousPipelines.find((pipe) => pipe.id === selectedPipeId) || null;
-    const persistedHint = readSelectedPipelineHint();
-
-    if (!previousSelectionById && !persistedHint) {
-        replaceUrlParam('p', null);
-        return;
-    }
-
-    const replacement = state.pipelines.find((pipe) => {
-        if (previousSelectionById?.key && pipe.key === previousSelectionById.key) return true;
-        if (previousSelectionById?.name && pipe.name === previousSelectionById.name) return true;
-        if (persistedHint?.name && pipe.name === persistedHint.name) return true;
-        return false;
+    const replacement = resolveSelectedPipelineId({
+        selectedPipelineId: selectedPipeId,
+        previousPipelines,
+        nextPipelines: state.pipelines,
+        persistedHint: readSelectedPipelineHint(),
     });
 
-    replaceUrlParam('p', replacement?.id ?? null);
+    if (replacement !== selectedPipeId) {
+        replaceUrlParam('p', replacement);
+    }
 }
 
 function applyUserConfigBaseline(etagValue) {
@@ -141,6 +237,11 @@ async function syncUserConfigBaseline() {
     }
     applyUserConfigBaseline(configEtag);
 }
+
+setDashboardActionHandlers({
+    refreshDashboard: requestDashboardRefresh,
+    syncUserConfigBaseline,
+});
 
 function dismissStreamingConfigAlert() {
     const alertElem = document.getElementById('streaming-config-changed-alert');
@@ -214,8 +315,14 @@ async function fetchAndRerender(attempt = 0) {
         fetchSystemMetrics(),
     ]);
 
-    const nextConfigSnapshotVersion = resolveConfigSnapshotVersion(configResult);
-    const nextHealthSnapshotVersion = resolveHealthSnapshotVersion(healthResult);
+    const nextConfigSnapshotVersion = resolveConfigSnapshotVersion(
+        configResult,
+        configSnapshotVersion,
+    );
+    const nextHealthSnapshotVersion = resolveHealthSnapshotVersion(
+        healthResult,
+        healthSnapshotVersion,
+    );
 
     if (
         nextConfigSnapshotVersion &&
@@ -226,15 +333,15 @@ async function fetchAndRerender(attempt = 0) {
         return fetchAndRerender(attempt + 1);
     }
 
-    applyConfigSlice(configResult);
-    applyHealthSlice(healthResult);
-    applyMetricsSlice(metricsResult);
+    applyConfigResult(configResult);
+    applyHealthResult(healthResult);
+    applyMetricsResult(metricsResult);
     const previousPipelines = state.pipelines;
     state.pipelines = parsePipelinesInfo(state.config, state.health);
     reconcileSelectedPipeline(previousPipelines);
     renderPipelines();
     renderMetrics();
-    dashboardHooks.afterRender?.();
+    renderPublisherQualityModal();
 }
 
 async function fetchConfig() {
@@ -262,17 +369,15 @@ let dismissedStreamingConfigEtag = null;
 const DASHBOARD_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
 const STREAMING_CONFIG_CHECK_INTERVAL_MS = 30000;
-let dashboardPollTimer = null;
-let dashboardPollEveryMs = null;
 let streamingConfigCheckTimer = null;
 let streamingConfigRecheckTimer = null;
+let dashboardInitPromise = null;
 
-function startDashboardPolling(intervalMs) {
-    if (dashboardPollTimer && dashboardPollEveryMs === intervalMs) return;
-    if (dashboardPollTimer) clearInterval(dashboardPollTimer);
-    dashboardPollEveryMs = intervalMs;
-    dashboardPollTimer = setInterval(() => requestDashboardRefresh(), intervalMs);
-}
+const dashboardPollLoop = createAdaptivePollLoop({
+    run: () => requestDashboardRefresh(),
+    getVisibleInterval: () => DASHBOARD_POLL_INTERVAL_MS,
+    getHiddenInterval: () => DASHBOARD_HIDDEN_POLL_INTERVAL_MS,
+});
 
 function startStreamingConfigPolling() {
     if (streamingConfigCheckTimer) return;
@@ -283,35 +388,61 @@ function startStreamingConfigPolling() {
 }
 
 async function onVisibilityChange() {
-    if (document.hidden) {
-        startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
-        await syncHistoryPollingWithVisibility();
-        return;
+    // Hidden tabs poll more slowly, but they still need history polling and config checks to stay
+    // internally consistent when the user comes back.
+    await dashboardPollLoop.syncWithVisibility({
+        pollImmediatelyOnVisible: !document.hidden,
+    });
+    await syncDashboardVisibilityDependents();
+    if (!document.hidden) {
+        await checkStreamingConfigs();
     }
-    startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
-    await syncHistoryPollingWithVisibility();
-    await requestDashboardRefresh();
-    await checkStreamingConfigs();
 }
 
-(async () => {
-    await requestDashboardRefresh();
-    markUserConfigBaseline();
-    startDashboardPolling(
-        document.hidden ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS : DASHBOARD_POLL_INTERVAL_MS,
-    );
-    startStreamingConfigPolling();
-})();
+function initDashboard() {
+    if (dashboardInitPromise) {
+        return dashboardInitPromise;
+    }
 
-document.addEventListener('visibilitychange', onVisibilityChange);
+    dashboardInitPromise = (async () => {
+        bindDashboardViewControls();
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        document
+            .getElementById('dismiss-streaming-config-alert-btn')
+            ?.addEventListener('click', dismissStreamingConfigAlert);
 
-document
-    .getElementById('dismiss-streaming-config-alert-btn')
-    ?.addEventListener('click', dismissStreamingConfigAlert);
+        // Initial bootstrap mirrors a normal poll so the first render uses the same code path as
+        // all later refreshes.
+        await requestDashboardRefresh();
+        markUserConfigBaseline();
+        dashboardPollLoop.start();
+        startStreamingConfigPolling();
+    })();
+
+    return dashboardInitPromise;
+}
 
 export {
+    applyConfigSlice,
+    applyHealthSlice,
+    applyMetricsSlice,
+    initDashboard,
     refreshDashboard,
     markUserConfigBaseline,
+    resolveConfigSnapshotVersion,
+    resolveHealthSnapshotVersion,
+    resolveSelectedPipelineId,
     syncUserConfigBaseline,
-    setDashboardHooks,
+    // from dashboard-view.js
+    isOutputIntentStopped,
+    isOutputRunning,
+    isOutputUnexpectedlyDown,
+    renderPipelinesList,
+    renderStatsColumn,
+    renderPipelines,
+    renderMetrics,
+    selectPipeline,
+    dismissHealthBanner,
+    renderHealthBanner,
+    renderServerMetrics,
 };
