@@ -1,4 +1,4 @@
-.PHONY: check check-dev-deps check-host-deps deps run-host run-docker down format css security security-strict start-input probe-output run-4x3
+.PHONY: check check-dev-deps check-host-deps deps run-docker format css security security-strict start-input probe-output run-4x3
 
 DEPS_STAMP := .deps-stamp
 NEEDS_NODE := security security-strict

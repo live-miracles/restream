@@ -25,9 +25,12 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 
 ## Primary Entry Points
 
-Start one supported stack first:
+Start the app stack first:
 - Host mode: `make run-host`
-- Docker mode: `make run-docker`
+- Or an already-running host/systemd deployment that exposes the same API and MediaMTX ports
+
+Optional disposable container stack:
+- make run-docker
 
 Preferred runner entry point (also starts `nginx-rtmp` if needed):
 - make run-4x3
@@ -39,13 +42,11 @@ Direct runner once `nginx-rtmp` is already running:
 Leave input publishers and resources created by the current run in place after completion for inspection:
 - KEEP_RUNNING=1 make run-4x3
 
-Docker mode output URL normalization:
-- RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" HLS_OUTPUT_BASE="http://nginx-rtmp/hls-upload" make run-4x3
-
 ## Notes
 
 - session-4x3-manifest.json is not rewritten by the runner.
-- `make run-4x3` no longer starts the app or MediaMTX; it assumes `make run-host` or `make run-docker` is already running.
+- `make run-4x3` no longer starts the app or MediaMTX; it assumes `make run-host` or another already-running host/systemd stack is already serving the API.
+- `make run-docker` starts the optional containerized app + MediaMTX + `nginx-rtmp` stack.
 - `make run-4x3` starts `nginx-rtmp` for you; `npm run test:4x3` expects that sink container to already be running.
 - `make run-4x3` and `npm run test:4x3` still require host `node`, host `ffmpeg`, and Docker with the compose plugin because the runner starts local publishers and manages the `nginx-rtmp` sink.
 - If the prestarted stack is host mode, it also still depends on the `make deps` outputs (`node_modules/` and `bin/mediamtx/mediamtx`).

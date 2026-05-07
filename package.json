@@ -9,8 +9,12 @@
         "css": "npx tailwindcss -i input.css -o public/output.css",
         "css-watch": "npx tailwindcss -i input.css -o public/output.css --watch",
         "format": "npx prettier --write .",
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "npm run test:smoke && npm run test:unit",
         "test:routes": "node --test test/routes/*.test.js",
+        "test:unit": "npm run test:frontend && npm run test:services",
+        "test:smoke": "npm run test:routes",
+        "test:frontend": "node --disable-warning=ExperimentalWarning --experimental-vm-modules --test test/frontend/*.test.mjs",
+        "test:services": "node --test test/services/*.test.js",
         "test:4x3": "node test/artifacts/run-4x3.mjs"
     },
     "keywords": [],
@@ -30,6 +34,7 @@
     "devDependencies": {
         "@tailwindcss/cli": "4.1.18",
         "daisyui": "5.5.14",
+        "jsdom": "^26.1.0",
         "nodemon": "3.1.11",
         "prettier": "3.7.4",
         "prettier-plugin-tailwindcss": "0.7.2",

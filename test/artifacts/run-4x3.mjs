@@ -87,7 +87,7 @@ async function main() {
     console.log('== Verify local 4x3 prerequisites ==');
     await ensureRunnerPrerequisites();
 
-    console.log('== Verify app is running (run "make run-host" or "make run-docker" first) ==');
+    console.log('== Verify app is running (run "make run-host" or start the host deployment first) ==');
     await ensureApiReachable();
 
     console.log('== Step 1: Ensure 4x3 manifest resources ==');
@@ -256,7 +256,7 @@ async function ensureApiReachable() {
         }
     } catch (error) {
         throw new Error(
-            `API readiness is not reachable at ${config.apiUrl}/healthz. Start app first (for example: make run-host or make run-docker). ${String(error)}`,
+            `API readiness is not reachable at ${config.apiUrl}/healthz. Start app first (for example: make run-host or your host deployment). ${String(error)}`,
         );
     }
 }

@@ -317,16 +317,16 @@ check_cmd xargs findutils
 check_cmd seq coreutils
 check_cmd nc netcat-openbsd
 
-# Docker is optional here and only needed for Docker-backed workflows.
+# Docker is optional here and only needed for the nginx-rtmp sink / 4x3 workflows.
 if have_cmd docker; then
-  ok "docker (optional: run-docker/run-4x3)"
+  ok "docker (optional: run-sink/run-docker/run-4x3)"
   if docker compose version >/dev/null 2>&1; then
-    ok "docker compose (optional: run-docker/run-4x3)"
+    ok "docker compose (optional: run-sink/run-docker/run-4x3)"
   else
-    warn "docker compose (optional: install it for run-docker/run-4x3)"
+    warn "docker compose (optional: install it for run-sink/run-docker/run-4x3)"
   fi
 else
-  warn "docker (optional: install it for run-docker/run-4x3)"
+  warn "docker (optional: install it for run-sink/run-docker/run-4x3)"
 fi
 
 # down.sh uses fuser if present, else falls back to lsof.
@@ -410,7 +410,7 @@ fi
 echo
 warn "Notes:"
 echo "  - For Node 20+ on older Debian releases, use NodeSource or nvm if apt is behind."
-echo "  - Docker is optional for make deps; install it for make run-docker or make run-4x3."
+echo "  - Docker is optional for make deps; install it for make run-sink, make run-docker, or make run-4x3."
 echo "  - Docker compose plugin package name may vary by distro/repo setup."
 echo "  - MediaMTX binary is downloaded by: make deps (or --install flag)."
 
