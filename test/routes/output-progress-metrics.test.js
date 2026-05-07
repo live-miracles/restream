@@ -6,7 +6,7 @@ const {
     parseFfmpegProgressFps,
     parseFfmpegProgressFrame,
     parseFfmpegTotalSizeBytes,
-} = require('../../src/utils/health-media');
+} = require('../../src/health-compute');
 
 test('parseFfmpegTotalSizeBytes returns null for HLS N/A progress values', () => {
     assert.equal(parseFfmpegTotalSizeBytes('N/A'), null);

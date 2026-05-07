@@ -1,7 +1,16 @@
 'use strict';
 
+// HLS preview proxy.
+// Proxies HLS manifest and segment requests from the browser to MediaMTX, rewriting
+// relative URLs in manifests so asset paths resolve back through this server. Validates
+// stream-key and path parameters before forwarding to prevent open-proxy misuse.
+
 const { Readable } = require('stream');
-const { validateStreamKey } = require('../utils/app');
+const { validateStreamKey, errMsg } = require('./utils');
+
+const { respondError } = require('./http');
+
+// HLS preview proxy
 
 const HLS_ASSET_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_HLS_ASSET_PATH_CHARS = 512;
@@ -70,7 +79,6 @@ function copyAllowedUpstreamHeaders(upstreamResponse, res) {
         const headerValue = upstreamResponse.headers.get(headerName);
         if (headerValue) res.setHeader(headerName, headerValue);
     });
-
     res.setHeader('x-content-type-options', 'nosniff');
 }
 
@@ -129,8 +137,8 @@ async function readManifestBufferWithLimit({ body, maxBytes, abortController }) 
         } finally {
             try {
                 reader.releaseLock();
-            } catch (_) {
-                // Ignore release failures after cancel/close.
+            } catch {
+                // Ignore release failures after cancel or close.
             }
         }
     }
@@ -231,7 +239,7 @@ async function streamUpstreamResponse({
             });
             if (!buffer) {
                 clearForwardedUpstreamHeaders(res);
-                return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
+                return respondError(res, 502, 'Preview manifest exceeds safe proxy size limit');
             }
             return res.send(buffer);
         } catch (err) {
@@ -244,7 +252,7 @@ async function streamUpstreamResponse({
                 return;
             }
             clearForwardedUpstreamHeaders(res);
-            return res.status(502).json({ error: 'Failed to read preview manifest' });
+            return respondError(res, 502, 'Failed to read preview manifest');
         } finally {
             finalize();
         }
@@ -266,7 +274,7 @@ async function streamUpstreamResponse({
             return;
         }
         clearForwardedUpstreamHeaders(res);
-        res.status(502).json({ error: 'Failed to stream preview asset' });
+        respondError(res, 502, 'Failed to stream preview asset');
     });
     res.once('close', finalize);
     res.once('finish', finalize);
@@ -277,12 +285,12 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
     async function proxyHlsAsset(req, res, rawAssetPath) {
         const streamKey = String(req.params.streamKey || '').trim();
         if (validateStreamKey(streamKey)) {
-            return res.status(400).json({ error: 'Invalid stream key' });
+            return respondError(res, 400, 'Invalid stream key');
         }
 
-        let parsedAsset = parseHlsAssetPath(rawAssetPath);
+        const parsedAsset = parseHlsAssetPath(rawAssetPath);
         if (!parsedAsset) {
-            return res.status(400).json({ error: 'Invalid HLS asset path' });
+            return respondError(res, 400, 'Invalid HLS asset path');
         }
 
         const query = req.originalUrl.includes('?')
@@ -301,7 +309,7 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
         });
 
         if (!upstreamResult) {
-            return res.status(502).json({ error: 'Failed to fetch preview asset' });
+            return respondError(res, 502, 'Failed to fetch preview asset');
         }
 
         const { abortController, cleanup, upstreamResponse } = upstreamResult;

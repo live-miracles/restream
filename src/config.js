@@ -1,7 +1,13 @@
+// Config loader and snapshot builder.
+// Reads and validates restream.json from disk, exposes getConfig() as the single source of truth
+// for runtime configuration, and builds the /config API payload (pipeline state + health + jobs)
+// that the dashboard polls. Also owns the config-level ETag used for conditional GET responses.
+
 const fs = require('fs');
 const path = require('path');
+const { createHash } = require('crypto');
 
-const DEFAULT_CONFIG_PATH = path.join(__dirname, 'restream.json');
+const DEFAULT_CONFIG_PATH = path.join(__dirname, 'config', 'restream.json');
 
 const DEFAULT_CONFIG = {
     host: '0.0.0.0',
@@ -323,8 +329,108 @@ function toPublicConfig(config) {
     };
 }
 
+// ── Config snapshot helpers (from src/services/config-snapshot.js) ───
+
+// These builders intentionally produce deterministic output because their serialized form becomes
+// the cache key for /config and related version checks.
+function sortByStringField(items, field, direction = 'asc') {
+    const sorted = [...items].sort((left, right) =>
+        String(left?.[field] || '').localeCompare(String(right?.[field] || '')),
+    );
+    return direction === 'desc' ? sorted.reverse() : sorted;
+}
+
+function buildConfigSnapshot({ db }) {
+    // Keep the config hash input deterministic so the same persisted state always produces the
+    // same ETag regardless of insertion order or unrelated runtime activity.
+    const streamKeys = sortByStringField(
+        db.listStreamKeys().map((streamKey) => ({
+            key: streamKey.key,
+            label: streamKey.label,
+            createdAt: streamKey.createdAt,
+        })),
+        'key',
+    );
+
+    const outputsByPipeline = db.listOutputs().reduce((accumulator, output) => {
+        const pipelineId = output.pipelineId;
+        if (!accumulator[pipelineId]) accumulator[pipelineId] = [];
+        accumulator[pipelineId].push(output);
+        return accumulator;
+    }, {});
+
+    const pipelines = sortByStringField(
+        db.listPipelines().map((pipeline) => ({
+            id: pipeline.id,
+            name: pipeline.name,
+            streamKey: pipeline.streamKey,
+            encoding: pipeline.encoding,
+            createdAt: pipeline.createdAt,
+            updatedAt: pipeline.updatedAt,
+            outputs: sortByStringField(
+                (outputsByPipeline[pipeline.id] || []).map((output) => ({
+                    id: output.id,
+                    name: output.name,
+                    url: output.url,
+                    desiredState: output.desiredState,
+                    encoding: output.encoding,
+                    createdAt: output.createdAt,
+                })),
+                'id',
+            ),
+        })),
+        'id',
+    );
+
+    return { streamKeys, pipelines };
+}
+
+function buildJobsSnapshot({ db }) {
+    // Keep only the fields that matter for dashboard state and cache invalidation.
+    return sortByStringField(
+        db.listJobs().map((job) => ({
+            id: job.id,
+            pipelineId: job.pipelineId,
+            outputId: job.outputId,
+            status: job.status,
+            startedAt: job.startedAt,
+            endedAt: job.endedAt,
+            exitCode: job.exitCode,
+            exitSignal: job.exitSignal,
+        })),
+        'startedAt',
+        'desc',
+    );
+}
+
+function hashSnapshot(snapshot, createHashFn = createHash) {
+    return createHashFn('sha256').update(JSON.stringify(snapshot)).digest('hex');
+}
+
+async function buildConfigApiSnapshot({ db, getConfig, toPublicConfig, buildIngestUrls }) {
+    // The dashboard consumes this shape directly, so keep the response assembly separate from the
+    // smaller ETag snapshots used for change detection.
+    const pipelines = await Promise.all(
+        db.listPipelines().map(async (pipeline) => ({
+            ...pipeline,
+            ingestUrls: await buildIngestUrls(pipeline.streamKey, getConfig),
+        })),
+    );
+
+    return {
+        ...toPublicConfig(getConfig()),
+        pipelines,
+        outputs: db.listOutputs(),
+        jobs: db.listJobs(),
+    };
+}
+
 module.exports = {
     getConfig,
     getConfigPath,
     toPublicConfig,
+    buildConfigApiSnapshot,
+    buildConfigSnapshot,
+    buildJobsSnapshot,
+    hashSnapshot,
 };

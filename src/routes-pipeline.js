@@ -1,9 +1,147 @@
-const { errMsg, maskToken, validateName, validateStreamKey } = require('../utils/app');
+'use strict';
+
+// Express routes for the config snapshot and pipeline/stream-key CRUD API.
+// GET /config serves the dashboard polling endpoint with ETag support.
+// Pipeline routes create, update, and delete pipelines and manage their stream-key assignments.
+// Stream-key routes handle creation, label updates, and deletion.
+
 const {
+    errMsg,
+    buildIngestUrls,
+    maskToken,
+    validateName,
+    validateStreamKey,
     getMediamtxApiBaseUrl,
     buildMediamtxPath,
-    buildIngestUrls,
-} = require('../utils/mediamtx');
+} = require('./utils');
+const {
+    buildConfigApiSnapshot,
+    buildConfigSnapshot,
+    buildJobsSnapshot,
+    hashSnapshot,
+} = require('./config');
+
+const { respondEmpty, respondError, respondJson } = require('./http');
+
+// Config API
+
+// /config is the durable dashboard snapshot. It exposes both a full-state ETag and a config-only
+// ETag so the frontend can detect meaningful changes without always refetching the entire payload.
+function normalizeEtag(value) {
+    if (!value) return null;
+    return value.replace(/^"(.*)"$/, '$1');
+}
+
+// Keep cache-related headers together so GET and HEAD stay aligned.
+function setSnapshotHeaders(res, etag, configEtag) {
+    if (etag) res.set('ETag', `"${etag}"`);
+    if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
+    if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
+}
+
+function registerConfigApi({ app, db, getConfig, toPublicConfig, buildIngestUrlsImpl = buildIngestUrls }) {
+    function recomputeConfigEtag() {
+        try {
+            // Config ETag ignores runtime job rows and changes only when the operator-facing
+            // configuration shape changes.
+            const etag = hashSnapshot(buildConfigSnapshot({ db }));
+            db.setConfigEtag(etag);
+            return etag;
+        } catch (err) {
+            console.error('recomputeConfigEtag error:', err);
+            return null;
+        }
+    }
+
+    function recomputeEtag() {
+        try {
+            // Full snapshot ETag includes current job rows because the dashboard uses /config as
+            // its durable control-plane view, not just static configuration.
+            const etag = hashSnapshot({
+                ...buildConfigSnapshot({ db }),
+                jobs: buildJobsSnapshot({ db }),
+            });
+
+            db.setEtag(etag);
+            return etag;
+        } catch (err) {
+            console.error('recomputeEtag error:', err);
+            return null;
+        }
+    }
+
+    // Seed both ETags on startup so the first poll can use normal cache headers immediately.
+    (async () => {
+        try {
+            if (!db.getConfigEtag()) recomputeConfigEtag();
+            if (!db.getEtag()) recomputeEtag();
+        } catch (e) {
+            /* ignore */
+        }
+    })();
+
+    app.get('/config', async (req, res) => {
+        try {
+            let etag = db.getEtag();
+            let configEtag = db.getConfigEtag();
+            if (!configEtag) configEtag = recomputeConfigEtag();
+            if (!etag) etag = recomputeEtag();
+
+            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
+            if (ifNoneMatch && etag && ifNoneMatch === etag) {
+                setSnapshotHeaders(res, etag, configEtag);
+                return respondEmpty(res, 304);
+            }
+
+            const snapshot = await buildConfigApiSnapshot({
+                db,
+                getConfig,
+                toPublicConfig,
+                buildIngestUrls: buildIngestUrlsImpl,
+            });
+
+            setSnapshotHeaders(res, etag, configEtag);
+            return respondJson(res, snapshot);
+        } catch (err) {
+            return respondError(res, 500, errMsg(err));
+        }
+    });
+
+    app.head('/config/version', (req, res) => {
+        try {
+            let configEtag = db.getConfigEtag();
+            if (!configEtag) configEtag = recomputeConfigEtag();
+
+            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
+            if (ifNoneMatch && configEtag && ifNoneMatch === configEtag) {
+                return respondEmpty(res, 304, { ETag: `"${configEtag}"` });
+            }
+
+            return respondEmpty(res, 200, configEtag ? { ETag: `"${configEtag}"` } : null);
+        } catch (err) {
+            return respondEmpty(res, 500);
+        }
+    });
+
+    app.head('/config', (req, res) => {
+        try {
+            const etag = db.getEtag();
+            const configEtag = db.getConfigEtag();
+            setSnapshotHeaders(res, etag, configEtag);
+            return respondEmpty(res, 200);
+        } catch (err) {
+            return respondEmpty(res, 500);
+        }
+    });
+
+    return {
+        normalizeEtag,
+        recomputeConfigEtag,
+        recomputeEtag,
+    };
+}
+
+// Pipeline API
 
 function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline) {
     if (!pipelineId || !previousPipeline || !nextPipeline) return;
@@ -63,7 +201,7 @@ function registerPipelineApi({
     getConfig,
     fetch,
     crypto,
-    healthMonitor,
+    pipelineRuntimeState,
     resetOutputFailureCount,
     clearOutputRestartState,
     stopRunningJobAndWait,
@@ -71,6 +209,41 @@ function registerPipelineApi({
     recomputeConfigEtag,
     recomputeEtag,
 }) {
+    const {
+        clearPipelineState,
+        resolveInputState,
+        seedPipelineState,
+    } = pipelineRuntimeState;
+
+    function refreshConfigAndHealthEtags() {
+        recomputeConfigEtag();
+        recomputeEtag();
+    }
+
+    function getRecordOrRespond(res, record, notFoundMessage) {
+        if (record) return record;
+        respondError(res, 404, notFoundMessage);
+        return null;
+    }
+
+    function parsePipelineMutation(body, existing = null) {
+        const hasStreamKeyUpdate = !existing || Object.prototype.hasOwnProperty.call(body || {}, 'streamKey');
+        const name = body?.name ?? existing?.name;
+        const streamKey = hasStreamKeyUpdate
+            ? normalizePipelineStreamKey(body?.streamKey)
+            : existing.streamKey;
+
+        return {
+            name,
+            streamKey,
+            encoding: body?.encoding ?? existing?.encoding ?? null,
+            hasStreamKeyUpdate,
+            validationError:
+                validateName(name, 'Pipeline name') ||
+                (hasStreamKeyUpdate && streamKey !== null ? validateStreamKey(streamKey) : null),
+        };
+    }
+
     async function mutateMediamtxPathWithRollback(key, action, applyDbChange) {
         await mutateMediamtxPath(key, action);
 
@@ -138,12 +311,12 @@ function registerPipelineApi({
             if (hasCustomStreamKey) {
                 const streamKeyError = validateStreamKey(key);
                 if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
+                    return respondError(res, 400, streamKeyError);
                 }
             }
 
             if (db.getStreamKey(key)) {
-                return res.status(409).json({ error: 'Stream key already exists' });
+                return respondError(res, 409, 'Stream key already exists');
             }
 
             const streamKey = await mutateMediamtxPathWithRollback(
@@ -155,17 +328,16 @@ function registerPipelineApi({
                     createdAt: new Date().toISOString(),
                 }),
             );
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.status(201).json({
+            refreshConfigAndHealthEtags();
+            return respondJson(res, {
                 message: 'Stream key created',
                 streamKey: {
                     ...streamKey,
                     ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
                 },
-            });
+            }, 201);
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 
@@ -174,27 +346,20 @@ function registerPipelineApi({
             const { key } = req.params;
             const { label } = req.body || {};
 
-            const existing = db.getStreamKey(key);
-            if (!existing) {
-                return res.status(404).json({ error: 'Stream key not found' });
-            }
+            if (!getRecordOrRespond(res, db.getStreamKey(key), 'Stream key not found')) return;
 
             const streamKey = db.updateStreamKey(key, label ?? null);
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: 'Stream key updated', streamKey });
+            refreshConfigAndHealthEtags();
+            return respondJson(res, { message: 'Stream key updated', streamKey });
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 
     app.delete('/stream-keys/:key', async (req, res) => {
         try {
             const { key } = req.params;
-            const existing = db.getStreamKey(key);
-            if (!existing) {
-                return res.status(404).json({ error: 'Stream key not found' });
-            }
+            if (!getRecordOrRespond(res, db.getStreamKey(key), 'Stream key not found')) return;
 
             await mutateMediamtxPathWithRollback(key, 'delete', () => {
                 const deleted = db.deleteStreamKey(key);
@@ -204,11 +369,10 @@ function registerPipelineApi({
                 return deleted;
             });
 
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: 'Stream key deleted' });
+            refreshConfigAndHealthEtags();
+            return respondJson(res, { message: 'Stream key deleted' });
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 
@@ -220,9 +384,9 @@ function registerPipelineApi({
                     ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
                 })),
             );
-            return res.json(streamKeys);
+            return respondJson(res, streamKeys);
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 
@@ -231,24 +395,13 @@ function registerPipelineApi({
             const runtimeConfig = getConfig();
             const pipelineLimit = Number(runtimeConfig.pipelinesLimit);
             if (Number.isFinite(pipelineLimit) && db.listPipelines().length >= pipelineLimit) {
-                return res.status(400).json({ error: `Pipeline limit reached: ${pipelineLimit}` });
+                return respondError(res, 400, `Pipeline limit reached: ${pipelineLimit}`);
             }
 
-            const name = req.body?.name;
-            const streamKey = normalizePipelineStreamKey(req.body?.streamKey);
-            const encoding = req.body?.encoding ?? null;
-            const nameError = validateName(name, 'Pipeline name');
-            if (nameError) {
-                return res.status(400).json({ error: nameError });
-            }
-            if (streamKey !== null) {
-                const streamKeyError = validateStreamKey(streamKey);
-                if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
-                }
-            }
+            const { name, streamKey, encoding, validationError } = parsePipelineMutation(req.body);
+            if (validationError) return respondError(res, 400, validationError);
 
-            const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
+            const runtimeState = await resolveInputState(streamKey, 0);
             const pipeline = db.createPipeline({ name, streamKey, encoding });
             const pipelineWithState =
                 db.updatePipeline(pipeline.id, {
@@ -270,7 +423,7 @@ function registerPipelineApi({
                     encoding: pipelineWithState.encoding || null,
                 },
             );
-            healthMonitor.seedPipelineRuntimeState(pipelineWithState.id, runtimeState.status);
+            seedPipelineState(pipelineWithState.id, runtimeState.status);
             db.appendPipelineEvent(
                 pipelineWithState.id,
                 `[input_state] initial_state=${runtimeState.status}`,
@@ -278,39 +431,24 @@ function registerPipelineApi({
                 { state: runtimeState.status },
             );
 
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res
-                .status(201)
-                .json({ message: 'Pipeline created', pipeline: pipelineWithState });
+            refreshConfigAndHealthEtags();
+            return respondJson(res, { message: 'Pipeline created', pipeline: pipelineWithState }, 201);
         } catch (err) {
-            return res.status(400).json({ error: err.message });
+            return respondError(res, 400, err.message);
         }
     });
 
     app.post('/pipelines/:id', async (req, res) => {
         try {
             const id = req.params.id;
-            const existing = db.getPipeline(id);
-            if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
+            const existing = getRecordOrRespond(res, db.getPipeline(id), 'Pipeline not found');
+            if (!existing) return;
 
-            const name = req.body?.name ?? existing.name;
-            const hasStreamKeyUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, 'streamKey');
-            const streamKey = hasStreamKeyUpdate
-                ? normalizePipelineStreamKey(req.body?.streamKey)
-                : existing.streamKey;
-            const encoding = req.body?.encoding ?? existing.encoding;
-            const nameError = validateName(name, 'Pipeline name');
-            if (nameError) {
-                return res.status(400).json({ error: nameError });
-            }
-
-            if (hasStreamKeyUpdate && streamKey !== null) {
-                const streamKeyError = validateStreamKey(streamKey);
-                if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
-                }
-            }
+            const { name, streamKey, encoding, hasStreamKeyUpdate, validationError } = parsePipelineMutation(
+                req.body,
+                existing,
+            );
+            if (validationError) return respondError(res, 400, validationError);
 
             const streamKeyChanging = streamKey !== existing.streamKey;
             if (streamKeyChanging) {
@@ -319,9 +457,11 @@ function registerPipelineApi({
                     (output) => !!db.getRunningJobFor(id, output.id),
                 );
                 if (hasRunningJob) {
-                    return res.status(409).json({
-                        error: 'Cannot change stream key while outputs are running. Stop all outputs first.',
-                    });
+                    return respondError(
+                        res,
+                        409,
+                        'Cannot change stream key while outputs are running. Stop all outputs first.',
+                    );
                 }
             }
 
@@ -329,7 +469,7 @@ function registerPipelineApi({
             let initialInputStatus = null;
 
             if (streamKeyChanging) {
-                const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
+                const runtimeState = await resolveInputState(streamKey, 0);
                 inputEverSeenLive = runtimeState.inputEverSeenLive;
                 initialInputStatus = runtimeState.status;
             }
@@ -340,10 +480,10 @@ function registerPipelineApi({
                 encoding,
                 inputEverSeenLive,
             });
-            if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
+            if (!updated) return respondError(res, 500, 'Failed to update pipeline');
 
             if (streamKeyChanging) {
-                healthMonitor.seedPipelineRuntimeState(id, initialInputStatus || 'off');
+                seedPipelineState(id, initialInputStatus || 'off');
                 db.appendPipelineEvent(
                     id,
                     '[input_state] reset reason=stream_key_change',
@@ -364,19 +504,17 @@ function registerPipelineApi({
             }
 
             logPipelineConfigChanges(db, id, existing, updated);
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: 'Pipeline updated', pipeline: updated });
+            refreshConfigAndHealthEtags();
+            return respondJson(res, { message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
-            return res.status(400).json({ error: err.message });
+            return respondError(res, 400, err.message);
         }
     });
 
     app.delete('/pipelines/:id', async (req, res) => {
         try {
             const id = req.params.id;
-            const existing = db.getPipeline(id);
-            if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
+            if (!getRecordOrRespond(res, db.getPipeline(id), 'Pipeline not found')) return;
 
             const outputs = db.listOutputsForPipeline(id);
             const runningJobs = outputs
@@ -392,8 +530,7 @@ function registerPipelineApi({
                 );
 
                 if (failedStops.length > 0) {
-                    return res.status(409).json({
-                        error: 'Failed to stop all outputs before deleting pipeline',
+                    return respondError(res, 409, 'Failed to stop all outputs before deleting pipeline', {
                         outputs: failedStops.map((result) => ({
                             outputId: result.outputId,
                             jobId: result.jobId,
@@ -404,30 +541,30 @@ function registerPipelineApi({
             }
 
             const ok = db.deletePipeline(id);
-            if (!ok) return res.status(500).json({ error: 'Failed to delete pipeline' });
+            if (!ok) return respondError(res, 500, 'Failed to delete pipeline');
 
-            healthMonitor.clearPipelineRuntimeState(id);
+            clearPipelineState(id);
             for (const output of outputs) {
                 clearOutputRestartState(id, output.id);
             }
 
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: `Pipeline ${id} deleted` });
+            refreshConfigAndHealthEtags();
+            return respondJson(res, { message: `Pipeline ${id} deleted` });
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 
     app.get('/pipelines', (req, res) => {
         try {
-            return res.json(db.listPipelines());
+            return respondJson(res, db.listPipelines());
         } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
+            return respondError(res, 500, errMsg(err));
         }
     });
 }
 
 module.exports = {
+    registerConfigApi,
     registerPipelineApi,
 };

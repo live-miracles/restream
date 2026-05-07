@@ -1,5 +1,14 @@
-const { errMsg, log } = require('../utils/app');
+'use strict';
+
+// Health monitor service.
+// Runs a polling loop that queries MediaMTX paths and connections, probes input streams with
+// ffprobe, computes per-pipeline health snapshots, and updates the shared pipeline runtime-state
+// coordinator that recovery decisions use. Exposes createHealthMonitorService() and
+// registerSystemMetricsApi().
+
 const {
+    errMsg,
+    log,
     MEDIAMTX_FETCH_TIMEOUT_MS,
     fetchMediamtxJson,
     getMediamtxApiBaseUrl,
@@ -7,9 +16,33 @@ const {
     getExpectedReaderTag,
     getReaderIdFromQuery,
     buildMediamtxPath,
-} = require('../utils/mediamtx');
-const { normalizeOutputEncoding } = require('../utils/ffmpeg');
-const { getInputUnavailableExitGraceMs } = require('../utils/retry');
+} = require('./utils');
+
+const {
+    buildDefaultHealthSnapshot,
+    buildUnexpectedReaders,
+    computeInputStatus,
+    extractProbeMediaInfo,
+    generateProbeReaderTag,
+    getHealthSnapshotHashSource,
+    getPipelineProbeRtspUrl,
+    groupOutputsByPipeline,
+    hashSnapshot,
+    indexPublishersByPath,
+    indexRtspConnectionsByReaderTag,
+    mergeProbeMediaInfo,
+    parseFfmpegBitrateToKbps,
+    parseFfmpegProgressFps,
+    parseFfmpegProgressFrame,
+    parseFfmpegTotalSizeBytes,
+    registerSystemMetricsApi,
+    resolveOutputMediaSnapshot,
+    findFirstVideoTrack,
+    findFirstAudioTrack,
+} = require('./health-compute');
+const { createPipelineRuntimeStateService } = require('./pipeline-runtime-state');
+
+// Health monitor service
 
 // These timing constants can be overridden at startup but are stable after that.
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
@@ -22,46 +55,16 @@ function createHealthMonitorService({
     normalizeEtag,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
+    pipelineRuntimeState,
     spawn,
 }) {
-    const {
-        buildUnexpectedReaders,
-        indexPublishersByPath,
-        indexRtspConnectionsByReaderTag,
-    } = require('../utils/health-connection');
-    const {
-        buildDefaultHealthSnapshot,
-        generateProbeReaderTag,
-        getHealthSnapshotHashSource,
-        getPipelineProbeRtspUrl,
-        groupOutputsByPipeline,
-        hashSnapshot,
-    } = require('../utils/health-state');
-    const {
-        computeInputStatus,
-        extractProbeMediaInfo,
-        findFirstAudioTrack,
-        findFirstVideoTrack,
-        mergeProbeMediaInfo,
-        parseFfmpegBitrateToKbps,
-        parseFfmpegProgressFps,
-        parseFfmpegProgressFrame,
-        parseFfmpegTotalSizeBytes,
-        resolveOutputMediaSnapshot,
-    } = require('../utils/health-media');
-
-    // Callback registered after both healthMonitor and outputLifecycle are created, resolving
-    // the circular dependency without a late-binding let-variable workaround.
-    let inputRecoveryHandler = null;
-
+    // These caches describe live observations only. They intentionally do not persist across restarts.
     const probeCacheTtlMs = Number(process.env.PROBE_CACHE_TTL_MS || 30000);
     const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
     const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
 
     const streamProbeCache = new Map();
     const probeRefreshStartedAt = new Map();
-    const pipelineInputStatusHistory = new Map();
-    const pipelineLastInputUnavailableAtMs = new Map();
     let latestHealthSnapshot = null;
     let latestHealthSnapshotEtag = null;
     let healthCollectorInFlight = null;
@@ -73,6 +76,8 @@ function createHealthMonitorService({
         error: null,
     };
     let mediamtxReadinessTimer = null;
+    const runtimeState =
+        pipelineRuntimeState || createPipelineRuntimeStateService({ db });
 
     const probeEvictionTimer = setInterval(() => {
         const now = Date.now();
@@ -83,89 +88,6 @@ function createHealthMonitorService({
         }
     }, probeCacheTtlMs * 4);
     probeEvictionTimer.unref?.();
-
-    function isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob) {
-        // A clean stop close to an input-off transition is treated as input loss, not an output
-        // failure, so retry logic can suppress noisy restarts during upstream outages.
-        // Example: if health sees the input drop at 12:00:06 and FFmpeg exits at 12:00:06.4,
-        // treat that as publisher loss within the grace window rather than a sink-side failure.
-        if (!latestJob || latestJob.status === 'running') {
-            return { matched: false, reason: 'no_terminal_job' };
-        }
-
-        if (latestJob.status !== 'stopped') {
-            return { matched: false, reason: 'job_not_stopped' };
-        }
-
-        const lastInputUnavailableAtMs = pipelineLastInputUnavailableAtMs.get(pipelineId);
-        if (!Number.isFinite(lastInputUnavailableAtMs)) {
-            return { matched: false, reason: 'no_input_unavailable_transition' };
-        }
-
-        const endedAtMs = Date.parse(latestJob.endedAt || '');
-        if (!Number.isFinite(endedAtMs)) {
-            return { matched: false, reason: 'missing_job_end_time' };
-        }
-
-        const graceMs = getInputUnavailableExitGraceMs();
-        const deltaMs = Math.abs(endedAtMs - lastInputUnavailableAtMs);
-        if (deltaMs > graceMs) {
-            return { matched: false, reason: 'outside_grace_window', deltaMs, graceMs };
-        }
-
-        return {
-            matched: true,
-            reason: 'near_input_unavailable_transition',
-            deltaMs,
-            graceMs,
-            exitStatus: latestJob.status,
-            exitCode: latestJob.exitCode ?? null,
-            exitSignal: latestJob.exitSignal || null,
-        };
-    }
-
-    async function resolveRuntimeInputState(streamKey, existingEverSeenLive = 0) {
-        // inputEverSeenLive lets the UI and recovery logic distinguish “never published” from
-        // “was live before, but is currently missing”.
-        const hasKey = !!streamKey;
-        if (!hasKey) {
-            return {
-                status: 'off',
-                inputEverSeenLive: 0,
-            };
-        }
-
-        let pathInfo = null;
-        try {
-            const paths = await fetchMediamtxJson('/v3/paths/list');
-            const effectivePath = buildMediamtxPath(streamKey);
-            pathInfo = (paths.items || []).find((pathItem) => pathItem?.name === effectivePath) || null;
-        } catch (err) {
-            return {
-                status: computeInputStatus({
-                    hasKey: true,
-                    pathAvailable: false,
-                    pathOnline: false,
-                    hasEverSeenLive: Number(existingEverSeenLive || 0) === 1,
-                }),
-                inputEverSeenLive: Number(existingEverSeenLive || 0),
-            };
-        }
-
-        const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
-        const pathOnline = !!pathInfo?.online;
-        const nextEverSeenLive = pathAvailable ? 1 : Number(existingEverSeenLive || 0);
-
-        return {
-            status: computeInputStatus({
-                hasKey: true,
-                pathAvailable,
-                pathOnline,
-                hasEverSeenLive: nextEverSeenLive === 1,
-            }),
-            inputEverSeenLive: nextEverSeenLive,
-        };
-    }
 
     async function checkMediamtxReadiness() {
         const checkedAt = new Date().toISOString();
@@ -211,52 +133,6 @@ function createHealthMonitorService({
             void checkMediamtxReadiness();
         }, MEDIAMTX_CHECK_INTERVAL_MS);
         mediamtxReadinessTimer.unref?.();
-    }
-
-    async function bootstrapPipelineInputStatusHistory() {
-        // Recovery decisions rely on in-memory transition history, so startup seeds that history
-        // from current MediaMTX state before timers and routes begin using it.
-        const pipelines = db.listPipelines();
-        const pathByName = new Map();
-
-        try {
-            const paths = await fetchMediamtxJson('/v3/paths/list');
-            for (const item of paths.items || []) {
-                if (item?.name) pathByName.set(item.name, item);
-            }
-        } catch (err) {
-            log('warn', 'Failed to fetch MediaMTX paths during startup bootstrap', {
-                error: errMsg(err),
-                pipelineCount: pipelines.length,
-            });
-        }
-
-        for (const pipeline of pipelines) {
-            const key = pipeline.streamKey || '';
-            const hasKey = !!key;
-            const effectivePath = hasKey ? buildMediamtxPath(key) : '';
-            const pathInfo = hasKey ? pathByName.get(effectivePath) : null;
-            const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
-            const pathOnline = !!pathInfo?.online;
-            const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1 || pathAvailable;
-            const status = computeInputStatus({
-                hasKey,
-                pathAvailable,
-                pathOnline,
-                hasEverSeenLive,
-            });
-
-            pipelineInputStatusHistory.set(pipeline.id, status);
-
-            if (hasKey && pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
-                db.markPipelineInputSeenLive(pipeline.id);
-            }
-        }
-
-        log('info', 'Pipeline input state bootstrap complete', {
-            pipelineCount: pipelines.length,
-            seededCount: pipelineInputStatusHistory.size,
-        });
     }
 
     async function probeRtspInput(inputUrl) {
@@ -377,6 +253,8 @@ function createHealthMonitorService({
     }
 
     function getPipelineProbeInfo(streamKey, pathAvailable, nowMs) {
+        // Prefer slightly stale probe data while a refresh is in flight so the dashboard does not
+        // flicker media details to null during normal polling.
         if (!streamKey) return null;
 
         const cachedProbe = streamProbeCache.get(streamKey);
@@ -394,68 +272,6 @@ function createHealthMonitorService({
         if (!cachedProbe || (probeCacheExpired && !withinRefreshGraceWindow)) return null;
 
         return cachedProbe.info;
-    }
-
-    function getInputPublisherMetadata(publisher) {
-        const protocol = String(publisher?.protocol || '')
-            .trim()
-            .toLowerCase();
-        const remoteAddr = String(publisher?.remoteAddr || '').trim();
-
-        return {
-            protocol: protocol || null,
-            remoteAddr: remoteAddr || null,
-        };
-    }
-
-    function updatePipelineInputStatusHistory(pipelineId, inputStatus, options = {}) {
-        const previousInputStatus = pipelineInputStatusHistory.get(pipelineId);
-        const publisherMeta = getInputPublisherMetadata(options.publisher);
-        const inputBecameOn = inputStatus === 'on';
-        const transitionDetails = inputBecameOn
-            ? ` protocol=${publisherMeta.protocol || 'unknown'} remote=${publisherMeta.remoteAddr || 'unknown'}`
-            : '';
-
-        if (previousInputStatus === undefined) {
-            db.appendPipelineEvent(
-                pipelineId,
-                `[input_state] initial_state=${inputStatus}${transitionDetails}`,
-                'pipeline.input_state.initialized',
-                {
-                    state: inputStatus,
-                    protocol: inputBecameOn ? publisherMeta.protocol : null,
-                    remoteAddr: inputBecameOn ? publisherMeta.remoteAddr : null,
-                },
-            );
-        } else if (previousInputStatus !== inputStatus) {
-            db.appendPipelineEvent(
-                pipelineId,
-                `[input_state] ${previousInputStatus} -> ${inputStatus}${transitionDetails}`,
-                'pipeline.input_state.transitioned',
-                {
-                    from: previousInputStatus,
-                    to: inputStatus,
-                    protocol: inputBecameOn ? publisherMeta.protocol : null,
-                    remoteAddr: inputBecameOn ? publisherMeta.remoteAddr : null,
-                },
-            );
-        }
-
-        if (
-            previousInputStatus !== undefined &&
-            previousInputStatus === 'on' &&
-            inputStatus !== 'on'
-        ) {
-            pipelineLastInputUnavailableAtMs.set(pipelineId, Date.now());
-        }
-
-        pipelineInputStatusHistory.set(pipelineId, inputStatus);
-
-        return {
-            previous: previousInputStatus,
-            current: inputStatus,
-            changed: previousInputStatus !== inputStatus,
-        };
     }
 
     function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, probeInfo, publisher }) {
@@ -541,7 +357,6 @@ function createHealthMonitorService({
             latestJobId: latestJob?.id || null,
             inputMedia,
             ffmpegOutputMediaByJobId,
-            normalizeOutputEncoding,
         });
 
         return {
@@ -586,17 +401,7 @@ function createHealthMonitorService({
         const effectivePath = streamKey ? buildMediamtxPath(streamKey) : '';
         const publisher = streamKey ? publisherByPath.get(effectivePath) || null : null;
 
-        const inputTransition = updatePipelineInputStatusHistory(pipeline.id, inputStatus, {
-            publisher,
-        });
-        if (
-            inputTransition.changed &&
-            inputTransition.previous !== undefined &&
-            inputTransition.previous !== 'on' &&
-            inputTransition.current === 'on'
-        ) {
-            inputRecoveryHandler?.(pipeline.id);
-        }
+        runtimeState.recordPipelineInputStatus(pipeline.id, inputStatus, { publisher });
 
         const probeInfo = getPipelineProbeInfo(streamKey, pathAvailable, nowMs);
         const inputHealth = buildPipelineInputHealth({
@@ -680,11 +485,7 @@ function createHealthMonitorService({
             const pathByName = new Map((paths.items || []).map((item) => [item.name, item]));
             const { rtspByReaderTag, rtspConnectionById, rtspSessionRecordById } =
                 indexRtspConnectionsByReaderTag(rtspConns, rtspSessions, getReaderIdFromQuery);
-            const publisherByPath = indexPublishersByPath(
-                rtspSessions,
-                rtmpConns,
-                srtConns,
-            );
+            const publisherByPath = indexPublishersByPath(rtspSessions, rtmpConns, srtConns);
 
             if ((rtspConns.items || []).length > 0 && rtspByReaderTag.size === 0) {
                 log('warn', 'MediaMTX RTSP payload has no reader_id query for active readers', {
@@ -801,6 +602,8 @@ function createHealthMonitorService({
     }
 
     function registerRoutes(app) {
+        // /health refreshes lazily when the cached snapshot is missing or stale relative to the
+        // latest durable state version. That keeps polling cheap without serving clearly old data.
         app.get('/health', async (req, res) => {
             let snapshot = latestHealthSnapshot;
             if (!snapshot || isHealthSnapshotStaleForCurrentState(snapshot)) {
@@ -844,35 +647,36 @@ function createHealthMonitorService({
         });
     }
 
-    function seedPipelineRuntimeState(pipelineId, status) {
-        pipelineInputStatusHistory.set(pipelineId, status || 'off');
-        pipelineLastInputUnavailableAtMs.delete(pipelineId);
-    }
-
-    function clearPipelineRuntimeState(pipelineId) {
-        pipelineInputStatusHistory.delete(pipelineId);
-        pipelineLastInputUnavailableAtMs.delete(pipelineId);
-    }
-
     async function start() {
+        // Start order matters: confirm MediaMTX readiness, seed transition history, then begin
+        // the periodic health collector that powers /health.
         startMediamtxReadinessChecks();
-        await bootstrapPipelineInputStatusHistory();
+        await runtimeState.bootstrap();
         startHealthCollector();
     }
 
+    async function stop() {
+        if (healthCollectorTimer) {
+            clearInterval(healthCollectorTimer);
+            healthCollectorTimer = null;
+        }
+
+        if (mediamtxReadinessTimer) {
+            clearInterval(mediamtxReadinessTimer);
+            mediamtxReadinessTimer = null;
+        }
+
+        clearInterval(probeEvictionTimer);
+    }
+
     return {
-        clearPipelineRuntimeState,
-        isLatestJobLikelyInputUnavailableStop,
-        registerInputRecoveryHandler(fn) {
-            inputRecoveryHandler = fn;
-        },
         registerRoutes,
-        resolveRuntimeInputState,
-        seedPipelineRuntimeState,
         start,
+        stop,
     };
 }
 
 module.exports = {
     createHealthMonitorService,
+    registerSystemMetricsApi,
 };

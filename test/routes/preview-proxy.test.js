@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const request = require('supertest');
 
-const { registerPreviewProxyRoutes } = require('../../src/api/preview');
+const { registerPreviewProxyRoutes } = require('../../src/preview');
 
 function createHarness({ fetchImpl } = {}) {
     const app = express();

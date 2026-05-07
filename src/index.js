@@ -1,25 +1,26 @@
-/* top requires */
+// Composition root. Creates long-lived singletons (DB, config, processes, health monitor),
+// wires the shared callbacks between services, mounts all Express routes, and starts the server.
+// No business logic lives here — delegate to the relevant service or route module.
 const express = require('express');
 const compression = require('compression');
-const fetch = global.fetch || require('node-fetch'); // keep compatibility
 const path = require('path');
+const fetch = global.fetch || require('node-fetch'); // keep compatibility
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const db = require('./db');
 const { getConfig, toPublicConfig } = require('./config');
-const { registerConfigApi } = require('./api/config');
-const { registerPreviewProxyRoutes } = require('./api/preview');
-const { registerOutputApi } = require('./api/outputs');
-const { registerPipelineApi } = require('./api/pipelines');
-const { createHealthMonitorService } = require('./services/health');
-const { createOutputLifecycleService } = require('./services/outputs');
-const { startServer } = require('./services/bootstrap');
-const { registerSystemMetricsApi } = require('./api/metrics');
-const { log } = require('./utils/app');
-const { buildMediamtxPath, getMediamtxHlsBaseUrl } = require('./utils/mediamtx');
+const { registerConfigApi, registerPipelineApi } = require('./routes-pipeline');
+const { registerOutputApi } = require('./routes-output');
+const { registerPreviewProxyRoutes } = require('./preview');
+const { createHealthMonitorService, registerSystemMetricsApi } = require('./health');
+const { createOutputLifecycleService } = require('./outputs');
+const { createPipelineRuntimeStateService } = require('./pipeline-runtime-state');
+const { startServer, createRuntimeRegistries } = require('./bootstrap');
+const { log, buildMediamtxPath, getMediamtxHlsBaseUrl } = require('./utils');
+
+const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 
 const app = express();
-const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 app.use(express.json());
 app.use(
     compression({
@@ -27,10 +28,12 @@ app.use(
         brotli: { enabled: true },
         filter: (req, res) => {
             if (req.headers['x-no-compression']) return false;
+
             const contentType = res.getHeader('Content-Type');
             if (typeof contentType === 'string' && contentType.includes('text/event-stream')) {
                 return false;
             }
+
             return compression.filter(req, res);
         },
     }),
@@ -39,13 +42,10 @@ app.use(
 const appPort = Number(process.env.PORT || 3030);
 const appHost = getConfig().host;
 
-// Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
-const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
-// Parsed output media info from FFmpeg stderr "Output #0" section.
-const ffmpegOutputMediaByJobId = new Map(); // jobId -> { video: {...}, audio: {...} }
-
-// ── Shared child-process handle registry ─────────────
-const processes = new Map(); // jobId -> ChildProcess
+// These Maps mirror live child-process state and are intentionally not persisted.
+const { ffmpegProgressByJobId, ffmpegOutputMediaByJobId, processes } =
+    createRuntimeRegistries();
+const pipelineRuntimeState = createPipelineRuntimeStateService({ db });
 
 // ── Config API (provides normalizeEtag + recomputeEtag) ──────────
 const { normalizeEtag, recomputeConfigEtag, recomputeEtag } = registerConfigApi({
@@ -63,6 +63,7 @@ const healthMonitor = createHealthMonitorService({
     normalizeEtag,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
+    pipelineRuntimeState,
     spawn,
 });
 
@@ -75,12 +76,13 @@ const outputLifecycle = createOutputLifecycleService({
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
     recomputeEtag,
-    isLatestJobLikelyInputUnavailableStop: healthMonitor.isLatestJobLikelyInputUnavailableStop,
+    isLatestJobLikelyInputUnavailableStop:
+        pipelineRuntimeState.isLatestJobLikelyInputUnavailableStop,
 });
 
-// Resolve circular dependency without late-binding let-variable workaround:
-// register the output recovery callback now that both services are created.
-healthMonitor.registerInputRecoveryHandler(
+// Shared pipeline runtime state owns the recovery callback seam so health and output lifecycle do
+// not need to reference each other directly.
+pipelineRuntimeState.setInputRecoveryHandler(
     outputLifecycle.restartPipelineOutputsOnInputRecovery,
 );
 
@@ -90,6 +92,7 @@ const {
     reconcileOutput,
     resetOutputFailureCount,
     setOutputDesiredState,
+    shutdown: shutdownOutputs,
     stopRunningJobAndWait,
     stopRunningJob,
 } = outputLifecycle;
@@ -101,7 +104,7 @@ registerPipelineApi({
     getConfig,
     fetch,
     crypto,
-    healthMonitor,
+    pipelineRuntimeState,
     resetOutputFailureCount,
     clearOutputRestartState,
     stopRunningJobAndWait,
@@ -135,7 +138,6 @@ registerPreviewProxyRoutes({
     buildMediamtxPath,
 });
 
-// ── Static UI ─────────────────────────────────────────
 const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
 app.use(
     '/vendor',
@@ -144,8 +146,7 @@ app.use(
         etag: true,
         lastModified: true,
         setHeaders: (res, filePath) => {
-            const ext = path.extname(filePath).toLowerCase();
-            if (ext === '.js') {
+            if (path.extname(filePath).toLowerCase() === '.js') {
                 res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
             }
         },
@@ -162,13 +163,11 @@ app.use(
         setHeaders: (res, filePath) => {
             const ext = path.extname(filePath).toLowerCase();
 
-            // Prevent HTML document caching so clients always fetch the latest module graph.
             if (ext === '.html') {
                 res.setHeader('Cache-Control', 'no-store');
                 return;
             }
 
-            // Revalidate JS/CSS on reload while still allowing browser/proxy caching.
             if (ext === '.js' || ext === '.css') {
                 res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
             }
@@ -176,7 +175,15 @@ app.use(
     }),
 );
 
-startServer({ app, healthMonitor, db, log, appPort, appHost }).catch((err) => {
+startServer({
+    app,
+    healthMonitor,
+    db,
+    log,
+    appPort,
+    appHost,
+    onShutdown: shutdownOutputs,
+}).catch((err) => {
     console.error('Fatal startup error:', err);
     process.exit(1);
 });

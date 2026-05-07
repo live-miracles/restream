@@ -1,12 +1,18 @@
-const { createOutputRecoveryService } = require('./recovery');
-const { errMsg, log, createHttpError } = require('../utils/app');
+'use strict';
+
+// Output lifecycle service.
+// Owns the concrete FFmpeg worker lifecycle: spawning, monitoring, and stopping output jobs.
+// Recovery policy (retries, desired state, input-unavailable grace) is handled by
+// createOutputRecoveryService in recovery.js, which this service composes at startup.
+
 const {
+    errMsg,
+    log,
+    createHttpError,
     fetchMediamtxJson,
     getPipelineTaggedRtspUrl,
     getExpectedReaderTag,
     buildMediamtxPath,
-} = require('../utils/mediamtx');
-const {
     buildCommandPreview,
     buildFfmpegOutputArgs,
     INVALID_OUTPUT_URL_ERROR,
@@ -16,11 +22,16 @@ const {
     shouldPersistFfmpegStderrLine,
     tryParseOutputMedia,
     validateOutputUrl,
-} = require('../utils/ffmpeg');
+} = require('./utils');
+
+const { createOutputRecoveryService } = require('./recovery');
+
+// Output lifecycle service
 
 const JOB_STABILITY_CHECK_MS = 250;
-const SIGKILL_ESCALATION_MS = 5000;
 
+// Owns the concrete FFmpeg worker lifecycle. Recovery policy is layered on top through
+// createOutputRecoveryService so spawn/stop mechanics and retry decisions stay separate.
 function createOutputLifecycleService({
     db,
     getConfig,
@@ -33,6 +44,8 @@ function createOutputLifecycleService({
 }) {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     let startOutputJob;
+    // Recovery callbacks close over startOutputJob, so the service is created first and the actual
+    // start function is assigned immediately afterwards.
     const outputRecovery = createOutputRecoveryService({
         db,
         getConfig,
@@ -53,6 +66,7 @@ function createOutputLifecycleService({
         restartPipelineOutputsOnInputRecovery,
         scheduleOutputRestart,
         setOutputDesiredState,
+        shutdown: shutdownOutputRecovery,
         stopRunningJobAndWait,
         stopRunningJob,
         tryAcquireOutputStartLock,
@@ -478,6 +492,24 @@ function createOutputLifecycleService({
         }
     }
 
+    async function shutdown() {
+        // App shutdown must prevent delayed retries from racing with teardown, then stop any jobs
+        // that are still marked running through the normal stop-request path.
+        shutdownOutputRecovery();
+
+        const runningJobs = db.listJobs().filter((job) => job?.status === 'running');
+        const results = await Promise.allSettled(
+            runningJobs.map((job) => stopRunningJobAndWait(job)),
+        );
+
+        shutdownOutputRecovery();
+
+        return {
+            stoppedJobs: runningJobs.length,
+            results,
+        };
+    }
+
     return {
         clearOutputRestartState,
         getOutputDesiredState,
@@ -485,6 +517,7 @@ function createOutputLifecycleService({
         resetOutputFailureCount,
         restartPipelineOutputsOnInputRecovery,
         setOutputDesiredState,
+        shutdown,
         stopRunningJobAndWait,
         stopRunningJob,
     };

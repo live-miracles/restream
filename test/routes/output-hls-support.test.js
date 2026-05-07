@@ -7,7 +7,7 @@ const {
     redactSensitiveUrl,
     shouldPersistFfmpegStderrLine,
     validateOutputUrl,
-} = require('../../src/utils/ffmpeg');
+} = require('../../src/utils');
 
 test('validateOutputUrl accepts HLS playlist upload URLs', () => {
     assert.equal(validateOutputUrl('https://example.com/live/out.m3u8'), true);
