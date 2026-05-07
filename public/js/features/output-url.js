@@ -11,6 +11,19 @@ const PROTOCOL_LABELS = {
     hls: 'HLS',
 };
 
+const OUTPUT_PRESET_PROTOCOLS = new Set(['rtmp', 'hls']);
+const OUTPUT_PROTOCOL_BY_SCHEME = {
+    'rtsp:': 'rtsp',
+    'rtsps:': 'rtsp',
+    'srt:': 'srt',
+};
+
+const OUTPUT_PROTOCOL_SCHEMES = {
+    rtmp: new Set(['rtmp:', 'rtmps:']),
+    rtsp: new Set(['rtsp:', 'rtsps:']),
+    srt: new Set(['srt:']),
+};
+
 const INGEST_PROTOCOL_DEFAULT_PORTS = {
     rtmp: '1935',
     rtsp: '8554',
@@ -98,7 +111,7 @@ function formatProtocolPortDisplay(parsedDetails) {
  * @returns {boolean}
  */
 function protocolUsesOutputServerPresets(protocol) {
-    return protocol === 'rtmp' || protocol === 'hls';
+    return OUTPUT_PRESET_PROTOCOLS.has(protocol);
 }
 
 function buildRtspOperatorUrl(fields = {}) {
@@ -442,9 +455,7 @@ function detectOutputProtocol(url) {
     if (isLikelyHlsOutputUrl(url)) return 'hls';
     const parsed = safeParseUrl(url);
     if (!parsed) return 'rtmp';
-    if (parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:') return 'rtsp';
-    if (parsed.protocol === 'srt:') return 'srt';
-    return 'rtmp';
+    return OUTPUT_PROTOCOL_BY_SCHEME[parsed.protocol] || 'rtmp';
 }
 
 /**
@@ -456,16 +467,7 @@ function detectOutputProtocol(url) {
  */
 function isMatchingOutputProtocolUrl(protocol, parsedUrl) {
     if (!parsedUrl) return false;
-    if (protocol === 'rtmp') {
-        return parsedUrl.protocol === 'rtmp:' || parsedUrl.protocol === 'rtmps:';
-    }
-    if (protocol === 'rtsp') {
-        return parsedUrl.protocol === 'rtsp:' || parsedUrl.protocol === 'rtsps:';
-    }
-    if (protocol === 'srt') {
-        return parsedUrl.protocol === 'srt:';
-    }
-    return false;
+    return OUTPUT_PROTOCOL_SCHEMES[protocol]?.has(parsedUrl.protocol) || false;
 }
 
 /**
@@ -561,17 +563,13 @@ function getDefaultOutputToken(rawUrl) {
 function buildDefaultCustomOutputUrl(protocol, rawSeed = '') {
     const host = getDefaultOutputHost();
     const token = getDefaultOutputToken(rawSeed);
-
-    if (protocol === 'hls') {
-        return `http://${host}/hls/${token}/out.m3u8`;
-    }
-    if (protocol === 'srt') {
-        return `srt://${host}:6000?streamid=publish:live/${token}`;
-    }
-    if (protocol === 'rtsp') {
-        return `rtsp://${host}:554/live/${token}`;
-    }
-    return `rtmp://${host}:1935/live/${token}`;
+    const builders = {
+        hls: () => `http://${host}/hls/${token}/out.m3u8`,
+        srt: () => `srt://${host}:6000?streamid=publish:live/${token}`,
+        rtsp: () => `rtsp://${host}:554/live/${token}`,
+        rtmp: () => `rtmp://${host}:1935/live/${token}`,
+    };
+    return (builders[protocol] || builders.rtmp)();
 }
 
 function serializeSearchParams(searchParams, ignoredKeys = null) {
@@ -592,7 +590,7 @@ function serializeSearchParams(searchParams, ignoredKeys = null) {
 function parseRtmpOperatorFields(rawUrl) {
     const parsed = safeParseUrl(rawUrl);
     const token = getDefaultOutputToken(rawUrl);
-    if (!parsed || (parsed.protocol !== 'rtmp:' && parsed.protocol !== 'rtmps:')) {
+    if (!isMatchingOutputProtocolUrl('rtmp', parsed)) {
         return {
             host: getDefaultOutputHost(),
             port: '1935',
@@ -634,7 +632,7 @@ function parseSrtOperatorFields(rawUrl) {
         };
     }
 
-    const isSrt = parsed.protocol === 'srt:';
+    const isSrt = isMatchingOutputProtocolUrl('srt', parsed);
     const knownKeys = new Set(['streamid']);
 
     let streamId = parsed.searchParams.get('streamid') || '';
@@ -668,7 +666,7 @@ function parseRtspOperatorFields(rawUrl) {
         };
     }
 
-    const isRtsp = parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:';
+    const isRtsp = isMatchingOutputProtocolUrl('rtsp', parsed);
 
     return {
         host: parsed.hostname || getDefaultOutputHost(),
