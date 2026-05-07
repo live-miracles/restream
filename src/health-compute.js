@@ -52,10 +52,28 @@ function parseFrameRate(rateValue) {
     return Number.isFinite(asNumber) ? asNumber : null;
 }
 
-function parseFfmpegBitrateToKbps(rateValue) {
-    if (rateValue === null || rateValue === undefined) return null;
-    const raw = String(rateValue).trim();
+function getSanitizedFfmpegField(value) {
+    if (value === null || value === undefined) return null;
+    const raw = String(value).trim();
     if (!raw || raw.toUpperCase() === 'N/A') return null;
+    return raw;
+}
+
+function parseOptionalProgressNumber(value, { truncate = false, fixed = null } = {}) {
+    const raw = getSanitizedFfmpegField(value);
+    if (raw === null) return null;
+
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric < 0) return null;
+
+    if (truncate) return Math.trunc(numeric);
+    if (typeof fixed === 'number') return Number(numeric.toFixed(fixed));
+    return numeric;
+}
+
+function parseFfmpegBitrateToKbps(rateValue) {
+    const raw = getSanitizedFfmpegField(rateValue);
+    if (raw === null) return null;
 
     const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*([kKmMgG]?)\s*(?:bits\/s)?$/);
     if (!match) return null;
@@ -73,33 +91,15 @@ function parseFfmpegBitrateToKbps(rateValue) {
 }
 
 function parseFfmpegTotalSizeBytes(sizeValue) {
-    if (sizeValue === null || sizeValue === undefined) return null;
-    const raw = String(sizeValue).trim();
-    if (!raw || raw.toUpperCase() === 'N/A') return null;
-
-    const bytes = Number(raw);
-    if (!Number.isFinite(bytes) || bytes < 0) return null;
-    return Math.trunc(bytes);
+    return parseOptionalProgressNumber(sizeValue, { truncate: true });
 }
 
 function parseFfmpegProgressFrame(frameValue) {
-    if (frameValue === null || frameValue === undefined) return null;
-    const raw = String(frameValue).trim();
-    if (!raw || raw.toUpperCase() === 'N/A') return null;
-
-    const frame = Number(raw);
-    if (!Number.isFinite(frame) || frame < 0) return null;
-    return Math.trunc(frame);
+    return parseOptionalProgressNumber(frameValue, { truncate: true });
 }
 
 function parseFfmpegProgressFps(fpsValue) {
-    if (fpsValue === null || fpsValue === undefined) return null;
-    const raw = String(fpsValue).trim();
-    if (!raw || raw.toUpperCase() === 'N/A') return null;
-
-    const fps = Number(raw);
-    if (!Number.isFinite(fps) || fps < 0) return null;
-    return Number(fps.toFixed(2));
+    return parseOptionalProgressNumber(fpsValue, { fixed: 2 });
 }
 
 function deriveOutputMediaFromEncoding(encoding, inputMedia) {
@@ -251,6 +251,18 @@ function getSessionBytesOut(record) {
     return record?.outboundBytes || record?.bytesSent || 0;
 }
 
+function buildPublisherRecord(protocol, record, quality = {}) {
+    return {
+        id: record?.id || null,
+        protocol,
+        state: record?.state || null,
+        remoteAddr: record?.remoteAddr || null,
+        bytesReceived: getSessionBytesIn(record),
+        bytesSent: getSessionBytesOut(record),
+        quality,
+    };
+}
+
 function findFirstVideoTrack(pathInfo) {
     return (
         (pathInfo?.tracks2 || []).find((track) =>
@@ -341,52 +353,34 @@ function indexPublishersByPath(rtspSessions, rtmpConns, srtConns) {
 
     for (const session of rtspSessions.items || []) {
         if (session?.state !== 'publish') continue;
-        setPublisher(session?.path, {
-            id: session?.id || null,
-            protocol: 'rtsp',
-            state: session?.state || null,
-            remoteAddr: session?.remoteAddr || null,
-            bytesReceived: getSessionBytesIn(session),
-            bytesSent: getSessionBytesOut(session),
-            quality: {
+        setPublisher(
+            session?.path,
+            buildPublisherRecord('rtsp', session, {
                 inboundRTPPacketsLost: session?.inboundRTPPacketsLost || 0,
                 inboundRTPPacketsInError: session?.inboundRTPPacketsInError || 0,
                 inboundRTPPacketsJitter: session?.inboundRTPPacketsJitter || 0,
-            },
-        });
+            }),
+        );
     }
 
     for (const conn of rtmpConns.items || []) {
         if (conn?.state !== 'publish') continue;
-        setPublisher(conn?.path, {
-            id: conn?.id || null,
-            protocol: 'rtmp',
-            state: conn?.state || null,
-            remoteAddr: conn?.remoteAddr || null,
-            bytesReceived: getSessionBytesIn(conn),
-            bytesSent: getSessionBytesOut(conn),
-            quality: {},
-        });
+        setPublisher(conn?.path, buildPublisherRecord('rtmp', conn, {}));
     }
 
     for (const conn of srtConns.items || []) {
         if (conn?.state !== 'publish') continue;
-        setPublisher(conn?.path, {
-            id: conn?.id || null,
-            protocol: 'srt',
-            state: conn?.state || null,
-            remoteAddr: conn?.remoteAddr || null,
-            bytesReceived: getSessionBytesIn(conn),
-            bytesSent: getSessionBytesOut(conn),
-            quality: {
+        setPublisher(
+            conn?.path,
+            buildPublisherRecord('srt', conn, {
                 msRTT: conn?.msRTT || 0,
                 packetsReceivedLoss: conn?.packetsReceivedLoss || 0,
                 packetsReceivedRetrans: conn?.packetsReceivedRetrans || 0,
                 packetsReceivedUndecrypt: conn?.packetsReceivedUndecrypt || 0,
                 packetsReceivedDrop: conn?.packetsReceivedDrop || 0,
                 mbpsReceiveRate: conn?.mbpsReceiveRate ?? null,
-            },
-        });
+            }),
+        );
     }
 
     return publisherByPath;
