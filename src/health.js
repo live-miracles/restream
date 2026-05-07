@@ -79,6 +79,26 @@ function createHealthMonitorService({
     const runtimeState =
         pipelineRuntimeState || createPipelineRuntimeStateService({ db });
 
+    function buildMediamtxSnapshot({
+        pathCount = 0,
+        rtspConnCount = 0,
+        rtmpConnCount = 0,
+        srtConnCount = 0,
+        ready = false,
+    } = {}) {
+        return {
+            pathCount,
+            rtspConnCount,
+            rtmpConnCount,
+            srtConnCount,
+            ready,
+        };
+    }
+
+    function indexJobsByOutputId(jobs) {
+        return new Map((jobs || []).map((job) => [job.outputId, job]));
+    }
+
     const probeEvictionTimer = setInterval(() => {
         const now = Date.now();
         for (const [key, entry] of streamProbeCache) {
@@ -501,11 +521,7 @@ function createHealthMonitorService({
             const outputs = db.listOutputs();
             const jobs = db.listJobs();
             const outputsByPipeline = groupOutputsByPipeline(outputs);
-
-            const jobByOutputId = new Map();
-            for (const job of jobs) {
-                jobByOutputId.set(job.outputId, job);
-            }
+            const jobByOutputId = indexJobsByOutputId(jobs);
 
             const health = { pipelines: {} };
             const nowMs = Date.now();
@@ -533,13 +549,13 @@ function createHealthMonitorService({
                 generatedAt: new Date().toISOString(),
                 snapshotVersion,
                 status: 'ready',
-                mediamtx: {
+                mediamtx: buildMediamtxSnapshot({
                     pathCount: paths.itemCount || 0,
                     rtspConnCount: rtspConns.itemCount || 0,
                     rtmpConnCount: rtmpConns.itemCount || 0,
                     srtConnCount: srtConns.itemCount || 0,
                     ready: mediamtxReadiness.ready,
-                },
+                }),
                 ...health,
             };
         } catch (err) {
@@ -551,13 +567,13 @@ function createHealthMonitorService({
                 generatedAt: new Date().toISOString(),
                 snapshotVersion: getCurrentStateVersion(),
                 status: 'degraded',
-                mediamtx: {
+                mediamtx: buildMediamtxSnapshot({
                     pathCount: latestHealthSnapshot?.mediamtx?.pathCount || 0,
                     rtspConnCount: latestHealthSnapshot?.mediamtx?.rtspConnCount || 0,
                     rtmpConnCount: latestHealthSnapshot?.mediamtx?.rtmpConnCount || 0,
                     srtConnCount: latestHealthSnapshot?.mediamtx?.srtConnCount || 0,
                     ready: mediamtxReadiness.ready,
-                },
+                }),
                 pipelines: latestHealthSnapshot?.pipelines || {},
             };
         }
