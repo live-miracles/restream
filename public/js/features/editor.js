@@ -191,6 +191,61 @@ function getEffectiveOutputUrlFromModal() {
 
     return resolvePresetOutputUrl(serverUrl, rawInput);
 }
+
+function getRtmpSelectedServer(rawValue) {
+    let selectedServer = OUTPUT_SERVER_PRESETS.rtmp[0]?.value || '';
+    const parsed = safeParseUrl(rawValue);
+    if (!isMatchingOutputProtocolUrl('rtmp', parsed)) {
+        return selectedServer;
+    }
+
+    const rtmpOptions = OUTPUT_SERVER_PRESETS.rtmp || [];
+    const match = rtmpOptions.find((item) => item.value && rawValue.startsWith(item.value));
+    return match?.value || '';
+}
+
+function syncRtmpPresetInput(rawValue, selectedServer, { preserveAbsoluteRtmp = false } = {}) {
+    const rawInput = document.getElementById('out-rtmp-key-input');
+    if (!rawInput) return;
+
+    if (selectedServer) {
+        rawInput.value = extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
+        syncOperatorFieldsFromRawInput('rtmp', `${selectedServer}${rawInput.value}`);
+        return;
+    }
+
+    const reuseAbsoluteRtmp = preserveAbsoluteRtmp
+        ? isMatchingOutputProtocolUrl('rtmp', safeParseUrl(rawValue))
+        : detectOutputProtocol(rawValue) === 'rtmp' && isAbsoluteUrl(rawValue);
+    const sourceUrl = reuseAbsoluteRtmp
+        ? rawValue
+        : buildDefaultCustomOutputUrl('rtmp', rawValue);
+    rawInput.value = sourceUrl;
+    syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
+    syncRawInputFromOperatorFields('rtmp');
+}
+
+function syncHlsPresetInput(rawValue, selectedServer) {
+    const rawInput = document.getElementById('out-rtmp-key-input');
+    if (!rawInput) return;
+
+    if (selectedServer) {
+        const matchedPreset = isLikelyHlsOutputUrl(rawValue)
+            ? matchOutputServerPreset('hls', rawValue)
+            : null;
+        rawInput.value =
+            matchedPreset?.inputValue ||
+            extractCandidateStreamToken(rawValue) ||
+            getDefaultOutputToken(rawValue);
+        return;
+    }
+
+    rawInput.value = isLikelyHlsOutputUrl(rawValue)
+        ? rawValue
+        : buildDefaultCustomOutputUrl('hls', rawValue);
+    syncOperatorFieldsFromRawInput('hls', rawInput.value);
+}
+
 function setupOutputModalProtocolHandlers() {
     const protocolSelect = document.getElementById('out-protocol-input');
     const serverSelect = document.getElementById('out-server-url-input');
@@ -203,59 +258,18 @@ function setupOutputModalProtocolHandlers() {
         const previousRaw = rawInput.value.trim();
 
         if (protocol === 'rtmp') {
-            let selectedServer = OUTPUT_SERVER_PRESETS.rtmp[0]?.value || '';
-            const parsed = safeParseUrl(previousRaw);
-            let normalizedRaw = previousRaw;
-
-            if (isMatchingOutputProtocolUrl('rtmp', parsed)) {
-                const rtmpOptions = OUTPUT_SERVER_PRESETS.rtmp || [];
-                const match = rtmpOptions.find(
-                    (item) => item.value && previousRaw.startsWith(item.value),
-                );
-                selectedServer = match?.value || '';
-                normalizedRaw = selectedServer
-                    ? previousRaw.replace(selectedServer, '')
-                    : previousRaw;
-            } else {
-                normalizedRaw = getDefaultOutputToken(previousRaw);
-            }
-
+            const selectedServer = getRtmpSelectedServer(previousRaw);
             populateOutputServerOptions('rtmp', selectedServer);
-            if (selectedServer) {
-                rawInput.value = normalizedRaw || getDefaultOutputToken(previousRaw);
-                syncOperatorFieldsFromRawInput('rtmp', `${selectedServer}${rawInput.value}`);
-            } else {
-                const sourceUrl =
-                    isAbsoluteUrl(normalizedRaw)
-                        ? normalizedRaw
-                        : buildDefaultCustomOutputUrl('rtmp', normalizedRaw);
-                rawInput.value = sourceUrl;
-                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
-                syncRawInputFromOperatorFields('rtmp');
-            }
+            syncRtmpPresetInput(previousRaw, selectedServer, { preserveAbsoluteRtmp: true });
             applyOutputProtocolUi('rtmp');
             return;
         }
 
         if (protocol === 'hls') {
-            const matchedPreset = isLikelyHlsOutputUrl(previousRaw)
-                ? matchOutputServerPreset('hls', previousRaw)
-                : null;
+            const matchedPreset = matchOutputServerPreset('hls', previousRaw);
             const selectedServer = matchedPreset?.value || OUTPUT_SERVER_PRESETS.hls[0]?.value || '';
-
             populateOutputServerOptions('hls', selectedServer);
-            if (selectedServer) {
-                rawInput.value =
-                    matchedPreset?.inputValue ||
-                    extractCandidateStreamToken(previousRaw) ||
-                    getDefaultOutputToken(previousRaw);
-            } else {
-                rawInput.value =
-                    isLikelyHlsOutputUrl(previousRaw)
-                        ? previousRaw
-                        : buildDefaultCustomOutputUrl('hls', previousRaw);
-                syncOperatorFieldsFromRawInput('hls', rawInput.value);
-            }
+            syncHlsPresetInput(previousRaw, selectedServer);
             applyOutputProtocolUi('hls');
             return;
         }
@@ -274,37 +288,16 @@ function setupOutputModalProtocolHandlers() {
 
     serverSelect.onchange = () => {
         const protocol = protocolSelect.value || 'rtmp';
+        const rawValue = rawInput.value.trim();
+
         if (protocol === 'rtmp') {
-            const rawValue = rawInput.value.trim();
-            if (serverSelect.value) {
-                rawInput.value =
-                    extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
-                syncOperatorFieldsFromRawInput('rtmp', `${serverSelect.value}${rawInput.value}`);
-            } else {
-                const sourceUrl =
-                    detectOutputProtocol(rawValue) === 'rtmp' && isAbsoluteUrl(rawValue)
-                        ? rawValue
-                        : buildDefaultCustomOutputUrl('rtmp', rawValue);
-                rawInput.value = sourceUrl;
-                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
-                syncRawInputFromOperatorFields('rtmp');
-            }
+            syncRtmpPresetInput(rawValue, serverSelect.value);
             applyOutputProtocolUi('rtmp');
             return;
         }
 
         if (protocol === 'hls') {
-            const rawValue = rawInput.value.trim();
-            if (serverSelect.value) {
-                rawInput.value =
-                    extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
-            } else {
-                rawInput.value =
-                    isLikelyHlsOutputUrl(rawValue)
-                        ? rawValue
-                        : buildDefaultCustomOutputUrl('hls', rawValue);
-                syncOperatorFieldsFromRawInput('hls', rawInput.value);
-            }
+            syncHlsPresetInput(rawValue, serverSelect.value);
             applyOutputProtocolUi('hls');
             return;
         }
