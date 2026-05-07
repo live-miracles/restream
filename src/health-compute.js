@@ -477,6 +477,16 @@ function getPipelineProbeRtspUrl(streamKey, getMediamtxRtspBaseUrlFn) {
     return `${getMediamtxRtspBaseUrlFn()}/${effectivePath}?reader_id=${encodeURIComponent(probeTag)}`;
 }
 
+function buildDefaultMediamtxSnapshot(ready = false) {
+    return {
+        pathCount: 0,
+        rtspConnCount: 0,
+        rtmpConnCount: 0,
+        srtConnCount: 0,
+        ready,
+    };
+}
+
 function buildDefaultHealthSnapshot(
     status = 'initializing',
     mediamtxReady = false,
@@ -486,13 +496,7 @@ function buildDefaultHealthSnapshot(
         generatedAt: new Date().toISOString(),
         snapshotVersion,
         status,
-        mediamtx: {
-            pathCount: 0,
-            rtspConnCount: 0,
-            rtmpConnCount: 0,
-            srtConnCount: 0,
-            ready: mediamtxReady,
-        },
+        mediamtx: buildDefaultMediamtxSnapshot(mediamtxReady),
         pipelines: {},
     };
 }
@@ -501,13 +505,7 @@ function getHealthSnapshotHashSource(snapshot) {
     return {
         snapshotVersion: snapshot?.snapshotVersion || null,
         status: snapshot?.status || 'initializing',
-        mediamtx: snapshot?.mediamtx || {
-            pathCount: 0,
-            rtspConnCount: 0,
-            rtmpConnCount: 0,
-            srtConnCount: 0,
-            ready: false,
-        },
+        mediamtx: snapshot?.mediamtx || buildDefaultMediamtxSnapshot(false),
         pipelines: snapshot?.pipelines || {},
     };
 }
@@ -556,9 +554,7 @@ function getCpuTotals(cpuInfo = os.cpus()) {
     return totals;
 }
 
-function getMemoryUsage() {
-    const totalBytes = os.totalmem();
-    const freeBytes = os.freemem();
+function buildStorageUsageSnapshot(totalBytes, freeBytes) {
     const usedBytes = Math.max(0, totalBytes - freeBytes);
     const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
 
@@ -568,6 +564,12 @@ function getMemoryUsage() {
         freeBytes,
         usedPercent,
     };
+}
+
+function getMemoryUsage() {
+    const totalBytes = os.totalmem();
+    const freeBytes = os.freemem();
+    return buildStorageUsageSnapshot(totalBytes, freeBytes);
 }
 
 function getNetworkTotals() {
@@ -605,10 +607,7 @@ function getDiskUsage(pathname = '/') {
 
         const totalBytes = blockSize * totalBlocks;
         const freeBytes = blockSize * availBlocks;
-        const usedBytes = Math.max(0, totalBytes - freeBytes);
-        const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
-
-        return { totalBytes, usedBytes, freeBytes, usedPercent };
+        return buildStorageUsageSnapshot(totalBytes, freeBytes);
     } catch (err) {
         return {
             totalBytes: null,
