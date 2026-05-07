@@ -3,6 +3,13 @@
 This document explains the backend module boundaries in the current top-level layout. Use it when
 you know the behavior you want to change but are not yet sure which file owns that behavior.
 
+Scope:
+
+- Keep end-to-end request flows, deployment shapes, and system-wide architecture in
+   [architecture.md](./architecture.md).
+- Keep backend file ownership, startup wiring, runtime-state ownership, and "where should I edit?"
+   guidance here.
+
 ## 1. Service Map
 
 | File | Owns | Depends On | Edit Here When... |

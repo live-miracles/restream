@@ -78,10 +78,10 @@ separately using your own supervisor or a direct local command such as
 
 | Document | Description |
 |---|---|
-| [docs/onboarding.md](docs/onboarding.md) | Reading order, mental model, and first-day debugging guide for new contributors |
-| [docs/backend-services.md](docs/backend-services.md) | Backend service ownership, startup wiring, and module-selection guide |
-| [docs/architecture.md](docs/architecture.md) | System design, data model, call flows, deployment |
-| [docs/frontend-modules.md](docs/frontend-modules.md) | Frontend ES module conventions and troubleshooting |
+| [docs/onboarding.md](docs/onboarding.md) | Reading order, mental model, and where to start before changing code |
+| [docs/backend-services.md](docs/backend-services.md) | Backend file ownership, startup wiring, runtime-state boundaries, and edit-routing guide |
+| [docs/architecture.md](docs/architecture.md) | System design, cross-cutting contracts, core call flows, and deployment topology |
+| [docs/frontend-modules.md](docs/frontend-modules.md) | Frontend module ownership, import/window conventions, and refactor troubleshooting |
 | [docs/api-reference.md](docs/api-reference.md) | All REST endpoints with request/response shapes |
 | [docs/health-mapping.md](docs/health-mapping.md) | How input/output health statuses are derived |
 | [docs/configuration.md](docs/configuration.md) | All environment variables and config file options |

@@ -3,6 +3,12 @@
 This guide documents how frontend modules are structured in this repository and how to avoid
 regressions when refactoring dashboard code.
 
+Scope:
+
+- Keep system-wide runtime flows and cross-plane architecture in [architecture.md](./architecture.md).
+- Keep browser-module ownership, import rules, HTML-handler conventions, and refactor safety
+  guidance here.
+
 ## 1. Goals
 
 - Make dependencies explicit with import/export.
