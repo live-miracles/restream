@@ -19,7 +19,7 @@ This file is now a short current-state backlog. The earlier audit turned into a 
 - Shared frontend secret masking helper.
 - FFmpeg output argument builder extraction.
 - Backend helper-boundary refactor: shared runtime helpers extracted into `src/utils/{app,ffmpeg,mediamtx,retry}.js`.
-- Frontend ES-module migration across dashboard/history/stream-keys with explicit imports and shared state in `public/js/core/state.js`.
+- Frontend ES-module migration across dashboard/history/stream-keys with explicit imports and shared state in `public/js/client.js`.
 - Stream-key create/delete now uses compensating MediaMTX rollback so DB write failures do not leave path config mutated on their own.
 - Dashboard/history frontend loading now uses page entry modules plus explicit import/callback wiring instead of ordered `<script type="module">` tags and internal `window.*` handoffs.
 - `/config` and `/health` now share an explicit snapshot-version token, and the dashboard retries refreshes until those slices agree before rendering.

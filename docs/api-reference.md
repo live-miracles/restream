@@ -2,7 +2,173 @@
 
 Base URL: `http://localhost:3030`
 
-All request/response bodies are JSON. All timestamps are ISO 8601 UTC strings.
+All request/response bodies are JSON except the HLS preview proxy. All timestamps are ISO 8601 UTC
+strings.
+
+---
+
+## 0. Snapshots And Status Endpoints
+
+### `GET /config`
+
+Returns the dashboard's durable snapshot: public server config plus all pipelines, outputs, and
+current job rows.
+
+Caching behavior:
+
+- `ETag` represents the full config-plus-jobs snapshot.
+- `X-Config-ETag` represents the config-only snapshot.
+- `X-Snapshot-Version` mirrors the full snapshot ETag and is used by the frontend to coordinate
+  `/config` and `/health` renders.
+- `If-None-Match` returns `304` when the full snapshot has not changed.
+
+**Response 200:**
+```json
+{
+  "serverName": "Restream",
+  "pipelinesLimit": 10,
+  "outputsLimit": 50,
+  "pipelines": [
+    {
+      "id": "a1b2c3d4e5f6a7b8",
+      "name": "Pipeline 1",
+      "streamKey": "mystream",
+      "ingestUrls": {
+        "rtmp": "rtmp://localhost:1935/live/mystream",
+        "rtsp": "rtsp://localhost:8554/live/mystream",
+        "srt": "srt://localhost:8890?streamid=publish:live/mystream"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "id": "output-1",
+      "pipelineId": "a1b2c3d4e5f6a7b8",
+      "name": "YouTube",
+      "desiredState": "running"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "job-1",
+      "pipelineId": "a1b2c3d4e5f6a7b8",
+      "outputId": "output-1",
+      "status": "running"
+    }
+  ]
+}
+```
+
+### `HEAD /config`
+
+Returns the same cache headers as `GET /config` without the body. Useful for low-cost polling or
+diagnostics.
+
+### `HEAD /config/version`
+
+Returns only the config ETag. The dashboard uses this to detect user-visible config drift without
+pulling the full `/config` payload.
+
+Behavior:
+
+- `200` with `ETag` when the current config version differs from the client's version.
+- `304` when `If-None-Match` already matches the current config version.
+
+### `GET /health`
+
+Returns the live runtime snapshot assembled from MediaMTX APIs, runtime FFmpeg state, probe cache
+data, and selected DB metadata.
+
+Caching behavior:
+
+- `ETag` and `X-Snapshot-Version` are returned when available.
+- `If-None-Match` returns `304` when the health snapshot did not change.
+
+**Response 200:**
+```json
+{
+  "generatedAt": "2026-05-04T12:00:00.000Z",
+  "snapshotVersion": "7c9f...",
+  "status": "ready",
+  "mediamtx": {
+    "ready": true,
+    "pathCount": 1,
+    "rtspConnCount": 2,
+    "rtmpConnCount": 1,
+    "srtConnCount": 0
+  },
+  "pipelines": {
+    "a1b2c3d4e5f6a7b8": {
+      "input": {
+        "status": "on",
+        "publishStartedAt": "2026-05-04T11:59:40.000Z"
+      },
+      "outputs": {
+        "output-1": {
+          "status": "on",
+          "jobId": "job-1",
+          "bitrateKbps": 4821.44
+        }
+      }
+    }
+  }
+}
+```
+
+The snapshot may also return `status: "initializing"` while MediaMTX readiness checks are still
+bootstrapping, or `status: "degraded"` if live collection fails and the service falls back to the
+last good snapshot.
+
+### `GET /metrics/system`
+
+Returns host metrics sampled by the Node process.
+
+**Response 200:**
+```json
+{
+  "generatedAt": "2026-05-04T12:00:00.000Z",
+  "cpu": {
+    "usagePercent": 13.52,
+    "cores": 8,
+    "load1": 0.42
+  },
+  "memory": {
+    "totalBytes": 16760328192,
+    "usedBytes": 5313849344,
+    "freeBytes": 11446478848,
+    "usedPercent": 31.71
+  },
+  "disk": {
+    "totalBytes": 512110190592,
+    "usedBytes": 213781663744,
+    "freeBytes": 298328526848,
+    "usedPercent": 41.75
+  },
+  "network": {
+    "downloadBytesPerSec": 1204.33,
+    "uploadBytesPerSec": 812.18,
+    "downloadKbps": 9.63,
+    "uploadKbps": 6.5
+  }
+}
+```
+
+### `GET /preview/hls/:streamKey`
+
+Returns the `index.m3u8` manifest for the given stream key through the app server, keeping preview
+traffic same-origin for the dashboard.
+
+### `GET /preview/hls/:streamKey/*assetPath`
+
+Proxies a specific HLS asset path under the same stream key. Query strings are forwarded upstream.
+
+Behavior:
+
+- `400` for invalid stream keys or invalid asset paths.
+- `502` if the upstream MediaMTX HLS request fails, the manifest exceeds the safe proxy size
+  limit, or the asset stream fails while proxying.
+- Manifest responses are buffered and size-limited before being returned.
+- Non-manifest assets are streamed through directly.
 
 ---
 

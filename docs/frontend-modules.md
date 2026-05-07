@@ -1,6 +1,7 @@
 # Frontend ES Module Conventions
 
-This guide documents how frontend modules are structured in this repository and how to avoid regressions when refactoring dashboard code.
+This guide documents how frontend modules are structured in this repository and how to avoid
+regressions when refactoring dashboard code.
 
 ## 1. Goals
 
@@ -21,13 +22,12 @@ Because files are modules:
 - cross-file usage must be imported explicitly
 - implicit global access should be treated as a bug unless intentionally exposed on `window`
 
-Do not rebuild the old dashboard-style ordered script list in HTML. If one module needs another,
-express that in the import graph or with an explicit callback registration step in the entry
-module.
+Do not rebuild the old ordered script list in HTML. If one module needs another, express that in
+the import graph or with an explicit callback registration step in the entry module.
 
 ## 3. Shared State Contract
 
-Use `public/js/core/state.js` as the single shared mutable state object:
+Use `public/js/client.js` as the single shared mutable state owner:
 
 - `state.config`
 - `state.health`
@@ -40,15 +40,15 @@ Rules:
 - read state in render and interaction modules
 - do not reintroduce separate global state variables
 - page entry modules may register callbacks between features, but they should not become a second
-	shared mutable state container
+  shared mutable state container
 
 ## 4. Cross-Module Dependency Rules
 
 1. Prefer imports for any normal cross-file dependency.
 2. Keep module APIs explicit with named exports.
 3. Avoid circular dependencies unless there is no practical alternative.
-4. If a feature needs to hand callbacks across modules without creating a cycle, do it explicitly
-	from the page entry module.
+4. If a feature needs to hand controller callbacks across modules without creating a cycle, keep
+  that seam in a tiny coordinator/action module rather than inside the view module itself.
 5. If an HTML attribute invokes a function directly, expose only that function on `window`.
 
 Examples where `window.*` exposure is valid:
@@ -57,112 +57,94 @@ Examples where `window.*` exposure is valid:
 - modal open/close actions wired in markup
 - data-attribute callbacks expecting global functions
 
-## 5. Troubleshooting Checklist
+## 5. Current Module Boundaries
 
-If a panel disappears, render stops halfway, or controls stop responding after refactor:
+- `public/js/client.js`: shared state plus API, ETag, and polling primitives
+- `public/js/pipeline.js`: config + health merge helpers and throughput calculation
+- `public/js/features/dashboard-actions.js`: narrow coordinator callbacks shared by dashboard, editor, and history modules
+- `public/js/features/dashboard.js`: refresh orchestration, snapshot reconciliation, visibility behavior
+- `public/js/features/dashboard-view.js`: dashboard DOM rendering, metrics cards, and health banner state
+- `public/js/features/pipeline-view-actions.js`: action adapter for pipeline-card history, editor, and toggle handlers
+- `public/js/features/view.js`: selected-pipeline detail, ingest details, preview orchestration, and output rows
+- `public/js/features/editor.js`: pipeline/output modal behavior and start/stop controls
+- `public/js/history.js`: output/pipeline history modal state, polling, and rendering
+- `public/js/history/classify.mjs`: pure history classification helpers
+- `public/js/features/output-url.js`: pure output URL parsing/building helpers
+- `public/js/features/input-preview-state.mjs`: pure preview URL/capability/recovery helpers
 
-1. Check browser console for `ReferenceError` and identify whether symbol should be imported or `window`-exposed.
+## 6. Troubleshooting Checklist
+
+If a panel disappears, render stops halfway, or controls stop responding after a refactor:
+
+1. Check browser console for `ReferenceError` and identify whether the symbol should be imported or `window`-exposed.
 2. Verify page markup still points to valid handler names for inline attributes.
-3. Confirm state reads/writes use `state.*` rather than removed globals.
+3. Confirm state reads/writes use `state.*` from `public/js/client.js` rather than removed globals.
 4. Confirm required functions are still attached to `window` only for HTML-bound hooks.
-5. Confirm page entry modules still register any cross-feature callbacks needed at startup.
+5. Confirm coordinator/action modules still expose the expected callbacks for cross-feature flows.
 6. Do a normal reload first; force reload only if an upstream cache/proxy serves stale JS.
 
-## 6. Quick Verification
+## 7. Quick Verification
 
 After frontend module changes, run:
 
-1. syntax checks for modified module files
-2. dashboard load + pipeline selection in browser
-3. stream-keys page load and key actions
+1. diagnostics or syntax checks for modified browser modules
+2. `npm run test:frontend`
+3. dashboard load + pipeline selection in browser if the change touches DOM behavior
 4. console review for runtime errors
 
-This keeps migration failures visible before commit.
+## 8. Input Preview Responsibility
 
-## 7. Input Preview Responsibility
-
-- `public/js/features/input-preview.js` owns rendering and teardown for the dashboard input
-	preview player in `#video-player`.
-- `public/js/features/pipeline-view.js` orchestrates when preview rendering is invoked for the
-	selected pipeline.
+- `public/js/features/view.js` owns when preview rendering happens for the selected pipeline.
+- `public/js/features/input-preview-state.mjs` owns preview URL construction, native-HLS support
+  checks, and fatal-error recovery classification.
 - Dashboard refresh flows should reconcile stale selected pipeline ids after config reloads or
-	restarts so bookmarked `?p=` state does not leave the UI pinned to a missing pipeline.
-
-- Preview source URLs should be generated as same-origin app routes (`/preview/hls/...`) and
-	not hardcoded to direct MediaMTX browser URLs.
+  restarts so bookmarked `?p=` state does not leave the UI pinned to a missing pipeline.
+- Preview source URLs should be generated as same-origin app routes (`/preview/hls/...`) and not
+  hardcoded to direct MediaMTX browser URLs.
 - Browser playback should prefer the bundled `hls.js` runtime when MSE playback is supported and
-	only fall back to native HLS when `hls.js` is unavailable.
-- The dashboard preview is muted and should use the normal proxied HLS master manifest.
-- When adding future preview enhancements, keep selection/change teardown logic in
-	`pipeline-view.js` and player/runtime lifecycle logic in `input-preview.js` so dashboard polling
-	does not leak stale playback elements.
+  only fall back to native HLS when `hls.js` is unavailable.
 
-## 8. Ingest URL Panel Behavior
+When adding future preview enhancements, keep selection/change teardown logic in `view.js` and
+keep pure preview-runtime decisions in `input-preview-state.mjs` so dashboard polling does not
+leak stale playback elements.
 
-- `public/js/features/pipeline-view.js` owns dashboard ingest card orchestration in `public/index.html`.
-- `public/js/features/ingest-url-details.js` owns protocol-aware ingest URL parsing and detail row
-	rendering for RTMP/RTSP/SRT.
+## 9. Ingest URL Panel Behavior
+
+- `public/js/features/view.js` owns dashboard ingest card orchestration, protocol-aware ingest URL
+  parsing, and detail-row rendering in `public/index.html`.
 - Stream key and publish URL values are hidden by default and revealed only by explicit user
-	action (`View Key` / `View URL`).
-- Dashboard selected-pipeline session hints persist only non-secret identifiers (`id`, `name`),
-	never stream keys.
+  action (`View Key` / `View URL`).
 - Copy actions for stream key and publish URL read current in-memory values; sensitive values are
-	not parked in DOM `data-copy` attributes while hidden.
-- `Copy Key` and `Copy URL` actions remain available without forcing reveal.
+  not parked in DOM `data-copy` attributes while hidden.
 - Publish URL rendering is protocol-aware (`RTMP`, `RTSP`, `SRT`) and should prioritize the
-	operator-facing fields each protocol typically needs.
-- Current reveal behavior by protocol:
-	- RTMP: server URL, stream key, host, port, app name
-	- RTSP: full URL remains primary, with credentials, host, port, and stream path called out when useful
-	- SRT: host, port, streamid, latency, mode, and common query params
+  operator-facing fields each protocol typically needs.
 
-## 9. History Timeline Expectations
+## 10. History Timeline Expectations
 
 - Output history opens with URL redaction enabled by default. The eye toggle reveals or re-hides
-	URLs in both timeline and raw modes.
+  URLs in both timeline and raw modes.
 - Redaction must mask RTMP/RTSP/SRT/HLS URL secrets consistently, including SRT `streamid`
-	segments used for publish routing and HLS query params such as `cid`, `token`, and similar
-	upload credentials.
+  segments used for publish routing and HLS query params such as `cid`, `token`, and similar
+  upload credentials.
 - Output configuration edits (name, URL, encoding) should emit a `Config` timeline event in
-	output history (`[lifecycle] config_created` and `[lifecycle] config_changed`).
+  output history (`[lifecycle] config_created` and `[lifecycle] config_changed`).
 - Pipeline input-state transitions to `on` should include publisher protocol and remote address in
-	the logged event payload/message for troubleshooting.
+  the logged event payload/message for troubleshooting.
+- `public/js/history.js` owns modal state, live polling, and DOM rendering; `public/js/history/classify.mjs`
+  owns the pure event classification helpers that the history tests exercise directly.
 
-## 10. Output Modal Protocol Behavior
+## 11. Output Modal Protocol Behavior
 
 - `public/js/features/editor.js` owns protocol-aware behavior for the output add/edit modal.
+- `public/js/features/output-url.js` owns pure output URL parsing, protocol detection, preset
+  matching, and default URL construction.
 - Protocol selector currently supports `RTMP`, `HLS`, `RTSP`, and `SRT`.
 - Server URL presets are protocol-aware:
-	- RTMP: known platform endpoints plus `Custom`
-	- HLS: `YouTube HLS`, `YT Backup HLS`, plus `Custom`
-	- RTSP: `Custom` only
-	- SRT: `Custom` only
-- For new outputs in RTMP mode, the Server URL preset defaults to `YouTube`.
-- For new outputs in HLS mode, the Server URL preset defaults to `YouTube HLS`.
-- Protocol, encoding, and server selector controls should remain grouped into one compact row in
-	the modal header area.
-- Operator fields are protocol-specific and switch live with the protocol selector.
-- RTMP operator fields should be shown when RTMP uses `Custom` server URL, and hidden when a
-	predefined RTMP server preset is selected.
-- HLS does not use separate host/port operator cards. In preset-backed HLS mode the modal accepts
-	a stream key only; in custom HLS mode it accepts a full `http://` or `https://` playlist URL.
-- URL input label should stay minimal to avoid operator confusion:
-	- `Stream Key` for RTMP and HLS preset servers
-	- `Custom URL` for RTMP custom mode, HLS custom mode, RTSP, and SRT
-- Operator field cards should keep compact padding/gaps while preserving clear label-to-input
-	spacing for readability.
+  - RTMP: known platform endpoints plus `Custom`
+  - HLS: `YouTube HLS`, `YT Backup HLS`, plus `Custom`
+  - RTSP: `Custom` only
+  - SRT: `Custom` only
 - Users can still paste a full output URL directly; the modal should best-effort parse that URL
-	and repopulate protocol/operator fields when possible, including known HLS preset URL shapes.
-- In HLS mode, an explicit `Custom` Server URL choice should stay custom while the user pastes or
-	edits a full `http://` or `https://` playlist URL. The modal should not snap back to a known HLS
-	preset unless the user explicitly selects that preset.
+  and repopulate protocol/operator fields when possible, including known HLS preset URL shapes.
 - Protocol switches should normalize the URL input so stale values from another protocol are not
-	left behind (for example, `rtsp://...` should not remain after switching back to `RTMP`, and a
-	raw HLS playlist URL should not remain when switching back into preset-backed HLS mode).
-- Protocol switches should seed a protocol-specific custom default URL and hydrate operator fields
-	from that URL immediately. The HLS custom default URL shape is
-	`http://<host>/hls/<token>/out.m3u8`.
-- Default protocol ports in operator fields are:
-	- RTMP: `1935`
-	- RTSP: `554`
-	- SRT: `6000`
+  left behind.

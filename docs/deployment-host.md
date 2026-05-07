@@ -11,7 +11,8 @@ This guide deploys Restream directly on a Linux host using native services only.
 
 No Docker or container runtime is required.
 
-This guide intentionally avoids `make deps` and `make run-host`. Those helpers target repo-managed local Linux workflows, install project dependencies into the checkout, and download MediaMTX under `bin/mediamtx/` instead of laying out a system-wide deployment.
+This guide intentionally avoids repo-local dev wrappers. It uses system packages and systemd units
+instead of the checkout-local dependency flow from `make deps`.
 
 ## 2. Host Requirements
 
@@ -72,12 +73,12 @@ Adjust values in `/etc/restream/restream.json` for server name and limits.
 
 1. Install the MediaMTX binary from official [releases](https://github.com/bluenviron/mediamtx/releases).
 
-   For a systemd-managed host, placing it at `/usr/local/bin/mediamtx` is the simplest option.
-   If you want to mirror the repo-managed layout used by `scripts/up.sh`, place it at `/opt/restream/bin/mediamtx/mediamtx` and adjust the systemd `ExecStart` line accordingly.
+  For a systemd-managed host, placing it at `/usr/local/bin/mediamtx` is the simplest option.
+  If you want to mirror the repo-local binary layout, place it at `/opt/restream/bin/mediamtx/mediamtx` and adjust the systemd `ExecStart` line accordingly.
 2. Place config:
 
 ```sh
-sudo cp /opt/restream/infra/mediamtx.yml /etc/restream/mediamtx.yml
+sudo cp /opt/restream/mediamtx.yml /etc/restream/mediamtx.yml
 sudo chown restream:restream /etc/restream/mediamtx.yml
 ```
 
@@ -155,6 +156,14 @@ PrivateTmp=true
 ProtectSystem=full
 ReadWritePaths=/var/lib/restream /opt/restream/data
 
+
+Shutdown behavior:
+
+- Restream now handles `SIGTERM`/`SIGINT` as a graceful shutdown path.
+- On shutdown it closes the HTTP listener, stops managed FFmpeg output jobs through the normal
+  stop-request path, stops background health timers, and then exits.
+- This makes systemd restarts and host shutdowns less likely to leave orphaned output workers
+  behind.
 [Install]
 WantedBy=multi-user.target
 ```

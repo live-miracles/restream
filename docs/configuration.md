@@ -158,72 +158,51 @@ Backend internal URLs are hardcoded as:
 
 ## 3. Run Modes
 
-There are two supported modes:
+There are two practical tracked runtime entry points:
 
-### Host Mode (app + MediaMTX on host)
+### App process
 
-This section covers the local helper scripts. For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
+This section covers the tracked Node entry points. For long-lived systemd deployment on a Linux
+host, see [deployment-host.md](./deployment-host.md).
 
-MediaMTX and the Node.js app run as host processes.
+Start the Node.js app directly:
 
 ```sh
-make run-host
+npm start
 ```
 
-Before running host mode, install the host dependencies with `make deps`. Re-run it whenever `package.json` or `package-lock.json` changes.
+Before starting the app, install dependencies with `make deps` or `DEV=1 make deps`. Re-run it
+whenever `package.json` or `package-lock.json` changes.
 
 **With hot reload (DEV mode):**
 ```sh
 DEV=1 make deps
-DEV=1 make run-host
+npm run dev
 ```
 
-This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`. It does not start any Docker services.
+This runs the app with nodemon instead of `node src/index.js`. It does not start any Docker services.
 
 **Details:**
-- Host mode does not use Docker, including `DEV=1`.
+- App startup does not use Docker.
 - MediaMTX is downloaded by running `make deps` into `bin/mediamtx/`.
-- `DEV=1 make run-host` requires the `DEV=1 make deps` install because nodemon comes from dev dependencies.
+- `npm run dev` and `npm test` require the `DEV=1 make deps` install because nodemon, jsdom, and supertest come from dev dependencies.
 - The helper scripts are Linux-oriented: `make deps` installs Debian/Ubuntu packages and downloads a Linux MediaMTX release.
-- On macOS/Windows, the blocker is this Linux-only host-process workflow rather than Docker host networking. Use `make run-docker` there unless you are manually provisioning equivalent host binaries.
-- MediaMTX is started as a background process; logs are written to `log/mediamtx.log` and PID to `.mediamtx.pid`.
-- Node app is started as a background process; logs are in `log/app.log` and PID in `.app.pid`.
-- To stop all processes and clean up, run `make down` (kills processes, removes PID files, stops Docker containers).
-- If you previously used Docker for MediaMTX in host mode, see the migration note below.
+- On macOS/Windows, the blocker is still the Linux-oriented MediaMTX/bootstrap workflow. Use a Linux host/systemd deployment or manually provision equivalent host binaries.
+- Start MediaMTX separately before using ingest, preview, or output lifecycle flows. One direct local option after `make deps` is `bin/mediamtx/mediamtx mediamtx.yml`.
+- Stop the app with your shell or process supervisor.
 
-**Migration Note:**
-As of April 2026, `make run-host` no longer runs MediaMTX in Docker. It is now managed as a host process. Remove any old containers and use `make down` to clean up lingering processes.
+### Optional Docker Stack
 
-If you encounter port conflicts, check for running MediaMTX or Node processes and use `make down`.
-
-If you prefer a fully containerized stack, use Docker mode (`make run-docker`).
-
-### Docker Mode (all containers)
-
-App, MediaMTX, and nginx-rtmp all run as containers. Use this for a fully containerized stack.
+`make run-docker` is still available when you want a disposable containerized stack for the app,
+MediaMTX, and the `nginx-rtmp` validation sink.
 
 ```sh
 make run-docker
 ```
 
-### app container environment
-
-`app` service environment:
-
-```yaml
-environment:
-  NODE_ENV: production
-  PORT: 3030
-```
-
-The app automatically connects to MediaMTX on `localhost:9997` (API) and `localhost:8554` (RTSP).
-
-Optional publisher-facing overrides:
-
-```yaml
-environment:
-  MEDIAMTX_INGEST_HOST: your-public-host
-```
+This is optional and not the main development path. Stop the stack with `docker compose down` when
+finished. The 4x3 runner still starts only `nginx-rtmp` itself, so host-mode and Docker-mode
+validation remain separate workflows.
 
 ## 4. MediaMTX Ports
 

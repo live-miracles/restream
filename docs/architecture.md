@@ -40,6 +40,35 @@ place.
 | FFmpeg             | Per-output RTSP→RTMP push process         | spawned on demand       |
 | nginx-rtmp         | Local test RTMP sink for Docker/test workflows | `1936` RTMP, `8081` HTTP|
 
+### Code Layers And Ownership
+
+The refactor intentionally pushed the backend into a small number of layers.
+
+1. Composition root: `src/index.js` wires services together and should stay light on business
+  logic.
+2. Route modules: `src/routes-pipeline.js`, `src/routes-output.js`, and `src/preview.js`
+  validate request shape, translate HTTP concerns, and call services.
+3. Service modules: `src/pipeline-runtime-state.js`, `src/health.js`, `src/outputs.js`,
+  `src/recovery.js`, and `src/bootstrap.js` own orchestration, shared runtime state, retry policy,
+  health aggregation, and process lifecycle behavior.
+4. Persistence and pure helpers: `src/db.js` owns SQLite access, while `src/utils.js`,
+  `src/health-compute.js`, and `src/recovery-helpers.js` own shared calculations and protocol-
+  specific logic.
+5. Frontend modules: `public/js/client.js` and `public/js/pipeline.js` own fetch/state primitives,
+  `public/js/features/` owns dashboard behavior, and `public/js/history.js` owns the history modal flows.
+
+Two backend snapshots are especially important to keep mentally separate:
+
+- `/config` is the durable control-plane snapshot, built from SQLite plus public config.
+- `/health` is the live runtime snapshot, built from MediaMTX, process Maps, and selected DB
+  metadata.
+
+When debugging UI drift, decide which snapshot is wrong before changing any implementation.
+
+For a code-oriented breakdown of the backend service boundaries, see
+[backend-services.md](./backend-services.md). For the recommended reading order for new
+contributors, see [onboarding.md](./onboarding.md).
+
 ---
 
 ## 2. Data Model
@@ -362,10 +391,13 @@ Recent backend refactors moved reusable runtime helpers out of bootstrap wiring 
 | File | Role |
 |---|---|
 | `src/index.js` | Composes services/routes and wires shared runtime maps and dependencies |
-| `src/utils/app.js` | Shared app helpers (`log`, `validateName`, `createHttpError`, token masking) |
-| `src/utils/ffmpeg.js` | FFmpeg argument/profile construction and progress/media parsing helpers |
-| `src/utils/mediamtx.js` | MediaMTX URL/tag helpers for path and reader correlation |
-| `src/utils/retry.js` | Retry/backoff decision helpers used by output recovery flows |
+| `src/routes-pipeline.js` | Config snapshot, pipeline CRUD, and stream-key routes |
+| `src/routes-output.js` | Output lifecycle/history routes |
+| `src/pipeline-runtime-state.js` | Shared input transition history and recovery coordination state |
+| `src/health.js` + `src/health-compute.js` | Live health monitor plus pure health/media helpers |
+| `src/outputs.js` + `src/recovery.js` + `src/recovery-helpers.js` | Output lifecycle, retry policy, and process/restart helper seams |
+| `src/db.js` | Schema, migrations, and durable query layer |
+| `src/utils.js` | Shared validation, logging, MediaMTX, FFmpeg, and redaction helpers |
 
 This was a structure/maintainability change only; API behavior and external contracts remained the same.
 
@@ -379,15 +411,15 @@ This was a structure/maintainability change only; API behavior and external cont
 |-----------------------|---------------------------------------------------------------|
 | `public/index.html`   | Dashboard SPA shell                                           |
 | `public/stream-keys.html` | Stream key management page                               |
-| `public/js/core/state.js` | Shared mutable UI state (`config`, `health`, `pipelines`, `metrics`) |
-| `public/js/core/api.js`       | All API calls as relative paths (never direct to MediaMTX)   |
-| `public/js/features/dashboard.js` | Polling orchestration and config/version drift detection      |
-| `public/js/core/pipeline.js`  | `parsePipelinesInfo()` — merges config + health into view model |
-| `public/js/features/render.js`    | DOM rendering — pipeline cards, stats tables, output rows     |
+| `public/js/client.js` | Shared mutable UI state plus API/ETag helpers |
+| `public/js/pipeline.js` | `parsePipelinesInfo()` and throughput helpers |
+| `public/js/features/dashboard.js` | Polling orchestration and config/version drift detection |
+| `public/js/features/dashboard-view.js` | Dashboard DOM rendering, metrics, and health banner state |
 | `public/js/features/editor.js`    | Pipeline/output edit flows and start/stop controls             |
-| `public/js/features/pipeline-view.js` | Selected-pipeline detail + outputs column renderers       |
-| `public/js/history/controller.js` | Output/pipeline history modal control and polling            |
-| `public/js/core/utils.js`     | `setServerConfig()`, `formatTime()`, `copyData()`, etc.       |
+| `public/js/features/view.js` | Selected-pipeline detail, ingest details, preview, and output columns |
+| `public/js/history.js` | Output/pipeline history modal control, polling, and rendering |
+| `public/js/history/classify.mjs` | Pure history classification helpers |
+| `public/js/utils.js`     | `setServerConfig()`, masking, copy, formatting, and DOM helpers |
 | `public/output.css`   | Compiled Tailwind + DaisyUI output (do not edit manually)     |
 | `input.css`           | Tailwind source (project root, compiled with `make css`)      |
 
@@ -410,13 +442,14 @@ renderPipelines()      DOM update for pipeline cards and output tables
 renderMetrics()        DOM update for system metrics (CPU, mem, disk, net)
   │
   ▼
-setInterval(requestDashboardRefresh, <pollInterval>)   repeats above on interval
+guarded poll loop schedules the next refresh after the current one finishes
+visibility changes retune that loop between visible/hidden intervals
 setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
 ```
 
 `GET /metrics/system` no longer advances the rate-calculation baseline on every request. A server-side timer samples CPU and network counters on a fixed cadence, and dashboard polls just read the latest completed sample.
 
-Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibility refreshes, and mutation-driven refreshes all funnel through a single in-flight gate, so a slow refresh cannot overlap with another full `fetchAndRerender()` pass and later overwrite fresher state.
+Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibility refreshes, and mutation-driven refreshes all funnel through a single in-flight gate, and the dashboard/history pollers now share the same guarded timeout-loop behavior so a slow refresh cannot overlap with another full fetch pass and later overwrite fresher state.
 
 `public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 
@@ -425,7 +458,7 @@ Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibilit
 See [frontend-modules.md](./frontend-modules.md) for implementation-level rules and examples. In short:
 
 - Import dependencies explicitly; do not rely on implicit globals.
-- Keep shared mutable dashboard state in `public/js/core/state.js`.
+- Keep shared mutable dashboard state in `public/js/client.js`.
 - Expose `window.*` only for handlers invoked directly by HTML attributes or legacy hooks.
 - Prefer normal module exports/imports for all other cross-file calls.
 
@@ -448,7 +481,9 @@ mutations.
 
 ### 5.3 Throughput Computation (client-side)
 
-`public/js/core/pipeline.js` maintains `throughputState.inputBytes` for input throughput only. On each poll cycle, `computeKbps(stateMap, key, totalBytes, nowMs)` computes input bitrate from the delta of `input.bytesReceived` between cycles:
+`public/js/pipeline.js` maintains the input-throughput baseline. On each poll cycle,
+`computeKbps(stateMap, key, totalBytes, nowMs)` computes input bitrate from the delta of
+`input.bytesReceived` between cycles:
 
 ```
 kbps = (deltaBytes × 8) / (deltaMs / 1000) / 1000
@@ -480,7 +515,7 @@ Each output card exposes a history modal with two modes:
 - Fetches up to 1000 rows ordered newest/oldest (user-selectable).
 - Find-in-page search: all rows render regardless of query; matching rows are highlighted inline and assigned a sequential match index. The `n/m` counter and up/down navigation (Enter / Shift+Enter) move between matches only. Scrolls active match into view. Non-matching rows remain visible for context.
 
-**Frontend constants** (in `public/js/history/state.js`):
+**Frontend constants** (in `public/js/history.js`):
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -496,7 +531,7 @@ If a page renders partially after a refactor, check these first:
 
 1. `ReferenceError` in browser console (usually an implicit-global access that should be an import or `window.*`).
 2. HTML handlers (`onclick`, `data-*`) still pointing to a function that is no longer exported to `window`.
-3. Shared state reads/writes still referencing old globals instead of `public/js/core/state.js`.
+3. Shared state reads/writes still referencing old globals instead of `public/js/client.js`.
 4. Stale browser JS from upstream cache/proxy; normal reload should revalidate, hard-refresh only if intermediaries ignore cache headers.
 
 ---
@@ -518,29 +553,36 @@ See [health-mapping.md](./health-mapping.md) for full status derivation diagrams
 
 ## 7. Deployment Topologies
 
-### 7.1 Host Processes (`make run-host`)
+### 7.1 App + MediaMTX (separately started)
 
 ```
 [Host]
-  bin/mediamtx/mediamtx :1935 :8554 :8888 :9997
-  node src/index.js     :3030
+  bin/mediamtx/mediamtx mediamtx.yml       :1935 :8554 :8888 :9997
+  node src/index.js                          :3030
     │
     └── (connects to)
         localhost:9997 (MediaMTX API)
         localhost:8554 (MediaMTX RTSP)
 ```
 
-`scripts/up.sh` backgrounds both host processes, writes logs to `log/mediamtx.log` and `log/app.log`, and records PIDs in `.mediamtx.pid` and `.app.pid`.
-With `DEV=1`, the app process switches to `npm run dev` for hot reload; `make run-host` still does not start any containers.
+The primary repo-managed edit/test flow remains host mode: start the app with `npm start` or
+`npm run dev`, and start MediaMTX separately with your own supervisor or a direct command such as
+`bin/mediamtx/mediamtx mediamtx.yml`.
 
-### 7.2 Full Docker (`make run-docker`)
+### 7.2 Optional Docker Stack (`make run-docker`)
 
-All services are defined in `docker-compose.yml` without profiles.
+`make run-docker` is still available when you want the older disposable container stack.
 
-`pause`, `app`, and `mediamtx` share a single network namespace (`network_mode: service:pause`).
-This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localhost:8554` (RTSP).
+```
+[Docker]
+  pause      :3030 :1935 :8554 :8890/udp
+  app        -> pause network namespace
+  mediamtx   -> pause network namespace
+  nginx-rtmp :1936 :8081
+```
 
-`nginx-rtmp` runs as a separate container with independent host port mappings.
+This stack starts the app, MediaMTX, and the `nginx-rtmp` validation sink together. It remains
+optional; host mode is still the main path described elsewhere in this guide.
 
 ---
 
@@ -548,11 +590,12 @@ This allows the app to use hardcoded `localhost:9997` (MediaMTX API) and `localh
 
 | Command               | Purpose                                              |
 |-----------------------|------------------------------------------------------|
-| `make deps`           | Run Linux preflight, install Node deps, and download MediaMTX; rerun it after `package.json` or `package-lock.json` changes |
-| `make run-host`       | Start MediaMTX + app as host processes; `DEV=1` switches the app to nodemon hot reload and expects a prior `DEV=1 make deps` |
-| `make run-docker`     | Start the full Docker stack (`pause`, `app`, `mediamtx`, `nginx-rtmp`) |
-| `make down`           | Stop host processes and containers, then clean local database files |
-| `make run-4x3`        | Start `nginx-rtmp` and run the artifact suite against an already-running app; the runner needs host `node` and `ffmpeg`, and host-mode stacks still depend on `make deps` outputs |
+| `make deps`           | Run Linux preflight, install Node deps, and download MediaMTX; use `DEV=1 make deps` for dev/test dependencies |
+| `npm start`           | Start the Node control plane from `src/index.js` |
+| `npm run dev`         | Start the Node control plane with nodemon hot reload |
+| `make run-docker`     | Start the optional app + MediaMTX + `nginx-rtmp` container stack |
+| `docker compose down` | Stop the optional Docker stack |
+| `make run-4x3`        | Start `nginx-rtmp` and run the artifact suite against an already-running app plus MediaMTX stack |
 | `make css`            | Rebuild `public/output.css` from `input.css`         |
 | `make format`         | Run prettier over all files                          |
 | `make security`       | npm audit + outdated packages                        |

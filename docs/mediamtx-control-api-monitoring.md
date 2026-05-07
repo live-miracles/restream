@@ -178,8 +178,7 @@ Supported workaround at configuration level:
 Operational notes for this repo:
 
 - In current host mode, MediaMTX and the app both run on the same host, so `authHTTPAddress: http://localhost:3030/...` works directly.
-- In Docker mode, `pause`, `app`, and `mediamtx` share a network namespace, so `localhost` also works there.
-- If MediaMTX is moved back into a separate container or a separate host in the future, the callback must use an address reachable from the MediaMTX process rather than assuming `localhost`.
+- If MediaMTX is moved into a separate container or a separate host in the future, the callback must use an address reachable from the MediaMTX process rather than assuming `localhost`.
 - This adds an auth round-trip for each connection attempt, so availability of the callback endpoint becomes part of ingest reliability.
 
 ### Recordings Runtime
@@ -199,9 +198,9 @@ Important runtime fields on `Recording` objects:
 
 Restream already has a good foundation around runtime path health and FFmpeg output correlation:
 
-- `src/services/health.js` builds a cached health snapshot from `paths`, `rtspconns`, `rtspsessions`, `rtmpconns`, and `srtconns`; the WebRTC session API remains documented here for future use, but current runtime collection leaves it disabled with WebRTC off in `mediamtx.yml`.
+- `src/health.js` builds a cached health snapshot from `paths`, `rtspconns`, `rtspsessions`, `rtmpconns`, and `srtconns`; the WebRTC session API remains documented here for future use, but current runtime collection leaves it disabled with WebRTC off in `mediamtx.yml`.
 - `docs/health-mapping.md` documents the current input and output status derivation model.
-- `public/js/features/render.js` renders publisher protocol/remote badges plus ingest-side quality status and modal details.
+- `public/js/features/view.js` renders publisher protocol/remote badges plus ingest-side quality status and modal details.
 
 The main limitation is scope. Current health is ingest-centric and still leaves some playback and secure-protocol runtime resources unused.
 
