@@ -401,6 +401,202 @@ Recent backend refactors moved reusable runtime helpers out of bootstrap wiring 
 
 This was a structure/maintainability change only; API behavior and external contracts remained the same.
 
+### 4.10 Internal Backend APIs And Contracts
+
+The backend now relies on a small number of internal service contracts. These are not public API
+surfaces, but they are stable enough that new code should treat them as explicit seams rather than
+reaching through neighboring modules.
+
+#### 4.10.1 Composition-Root Wiring Contract
+
+`src/index.js` is the only place that should wire long-lived service instances together.
+
+```
+src/index.js
+  |
+  +-- createRuntimeRegistries()
+  |     -> processes
+  |     -> ffmpegProgressByJobId
+  |     -> ffmpegOutputMediaByJobId
+  |
+  +-- createPipelineRuntimeStateService({ db })
+  |     -> pipelineRuntimeState
+  |
+  +-- createHealthMonitorService({
+  |       db,
+  |       fetch,
+  |       normalizeEtag,
+  |       ffmpegProgressByJobId,
+  |       ffmpegOutputMediaByJobId,
+  |       pipelineRuntimeState,
+  |       spawn,
+  |     })
+  |
+  +-- createOutputLifecycleService({
+  |       db,
+  |       getConfig,
+  |       spawn,
+  |       processes,
+  |       ffmpegProgressByJobId,
+  |       ffmpegOutputMediaByJobId,
+  |       recomputeEtag,
+  |       isLatestJobLikelyInputUnavailableStop:
+  |         pipelineRuntimeState.isLatestJobLikelyInputUnavailableStop,
+  |     })
+  |
+  +-- registerPipelineApi({ ..., pipelineRuntimeState, ... })
+  +-- registerOutputApi({ ..., reconcileOutput, stopRunningJobAndWait, ... })
+  |
+  \-- pipelineRuntimeState.setInputRecoveryHandler(
+        outputLifecycle.restartPipelineOutputsOnInputRecovery
+      )
+```
+
+Contract rules:
+
+- `src/index.js` owns callback registration and concrete singleton creation.
+- `src/health.js` and `src/outputs.js` must not import each other directly.
+- Shared mutable Maps for live FFmpeg state are created once in the composition root and passed
+  down; route modules do not own them.
+
+#### 4.10.2 Pipeline Runtime-State Contract
+
+`src/pipeline-runtime-state.js` is the shared coordinator for pipeline input transitions. It exists
+so routes, health collection, and output recovery can share one state model without reaching into
+each other's implementation details.
+
+```
+pipeline-runtime-state.js
+  |
+  +-- bootstrap()
+  |     seeds in-memory input-status history from DB + MediaMTX
+  |
+  +-- resolveInputState(streamKey, existingEverSeenLive)
+  |     used by routes when pipeline stream-key assignments change
+  |
+  +-- seedPipelineState(pipelineId, status)
+  +-- clearPipelineState(pipelineId)
+  |     used by routes after create/update/delete
+  |
+  +-- recordPipelineInputStatus(pipelineId, inputStatus, { publisher })
+  |     used by health.js while building live snapshots
+  |
+  +-- isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob)
+  |     used by outputs.js recovery logic
+  |
+  \-- setInputRecoveryHandler(fn)
+        called once by src/index.js
+```
+
+Method-level contract:
+
+| Method | Called by | Contract |
+|---|---|---|
+| `bootstrap()` | `health.start()` | Seed in-memory input status before periodic collectors start. |
+| `resolveInputState(streamKey, existingEverSeenLive)` | `routes-pipeline.js` | Returns `{ status, inputEverSeenLive }` from current MediaMTX state; routes use this to initialize persisted pipeline fields. |
+| `seedPipelineState(pipelineId, status)` | `routes-pipeline.js` | Seeds a new or updated pipeline's in-memory state after config changes. |
+| `clearPipelineState(pipelineId)` | `routes-pipeline.js` | Removes transient state after pipeline deletion. |
+| `recordPipelineInputStatus(pipelineId, inputStatus, { publisher })` | `health.js` | Logs transitions, updates the last input-unavailable timestamp, and fires the recovery callback on a non-`on` to `on` transition. |
+| `isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob)` | `outputs.js` | Classifies a clean stop near an input-off transition so recovery can suppress noisy retries. |
+| `setInputRecoveryHandler(fn)` | `index.js` | Registers a fire-and-forget callback with signature `fn(pipelineId)`. The runtime-state service does not await or catch this callback. |
+
+The important boundary is that `routes-pipeline.js` only uses the route-facing subset
+(`resolveInputState`, `seedPipelineState`, `clearPipelineState`), while `src/health.js` owns live
+transition recording and `src/outputs.js` owns recovery decisions.
+
+#### 4.10.3 Health Monitor Contract
+
+`createHealthMonitorService()` returns exactly three operational entrypoints:
+
+```
+healthMonitor
+  |
+  +-- start()
+  |     1. start MediaMTX readiness checks
+  |     2. await pipelineRuntimeState.bootstrap()
+  |     3. start periodic health snapshot collection
+  |
+  +-- stop()
+  |     clears readiness, collector, and probe-eviction timers
+  |
+  \-- registerRoutes(app)
+        GET /health
+        GET /healthz
+```
+
+Contract rules:
+
+- `start()` must run before the app is considered ready.
+- `registerRoutes(app)` is pure route registration; it does not start background work by itself.
+- `src/health.js` owns probe cache, readiness polling, and live snapshot assembly, but it does not
+  own desired-state or retry policy.
+- `src/health.js` may receive a `pipelineRuntimeState` instance from `src/index.js`; that shared
+  instance is the normal app path. The fallback local creation path exists only so the module can
+  still be exercised in isolation.
+
+#### 4.10.4 Output Lifecycle And Recovery Contract
+
+`src/outputs.js` owns concrete FFmpeg worker lifecycle. `src/recovery.js` owns desired-state,
+retry-budget, and stop/restart coordination policy.
+
+```
+routes-output.js
+  |
+  +-- setOutputDesiredState(...)
+  +-- resetOutputFailureCount(...)
+  \-- reconcileOutput(...)
+          |
+          +-- desiredState == stopped
+          |     -> stopRunningJob() when a job is active
+          |
+          +-- desiredState == running and job exists
+          |     -> already_running
+          |
+          \-- desiredState == running and no job exists
+                -> startOutputJob()
+                   -> spawn ffmpeg
+                   -> create/update job row
+                   -> register process + progress maps
+```
+
+Internal contract split:
+
+| Provider | Owns | Consumers |
+|---|---|---|
+| `src/outputs.js` | FFmpeg spawn/exit wiring, progress parsing, job start stability check, graceful shutdown | `routes-output.js`, `src/index.js` |
+| `src/recovery.js` | desiredState, failure counts, start locks, restart timers, stop escalation, input-recovery restart policy | `src/outputs.js` |
+
+Contract rules:
+
+- Route handlers should not spawn or kill FFmpeg directly; they must go through
+  `reconcileOutput()`, `stopRunningJob()`, or `stopRunningJobAndWait()`.
+- `desiredState` is operator or system intent. `jobs.status` is actual process outcome. The two are
+  allowed to diverge during retries and input outages.
+- `restartPipelineOutputsOnInputRecovery(pipelineId)` is the recovery callback installed by the
+  composition root; it is triggered by pipeline input transitions, not by routes.
+
+#### 4.10.5 Route Registration Contract
+
+The route modules are intentionally narrow adapters around services and DB operations.
+
+```
+registerConfigApi(app, db, getConfig, toPublicConfig)
+  -> owns /config and /config/version
+  -> owns ETag recomputation helpers returned to index.js
+
+registerPipelineApi(app, ..., pipelineRuntimeState, ...)
+  -> owns stream-key CRUD and pipeline CRUD
+  -> may mutate MediaMTX path config and DB in one request
+  -> may seed or clear runtime state after config mutations
+
+registerOutputApi(app, ..., reconcileOutput, stopRunningJobAndWait, ...)
+  -> owns output CRUD, start/stop endpoints, and history endpoints
+  -> delegates output state transitions to the lifecycle/recovery seam
+```
+
+The route modules may coordinate multiple subsystems, but they should stop at orchestration. The
+long-lived runtime Maps, timers, and retry policy all belong to services, not to route handlers.
+
 ---
 
 ## 5. Frontend Architecture
@@ -416,7 +612,8 @@ This was a structure/maintainability change only; API behavior and external cont
 | `public/js/features/dashboard.js` | Polling orchestration and config/version drift detection |
 | `public/js/features/dashboard-view.js` | Dashboard DOM rendering, metrics, and health banner state |
 | `public/js/features/editor.js`    | Pipeline/output edit flows and start/stop controls             |
-| `public/js/features/view.js` | Selected-pipeline detail, ingest details, preview, and output columns |
+| `public/js/features/view.js` | Selected-pipeline detail, ingest details, preview, and output-list wiring |
+| `public/js/features/output-list-view.js` | Output row DOM builder, metrics badges, and per-output action buttons |
 | `public/js/history.js` | Output/pipeline history modal control, polling, and rendering |
 | `public/js/history/classify.mjs` | Pure history classification helpers |
 | `public/js/utils.js`     | `setServerConfig()`, masking, copy, formatting, and DOM helpers |
@@ -533,6 +730,181 @@ If a page renders partially after a refactor, check these first:
 2. HTML handlers (`onclick`, `data-*`) still pointing to a function that is no longer exported to `window`.
 3. Shared state reads/writes still referencing old globals instead of `public/js/client.js`.
 4. Stale browser JS from upstream cache/proxy; normal reload should revalidate, hard-refresh only if intermediaries ignore cache headers.
+
+### 5.6 Frontend Internal APIs And Contracts
+
+The frontend is flatter now, but it still relies on a few internal contracts that are worth making
+explicit.
+
+#### 5.6.1 Shared State Ownership Contract
+
+`public/js/client.js` exports the shared singleton `state`. The contract is by ownership, not by
+immutability.
+
+```
+client.js
+  |
+  +-- export const state = {
+  |     config,
+  |     health,
+  |     pipelines,
+  |     metrics,
+  |   }
+  |
+  +-- export fetch helpers
+  |     getConfig()
+  |     getConfigVersion()
+  |     getHealth()
+  |     getSystemMetrics()
+  |     apiRequest(...)
+  |
+  \-- export createAdaptivePollLoop(...)
+
+dashboard.js
+  |
+  +-- writes state.config
+  +-- writes state.health
+  +-- writes state.metrics
+  \-- writes state.pipelines
+
+dashboard-view.js / editor.js / view.js / history.js
+  \-- read shared state, but do not own it
+```
+
+Current ownership rule:
+
+- `public/js/features/dashboard.js` is the only writer of `state.config`, `state.health`,
+  `state.metrics`, and `state.pipelines`.
+- Other frontend modules should treat `state` as read-mostly shared data and keep their own modal
+  or UI-local state separately.
+- `parsePipelinesInfo(config, health)` in `public/js/pipeline.js` is the only supported merge point
+  from API snapshots into the dashboard pipeline model.
+
+#### 5.6.2 Dashboard Refresh Coordination Contract
+
+The dashboard controller is the only module allowed to decide when a full config/health/metrics
+refresh happens.
+
+```
+initDashboard()
+  |
+  +-- requestDashboardRefresh()
+  |     -> fetchConfig()
+  |     -> fetchHealth()
+  |     -> fetchSystemMetrics()
+  |     -> compare snapshot versions
+  |     -> state.pipelines = parsePipelinesInfo(state.config, state.health)
+  |     -> renderPipelines()
+  |     -> renderMetrics()
+  |
+  +-- dashboardPollLoop.start()
+  |
+  \-- document.visibilitychange
+        -> onVisibilityChange()
+           -> dashboardPollLoop.syncWithVisibility(...)
+           -> syncDashboardVisibilityDependents()
+```
+
+Contract rules:
+
+- `requestDashboardRefresh()` is single-flight; overlapping callers queue behind the active refresh.
+- Config and health slices are considered mergeable only when their snapshot-version tokens agree.
+- `renderPipelines()` and `renderMetrics()` run after state replacement, not during incremental
+  fetch callbacks.
+
+#### 5.6.3 Dashboard Action-Coordinator Contract
+
+`public/js/features/dashboard-actions.js` exists so feature modules can request dashboard-level work
+without importing the dashboard controller directly.
+
+```
+dashboard.js
+  |
+  \-- setDashboardActionHandlers({
+        refreshDashboard: requestDashboardRefresh,
+        syncUserConfigBaseline,
+      })
+
+editor.js / history.js / other feature modules
+  |
+  +-- refreshDashboard()
+  +-- syncUserConfigBaseline()
+  +-- registerDashboardVisibilitySync(handler)
+  \-- rely on dashboard.js to call syncDashboardVisibilityDependents()
+```
+
+Contract rules:
+
+- `setDashboardActionHandlers()` must run during dashboard startup before other modules rely on the
+  forwarded callbacks.
+- Registered visibility handlers are called sequentially by
+  `syncDashboardVisibilityDependents()`.
+- `dashboard-actions.js` is a coordinator seam, not a second state store.
+
+#### 5.6.4 View Action Adapter Contract
+
+`public/js/features/view.js` owns selected-pipeline state lookup and action-adapter wiring.
+`public/js/features/output-list-view.js` owns the DOM builder for per-output rows. Together they
+render the selected pipeline without coupling output DOM code directly to editor/history modules.
+
+```
+view.js
+  |
+  +-- reads selected pipe from state.pipelines
+  +-- imports stable wrappers from pipeline-view-actions.js
+  |     |
+  |     +-- default action providers
+  |     |     -> editor.js
+  |     |     -> history.js
+  |     |
+  |     \-- test overrides
+  |           -> setPipelineViewActionOverrides(...)
+  |           -> resetPipelineViewActionOverrides()
+  |
+  \-- renderOutputsList(outputsList, pipe, actionAdapters)
+        from output-list-view.js
+```
+
+Contract rules:
+
+- `view.js` should call only the action adapter functions, not import editor/history internals
+  directly.
+- `output-list-view.js` should stay a DOM-builder seam: it receives the selected pipeline and the
+  narrow action callbacks from `view.js`, and it should not read shared state or import
+  editor/history modules itself.
+- Tests may override adapter functions, but production wiring should continue using the default
+  providers; `view.js` remains the only module that bridges those overrides into output rendering.
+- This adapter is intentionally narrow: output start/stop/edit/delete, history openers, publisher
+  quality opener, and the output-toggle busy check.
+
+#### 5.6.5 History Modal Contract
+
+`public/js/history.js` owns modal-local history state and polling. It does not own the dashboard's
+global pipeline snapshot.
+
+```
+openOutputHistoryModal(pipeId, outId, outName)
+  |
+  +-- reset outputHistoryState
+  +-- pollHistoryOnce(true)
+  +-- start or stop modal-local poll loop
+  \-- render output-history view
+
+openPipelineHistoryModal(pipeId, pipeName)
+  |
+  +-- reset pipelineHistoryState
+  +-- pollPipelineHistoryOnce(true)
+  \-- render pipeline-history view
+```
+
+Contract rules:
+
+- `outputHistoryState` and `pipelineHistoryState` are local to the history feature and are reset on
+  every modal open.
+- `registerDashboardVisibilitySync(syncHistoryPollingWithVisibility)` is the only intended bridge
+  from history polling to dashboard visibility changes.
+- Timeline context loading is bounded and cached per modal session; it is not a general-purpose log
+  query layer for the rest of the UI.
 
 ---
 
