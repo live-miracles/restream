@@ -53,11 +53,6 @@ function isCustomOutputServerSelected(protocol = 'rtmp') {
     return !serverSelect || !serverSelect.value;
 }
 
-function isCustomRtmpServerSelected() {
-    const serverSelect = document.getElementById('out-server-url-input');
-    return !serverSelect || isCustomOutputServerSelected('rtmp');
-}
-
 const OUTPUT_OPERATOR_PROTOCOLS = {
     rtmp: {
         fieldIds: {
@@ -67,7 +62,7 @@ const OUTPUT_OPERATOR_PROTOCOLS = {
             streamKey: 'out-rtmp-stream-key-input',
             extraQuery: 'out-rtmp-extra-query-input',
         },
-        shouldSyncRaw: isCustomRtmpServerSelected,
+        shouldSyncRaw: () => isCustomOutputServerSelected('rtmp'),
     },
     rtsp: {
         fieldIds: {
@@ -140,35 +135,30 @@ function syncRawInputFromOperatorFields(protocol) {
 
 function applyOutputProtocolUi(protocol) {
     const urlLabel = document.getElementById('out-url-input-label');
-    const rtmpOperatorFields = document.getElementById('out-rtmp-operator-fields');
-    const hlsOperatorFields = document.getElementById('out-hls-operator-fields');
-    const rtspOperatorFields = document.getElementById('out-rtsp-operator-fields');
-    const srtOperatorFields = document.getElementById('out-srt-operator-fields');
     const serverSelect = document.getElementById('out-server-url-input');
+    const usesPresets = protocolUsesOutputServerPresets(protocol);
+    const isCustomServer = isCustomOutputServerSelected(protocol);
 
-    const showRtmpOperatorFields = protocol === 'rtmp' && isCustomOutputServerSelected(protocol);
-    const showHlsOperatorFields = protocol === 'hls' && isCustomOutputServerSelected(protocol);
-    const isPresetBackedMode =
-        protocolUsesOutputServerPresets(protocol) && !isCustomOutputServerSelected(protocol);
+    const isPresetBackedMode = usesPresets && !isCustomServer;
 
     if (urlLabel) {
         urlLabel.textContent = isPresetBackedMode ? 'Stream Key' : 'Custom URL';
     }
-    if (rtmpOperatorFields) {
-        rtmpOperatorFields.classList.toggle('hidden', !showRtmpOperatorFields);
-    }
-    if (hlsOperatorFields) {
-        hlsOperatorFields.classList.toggle('hidden', !showHlsOperatorFields);
-    }
-    if (rtspOperatorFields) {
-        rtspOperatorFields.classList.toggle('hidden', protocol !== 'rtsp');
-    }
-    if (srtOperatorFields) {
-        srtOperatorFields.classList.toggle('hidden', protocol !== 'srt');
-    }
+
+    Object.keys(OUTPUT_OPERATOR_PROTOCOLS).forEach((panelProtocol) => {
+        const panelId = `out-${panelProtocol}-operator-fields`;
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const visible =
+            panelProtocol === 'rtmp' || panelProtocol === 'hls'
+                ? protocol === panelProtocol && isCustomServer
+                : protocol === panelProtocol;
+        panel.classList.toggle('hidden', !visible);
+    });
+
     if (serverSelect) {
-        serverSelect.disabled = !protocolUsesOutputServerPresets(protocol);
-        serverSelect.style.opacity = protocolUsesOutputServerPresets(protocol) ? '' : '0.75';
+        serverSelect.disabled = !usesPresets;
+        serverSelect.style.opacity = usesPresets ? '' : '0.75';
     }
 }
 
@@ -368,6 +358,12 @@ function setOutputOperatorFieldLocked(field, locked) {
         field.readOnly = locked;
     }
     field.classList.toggle('opacity-70', locked);
+}
+
+function setPointerLock(field, locked) {
+    if (!field) return;
+    field.style.pointerEvents = locked ? 'none' : '';
+    field.style.opacity = locked ? '0.75' : '';
 }
 
 function setOutputToggleBusy(button, busy) {
@@ -625,10 +621,8 @@ function setOutputToggleBusy(button, busy) {
         document.getElementById('out-running-edit-hint').classList.toggle('hidden', !isRunningEdit);
         document.getElementById('out-name-input').classList.remove('input-error');
 
-        encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
-        serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
+        setPointerLock(encodingSelect, isRunningEdit);
+        setPointerLock(serverSelect, isRunningEdit);
         const outRtmpInput = document.getElementById('out-rtmp-key-input');
         outRtmpInput.readOnly = isRunningEdit;
         outRtmpInput.classList.toggle('opacity-70', isRunningEdit);
