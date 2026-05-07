@@ -58,6 +58,96 @@ function getHealthBannerState(currentStatus) {
     return 'hidden';
 }
 
+function summarizePipelineOutputs(outputs = []) {
+    const summary = {
+        total: 0,
+        on: 0,
+        warning: 0,
+        error: 0,
+        off: 0,
+        status: 'off',
+    };
+
+    for (const output of outputs) {
+        summary.total += 1;
+        if (isOutputUnexpectedlyDown(output)) {
+            summary.error += 1;
+            summary.status = 'error';
+            continue;
+        }
+        if (output.status === 'warning') {
+            summary.warning += 1;
+            if (summary.status !== 'error') summary.status = 'warning';
+            continue;
+        }
+        if (output.status === 'on') {
+            summary.on += 1;
+            if (summary.status === 'off') summary.status = 'on';
+            continue;
+        }
+        if (isOutputIntentStopped(output)) {
+            summary.off += 1;
+        }
+    }
+
+    return summary;
+}
+
+function summarizePipelines(pipelines = []) {
+    const summary = {
+        inputs: {
+            total: 0,
+            on: 0,
+            warning: 0,
+            error: 0,
+            off: 0,
+        },
+        outputs: {
+            total: 0,
+            on: 0,
+            warning: 0,
+            error: 0,
+            off: 0,
+        },
+        byPipelineId: new Map(),
+    };
+
+    for (const pipeline of pipelines) {
+        summary.inputs.total += 1;
+        if (pipeline.input.status === 'on') summary.inputs.on += 1;
+        else if (pipeline.input.status === 'warning') summary.inputs.warning += 1;
+        else if (pipeline.input.status === 'error') summary.inputs.error += 1;
+        else summary.inputs.off += 1;
+
+        const outputSummary = summarizePipelineOutputs(pipeline.outs);
+        summary.outputs.total += outputSummary.total;
+        summary.outputs.on += outputSummary.on;
+        summary.outputs.warning += outputSummary.warning;
+        summary.outputs.error += outputSummary.error;
+        summary.outputs.off += outputSummary.off;
+        summary.byPipelineId.set(pipeline.id, outputSummary);
+    }
+
+    return summary;
+}
+
+function buildPipelineOutputBadges(outputSummary) {
+    return [
+        { value: outputSummary.on, className: 'badge badge-sm badge-success px-2' },
+        { value: outputSummary.warning, className: 'badge badge-sm badge-warning px-2' },
+        {
+            value: outputSummary.error,
+            className: 'badge badge-sm badge-error px-2',
+            title: 'Unexpectedly down outputs',
+        },
+        {
+            value: outputSummary.off,
+            className: 'badge badge-sm badge-ghost px-2',
+            title: 'Outputs intentionally stopped',
+        },
+    ];
+}
+
 function setMetricPlaceholders() {
     const setAll = (selector, value) =>
         document.querySelectorAll(selector).forEach((elem) => {
@@ -177,62 +267,29 @@ function isOutputUnexpectedlyDown(output) {
 }
 
 function renderPipelinesList(selectedPipe) {
-    const inputOn = state.pipelines.filter((p) => p.input.status === 'on').length;
-    const inputWarning = state.pipelines.filter((p) => p.input.status === 'warning').length;
-    const inputError = state.pipelines.filter((p) => p.input.status === 'error').length;
-    const inputOff = state.pipelines.filter((p) => p.input.status === 'off').length;
+    const summary = summarizePipelines(state.pipelines);
 
-    setInnerText('pipe-cnt', state.pipelines.length);
-    setInnerText('pipe-oks', inputOn);
-    setInnerText('pipe-warnings', inputWarning);
-    setInnerText('pipe-errors', inputError);
-    setInnerText('pipe-offs', inputOff);
+    setInnerText('pipe-cnt', summary.inputs.total);
+    setInnerText('pipe-oks', summary.inputs.on);
+    setInnerText('pipe-warnings', summary.inputs.warning);
+    setInnerText('pipe-errors', summary.inputs.error);
+    setInnerText('pipe-offs', summary.inputs.off);
 
-    const outputTotal = state.pipelines.reduce((sum, p) => sum + p.outs.length, 0);
-    const outputOn = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => o.status === 'on').length,
-        0,
-    );
-    const outputWarning = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => o.status === 'warning').length,
-        0,
-    );
-    const outputError = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length,
-        0,
-    );
-    const outputOff = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => isOutputIntentStopped(o)).length,
-        0,
-    );
-
-    setInnerText('out-cnt', outputTotal);
-    setInnerText('out-oks', outputOn);
-    setInnerText('out-warnings', outputWarning);
-    setInnerText('out-errors', outputError);
-    setInnerText('out-offs', outputOff);
+    setInnerText('out-cnt', summary.outputs.total);
+    setInnerText('out-oks', summary.outputs.on);
+    setInnerText('out-warnings', summary.outputs.warning);
+    setInnerText('out-errors', summary.outputs.error);
+    setInnerText('out-offs', summary.outputs.off);
 
     const sortedPipelines = [...state.pipelines].sort((a, b) => a.name.localeCompare(b.name));
     const pipelinesList = document.getElementById('pipelines');
     pipelinesList.replaceChildren();
 
     sortedPipelines.forEach((p, pipelineIndex) => {
-        let outStatus = 'off';
-        if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) {
-            outStatus = 'error';
-        } else if (p.outs.some((o) => o.status === 'warning')) {
-            outStatus = 'warning';
-        } else if (p.outs.some((o) => o.status === 'on')) {
-            outStatus = 'on';
-        }
+        const outputSummary = summary.byPipelineId.get(p.id) || summarizePipelineOutputs(p.outs);
         const style = p.id === selectedPipe ? 'bg-base-100' : '';
         const inputColor = getStatusColor(p.input.status);
-        const outColor = getStatusColor(outStatus);
-
-        const outOks = p.outs.filter((o) => o.status === 'on').length;
-        const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
-        const outErrors = p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length;
-        const outOffs = p.outs.filter((o) => isOutputIntentStopped(o)).length;
+        const outColor = getStatusColor(outputSummary.status);
 
         const li = document.createElement('li');
         const row = document.createElement('div');
@@ -244,22 +301,7 @@ function renderPipelinesList(selectedPipe) {
         statusTile.style.background = `linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)`;
         row.appendChild(statusTile);
 
-        const badges = [
-            { value: outOks, className: 'badge badge-sm badge-success px-2' },
-            { value: outWarnings, className: 'badge badge-sm badge-warning px-2' },
-            {
-                value: outErrors,
-                className: 'badge badge-sm badge-error px-2',
-                title: 'Unexpectedly down outputs',
-            },
-            {
-                value: outOffs,
-                className: 'badge badge-sm badge-ghost px-2',
-                title: 'Outputs intentionally stopped',
-            },
-        ];
-
-        badges.forEach(({ value, className, title = '' }) => {
+        buildPipelineOutputBadges(outputSummary).forEach(({ value, className, title = '' }) => {
             const badge = document.createElement('div');
             badge.className = className;
             if (!value) badge.classList.add('hidden');
@@ -422,4 +464,5 @@ export {
     renderServerMetrics,
     renderStatsColumn,
     setDashboardViewHandlers,
+    summarizePipelines,
 };

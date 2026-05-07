@@ -576,6 +576,29 @@ function createHealthMonitorService({
         return healthCollectorInFlight;
     }
 
+    async function getHealthSnapshot({ refreshIfStale = true } = {}) {
+        let snapshot = latestHealthSnapshot;
+        if (refreshIfStale && (!snapshot || isHealthSnapshotStaleForCurrentState(snapshot))) {
+            snapshot = await collectHealthSnapshot();
+        }
+
+        const etag =
+            latestHealthSnapshotEtag ||
+            hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
+        const generatedAtMs = Date.parse(snapshot?.generatedAt);
+        const ageMs = Number.isFinite(generatedAtMs)
+            ? Math.max(0, Date.now() - generatedAtMs)
+            : null;
+
+        return {
+            etag,
+            snapshot: {
+                ...snapshot,
+                ageMs,
+            },
+        };
+    }
+
     function startHealthCollector() {
         setLatestHealthSnapshot(
             buildDefaultHealthSnapshot('initializing', mediamtxReadiness.ready),
@@ -605,14 +628,7 @@ function createHealthMonitorService({
         // /health refreshes lazily when the cached snapshot is missing or stale relative to the
         // latest durable state version. That keeps polling cheap without serving clearly old data.
         app.get('/health', async (req, res) => {
-            let snapshot = latestHealthSnapshot;
-            if (!snapshot || isHealthSnapshotStaleForCurrentState(snapshot)) {
-                snapshot = await collectHealthSnapshot();
-            }
-
-            const etag =
-                latestHealthSnapshotEtag ||
-                hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
+            const { etag, snapshot } = await getHealthSnapshot({ refreshIfStale: true });
             const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
 
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
@@ -628,15 +644,7 @@ function createHealthMonitorService({
                 res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
             }
 
-            const generatedAtMs = Date.parse(snapshot.generatedAt);
-            const ageMs = Number.isFinite(generatedAtMs)
-                ? Math.max(0, Date.now() - generatedAtMs)
-                : null;
-
-            return res.json({
-                ...snapshot,
-                ageMs,
-            });
+            return res.json(snapshot);
         });
 
         app.get('/healthz', (req, res) => {
@@ -670,6 +678,7 @@ function createHealthMonitorService({
     }
 
     return {
+        getHealthSnapshot,
         registerRoutes,
         start,
         stop,

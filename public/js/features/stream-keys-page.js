@@ -103,29 +103,13 @@ function openDeleteConfirmModal(key, label) {
     openDeleteKeyModal(key, label);
 }
 
-async function createStreamKeyBtn() {
-    // Legacy: called from HTML but now just opens modal
-    openAddKeyModal();
-}
-
-async function updateStreamKeyBtn(key, name) {
-    // Legacy: called from event handlers
-    openEditKeyModal(key, name);
-}
-
-async function deleteStreamKeyBtn(key) {
-    const res = await deleteStreamKey(key);
-    if (res === null) return;
-    renderKeysTable();
-}
-
 async function copyKeyBtn(key) {
     if (await copyText(key)) showCopiedNotification();
 }
 
 async function renderKeysTable() {
     const keys = await getStreamKeys();
-        const { sortedKeys, tableHtml } = prepareStreamKeysTable(keys);
+    const { sortedKeys, tableHtml } = prepareStreamKeysTable(keys);
 
     const streamKeysTable = document.querySelector('#stream-keys');
     streamKeysTable.innerHTML = tableHtml;

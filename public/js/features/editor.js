@@ -13,19 +13,16 @@ import {
     OUTPUT_SERVER_PRESETS,
     safeParseUrl,
     protocolUsesOutputServerPresets,
+    parseOutputOperatorFields,
+    buildOutputUrlFromOperatorFields,
     resolvePresetOutputUrl,
     matchOutputServerPreset,
     detectOutputProtocol,
     isMatchingOutputProtocolUrl,
     isAbsoluteUrl,
-    getDefaultOutputHost,
     getDefaultOutputToken,
     extractCandidateStreamToken,
     buildDefaultCustomOutputUrl,
-    parseRtmpOperatorFields,
-    parseSrtOperatorFields,
-    parseRtspOperatorFields,
-    parseHlsOperatorFields,
 } from './output-url.js';
 
 async function updateLocalConfigBaseline() {
@@ -50,124 +47,6 @@ function populateOutputServerOptions(protocol, selectedValue = '') {
     serverSelect.value = hasSelectedValue ? selectedValue : '';
 }
 
-function buildRtspUrlFromOperatorFields() {
-    const host = document.getElementById('out-rtsp-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-rtsp-port-input')?.value.trim() || '554';
-    const rawPath = document.getElementById('out-rtsp-path-input')?.value.trim() || '/live/stream';
-    const extraQueryRaw =
-        document.getElementById('out-rtsp-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const qs = query.toString();
-    return `rtsp://${host}:${port}${normalizedPath}${qs ? `?${qs}` : ''}`;
-}
-
-function buildSrtUrlFromOperatorFields() {
-    const host = document.getElementById('out-srt-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-srt-port-input')?.value.trim() || '6000';
-    const streamId = document.getElementById('out-srt-streamid-input')?.value.trim() || '';
-    const extraQueryRaw = document.getElementById('out-srt-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const queryParts = [];
-    if (streamId) {
-        queryParts.push(`streamid=${streamId}`);
-    }
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            queryParts.push(part);
-        }
-    }
-
-    const qs = queryParts.join('&');
-    return `srt://${host}:${port}${qs ? `?${qs}` : ''}`;
-}
-
-function buildHlsUrlFromOperatorFields() {
-    const schemeValue = document.getElementById('out-hls-scheme-input')?.value.trim() || 'http';
-    const host = document.getElementById('out-hls-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-hls-port-input')?.value.trim() || '';
-    const rawPath =
-        document.getElementById('out-hls-path-input')?.value.trim() || '/hls/test/out.m3u8';
-    const extraQueryRaw = document.getElementById('out-hls-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const scheme = schemeValue === 'https' ? 'https' : 'http';
-    const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const origin = `${scheme}://${host}${port ? `:${port}` : ''}`;
-    const qs = query.toString();
-    return `${origin}${normalizedPath}${qs ? `?${qs}` : ''}`;
-}
-
-function buildRtmpUrlFromOperatorFields() {
-    const host = document.getElementById('out-rtmp-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-rtmp-port-input')?.value.trim() || '1935';
-    const rawAppPath = document.getElementById('out-rtmp-app-path-input')?.value.trim() || '/live';
-    const rawStreamKey =
-        document.getElementById('out-rtmp-stream-key-input')?.value.trim() || 'test';
-    const extraQueryRaw =
-        document.getElementById('out-rtmp-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const normalizedAppPath = (() => {
-        const cleaned = rawAppPath.replace(/^\/+|\/+$/g, '');
-        return cleaned ? `/${cleaned}` : '/live';
-    })();
-    const streamKey = rawStreamKey.replace(/^\/+/, '') || 'test';
-
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const qs = query.toString();
-    return `rtmp://${host}:${port}${normalizedAppPath}/${streamKey}${qs ? `?${qs}` : ''}`;
-}
-
 function isCustomOutputServerSelected(protocol = 'rtmp') {
     const serverSelect = document.getElementById('out-server-url-input');
     if (!protocolUsesOutputServerPresets(protocol)) return true;
@@ -188,8 +67,6 @@ const OUTPUT_OPERATOR_PROTOCOLS = {
             streamKey: 'out-rtmp-stream-key-input',
             extraQuery: 'out-rtmp-extra-query-input',
         },
-        parse: parseRtmpOperatorFields,
-        build: buildRtmpUrlFromOperatorFields,
         shouldSyncRaw: isCustomRtmpServerSelected,
     },
     rtsp: {
@@ -199,8 +76,6 @@ const OUTPUT_OPERATOR_PROTOCOLS = {
             path: 'out-rtsp-path-input',
             extraQuery: 'out-rtsp-extra-query-input',
         },
-        parse: parseRtspOperatorFields,
-        build: buildRtspUrlFromOperatorFields,
         shouldSyncRaw: () => true,
     },
     srt: {
@@ -210,8 +85,6 @@ const OUTPUT_OPERATOR_PROTOCOLS = {
             streamId: 'out-srt-streamid-input',
             extraQuery: 'out-srt-extra-query-input',
         },
-        parse: parseSrtOperatorFields,
-        build: buildSrtUrlFromOperatorFields,
         shouldSyncRaw: () => true,
     },
     hls: {
@@ -222,8 +95,6 @@ const OUTPUT_OPERATOR_PROTOCOLS = {
             path: 'out-hls-path-input',
             extraQuery: 'out-hls-extra-query-input',
         },
-        parse: parseHlsOperatorFields,
-        build: buildHlsUrlFromOperatorFields,
         shouldSyncRaw: () => isCustomOutputServerSelected('hls'),
     },
 };
@@ -233,11 +104,23 @@ function getOutputOperatorFieldIds(protocol = null) {
     return protocols.flatMap((name) => Object.values(OUTPUT_OPERATOR_PROTOCOLS[name].fieldIds));
 }
 
+function readOutputOperatorFields(protocol) {
+    const fieldIds = OUTPUT_OPERATOR_PROTOCOLS[protocol]?.fieldIds;
+    if (!fieldIds) return {};
+
+    return Object.fromEntries(
+        Object.entries(fieldIds).map(([key, fieldId]) => [
+            key,
+            document.getElementById(fieldId)?.value.trim() || '',
+        ]),
+    );
+}
+
 function syncOperatorFieldsFromRawInput(protocol, rawInput) {
     const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
     if (!config) return;
 
-    const parsed = config.parse(rawInput);
+    const parsed = parseOutputOperatorFields(protocol, rawInput);
     Object.entries(config.fieldIds).forEach(([key, fieldId]) => {
         const field = document.getElementById(fieldId);
         if (field) field.value = parsed[key] ?? '';
@@ -249,7 +132,7 @@ function syncRawInputFromOperatorFields(protocol) {
     const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
     if (!rawInput || !config) return;
 
-    const crafted = config.build();
+    const crafted = buildOutputUrlFromOperatorFields(protocol, readOutputOperatorFields(protocol));
     if (crafted) {
         rawInput.value = crafted;
     }
@@ -303,7 +186,7 @@ function getEffectiveOutputUrlFromModal() {
         operatorProtocol &&
         (!protocolUsesOutputServerPresets(protocol) || isCustomOutputServerSelected(protocol))
     ) {
-        return operatorProtocol.build() || rawInput;
+        return buildOutputUrlFromOperatorFields(protocol, readOutputOperatorFields(protocol)) || rawInput;
     }
 
     return resolvePresetOutputUrl(serverUrl, rawInput);

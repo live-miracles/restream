@@ -116,3 +116,38 @@ test('outputs history normalizes timestamps, prefixes, and default pagination', 
         prefixes: ['[stderr]', '[exit]'],
     });
 });
+
+test('pipeline history rejects invalid prefix list', async () => {
+    const { app } = createOutputsHarness();
+
+    const res = await request(app)
+        .get('/pipelines/pipe-a/history?prefix=stderr,unknown')
+        .expect(400);
+
+    assert.match(res.body.error, /prefix must be a comma-separated list/i);
+});
+
+test('pipeline history passes parsed filters to the db layer', async () => {
+    let receivedOptions = null;
+    const { app } = createOutputsHarness({
+        listJobLogsByPipelineFiltered: (_pipelineId, options) => {
+            receivedOptions = options;
+            return [{ ts: '2026-05-05T00:00:00.000Z', message: '[config] changed' }];
+        },
+    });
+
+    const res = await request(app)
+        .get(
+            '/pipelines/pipe-a/history?prefix=config,input_state&since=2026-05-05T00:00:00Z&until=2026-05-05T00:20:00Z&order=asc&limit=25',
+        )
+        .expect(200);
+
+    assert.equal(res.body.logs.length, 1);
+    assert.deepEqual(receivedOptions, {
+        since: '2026-05-05T00:00:00.000Z',
+        until: '2026-05-05T00:20:00.000Z',
+        limit: 25,
+        order: 'asc',
+        prefixes: ['[config]', '[input_state]'],
+    });
+});

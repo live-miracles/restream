@@ -48,7 +48,12 @@ const { ffmpegProgressByJobId, ffmpegOutputMediaByJobId, processes } =
 const pipelineRuntimeState = createPipelineRuntimeStateService({ db });
 
 // ── Config API (provides normalizeEtag + recomputeEtag) ──────────
-const { normalizeEtag, recomputeConfigEtag, recomputeEtag } = registerConfigApi({
+const {
+    normalizeEtag,
+    recomputeConfigEtag,
+    recomputeEtag,
+    setHealthSnapshotProvider,
+} = registerConfigApi({
     app,
     db,
     getConfig,
@@ -66,6 +71,7 @@ const healthMonitor = createHealthMonitorService({
     pipelineRuntimeState,
     spawn,
 });
+setHealthSnapshotProvider(healthMonitor.getHealthSnapshot);
 
 // ── Output lifecycle (FFmpeg process management) ──────
 const outputLifecycle = createOutputLifecycleService({

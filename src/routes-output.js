@@ -32,6 +32,8 @@ const HISTORY_MAX_LIMIT = 1000;
 const HISTORY_MAX_RANGE_MS = 24 * 60 * 60 * 1000;
 const HISTORY_MAX_HIGH_VOLUME_RANGE_MS = 10 * 60 * 1000;
 const HISTORY_HIGH_VOLUME_PREFIXES = new Set(['[stderr]', '[exit]', '[control]']);
+const HISTORY_PREFIX_ERROR =
+    'prefix must be a comma-separated list of lifecycle, stderr, exit, control, config, input_state';
 
 function normalizeOutputPayload(body, existing = null) {
     const existingEncoding = existing ? normalizeOutputEncoding(existing.encoding) || 'source' : null;
@@ -176,6 +178,61 @@ function getHistoryWindowError({ since, until, prefixes }) {
     }
 
     return null;
+}
+
+function parseHistoryFilters(query, options = {}) {
+    const {
+        defaultLimit = 200,
+        defaultOrder = 'desc',
+        defaultPrefixes = [],
+        lifecycleMode = false,
+    } = options;
+
+    const since = parseHistoryTimestamp(query?.since);
+    if (since === undefined) {
+        return { error: 'Invalid since timestamp' };
+    }
+
+    const until = parseHistoryTimestamp(query?.until);
+    if (until === undefined) {
+        return { error: 'Invalid until timestamp' };
+    }
+
+    if (since && until && since >= until) {
+        return { error: 'since must be earlier than until' };
+    }
+
+    const order = parseHistoryOrder(query?.order, defaultOrder);
+    if (!order) {
+        return { error: 'order must be asc or desc' };
+    }
+
+    const prefixes = lifecycleMode
+        ? ['[lifecycle]']
+        : query?.prefix === undefined
+          ? [...defaultPrefixes]
+          : parseHistoryPrefixes(query?.prefix);
+    if (prefixes === null) {
+        return { error: HISTORY_PREFIX_ERROR };
+    }
+
+    const historyWindowError = getHistoryWindowError({ since, until, prefixes });
+    if (historyWindowError) {
+        return { error: historyWindowError };
+    }
+
+    const limit = parseHistoryLimit(query?.limit, defaultLimit);
+    if (limit === null && (!lifecycleMode || query?.limit !== undefined)) {
+        return { error: 'limit must be an integer between 1 and 1000' };
+    }
+
+    return {
+        since,
+        until,
+        limit,
+        order,
+        prefixes,
+    };
 }
 
 function registerOutputApi({
@@ -450,47 +507,21 @@ function registerOutputApi({
             if (!getOutputOrRespond(res, pid, oid)) return;
 
             const filterLifecycle = req.query.filter === 'lifecycle';
-            const since = parseHistoryTimestamp(req.query.since);
-            if (since === undefined)
-                return respondError(res, 400, 'Invalid since timestamp');
-
-            const until = parseHistoryTimestamp(req.query.until);
-            if (until === undefined)
-                return respondError(res, 400, 'Invalid until timestamp');
-            if (since && until && since >= until) {
-                return respondError(res, 400, 'since must be earlier than until');
-            }
-
-            const order = parseHistoryOrder(req.query.order, filterLifecycle ? 'asc' : 'desc');
-            if (!order) return respondError(res, 400, 'order must be asc or desc');
-
-            const prefixes = filterLifecycle
-                ? ['[lifecycle]']
-                : parseHistoryPrefixes(req.query.prefix);
-            if (prefixes === null) {
-                return respondError(
-                    res,
-                    400,
-                    'prefix must be a comma-separated list of lifecycle, stderr, exit, control, config, input_state',
-                );
-            }
-
-            const historyWindowError = getHistoryWindowError({ since, until, prefixes });
-            if (historyWindowError) {
-                return respondError(res, 400, historyWindowError);
-            }
-
-            const limit = parseHistoryLimit(req.query.limit, filterLifecycle ? null : 200);
-            if (limit === null && (!filterLifecycle || req.query.limit !== undefined)) {
-                return respondError(res, 400, 'limit must be an integer between 1 and 1000');
+            const historyFilters = parseHistoryFilters(req.query, {
+                defaultLimit: filterLifecycle ? null : 200,
+                defaultOrder: filterLifecycle ? 'asc' : 'desc',
+                lifecycleMode: filterLifecycle,
+            });
+            if (historyFilters.error) {
+                return respondError(res, 400, historyFilters.error);
             }
 
             const logs = db.listJobLogsByOutputFiltered(pid, oid, {
-                since,
-                until,
-                limit,
-                order,
-                prefixes,
+                since: historyFilters.since,
+                until: historyFilters.until,
+                limit: historyFilters.limit,
+                order: historyFilters.order,
+                prefixes: historyFilters.prefixes,
             });
 
             return respondJson(res, {
@@ -508,12 +539,18 @@ function registerOutputApi({
             const pid = req.params.pipelineId;
             if (!getPipelineOrRespond(res, pid)) return;
 
-            const requestedLimit = Number.parseInt(String(req.query.limit || '200'), 10);
-            const limit = Number.isFinite(requestedLimit)
-                ? Math.max(1, Math.min(requestedLimit, 1000))
-                : 200;
+            const historyFilters = parseHistoryFilters(req.query, {
+                defaultLimit: 200,
+                defaultOrder: 'desc',
+            });
+            if (historyFilters.error) {
+                return respondError(res, 400, historyFilters.error);
+            }
 
-            const logs = db.listJobLogsByPipeline(pid).slice(0, limit);
+            const logs =
+                typeof db.listJobLogsByPipelineFiltered === 'function'
+                    ? db.listJobLogsByPipelineFiltered(pid, historyFilters)
+                    : db.listJobLogsByPipeline(pid).slice(0, historyFilters.limit || 200);
             return respondJson(res, { pipelineId: pid, logs });
         } catch (err) {
             return respondError(res, 500, errMsg(err));

@@ -1,8 +1,21 @@
-// Pure output URL helpers.
-// Parses, validates, and constructs output URLs for RTMP, RTMPS, RTSP, SRT, and HLS.
-// Contains preset server definitions and the matching logic that maps a raw URL back to
-// a known preset. No DOM access — safe to use in tests without a browser environment.
+// Shared protocol URL helpers.
+// Parses, validates, and constructs output URLs, and also parses ingest URLs into
+// the operator-field models used by the selected-pipeline view. No DOM access — safe
+// to use in tests without a browser environment.
 import { isLikelyHlsOutputUrl } from '../utils.js';
+
+const PROTOCOL_LABELS = {
+    rtmp: 'RTMP',
+    rtsp: 'RTSP',
+    srt: 'SRT',
+    hls: 'HLS',
+};
+
+const INGEST_PROTOCOL_DEFAULT_PORTS = {
+    rtmp: '1935',
+    rtsp: '8554',
+    srt: '8890',
+};
 
 const OUTPUT_SERVER_PRESETS = {
     // Keep the preferred RTMP default first; modal create/switch flows read rtmp[0].
@@ -51,6 +64,33 @@ function safeDecodeUrlComponent(value) {
     }
 }
 
+function parseLooseQueryString(rawQuery) {
+    const query = new URLSearchParams();
+    const source = String(rawQuery || '').trim();
+    if (!source) return query;
+
+    for (const segment of source.split('&')) {
+        const part = segment.trim();
+        if (!part) continue;
+
+        const eqIdx = part.indexOf('=');
+        if (eqIdx < 0) {
+            query.set(part, '');
+            continue;
+        }
+
+        query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
+    }
+
+    return query;
+}
+
+function formatProtocolPortDisplay(parsedDetails) {
+    if (!parsedDetails?.port) return '';
+    if (parsedDetails.hasExplicitPort) return parsedDetails.port;
+    return `${parsedDetails.port} (default)`;
+}
+
 /**
  * Returns `true` for protocols whose server field is backed by a preset dropdown
  * (currently RTMP and HLS).
@@ -59,6 +99,279 @@ function safeDecodeUrlComponent(value) {
  */
 function protocolUsesOutputServerPresets(protocol) {
     return protocol === 'rtmp' || protocol === 'hls';
+}
+
+function buildRtspOperatorUrl(fields = {}) {
+    const host = String(fields.host || '').trim();
+    const port = String(fields.port || '').trim() || '554';
+    const rawPath = String(fields.path || '').trim() || '/live/stream';
+    const extraQueryRaw = String(fields.extraQuery || '').trim();
+
+    if (!host) return '';
+
+    const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+    const qs = parseLooseQueryString(extraQueryRaw).toString();
+    return `rtsp://${host}:${port}${normalizedPath}${qs ? `?${qs}` : ''}`;
+}
+
+function splitLooseQueryParts(rawQuery) {
+    return String(rawQuery || '')
+        .split('&')
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+}
+
+function buildSrtOperatorUrl(fields = {}) {
+    const host = String(fields.host || '').trim();
+    const port = String(fields.port || '').trim() || '6000';
+    const streamId = String(fields.streamId || '').trim();
+    const extraQueryRaw = String(fields.extraQuery || '').trim();
+
+    if (!host) return '';
+
+    const queryParts = [];
+    if (streamId) {
+        queryParts.push(`streamid=${streamId}`);
+    }
+    queryParts.push(...splitLooseQueryParts(extraQueryRaw));
+
+    const qs = queryParts.join('&');
+    return `srt://${host}:${port}${qs ? `?${qs}` : ''}`;
+}
+
+function buildHlsOperatorUrl(fields = {}) {
+    const schemeValue = String(fields.scheme || '').trim() || 'http';
+    const host = String(fields.host || '').trim();
+    const port = String(fields.port || '').trim();
+    const rawPath = String(fields.path || '').trim() || '/hls/test/out.m3u8';
+    const extraQueryRaw = String(fields.extraQuery || '').trim();
+
+    if (!host) return '';
+
+    const scheme = schemeValue === 'https' ? 'https' : 'http';
+    const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+    const origin = `${scheme}://${host}${port ? `:${port}` : ''}`;
+    const qs = parseLooseQueryString(extraQueryRaw).toString();
+    return `${origin}${normalizedPath}${qs ? `?${qs}` : ''}`;
+}
+
+function buildRtmpOperatorUrl(fields = {}) {
+    const host = String(fields.host || '').trim();
+    const port = String(fields.port || '').trim() || '1935';
+    const rawAppPath = String(fields.appPath || '').trim() || '/live';
+    const rawStreamKey = String(fields.streamKey || '').trim() || 'test';
+    const extraQueryRaw = String(fields.extraQuery || '').trim();
+
+    if (!host) return '';
+
+    const normalizedAppPath = (() => {
+        const cleaned = rawAppPath.replace(/^\/+|\/+$/g, '');
+        return cleaned ? `/${cleaned}` : '/live';
+    })();
+    const streamKey = rawStreamKey.replace(/^\/+/, '') || 'test';
+    const qs = parseLooseQueryString(extraQueryRaw).toString();
+    return `rtmp://${host}:${port}${normalizedAppPath}/${streamKey}${qs ? `?${qs}` : ''}`;
+}
+
+const OUTPUT_PROTOCOL_FIELD_PARSERS = {
+    rtmp: parseRtmpOperatorFields,
+    rtsp: parseRtspOperatorFields,
+    srt: parseSrtOperatorFields,
+    hls: parseHlsOperatorFields,
+};
+
+const OUTPUT_PROTOCOL_FIELD_BUILDERS = {
+    rtmp: buildRtmpOperatorUrl,
+    rtsp: buildRtspOperatorUrl,
+    srt: buildSrtOperatorUrl,
+    hls: buildHlsOperatorUrl,
+};
+
+function parseOutputOperatorFields(protocol, rawUrl) {
+    const parser = OUTPUT_PROTOCOL_FIELD_PARSERS[protocol];
+    return parser ? parser(rawUrl) : {};
+}
+
+function buildOutputUrlFromOperatorFields(protocol, fields = {}) {
+    const builder = OUTPUT_PROTOCOL_FIELD_BUILDERS[protocol];
+    return builder ? builder(fields) : '';
+}
+
+/**
+ * Parses an ingest URL into a protocol-aware operator-field model for the dashboard.
+ * @param {'rtmp'|'rtsp'|'srt'} protocol
+ * @param {string} rawUrl
+ * @returns {object|null}
+ */
+function parseIngestProtocolUrl(protocol, rawUrl) {
+    const parsed = safeParseUrl(rawUrl);
+    if (!parsed) return null;
+
+    const host = parsed.hostname || '';
+    const port = parsed.port || INGEST_PROTOCOL_DEFAULT_PORTS[protocol] || '';
+    const authority = host ? `${host}${port ? `:${port}` : ''}` : '';
+    const base = {
+        rawUrl,
+        scheme: parsed.protocol.replace(/:$/, ''),
+        host,
+        port,
+        hasExplicitPort: parsed.port !== '',
+    };
+
+    if (protocol === 'srt') {
+        const streamId = parsed.searchParams.get('streamid') || '';
+        const knownParams = new Set(['streamid', 'latency', 'mode', 'passphrase', 'pbkeylen', 'maxbw']);
+        return {
+            ...base,
+            streamId,
+            latency: parsed.searchParams.get('latency') || '',
+            mode: parsed.searchParams.get('mode') || '',
+            passphrase: parsed.searchParams.get('passphrase') || '',
+            pbkeylen: parsed.searchParams.get('pbkeylen') || '',
+            maxbw: parsed.searchParams.get('maxbw') || '',
+            otherParams: Array.from(parsed.searchParams.entries())
+                .filter(([key]) => !knownParams.has(key))
+                .map(([key, value]) => `${key}=${value}`)
+                .join(' · '),
+        };
+    }
+
+    const pathSegments = parsed.pathname
+        .split('/')
+        .filter(Boolean)
+        .map((segment) => safeDecodeUrlComponent(segment));
+    const streamKey = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : '';
+    const application = pathSegments.length > 1 ? pathSegments.slice(0, -1).join('/') : '';
+
+    if (protocol === 'rtmp') {
+        return {
+            ...base,
+            application,
+            streamKey,
+            serverUrl: `${base.scheme}://${authority}${application ? `/${application}` : ''}`,
+        };
+    }
+
+    const credentials = parsed.username
+        ? parsed.password
+            ? `${safeDecodeUrlComponent(parsed.username)}:${safeDecodeUrlComponent(parsed.password)}`
+            : safeDecodeUrlComponent(parsed.username)
+        : '';
+    return {
+        ...base,
+        credentials,
+        path: pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '/',
+        search: parsed.search || '',
+    };
+}
+
+/**
+ * Builds the operator-field display model for the ingest detail cards.
+ * @param {'rtmp'|'rtsp'|'srt'} protocol
+ * @param {object|null} parsedDetails
+ * @returns {{heading: string, note: string, rows: Array<object>}}
+ */
+function buildIngestProtocolDetailModel(protocol, parsedDetails) {
+    const heading = 'Operator Fields';
+    if (!parsedDetails) {
+        return { heading, note: '', rows: [] };
+    }
+
+    const optionalRow = (value, row) => (value ? row : null);
+
+    if (protocol === 'rtmp') {
+        return {
+            heading,
+            note:
+                parsedDetails.scheme === 'rtmps'
+                    ? 'Push ingest over TLS. Most encoders want Server URL plus Stream Key.'
+                    : 'Push ingest. Most encoders want Server URL plus Stream Key.',
+            rows: [
+                { label: 'Server URL', value: parsedDetails.serverUrl, wide: true },
+                { label: 'Stream Key', value: parsedDetails.streamKey, wide: true },
+                { label: 'Host', value: parsedDetails.host },
+                {
+                    label: 'Port',
+                    value: formatProtocolPortDisplay(parsedDetails),
+                    copyValue: parsedDetails.port,
+                },
+                { label: 'App Name', value: parsedDetails.application },
+            ].filter((row) => row.value),
+        };
+    }
+
+    if (protocol === 'rtsp') {
+        return {
+            heading,
+            note: parsedDetails.credentials
+                ? 'Use the full URL above. Embedded credentials are plaintext unless you use RTSPS or another secure tunnel.'
+                : '',
+            rows: [
+                optionalRow(parsedDetails.credentials, {
+                    label: 'Credentials',
+                    value: parsedDetails.credentials,
+                }),
+                { label: 'Host', value: parsedDetails.host },
+                {
+                    label: 'Port',
+                    value: formatProtocolPortDisplay(parsedDetails),
+                    copyValue: parsedDetails.port,
+                },
+                {
+                    label: 'Stream Path',
+                    value: `${parsedDetails.path}${parsedDetails.search || ''}`,
+                    wide: true,
+                },
+            ].filter(Boolean),
+        };
+    }
+
+    return {
+        heading,
+        note: 'Most SRT setups need Host, Port, and Stream ID. Latency is the main operator tuning knob for unstable networks.',
+        rows: [
+            { label: 'Host', value: parsedDetails.host },
+            {
+                label: 'Port',
+                value: formatProtocolPortDisplay(parsedDetails),
+                copyValue: parsedDetails.port,
+            },
+            {
+                label: 'Stream ID',
+                value: parsedDetails.streamId,
+                wide: true,
+            },
+            optionalRow(parsedDetails.latency, {
+                label: 'Latency',
+                value: `${parsedDetails.latency} ms`,
+                copyValue: parsedDetails.latency,
+            }),
+            {
+                label: 'Mode',
+                value: parsedDetails.mode || 'caller (default)',
+                copyValue: parsedDetails.mode || 'caller',
+            },
+            optionalRow(parsedDetails.passphrase, {
+                label: 'Passphrase',
+                value: parsedDetails.passphrase,
+            }),
+            optionalRow(parsedDetails.pbkeylen, {
+                label: 'PB Key Len',
+                value: `${parsedDetails.pbkeylen} bytes`,
+                copyValue: parsedDetails.pbkeylen,
+            }),
+            optionalRow(parsedDetails.maxbw, {
+                label: 'Max BW',
+                value: `${parsedDetails.maxbw} B/s`,
+                copyValue: parsedDetails.maxbw,
+            }),
+            optionalRow(parsedDetails.otherParams, {
+                label: 'Other Params',
+                value: parsedDetails.otherParams,
+                wide: true,
+            }),
+        ].filter(Boolean),
+    };
 }
 
 /**
@@ -261,6 +574,15 @@ function buildDefaultCustomOutputUrl(protocol, rawSeed = '') {
     return `rtmp://${host}:1935/live/${token}`;
 }
 
+function serializeSearchParams(searchParams, ignoredKeys = null) {
+    const entries = [];
+    searchParams.forEach((value, key) => {
+        if (ignoredKeys?.has(key)) return;
+        entries.push(`${key}=${value}`);
+    });
+    return entries.join('&');
+}
+
 /**
  * Parses an RTMP/RTMPS URL into its operator field components.
  * Returns safe defaults when the URL is absent or malformed.
@@ -285,17 +607,12 @@ function parseRtmpOperatorFields(rawUrl) {
     const appSegments =
         pathSegments.length > 1 ? pathSegments.slice(0, pathSegments.length - 1) : ['live'];
 
-    const extraEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        extraEntries.push(`${key}=${value}`);
-    });
-
     return {
         host: parsed.hostname || getDefaultOutputHost(),
         port: parsed.port || (parsed.protocol === 'rtmps:' ? '443' : '1935'),
         appPath: `/${appSegments.join('/')}`,
         streamKey,
-        extraQuery: extraEntries.join('&'),
+        extraQuery: serializeSearchParams(parsed.searchParams),
     };
 }
 
@@ -319,12 +636,6 @@ function parseSrtOperatorFields(rawUrl) {
 
     const isSrt = parsed.protocol === 'srt:';
     const knownKeys = new Set(['streamid']);
-    const extraEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        if (!knownKeys.has(key)) {
-            extraEntries.push(`${key}=${value}`);
-        }
-    });
 
     let streamId = parsed.searchParams.get('streamid') || '';
     if (!streamId && !isSrt) {
@@ -335,7 +646,7 @@ function parseSrtOperatorFields(rawUrl) {
         host: parsed.hostname || getDefaultOutputHost(),
         port: isSrt ? parsed.port || '6000' : '6000',
         streamId,
-        extraQuery: isSrt ? extraEntries.join('&') : '',
+        extraQuery: isSrt ? serializeSearchParams(parsed.searchParams, knownKeys) : '',
     };
 }
 
@@ -359,16 +670,11 @@ function parseRtspOperatorFields(rawUrl) {
 
     const isRtsp = parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:';
 
-    const queryEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        queryEntries.push(`${key}=${value}`);
-    });
-
     return {
         host: parsed.hostname || getDefaultOutputHost(),
         port: isRtsp ? parsed.port || '554' : '554',
         path: isRtsp ? parsed.pathname || '/live/stream' : `/live/${getDefaultOutputToken(rawUrl)}`,
-        extraQuery: isRtsp ? queryEntries.join('&') : '',
+        extraQuery: isRtsp ? serializeSearchParams(parsed.searchParams) : '',
     };
 }
 
@@ -395,25 +701,23 @@ function parseHlsOperatorFields(rawUrl) {
         };
     }
 
-    const queryEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        queryEntries.push(`${key}=${value}`);
-    });
-
     return {
         scheme: parsed.protocol === 'https:' ? 'https' : 'http',
         host: parsed.hostname || getDefaultOutputHost(),
         port: parsed.port || '',
         path: parsed.pathname || `/hls/${token}/out.m3u8`,
-        extraQuery: queryEntries.join('&'),
+        extraQuery: serializeSearchParams(parsed.searchParams),
     };
 }
 
 export {
+    PROTOCOL_LABELS,
     OUTPUT_SERVER_PRESETS,
     safeParseUrl,
     safeDecodeUrlComponent,
     protocolUsesOutputServerPresets,
+    parseOutputOperatorFields,
+    buildOutputUrlFromOperatorFields,
     resolvePresetOutputUrl,
     matchOutputServerPreset,
     detectOutputProtocol,
@@ -423,6 +727,8 @@ export {
     getDefaultOutputToken,
     extractCandidateStreamToken,
     buildDefaultCustomOutputUrl,
+    parseIngestProtocolUrl,
+    buildIngestProtocolDetailModel,
     parseRtmpOperatorFields,
     parseSrtOperatorFields,
     parseRtspOperatorFields,

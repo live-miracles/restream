@@ -20,6 +20,52 @@ function formatProgressFps(value) {
     return Number.isInteger(value) ? `${value} FPS` : `${value.toFixed(1)} FPS`;
 }
 
+function getOutputMetadataBadgeConfigs(output, isRunning) {
+    const configs = [];
+
+    if (output.time !== null) {
+        configs.push({
+            text: msToHHMMSS(output.time),
+            title: 'Output uptime in the current session',
+        });
+    }
+
+    const outputProgressFrame = Number(output.progressFrame);
+    if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
+        configs.push({
+            text: `Frame ${Math.trunc(outputProgressFrame)}`,
+            title: 'Output frame count from FFmpeg progress',
+        });
+    }
+
+    const outputFpsText = formatProgressFps(Number(output.progressFps));
+    if (outputFpsText) {
+        configs.push({
+            text: outputFpsText,
+            title: 'Output FPS from FFmpeg progress',
+        });
+    }
+
+    const outputBitrateKbps = Number(output.bitrateKbps);
+    if (isRunning && Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
+        configs.push({
+            text: '',
+            title: 'Output bitrate from FFmpeg progress',
+            bitrateKbps: outputBitrateKbps,
+        });
+    }
+
+    const outputTotalSizeBytes = Number(output.totalSize);
+    if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+        configs.push({
+            text: `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+            title: 'Output total size from FFmpeg progress',
+        });
+    }
+
+    return configs;
+}
+
 function renderOutputsList(
     outputsList,
     pipe,
@@ -105,53 +151,13 @@ function renderOutputsList(
             'mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap';
         metadataRow.style.gridColumn = '1 / -1';
 
-        if (output.time !== null) {
-            const timeBadge = createOutputMetricBadge(
-                msToHHMMSS(output.time),
-                'Output uptime in the current session',
-            );
-            metadataRow.appendChild(timeBadge);
-        }
-
-        const outputProgressFrame = Number(output.progressFrame);
-        if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
-            const frameBadge = createOutputMetricBadge(
-                `Frame ${Math.trunc(outputProgressFrame)}`,
-                'Output frame count from FFmpeg progress',
-            );
-            metadataRow.appendChild(frameBadge);
-        }
-
-        const outputProgressFps = Number(output.progressFps);
-        const outputFpsText = formatProgressFps(outputProgressFps);
-        if (outputFpsText) {
-            const fpsBadge = createOutputMetricBadge(
-                outputFpsText,
-                'Output FPS from FFmpeg progress',
-            );
-            metadataRow.appendChild(fpsBadge);
-        }
-
-        if (isRunning) {
-            const outputBitrateKbps = Number(output.bitrateKbps);
-            if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
-                const throughputBadge = createOutputMetricBadge(
-                    '',
-                    'Output bitrate from FFmpeg progress',
-                );
-                setBadgeBitrateWithSubtleUnit(throughputBadge, outputBitrateKbps);
-                metadataRow.appendChild(throughputBadge);
+        getOutputMetadataBadgeConfigs(output, isRunning).forEach((config) => {
+            const badge = createOutputMetricBadge(config.text, config.title);
+            if (config.bitrateKbps) {
+                setBadgeBitrateWithSubtleUnit(badge, config.bitrateKbps);
             }
-        }
-
-        const outputTotalSizeBytes = Number(output.totalSize);
-        if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-            const volumeBadge = createOutputMetricBadge(
-                `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
-                'Output total size from FFmpeg progress',
-            );
-            metadataRow.appendChild(volumeBadge);
-        }
+            metadataRow.appendChild(badge);
+        });
 
         const outputUrl = document.createElement('code');
         outputUrl.className = 'text-sm opacity-70 truncate block mt-1';

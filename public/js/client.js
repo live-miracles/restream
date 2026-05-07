@@ -30,6 +30,28 @@ function getSnapshotVersion(response, fallback = null) {
     return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
 }
 
+function encodePathSegment(value) {
+    return encodeURIComponent(String(value));
+}
+
+function buildApiPath(...segments) {
+    return `/${segments.map((segment) => encodePathSegment(segment)).join('/')}`;
+}
+
+function buildPipelinePath(pipeId, ...segments) {
+    return buildApiPath('pipelines', pipeId, ...segments);
+}
+
+function buildOutputPath(pipeId, outId, ...segments) {
+    return buildPipelinePath(pipeId, 'outputs', outId, ...segments);
+}
+
+function requireIdentifiers(values, message) {
+    if (values.every(Boolean)) return true;
+    showErrorAlert(message);
+    return false;
+}
+
 function buildOutputHistoryPath(pipeId, outId, options = {}) {
     const query = new URLSearchParams();
     const {
@@ -55,12 +77,16 @@ function buildOutputHistoryPath(pipeId, outId, options = {}) {
         query.set('prefix', prefixes.join(','));
     }
 
-    return `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?${query.toString()}`;
+    return `${buildOutputPath(pipeId, outId, 'history')}?${query.toString()}`;
 }
 
 function buildPipelineHistoryPath(pipeId, limit = 200) {
     const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
-    return `/pipelines/${encodeURIComponent(pipeId)}/history?limit=${encodeURIComponent(safeLimit)}`;
+    return `${buildPipelinePath(pipeId, 'history')}?limit=${encodeURIComponent(safeLimit)}`;
+}
+
+function buildDashboardSnapshotPath() {
+    return '/dashboard/snapshot';
 }
 
 function beginMutationRequest() {
@@ -113,6 +139,36 @@ async function parseJsonResponse(response) {
     }
 }
 
+async function fetchJsonWithEtag(
+    url,
+    { etag = null, method = 'GET', networkErrorMessage = null } = {},
+) {
+    const response = await fetchWithEtag(url, { etag, method, networkErrorMessage });
+    if (!response) return null;
+
+    if (response.status === 304) {
+        return {
+            response,
+            notModified: true,
+            data: null,
+        };
+    }
+
+    const data = await parseJsonResponse(response);
+    if (data === null) return null;
+
+    if (!response.ok) {
+        showErrorAlert(data?.error || `Request failed with ${response.status}`);
+        return null;
+    }
+
+    return {
+        response,
+        notModified: false,
+        data,
+    };
+}
+
 async function apiRequest(url, { method = 'GET', body = null } = {}) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
     const options = { method: normalizedMethod };
@@ -151,35 +207,28 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
 }
 
 async function getConfig(etag = null) {
-    const response = await fetchWithEtag('/config', { etag });
+    const result = await fetchJsonWithEtag('/config', { etag });
+    if (!result) return null;
 
     // 304 → cached version is still valid
-    if (response.status === 304) {
+    if (result.notModified) {
         return {
             notModified: true,
             etag,
-            snapshotVersion: getSnapshotVersion(response, etag),
+            snapshotVersion: getSnapshotVersion(result.response, etag),
             data: null,
         };
     }
 
-    const data = await parseJsonResponse(response);
-    if (data === null) return null;
-
-    if (!response.ok) {
-        showErrorAlert(data?.error || `Request failed with ${response.status}`);
-        return null;
-    }
-
-    const newEtag = normalizeEtag(response.headers.get('ETag'));
-    const configEtag = normalizeEtag(response.headers.get('X-Config-ETag'));
+    const newEtag = normalizeEtag(result.response.headers.get('ETag'));
+    const configEtag = normalizeEtag(result.response.headers.get('X-Config-ETag'));
 
     return {
         notModified: false,
         etag: newEtag,
         configEtag: configEtag || newEtag,
-        snapshotVersion: getSnapshotVersion(response, newEtag),
-        data,
+        snapshotVersion: getSnapshotVersion(result.response, newEtag),
+        data: result.data,
     };
 }
 
@@ -197,35 +246,53 @@ async function getConfigVersion(etag = null) {
 }
 
 async function getHealth(etag = null) {
-    const response = await fetchWithEtag('/health', {
+    const result = await fetchJsonWithEtag('/health', {
         etag,
         networkErrorMessage: 'Network request failed: ',
     });
-    if (!response) return null;
+    if (!result) return null;
 
-    if (response.status === 304) {
+    if (result.notModified) {
         return {
             notModified: true,
             etag,
-            snapshotVersion: getSnapshotVersion(response, null),
+            snapshotVersion: getSnapshotVersion(result.response, null),
             data: null,
         };
     }
 
-    const data = await parseJsonResponse(response);
-    if (data === null) return null;
-
-    if (!response.ok) {
-        showErrorAlert(data?.error || `Request failed with ${response.status}`);
-        return null;
-    }
-
     return {
         notModified: false,
-        etag: normalizeEtag(response.headers.get('ETag')),
+        etag: normalizeEtag(result.response.headers.get('ETag')),
         snapshotVersion:
-            getSnapshotVersion(response, null) || normalizeEtag(data?.snapshotVersion),
-        data,
+            getSnapshotVersion(result.response, null) ||
+            normalizeEtag(result.data?.snapshotVersion),
+        data: result.data,
+    };
+}
+
+async function getDashboardSnapshot(etag = null) {
+    const result = await fetchJsonWithEtag(buildDashboardSnapshotPath(), {
+        etag,
+        networkErrorMessage: 'Network request failed: ',
+    });
+    if (!result) return null;
+
+    if (result.notModified) {
+        return {
+            notModified: true,
+            etag,
+            snapshotVersion: getSnapshotVersion(result.response, etag),
+            data: null,
+        };
+    }
+
+    const newEtag = normalizeEtag(result.response.headers.get('ETag'));
+    return {
+        notModified: false,
+        etag: newEtag,
+        snapshotVersion: getSnapshotVersion(result.response, newEtag),
+        data: result.data,
     };
 }
 
@@ -250,7 +317,7 @@ async function createStreamKey(name) {
 async function updateStreamKey(key, name) {
     if (!key) throw new Error('Stream key is required');
 
-    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, {
+    return apiRequest(buildApiPath('stream-keys', key), {
         method: 'POST',
         body: { label: name },
     });
@@ -259,7 +326,7 @@ async function updateStreamKey(key, name) {
 async function deleteStreamKey(key) {
     if (!key) throw new Error('Stream key is required');
 
-    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    return apiRequest(buildApiPath('stream-keys', key), { method: 'DELETE' });
 }
 
 // Pipelines API
@@ -277,94 +344,66 @@ async function createPipeline({ name, streamKey = null, encoding = null }) {
 }
 
 async function updatePipeline(pipeId, data) {
-    if (!pipeId) {
-        showErrorAlert('Pipeline id is required');
-        return null;
-    }
+    if (!requireIdentifiers([pipeId], 'Pipeline id is required')) return null;
 
-    return apiRequest(`/pipelines/${encodeURIComponent(pipeId)}`, {
+    return apiRequest(buildPipelinePath(pipeId), {
         method: 'POST',
         body: data,
     });
 }
 
 async function deletePipeline(pipeId) {
-    if (!pipeId) {
-        showErrorAlert('Pipeline id is required');
-        return null;
-    }
+    if (!requireIdentifiers([pipeId], 'Pipeline id is required')) return null;
 
-    return apiRequest(`/pipelines/${encodeURIComponent(pipeId)}`, { method: 'DELETE' });
+    return apiRequest(buildPipelinePath(pipeId), { method: 'DELETE' });
 }
 
 async function createOutput(pipeId, data) {
-    if (!pipeId) {
-        showErrorAlert('Pipeline id is required');
-        return null;
-    }
+    if (!requireIdentifiers([pipeId], 'Pipeline id is required')) return null;
 
-    return apiRequest(`/pipelines/${encodeURIComponent(pipeId)}/outputs`, {
+    return apiRequest(buildPipelinePath(pipeId, 'outputs'), {
         method: 'POST',
         body: data,
     });
 }
 
 async function updateOutput(pipeId, outId, data) {
-    if (!pipeId || !outId) {
-        showErrorAlert('Pipeline id and output id are required');
+    if (!requireIdentifiers([pipeId, outId], 'Pipeline id and output id are required')) {
         return null;
     }
 
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`,
-        {
-            method: 'POST',
-            body: data,
-        },
-    );
+    return apiRequest(buildOutputPath(pipeId, outId), {
+        method: 'POST',
+        body: data,
+    });
 }
 
 async function deleteOutput(pipeId, outId) {
-    if (!pipeId || !outId) {
-        showErrorAlert('Pipeline id and output id are required');
+    if (!requireIdentifiers([pipeId, outId], 'Pipeline id and output id are required')) {
         return null;
     }
 
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`,
-        {
-            method: 'DELETE',
-        },
-    );
+    return apiRequest(buildOutputPath(pipeId, outId), { method: 'DELETE' });
 }
 
 async function startOut(pipeId, outId) {
-    if (!pipeId || !outId) {
-        showErrorAlert('Pipeline id and output id are required');
+    if (!requireIdentifiers([pipeId, outId], 'Pipeline id and output id are required')) {
         return null;
     }
 
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/start`,
-        { method: 'POST' },
-    );
+    return apiRequest(buildOutputPath(pipeId, outId, 'start'), { method: 'POST' });
 }
 
 async function stopOut(pipeId, outId) {
-    if (!pipeId || !outId) {
-        showErrorAlert('Pipeline id and output id are required');
+    if (!requireIdentifiers([pipeId, outId], 'Pipeline id and output id are required')) {
         return null;
     }
 
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/stop`,
-        { method: 'POST' },
-    );
+    return apiRequest(buildOutputPath(pipeId, outId, 'stop'), { method: 'POST' });
 }
 
 async function getOutputHistory(pipeId, outId, options = {}) {
-    if (!pipeId || !outId) {
-        showErrorAlert('Pipeline id and output id are required');
+    if (!requireIdentifiers([pipeId, outId], 'Pipeline id and output id are required')) {
         return null;
     }
 
@@ -372,10 +411,7 @@ async function getOutputHistory(pipeId, outId, options = {}) {
 }
 
 async function getPipelineHistory(pipeId, limit = 200) {
-    if (!pipeId) {
-        showErrorAlert('Pipeline id is required');
-        return null;
-    }
+    if (!requireIdentifiers([pipeId], 'Pipeline id is required')) return null;
 
     return apiRequest(buildPipelineHistoryPath(pipeId, limit));
 }
@@ -479,6 +515,7 @@ export {
     buildPipelineHistoryPath,
     getConfig,
     getConfigVersion,
+    getDashboardSnapshot,
     getHealth,
     getSnapshotVersion,
     getSystemMetrics,

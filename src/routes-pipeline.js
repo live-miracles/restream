@@ -39,7 +39,16 @@ function setSnapshotHeaders(res, etag, configEtag) {
     if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
 }
 
-function registerConfigApi({ app, db, getConfig, toPublicConfig, buildIngestUrlsImpl = buildIngestUrls }) {
+function registerConfigApi({
+    app,
+    db,
+    getConfig,
+    toPublicConfig,
+    buildIngestUrlsImpl = buildIngestUrls,
+    getHealthSnapshot = null,
+}) {
+    let healthSnapshotProvider = getHealthSnapshot;
+
     function recomputeConfigEtag() {
         try {
             // Config ETag ignores runtime job rows and changes only when the operator-facing
@@ -80,12 +89,26 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig, buildIngestUrls
         }
     })();
 
+    function ensureSnapshotEtags() {
+        let etag = db.getEtag();
+        let configEtag = db.getConfigEtag();
+        if (!configEtag) configEtag = recomputeConfigEtag();
+        if (!etag) etag = recomputeEtag();
+        return { etag, configEtag };
+    }
+
+    async function buildConfigSnapshotPayload() {
+        return buildConfigApiSnapshot({
+            db,
+            getConfig,
+            toPublicConfig,
+            buildIngestUrls: buildIngestUrlsImpl,
+        });
+    }
+
     app.get('/config', async (req, res) => {
         try {
-            let etag = db.getEtag();
-            let configEtag = db.getConfigEtag();
-            if (!configEtag) configEtag = recomputeConfigEtag();
-            if (!etag) etag = recomputeEtag();
+            const { etag, configEtag } = ensureSnapshotEtags();
 
             const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
@@ -93,15 +116,64 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig, buildIngestUrls
                 return respondEmpty(res, 304);
             }
 
-            const snapshot = await buildConfigApiSnapshot({
-                db,
-                getConfig,
-                toPublicConfig,
-                buildIngestUrls: buildIngestUrlsImpl,
-            });
+            const snapshot = await buildConfigSnapshotPayload();
 
             setSnapshotHeaders(res, etag, configEtag);
             return respondJson(res, snapshot);
+        } catch (err) {
+            return respondError(res, 500, errMsg(err));
+        }
+    });
+
+    app.get('/dashboard/snapshot', async (req, res) => {
+        try {
+            const { etag: configSnapshotEtag, configEtag } = ensureSnapshotEtags();
+            const healthSnapshotResult =
+                typeof healthSnapshotProvider === 'function'
+                    ? await healthSnapshotProvider({ refreshIfStale: true })
+                    : null;
+
+            const healthSlice = {
+                etag: normalizeEtag(healthSnapshotResult?.etag) || null,
+                snapshotVersion: normalizeEtag(healthSnapshotResult?.snapshot?.snapshotVersion) || null,
+                data: healthSnapshotResult?.snapshot || null,
+            };
+            const dashboardSnapshotVersion = hashSnapshot({
+                configSnapshotVersion: configSnapshotEtag || null,
+                configEtag: configEtag || null,
+                healthSnapshotVersion: healthSlice.snapshotVersion,
+                healthEtag: healthSlice.etag,
+            });
+
+            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
+            if (
+                ifNoneMatch &&
+                dashboardSnapshotVersion &&
+                ifNoneMatch === dashboardSnapshotVersion
+            ) {
+                if (dashboardSnapshotVersion) {
+                    res.set('ETag', `"${dashboardSnapshotVersion}"`);
+                    res.set('X-Snapshot-Version', `"${dashboardSnapshotVersion}"`);
+                }
+                return respondEmpty(res, 304);
+            }
+
+            const configSnapshot = await buildConfigSnapshotPayload();
+            if (dashboardSnapshotVersion) {
+                res.set('ETag', `"${dashboardSnapshotVersion}"`);
+                res.set('X-Snapshot-Version', `"${dashboardSnapshotVersion}"`);
+            }
+
+            return respondJson(res, {
+                snapshotVersion: dashboardSnapshotVersion || null,
+                config: {
+                    etag: configSnapshotEtag || null,
+                    configEtag: configEtag || configSnapshotEtag || null,
+                    snapshotVersion: configSnapshotEtag || null,
+                    data: configSnapshot,
+                },
+                health: healthSlice,
+            });
         } catch (err) {
             return respondError(res, 500, errMsg(err));
         }
@@ -138,6 +210,9 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig, buildIngestUrls
         normalizeEtag,
         recomputeConfigEtag,
         recomputeEtag,
+        setHealthSnapshotProvider(provider) {
+            healthSnapshotProvider = typeof provider === 'function' ? provider : null;
+        },
     };
 }
 
@@ -244,6 +319,41 @@ function registerPipelineApi({
         };
     }
 
+    function normalizeStreamKeyLabel(value) {
+        if (value === undefined || value === null) return null;
+        const normalized = String(value).trim();
+        return normalized.length > 0 ? normalized : null;
+    }
+
+    function parseStreamKeyCreateRequest(body) {
+        const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(body || {}, 'streamKey');
+        const requestedStreamKey = hasCustomStreamKey ? body?.streamKey : null;
+        const key = hasCustomStreamKey
+            ? (typeof requestedStreamKey === 'string' ? requestedStreamKey.trim() : requestedStreamKey)
+            : crypto.randomBytes(12).toString('hex');
+
+        return {
+            hasCustomStreamKey,
+            key,
+            label: normalizeStreamKeyLabel(body?.label),
+            validationError: hasCustomStreamKey ? validateStreamKey(key) : null,
+        };
+    }
+
+    async function buildStreamKeyResponse(streamKey) {
+        if (!streamKey) return streamKey;
+        return {
+            ...streamKey,
+            ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
+        };
+    }
+
+    async function listStreamKeysWithIngestUrls() {
+        return Promise.all(
+            db.listStreamKeys().map((streamKey) => buildStreamKeyResponse(streamKey)),
+        );
+    }
+
     function initializePipelineInputState(pipelineId, inputStatus, { reason = null } = {}) {
         const status = inputStatus || 'off';
         seedPipelineState(pipelineId, status);
@@ -333,16 +443,16 @@ function registerPipelineApi({
 
     app.post('/stream-keys', async (req, res) => {
         try {
-            const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'streamKey');
-            const key = hasCustomStreamKey
-                ? (typeof req.body?.streamKey === 'string' ? req.body.streamKey.trim() : req.body?.streamKey)
-                : crypto.randomBytes(12).toString('hex');
-            const label = req.body?.label ?? null;
+            const {
+                hasCustomStreamKey,
+                key,
+                label,
+                validationError,
+            } = parseStreamKeyCreateRequest(req.body || {});
 
             if (hasCustomStreamKey) {
-                const streamKeyError = validateStreamKey(key);
-                if (streamKeyError) {
-                    return respondError(res, 400, streamKeyError);
+                if (validationError) {
+                    return respondError(res, 400, validationError);
                 }
             }
 
@@ -362,10 +472,7 @@ function registerPipelineApi({
             refreshConfigAndHealthEtags();
             return respondJson(res, {
                 message: 'Stream key created',
-                streamKey: {
-                    ...streamKey,
-                    ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
-                },
+                streamKey: await buildStreamKeyResponse(streamKey),
             }, 201);
         } catch (err) {
             return respondError(res, 500, errMsg(err));
@@ -375,7 +482,7 @@ function registerPipelineApi({
     app.post('/stream-keys/:key', (req, res) => {
         try {
             const { key } = req.params;
-            const { label } = req.body || {};
+            const label = normalizeStreamKeyLabel(req.body?.label);
 
             if (!getRecordOrRespond(res, db.getStreamKey(key), 'Stream key not found')) return;
 
@@ -409,12 +516,7 @@ function registerPipelineApi({
 
     app.get('/stream-keys', async (req, res) => {
         try {
-            const streamKeys = await Promise.all(
-                db.listStreamKeys().map(async (streamKey) => ({
-                    ...streamKey,
-                    ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
-                })),
-            );
+            const streamKeys = await listStreamKeysWithIngestUrls();
             return respondJson(res, streamKeys);
         } catch (err) {
             return respondError(res, 500, errMsg(err));

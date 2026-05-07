@@ -105,6 +105,7 @@ function createConfigHarness(overrides = {}) {
                     rtsp: `rtsp://localhost/live/${streamKey}`,
                     srt: `srt://localhost/live/${streamKey}`,
                 })),
+            getHealthSnapshot: overrides.getHealthSnapshot || null,
         });
     });
 
@@ -157,5 +158,53 @@ test('HEAD /config/version returns 304 for matching config ETag', async () => {
     await request(app)
         .head('/config/version')
         .set('If-None-Match', first.headers['x-config-etag'])
+        .expect(304);
+});
+
+test('GET /dashboard/snapshot returns aligned config and health slices', async () => {
+    const { app } = createConfigHarness({
+        getHealthSnapshot: async () => ({
+            etag: 'health-etag-1',
+            snapshot: {
+                snapshotVersion: 'health-snap-1',
+                status: 'on',
+                generatedAt: '2026-05-01T00:00:00.000Z',
+                ageMs: 12,
+                mediamtx: {},
+                pipelines: {},
+            },
+        }),
+    });
+
+    const res = await request(app).get('/dashboard/snapshot').expect(200);
+
+    assert.equal(typeof res.body.snapshotVersion, 'string');
+    assert.equal(res.headers.etag, `"${res.body.snapshotVersion}"`);
+    assert.equal(res.body.config.snapshotVersion, res.body.config.etag);
+    assert.equal(res.body.config.data.serverName, 'Restream');
+    assert.equal(res.body.health.etag, 'health-etag-1');
+    assert.equal(res.body.health.snapshotVersion, 'health-snap-1');
+    assert.equal(res.body.health.data.status, 'on');
+});
+
+test('GET /dashboard/snapshot supports 304 when snapshot version matches', async () => {
+    const { app } = createConfigHarness({
+        getHealthSnapshot: async () => ({
+            etag: 'health-etag-2',
+            snapshot: {
+                snapshotVersion: 'health-snap-2',
+                status: 'off',
+                generatedAt: '2026-05-01T00:00:00.000Z',
+                ageMs: 55,
+                mediamtx: {},
+                pipelines: {},
+            },
+        }),
+    });
+
+    const first = await request(app).get('/dashboard/snapshot').expect(200);
+    await request(app)
+        .get('/dashboard/snapshot')
+        .set('If-None-Match', first.headers.etag)
         .expect(304);
 });

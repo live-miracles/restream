@@ -10,16 +10,21 @@ const frontendDom = installFrontendDom();
 const loadBrowserModule = createBrowserModuleLoader();
 
 const {
+    PROTOCOL_LABELS,
     safeParseUrl,
     detectOutputProtocol,
     isAbsoluteUrl,
     extractCandidateStreamToken,
     getDefaultOutputToken,
     buildDefaultCustomOutputUrl,
+    buildOutputUrlFromOperatorFields,
     resolvePresetOutputUrl,
     matchOutputServerPreset,
     isMatchingOutputProtocolUrl,
     protocolUsesOutputServerPresets,
+    parseOutputOperatorFields,
+    parseIngestProtocolUrl,
+    buildIngestProtocolDetailModel,
     parseRtmpOperatorFields,
     parseSrtOperatorFields,
     parseRtspOperatorFields,
@@ -77,6 +82,13 @@ test('protocolUsesOutputServerPresets is true for rtmp and hls only', () => {
     assert.ok(protocolUsesOutputServerPresets('hls'));
     assert.ok(!protocolUsesOutputServerPresets('rtsp'));
     assert.ok(!protocolUsesOutputServerPresets('srt'));
+});
+
+test('PROTOCOL_LABELS exposes stable display labels', () => {
+    assert.equal(PROTOCOL_LABELS.rtmp, 'RTMP');
+    assert.equal(PROTOCOL_LABELS.rtsp, 'RTSP');
+    assert.equal(PROTOCOL_LABELS.srt, 'SRT');
+    assert.equal(PROTOCOL_LABELS.hls, 'HLS');
 });
 
 // extractCandidateStreamToken
@@ -180,6 +192,28 @@ test('buildDefaultCustomOutputUrl builds hls URL with .m3u8 suffix', () => {
     assert.ok(url.endsWith('/out.m3u8'));
 });
 
+// generic output parse/build entry points
+test('parseOutputOperatorFields delegates to the protocol-specific parser', () => {
+    const parsed = parseOutputOperatorFields('rtsp', 'rtsp://host:554/live/stream?timeout=30');
+    assert.equal(parsed.host, 'host');
+    assert.equal(parsed.port, '554');
+    assert.equal(parsed.path, '/live/stream');
+    assert.equal(parsed.extraQuery, 'timeout=30');
+});
+
+test('buildOutputUrlFromOperatorFields builds RTMP URLs from operator field values', () => {
+    assert.equal(
+        buildOutputUrlFromOperatorFields('rtmp', {
+            host: 'example.com',
+            port: '1935',
+            appPath: '/live',
+            streamKey: 'next-key',
+            extraQuery: 'token=abc',
+        }),
+        'rtmp://example.com:1935/live/next-key?token=abc',
+    );
+});
+
 // parseRtmpOperatorFields
 test('parseRtmpOperatorFields parses standard RTMP URL', () => {
     const f = parseRtmpOperatorFields('rtmp://example.com:1935/live/mykey');
@@ -255,5 +289,31 @@ test('parseHlsOperatorFields returns defaults for non-HLS URL', () => {
     const f = parseHlsOperatorFields('rtmp://host/live/x');
     assert.equal(f.scheme, 'http');
     assert.ok(f.path.endsWith('/out.m3u8'));
+});
+
+// ingest URL parsing and detail models
+test('parseIngestProtocolUrl parses RTMP ingest URLs for operator detail cards', () => {
+    const parsed = parseIngestProtocolUrl('rtmp', 'rtmp://ingest.example:1935/live/demo');
+    assert.equal(parsed.host, 'ingest.example');
+    assert.equal(parsed.port, '1935');
+    assert.equal(parsed.serverUrl, 'rtmp://ingest.example:1935/live');
+    assert.equal(parsed.streamKey, 'demo');
+});
+
+test('buildIngestProtocolDetailModel builds SRT operator rows', () => {
+    const detailModel = buildIngestProtocolDetailModel(
+        'srt',
+        parseIngestProtocolUrl(
+            'srt',
+            'srt://caller.example:8890?streamid=publish:live/demo&latency=120&mode=listener',
+        ),
+    );
+
+    assert.equal(detailModel.heading, 'Operator Fields');
+    assert.ok(detailModel.note.includes('Latency'));
+    assert.equal(
+        detailModel.rows.map((row) => row.label).join('|'),
+        'Host|Port|Stream ID|Latency|Mode',
+    );
 });
 

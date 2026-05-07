@@ -72,6 +72,16 @@ function createOutputLifecycleService({
         tryAcquireOutputStartLock,
     } = outputRecovery;
 
+    function cleanupOutputJobRuntime(jobId, { consumeStopRequest = false } = {}) {
+        if (!jobId) return;
+        if (consumeStopRequest) {
+            consumeStopRequested(jobId);
+        }
+        processes.delete(jobId);
+        ffmpegProgressByJobId.delete(jobId);
+        ffmpegOutputMediaByJobId.delete(jobId);
+    }
+
     startOutputJob = async function startOutputJob({
         pipelineId,
         outputId,
@@ -232,10 +242,7 @@ function createOutputLifecycleService({
                 { status: 'failed', exitCode: null, exitSignal: null },
             );
             recomputeEtag();
-            consumeStopRequested(job.id);
-            processes.delete(job.id);
-            ffmpegProgressByJobId.delete(job.id);
-            ffmpegOutputMediaByJobId.delete(job.id);
+            cleanupOutputJobRuntime(job.id, { consumeStopRequest: true });
         });
 
         const progressStream = child.stdio[3];
@@ -350,9 +357,7 @@ function createOutputLifecycleService({
                 signal: signal || null,
             });
             recomputeEtag();
-            processes.delete(job.id);
-            ffmpegProgressByJobId.delete(job.id);
-            ffmpegOutputMediaByJobId.delete(job.id);
+            cleanupOutputJobRuntime(job.id);
 
             // Unrequested failed exits always retry while desiredState=running; clean exits only
             // retry when they are not plausibly explained by a recent input-unavailable transition.

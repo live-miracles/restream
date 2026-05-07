@@ -18,6 +18,11 @@ import {
     normalizePublisherProtocolLabel,
 } from './publisher-quality.js';
 import {
+    PROTOCOL_LABELS,
+    buildIngestProtocolDetailModel,
+    parseIngestProtocolUrl,
+} from './output-url.js';
+import {
     buildInputPreviewUrl,
     canUseNativeHls,
     resolveHlsFatalAction,
@@ -33,253 +38,8 @@ import {
     stopOutBtn,
 } from './pipeline-view-actions.js';
 
-export const PROTOCOL_LABELS = {
-    rtmp: 'RTMP',
-    rtsp: 'RTSP',
-    srt: 'SRT',
-};
-
-const PROTOCOL_DEFAULT_PORTS = {
-    rtmp: '1935',
-    rtsp: '8554',
-    srt: '8890',
-};
-
-function safeDecodeUrlComponent(value) {
-    if (!value) return '';
-
-    try {
-        return decodeURIComponent(value);
-    } catch (_err) {
-        return value;
-    }
-}
-
-function formatPortDisplay(parsedDetails) {
-    if (!parsedDetails?.port) return '';
-    if (parsedDetails.hasExplicitPort) return parsedDetails.port;
-    return `${parsedDetails.port} (default)`;
-}
-
 export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
-    if (typeof rawUrl !== 'string' || rawUrl.trim() === '') return null;
-
-    try {
-        const parsed = new URL(rawUrl);
-        const scheme = parsed.protocol.replace(/:$/, '');
-        const hasExplicitPort = parsed.port !== '';
-        const host = parsed.hostname || '';
-        const port = parsed.port || PROTOCOL_DEFAULT_PORTS[protocol] || '';
-        const authority = host ? `${host}${port ? `:${port}` : ''}` : '';
-        const pathSegments = parsed.pathname
-            .split('/')
-            .filter(Boolean)
-            .map((segment) => safeDecodeUrlComponent(segment));
-        const pathname = pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '';
-        const queryEntries = Array.from(parsed.searchParams.entries());
-        const details = {
-            rawUrl,
-            scheme,
-            host,
-            port,
-            authority,
-            hasExplicitPort,
-            application: '',
-            credentials: '',
-            endpoint: authority,
-            latency: '',
-            maxbw: '',
-            mode: '',
-            otherParams: '',
-            passphrase: '',
-            path: pathname || '/',
-            pbkeylen: '',
-            queryEntries,
-            serverUrl: '',
-            streamId: '',
-            streamKey: '',
-        };
-
-        if (protocol === 'srt') {
-            const streamId = parsed.searchParams.get('streamid') || '';
-            const knownParams = new Set(['streamid', 'latency', 'mode', 'passphrase', 'pbkeylen', 'maxbw']);
-            details.streamId = streamId;
-            details.latency = parsed.searchParams.get('latency') || '';
-            details.mode = parsed.searchParams.get('mode') || '';
-            details.passphrase = parsed.searchParams.get('passphrase') || '';
-            details.pbkeylen = parsed.searchParams.get('pbkeylen') || '';
-            details.maxbw = parsed.searchParams.get('maxbw') || '';
-            details.otherParams = queryEntries
-                .filter(([key]) => !knownParams.has(key))
-                .map(([key, value]) => `${key}=${value}`)
-                .join(' · ');
-
-            if (streamId.startsWith('publish:')) {
-                const publishPath = streamId.slice('publish:'.length);
-                const segments = publishPath.split('/').filter(Boolean);
-                details.streamKey = segments.length > 0 ? segments[segments.length - 1] : '';
-            }
-
-            return details;
-        }
-
-        details.credentials = parsed.username
-            ? parsed.password
-                ? `${safeDecodeUrlComponent(parsed.username)}:${safeDecodeUrlComponent(parsed.password)}`
-                : safeDecodeUrlComponent(parsed.username)
-            : '';
-
-        if (pathSegments.length > 1) {
-            details.streamKey = pathSegments[pathSegments.length - 1];
-            details.application = pathSegments.slice(0, -1).join('/');
-        } else {
-            details.streamKey = pathSegments[0] || '';
-        }
-
-        if (protocol === 'rtmp') {
-            details.serverUrl = `${scheme}://${authority}${details.application ? `/${details.application}` : ''}`;
-        }
-
-        return details;
-    } catch (_err) {
-        return null;
-    }
-}
-
-function buildProtocolDetailModel(protocol, parsedDetails) {
-    if (!parsedDetails) {
-        return {
-            heading: 'Operator Fields',
-            note: '',
-            rows: [],
-        };
-    }
-
-    if (protocol === 'rtmp') {
-        return {
-            heading: 'Operator Fields',
-            note:
-                parsedDetails.scheme === 'rtmps'
-                    ? 'Push ingest over TLS. Most encoders want Server URL plus Stream Key.'
-                    : 'Push ingest. Most encoders want Server URL plus Stream Key.',
-            rows: [
-                {
-                    label: 'Server URL',
-                    value: parsedDetails.serverUrl,
-                    wide: true,
-                },
-                {
-                    label: 'Stream Key',
-                    value: parsedDetails.streamKey,
-                    wide: true,
-                },
-                {
-                    label: 'Host',
-                    value: parsedDetails.host,
-                },
-                {
-                    label: 'Port',
-                    value: formatPortDisplay(parsedDetails),
-                    copyValue: parsedDetails.port,
-                },
-                {
-                    label: 'App Name',
-                    value: parsedDetails.application,
-                },
-            ].filter((row) => row.value),
-        };
-    }
-
-    if (protocol === 'rtsp') {
-        return {
-            heading: 'Operator Fields',
-            note: parsedDetails.credentials
-                ? 'Use the full URL above. Embedded credentials are plaintext unless you use RTSPS or another secure tunnel.'
-                : '',
-            rows: [
-                parsedDetails.credentials
-                    ? {
-                          label: 'Credentials',
-                          value: parsedDetails.credentials,
-                      }
-                    : null,
-                {
-                    label: 'Host',
-                    value: parsedDetails.host,
-                },
-                {
-                    label: 'Port',
-                    value: formatPortDisplay(parsedDetails),
-                    copyValue: parsedDetails.port,
-                },
-                {
-                    label: 'Stream Path',
-                    value: `${parsedDetails.path}${new URL(parsedDetails.rawUrl).search || ''}`,
-                    wide: true,
-                },
-            ].filter(Boolean),
-        };
-    }
-
-    return {
-        heading: 'Operator Fields',
-        note: 'Most SRT setups need Host, Port, and Stream ID. Latency is the main operator tuning knob for unstable networks.',
-        rows: [
-            {
-                label: 'Host',
-                value: parsedDetails.host,
-            },
-            {
-                label: 'Port',
-                value: formatPortDisplay(parsedDetails),
-                copyValue: parsedDetails.port,
-            },
-            {
-                label: 'Stream ID',
-                value: parsedDetails.streamId,
-                wide: true,
-            },
-            parsedDetails.latency
-                ? {
-                      label: 'Latency',
-                      value: `${parsedDetails.latency} ms`,
-                      copyValue: parsedDetails.latency,
-                  }
-                : null,
-            {
-                label: 'Mode',
-                value: parsedDetails.mode || 'caller (default)',
-                copyValue: parsedDetails.mode || 'caller',
-            },
-            parsedDetails.passphrase
-                ? {
-                      label: 'Passphrase',
-                      value: parsedDetails.passphrase,
-                  }
-                : null,
-            parsedDetails.pbkeylen
-                ? {
-                      label: 'PB Key Len',
-                      value: `${parsedDetails.pbkeylen} bytes`,
-                      copyValue: parsedDetails.pbkeylen,
-                  }
-                : null,
-            parsedDetails.maxbw
-                ? {
-                      label: 'Max BW',
-                      value: `${parsedDetails.maxbw} B/s`,
-                      copyValue: parsedDetails.maxbw,
-                  }
-                : null,
-            parsedDetails.otherParams
-                ? {
-                      label: 'Other Params',
-                      value: parsedDetails.otherParams,
-                      wide: true,
-                  }
-                : null,
-        ].filter(Boolean),
-    };
+    return parseIngestProtocolUrl(protocol, rawUrl);
 }
 
 export function renderProtocolDetails(gridEl, protocol, parsedDetails) {
@@ -288,7 +48,7 @@ export function renderProtocolDetails(gridEl, protocol, parsedDetails) {
     if (!gridEl) return;
     gridEl.replaceChildren();
 
-    const detailModel = buildProtocolDetailModel(protocol, parsedDetails);
+    const detailModel = buildIngestProtocolDetailModel(protocol, parsedDetails);
 
     if (headingEl) {
         headingEl.textContent = detailModel.heading;
@@ -620,6 +380,138 @@ const ingestUiState = {
 
 let ingestVisibilityPipeId = null;
 
+function setTextFieldValues(fields) {
+    for (const { id, value } of fields) {
+        const elem = document.getElementById(id);
+        if (elem) elem.textContent = value;
+    }
+}
+
+function ensurePublisherMetaContainer(inputStatsElem) {
+    let publisherMeta = document.getElementById('publisher-meta');
+    if (!publisherMeta && inputStatsElem?.parentNode) {
+        publisherMeta = document.createElement('div');
+        publisherMeta.id = 'publisher-meta';
+        publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
+        inputStatsElem.parentNode.insertBefore(publisherMeta, inputStatsElem);
+    }
+    return publisherMeta;
+}
+
+function appendPublisherMetaItem(container, { text, className, tagName = 'span', onClick = null }) {
+    if (!container || !text) return;
+    const item = document.createElement(tagName);
+    if (tagName === 'button') {
+        item.type = 'button';
+    }
+    item.className = className;
+    item.textContent = text;
+    if (typeof onClick === 'function') {
+        item.addEventListener('click', onClick);
+    }
+    container.appendChild(item);
+}
+
+function renderPipelineInputStats(pipe) {
+    const video = pipe.input.video || {};
+    const audio = pipe.input.audio || {};
+    const stats = pipe.stats || {};
+    const hasAudioTrack = !!audio.codec;
+
+    setTextFieldValues([
+        { id: 'input-video-codec', value: formatCodecName(video.codec) || '--' },
+        {
+            id: 'input-video-resolution',
+            value: video.width && video.height ? `${video.width}x${video.height}` : '--',
+        },
+        {
+            id: 'input-video-fps',
+            value: video.fps !== null && video.fps !== undefined ? String(video.fps) : '--',
+        },
+        { id: 'input-video-level', value: video.level || '--' },
+        { id: 'input-video-profile', value: video.profile || '--' },
+        {
+            id: 'input-audio-codec',
+            value: hasAudioTrack ? formatCodecName(audio.codec) || audio.codec : 'No audio track',
+        },
+        {
+            id: 'input-audio-channels',
+            value: hasAudioTrack ? audio.channels || '--' : '--',
+        },
+        {
+            id: 'input-audio-sample-rate',
+            value: hasAudioTrack ? audio.sample_rate || '--' : '--',
+        },
+        {
+            id: 'input-audio-profile',
+            value: hasAudioTrack ? audio.profile || '--' : '--',
+        },
+        {
+            id: 'input-reader-count',
+            value:
+                stats.readerCount !== null && stats.readerCount !== undefined
+                    ? String(stats.readerCount)
+                    : '--',
+        },
+        {
+            id: 'input-output-count',
+            value:
+                stats.outputCount !== null && stats.outputCount !== undefined
+                    ? String(stats.outputCount)
+                    : '--',
+        },
+    ]);
+
+    setBitrateWithSubtleUnit('input-total-bw', stats.inputBitrateKbps);
+    setBitrateWithSubtleUnit('output-total-bw', stats.outputBitrateKbps);
+}
+
+function renderPublisherMeta(pipe, inputStatsElem) {
+    const publisherMeta = ensurePublisherMetaContainer(inputStatsElem);
+    if (!publisherMeta) return;
+
+    publisherMeta.replaceChildren();
+
+    if (pipe.input.time !== null) {
+        appendPublisherMetaItem(publisherMeta, {
+            text: msToHHMMSS(pipe.input.time),
+            className: 'badge text-sm px-3',
+        });
+    }
+
+    const publisher = pipe.input.publisher;
+    if (publisher) {
+        appendPublisherMetaItem(publisherMeta, {
+            text: normalizePublisherProtocolLabel(publisher.protocol),
+            className: 'badge badge-info text-sm px-3',
+        });
+
+        if (publisher.remoteAddr) {
+            appendPublisherMetaItem(publisherMeta, {
+                text: publisher.remoteAddr,
+                className: 'badge badge-outline font-mono text-sm px-3',
+            });
+        }
+
+        const qualityAlerts = getPublisherQualityAlerts(publisher);
+        const isHealthy = qualityAlerts.length === 0;
+        appendPublisherMetaItem(publisherMeta, {
+            tagName: 'button',
+            text: isHealthy ? 'Healthy' : 'Unhealthy',
+            className: `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`,
+            onClick: () => openPublisherQualityModal(pipe.id),
+        });
+    }
+
+    const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
+    if (unexpectedCount > 0) {
+        appendPublisherMetaItem(publisherMeta, {
+            text: `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}`,
+            className: 'badge badge-sm badge-error',
+        });
+    }
+}
+
 function renderPipelineInfoColumn(selectedPipe) {
         if (!selectedPipe) {
             ingestVisibilityPipeId = null;
@@ -805,95 +697,9 @@ function renderPipelineInfoColumn(selectedPipe) {
             playerElem.classList.remove('hidden');
             inputStatsElem.classList.remove('hidden');
             renderInputPreview(playerElem, pipe);
-
-            const video = pipe.input.video || {};
-            const audio = pipe.input.audio || {};
-            const stats = pipe.stats || {};
-            const hasAudioTrack = !!audio.codec;
-
-            document.getElementById('input-video-codec').textContent =
-                formatCodecName(video.codec) || '--';
-            document.getElementById('input-video-resolution').textContent =
-                video.width && video.height ? video.width + 'x' + video.height : '--';
-            document.getElementById('input-video-fps').textContent =
-                video.fps !== null && video.fps !== undefined ? video.fps : '--';
-            document.getElementById('input-video-level').textContent = video.level || '--';
-            document.getElementById('input-video-profile').textContent = video.profile || '--';
-
-            document.getElementById('input-audio-codec').textContent = hasAudioTrack
-                ? formatCodecName(audio.codec) || audio.codec
-                : 'No audio track';
-            document.getElementById('input-audio-channels').textContent = hasAudioTrack
-                ? audio.channels || '--'
-                : '--';
-            document.getElementById('input-audio-sample-rate').textContent = hasAudioTrack
-                ? audio.sample_rate || '--'
-                : '--';
-            document.getElementById('input-audio-profile').textContent = hasAudioTrack
-                ? audio.profile || '--'
-                : '--';
-
-            setBitrateWithSubtleUnit('input-total-bw', stats.inputBitrateKbps);
-            setBitrateWithSubtleUnit('output-total-bw', stats.outputBitrateKbps);
-            document.getElementById('input-reader-count').textContent =
-                stats.readerCount !== null && stats.readerCount !== undefined
-                    ? stats.readerCount
-                    : '--';
-            document.getElementById('input-output-count').textContent =
-                stats.outputCount !== null && stats.outputCount !== undefined
-                    ? stats.outputCount
-                    : '--';
+            renderPipelineInputStats(pipe);
         }
-
-        let publisherMeta = document.getElementById('publisher-meta');
-        if (!publisherMeta) {
-            publisherMeta = document.createElement('div');
-            publisherMeta.id = 'publisher-meta';
-            publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
-            inputStatsElem.parentNode.insertBefore(publisherMeta, inputStatsElem);
-        }
-        publisherMeta.replaceChildren();
-
-        if (pipe.input.time !== null) {
-            const uptimeBadge = document.createElement('span');
-            uptimeBadge.className = 'badge text-sm px-3';
-            uptimeBadge.textContent = msToHHMMSS(pipe.input.time);
-            publisherMeta.appendChild(uptimeBadge);
-        }
-
-        const publisher = pipe.input.publisher;
-        if (publisher) {
-            const protoBadge = document.createElement('span');
-            protoBadge.className = 'badge badge-info text-sm px-3';
-            protoBadge.textContent = normalizePublisherProtocolLabel(publisher.protocol);
-            publisherMeta.appendChild(protoBadge);
-
-            if (publisher.remoteAddr) {
-                const addrBadge = document.createElement('span');
-                addrBadge.className = 'badge badge-outline font-mono text-sm px-3';
-                addrBadge.textContent = publisher.remoteAddr;
-                publisherMeta.appendChild(addrBadge);
-            }
-
-            const qualityAlerts = getPublisherQualityAlerts(publisher);
-            const isHealthy = qualityAlerts.length === 0;
-            const qualityBtn = document.createElement('button');
-            qualityBtn.type = 'button';
-            qualityBtn.className = `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`;
-            qualityBtn.textContent = isHealthy ? 'Healthy' : 'Unhealthy';
-            qualityBtn.addEventListener('click', () => {
-                openPublisherQualityModal(pipe.id);
-            });
-            publisherMeta.appendChild(qualityBtn);
-        }
-
-        const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
-        if (unexpectedCount > 0) {
-            const urBadge = document.createElement('span');
-            urBadge.className = 'badge badge-sm badge-error';
-            urBadge.textContent = `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}`;
-            publisherMeta.appendChild(urBadge);
-        }
+        renderPublisherMeta(pipe, inputStatsElem);
     }
 
 function renderOutsColumn(selectedPipe) {

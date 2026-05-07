@@ -2,7 +2,15 @@
 // Drives the main dashboard poll loop, reconciles config and health snapshots into shared state,
 // and hands DOM rendering to dashboard-view.js.
 
-import { createAdaptivePollLoop, getConfig, getConfigVersion, getHealth, getSystemMetrics, state } from '../client.js';
+import {
+    createAdaptivePollLoop,
+    getConfig,
+    getConfigVersion,
+    getDashboardSnapshot,
+    getHealth,
+    getSystemMetrics,
+    state,
+} from '../client.js';
 import { parsePipelinesInfo } from '../pipeline.js';
 import {
     getUrlParam,
@@ -307,34 +315,44 @@ async function checkStreamingConfigs(secondTime = false, baselineEtag = userConf
 }
 
 async function fetchAndRerender(attempt = 0) {
-    // Fetch config, health, and metrics together so one render pass always sees a consistent view
-    // of the latest server state instead of mixing fresh and stale slices.
-    const [configResult, healthResult, metricsResult] = await Promise.all([
-        fetchConfig(),
-        fetchHealth(),
+    // Prefer a single backend snapshot so config and health slices are version-aligned.
+    const [dashboardSnapshotResult, metricsResult] = await Promise.all([
+        fetchDashboardSnapshot(),
         fetchSystemMetrics(),
     ]);
 
-    const nextConfigSnapshotVersion = resolveConfigSnapshotVersion(
-        configResult,
-        configSnapshotVersion,
-    );
-    const nextHealthSnapshotVersion = resolveHealthSnapshotVersion(
-        healthResult,
-        healthSnapshotVersion,
-    );
+    if (dashboardSnapshotResult) {
+        dashboardSnapshotEtag = dashboardSnapshotResult.etag || dashboardSnapshotEtag;
+        if (!dashboardSnapshotResult.notModified) {
+            applyConfigResult(dashboardSnapshotResult.data?.config || null);
+            applyHealthResult(dashboardSnapshotResult.data?.health || null);
+        }
+    } else {
+        // Fallback to split polling while older controllers roll out.
+        const [configResult, healthResult] = await Promise.all([fetchConfig(), fetchHealth()]);
 
-    if (
-        nextConfigSnapshotVersion &&
-        nextHealthSnapshotVersion &&
-        nextConfigSnapshotVersion !== nextHealthSnapshotVersion &&
-        attempt < 2
-    ) {
-        return fetchAndRerender(attempt + 1);
+        const nextConfigSnapshotVersion = resolveConfigSnapshotVersion(
+            configResult,
+            configSnapshotVersion,
+        );
+        const nextHealthSnapshotVersion = resolveHealthSnapshotVersion(
+            healthResult,
+            healthSnapshotVersion,
+        );
+
+        if (
+            nextConfigSnapshotVersion &&
+            nextHealthSnapshotVersion &&
+            nextConfigSnapshotVersion !== nextHealthSnapshotVersion &&
+            attempt < 2
+        ) {
+            return fetchAndRerender(attempt + 1);
+        }
+
+        applyConfigResult(configResult);
+        applyHealthResult(healthResult);
     }
 
-    applyConfigResult(configResult);
-    applyHealthResult(healthResult);
     applyMetricsResult(metricsResult);
     const previousPipelines = state.pipelines;
     state.pipelines = parsePipelinesInfo(state.config, state.health);
@@ -352,6 +370,10 @@ async function fetchHealth() {
     return getHealth(healthEtag);
 }
 
+async function fetchDashboardSnapshot() {
+    return getDashboardSnapshot(dashboardSnapshotEtag);
+}
+
 async function fetchSystemMetrics() {
     return getSystemMetrics();
 }
@@ -359,6 +381,7 @@ async function fetchSystemMetrics() {
 let etag = null;
 let healthEtag = null;
 let configEtag = null;
+let dashboardSnapshotEtag = null;
 let configSnapshotVersion = null;
 let healthSnapshotVersion = null;
 let userConfigEtag = null;
