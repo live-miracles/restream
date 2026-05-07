@@ -434,6 +434,24 @@ function createOutputRecoveryService({
         }
     }
 
+    function schedulePendingOutputStart(
+        pipelineId,
+        outputId,
+        { delayMs, pendingReason, trigger, reason, beforeAttempt = null },
+    ) {
+        const state = getOutputRestartStateFor(pipelineId, outputId);
+        clearOutputRestartTimer(state);
+        state.pendingReason = pendingReason;
+        state.pendingTimer = setTimeout(() => {
+            state.pendingTimer = null;
+            state.pendingReason = null;
+            beforeAttempt?.();
+            void attemptAutoStartOutput(pipelineId, outputId, trigger, reason);
+        }, delayMs);
+        state.pendingTimer.unref?.();
+        return state;
+    }
+
     function scheduleOutputRestart({
         pipelineId,
         outputId,
@@ -493,15 +511,12 @@ function createOutputRecoveryService({
             return { scheduled: false, reason: decision.reason };
         }
 
-        const state = getOutputRestartStateFor(pipelineId, outputId);
-        clearOutputRestartTimer(state);
-        state.pendingReason = reason;
-        state.pendingTimer = setTimeout(() => {
-            state.pendingTimer = null;
-            state.pendingReason = null;
-            void attemptAutoStartOutput(pipelineId, outputId, trigger, reason);
-        }, decision.delayMs);
-        state.pendingTimer.unref?.();
+        schedulePendingOutputStart(pipelineId, outputId, {
+            delayMs: decision.delayMs,
+            pendingReason: reason,
+            trigger,
+            reason,
+        });
 
         log('info', 'Scheduled output retry', {
             pipelineId,
@@ -550,22 +565,15 @@ function createOutputRecoveryService({
 
         eligibleOutputs.forEach((output, index) => {
             const delayMs = initialDelayMs + index * staggerMs;
-            const state = getOutputRestartStateFor(pipelineId, output.id);
-            clearOutputRestartTimer(state);
-
-            state.pendingReason = 'input_recovery';
-            state.pendingTimer = setTimeout(() => {
-                state.pendingTimer = null;
-                state.pendingReason = null;
+            schedulePendingOutputStart(pipelineId, output.id, {
+                delayMs,
+                pendingReason: 'input_recovery',
+                trigger: 'input-recovery',
+                reason: 'input_recovery',
+                beforeAttempt: () => {
                 resetOutputFailureCountLocal(pipelineId, output.id, 'input_recovery');
-                void attemptAutoStartOutput(
-                    pipelineId,
-                    output.id,
-                    'input-recovery',
-                    'input_recovery',
-                );
-            }, delayMs);
-            state.pendingTimer.unref?.();
+                },
+            });
         });
 
         log('info', 'Scheduled output restarts after input recovery', {

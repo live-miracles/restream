@@ -244,28 +244,38 @@ function registerPipelineApi({
         };
     }
 
-    async function mutateMediamtxPathWithRollback(key, action, applyDbChange) {
-        await mutateMediamtxPath(key, action);
+    function initializePipelineInputState(pipelineId, inputStatus, { reason = null } = {}) {
+        const status = inputStatus || 'off';
+        seedPipelineState(pipelineId, status);
 
-        try {
-            return await applyDbChange();
-        } catch (dbError) {
-            const rollbackAction = action === 'add' ? 'delete' : 'add';
-            try {
-                await mutateMediamtxPath(key, rollbackAction);
-            } catch (rollbackError) {
-                throw new Error(
-                    `${errMsg(dbError)}; MediaMTX rollback (${rollbackAction}) failed: ${errMsg(rollbackError)}`,
-                );
-            }
-
-            throw new Error(
-                `${errMsg(dbError)}; MediaMTX change was rolled back`,
+        if (reason) {
+            db.appendPipelineEvent(
+                pipelineId,
+                `[input_state] reset reason=${reason}`,
+                'pipeline.input_state.reset',
+                { reason },
             );
         }
+
+        db.appendPipelineEvent(
+            pipelineId,
+            `[input_state] initial_state=${status}`,
+            'pipeline.input_state.initialized',
+            { state: status },
+        );
+
+        return status;
     }
 
-    async function mutateMediamtxPath(key, action) {
+    function resetPipelineOutputRecovery(pipelineId, reason) {
+        const outputs = db.listOutputsForPipeline(pipelineId);
+        for (const output of outputs) {
+            resetOutputFailureCount(pipelineId, output.id, reason);
+        }
+        return outputs;
+    }
+
+    async function applyMediamtxPathMutation(key, action) {
         // Stream-key creation/deletion must stay in sync with MediaMTX path config, so the route
         // handlers share one request/parse/error path instead of duplicating control-plane logic.
         const methodByAction = {
@@ -300,6 +310,27 @@ function registerPipelineApi({
         return data;
     }
 
+    async function applyMediamtxPathMutationWithRollback(key, action, applyDbChange) {
+        await applyMediamtxPathMutation(key, action);
+
+        try {
+            return await applyDbChange();
+        } catch (dbError) {
+            const rollbackAction = action === 'add' ? 'delete' : 'add';
+            try {
+                await applyMediamtxPathMutation(key, rollbackAction);
+            } catch (rollbackError) {
+                throw new Error(
+                    `${errMsg(dbError)}; MediaMTX rollback (${rollbackAction}) failed: ${errMsg(rollbackError)}`,
+                );
+            }
+
+            throw new Error(
+                `${errMsg(dbError)}; MediaMTX change was rolled back`,
+            );
+        }
+    }
+
     app.post('/stream-keys', async (req, res) => {
         try {
             const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'streamKey');
@@ -319,7 +350,7 @@ function registerPipelineApi({
                 return respondError(res, 409, 'Stream key already exists');
             }
 
-            const streamKey = await mutateMediamtxPathWithRollback(
+            const streamKey = await applyMediamtxPathMutationWithRollback(
                 key,
                 'add',
                 () => db.createStreamKey({
@@ -361,7 +392,7 @@ function registerPipelineApi({
             const { key } = req.params;
             if (!getRecordOrRespond(res, db.getStreamKey(key), 'Stream key not found')) return;
 
-            await mutateMediamtxPathWithRollback(key, 'delete', () => {
+            await applyMediamtxPathMutationWithRollback(key, 'delete', () => {
                 const deleted = db.deleteStreamKey(key);
                 if (!deleted) {
                     throw new Error('Failed to remove stream key from DB');
@@ -423,13 +454,7 @@ function registerPipelineApi({
                     encoding: pipelineWithState.encoding || null,
                 },
             );
-            seedPipelineState(pipelineWithState.id, runtimeState.status);
-            db.appendPipelineEvent(
-                pipelineWithState.id,
-                `[input_state] initial_state=${runtimeState.status}`,
-                'pipeline.input_state.initialized',
-                { state: runtimeState.status },
-            );
+            initializePipelineInputState(pipelineWithState.id, runtimeState.status);
 
             refreshConfigAndHealthEtags();
             return respondJson(res, { message: 'Pipeline created', pipeline: pipelineWithState }, 201);
@@ -483,24 +508,10 @@ function registerPipelineApi({
             if (!updated) return respondError(res, 500, 'Failed to update pipeline');
 
             if (streamKeyChanging) {
-                seedPipelineState(id, initialInputStatus || 'off');
-                db.appendPipelineEvent(
-                    id,
-                    '[input_state] reset reason=stream_key_change',
-                    'pipeline.input_state.reset',
-                    { reason: 'stream_key_change' },
-                );
-                db.appendPipelineEvent(
-                    id,
-                    `[input_state] initial_state=${initialInputStatus || 'off'}`,
-                    'pipeline.input_state.initialized',
-                    { state: initialInputStatus || 'off' },
-                );
-
-                const outputs = db.listOutputsForPipeline(id);
-                for (const output of outputs) {
-                    resetOutputFailureCount(id, output.id, 'stream_key_change');
-                }
+                initializePipelineInputState(id, initialInputStatus, {
+                    reason: 'stream_key_change',
+                });
+                resetPipelineOutputRecovery(id, 'stream_key_change');
             }
 
             logPipelineConfigChanges(db, id, existing, updated);
