@@ -45,6 +45,7 @@ const { createPipelineRuntimeStateService } = require('./pipeline-runtime-state'
 // Health monitor service
 
 // These timing constants can be overridden at startup but are stable after that.
+
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 const FFPROBE_TIMEOUT_MS = 8000;
 
@@ -78,22 +79,6 @@ function createHealthMonitorService({
     let mediamtxReadinessTimer = null;
     const runtimeState =
         pipelineRuntimeState || createPipelineRuntimeStateService({ db });
-
-    function buildMediamtxSnapshot({
-        pathCount = 0,
-        rtspConnCount = 0,
-        rtmpConnCount = 0,
-        srtConnCount = 0,
-        ready = false,
-    } = {}) {
-        return {
-            pathCount,
-            rtspConnCount,
-            rtmpConnCount,
-            srtConnCount,
-            ready,
-        };
-    }
 
     function indexJobsByOutputId(jobs) {
         return new Map((jobs || []).map((job) => [job.outputId, job]));
@@ -149,9 +134,10 @@ function createHealthMonitorService({
     function startMediamtxReadinessChecks() {
         void checkMediamtxReadiness();
         if (mediamtxReadinessTimer) return;
-        mediamtxReadinessTimer = setInterval(() => {
-            void checkMediamtxReadiness();
-        }, MEDIAMTX_CHECK_INTERVAL_MS);
+        mediamtxReadinessTimer = setInterval(
+            () => void checkMediamtxReadiness(),
+            MEDIAMTX_CHECK_INTERVAL_MS,
+        );
         mediamtxReadinessTimer.unref?.();
     }
 
@@ -173,6 +159,16 @@ function createHealthMonitorService({
             let stdout = '';
             let settled = false;
             let child;
+            let timeout = null;
+
+            const finalize = (result, { clearTimer = true } = {}) => {
+                if (settled) return;
+                settled = true;
+                if (clearTimer && timeout) {
+                    clearTimeout(timeout);
+                }
+                resolve(result);
+            };
 
             try {
                 child = spawn(ffprobeCmd, args, {
@@ -184,19 +180,20 @@ function createHealthMonitorService({
                 return;
             }
 
-            const timeout = setTimeout(() => {
-                if (settled) return;
-                settled = true;
+            timeout = setTimeout(() => {
                 try {
                     child.kill('SIGKILL');
                 } catch (e) {
                     /* ignore */
                 }
-                resolve({
+                finalize(
+                    {
                     ok: false,
                     error: `ffprobe timeout after ${FFPROBE_TIMEOUT_MS}ms`,
                     stderr,
-                });
+                    },
+                    { clearTimer: false },
+                );
             }, FFPROBE_TIMEOUT_MS);
 
             child.stdout.on('data', (chunk) => {
@@ -208,21 +205,20 @@ function createHealthMonitorService({
             });
 
             child.on('error', (err) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timeout);
-                resolve({ ok: false, error: errMsg(err), stderr });
+                finalize({ ok: false, error: errMsg(err), stderr });
             });
 
             child.on('exit', (code) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timeout);
                 if (code === 0) {
-                    resolve({ ok: true, stdout, info: extractProbeMediaInfo(stdout) });
+                    finalize({ ok: true, stdout, info: extractProbeMediaInfo(stdout) });
                     return;
                 }
-                resolve({ ok: false, error: `ffprobe exited with code ${code}`, stderr, stdout });
+                finalize({
+                    ok: false,
+                    error: `ffprobe exited with code ${code}`,
+                    stderr,
+                    stdout,
+                });
             });
         });
     }
@@ -522,8 +518,7 @@ function createHealthMonitorService({
             const jobs = db.listJobs();
             const outputsByPipeline = groupOutputsByPipeline(outputs);
             const jobByOutputId = indexJobsByOutputId(jobs);
-
-            const health = { pipelines: {} };
+            const pipelinesHealth = {};
             const nowMs = Date.now();
 
             for (const pipeline of pipelines) {
@@ -532,7 +527,7 @@ function createHealthMonitorService({
                 const pathInfo = streamKey ? pathByName.get(effectivePath) : null;
                 const pipelineOutputs = outputsByPipeline.get(pipeline.id) || [];
 
-                health.pipelines[pipeline.id] = buildPipelineHealthSnapshot(
+                pipelinesHealth[pipeline.id] = buildPipelineHealthSnapshot(
                     pipeline,
                     pathInfo,
                     pipelineOutputs,
@@ -549,14 +544,14 @@ function createHealthMonitorService({
                 generatedAt: new Date().toISOString(),
                 snapshotVersion,
                 status: 'ready',
-                mediamtx: buildMediamtxSnapshot({
+                mediamtx: {
                     pathCount: paths.itemCount || 0,
                     rtspConnCount: rtspConns.itemCount || 0,
                     rtmpConnCount: rtmpConns.itemCount || 0,
                     srtConnCount: srtConns.itemCount || 0,
                     ready: mediamtxReadiness.ready,
-                }),
-                ...health,
+                },
+                pipelines: pipelinesHealth,
             };
         } catch (err) {
             log('error', 'Failed to build health response', {
@@ -567,13 +562,13 @@ function createHealthMonitorService({
                 generatedAt: new Date().toISOString(),
                 snapshotVersion: getCurrentStateVersion(),
                 status: 'degraded',
-                mediamtx: buildMediamtxSnapshot({
+                mediamtx: {
                     pathCount: latestHealthSnapshot?.mediamtx?.pathCount || 0,
                     rtspConnCount: latestHealthSnapshot?.mediamtx?.rtspConnCount || 0,
                     rtmpConnCount: latestHealthSnapshot?.mediamtx?.rtmpConnCount || 0,
                     srtConnCount: latestHealthSnapshot?.mediamtx?.srtConnCount || 0,
                     ready: mediamtxReadiness.ready,
-                }),
+                },
                 pipelines: latestHealthSnapshot?.pipelines || {},
             };
         }
@@ -615,29 +610,36 @@ function createHealthMonitorService({
         };
     }
 
+    function runHealthCollectionWithErrorLog(message) {
+        void collectHealthSnapshot().catch((err) => {
+            log('error', message, {
+                error: errMsg(err),
+            });
+        });
+    }
+
     function startHealthCollector() {
         setLatestHealthSnapshot(
             buildDefaultHealthSnapshot('initializing', mediamtxReadiness.ready),
         );
 
-        void collectHealthSnapshot().catch((err) => {
-            log('error', 'Initial health snapshot collection failed', {
-                error: errMsg(err),
-            });
-        });
+        runHealthCollectionWithErrorLog('Initial health snapshot collection failed');
 
         if (healthCollectorTimer) {
             clearInterval(healthCollectorTimer);
         }
 
         healthCollectorTimer = setInterval(() => {
-            void collectHealthSnapshot().catch((err) => {
-                log('error', 'Periodic health snapshot collection failed', {
-                    error: errMsg(err),
-                });
-            });
+            runHealthCollectionWithErrorLog('Periodic health snapshot collection failed');
         }, healthSnapshotIntervalMs);
         healthCollectorTimer.unref?.();
+    }
+
+    function setHealthSnapshotHeaders(res, etag, snapshotVersion) {
+        if (etag) res.set('ETag', `"${etag}"`);
+        if (snapshotVersion) {
+            res.set('X-Snapshot-Version', `"${snapshotVersion}"`);
+        }
     }
 
     function registerRoutes(app) {
@@ -648,17 +650,11 @@ function createHealthMonitorService({
             const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
 
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
-                res.set('ETag', `"${etag}"`);
-                if (snapshot?.snapshotVersion) {
-                    res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
-                }
+                setHealthSnapshotHeaders(res, etag, snapshot?.snapshotVersion);
                 return res.status(304).end();
             }
 
-            if (etag) res.set('ETag', `"${etag}"`);
-            if (snapshot?.snapshotVersion) {
-                res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
-            }
+            setHealthSnapshotHeaders(res, etag, snapshot?.snapshotVersion);
 
             return res.json(snapshot);
         });
