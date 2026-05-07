@@ -16,7 +16,7 @@ landed changes.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Reconcile MediaMTX + SQLite stream-key mutations | Fixed | Create/delete now roll back the MediaMTX path change if the DB phase fails after the control-plane mutation succeeds. |
+| Add compensating rollback for stream-key create/delete | Fixed | Stream-key create/delete now roll back the MediaMTX path change if the SQLite phase fails after the control-plane mutation succeeds. |
 | Replace order-dependent frontend `window.*` handoffs | Fixed | Dashboard and history now boot through entry modules plus explicit callback seams, leaving `window.*` only for markup-bound handlers. |
 | Add shared snapshot identity across `/config` and `/health` | Fixed | Both endpoints now expose the same snapshot-version token for config/jobs state, and the dashboard retries until the slices line up. |
 | Replace history log-message parsing with typed event payloads | Fixed | Lifecycle and pipeline history now emit stable `eventType` codes plus structured `eventData`. |
