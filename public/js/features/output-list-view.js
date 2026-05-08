@@ -2,6 +2,7 @@
 // Renders per-output rows, progress badges, and action buttons for the selected pipeline.
 
 import {
+    formatBytesWithAdaptiveUnit,
     msToHHMMSS,
     sanitizeLogMessage,
     setBadgeBitrateWithSubtleUnit,
@@ -57,10 +58,13 @@ function getOutputMetadataBadgeConfigs(output, isRunning) {
 
     const outputTotalSizeBytes = Number(output.totalSize);
     if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+        const formattedOutputSize = formatBytesWithAdaptiveUnit(outputTotalSizeBytes);
+        if (formattedOutputSize) {
         configs.push({
-            text: `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+            text: formattedOutputSize,
             title: 'Output total size from FFmpeg progress',
         });
+        }
     }
 
     return configs;

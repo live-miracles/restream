@@ -150,7 +150,10 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
         buildPipeline('pipe-b', 'Pipeline B'),
         buildPipeline('pipe-a', 'Pipeline A', {
             key: 'pipe-a-secret',
-            outs: [buildOutput('out-a-1', 'Output A-1')],
+            outs: [
+                buildOutput('out-a-1', 'Output A-1', { totalSize: 104857600 }),
+                buildOutput('out-a-2', 'Output A-2', { totalSize: 3 * 1024 * 1024 * 1024 }),
+            ],
         }),
     ];
 
@@ -181,6 +184,12 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
     );
     assert.equal(document.getElementById('ingest-url-title').textContent, 'RTSP Publish URL');
     assert.equal(document.getElementById('ingest-url-surface').classList.contains('hidden'), false);
+
+    const totalSizeBadges = [...document.querySelectorAll('#outputs-list .badge')]
+        .filter((badge) => badge.title === 'Output total size from FFmpeg progress')
+        .map((badge) => badge.textContent);
+
+    assert.deepEqual(totalSizeBadges, ['100.0 MB', '3.0 GB']);
 });
 
 test('dashboard smoke wires output controls to the injected handlers', async () => {

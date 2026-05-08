@@ -406,6 +406,26 @@ function setMetricsValueWithSubtleUnit(selector, parts, fallback = '--') {
     });
 }
 
+function formatBytesWithAdaptiveUnit(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return null;
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let normalized = value;
+    let unitIndex = 0;
+
+    while (normalized >= 1024 && unitIndex < units.length - 1) {
+        normalized /= 1024;
+        unitIndex += 1;
+    }
+
+    if (unitIndex === 0) {
+        return `${Math.trunc(normalized)} ${units[unitIndex]}`;
+    }
+
+    return `${normalized.toFixed(1)} ${units[unitIndex]}`;
+}
+
 export {
     HEALTH_RECOVERY_BANNER_MS,
     msToHHMMSS,
@@ -436,4 +456,5 @@ export {
     setBadgeBitrateWithSubtleUnit,
     setMetricsBitrateWithSubtleUnit,
     setMetricsValueWithSubtleUnit,
+    formatBytesWithAdaptiveUnit,
 };
