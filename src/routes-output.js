@@ -239,8 +239,8 @@ function registerOutputApi({
     app,
     db,
     getConfig,
-    recomputeConfigEtag,
-    recomputeEtag,
+    recomputeConfigSnapshotVersion,
+    recomputeSnapshotVersion,
     clearOutputRestartState,
     getOutputDesiredState,
     reconcileOutput,
@@ -248,9 +248,9 @@ function registerOutputApi({
     setOutputDesiredState,
     stopRunningJobAndWait,
 }) {
-    function refreshConfigAndHealthEtags() {
-        recomputeConfigEtag();
-        recomputeEtag();
+    function refreshConfigAndHealthSnapshotVersions() {
+        recomputeConfigSnapshotVersion();
+        recomputeSnapshotVersion();
     }
 
     function getPipelineOrRespond(res, pipelineId) {
@@ -290,7 +290,7 @@ function registerOutputApi({
             source: 'api',
             reason: stateReason,
         });
-        recomputeConfigEtag();
+        recomputeConfigSnapshotVersion();
 
         resetOutputFailureCount(pid, oid, resetReason);
 
@@ -299,7 +299,7 @@ function registerOutputApi({
             reason: reconcileReason,
             source: 'api',
         });
-        recomputeEtag();
+        recomputeSnapshotVersion();
 
         return { desiredStateChange, reconciliation };
     }
@@ -337,7 +337,7 @@ function registerOutputApi({
                 },
             );
 
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Output created', output }, 201);
         } catch (err) {
             return respondError(res, 400, err.message || errMsg(err));
@@ -373,7 +373,7 @@ function registerOutputApi({
 
             logOutputConfigChanges(db, pid, oid, existing, updated);
 
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Output updated', output: updated });
         } catch (err) {
             return respondError(res, 400, err.message || errMsg(err));
@@ -402,7 +402,7 @@ function registerOutputApi({
             if (!ok) return respondError(res, 500, 'Failed to delete output');
 
             clearOutputRestartState(pid, oid);
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: `Output ${oid} from pipeline ${pid} deleted` });
         } catch (err) {
             return respondError(res, 500, errMsg(err));

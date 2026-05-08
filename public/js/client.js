@@ -205,9 +205,8 @@ async function getConfig() {
 
     return {
         notModified: false,
-        etag: null,
-        configEtag: null,
         snapshotVersion: result.data?.snapshotVersion || null,
+        configSnapshotVersion: result.data?.snapshotVersion || null,
         data: result.data,
     };
 }
@@ -220,7 +219,6 @@ async function getHealth() {
 
     return {
         notModified: false,
-        etag: null,
         snapshotVersion: result.data?.snapshotVersion || null,
         data: result.data,
     };

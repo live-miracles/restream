@@ -49,8 +49,8 @@ const pipelineRuntimeState = createPipelineRuntimeStateService({ db });
 
 // ── Config API ──────────
 const {
-    recomputeConfigEtag,
-    recomputeEtag,
+    recomputeConfigSnapshotVersion,
+    recomputeSnapshotVersion,
     setHealthSnapshotProvider,
     setSystemMetricsProvider,
 } = registerConfigApi({
@@ -79,7 +79,7 @@ const outputLifecycle = createOutputLifecycleService({
     processes,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
-    recomputeEtag,
+    recomputeSnapshotVersion,
     isLatestJobLikelyInputUnavailableStop:
         pipelineRuntimeState.isLatestJobLikelyInputUnavailableStop,
 });
@@ -113,16 +113,16 @@ registerPipelineApi({
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
-    recomputeConfigEtag,
-    recomputeEtag,
+    recomputeConfigSnapshotVersion,
+    recomputeSnapshotVersion,
 });
 
 registerOutputApi({
     app,
     db,
     getConfig,
-    recomputeConfigEtag,
-    recomputeEtag,
+    recomputeConfigSnapshotVersion,
+    recomputeSnapshotVersion,
     clearOutputRestartState,
     getOutputDesiredState,
     reconcileOutput,

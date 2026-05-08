@@ -92,8 +92,7 @@ function applyConfigSlice(result, current) {
 
     return {
         ...current,
-        etag: configVersion || current.etag,
-        configEtag: configVersion || current.configEtag,
+        snapshotVersion: configVersion || current.snapshotVersion,
         configSnapshotVersion: configVersion,
         config: result.data || current.config,
         serverName: result.data?.serverName || null,
@@ -107,7 +106,6 @@ function applyHealthSlice(result, current) {
 
     return {
         ...current,
-        healthEtag: healthSnapshot?.snapshotVersion || current.healthEtag,
         healthSnapshotVersion: resolveHealthSnapshotVersion(
             healthSnapshot,
             current.healthSnapshotVersion,
@@ -153,11 +151,10 @@ function resolveSelectedPipelineId({
     return replacement?.id || null;
 }
 
-let configEtag = null;
 let configSnapshotVersion = null;
 let healthSnapshotVersion = null;
-let userConfigEtag = null;
-let dismissedStreamingConfigEtag = null;
+let userConfigSnapshotVersion = null;
+let dismissedStreamingConfigSnapshotVersion = null;
 let pendingLocalConfigMutationCount = 0;
 let dashboardInitPromise = null;
 let dashboardEventSource = null;
@@ -204,51 +201,48 @@ function updateStreamingConfigAlert() {
     if (!alertElem) return;
 
     const shouldShow =
-        !!userConfigEtag &&
-        !!configEtag &&
-        configEtag !== userConfigEtag &&
-        dismissedStreamingConfigEtag !== configEtag;
+        !!userConfigSnapshotVersion &&
+        !!configSnapshotVersion &&
+        configSnapshotVersion !== userConfigSnapshotVersion &&
+        dismissedStreamingConfigSnapshotVersion !== configSnapshotVersion;
 
-    alertElem.dataset.configVersion = configEtag || '';
+    alertElem.dataset.configVersion = configSnapshotVersion || '';
     alertElem.classList.toggle('hidden', !shouldShow);
 }
 
 function applyConfigResult(result) {
-    const previousConfigEtag = configEtag;
+    const previousConfigSnapshotVersion = configSnapshotVersion;
     const next = applyConfigSlice(result, {
-        etag: null,
-        configEtag,
+        snapshotVersion: null,
         configSnapshotVersion,
         config: state.config,
     });
 
-    configEtag = next.configEtag;
     configSnapshotVersion = next.configSnapshotVersion;
 
     const nextPendingLocalConfigMutationCount = consumePendingLocalConfigMutation(
         pendingLocalConfigMutationCount,
-        configEtag,
-        previousConfigEtag,
+        configSnapshotVersion,
+        previousConfigSnapshotVersion,
     );
     const acceptAsLocalConfigMutation =
         nextPendingLocalConfigMutationCount !== pendingLocalConfigMutationCount;
     pendingLocalConfigMutationCount = nextPendingLocalConfigMutationCount;
 
     if (acceptAsLocalConfigMutation) {
-        applyUserConfigBaseline(configEtag);
+        applyUserConfigBaseline(configSnapshotVersion);
     }
 
     state.config = next.config;
     setServerConfig(next.serverName);
-    if (!userConfigEtag && configEtag) {
-        userConfigEtag = configEtag;
+    if (!userConfigSnapshotVersion && configSnapshotVersion) {
+        userConfigSnapshotVersion = configSnapshotVersion;
     }
     updateStreamingConfigAlert();
 }
 
 function applyHealthResult(result) {
     const next = applyHealthSlice(result, {
-        healthEtag: null,
         healthSnapshotVersion,
         health: state.health,
     });
@@ -261,18 +255,18 @@ function applyMetricsResult(result) {
     state.metrics = applyMetricsSlice(result, state.metrics);
 }
 
-function applyUserConfigBaseline(etagValue) {
-    userConfigEtag = etagValue || null;
-    dismissedStreamingConfigEtag = null;
+function applyUserConfigBaseline(snapshotVersionValue) {
+    userConfigSnapshotVersion = snapshotVersionValue || null;
+    dismissedStreamingConfigSnapshotVersion = null;
     updateStreamingConfigAlert();
 }
 
 function markUserConfigBaseline() {
-    applyUserConfigBaseline(configEtag);
+    applyUserConfigBaseline(configSnapshotVersion);
 }
 
 async function syncUserConfigBaseline() {
-    applyUserConfigBaseline(configEtag);
+    applyUserConfigBaseline(configSnapshotVersion);
 }
 
 setDashboardActionHandlers({
@@ -281,7 +275,7 @@ setDashboardActionHandlers({
 });
 
 function dismissStreamingConfigAlert() {
-    dismissedStreamingConfigEtag = configEtag || null;
+    dismissedStreamingConfigSnapshotVersion = configSnapshotVersion || null;
     updateStreamingConfigAlert();
 }
 

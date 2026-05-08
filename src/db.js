@@ -777,19 +777,31 @@ module.exports = {
         return value;
     },
 
-    getEtag() {
-        return module.exports.getMeta('etag');
+    getSnapshotVersion() {
+        return (
+            module.exports.getMeta('snapshot_version') ||
+            module.exports.getMeta('etag')
+        );
     },
 
-    setEtag(v) {
-        return module.exports.setMeta('etag', v);
+    setSnapshotVersion(v) {
+        module.exports.setMeta('snapshot_version', v);
+        // Keep the legacy key in sync for existing DB files.
+        module.exports.setMeta('etag', v);
+        return v;
     },
 
-    getConfigEtag() {
-        return module.exports.getMeta('config_etag');
+    getConfigSnapshotVersion() {
+        return (
+            module.exports.getMeta('config_snapshot_version') ||
+            module.exports.getMeta('config_etag')
+        );
     },
 
-    setConfigEtag(v) {
-        return module.exports.setMeta('config_etag', v);
+    setConfigSnapshotVersion(v) {
+        module.exports.setMeta('config_snapshot_version', v);
+        // Keep the legacy key in sync for existing DB files.
+        module.exports.setMeta('config_etag', v);
+        return v;
     },
 };

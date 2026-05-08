@@ -44,11 +44,11 @@ async function withHealthModule(globalFetchImpl, run) {
 
 function createHealthHarness(createHealthMonitorService, overrides = {}) {
     const dbState = {
-        etag: overrides.dbState?.etag || null,
+        snapshotVersion: overrides.dbState?.snapshotVersion || null,
     };
 
     const db = {
-        getEtag: () => dbState.etag,
+        getSnapshotVersion: () => dbState.snapshotVersion,
         listPipelines: () => [],
         listOutputs: () => [],
         listJobs: () => [],
@@ -95,7 +95,7 @@ async function waitFor(checkFn, attempts = 20) {
 test('GET /health returns a snapshot body with age metadata', async () => {
     await withHealthModule(async () => createJsonResponse({ items: [], itemCount: 0 }), async (createHealthMonitorService) => {
         const { app } = createHealthHarness(createHealthMonitorService, {
-            dbState: { etag: 'snapshot-v1' },
+            dbState: { snapshotVersion: 'snapshot-v1' },
         });
 
         const response = await request(app).get('/health').expect(200);
@@ -121,7 +121,7 @@ test('health readiness transitions from 503 to 200 after the monitor starts', as
             async () => createJsonResponse({ items: [], itemCount: 0 }),
             async (createHealthMonitorService) => {
                 const { app, healthMonitor } = createHealthHarness(createHealthMonitorService, {
-                    dbState: { etag: 'snapshot-v-ready' },
+                    dbState: { snapshotVersion: 'snapshot-v-ready' },
                     readinessFetch: async () => ({ ok: true, status: 200 }),
                 });
 

@@ -65,7 +65,7 @@ Examples where `window.*` exposure is valid:
 
 ## 5. Current Module Boundaries
 
-- `public/js/client.js`: shared state plus API, ETag, and polling primitives
+- `public/js/client.js`: shared state plus API and snapshot-version primitives
 - `public/js/pipeline.js`: config + health merge helpers and throughput calculation
 - `public/js/features/dashboard-actions.js`: narrow coordinator callbacks shared by dashboard, editor, and history modules
 - `public/js/features/dashboard.js`: refresh orchestration, snapshot reconciliation, visibility behavior

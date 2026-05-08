@@ -241,7 +241,7 @@ function createHealthMonitorService({
     }
 
     function getCurrentStateVersion() {
-        return db.getEtag() || null;
+        return db.getSnapshotVersion() || null;
     }
 
     function isHealthSnapshotStaleForCurrentState(snapshot) {

@@ -89,22 +89,21 @@ test('SSE recovery decision triggers on closed/null stream and on silence timeou
     );
 });
 
-test('applyConfigSlice updates etags and config only when the slice is modified', () => {
+test('applyConfigSlice updates snapshot versions and config only when the slice is modified', () => {
     const next = applyConfigSlice(
         {
             snapshotVersion: 'new-snapshot',
             data: { serverName: 'Updated' },
         },
         {
-            etag: 'old-snapshot',
-            configEtag: 'old-config',
+            snapshotVersion: 'old-snapshot',
             configSnapshotVersion: 'old-snapshot',
             config: { serverName: 'Old' },
         },
     );
 
-    assert.equal(next.etag, 'new-snapshot');
-    assert.equal(next.configEtag, 'new-snapshot');
+    assert.equal(next.snapshotVersion, 'new-snapshot');
+    assert.equal(next.configSnapshotVersion, 'new-snapshot');
     assert.equal(next.config.serverName, 'Updated');
     assert.equal(next.serverName, 'Updated');
 });
@@ -113,13 +112,12 @@ test('applyHealthSlice applies updated health data when present', () => {
     const next = applyHealthSlice(
         { snapshotVersion: 'health-v2', status: 'warning' },
         {
-            healthEtag: 'health-v1',
             healthSnapshotVersion: 'health-v1',
             health: { status: 'on' },
         },
     );
 
-    assert.equal(next.healthEtag, 'health-v2');
+    assert.equal(next.healthSnapshotVersion, 'health-v2');
     assert.deepEqual(next.health, { snapshotVersion: 'health-v2', status: 'warning' });
 });
 

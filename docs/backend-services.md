@@ -15,7 +15,7 @@ Scope:
 | File | Owns | Depends On | Edit Here When... |
 |---|---|---|---|
 | `src/index.js` | App composition root and dependency wiring | all top-level modules | you are changing startup wiring or cross-module dependencies |
-| `src/routes-pipeline.js` | `/config`, pipeline CRUD, and stream-key routes | DB, config helpers, HTTP helpers, pipeline runtime state contract | you are changing config response shape, ETag handling, or pipeline/key routes |
+| `src/routes-pipeline.js` | `/config`, pipeline CRUD, and stream-key routes | DB, config helpers, HTTP helpers, pipeline runtime state contract | you are changing config response shape, snapshot-version handling, or pipeline/key routes |
 | `src/routes-output.js` | output CRUD, history, and lifecycle routes | DB, recovery/output lifecycle, HTTP helpers | you are changing output route behavior or history responses |
 | `src/preview.js` | preview proxy routes | fetch, MediaMTX URL helpers | you are changing preview routing or proxy semantics |
 | `src/pipeline-runtime-state.js` | shared in-memory input transition history and recovery callback seam | DB, MediaMTX path reads, health-compute, utility helpers | you are changing input transition history, runtime input seeding, or input-loss classification |

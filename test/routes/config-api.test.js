@@ -8,8 +8,8 @@ const { createExpressHarness } = require('../helpers/create-express-harness');
 
 function createConfigHarness(overrides = {}) {
     const dbState = {
-        etag: overrides.dbState?.etag || null,
-        configEtag: overrides.dbState?.configEtag || null,
+        snapshotVersion: overrides.dbState?.snapshotVersion || null,
+        configSnapshotVersion: overrides.dbState?.configSnapshotVersion || null,
     };
 
     const db = {
@@ -77,13 +77,13 @@ function createConfigHarness(overrides = {}) {
                 exitSignal: null,
             },
         ],
-        getConfigEtag: () => dbState.configEtag,
-        setConfigEtag: (value) => {
-            dbState.configEtag = value;
+        getConfigSnapshotVersion: () => dbState.configSnapshotVersion,
+        setConfigSnapshotVersion: (value) => {
+            dbState.configSnapshotVersion = value;
         },
-        getEtag: () => dbState.etag,
-        setEtag: (value) => {
-            dbState.etag = value;
+        getSnapshotVersion: () => dbState.snapshotVersion,
+        setSnapshotVersion: (value) => {
+            dbState.snapshotVersion = value;
         },
         ...overrides.db,
     };
@@ -118,8 +118,8 @@ test('GET /config returns stable sorted payloads', async () => {
 
     const res = await request(app).get('/config').expect(200);
 
-    assert.ok(dbState.etag);
-    assert.ok(dbState.configEtag);
+    assert.ok(dbState.snapshotVersion);
+    assert.ok(dbState.configSnapshotVersion);
     assert.deepEqual(
         res.body.pipelines.map((pipeline) => pipeline.id),
         ['pipe-b', 'pipe-a'],

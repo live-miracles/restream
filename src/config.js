@@ -1,7 +1,7 @@
 // Config loader and snapshot builder.
 // Reads and validates restream.json from disk, exposes getConfig() as the single source of truth
 // for runtime configuration, and builds the /config API payload (pipeline state + health + jobs)
-// that the dashboard polls. Also owns the config-level ETag used for conditional GET responses.
+// that the dashboard reads. Also owns deterministic snapshot-version hashing for control-plane diffs.
 
 const fs = require('fs');
 const path = require('path');
@@ -342,7 +342,7 @@ function sortByStringField(items, field, direction = 'asc') {
 
 function buildConfigSnapshot({ db }) {
     // Keep the config hash input deterministic so the same persisted state always produces the
-    // same ETag regardless of insertion order or unrelated runtime activity.
+    // same snapshot version regardless of insertion order or unrelated runtime activity.
     const streamKeys = sortByStringField(
         db.listStreamKeys().map((streamKey) => ({
             key: streamKey.key,
@@ -409,7 +409,7 @@ function hashSnapshot(snapshot, createHashFn = createHash) {
 
 async function buildConfigApiSnapshot({ db, getConfig, toPublicConfig, buildIngestUrls }) {
     // The dashboard consumes this shape directly, so keep the response assembly separate from the
-    // smaller ETag snapshots used for change detection.
+    // smaller snapshot payloads used for change detection.
     const pipelines = await Promise.all(
         db.listPipelines().map(async (pipeline) => ({
             ...pipeline,

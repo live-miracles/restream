@@ -39,55 +39,55 @@ function registerConfigApi({
     let healthSnapshotProvider = getHealthSnapshot;
     let systemMetricsProvider = getSystemMetricsSnapshot;
 
-    function recomputeConfigEtag() {
+    function recomputeConfigSnapshotVersion() {
         try {
-            const etag = db.getEtag() || recomputeEtag();
-            db.setConfigEtag(etag);
-            return etag;
+            const snapshotVersion = db.getSnapshotVersion() || recomputeSnapshotVersion();
+            db.setConfigSnapshotVersion(snapshotVersion);
+            return snapshotVersion;
         } catch (err) {
-            console.error('recomputeConfigEtag error:', err);
+            console.error('recomputeConfigSnapshotVersion error:', err);
             return null;
         }
     }
 
-    function recomputeEtag() {
+    function recomputeSnapshotVersion() {
         try {
-            // Full snapshot ETag includes current job rows because the dashboard uses /config as
+            // Full snapshot version includes current job rows because the dashboard uses /config as
             // its durable control-plane view, not just static configuration.
-            const etag = hashSnapshot({
+            const snapshotVersion = hashSnapshot({
                 ...buildConfigSnapshot({ db }),
                 jobs: buildJobsSnapshot({ db }),
             });
 
-            db.setEtag(etag);
-            return etag;
+            db.setSnapshotVersion(snapshotVersion);
+            return snapshotVersion;
         } catch (err) {
-            console.error('recomputeEtag error:', err);
+            console.error('recomputeSnapshotVersion error:', err);
             return null;
         }
     }
 
-    // Seed both ETags on startup so the first poll can use normal cache headers immediately.
+    // Seed both snapshot versions on startup so the first SSE connect can diff immediately.
     (async () => {
         try {
-            if (!db.getEtag()) recomputeEtag();
-            if (!db.getConfigEtag()) recomputeConfigEtag();
+            if (!db.getSnapshotVersion()) recomputeSnapshotVersion();
+            if (!db.getConfigSnapshotVersion()) recomputeConfigSnapshotVersion();
         } catch (e) {
             /* ignore */
         }
     })();
 
-    function ensureSnapshotEtags() {
-        let etag = db.getEtag();
-        if (!etag) etag = recomputeEtag();
+    function ensureSnapshotVersions() {
+        let snapshotVersion = db.getSnapshotVersion();
+        if (!snapshotVersion) snapshotVersion = recomputeSnapshotVersion();
 
-        let configEtag = db.getConfigEtag();
-        if (!configEtag) {
-            configEtag = etag;
-            db.setConfigEtag(configEtag);
+        let configSnapshotVersion = db.getConfigSnapshotVersion();
+        if (!configSnapshotVersion) {
+            configSnapshotVersion = snapshotVersion;
+            db.setConfigSnapshotVersion(configSnapshotVersion);
         }
 
-        return { etag, configEtag };
+        return { snapshotVersion, configSnapshotVersion };
     }
 
     async function buildConfigSnapshotPayload() {
@@ -100,9 +100,9 @@ function registerConfigApi({
     }
 
     async function buildDashboardConfigPayload() {
-        const { configEtag } = ensureSnapshotEtags();
+        const { configSnapshotVersion } = ensureSnapshotVersions();
         return {
-            snapshotVersion: configEtag || null,
+            snapshotVersion: configSnapshotVersion || null,
             data: await buildConfigSnapshotPayload(),
         };
     }
@@ -149,8 +149,8 @@ function registerConfigApi({
 
         const writeConfigEvent = async ({ force = false } = {}) => {
             try {
-                const { configEtag } = ensureSnapshotEtags();
-                const configVersion = configEtag || null;
+                const { configSnapshotVersion } = ensureSnapshotVersions();
+                const configVersion = configSnapshotVersion || null;
                 if (!force && configVersion === lastSentConfigVersion) {
                     return;
                 }
@@ -196,8 +196,8 @@ function registerConfigApi({
     });
 
     return {
-        recomputeConfigEtag,
-        recomputeEtag,
+        recomputeConfigSnapshotVersion,
+        recomputeSnapshotVersion,
         setHealthSnapshotProvider(provider) {
             healthSnapshotProvider = typeof provider === 'function' ? provider : null;
         },
@@ -272,8 +272,8 @@ function registerPipelineApi({
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
-    recomputeConfigEtag,
-    recomputeEtag,
+    recomputeConfigSnapshotVersion,
+    recomputeSnapshotVersion,
 }) {
     const {
         clearPipelineState,
@@ -281,9 +281,9 @@ function registerPipelineApi({
         seedPipelineState,
     } = pipelineRuntimeState;
 
-    function refreshConfigAndHealthEtags() {
-        recomputeConfigEtag();
-        recomputeEtag();
+    function refreshConfigAndHealthSnapshotVersions() {
+        recomputeConfigSnapshotVersion();
+        recomputeSnapshotVersion();
     }
 
     function getRecordOrRespond(res, record, notFoundMessage) {
@@ -460,7 +460,7 @@ function registerPipelineApi({
                     createdAt: new Date().toISOString(),
                 }),
             );
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, {
                 message: 'Stream key created',
                 streamKey: await buildStreamKeyResponse(streamKey),
@@ -478,7 +478,7 @@ function registerPipelineApi({
             if (!getRecordOrRespond(res, db.getStreamKey(key), 'Stream key not found')) return;
 
             const streamKey = db.updateStreamKey(key, label ?? null);
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Stream key updated', streamKey });
         } catch (err) {
             return respondError(res, 500, errMsg(err));
@@ -498,7 +498,7 @@ function registerPipelineApi({
                 return deleted;
             });
 
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Stream key deleted' });
         } catch (err) {
             return respondError(res, 500, errMsg(err));
@@ -549,7 +549,7 @@ function registerPipelineApi({
             );
             initializePipelineInputState(pipelineWithState.id, runtimeState.status);
 
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Pipeline created', pipeline: pipelineWithState }, 201);
         } catch (err) {
             return respondError(res, 400, err.message);
@@ -608,7 +608,7 @@ function registerPipelineApi({
             }
 
             logPipelineConfigChanges(db, id, existing, updated);
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
             return respondError(res, 400, err.message);
@@ -652,7 +652,7 @@ function registerPipelineApi({
                 clearOutputRestartState(id, output.id);
             }
 
-            refreshConfigAndHealthEtags();
+            refreshConfigAndHealthSnapshotVersions();
             return respondJson(res, { message: `Pipeline ${id} deleted` });
         } catch (err) {
             return respondError(res, 500, errMsg(err));

@@ -38,7 +38,7 @@ test('output lifecycle shutdown stops tracked running jobs through the normal st
         processes: new Map([[job.id, proc]]),
         ffmpegProgressByJobId: new Map(),
         ffmpegOutputMediaByJobId: new Map(),
-        recomputeEtag: () => {},
+        recomputeSnapshotVersion: () => {},
         isLatestJobLikelyInputUnavailableStop: () => ({ matched: false, reason: 'not_checked' }),
     });
 

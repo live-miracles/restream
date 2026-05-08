@@ -26,7 +26,7 @@ function createRecoveryHarness(overrides = {}) {
         db,
         getConfig: () => buildConfigMock({ outputRecovery: { enabled: true } }),
         processes,
-        recomputeEtag: () => {},
+        recomputeSnapshotVersion: () => {},
         isLatestJobLikelyInputUnavailableStop: () => ({ matched: false, reason: 'not_checked' }),
         startOutputJob: async () => {},
     });

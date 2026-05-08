@@ -133,7 +133,7 @@ function createOutputRecoveryService({
     db,
     getConfig,
     processes,
-    recomputeEtag,
+    recomputeSnapshotVersion,
     isLatestJobLikelyInputUnavailableStop,
     startOutputJob,
 }) {
@@ -280,7 +280,7 @@ function createOutputRecoveryService({
             exitSignal: null,
         });
         appendMarkedStoppedNoProcessLogs(db, { job, status: 'stopped' });
-        recomputeEtag();
+        recomputeSnapshotVersion();
         return { stopped: true, reason: 'marked-stopped' };
     }
 

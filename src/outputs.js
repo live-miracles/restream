@@ -39,7 +39,7 @@ function createOutputLifecycleService({
     processes,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
-    recomputeEtag,
+    recomputeSnapshotVersion,
     isLatestJobLikelyInputUnavailableStop,
 }) {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -50,7 +50,7 @@ function createOutputLifecycleService({
         db,
         getConfig,
         processes,
-        recomputeEtag,
+        recomputeSnapshotVersion,
         isLatestJobLikelyInputUnavailableStop,
         startOutputJob: (params) => startOutputJob(params),
     });
@@ -190,7 +190,7 @@ function createOutputLifecycleService({
             status: 'running',
             startedAt: new Date().toISOString(),
         });
-        recomputeEtag();
+        recomputeSnapshotVersion();
 
         processes.set(job.id, child);
         ffmpegProgressByJobId.set(job.id, {});
@@ -241,7 +241,7 @@ function createOutputLifecycleService({
                 'lifecycle.failed_on_error',
                 { status: 'failed', exitCode: null, exitSignal: null },
             );
-            recomputeEtag();
+            recomputeSnapshotVersion();
             cleanupOutputJobRuntime(job.id, { consumeStopRequest: true });
         });
 
@@ -356,7 +356,7 @@ function createOutputLifecycleService({
                 code: code ?? null,
                 signal: signal || null,
             });
-            recomputeEtag();
+            recomputeSnapshotVersion();
             cleanupOutputJobRuntime(job.id);
 
             // Unrequested failed exits always retry while desiredState=running; clean exits only
