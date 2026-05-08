@@ -8,7 +8,7 @@ when you keep the control-plane and media-plane boundaries separate.
 
 Restream is not the media server. MediaMTX moves media packets. Restream is the control plane that
 stores operator intent, starts and stops FFmpeg jobs, and turns MediaMTX runtime state into an API
-that the dashboard can poll.
+that the dashboard can stream and resync.
 
 Keep these boundaries in mind:
 
@@ -72,7 +72,7 @@ Then move into code in this order:
 7. `public/js/features/dashboard.js`
 8. `public/js/history.js`
 
-That sequence mirrors how the app starts, polls, and reacts to live stream state.
+That sequence mirrors how the app starts, streams updates, and reacts to live stream state.
 
 ## 4. How Data Moves Through The System
 
@@ -115,8 +115,11 @@ Relevant files:
 
 ### Dashboard path
 
-The browser does not talk directly to MediaMTX. It polls the Node API, merges config and health
-into a view model, and then renders cards, detail panels, modals, and metrics.
+The browser does not talk directly to MediaMTX. It consumes Node API snapshots/events, merges
+config and health into a view model, and then renders cards, detail panels, modals, and metrics.
+
+The main dashboard uses `/dashboard/events` (SSE) for live updates and falls back to one-shot
+snapshot fetches (`/config`, `/health`, `/metrics/system`) during recovery.
 
 Relevant files:
 

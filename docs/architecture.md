@@ -523,7 +523,7 @@ detects stream silence/closure, which protects against missed event windows afte
 
 ### 5.3 Throughput Computation (client-side)
 
-`public/js/pipeline.js` maintains the input-throughput baseline. On each poll cycle,
+`public/js/pipeline.js` maintains the input-throughput baseline. On each dashboard refresh cycle,
 `computeKbps(stateMap, key, totalBytes, nowMs)` computes input bitrate from the delta of
 `input.bytesReceived` between cycles:
 
@@ -548,7 +548,7 @@ Each output card exposes a history modal with two modes:
 
 **Timeline mode** (default)
 - On open, fetches only `filter=lifecycle` logs (lifecycle events only, oldest-first).
-- Polls on the same interval as the main dashboard poll, but uses a guarded timeout loop so only one history request is in flight at a time.
+- Uses an adaptive poll loop (`5s` visible, `30s` hidden) with a guarded timeout loop so only one history request is in flight at a time.
 - `retry_exhausted` is rendered as a terminal error badge (`Retry exhausted`) so operators can distinguish "will retry" from "gave up".
 - Each lifecycle event row has a collapsible context section that loads surrounding `stderr`/`exit`/`control` logs on demand when expanded.
 - Context fetch is bounded: at most 50 rows, at most 5 minutes before the event, floored to the previous lifecycle event's timestamp. Result is cached per event key for the modal session.
