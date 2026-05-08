@@ -16,7 +16,9 @@ const { state } = await loadBrowserModule('public/js/client.js');
 const { outputHistoryState, pipelineHistoryState } = await loadBrowserModule(
     'public/js/history.js',
 );
-const { renderPipelines } = await loadBrowserModule('public/js/features/dashboard.js');
+const { renderPipelines, renderServerMetrics } = await loadBrowserModule(
+    'public/js/features/dashboard.js',
+);
 const {
     resetPipelineViewActionOverrides,
     setPipelineViewActionOverrides,
@@ -190,6 +192,31 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
         .map((badge) => badge.textContent);
 
     assert.deepEqual(totalSizeBadges, ['100.0 MB', '3.0 GB']);
+});
+
+test('dashboard smoke renders RAM metric with adaptive shared byte units', () => {
+    const metricsHost = document.createElement('div');
+    metricsHost.innerHTML = `
+        <div class="ram-metric"></div>
+        <div class="ram-metric"></div>
+    `;
+    document.body.appendChild(metricsHost);
+
+    state.metrics = {
+        memory: {
+            usedBytes: 512 * 1024 * 1024,
+            totalBytes: 3 * 1024 * 1024 * 1024,
+        },
+    };
+
+    renderServerMetrics();
+
+    const ramMetrics = [...document.querySelectorAll('.ram-metric')];
+    assert.ok(ramMetrics.length > 0);
+    ramMetrics.forEach((metric) => {
+        assert.match(metric.textContent, /512\.0\/3\.0/);
+        assert.match(metric.textContent, /MB\/GB/);
+    });
 });
 
 test('dashboard smoke wires output controls to the injected handlers', async () => {

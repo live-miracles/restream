@@ -406,7 +406,7 @@ function setMetricsValueWithSubtleUnit(selector, parts, fallback = '--') {
     });
 }
 
-function formatBytesWithAdaptiveUnit(bytes) {
+function formatBytesWithAdaptiveUnitParts(bytes) {
     const value = Number(bytes);
     if (!Number.isFinite(value) || value < 0) return null;
 
@@ -420,10 +420,16 @@ function formatBytesWithAdaptiveUnit(bytes) {
     }
 
     if (unitIndex === 0) {
-        return `${Math.trunc(normalized)} ${units[unitIndex]}`;
+        return { valueText: String(Math.trunc(normalized)), unitText: units[unitIndex] };
     }
 
-    return `${normalized.toFixed(1)} ${units[unitIndex]}`;
+    return { valueText: normalized.toFixed(1), unitText: units[unitIndex] };
+}
+
+function formatBytesWithAdaptiveUnit(bytes) {
+    const parts = formatBytesWithAdaptiveUnitParts(bytes);
+    if (!parts) return null;
+    return `${parts.valueText} ${parts.unitText}`;
 }
 
 export {
@@ -456,5 +462,6 @@ export {
     setBadgeBitrateWithSubtleUnit,
     setMetricsBitrateWithSubtleUnit,
     setMetricsValueWithSubtleUnit,
+    formatBytesWithAdaptiveUnitParts,
     formatBytesWithAdaptiveUnit,
 };

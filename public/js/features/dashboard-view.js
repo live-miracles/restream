@@ -4,6 +4,7 @@
 
 import { state } from '../client.js';
 import {
+    formatBytesWithAdaptiveUnitParts,
     formatCodecName,
     getStatusColor,
     getUrlParam,
@@ -162,20 +163,26 @@ function setMetricPlaceholders() {
 }
 
 function getMetricParts(metrics) {
-    const toGiB = (bytes) => (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
+    const usedMemoryParts = formatBytesWithAdaptiveUnitParts(metrics?.memory?.usedBytes);
+    const totalMemoryParts = formatBytesWithAdaptiveUnitParts(metrics?.memory?.totalBytes);
+
+    const ramParts =
+        usedMemoryParts && totalMemoryParts
+            ? {
+                  valueText: `${usedMemoryParts.valueText}/${totalMemoryParts.valueText}`,
+                  unitText:
+                      usedMemoryParts.unitText === totalMemoryParts.unitText
+                          ? usedMemoryParts.unitText
+                          : `${usedMemoryParts.unitText}/${totalMemoryParts.unitText}`,
+              }
+            : null;
 
     return {
         cpuParts:
             metrics?.cpu?.usagePercent !== null && metrics?.cpu?.usagePercent !== undefined
                 ? { valueText: metrics.cpu.usagePercent.toFixed(1), unitText: '%' }
                 : null,
-        ramParts:
-            metrics?.memory?.usedBytes !== null && metrics?.memory?.totalBytes !== null
-                ? {
-                      valueText: `${toGiB(metrics.memory.usedBytes)}/${toGiB(metrics.memory.totalBytes)}`,
-                      unitText: 'G',
-                  }
-                : null,
+        ramParts,
         diskParts:
             metrics?.disk?.usedPercent !== null && metrics?.disk?.usedPercent !== undefined
                 ? { valueText: metrics.disk.usedPercent.toFixed(1), unitText: '%' }
