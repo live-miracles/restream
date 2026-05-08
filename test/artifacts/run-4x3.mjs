@@ -102,7 +102,7 @@ async function main() {
     }
 
     console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
-    const inputPublishers = await startInputPublishers(manifest);
+    const inputPublishers = await startInputPublishers(resolved);
 
     console.log('== Step 3: Start outputs from manifest ==');
     await startOutputs(resolved.outputs);
@@ -158,7 +158,6 @@ function relativePath(targetPath) {
 
 function createCleanupTargets() {
     return {
-        streamKeys: [],
         pipelines: [],
         outputs: [],
     };
@@ -292,59 +291,35 @@ async function loadManifest(manifestPath) {
 async function ensureResources(manifest, trackedTargets = createCleanupTargets()) {
     const pipelineTargets = trackedTargets.pipelines;
     const outputTargets = trackedTargets.outputs;
-    const streamKeyTargets = trackedTargets.streamKeys;
     let state = await fetchConfigState();
 
-    for (const [pipelineIndex, pipelineDef] of manifest.pipelines.entries()) {
-        let streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
-        let streamKeyWasCreated = false;
-        if (!streamKey) {
-            await requestJson('/stream-keys', {
-                method: 'POST',
-                body: { streamKey: pipelineDef.streamKey, label: pipelineDef.name },
-                okStatuses: [201],
-            });
-            console.log(`Created stream key for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
-            state = await fetchConfigState();
-            streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
-            streamKeyWasCreated = true;
-        } else {
-            console.log(`Stream key exists for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
-        }
-
-        trackUnique(
-            streamKeyTargets,
-            {
-                key: pipelineDef.streamKey,
-                label: pipelineDef.name,
-                wasCreated: streamKeyWasCreated,
-            },
-            (item) => item.key,
-        );
-
-        let pipeline = state.pipelines.find(
-            (item) => item.name === pipelineDef.name && item.streamKey === pipelineDef.streamKey,
-        );
+    for (const pipelineDef of manifest.pipelines) {
+        let pipeline = state.pipelines.find((item) => item.name === pipelineDef.name);
         let pipelineWasCreated = false;
         if (!pipeline) {
             const result = await requestJson('/pipelines', {
                 method: 'POST',
-                body: { name: pipelineDef.name, streamKey: pipelineDef.streamKey },
+                body: { name: pipelineDef.name },
                 okStatuses: [201],
             });
             pipeline = result.json.pipeline;
-            console.log(`Created pipeline ${pipelineDef.name}: ${pipeline.id}`);
+            console.log(
+                `Created pipeline ${pipelineDef.name}: ${pipeline.id} streamKey=${pipeline.streamKey}`,
+            );
             state = await fetchConfigState();
+            pipeline = state.pipelines.find((item) => item.id === pipeline.id) || pipeline;
             pipelineWasCreated = true;
         } else {
-            console.log(`Pipeline exists ${pipelineDef.name}: ${pipeline.id}`);
+            console.log(
+                `Pipeline exists ${pipelineDef.name}: ${pipeline.id} streamKey=${pipeline.streamKey}`,
+            );
         }
 
         trackUnique(
             pipelineTargets,
             {
                 name: pipelineDef.name,
-                streamKey: pipelineDef.streamKey,
+                streamKey: pipeline.streamKey,
                 pipelineId: pipeline.id,
                 wasCreated: pipelineWasCreated,
             },
@@ -416,19 +391,15 @@ async function cleanupTestResources(targets) {
     const outputTargets = Array.isArray(targets?.outputs)
         ? targets.outputs.filter((target) => target?.wasCreated)
         : [];
-    const streamKeyTargets = Array.isArray(targets?.streamKeys)
-        ? targets.streamKeys.filter((target) => target?.wasCreated)
-        : [];
 
     if (
         pipelineTargets.length === 0 &&
-        outputTargets.length === 0 &&
-        streamKeyTargets.length === 0
+        outputTargets.length === 0
     ) {
         return;
     }
 
-    console.log('== Cleanup test resources (outputs, pipelines, stream keys) ==');
+    console.log('== Cleanup test resources (outputs, pipelines) ==');
 
     const cleanupErrors = [];
     let state = await fetchConfigState();
@@ -495,32 +466,6 @@ async function cleanupTestResources(targets) {
         }
     }
 
-    for (const target of [...streamKeyTargets].reverse()) {
-        const streamKey = state.streamKeys.find((item) => item.key === target.key);
-        if (!streamKey) {
-            continue;
-        }
-
-        const stillReferenced = state.pipelines.some((item) => item.streamKey === target.key);
-        if (stillReferenced) {
-            console.log(`Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`);
-            continue;
-        }
-
-        try {
-            await requestJson(`/stream-keys/${encodeURIComponent(target.key)}`, {
-                method: 'DELETE',
-                okStatuses: [200],
-            });
-            console.log(`Deleted test stream key ${target.key}`);
-            state = await fetchConfigState();
-        } catch (error) {
-            cleanupErrors.push(
-                `delete stream key ${target.key}: ${String(error?.message || error)}`,
-            );
-        }
-    }
-
     cleanupTargets = createCleanupTargets();
 
     if (cleanupErrors.length > 0) {
@@ -552,28 +497,22 @@ function normalizeOutputEncodingValue(encodingValue) {
 }
 
 async function fetchConfigState() {
-    const [streamKeysResult, pipelinesResult, configResult] = await Promise.all([
-        requestJson('/stream-keys'),
-        requestJson('/pipelines'),
-        requestJson('/config'),
-    ]);
+    const configResult = await requestJson('/config');
+    const pipelines = Array.isArray(configResult.json?.pipelines) ? configResult.json.pipelines : [];
 
     return {
-        streamKeys: Array.isArray(streamKeysResult.json) ? streamKeysResult.json : [],
-        pipelines: Array.isArray(pipelinesResult.json) ? pipelinesResult.json : [],
+        pipelines,
         outputs: Array.isArray(configResult.json?.outputs) ? configResult.json.outputs : [],
         jobs: Array.isArray(configResult.json?.jobs) ? configResult.json.jobs : [],
     };
 }
 
-async function startInputPublishers(manifest) {
+async function startInputPublishers(resolved) {
     await access(config.inputFile);
     await mkdir(config.logDir, { recursive: true });
 
     const state = await fetchConfigState();
-    const streamKeysByKey = new Map(
-        (state.streamKeys || []).map((streamKey) => [streamKey.key, streamKey]),
-    );
+    const pipelineStateById = new Map((state.pipelines || []).map((pipeline) => [pipeline.id, pipeline]));
 
     const protocols = config.inputProtocols
         .split(',')
@@ -584,22 +523,25 @@ async function startInputPublishers(manifest) {
         throw new Error('No input protocols configured');
     }
 
-    const streamKeys = manifest.pipelines.map((pipeline) => pipeline.streamKey);
-    if (streamKeys.length === 0) {
-        throw new Error(`No stream keys found in manifest: ${relativePath(config.manifestPath)}`);
+    const pipelineTargets = resolved?.pipelines || [];
+    if (pipelineTargets.length === 0) {
+        throw new Error(`No pipelines found in manifest: ${relativePath(config.manifestPath)}`);
     }
 
     const publisherTargets = [];
 
-    for (const [index, streamKey] of streamKeys.entries()) {
+    for (const [index, pipelineTarget] of pipelineTargets.entries()) {
         const ordinal = index + 1;
         const protocol = protocols[index % protocols.length];
-        const streamKeyRecord = streamKeysByKey.get(streamKey) || null;
-        const targetUrl = selectIngestUrl(streamKeyRecord, protocol);
+        const pipelineState = pipelineStateById.get(pipelineTarget.pipelineId) || null;
+        const streamKey = String(
+            pipelineState?.streamKey || pipelineTarget.streamKey || '',
+        ).trim();
+        const targetUrl = selectIngestUrl(pipelineState, protocol);
         const logPath = path.join(config.logDir, `input-${ordinal}-${protocol}.log`);
         const publisherTarget = {
             ordinal,
-            pipelineName: manifest.pipelines[index]?.name || `Pipeline ${ordinal}`,
+            pipelineName: pipelineTarget.name || `Pipeline ${ordinal}`,
             streamKey,
             protocol,
             targetUrl,
@@ -609,7 +551,7 @@ async function startInputPublishers(manifest) {
         const pid = spawnInputPublisher(publisherTarget);
 
         console.log(
-            `[${ordinal}/${streamKeys.length}] protocol=${protocol} streamKey=${streamKey} target=${targetUrl}`,
+            `[${ordinal}/${pipelineTargets.length}] protocol=${protocol} streamKey=${streamKey} target=${targetUrl}`,
         );
         console.log(`  pid=${pid} log=${relativePath(logPath)}`);
         publisherTargets.push(publisherTarget);
@@ -706,14 +648,16 @@ async function restartInputPublisher(target) {
     return pid;
 }
 
-function selectIngestUrl(streamKeyRecord, protocol) {
-    const ingestUrls = streamKeyRecord?.ingestUrls || {};
+function selectIngestUrl(pipelineRecord, protocol) {
+    const ingestUrls = pipelineRecord?.ingestUrls || {};
 
     if (protocol === 'rtmp' && ingestUrls.rtmp) return ingestUrls.rtmp;
     if (protocol === 'rtsp' && ingestUrls.rtsp) return ingestUrls.rtsp;
     if (protocol === 'srt' && ingestUrls.srt) return ingestUrls.srt;
 
-    throw new Error(`Missing ingest URL for protocol=${protocol} streamKey=${streamKeyRecord?.key || 'unknown'}`);
+    throw new Error(
+        `Missing ingest URL for protocol=${protocol} pipeline=${pipelineRecord?.id || 'unknown'} streamKey=${pipelineRecord?.streamKey || 'unknown'}`,
+    );
 }
 
 function buildFfmpegArgs(protocol, targetUrl) {

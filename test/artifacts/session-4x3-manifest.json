@@ -3,7 +3,6 @@
     "pipelines": [
         {
             "name": "Pipeline 1",
-            "streamKey": "18679b4ca5d244f6d75e7d92",
             "outputs": [
                 {
                     "name": "Output 1-1",
@@ -24,7 +23,6 @@
         },
         {
             "name": "Pipeline 2",
-            "streamKey": "b8f70ec1f3d946d4c13f0619",
             "outputs": [
                 {
                     "name": "Output 2-1",
@@ -45,7 +43,6 @@
         },
         {
             "name": "Pipeline 3",
-            "streamKey": "4a880c496e49553ded41c63a",
             "outputs": [
                 {
                     "name": "Output 3-1",
@@ -66,7 +63,6 @@
         },
         {
             "name": "Pipeline 4",
-            "streamKey": "744dd36df4805839fd10c1c8",
             "outputs": [
                 {
                     "name": "Output 4-1",

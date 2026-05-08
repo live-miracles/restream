@@ -20,7 +20,6 @@ Scope:
 Each page should load a small entry module via `<script type="module">`:
 
 - `public/index.html` loads `public/js/features/dashboard-entry.js`
-- `public/stream-keys.html` loads `public/js/features/stream-keys-page.js`
 
 Because files are modules:
 

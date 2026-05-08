@@ -229,38 +229,9 @@ async function getSystemMetrics() {
     return apiRequest('/metrics/system');
 }
 
-// Keys API
-
-async function getStreamKeys() {
-    return apiRequest('/stream-keys');
-}
-
-async function createStreamKey(name) {
-    if (!name) {
-        showErrorAlert('createStreamKey - Invalid name: ' + name);
-    }
-
-    return apiRequest('/stream-keys', { method: 'POST', body: { label: name } });
-}
-
-async function updateStreamKey(key, name) {
-    if (!key) throw new Error('Stream key is required');
-
-    return apiRequest(buildApiPath('stream-keys', key), {
-        method: 'POST',
-        body: { label: name },
-    });
-}
-
-async function deleteStreamKey(key) {
-    if (!key) throw new Error('Stream key is required');
-
-    return apiRequest(buildApiPath('stream-keys', key), { method: 'DELETE' });
-}
-
 // Pipelines API
 
-async function createPipeline({ name, streamKey = null, encoding = null }) {
+async function createPipeline({ name, encoding = null }) {
     if (!name) {
         showErrorAlert('Invalid pipeline name');
         return;
@@ -268,7 +239,7 @@ async function createPipeline({ name, streamKey = null, encoding = null }) {
 
     return apiRequest('/pipelines', {
         method: 'POST',
-        body: { name, streamKey, encoding },
+        body: { name, encoding },
     });
 }
 
@@ -444,12 +415,8 @@ export {
     getConfig,
     getHealth,
     getSystemMetrics,
-    getStreamKeys,
     isMutationMethod,
     registerMutationSuccessListener,
-    createStreamKey,
-    updateStreamKey,
-    deleteStreamKey,
     createPipeline,
     updatePipeline,
     deletePipeline,

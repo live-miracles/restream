@@ -30,20 +30,20 @@ The collector loop also performs bounded DB writes for lifecycle bookkeeping:
 
 For each pipeline, the input status is derived from the pipeline's `streamKey`:
 
+Pipelines created via `POST /pipelines` always receive a backend-assigned stream key.
+
 ```mermaid
 flowchart TD
   A["pipeline.streamKey"] --> B["effectivePath = live/<streamKey>"]
   B --> C["pathByName.get(effectivePath)"]
 
-  C --> D{has stream key?}
-  D -->|no| OFF["status = 'off'"]
-  D -->|yes| E{"pathInfo.available?"}
+  C --> E{"pathInfo.available?"}
   E -->|yes| ON["status = 'on'\npublishStartedAt = pathInfo.availableTime"]
   E -->|no| F{"pathInfo.online?"}
   F -->|yes| WARN["status = 'warning'"]
   F -->|no| G{"inputEverSeenLive == 1?"}
   G -->|yes| ERR["status = 'error'"]
-  G -->|no| OFF
+  G -->|no| OFF["status = 'off'"]
 ```
 
 **Input status values:**
@@ -53,7 +53,7 @@ flowchart TD
 | `on`  | Path exists AND `pathInfo.available === true` *(fallback to deprecated `ready` for older MediaMTX versions)* |
 | `warning` | Path exists, `pathInfo.online === true`, but not yet `available` |
 | `error` | Stream key is configured, path is neither online nor available, and `inputEverSeenLive === 1` |
-| `off` | No stream key configured, or stream key configured but never seen live |
+| `off` | Stream key is configured but has never been seen live yet |
 
 **Additional input fields from MediaMTX:**
 

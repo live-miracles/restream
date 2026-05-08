@@ -12,8 +12,8 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 1. Loads session-4x3-manifest.json as the tracked source of truth.
 2. Verifies the target app stack is already running.
 3. Verifies the local runner prerequisites (`ffmpeg` and `docker compose`) are available.
-4. Ensures missing stream keys, pipelines, and outputs exist without mutating conflicting existing outputs.
-5. Starts ffmpeg input publishers for the manifest stream keys.
+4. Ensures missing pipelines and outputs exist without mutating conflicting existing outputs. Stream keys are resolved from server pipeline state.
+5. Starts ffmpeg input publishers using resolved pipeline ingest URLs and server-assigned stream keys.
 6. Starts outputs for the resolved pipeline/output IDs.
 7. Waits for manifest-scoped inputs and outputs to become `on`; one tracked manifest output is an HLS playlist upload target, so this stage also exercises HTTP PUT HLS egress.
 8. Captures a `/health` snapshot into test/artifacts/runs.
@@ -52,7 +52,8 @@ Leave input publishers and resources created by the current run in place after c
 - If the prestarted stack is host mode, it also still depends on the `make deps` outputs (`node_modules/` and `bin/mediamtx/mediamtx`).
 - `CLEAN_START` is no longer supported.
 - If a manifest output name already exists with different settings, the runner stops with a conflict instead of rewriting that output in place.
-- When `KEEP_RUNNING` is unset or `0`, shutdown removes only the stream keys, pipelines, and outputs created during the current run.
+- `session-4x3-manifest.json` tracks pipeline names and outputs only; it no longer carries explicit `streamKey` fields.
+- When `KEEP_RUNNING` is unset or `0`, shutdown removes pipelines and outputs created during the current run. Any auto-created stream-key records are cleaned up by backend pipeline deletion when no longer referenced.
 - SRT/RTSP loopback activation and restore checks use a fixed 30-second window.
 - If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
 - The tracked manifest includes two HLS outputs targeting a dedicated nginx `/hls-upload/` blackhole endpoint: one `source` output and one transcoded `720p` output, making it clear that missing Frame/FPS badges are tied to encoding mode rather than HLS itself.

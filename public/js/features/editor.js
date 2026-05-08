@@ -1,8 +1,8 @@
 // Output and pipeline editor modals.
 // Handles the create/edit/delete UI for pipelines and outputs, including the output-URL
-// protocol selector, operator field sync, and stream-key assignment. Delegates pure URL
+// protocol selector and operator field sync. Delegates pure URL
 // parsing and preset resolution to output-url.js.
-import { getStreamKeys, startOut, stopOut, createPipeline, updatePipeline, deletePipeline, createOutput, updateOutput, deleteOutput, state } from '../client.js';
+import { startOut, stopOut, createPipeline, updatePipeline, deletePipeline, createOutput, updateOutput, deleteOutput, state } from '../client.js';
 import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../utils.js';
 import { refreshDashboard, syncUserConfigBaseline } from './dashboard-actions.js';
 import {
@@ -490,28 +490,6 @@ function setOutputToggleBusy(button, busy) {
         }
     }
 
-    async function populatePipelineKeySelect(selectedKey = '') {
-        const keySelect = document.getElementById('pipe-stream-key-input');
-        const keys = (await getStreamKeys()) || [];
-
-        keySelect.replaceChildren();
-
-        const unassignedOption = document.createElement('option');
-        unassignedOption.value = '';
-        unassignedOption.textContent = 'Unassigned';
-        unassignedOption.selected = selectedKey === '';
-        keySelect.appendChild(unassignedOption);
-
-        keys.forEach((key) => {
-            const option = document.createElement('option');
-            option.value = key.key;
-            option.selected = key.key === selectedKey;
-            const label = typeof key.label === 'string' ? key.label.trim() : '';
-            option.textContent = `${label || 'Unnamed'} (${key.key})`;
-            keySelect.appendChild(option);
-        });
-    }
-
     async function openPipeModal(mode, pipe = null, suggestedName = '') {
         document.getElementById('pipe-id-input').value = pipe?.id || '';
         document.getElementById('pipe-name-input').value = pipe?.name || suggestedName;
@@ -519,14 +497,6 @@ function setOutputToggleBusy(button, busy) {
             mode === 'edit' ? 'Edit Pipeline' : 'Add Pipeline';
         document.getElementById('pipe-submit-btn').innerText =
             mode === 'edit' ? 'Update' : 'Create';
-        await populatePipelineKeySelect(pipe?.key || '');
-
-        const keySelect = document.getElementById('pipe-stream-key-input');
-        const keyHint = document.getElementById('pipe-stream-key-locked-hint');
-        const hasRunningOutput =
-            mode === 'edit' && pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
-        keySelect.disabled = !!hasRunningOutput;
-        keyHint.classList.toggle('hidden', !hasRunningOutput);
 
         document.getElementById('edit-pipe-modal').dataset.mode = mode;
         document.getElementById('edit-pipe-modal').showModal();
@@ -539,9 +509,7 @@ function setOutputToggleBusy(button, busy) {
         const mode = modal.dataset.mode || 'create';
         const pipeId = document.getElementById('pipe-id-input').value;
         const nameInput = document.getElementById('pipe-name-input');
-        const streamKeyInput = document.getElementById('pipe-stream-key-input');
         const name = nameInput.value.trim();
-        const streamKey = streamKeyInput.value || null;
 
         if (!name) {
             nameInput.classList.add('input-error');
@@ -551,8 +519,8 @@ function setOutputToggleBusy(button, busy) {
 
         const response =
             mode === 'edit'
-                ? await updatePipeline(pipeId, { name, streamKey })
-                : await createPipeline({ name, streamKey });
+                ? await updatePipeline(pipeId, { name })
+                : await createPipeline({ name });
         if (response === null) return;
 
         modal.close();

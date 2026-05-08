@@ -459,7 +459,6 @@ For the backend ownership map and module-selection guidance, see
 | File                  | Role                                                          |
 |-----------------------|---------------------------------------------------------------|
 | `public/index.html`   | Dashboard SPA shell                                           |
-| `public/stream-keys.html` | Stream key management page                               |
 | `public/js/client.js` | Shared mutable UI state plus API/snapshot helpers |
 | `public/js/pipeline.js` | `parsePipelinesInfo()` and throughput helpers |
 | `public/js/features/dashboard.js` | SSE orchestration and snapshot-version drift detection |
@@ -503,7 +502,7 @@ Dashboard refresh triggers are coalesced client-side. SSE events, visibility-dri
 and watchdog recovery fetches funnel through guarded state application so stale updates cannot
 overwrite fresher slices.
 
-`public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
+`public/index.html` loads the frontend entry module as an ES module (`<script type="module">`). The dashboard page boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 
 #### External-change detection
 

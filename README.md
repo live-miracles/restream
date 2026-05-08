@@ -32,7 +32,6 @@ src/
     restream.json   — App config: host, serverName, pipelinesLimit, outLimit
 public/
   index.html        — Dashboard SPA shell
-  stream-keys.html  — Stream key management page
   js/
     client.js        — Shared mutable UI state plus API/snapshot helpers
     history.js       — Output/pipeline history modal control, polling, and rendering
@@ -49,8 +48,6 @@ public/
       input-preview-state.mjs — Pure preview URL and runtime helpers
       output-url.js     — Pure output URL parse/build helpers
       pipeline-view-actions.js — Action adapter for pipeline detail/history/editor handlers
-      stream-keys-page.js — Stream key page interactions
-      stream-keys-state.mjs — Stream-key page pure state/render helpers
       publisher-quality.js — Publisher quality classification helpers
       view.js           — Pipeline detail, ingest detail, preview, and output column rendering
   output.css        — Compiled Tailwind + DaisyUI (do not edit manually)

@@ -334,13 +334,13 @@ Returns all pipelines.
 
 Creates a pipeline.
 
-If `streamKey` is provided, it follows the same validation rules as `POST /stream-keys`.
+The backend auto-generates a stream key, creates/links the corresponding stream-key row, and
+provisions the MediaMTX path (`live/<streamKey>`). Clients should not provide `streamKey`.
 
 **Request body:**
 ```json
 {
   "name": "Pipeline 1",
-  "streamKey": "c1518f5ef0d917ef1b6547d7",  // optional
   "encoding": null                            // reserved, not used at runtime
 }
 ```
@@ -350,7 +350,7 @@ If `streamKey` is provided, it follows the same validation rules as `POST /strea
 { "message": "Pipeline created", "pipeline": { ... } }
 ```
 
-**Errors:** `400` missing name.
+**Errors:** `400` missing name or pipeline limit reached.
 
 ---
 
@@ -358,16 +358,16 @@ If `streamKey` is provided, it follows the same validation rules as `POST /strea
 
 Updates pipeline fields.
 
-If `streamKey` is provided in the request body, it follows the same validation rules as `POST /stream-keys`.
+`streamKey` is immutable through this route.
 
-**Request body:** same shape as create (all fields optional).
+**Request body:** `name` and/or `encoding`.
 
 **Response 200:**
 ```json
 { "message": "Pipeline updated", "pipeline": { ... } }
 ```
 
-**Errors:** `404` pipeline not found; `409` stream key change blocked while outputs are running.
+**Errors:** `404` pipeline not found.
 
 ---
 
@@ -382,7 +382,7 @@ Pipeline-level history entries are stored in `job_logs` with:
 
 - `pipeline_id = :pipelineId`
 - `output_id IS NULL`
-- typed `eventType` values such as `pipeline.config.stream_key_changed` and `pipeline.input_state.transitioned`
+- typed `eventType` values such as `pipeline.config.name_changed` and `pipeline.input_state.transitioned`
 
 **Response 200:**
 ```json
@@ -397,9 +397,9 @@ Pipeline-level history entries are stored in `job_logs` with:
     },
     {
       "ts": "2026-04-16T05:25:00.000Z",
-      "eventType": "pipeline.config.stream_key_changed",
-      "eventData": { "fromMasked": "ab...cd", "toMasked": "ef...12" },
-      "message": "[config] stream_key changed from ab...cd to ef...12"
+      "eventType": "pipeline.config.name_changed",
+      "eventData": { "from": "Pipeline A", "to": "Pipeline B" },
+      "message": "[config] name changed from Pipeline A to Pipeline B"
     }
   ]
 }

@@ -109,7 +109,6 @@ registerPipelineApi({
     fetch,
     crypto,
     pipelineRuntimeState,
-    resetOutputFailureCount,
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,

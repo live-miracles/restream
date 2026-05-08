@@ -246,7 +246,7 @@ Upgrade process:
 3. Upgrade the MediaMTX binary if the release version changed.
 4. Restart `mediamtx.service` and `restream.service`.
 5. Run smoke tests.
-6. Validate dashboard and stream-keys pages after a normal refresh.
+6. Validate dashboard flows (pipeline cards, modal actions, history, and preview) after a normal refresh.
 
 ### Frontend Cache Note
 

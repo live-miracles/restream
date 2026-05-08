@@ -235,30 +235,6 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
             },
         );
     }
-
-    if (previousPipeline.streamKey !== nextPipeline.streamKey) {
-        db.appendPipelineEvent(
-            pipelineId,
-            `[config] stream_key changed from ${previousPipeline.streamKey ? maskToken(previousPipeline.streamKey) : 'unassigned'} to ${nextPipeline.streamKey ? maskToken(nextPipeline.streamKey) : 'unassigned'}`,
-            'pipeline.config.stream_key_changed',
-            {
-                fromMasked: previousPipeline.streamKey
-                    ? maskToken(previousPipeline.streamKey)
-                    : 'unassigned',
-                toMasked: nextPipeline.streamKey
-                    ? maskToken(nextPipeline.streamKey)
-                    : 'unassigned',
-            },
-        );
-    }
-}
-
-function normalizePipelineStreamKey(value) {
-    if (value === null || value === undefined) return null;
-    if (typeof value !== 'string') return value;
-
-    const normalized = value.trim();
-    return normalized || null;
 }
 
 function registerPipelineApi({
@@ -268,7 +244,6 @@ function registerPipelineApi({
     fetch,
     crypto,
     pipelineRuntimeState,
-    resetOutputFailureCount,
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
@@ -293,21 +268,21 @@ function registerPipelineApi({
     }
 
     function parsePipelineMutation(body, existing = null) {
-        const hasStreamKeyUpdate = !existing || Object.prototype.hasOwnProperty.call(body || {}, 'streamKey');
         const name = body?.name ?? existing?.name;
-        const streamKey = hasStreamKeyUpdate
-            ? normalizePipelineStreamKey(body?.streamKey)
-            : existing.streamKey;
 
         return {
             name,
-            streamKey,
             encoding: body?.encoding ?? existing?.encoding ?? null,
-            hasStreamKeyUpdate,
-            validationError:
-                validateName(name, 'Pipeline name') ||
-                (hasStreamKeyUpdate && streamKey !== null ? validateStreamKey(streamKey) : null),
+            validationError: validateName(name, 'Pipeline name'),
         };
+    }
+
+    function createAutoPipelineStreamKey() {
+        let key;
+        do {
+            key = crypto.randomBytes(12).toString('hex');
+        } while (db.getStreamKey(key));
+        return key;
     }
 
     function normalizeStreamKeyLabel(value) {
@@ -366,14 +341,6 @@ function registerPipelineApi({
         );
 
         return status;
-    }
-
-    function resetPipelineOutputRecovery(pipelineId, reason) {
-        const outputs = db.listOutputsForPipeline(pipelineId);
-        for (const output of outputs) {
-            resetOutputFailureCount(pipelineId, output.id, reason);
-        }
-        return outputs;
     }
 
     async function applyMediamtxPathMutation(key, action) {
@@ -522,11 +489,36 @@ function registerPipelineApi({
                 return respondError(res, 400, `Pipeline limit reached: ${pipelineLimit}`);
             }
 
-            const { name, streamKey, encoding, validationError } = parsePipelineMutation(req.body);
+            const { name, encoding, validationError } = parsePipelineMutation(req.body);
             if (validationError) return respondError(res, 400, validationError);
 
-            const runtimeState = await resolveInputState(streamKey, 0);
-            const pipeline = db.createPipeline({ name, streamKey, encoding });
+            const streamKey = createAutoPipelineStreamKey();
+
+            await applyMediamtxPathMutationWithRollback(
+                streamKey,
+                'add',
+                () => db.createStreamKey({
+                    key: streamKey,
+                    label: null,
+                    createdAt: new Date().toISOString(),
+                }),
+            );
+
+            let runtimeState;
+            let pipeline;
+            try {
+                runtimeState = await resolveInputState(streamKey, 0);
+                pipeline = db.createPipeline({ name, streamKey, encoding });
+            } catch (pipelineError) {
+                try {
+                    await applyMediamtxPathMutation(streamKey, 'delete');
+                } catch {
+                    // ignore cleanup failures; original error is returned
+                }
+                db.deleteStreamKey(streamKey);
+                throw pipelineError;
+            }
+
             const pipelineWithState =
                 db.updatePipeline(pipeline.id, {
                     name: pipeline.name,
@@ -562,50 +554,19 @@ function registerPipelineApi({
             const existing = getRecordOrRespond(res, db.getPipeline(id), 'Pipeline not found');
             if (!existing) return;
 
-            const { name, streamKey, encoding, hasStreamKeyUpdate, validationError } = parsePipelineMutation(
+            const { name, encoding, validationError } = parsePipelineMutation(
                 req.body,
                 existing,
             );
             if (validationError) return respondError(res, 400, validationError);
 
-            const streamKeyChanging = streamKey !== existing.streamKey;
-            if (streamKeyChanging) {
-                const pipelineOutputs = db.listOutputsForPipeline(id);
-                const hasRunningJob = pipelineOutputs.some(
-                    (output) => !!db.getRunningJobFor(id, output.id),
-                );
-                if (hasRunningJob) {
-                    return respondError(
-                        res,
-                        409,
-                        'Cannot change stream key while outputs are running. Stop all outputs first.',
-                    );
-                }
-            }
-
-            let inputEverSeenLive = Number(existing.inputEverSeenLive || 0);
-            let initialInputStatus = null;
-
-            if (streamKeyChanging) {
-                const runtimeState = await resolveInputState(streamKey, 0);
-                inputEverSeenLive = runtimeState.inputEverSeenLive;
-                initialInputStatus = runtimeState.status;
-            }
-
             const updated = db.updatePipeline(id, {
                 name,
-                streamKey,
+                streamKey: existing.streamKey,
                 encoding,
-                inputEverSeenLive,
+                inputEverSeenLive: Number(existing.inputEverSeenLive || 0),
             });
             if (!updated) return respondError(res, 500, 'Failed to update pipeline');
-
-            if (streamKeyChanging) {
-                initializePipelineInputState(id, initialInputStatus, {
-                    reason: 'stream_key_change',
-                });
-                resetPipelineOutputRecovery(id, 'stream_key_change');
-            }
 
             logPipelineConfigChanges(db, id, existing, updated);
             refreshConfigAndHealthSnapshotVersions();
@@ -618,7 +579,9 @@ function registerPipelineApi({
     app.delete('/pipelines/:id', async (req, res) => {
         try {
             const id = req.params.id;
-            if (!getRecordOrRespond(res, db.getPipeline(id), 'Pipeline not found')) return;
+            const pipeline = getRecordOrRespond(res, db.getPipeline(id), 'Pipeline not found');
+            if (!pipeline) return;
+            const streamKey = pipeline.streamKey || null;
 
             const outputs = db.listOutputsForPipeline(id);
             const runningJobs = outputs
@@ -650,6 +613,21 @@ function registerPipelineApi({
             clearPipelineState(id);
             for (const output of outputs) {
                 clearOutputRestartState(id, output.id);
+            }
+
+            if (streamKey) {
+                const stillReferenced = db
+                    .listPipelines()
+                    .some((candidate) => candidate.id !== id && candidate.streamKey === streamKey);
+
+                if (!stillReferenced) {
+                    try {
+                        await applyMediamtxPathMutation(streamKey, 'delete');
+                    } catch {
+                        // ignore cleanup failures; pipeline deletion already succeeded
+                    }
+                    db.deleteStreamKey(streamKey);
+                }
             }
 
             refreshConfigAndHealthSnapshotVersions();
