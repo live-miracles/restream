@@ -10,21 +10,20 @@ const frontendDom = installFrontendDom();
 const loadBrowserModule = createBrowserModuleLoader();
 
 const {
-    buildEtagHeaders,
+    apiRequest,
     buildOutputHistoryPath,
     buildPipelineHistoryPath,
-    getSnapshotVersion,
     isMutationMethod,
+    registerMutationSuccessListener,
 } = await loadBrowserModule('public/js/client.js');
 
 after(() => {
     frontendDom.destroy();
 });
 
-test('api query helpers identify mutation methods and etag headers', () => {
+test('api query helpers identify mutation methods', () => {
     assert.equal(isMutationMethod('POST'), true);
     assert.equal(isMutationMethod('HEAD'), false);
-    assert.deepEqual({ ...buildEtagHeaders('abc123') }, { 'If-None-Match': '"abc123"' });
 });
 
 test('api query helpers build output history paths for lifecycle and raw modes', () => {
@@ -42,15 +41,48 @@ test('api query helpers build output history paths for lifecycle and raw modes',
     );
 });
 
-test('api query helpers build pipeline history paths and snapshot versions', () => {
-    const response = {
-        headers: {
-            get(name) {
-                return name === 'X-Snapshot-Version' ? '"snap-1"' : null;
-            },
-        },
-    };
-
+test('api query helpers build pipeline history paths', () => {
     assert.equal(buildPipelineHistoryPath('pipe-a', '25'), '/pipelines/pipe-a/history?limit=25');
-    assert.equal(getSnapshotVersion(response, null), 'snap-1');
+});
+
+test('api request notifies mutation listeners only for successful mutation requests', async () => {
+    const originalFetch = global.fetch;
+    const mutationEvents = [];
+    const unregisterListener = registerMutationSuccessListener((event) => {
+        mutationEvents.push(event);
+    });
+    const savingBadge = document.createElement('input');
+    savingBadge.type = 'checkbox';
+    savingBadge.id = 'saving-badge';
+    document.body.appendChild(savingBadge);
+
+    try {
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true }),
+        });
+
+        await apiRequest('/health', { method: 'GET' });
+        assert.equal(mutationEvents.length, 0);
+
+        await apiRequest('/pipelines/test/outputs/test/stop', { method: 'POST' });
+        assert.equal(mutationEvents.length, 1);
+        assert.equal(mutationEvents[0].method, 'POST');
+        assert.equal(mutationEvents[0].status, 200);
+        assert.equal(mutationEvents[0].url, '/pipelines/test/outputs/test/stop');
+
+        global.fetch = async () => ({
+            ok: false,
+            status: 409,
+            json: async () => ({ error: 'conflict' }),
+        });
+
+        await apiRequest('/pipelines/test/outputs/test/start', { method: 'POST' });
+        assert.equal(mutationEvents.length, 1);
+    } finally {
+        unregisterListener();
+        global.fetch = originalFetch;
+        savingBadge.remove();
+    }
 });

@@ -13,9 +13,12 @@ const {
     applyConfigSlice,
     applyHealthSlice,
     applyMetricsSlice,
+    consumePendingLocalConfigMutation,
+    isSseWatchdogExpired,
     resolveConfigSnapshotVersion,
     resolveHealthSnapshotVersion,
     resolveSelectedPipelineId,
+    shouldRecoverSseStream,
 } = await loadBrowserModule('public/js/features/dashboard.js');
 
 after(() => {
@@ -27,13 +30,69 @@ test('resolve snapshot version helpers preserve the previous version when result
     assert.equal(resolveHealthSnapshotVersion(null, 'old-health'), 'old-health');
 });
 
+test('consumePendingLocalConfigMutation only consumes on version advancement', () => {
+    assert.equal(consumePendingLocalConfigMutation(1, 'v2', 'v1'), 0);
+    assert.equal(consumePendingLocalConfigMutation(1, 'v1', 'v1'), 1);
+    assert.equal(consumePendingLocalConfigMutation(1, null, 'v1'), 1);
+    assert.equal(consumePendingLocalConfigMutation(0, 'v2', 'v1'), 0);
+});
+
+test('SSE watchdog expires only after the 30s timeout window', () => {
+    assert.equal(isSseWatchdogExpired(1000, 30999, 30000), false);
+    assert.equal(isSseWatchdogExpired(1000, 31001, 30000), true);
+    assert.equal(isSseWatchdogExpired(0, 31001, 30000), false);
+});
+
+test('SSE recovery decision triggers on closed/null stream and on silence timeout', () => {
+    assert.equal(
+        shouldRecoverSseStream({
+            isHidden: false,
+            sourceReadyState: 2,
+            lastEventAtMs: Date.now(),
+            nowMs: Date.now(),
+            timeoutMs: 30000,
+        }),
+        true,
+    );
+
+    assert.equal(
+        shouldRecoverSseStream({
+            isHidden: false,
+            sourceReadyState: null,
+            lastEventAtMs: Date.now(),
+            nowMs: Date.now(),
+            timeoutMs: 30000,
+        }),
+        true,
+    );
+
+    assert.equal(
+        shouldRecoverSseStream({
+            isHidden: false,
+            sourceReadyState: 1,
+            lastEventAtMs: 1000,
+            nowMs: 31001,
+            timeoutMs: 30000,
+        }),
+        true,
+    );
+
+    assert.equal(
+        shouldRecoverSseStream({
+            isHidden: true,
+            sourceReadyState: 2,
+            lastEventAtMs: 1000,
+            nowMs: 31001,
+            timeoutMs: 30000,
+        }),
+        false,
+    );
+});
+
 test('applyConfigSlice updates etags and config only when the slice is modified', () => {
     const next = applyConfigSlice(
         {
-            etag: 'new-snapshot',
-            configEtag: 'new-config',
             snapshotVersion: 'new-snapshot',
-            notModified: false,
             data: { serverName: 'Updated' },
         },
         {
@@ -45,14 +104,14 @@ test('applyConfigSlice updates etags and config only when the slice is modified'
     );
 
     assert.equal(next.etag, 'new-snapshot');
-    assert.equal(next.configEtag, 'new-config');
+    assert.equal(next.configEtag, 'new-snapshot');
     assert.equal(next.config.serverName, 'Updated');
     assert.equal(next.serverName, 'Updated');
 });
 
-test('applyHealthSlice preserves current health data on 304-like responses', () => {
+test('applyHealthSlice applies updated health data when present', () => {
     const next = applyHealthSlice(
-        { etag: 'health-v2', snapshotVersion: 'health-v2', notModified: true, data: null },
+        { snapshotVersion: 'health-v2', status: 'warning' },
         {
             healthEtag: 'health-v1',
             healthSnapshotVersion: 'health-v1',
@@ -61,7 +120,7 @@ test('applyHealthSlice preserves current health data on 304-like responses', () 
     );
 
     assert.equal(next.healthEtag, 'health-v2');
-    assert.deepEqual(next.health, { status: 'on' });
+    assert.deepEqual(next.health, { snapshotVersion: 'health-v2', status: 'warning' });
 });
 
 test('applyMetricsSlice ignores null responses and keeps the previous metrics snapshot', () => {
@@ -88,5 +147,15 @@ test('resolveSelectedPipelineId reuses a matching previous pipeline or persisted
             persistedHint: { name: 'Remembered' },
         }),
         'pipe-z',
+    );
+
+    assert.equal(
+        resolveSelectedPipelineId({
+            selectedPipelineId: 'pipe-still-selected',
+            previousPipelines: [{ id: 'pipe-still-selected', key: 'stream-a', name: 'Pipeline A' }],
+            nextPipelines: [],
+            persistedHint: null,
+        }),
+        'pipe-still-selected',
     );
 });

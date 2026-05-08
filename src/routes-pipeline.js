@@ -1,7 +1,7 @@
 'use strict';
 
 // Express routes for the config snapshot and pipeline/stream-key CRUD API.
-// GET /config serves the dashboard polling endpoint with ETag support.
+// GET /config serves a point-in-time dashboard snapshot.
 // Pipeline routes create, update, and delete pipelines and manage their stream-key assignments.
 // Stream-key routes handle creation, label updates, and deletion.
 
@@ -25,19 +25,7 @@ const { respondEmpty, respondError, respondJson } = require('./http');
 
 // Config API
 
-// /config is the durable dashboard snapshot. It exposes both a full-state ETag and a config-only
-// ETag so the frontend can detect meaningful changes without always refetching the entire payload.
-function normalizeEtag(value) {
-    if (!value) return null;
-    return value.replace(/^"(.*)"$/, '$1');
-}
-
-// Keep cache-related headers together so GET and HEAD stay aligned.
-function setSnapshotHeaders(res, etag, configEtag) {
-    if (etag) res.set('ETag', `"${etag}"`);
-    if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-    if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
-}
+const DASHBOARD_SSE_INTERVAL_MS = Number(process.env.DASHBOARD_SSE_INTERVAL_MS || 2000);
 
 function registerConfigApi({
     app,
@@ -46,14 +34,14 @@ function registerConfigApi({
     toPublicConfig,
     buildIngestUrlsImpl = buildIngestUrls,
     getHealthSnapshot = null,
+    getSystemMetricsSnapshot = null,
 }) {
     let healthSnapshotProvider = getHealthSnapshot;
+    let systemMetricsProvider = getSystemMetricsSnapshot;
 
     function recomputeConfigEtag() {
         try {
-            // Config ETag ignores runtime job rows and changes only when the operator-facing
-            // configuration shape changes.
-            const etag = hashSnapshot(buildConfigSnapshot({ db }));
+            const etag = db.getEtag() || recomputeEtag();
             db.setConfigEtag(etag);
             return etag;
         } catch (err) {
@@ -82,8 +70,8 @@ function registerConfigApi({
     // Seed both ETags on startup so the first poll can use normal cache headers immediately.
     (async () => {
         try {
-            if (!db.getConfigEtag()) recomputeConfigEtag();
             if (!db.getEtag()) recomputeEtag();
+            if (!db.getConfigEtag()) recomputeConfigEtag();
         } catch (e) {
             /* ignore */
         }
@@ -91,9 +79,14 @@ function registerConfigApi({
 
     function ensureSnapshotEtags() {
         let etag = db.getEtag();
-        let configEtag = db.getConfigEtag();
-        if (!configEtag) configEtag = recomputeConfigEtag();
         if (!etag) etag = recomputeEtag();
+
+        let configEtag = db.getConfigEtag();
+        if (!configEtag) {
+            configEtag = etag;
+            db.setConfigEtag(configEtag);
+        }
+
         return { etag, configEtag };
     }
 
@@ -106,112 +99,110 @@ function registerConfigApi({
         });
     }
 
+    async function buildDashboardConfigPayload() {
+        const { configEtag } = ensureSnapshotEtags();
+        return {
+            snapshotVersion: configEtag || null,
+            data: await buildConfigSnapshotPayload(),
+        };
+    }
+
+    async function buildDashboardTelemetryPayload() {
+        const healthSnapshot =
+            typeof healthSnapshotProvider === 'function'
+                ? await healthSnapshotProvider({ refreshIfStale: true })
+                : null;
+        const systemMetrics =
+            typeof systemMetricsProvider === 'function'
+                ? systemMetricsProvider()
+                : null;
+
+        const snapshotVersion = [
+            healthSnapshot?.snapshotVersion || 'health-none',
+            systemMetrics?.generatedAt || 'metrics-none',
+        ].join(':');
+
+        return {
+            snapshotVersion,
+            health: healthSnapshot,
+            metrics: systemMetrics,
+        };
+    }
+
     app.get('/config', async (req, res) => {
         try {
-            const { etag, configEtag } = ensureSnapshotEtags();
-
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-            if (ifNoneMatch && etag && ifNoneMatch === etag) {
-                setSnapshotHeaders(res, etag, configEtag);
-                return respondEmpty(res, 304);
-            }
-
             const snapshot = await buildConfigSnapshotPayload();
-
-            setSnapshotHeaders(res, etag, configEtag);
             return respondJson(res, snapshot);
         } catch (err) {
             return respondError(res, 500, errMsg(err));
         }
     });
 
-    app.get('/dashboard/snapshot', async (req, res) => {
-        try {
-            const { etag: configSnapshotEtag, configEtag } = ensureSnapshotEtags();
-            const healthSnapshotResult =
-                typeof healthSnapshotProvider === 'function'
-                    ? await healthSnapshotProvider({ refreshIfStale: true })
-                    : null;
+    app.get('/dashboard/events', (req, res) => {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders?.();
 
-            const healthSlice = {
-                etag: normalizeEtag(healthSnapshotResult?.etag) || null,
-                snapshotVersion: normalizeEtag(healthSnapshotResult?.snapshot?.snapshotVersion) || null,
-                data: healthSnapshotResult?.snapshot || null,
-            };
-            const dashboardSnapshotVersion = hashSnapshot({
-                configSnapshotVersion: configSnapshotEtag || null,
-                configEtag: configEtag || null,
-                healthSnapshotVersion: healthSlice.snapshotVersion,
-                healthEtag: healthSlice.etag,
-            });
+        let lastSentConfigVersion = null;
 
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-            if (
-                ifNoneMatch &&
-                dashboardSnapshotVersion &&
-                ifNoneMatch === dashboardSnapshotVersion
-            ) {
-                if (dashboardSnapshotVersion) {
-                    res.set('ETag', `"${dashboardSnapshotVersion}"`);
-                    res.set('X-Snapshot-Version', `"${dashboardSnapshotVersion}"`);
+        const writeConfigEvent = async ({ force = false } = {}) => {
+            try {
+                const { configEtag } = ensureSnapshotEtags();
+                const configVersion = configEtag || null;
+                if (!force && configVersion === lastSentConfigVersion) {
+                    return;
                 }
-                return respondEmpty(res, 304);
+
+                const payload = await buildDashboardConfigPayload();
+                const eventId = String(payload.snapshotVersion || Date.now());
+                res.write(`id: config:${eventId}\n`);
+                res.write('event: dashboard.config\n');
+                res.write(`data: ${JSON.stringify(payload)}\n\n`);
+                lastSentConfigVersion = payload.snapshotVersion || configVersion;
+            } catch (err) {
+                res.write('event: error\n');
+                res.write(`data: ${JSON.stringify({ error: errMsg(err) })}\n\n`);
             }
+        };
 
-            const configSnapshot = await buildConfigSnapshotPayload();
-            if (dashboardSnapshotVersion) {
-                res.set('ETag', `"${dashboardSnapshotVersion}"`);
-                res.set('X-Snapshot-Version', `"${dashboardSnapshotVersion}"`);
+        const writeTelemetryEvent = async () => {
+            try {
+                const payload = await buildDashboardTelemetryPayload();
+                const eventId = String(payload.snapshotVersion || Date.now());
+                res.write(`id: telemetry:${eventId}\n`);
+                res.write('event: dashboard.telemetry\n');
+                res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            } catch (err) {
+                res.write('event: error\n');
+                res.write(`data: ${JSON.stringify({ error: errMsg(err) })}\n\n`);
             }
+        };
 
-            return respondJson(res, {
-                snapshotVersion: dashboardSnapshotVersion || null,
-                config: {
-                    etag: configSnapshotEtag || null,
-                    configEtag: configEtag || configSnapshotEtag || null,
-                    snapshotVersion: configSnapshotEtag || null,
-                    data: configSnapshot,
-                },
-                health: healthSlice,
-            });
-        } catch (err) {
-            return respondError(res, 500, errMsg(err));
-        }
-    });
+        void writeConfigEvent({ force: true });
+        void writeTelemetryEvent();
 
-    app.head('/config/version', (req, res) => {
-        try {
-            let configEtag = db.getConfigEtag();
-            if (!configEtag) configEtag = recomputeConfigEtag();
+        const timer = setInterval(() => {
+            void writeConfigEvent();
+            void writeTelemetryEvent();
+        }, DASHBOARD_SSE_INTERVAL_MS);
+        timer.unref?.();
 
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-            if (ifNoneMatch && configEtag && ifNoneMatch === configEtag) {
-                return respondEmpty(res, 304, { ETag: `"${configEtag}"` });
-            }
-
-            return respondEmpty(res, 200, configEtag ? { ETag: `"${configEtag}"` } : null);
-        } catch (err) {
-            return respondEmpty(res, 500);
-        }
-    });
-
-    app.head('/config', (req, res) => {
-        try {
-            const etag = db.getEtag();
-            const configEtag = db.getConfigEtag();
-            setSnapshotHeaders(res, etag, configEtag);
-            return respondEmpty(res, 200);
-        } catch (err) {
-            return respondEmpty(res, 500);
-        }
+        req.on('close', () => {
+            clearInterval(timer);
+            res.end();
+        });
     });
 
     return {
-        normalizeEtag,
         recomputeConfigEtag,
         recomputeEtag,
         setHealthSnapshotProvider(provider) {
             healthSnapshotProvider = typeof provider === 'function' ? provider : null;
+        },
+        setSystemMetricsProvider(provider) {
+            systemMetricsProvider = typeof provider === 'function' ? provider : null;
         },
     };
 }

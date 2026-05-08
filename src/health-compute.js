@@ -501,19 +501,6 @@ function buildDefaultHealthSnapshot(
     };
 }
 
-function getHealthSnapshotHashSource(snapshot) {
-    return {
-        snapshotVersion: snapshot?.snapshotVersion || null,
-        status: snapshot?.status || 'initializing',
-        mediamtx: snapshot?.mediamtx || buildDefaultMediamtxSnapshot(false),
-        pipelines: snapshot?.pipelines || {},
-    };
-}
-
-function hashSnapshot(snapshot, createHash) {
-    return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-}
-
 function groupOutputsByPipeline(outputs) {
     const outputsByPipeline = new Map();
 
@@ -708,6 +695,12 @@ function registerSystemMetricsApi({ app }) {
             return respondError(res, 500, errMsg(err));
         }
     });
+
+    return {
+        getSystemMetricsSnapshot() {
+            return latestSystemMetricsSnapshot;
+        },
+    };
 }
 
 module.exports = {
@@ -731,8 +724,6 @@ module.exports = {
     generateProbeReaderTag,
     getPipelineProbeRtspUrl,
     buildDefaultHealthSnapshot,
-    getHealthSnapshotHashSource,
-    hashSnapshot,
     groupOutputsByPipeline,
     // system metrics
     getCpuTotals,

@@ -3,7 +3,7 @@
 // every backend endpoint, and the adaptive polling loop primitive. Loaded as a singleton
 // ESM module so all importers share the same state reference.
 
-import { showLoading, hideLoading, showErrorAlert, normalizeEtag } from './utils.js';
+import { showLoading, hideLoading, showErrorAlert } from './utils.js';
 
 // ES modules share a single module instance so all imports reference the same object.
 export const state = {
@@ -14,20 +14,32 @@ export const state = {
 };
 
 let activeMutationRequestCount = 0;
+const mutationSuccessListeners = new Set();
+
+function registerMutationSuccessListener(listener) {
+    if (typeof listener !== 'function') {
+        return () => {};
+    }
+
+    mutationSuccessListeners.add(listener);
+    return () => {
+        mutationSuccessListeners.delete(listener);
+    };
+}
+
+function notifyMutationSuccess(event) {
+    for (const listener of mutationSuccessListeners) {
+        try {
+            listener(event);
+        } catch (err) {
+            console.error('mutation success listener error', err);
+        }
+    }
+}
 
 function isMutationMethod(method) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
     return normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS';
-}
-
-function buildEtagHeaders(etag) {
-    const headers = {};
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    return headers;
-}
-
-function getSnapshotVersion(response, fallback = null) {
-    return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
 }
 
 function encodePathSegment(value) {
@@ -85,10 +97,6 @@ function buildPipelineHistoryPath(pipeId, limit = 200) {
     return `${buildPipelinePath(pipeId, 'history')}?limit=${encodeURIComponent(safeLimit)}`;
 }
 
-function buildDashboardSnapshotPath() {
-    return '/dashboard/snapshot';
-}
-
 function beginMutationRequest() {
     activeMutationRequestCount += 1;
     if (activeMutationRequestCount === 1) {
@@ -108,28 +116,6 @@ function endMutationRequest() {
     }
 }
 
-async function fetchWithEtag(
-    url,
-    { etag = null, method = 'GET', networkErrorMessage = null } = {},
-) {
-    const options = {
-        method,
-        headers: buildEtagHeaders(etag),
-        cache: 'no-store',
-    };
-
-    if (!networkErrorMessage) {
-        return fetch(url, options);
-    }
-
-    try {
-        return await fetch(url, options);
-    } catch (e) {
-        showErrorAlert(networkErrorMessage + e);
-        return null;
-    }
-}
-
 async function parseJsonResponse(response) {
     try {
         return await response.json();
@@ -139,20 +125,20 @@ async function parseJsonResponse(response) {
     }
 }
 
-async function fetchJsonWithEtag(
+async function fetchJson(
     url,
-    { etag = null, method = 'GET', networkErrorMessage = null } = {},
+    { method = 'GET', networkErrorMessage = null } = {},
 ) {
-    const response = await fetchWithEtag(url, { etag, method, networkErrorMessage });
-    if (!response) return null;
-
-    if (response.status === 304) {
-        return {
-            response,
-            notModified: true,
-            data: null,
-        };
+    let response = null;
+    try {
+        response = await fetch(url, { method, cache: 'no-store' });
+    } catch (e) {
+        if (networkErrorMessage) showErrorAlert(networkErrorMessage + e);
+        else showErrorAlert('Network request failed: ' + e);
+        return null;
     }
+
+    if (!response) return null;
 
     const data = await parseJsonResponse(response);
     if (data === null) return null;
@@ -164,7 +150,6 @@ async function fetchJsonWithEtag(
 
     return {
         response,
-        notModified: false,
         data,
     };
 }
@@ -203,95 +188,40 @@ async function apiRequest(url, { method = 'GET', body = null } = {}) {
         return null;
     }
 
+    if (showMutationLoading) {
+        notifyMutationSuccess({
+            method: normalizedMethod,
+            status: response.status,
+            url,
+        });
+    }
+
     return data;
 }
 
-async function getConfig(etag = null) {
-    const result = await fetchJsonWithEtag('/config', { etag });
+async function getConfig() {
+    const result = await fetchJson('/config');
     if (!result) return null;
-
-    // 304 → cached version is still valid
-    if (result.notModified) {
-        return {
-            notModified: true,
-            etag,
-            snapshotVersion: getSnapshotVersion(result.response, etag),
-            data: null,
-        };
-    }
-
-    const newEtag = normalizeEtag(result.response.headers.get('ETag'));
-    const configEtag = normalizeEtag(result.response.headers.get('X-Config-ETag'));
 
     return {
         notModified: false,
-        etag: newEtag,
-        configEtag: configEtag || newEtag,
-        snapshotVersion: getSnapshotVersion(result.response, newEtag),
+        etag: null,
+        configEtag: null,
+        snapshotVersion: result.data?.snapshotVersion || null,
         data: result.data,
     };
 }
 
-async function getConfigVersion(etag = null) {
-    const response = await fetchWithEtag('/config/version', { etag, method: 'HEAD' });
-
-    if (response.status === 304) return { notModified: true, etag };
-    if (!response.ok) {
-        showErrorAlert(`Request failed with ${response.status}`);
-        return null;
-    }
-
-    const newEtag = normalizeEtag(response.headers.get('ETag'));
-    return { notModified: false, etag: newEtag };
-}
-
-async function getHealth(etag = null) {
-    const result = await fetchJsonWithEtag('/health', {
-        etag,
+async function getHealth() {
+    const result = await fetchJson('/health', {
         networkErrorMessage: 'Network request failed: ',
     });
     if (!result) return null;
 
-    if (result.notModified) {
-        return {
-            notModified: true,
-            etag,
-            snapshotVersion: getSnapshotVersion(result.response, null),
-            data: null,
-        };
-    }
-
     return {
         notModified: false,
-        etag: normalizeEtag(result.response.headers.get('ETag')),
-        snapshotVersion:
-            getSnapshotVersion(result.response, null) ||
-            normalizeEtag(result.data?.snapshotVersion),
-        data: result.data,
-    };
-}
-
-async function getDashboardSnapshot(etag = null) {
-    const result = await fetchJsonWithEtag(buildDashboardSnapshotPath(), {
-        etag,
-        networkErrorMessage: 'Network request failed: ',
-    });
-    if (!result) return null;
-
-    if (result.notModified) {
-        return {
-            notModified: true,
-            etag,
-            snapshotVersion: getSnapshotVersion(result.response, etag),
-            data: null,
-        };
-    }
-
-    const newEtag = normalizeEtag(result.response.headers.get('ETag'));
-    return {
-        notModified: false,
-        etag: newEtag,
-        snapshotVersion: getSnapshotVersion(result.response, newEtag),
+        etag: null,
+        snapshotVersion: result.data?.snapshotVersion || null,
         data: result.data,
     };
 }
@@ -510,17 +440,14 @@ function createAdaptivePollLoop({
 
 export {
     apiRequest,
-    buildEtagHeaders,
     buildOutputHistoryPath,
     buildPipelineHistoryPath,
     getConfig,
-    getConfigVersion,
-    getDashboardSnapshot,
     getHealth,
-    getSnapshotVersion,
     getSystemMetrics,
     getStreamKeys,
     isMutationMethod,
+    registerMutationSuccessListener,
     createStreamKey,
     updateStreamKey,
     deleteStreamKey,

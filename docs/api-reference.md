@@ -14,13 +14,10 @@ strings.
 Returns the dashboard's durable snapshot: public server config plus all pipelines, outputs, and
 current job rows.
 
-Caching behavior:
+Behavior:
 
-- `ETag` represents the full config-plus-jobs snapshot.
-- `X-Config-ETag` represents the config-only snapshot.
-- `X-Snapshot-Version` mirrors the full snapshot ETag and is used by the frontend to coordinate
-  `/config` and `/health` renders.
-- `If-None-Match` returns `304` when the full snapshot has not changed.
+- Always returns `200` with the full snapshot body.
+- The dashboard uses `GET /dashboard/events` for change-driven config updates.
 
 **Response 200:**
 ```json
@@ -59,30 +56,14 @@ Caching behavior:
 }
 ```
 
-### `HEAD /config`
-
-Returns the same cache headers as `GET /config` without the body. Useful for low-cost polling or
-diagnostics.
-
-### `HEAD /config/version`
-
-Returns only the config ETag. The dashboard uses this to detect user-visible config drift without
-pulling the full `/config` payload.
-
-Behavior:
-
-- `200` with `ETag` when the current config version differs from the client's version.
-- `304` when `If-None-Match` already matches the current config version.
-
 ### `GET /health`
 
 Returns the live runtime snapshot assembled from MediaMTX APIs, runtime FFmpeg state, probe cache
 data, and selected DB metadata.
 
-Caching behavior:
+Behavior:
 
-- `ETag` and `X-Snapshot-Version` are returned when available.
-- `If-None-Match` returns `304` when the health snapshot did not change.
+- Always returns `200` with the latest cached health snapshot body plus `ageMs`.
 
 **Response 200:**
 ```json
@@ -152,6 +133,54 @@ Returns host metrics sampled by the Node process.
   }
 }
 ```
+
+### `GET /dashboard/events`
+
+Server-Sent Events stream used by the dashboard UI.
+
+Event contract:
+
+- `event: dashboard.config`
+  - Sent immediately on connect.
+  - Re-sent only when the config snapshot version changes.
+  - Payload shape:
+
+```json
+{
+  "snapshotVersion": "config-version",
+  "data": {
+    "serverName": "Restream",
+    "pipelines": [],
+    "outputs": [],
+    "jobs": []
+  }
+}
+```
+
+- `event: dashboard.telemetry`
+  - Sent immediately on connect, then on a fixed interval.
+  - Interval defaults to `2000ms` and can be overridden with `DASHBOARD_SSE_INTERVAL_MS`.
+  - Health and system metrics are emitted together in this event.
+  - Payload shape:
+
+```json
+{
+  "snapshotVersion": "health-version:metrics-timestamp",
+  "health": {
+    "generatedAt": "2026-05-04T12:00:00.000Z",
+    "snapshotVersion": "health-version",
+    "status": "ready",
+    "pipelines": {}
+  },
+  "metrics": {
+    "generatedAt": "2026-05-04T12:00:00.000Z",
+    "cpu": { "usagePercent": 13.52 }
+  }
+}
+```
+
+- `event: error`
+  - Emitted when building either event payload fails.
 
 ### `GET /preview/hls/:streamKey`
 
@@ -631,23 +660,8 @@ Guardrails:
 
 ### `GET /config`
 
-Returns the full state snapshot used by the dashboard. Supports conditional GET via `If-None-Match` / ETag.
-
-Response headers now include a shared `X-Snapshot-Version` token that identifies the config/jobs
-state version represented by this snapshot. The dashboard compares that token with the health
-response before committing a render.
-
-**Request headers (optional):**
-```
-If-None-Match: "abc123..."
-```
-
-**Response headers:**
-```
-ETag: "..."                 // config + jobs snapshot hash
-X-Config-ETag: "..."        // config-only snapshot hash
-X-Snapshot-Version: "..."   // shared config/jobs state version used to align /config and /health
-```
+Returns the full state snapshot used by the dashboard. This endpoint is now unconditional and does
+not rely on request-side conditional cache headers.
 
 **Response 200:**
 ```json
@@ -688,24 +702,6 @@ X-Snapshot-Version: "..."   // shared config/jobs state version used to align /c
 
 Each output now includes `desiredState`, which is the persistent operator intent (`running` or `stopped`).
 
-**Response headers:**
-```
-ETag: "abc123def456..."
-X-Config-ETag: "7890abcd1234..."
-```
-
-**Response 304:** ETag matches — no body, no change.
-
-> The ETag is a SHA-256 hash of a deterministic state snapshot, persisted in the `meta` table.
-
----
-
-### `HEAD /config`
-
-Returns the current ETag without a response body. Used to poll for changes without downloading the full config.
-
-**Response 200** (no body) + `ETag` and `X-Config-ETag` headers.
-
 ---
 
 ## 6. Health and Metrics
@@ -715,11 +711,6 @@ Returns the current ETag without a response body. Used to poll for changes witho
 Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`, `/v3/rtmpconns/list`, and `/v3/srtconns/list`, then merging that runtime state with DB job state and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 `GET /health` itself does not call MediaMTX. It returns the most recent cached snapshot immediately.
-
-Headers:
-
-- `ETag` for the current snapshot content
-- Supports `If-None-Match` and returns `304 Not Modified` when unchanged
 
 **Response 200:**
 ```json
@@ -927,17 +918,20 @@ All errors return:
 
 ---
 
-## 8. Response ETag Lifecycle
+## 8. Dashboard Stream Versioning
 
-```
-POST /pipelines            → recomputeEtag()
-POST /pipelines/:id        → recomputeEtag()
-DELETE /pipelines/:id      → recomputeEtag()
-POST /pipelines/.../outputs         → recomputeEtag()
-POST /pipelines/.../outputs/:id     → recomputeEtag()
-DELETE /pipelines/.../outputs/:id   → recomputeEtag()
-POST .../start             → recomputeEtag() (on create + on every exit transition)
-POST .../stop              → recomputeEtag()
-```
+The service keeps an internal state version that is recomputed when pipeline/output/job state
+changes. That internal token is used by:
 
-Clients should save the ETag from `GET /config` and pass it as `If-None-Match` on subsequent calls to avoid unnecessary payload transfers.
+- `/health` snapshots (`snapshotVersion`)
+- `dashboard.config` event `snapshotVersion`
+- `dashboard.telemetry` event `health.snapshotVersion`
+
+Client change detection for dashboard rendering should use `/dashboard/events` and these
+`snapshotVersion` fields rather than conditional request headers.
+
+Operational note for dashboard clients:
+
+- Keep a watchdog on the event stream and recover when the stream closes or goes silent.
+- The dashboard implementation uses a `30s` silence timeout and, on recovery, performs a one-shot
+  snapshot fetch (`GET /config`, `GET /health`, `GET /metrics/system`) before continuing with SSE.

@@ -47,12 +47,12 @@ const { ffmpegProgressByJobId, ffmpegOutputMediaByJobId, processes } =
     createRuntimeRegistries();
 const pipelineRuntimeState = createPipelineRuntimeStateService({ db });
 
-// ── Config API (provides normalizeEtag + recomputeEtag) ──────────
+// ── Config API ──────────
 const {
-    normalizeEtag,
     recomputeConfigEtag,
     recomputeEtag,
     setHealthSnapshotProvider,
+    setSystemMetricsProvider,
 } = registerConfigApi({
     app,
     db,
@@ -64,8 +64,6 @@ const {
 const healthMonitor = createHealthMonitorService({
     db,
     fetch,
-    createHash: crypto.createHash.bind(crypto),
-    normalizeEtag,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
     pipelineRuntimeState,
@@ -135,7 +133,8 @@ registerOutputApi({
 });
 
 healthMonitor.registerRoutes(app);
-registerSystemMetricsApi({ app });
+const { getSystemMetricsSnapshot } = registerSystemMetricsApi({ app });
+setSystemMetricsProvider(getSystemMetricsSnapshot);
 registerPreviewProxyRoutes({
     app,
     fetch,

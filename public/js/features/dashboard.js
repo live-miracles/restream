@@ -1,14 +1,12 @@
 // Dashboard controller.
-// Drives the main dashboard poll loop, reconciles config and health snapshots into shared state,
-// and hands DOM rendering to dashboard-view.js.
+// Consumes SSE updates from /dashboard/events where config updates are change-driven and
+// telemetry updates (health+system) are interval-driven.
 
 import {
-    createAdaptivePollLoop,
     getConfig,
-    getConfigVersion,
-    getDashboardSnapshot,
     getHealth,
     getSystemMetrics,
+    registerMutationSuccessListener,
     state,
 } from '../client.js';
 import { parsePipelinesInfo } from '../pipeline.js';
@@ -17,6 +15,7 @@ import {
     readSelectedPipelineHint,
     setServerConfig,
     setUrlParam,
+    showErrorAlert,
 } from '../utils.js';
 import {
     bindDashboardViewControls,
@@ -43,13 +42,12 @@ function selectPipeline(id) {
     renderPipelines();
 }
 
-// HTML-bound handler — keep accessible as a global
 setDashboardViewHandlers({ selectPipeline });
 window.selectPipeline = selectPipeline;
 
 function resolveConfigSnapshotVersion(result, currentVersion) {
     if (!result) return currentVersion;
-    return result.snapshotVersion || result.etag || currentVersion;
+    return result.snapshotVersion || currentVersion;
 }
 
 function resolveHealthSnapshotVersion(result, currentVersion) {
@@ -57,41 +55,65 @@ function resolveHealthSnapshotVersion(result, currentVersion) {
     return result.snapshotVersion || currentVersion;
 }
 
+function consumePendingLocalConfigMutation(pendingCount, observedVersion, previousVersion) {
+    if (pendingCount <= 0) return pendingCount;
+    if (!observedVersion || observedVersion === previousVersion) return pendingCount;
+    return pendingCount - 1;
+}
+
+const DASHBOARD_SSE_SILENCE_TIMEOUT_MS = 30000;
+const DASHBOARD_SSE_WATCHDOG_INTERVAL_MS = 5000;
+
+function isSseWatchdogExpired(lastEventAtMs, nowMs, timeoutMs = DASHBOARD_SSE_SILENCE_TIMEOUT_MS) {
+    if (!lastEventAtMs) return false;
+    return nowMs - lastEventAtMs > timeoutMs;
+}
+
+function shouldRecoverSseStream({
+    isHidden,
+    sourceReadyState,
+    lastEventAtMs,
+    nowMs,
+    timeoutMs = DASHBOARD_SSE_SILENCE_TIMEOUT_MS,
+}) {
+    if (isHidden) return false;
+
+    const closedState = typeof EventSource !== 'undefined' ? EventSource.CLOSED : 2;
+    if (sourceReadyState === closedState) return true;
+    if (sourceReadyState == null) return true;
+
+    return isSseWatchdogExpired(lastEventAtMs, nowMs, timeoutMs);
+}
+
 function applyConfigSlice(result, current) {
     if (!result) return current;
 
-    const next = {
+    const configVersion = resolveConfigSnapshotVersion(result, current.configSnapshotVersion);
+
+    return {
         ...current,
-        etag: result.etag || current.etag,
-        configEtag: result.configEtag || current.configEtag,
-        configSnapshotVersion: resolveConfigSnapshotVersion(result, current.configSnapshotVersion),
-        config: current.config,
-        serverName: null,
+        etag: configVersion || current.etag,
+        configEtag: configVersion || current.configEtag,
+        configSnapshotVersion: configVersion,
+        config: result.data || current.config,
+        serverName: result.data?.serverName || null,
     };
-
-    if (!result.notModified) {
-        next.config = result.data;
-        next.serverName = result.data?.serverName || null;
-    }
-
-    return next;
 }
 
 function applyHealthSlice(result, current) {
     if (!result) return current;
 
-    const next = {
+    const healthSnapshot = result.data || result;
+
+    return {
         ...current,
-        healthEtag: result.etag || current.healthEtag,
-        healthSnapshotVersion: resolveHealthSnapshotVersion(result, current.healthSnapshotVersion),
-        health: current.health,
+        healthEtag: healthSnapshot?.snapshotVersion || current.healthEtag,
+        healthSnapshotVersion: resolveHealthSnapshotVersion(
+            healthSnapshot,
+            current.healthSnapshotVersion,
+        ),
+        health: healthSnapshot || current.health,
     };
-
-    if (!result.notModified) {
-        next.health = result.data;
-    }
-
-    return next;
 }
 
 function applyMetricsSlice(result, currentMetrics) {
@@ -107,6 +129,11 @@ function resolveSelectedPipelineId({
 }) {
     if (!selectedPipelineId) return selectedPipelineId;
     if (nextPipelines.some((pipeline) => pipeline.id === selectedPipelineId)) {
+        return selectedPipelineId;
+    }
+
+    // Keep the URL selection stable when a transient refresh yields no pipeline rows.
+    if (nextPipelines.length === 0) {
         return selectedPipelineId;
     }
 
@@ -126,74 +153,18 @@ function resolveSelectedPipelineId({
     return replacement?.id || null;
 }
 
-let dashboardRefreshInFlight = null;
-let dashboardRefreshQueued = false;
-
-async function refreshDashboard() {
-    await requestDashboardRefresh();
-}
-
-async function requestDashboardRefresh() {
-    // Coalesce overlapping refresh requests so poll ticks, visibility changes, and manual actions
-    // never interleave partial renders against different snapshot versions.
-    if (dashboardRefreshInFlight) {
-        dashboardRefreshQueued = true;
-        return dashboardRefreshInFlight;
-    }
-
-    let lastRefreshPromise = null;
-
-    do {
-        dashboardRefreshQueued = false;
-        lastRefreshPromise = fetchAndRerender();
-        dashboardRefreshInFlight = lastRefreshPromise;
-
-        try {
-            await lastRefreshPromise;
-        } finally {
-            if (dashboardRefreshInFlight === lastRefreshPromise) {
-                dashboardRefreshInFlight = null;
-            }
-        }
-    } while (dashboardRefreshQueued);
-
-    return lastRefreshPromise;
-}
-
-function applyConfigResult(result) {
-    const next = applyConfigSlice(result, {
-        etag,
-        configEtag,
-        configSnapshotVersion,
-        config: state.config,
-    });
-
-    etag = next.etag;
-    configEtag = next.configEtag;
-    configSnapshotVersion = next.configSnapshotVersion;
-    if (!result || result.notModified) return;
-
-    state.config = next.config;
-    setServerConfig(next.serverName);
-}
-
-function applyHealthResult(result) {
-    const next = applyHealthSlice(result, {
-        healthEtag,
-        healthSnapshotVersion,
-        health: state.health,
-    });
-
-    healthEtag = next.healthEtag;
-    healthSnapshotVersion = next.healthSnapshotVersion;
-    if (!result || result.notModified) return;
-
-    state.health = next.health;
-}
-
-function applyMetricsResult(result) {
-    state.metrics = applyMetricsSlice(result, state.metrics);
-}
+let configEtag = null;
+let configSnapshotVersion = null;
+let healthSnapshotVersion = null;
+let userConfigEtag = null;
+let dismissedStreamingConfigEtag = null;
+let pendingLocalConfigMutationCount = 0;
+let dashboardInitPromise = null;
+let dashboardEventSource = null;
+let unregisterMutationSuccessListener = null;
+let sseLastEventAtMs = 0;
+let sseWatchdogTimer = null;
+let sseRecoveryInFlight = false;
 
 function replaceUrlParam(param, value) {
     const url = new URL(window.location);
@@ -206,8 +177,6 @@ function replaceUrlParam(param, value) {
 }
 
 function reconcileSelectedPipeline(previousPipelines = []) {
-    // Preserve the user's context when possible, but fall back cleanly if the selected pipeline
-    // disappeared or the stored hint no longer points at a live entry.
     const selectedPipeId = getUrlParam('p');
     const replacement = resolveSelectedPipelineId({
         selectedPipelineId: selectedPipeId,
@@ -221,139 +190,7 @@ function reconcileSelectedPipeline(previousPipelines = []) {
     }
 }
 
-function applyUserConfigBaseline(etagValue) {
-    userConfigEtag = etagValue || null;
-    dismissedStreamingConfigEtag = null;
-
-    const alertElem = document.getElementById('streaming-config-changed-alert');
-    if (alertElem) {
-        alertElem.classList.add('hidden');
-        alertElem.dataset.configVersion = '';
-    }
-
-    clearStreamingConfigRecheckTimer();
-}
-
-function markUserConfigBaseline() {
-    applyUserConfigBaseline(configEtag);
-}
-
-async function syncUserConfigBaseline() {
-    const version = await getConfigVersion();
-    if (version && !version.notModified && version.etag) {
-        configEtag = version.etag;
-    }
-    applyUserConfigBaseline(configEtag);
-}
-
-setDashboardActionHandlers({
-    refreshDashboard: requestDashboardRefresh,
-    syncUserConfigBaseline,
-});
-
-function dismissStreamingConfigAlert() {
-    const alertElem = document.getElementById('streaming-config-changed-alert');
-    if (!alertElem) return;
-
-    dismissedStreamingConfigEtag = alertElem.dataset.configVersion || configEtag || null;
-    alertElem.classList.add('hidden');
-
-    clearStreamingConfigRecheckTimer();
-}
-
-function clearStreamingConfigRecheckTimer() {
-    if (!streamingConfigRecheckTimer) return;
-    clearTimeout(streamingConfigRecheckTimer);
-    streamingConfigRecheckTimer = null;
-}
-
-async function checkStreamingConfigs(secondTime = false, baselineEtag = userConfigEtag) {
-    if (document.hidden) return;
-    const alertElem = document.getElementById('streaming-config-changed-alert');
-    if (!alertElem) return;
-
-    if (!baselineEtag) {
-        alertElem.classList.add('hidden');
-        return;
-    }
-
-    // Ignore stale checks queued with an old baseline (e.g., before local edits).
-    if (baselineEtag !== userConfigEtag) {
-        alertElem.classList.add('hidden');
-        alertElem.dataset.configVersion = '';
-        clearStreamingConfigRecheckTimer();
-        return;
-    }
-
-    const res = await getConfigVersion(baselineEtag);
-
-    if (res === null || res.notModified) {
-        alertElem.classList.add('hidden');
-        alertElem.dataset.configVersion = '';
-        return;
-    }
-
-    if (dismissedStreamingConfigEtag && dismissedStreamingConfigEtag === res.etag) {
-        alertElem.classList.add('hidden');
-        alertElem.dataset.configVersion = res.etag || '';
-        return;
-    }
-
-    if (secondTime) {
-        alertElem.dataset.configVersion = res.etag || '';
-        alertElem.classList.remove('hidden');
-        return;
-    }
-
-    // Require two changed-version checks before surfacing the banner so brief config churn does
-    // not interrupt the dashboard while the user is actively editing.
-    clearStreamingConfigRecheckTimer();
-    streamingConfigRecheckTimer = setTimeout(() => {
-        streamingConfigRecheckTimer = null;
-        checkStreamingConfigs(true, baselineEtag);
-    }, 5000);
-}
-
-async function fetchAndRerender(attempt = 0) {
-    // Prefer a single backend snapshot so config and health slices are version-aligned.
-    const [dashboardSnapshotResult, metricsResult] = await Promise.all([
-        fetchDashboardSnapshot(),
-        fetchSystemMetrics(),
-    ]);
-
-    if (dashboardSnapshotResult) {
-        dashboardSnapshotEtag = dashboardSnapshotResult.etag || dashboardSnapshotEtag;
-        if (!dashboardSnapshotResult.notModified) {
-            applyConfigResult(dashboardSnapshotResult.data?.config || null);
-            applyHealthResult(dashboardSnapshotResult.data?.health || null);
-        }
-    } else {
-        // Fallback to split polling while older controllers roll out.
-        const [configResult, healthResult] = await Promise.all([fetchConfig(), fetchHealth()]);
-
-        const nextConfigSnapshotVersion = resolveConfigSnapshotVersion(
-            configResult,
-            configSnapshotVersion,
-        );
-        const nextHealthSnapshotVersion = resolveHealthSnapshotVersion(
-            healthResult,
-            healthSnapshotVersion,
-        );
-
-        if (
-            nextConfigSnapshotVersion &&
-            nextHealthSnapshotVersion &&
-            nextConfigSnapshotVersion !== nextHealthSnapshotVersion &&
-            attempt < 2
-        ) {
-            return fetchAndRerender(attempt + 1);
-        }
-
-        applyConfigResult(configResult);
-        applyHealthResult(healthResult);
-    }
-
-    applyMetricsResult(metricsResult);
+function renderDashboardState() {
     const previousPipelines = state.pipelines;
     state.pipelines = parsePipelinesInfo(state.config, state.health);
     reconcileSelectedPipeline(previousPipelines);
@@ -362,63 +199,211 @@ async function fetchAndRerender(attempt = 0) {
     renderPublisherQualityModal();
 }
 
-async function fetchConfig() {
-    return getConfig(etag);
+function updateStreamingConfigAlert() {
+    const alertElem = document.getElementById('streaming-config-changed-alert');
+    if (!alertElem) return;
+
+    const shouldShow =
+        !!userConfigEtag &&
+        !!configEtag &&
+        configEtag !== userConfigEtag &&
+        dismissedStreamingConfigEtag !== configEtag;
+
+    alertElem.dataset.configVersion = configEtag || '';
+    alertElem.classList.toggle('hidden', !shouldShow);
 }
 
-async function fetchHealth() {
-    return getHealth(healthEtag);
+function applyConfigResult(result) {
+    const previousConfigEtag = configEtag;
+    const next = applyConfigSlice(result, {
+        etag: null,
+        configEtag,
+        configSnapshotVersion,
+        config: state.config,
+    });
+
+    configEtag = next.configEtag;
+    configSnapshotVersion = next.configSnapshotVersion;
+
+    const nextPendingLocalConfigMutationCount = consumePendingLocalConfigMutation(
+        pendingLocalConfigMutationCount,
+        configEtag,
+        previousConfigEtag,
+    );
+    const acceptAsLocalConfigMutation =
+        nextPendingLocalConfigMutationCount !== pendingLocalConfigMutationCount;
+    pendingLocalConfigMutationCount = nextPendingLocalConfigMutationCount;
+
+    if (acceptAsLocalConfigMutation) {
+        applyUserConfigBaseline(configEtag);
+    }
+
+    state.config = next.config;
+    setServerConfig(next.serverName);
+    if (!userConfigEtag && configEtag) {
+        userConfigEtag = configEtag;
+    }
+    updateStreamingConfigAlert();
 }
 
-async function fetchDashboardSnapshot() {
-    return getDashboardSnapshot(dashboardSnapshotEtag);
+function applyHealthResult(result) {
+    const next = applyHealthSlice(result, {
+        healthEtag: null,
+        healthSnapshotVersion,
+        health: state.health,
+    });
+
+    healthSnapshotVersion = next.healthSnapshotVersion;
+    state.health = next.health;
 }
 
-async function fetchSystemMetrics() {
-    return getSystemMetrics();
+function applyMetricsResult(result) {
+    state.metrics = applyMetricsSlice(result, state.metrics);
 }
 
-let etag = null;
-let healthEtag = null;
-let configEtag = null;
-let dashboardSnapshotEtag = null;
-let configSnapshotVersion = null;
-let healthSnapshotVersion = null;
-let userConfigEtag = null;
-let dismissedStreamingConfigEtag = null;
+function applyUserConfigBaseline(etagValue) {
+    userConfigEtag = etagValue || null;
+    dismissedStreamingConfigEtag = null;
+    updateStreamingConfigAlert();
+}
 
-// configEtag tracks the latest server config version; userConfigEtag is the version the current
-// page state considers “accepted”, which is what powers the reload-needed banner.
-const DASHBOARD_POLL_INTERVAL_MS = 5000;
-const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
-const STREAMING_CONFIG_CHECK_INTERVAL_MS = 30000;
-let streamingConfigCheckTimer = null;
-let streamingConfigRecheckTimer = null;
-let dashboardInitPromise = null;
+function markUserConfigBaseline() {
+    applyUserConfigBaseline(configEtag);
+}
 
-const dashboardPollLoop = createAdaptivePollLoop({
-    run: () => requestDashboardRefresh(),
-    getVisibleInterval: () => DASHBOARD_POLL_INTERVAL_MS,
-    getHiddenInterval: () => DASHBOARD_HIDDEN_POLL_INTERVAL_MS,
+async function syncUserConfigBaseline() {
+    applyUserConfigBaseline(configEtag);
+}
+
+setDashboardActionHandlers({
+    refreshDashboard,
+    syncUserConfigBaseline,
 });
 
-function startStreamingConfigPolling() {
-    if (streamingConfigCheckTimer) return;
-    streamingConfigCheckTimer = setInterval(
-        () => checkStreamingConfigs(),
-        STREAMING_CONFIG_CHECK_INTERVAL_MS,
-    );
+function dismissStreamingConfigAlert() {
+    dismissedStreamingConfigEtag = configEtag || null;
+    updateStreamingConfigAlert();
+}
+
+async function refreshDashboard() {
+    connectDashboardEventStream();
+}
+
+async function fetchDashboardSnapshotOnce() {
+    const [configResult, healthResult, systemMetricsResult] = await Promise.all([
+        getConfig(),
+        getHealth(),
+        getSystemMetrics(),
+    ]);
+
+    if (configResult?.data) applyConfigResult(configResult);
+    if (healthResult?.data) applyHealthResult(healthResult.data);
+    if (systemMetricsResult) applyMetricsResult(systemMetricsResult);
+
+    renderDashboardState();
+}
+
+async function recoverDashboardStream(reason = 'unknown') {
+    if (sseRecoveryInFlight) return;
+    sseRecoveryInFlight = true;
+
+    try {
+        connectDashboardEventStream();
+        await fetchDashboardSnapshotOnce();
+    } catch (err) {
+        showErrorAlert(`Dashboard SSE recovery failed (${reason}): ${err}`);
+    } finally {
+        sseRecoveryInFlight = false;
+    }
+}
+
+function startSseWatchdog() {
+    if (sseWatchdogTimer) return;
+
+    sseWatchdogTimer = setInterval(() => {
+        const shouldRecover = shouldRecoverSseStream({
+            isHidden: document.hidden,
+            sourceReadyState: dashboardEventSource?.readyState ?? null,
+            lastEventAtMs: sseLastEventAtMs,
+            nowMs: Date.now(),
+        });
+
+        if (!shouldRecover) return;
+
+        const closedState = typeof EventSource !== 'undefined' ? EventSource.CLOSED : 2;
+        const reason =
+            dashboardEventSource?.readyState === closedState ? 'closed' : 'silence-timeout';
+        void recoverDashboardStream(reason);
+    }, DASHBOARD_SSE_WATCHDOG_INTERVAL_MS);
+}
+
+function handleDashboardConfigEventData(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    applyConfigResult(payload);
+    renderDashboardState();
+}
+
+function handleDashboardTelemetryEventData(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.health) applyHealthResult(payload.health);
+    if (payload.metrics) applyMetricsResult(payload.metrics);
+    renderDashboardState();
+}
+
+function connectDashboardEventStream() {
+    if (typeof EventSource === 'undefined') return false;
+
+    if (dashboardEventSource) {
+        dashboardEventSource.close();
+    }
+
+    const source = new EventSource('/dashboard/events');
+    sseLastEventAtMs = Date.now();
+    const parseEventData = (event) => {
+        if (!event?.data) return;
+        try {
+            return JSON.parse(event.data);
+        } catch (err) {
+            showErrorAlert(`Invalid dashboard event payload: ${err}`);
+        }
+        return null;
+    };
+
+    const handleConfigMessage = (event) => {
+        const payload = parseEventData(event);
+        if (!payload) return;
+        sseLastEventAtMs = Date.now();
+        handleDashboardConfigEventData(payload);
+    };
+
+    const handleTelemetryMessage = (event) => {
+        const payload = parseEventData(event);
+        if (!payload) return;
+        sseLastEventAtMs = Date.now();
+        handleDashboardTelemetryEventData(payload);
+    };
+
+    source.addEventListener('dashboard.config', handleConfigMessage);
+    source.addEventListener('dashboard.telemetry', handleTelemetryMessage);
+    source.onerror = () => {
+        // Native EventSource retries automatically.
+    };
+    dashboardEventSource = source;
+    return true;
 }
 
 async function onVisibilityChange() {
-    // Hidden tabs poll more slowly, but they still need history polling and config checks to stay
-    // internally consistent when the user comes back.
-    await dashboardPollLoop.syncWithVisibility({
-        pollImmediatelyOnVisible: !document.hidden,
-    });
     await syncDashboardVisibilityDependents();
-    if (!document.hidden) {
-        await checkStreamingConfigs();
+    if (!document.hidden && dashboardEventSource?.readyState === EventSource.CLOSED) {
+        await recoverDashboardStream('visibility-reopen');
+        return;
+    }
+
+    if (
+        !document.hidden &&
+        isSseWatchdogExpired(sseLastEventAtMs, Date.now(), DASHBOARD_SSE_SILENCE_TIMEOUT_MS)
+    ) {
+        await recoverDashboardStream('visibility-timeout');
     }
 }
 
@@ -434,12 +419,14 @@ function initDashboard() {
             .getElementById('dismiss-streaming-config-alert-btn')
             ?.addEventListener('click', dismissStreamingConfigAlert);
 
-        // Initial bootstrap mirrors a normal poll so the first render uses the same code path as
-        // all later refreshes.
-        await requestDashboardRefresh();
-        markUserConfigBaseline();
-        dashboardPollLoop.start();
-        startStreamingConfigPolling();
+        if (!unregisterMutationSuccessListener) {
+            unregisterMutationSuccessListener = registerMutationSuccessListener(() => {
+                pendingLocalConfigMutationCount += 1;
+            });
+        }
+
+        connectDashboardEventStream();
+        startSseWatchdog();
     })();
 
     return dashboardInitPromise;
@@ -449,14 +436,16 @@ export {
     applyConfigSlice,
     applyHealthSlice,
     applyMetricsSlice,
+    consumePendingLocalConfigMutation,
+    isSseWatchdogExpired,
     initDashboard,
     refreshDashboard,
     markUserConfigBaseline,
     resolveConfigSnapshotVersion,
     resolveHealthSnapshotVersion,
     resolveSelectedPipelineId,
+    shouldRecoverSseStream,
     syncUserConfigBaseline,
-    // from dashboard-view.js
     isOutputIntentStopped,
     isOutputRunning,
     isOutputUnexpectedlyDown,

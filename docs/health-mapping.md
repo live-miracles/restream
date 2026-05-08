@@ -6,7 +6,7 @@ This document explains exactly how input and output health statuses are derived 
 
 ## 1. Data Sources
 
-The background health collector fetches multiple MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs` plus an `ETag` header. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+The background health collector fetches multiple MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs`. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 | Source | What it provides |
 |---|---|

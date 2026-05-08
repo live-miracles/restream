@@ -1,6 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const request = require('supertest');
 
 const { createExpressHarness } = require('../helpers/create-express-harness');
@@ -43,7 +42,6 @@ async function withHealthModule(globalFetchImpl, run) {
     }
 }
 
-
 function createHealthHarness(createHealthMonitorService, overrides = {}) {
     const dbState = {
         etag: overrides.dbState?.etag || null,
@@ -67,8 +65,6 @@ function createHealthHarness(createHealthMonitorService, overrides = {}) {
                 ok: false,
                 status: 503,
             })),
-        createHash: crypto.createHash.bind(crypto),
-        normalizeEtag: (value) => String(value || '').replace(/^"(.*)"$/, '$1') || null,
         ffmpegProgressByJobId: new Map(),
         ffmpegOutputMediaByJobId: new Map(),
         spawn: () => {
@@ -96,47 +92,18 @@ async function waitFor(checkFn, attempts = 20) {
     throw lastError;
 }
 
-test('GET /health returns cache headers and 304 support for the current snapshot', async () => {
+test('GET /health returns a snapshot body with age metadata', async () => {
     await withHealthModule(async () => createJsonResponse({ items: [], itemCount: 0 }), async (createHealthMonitorService) => {
         const { app } = createHealthHarness(createHealthMonitorService, {
             dbState: { etag: 'snapshot-v1' },
         });
 
-        const first = await request(app).get('/health').expect(200);
+        const response = await request(app).get('/health').expect(200);
 
-        assert.equal(first.body.status, 'initializing');
-        assert.equal(first.body.snapshotVersion, 'snapshot-v1');
-        assert.equal(first.headers['x-snapshot-version'], '"snapshot-v1"');
-        assert.match(first.headers.etag || '', /^"[a-f0-9]{64}"$/);
-        assert.equal(typeof first.body.ageMs, 'number');
-        assert.equal(first.body.ageMs >= 0, true);
-
-        const second = await request(app)
-            .get('/health')
-            .set('If-None-Match', first.headers.etag)
-            .expect(304);
-
-        assert.equal(second.headers.etag, first.headers.etag);
-        assert.equal(second.headers['x-snapshot-version'], first.headers['x-snapshot-version']);
-    });
-});
-
-test('GET /health refreshes the cached snapshot when the durable state version changes', async () => {
-    await withHealthModule(async () => createJsonResponse({ items: [], itemCount: 0 }), async (createHealthMonitorService) => {
-        const { app, dbState } = createHealthHarness(createHealthMonitorService, {
-            dbState: { etag: 'snapshot-v1' },
-        });
-
-        const first = await request(app).get('/health').expect(200);
-        assert.equal(first.body.snapshotVersion, 'snapshot-v1');
-
-        dbState.etag = 'snapshot-v2';
-
-        const second = await request(app).get('/health').expect(200);
-
-        assert.equal(second.body.snapshotVersion, 'snapshot-v2');
-        assert.equal(second.headers['x-snapshot-version'], '"snapshot-v2"');
-        assert.notEqual(second.headers.etag, first.headers.etag);
+        assert.equal(response.body.status, 'initializing');
+        assert.equal(response.body.snapshotVersion, 'snapshot-v1');
+        assert.equal(typeof response.body.ageMs, 'number');
+        assert.equal(response.body.ageMs >= 0, true);
     });
 });
 

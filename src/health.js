@@ -24,10 +24,8 @@ const {
     computeInputStatus,
     extractProbeMediaInfo,
     generateProbeReaderTag,
-    getHealthSnapshotHashSource,
     getPipelineProbeRtspUrl,
     groupOutputsByPipeline,
-    hashSnapshot,
     indexPublishersByPath,
     indexRtspConnectionsByReaderTag,
     mergeProbeMediaInfo,
@@ -52,8 +50,6 @@ const FFPROBE_TIMEOUT_MS = 8000;
 function createHealthMonitorService({
     db,
     fetch,
-    createHash,
-    normalizeEtag,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
     pipelineRuntimeState,
@@ -67,7 +63,6 @@ function createHealthMonitorService({
     const streamProbeCache = new Map();
     const probeRefreshStartedAt = new Map();
     let latestHealthSnapshot = null;
-    let latestHealthSnapshotEtag = null;
     let healthCollectorInFlight = null;
     let healthCollectorTimer = null;
     const mediamtxReadiness = {
@@ -242,7 +237,6 @@ function createHealthMonitorService({
 
     function setLatestHealthSnapshot(snapshot) {
         latestHealthSnapshot = snapshot;
-        latestHealthSnapshotEtag = hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
         return latestHealthSnapshot;
     }
 
@@ -593,20 +587,14 @@ function createHealthMonitorService({
             snapshot = await collectHealthSnapshot();
         }
 
-        const etag =
-            latestHealthSnapshotEtag ||
-            hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
         const generatedAtMs = Date.parse(snapshot?.generatedAt);
         const ageMs = Number.isFinite(generatedAtMs)
             ? Math.max(0, Date.now() - generatedAtMs)
             : null;
 
         return {
-            etag,
-            snapshot: {
-                ...snapshot,
-                ageMs,
-            },
+            ...snapshot,
+            ageMs,
         };
     }
 
@@ -635,27 +623,9 @@ function createHealthMonitorService({
         healthCollectorTimer.unref?.();
     }
 
-    function setHealthSnapshotHeaders(res, etag, snapshotVersion) {
-        if (etag) res.set('ETag', `"${etag}"`);
-        if (snapshotVersion) {
-            res.set('X-Snapshot-Version', `"${snapshotVersion}"`);
-        }
-    }
-
     function registerRoutes(app) {
-        // /health refreshes lazily when the cached snapshot is missing or stale relative to the
-        // latest durable state version. That keeps polling cheap without serving clearly old data.
         app.get('/health', async (req, res) => {
-            const { etag, snapshot } = await getHealthSnapshot({ refreshIfStale: true });
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-
-            if (ifNoneMatch && etag && ifNoneMatch === etag) {
-                setHealthSnapshotHeaders(res, etag, snapshot?.snapshotVersion);
-                return res.status(304).end();
-            }
-
-            setHealthSnapshotHeaders(res, etag, snapshot?.snapshotVersion);
-
+            const snapshot = await getHealthSnapshot({ refreshIfStale: true });
             return res.json(snapshot);
         });
 

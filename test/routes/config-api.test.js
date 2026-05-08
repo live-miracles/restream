@@ -7,6 +7,11 @@ const { buildConfigMock } = require('../helpers/build-config-mock');
 const { createExpressHarness } = require('../helpers/create-express-harness');
 
 function createConfigHarness(overrides = {}) {
+    const dbState = {
+        etag: overrides.dbState?.etag || null,
+        configEtag: overrides.dbState?.configEtag || null,
+    };
+
     const db = {
         listStreamKeys: () => [
             { key: 'b-key', label: 'B', createdAt: '2026-05-01T00:00:00.000Z' },
@@ -82,10 +87,6 @@ function createConfigHarness(overrides = {}) {
         },
         ...overrides.db,
     };
-    const dbState = {
-        etag: overrides.dbState?.etag || null,
-        configEtag: overrides.dbState?.configEtag || null,
-    };
 
     const app = createExpressHarness((instance) => {
         registerConfigApi({
@@ -112,17 +113,13 @@ function createConfigHarness(overrides = {}) {
     return { app, dbState };
 }
 
-test('GET /config returns snapshot headers and stable sorted payloads', async () => {
+test('GET /config returns stable sorted payloads', async () => {
     const { app, dbState } = createConfigHarness();
 
     const res = await request(app).get('/config').expect(200);
 
     assert.ok(dbState.etag);
     assert.ok(dbState.configEtag);
-    assert.equal(res.headers.etag, `"${dbState.etag}"`);
-    assert.equal(res.headers['x-config-etag'], `"${dbState.configEtag}"`);
-    assert.equal(res.headers['x-snapshot-version'], `"${dbState.etag}"`);
-
     assert.deepEqual(
         res.body.pipelines.map((pipeline) => pipeline.id),
         ['pipe-b', 'pipe-a'],
@@ -135,76 +132,4 @@ test('GET /config returns snapshot headers and stable sorted payloads', async ()
         res.body.jobs.map((job) => job.id),
         ['job-old', 'job-new'],
     );
-});
-
-test('GET /config returns 304 when If-None-Match matches current snapshot version', async () => {
-    const { app } = createConfigHarness();
-    const first = await request(app).get('/config').expect(200);
-
-    const res = await request(app)
-        .get('/config')
-        .set('If-None-Match', first.headers.etag)
-        .expect(304);
-
-    assert.equal(res.headers.etag, first.headers.etag);
-    assert.equal(res.headers['x-config-etag'], first.headers['x-config-etag']);
-    assert.equal(res.headers['x-snapshot-version'], first.headers['x-snapshot-version']);
-});
-
-test('HEAD /config/version returns 304 for matching config ETag', async () => {
-    const { app } = createConfigHarness();
-    const first = await request(app).get('/config').expect(200);
-
-    await request(app)
-        .head('/config/version')
-        .set('If-None-Match', first.headers['x-config-etag'])
-        .expect(304);
-});
-
-test('GET /dashboard/snapshot returns aligned config and health slices', async () => {
-    const { app } = createConfigHarness({
-        getHealthSnapshot: async () => ({
-            etag: 'health-etag-1',
-            snapshot: {
-                snapshotVersion: 'health-snap-1',
-                status: 'on',
-                generatedAt: '2026-05-01T00:00:00.000Z',
-                ageMs: 12,
-                mediamtx: {},
-                pipelines: {},
-            },
-        }),
-    });
-
-    const res = await request(app).get('/dashboard/snapshot').expect(200);
-
-    assert.equal(typeof res.body.snapshotVersion, 'string');
-    assert.equal(res.headers.etag, `"${res.body.snapshotVersion}"`);
-    assert.equal(res.body.config.snapshotVersion, res.body.config.etag);
-    assert.equal(res.body.config.data.serverName, 'Restream');
-    assert.equal(res.body.health.etag, 'health-etag-1');
-    assert.equal(res.body.health.snapshotVersion, 'health-snap-1');
-    assert.equal(res.body.health.data.status, 'on');
-});
-
-test('GET /dashboard/snapshot supports 304 when snapshot version matches', async () => {
-    const { app } = createConfigHarness({
-        getHealthSnapshot: async () => ({
-            etag: 'health-etag-2',
-            snapshot: {
-                snapshotVersion: 'health-snap-2',
-                status: 'off',
-                generatedAt: '2026-05-01T00:00:00.000Z',
-                ageMs: 55,
-                mediamtx: {},
-                pipelines: {},
-            },
-        }),
-    });
-
-    const first = await request(app).get('/dashboard/snapshot').expect(200);
-    await request(app)
-        .get('/dashboard/snapshot')
-        .set('If-None-Match', first.headers.etag)
-        .expect(304);
 });
