@@ -3,15 +3,85 @@
 
 import {
     formatBytesWithAdaptiveUnit,
+    formatBytesWithAdaptiveUnitParts,
     msToHHMMSS,
     sanitizeLogMessage,
     setBadgeBitrateWithSubtleUnit,
 } from '../utils.js';
 
-function createOutputMetricBadge(text, title) {
+function createBadgeIcon(iconName) {
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNs, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '12');
+    svg.setAttribute('height', '12');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.classList.add('shrink-0', 'opacity-70');
+
+    const addPath = (d) => {
+        const path = document.createElementNS(svgNs, 'path');
+        path.setAttribute('d', d);
+        svg.appendChild(path);
+    };
+
+    switch (iconName) {
+        case 'time':
+            addPath('M12 6v6l4 2');
+            addPath('M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z');
+            break;
+        case 'cpu':
+            addPath('M9 9h6v6H9z');
+            addPath('M3 9h2M3 15h2M19 9h2M19 15h2M9 3v2M15 3v2M9 19v2M15 19v2');
+            break;
+        case 'memory':
+            addPath('M4 7h16v10H4z');
+            addPath('M8 7V5M12 7V5M16 7V5M8 17v2M12 17v2M16 17v2');
+            break;
+        case 'network':
+            addPath('M8 17V7');
+            addPath('M5 10l3-3 3 3');
+            addPath('M16 7v10');
+            addPath('M13 14l3 3 3-3');
+            break;
+        case 'size':
+            addPath('M3 7h18v4H3z');
+            addPath('M5 11h14v8H5z');
+            addPath('M10 14h4');
+            break;
+        case 'fps':
+            addPath('M3 5h18v14H3z');
+            addPath('M7 5v14M13 5v14M17 5v14');
+            addPath('M3 10h4M3 14h4M17 10h4M17 14h4');
+            break;
+        default:
+            return null;
+    }
+
+    return svg;
+}
+
+function applyBadgeContent(badge, text, iconName) {
+    badge.replaceChildren();
+
+    const icon = createBadgeIcon(iconName);
+    if (icon) {
+        badge.appendChild(icon);
+    }
+
+    const textSpan = document.createElement('span');
+    textSpan.textContent = text;
+    badge.appendChild(textSpan);
+}
+
+function createOutputMetricBadge(text, title, iconName = null) {
     const badge = document.createElement('span');
-    badge.className = 'badge badge-sm whitespace-nowrap';
-    badge.textContent = text;
+    badge.className = 'badge badge-sm whitespace-nowrap inline-flex items-center gap-1';
+    applyBadgeContent(badge, text, iconName);
     badge.title = title;
     return badge;
 }
@@ -21,6 +91,17 @@ function formatProgressFps(value) {
     return Number.isInteger(value) ? `${value} FPS` : `${value.toFixed(1)} FPS`;
 }
 
+function toFiniteMetricValue(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatBytesWithSharedUnitText(value) {
+    const parts = formatBytesWithAdaptiveUnitParts(value);
+    return parts ? `${parts.valueText} ${parts.unitText}` : null;
+}
+
 function getOutputMetadataBadgeConfigs(output, isRunning) {
     const configs = [];
 
@@ -28,23 +109,29 @@ function getOutputMetadataBadgeConfigs(output, isRunning) {
         configs.push({
             text: msToHHMMSS(output.time),
             title: 'Output uptime in the current session',
+            icon: 'time',
         });
     }
 
-    const outputProgressFrame = Number(output.progressFrame);
-    if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
+    const outputProcessCpuPercent = toFiniteMetricValue(output.processCpuPercent);
+    if (isRunning && outputProcessCpuPercent !== null && outputProcessCpuPercent >= 0) {
         configs.push({
-            text: `Frame ${Math.trunc(outputProgressFrame)}`,
-            title: 'Output frame count from FFmpeg progress',
+            text: `${outputProcessCpuPercent.toFixed(1)}%`,
+            title: 'Output process CPU usage',
+            icon: 'cpu',
         });
     }
 
-    const outputFpsText = formatProgressFps(Number(output.progressFps));
-    if (outputFpsText) {
-        configs.push({
-            text: outputFpsText,
-            title: 'Output FPS from FFmpeg progress',
-        });
+    const outputProcessMemoryBytes = toFiniteMetricValue(output.processMemoryBytes);
+    if (isRunning && outputProcessMemoryBytes !== null && outputProcessMemoryBytes >= 0) {
+        const formattedProcessMemory = formatBytesWithSharedUnitText(outputProcessMemoryBytes);
+        if (formattedProcessMemory) {
+            configs.push({
+                text: formattedProcessMemory,
+                title: 'Output process memory usage',
+                icon: 'memory',
+            });
+        }
     }
 
     const outputBitrateKbps = Number(output.bitrateKbps);
@@ -53,6 +140,7 @@ function getOutputMetadataBadgeConfigs(output, isRunning) {
             text: '',
             title: 'Output bitrate from FFmpeg progress',
             bitrateKbps: outputBitrateKbps,
+            icon: 'network',
         });
     }
 
@@ -60,11 +148,21 @@ function getOutputMetadataBadgeConfigs(output, isRunning) {
     if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
         const formattedOutputSize = formatBytesWithAdaptiveUnit(outputTotalSizeBytes);
         if (formattedOutputSize) {
-        configs.push({
-            text: formattedOutputSize,
-            title: 'Output total size from FFmpeg progress',
-        });
+            configs.push({
+                text: formattedOutputSize,
+                title: 'Output total size from FFmpeg progress',
+                icon: 'size',
+            });
         }
+    }
+
+    const outputFpsText = formatProgressFps(Number(output.progressFps));
+    if (outputFpsText) {
+        configs.push({
+            text: outputFpsText,
+            title: 'Output FPS from FFmpeg progress',
+            icon: 'fps',
+        });
     }
 
     return configs;
@@ -152,13 +250,14 @@ function renderOutputsList(
 
         const metadataRow = document.createElement('div');
         metadataRow.className =
-            'mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap';
+            'mt-2 flex flex-wrap items-center gap-2';
         metadataRow.style.gridColumn = '1 / -1';
 
         getOutputMetadataBadgeConfigs(output, isRunning).forEach((config) => {
-            const badge = createOutputMetricBadge(config.text, config.title);
+            const badge = createOutputMetricBadge(config.text, config.title, config.icon);
             if (config.bitrateKbps) {
                 setBadgeBitrateWithSubtleUnit(badge, config.bitrateKbps);
+                applyBadgeContent(badge, badge.textContent || '', config.icon);
             }
             metadataRow.appendChild(badge);
         });

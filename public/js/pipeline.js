@@ -230,6 +230,9 @@ function mergePipelineInfo({ config, health, nowMs, currentHost = null, computeI
             bitrateKbps: outputHealth?.bitrateKbps ?? null,
             progressFrame: outputHealth?.progressFrame ?? null,
             progressFps: outputHealth?.progressFps ?? null,
+            process: outputHealth?.process || null,
+            processCpuPercent: outputHealth?.process?.cpuPercent ?? null,
+            processMemoryBytes: outputHealth?.process?.memoryBytes ?? null,
         });
     });
 
@@ -239,12 +242,30 @@ function mergePipelineInfo({ config, health, nowMs, currentHost = null, computeI
         const outputBitrates = pipeline.outs
             .map((output) => output.bitrateKbps)
             .filter((value) => Number.isFinite(value));
+        const outputProcessCpuValues = pipeline.outs
+            .map((output) => output.processCpuPercent)
+            .filter((value) => Number.isFinite(value));
+        const outputProcessMemoryValues = pipeline.outs
+            .map((output) => output.processMemoryBytes)
+            .filter((value) => Number.isFinite(value) && value >= 0);
 
         pipeline.stats = {
             inputBitrateKbps: pipeline.input.bitrateKbps,
             outputBitrateKbps:
                 outputBitrates.length > 0
                     ? Number(outputBitrates.reduce((sum, value) => sum + value, 0).toFixed(1))
+                    : null,
+            processCpuPercent:
+                outputProcessCpuValues.length > 0
+                    ? Number(
+                          outputProcessCpuValues
+                              .reduce((sum, value) => sum + value, 0)
+                              .toFixed(2),
+                      )
+                    : null,
+            processMemoryBytes:
+                outputProcessMemoryValues.length > 0
+                    ? outputProcessMemoryValues.reduce((sum, value) => sum + value, 0)
                     : null,
             readerCount,
             outputCount,

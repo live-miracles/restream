@@ -143,3 +143,69 @@ test('health readiness transitions from 503 to 200 after the monitor starts', as
         console.log = originalConsoleLog;
     }
 });
+
+test('GET /health includes per-output process metrics for running job pids', async () => {
+    await withHealthModule(
+        async () => createJsonResponse({ items: [], itemCount: 0 }),
+        async (createHealthMonitorService) => {
+            const { app, healthMonitor } = createHealthHarness(createHealthMonitorService, {
+                readinessFetch: async () => ({ ok: true, status: 200 }),
+                db: {
+                    listPipelines: () => [
+                        {
+                            id: 'pipe-a',
+                            name: 'Pipeline A',
+                            streamKey: 'stream-a',
+                            inputEverSeenLive: 0,
+                        },
+                    ],
+                    listOutputs: () => [
+                        {
+                            id: 'out-a',
+                            pipelineId: 'pipe-a',
+                            encoding: 'source',
+                        },
+                    ],
+                    listJobs: () => [
+                        {
+                            id: 'job-a',
+                            pipelineId: 'pipe-a',
+                            outputId: 'out-a',
+                            pid: process.pid,
+                            status: 'running',
+                            startedAt: new Date().toISOString(),
+                            endedAt: null,
+                        },
+                    ],
+                },
+            });
+
+            await healthMonitor.start();
+
+            try {
+                await waitFor(async () => {
+                    const response = await request(app).get('/health').expect(200);
+                    const processMetrics =
+                        response.body?.pipelines?.['pipe-a']?.outputs?.['out-a']?.process || null;
+
+                    assert.ok(processMetrics);
+                    assert.equal(processMetrics.pid, process.pid);
+                    assert.equal(
+                        processMetrics.memoryBytes === null ||
+                            (typeof processMetrics.memoryBytes === 'number' &&
+                                processMetrics.memoryBytes >= 0),
+                        true,
+                    );
+                    assert.equal(
+                        processMetrics.cpuPercent === null ||
+                            (typeof processMetrics.cpuPercent === 'number' &&
+                                processMetrics.cpuPercent >= 0),
+                        true,
+                    );
+                });
+            } finally {
+                await healthMonitor.stop();
+            }
+        },
+    );
+});

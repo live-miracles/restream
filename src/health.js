@@ -6,6 +6,8 @@
 // coordinator that recovery decisions use. Exposes createHealthMonitorService() and
 // registerSystemMetricsApi().
 
+const fs = require('fs');
+
 const {
     errMsg,
     log,
@@ -77,6 +79,78 @@ function createHealthMonitorService({
 
     function indexJobsByOutputId(jobs) {
         return new Map((jobs || []).map((job) => [job.outputId, job]));
+    }
+
+    // Per-output process telemetry is sampled from /proc and kept in-memory only.
+    const processCpuSampleByPid = new Map();
+
+    function readProcessRuntimeNs(pid) {
+        if (!Number.isFinite(pid) || pid <= 0) return null;
+        try {
+            const content = fs.readFileSync(`/proc/${pid}/schedstat`, 'utf8').trim();
+            const runtimeNs = Number(content.split(/\s+/)[0]);
+            return Number.isFinite(runtimeNs) && runtimeNs >= 0 ? runtimeNs : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function readProcessMemoryBytes(pid) {
+        if (!Number.isFinite(pid) || pid <= 0) return null;
+        try {
+            const content = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+            const match = content.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+            if (!match) return null;
+            const kb = Number(match[1]);
+            return Number.isFinite(kb) && kb >= 0 ? kb * 1024 : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function collectProcessUsageByPid(activePids, sampledAtMs = Date.now()) {
+        const usageByPid = new Map();
+
+        for (const pid of activePids) {
+            const runtimeNs = readProcessRuntimeNs(pid);
+            const memoryBytes = readProcessMemoryBytes(pid);
+
+            if (runtimeNs === null && memoryBytes === null) {
+                processCpuSampleByPid.delete(pid);
+                continue;
+            }
+
+            let cpuPercent = null;
+            const previous = processCpuSampleByPid.get(pid);
+            if (previous && runtimeNs !== null) {
+                const dtNs = Math.max((sampledAtMs - previous.ts) * 1_000_000, 1);
+                const deltaRuntimeNs = runtimeNs - previous.runtimeNs;
+                if (deltaRuntimeNs >= 0) {
+                    cpuPercent = Number(((deltaRuntimeNs / dtNs) * 100).toFixed(2));
+                }
+            }
+
+            if (runtimeNs !== null) {
+                processCpuSampleByPid.set(pid, {
+                    ts: sampledAtMs,
+                    runtimeNs,
+                });
+            }
+
+            usageByPid.set(pid, {
+                pid,
+                cpuPercent,
+                memoryBytes,
+            });
+        }
+
+        for (const trackedPid of processCpuSampleByPid.keys()) {
+            if (!activePids.has(trackedPid)) {
+                processCpuSampleByPid.delete(trackedPid);
+            }
+        }
+
+        return usageByPid;
     }
 
     const probeEvictionTimer = setInterval(() => {
@@ -330,7 +404,14 @@ function createHealthMonitorService({
         };
     }
 
-    function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag, inputMedia) {
+    function buildOutputHealthSnapshot(
+        pipeline,
+        output,
+        latestJob,
+        rtspByReaderTag,
+        inputMedia,
+        processUsageByPid,
+    ) {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -340,6 +421,15 @@ function createHealthMonitorService({
         const bitrate = bitrateKbps === null ? null : ffmpegProgress?.bitrate || null;
         const progressFrame = parseFfmpegProgressFrame(ffmpegProgress?.frame);
         const progressFps = parseFfmpegProgressFps(ffmpegProgress?.fps);
+        const latestJobPid = Number(latestJob?.pid);
+        const processUsage =
+            latestJob?.status === 'running' && Number.isFinite(latestJobPid)
+                ? processUsageByPid.get(latestJobPid) || {
+                      pid: latestJobPid,
+                      cpuPercent: null,
+                      memoryBytes: null,
+                  }
+                : null;
 
         if (latestJob?.status === 'failed') status = 'error';
         if (latestJob?.status === 'running') {
@@ -372,11 +462,13 @@ function createHealthMonitorService({
         return {
             status,
             jobId: latestJob?.id || null,
+            pid: Number.isFinite(latestJobPid) ? latestJobPid : null,
             totalSize: totalSizeBytes,
             bitrate,
             bitrateKbps,
             progressFrame,
             progressFps,
+            process: processUsage,
             media: outputMediaSnapshot.media,
             mediaSource: outputMediaSnapshot.mediaSource,
         };
@@ -392,6 +484,7 @@ function createHealthMonitorService({
         rtspSessionRecordById,
         publisherByPath,
         nowMs,
+        processUsageByPid,
     ) {
         const streamKey = pipeline.streamKey || '';
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
@@ -444,6 +537,7 @@ function createHealthMonitorService({
                     video: inputHealth.video,
                     audio: inputHealth.audio,
                 },
+                processUsageByPid,
             );
         }
 
@@ -510,10 +604,17 @@ function createHealthMonitorService({
             const pipelines = db.listPipelines();
             const outputs = db.listOutputs();
             const jobs = db.listJobs();
+            const nowMs = Date.now();
+            const activePids = new Set(
+                jobs
+                    .filter((job) => job?.status === 'running')
+                    .map((job) => Number(job?.pid))
+                    .filter((pid) => Number.isFinite(pid) && pid > 0),
+            );
+            const processUsageByPid = collectProcessUsageByPid(activePids, nowMs);
             const outputsByPipeline = groupOutputsByPipeline(outputs);
             const jobByOutputId = indexJobsByOutputId(jobs);
             const pipelinesHealth = {};
-            const nowMs = Date.now();
 
             for (const pipeline of pipelines) {
                 const streamKey = pipeline.streamKey || '';
@@ -531,6 +632,7 @@ function createHealthMonitorService({
                     rtspSessionRecordById,
                     publisherByPath,
                     nowMs,
+                    processUsageByPid,
                 );
             }
 

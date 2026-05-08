@@ -6,6 +6,7 @@
 import {
     copyData,
     copyText,
+    formatBytesWithAdaptiveUnit,
     formatCodecName,
     msToHHMMSS,
     showCopiedNotification,
@@ -459,6 +460,17 @@ function renderPipelineInputStats(pipe) {
                 stats.outputCount !== null && stats.outputCount !== undefined
                     ? String(stats.outputCount)
                     : '--',
+        },
+        {
+            id: 'output-process-cpu',
+            value:
+                stats.processCpuPercent !== null && stats.processCpuPercent !== undefined
+                    ? `${Number(stats.processCpuPercent).toFixed(1)}%`
+                    : '--',
+        },
+        {
+            id: 'output-process-memory',
+            value: formatBytesWithAdaptiveUnit(stats.processMemoryBytes) || '--',
         },
     ]);
 

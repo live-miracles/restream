@@ -118,6 +118,11 @@ test('mergePipelineInfo builds the dashboard pipeline model from config and heal
                             bitrateKbps: 456.7,
                             progressFrame: 33,
                             progressFps: 29.97,
+                            process: {
+                                pid: 12345,
+                                cpuPercent: 14.25,
+                                memoryBytes: 314572800,
+                            },
                             mediaSource: 'ffmpeg',
                             media: {
                                 video: { codec: 'h264', width: 1280, height: 720 },
@@ -137,6 +142,10 @@ test('mergePipelineInfo builds the dashboard pipeline model from config and heal
     assert.equal(pipelines[0].ingestUrls.rtmp, 'rtmp://viewer.example.com:1935/live/stream-a');
     assert.equal(pipelines[0].input.bitrateKbps, 99.9);
     assert.equal(pipelines[0].outs[0].bitrateKbps, 456.7);
+    assert.equal(pipelines[0].outs[0].processCpuPercent, 14.25);
+    assert.equal(pipelines[0].outs[0].processMemoryBytes, 314572800);
     assert.equal(pipelines[0].stats.outputBitrateKbps, 456.7);
+    assert.equal(pipelines[0].stats.processCpuPercent, 14.25);
+    assert.equal(pipelines[0].stats.processMemoryBytes, 314572800);
     assert.equal(pipelines[0].stats.readerMismatch, false);
 });

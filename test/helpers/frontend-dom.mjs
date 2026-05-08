@@ -254,6 +254,8 @@ function buildDashboardSmokeFixture() {
             <div id="input-audio-profile"></div>
             <div id="input-total-bw"></div>
             <div id="output-total-bw"></div>
+            <div id="output-process-cpu"></div>
+            <div id="output-process-memory"></div>
             <div id="input-reader-count"></div>
             <div id="input-output-count"></div>
         </section>

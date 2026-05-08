@@ -46,6 +46,8 @@ function buildOutput(id, name, overrides = {}) {
         progressFrame: 1820,
         progressFps: 29.7,
         bitrateKbps: 2500,
+        processCpuPercent: 12.3,
+        processMemoryBytes: 256 * 1024 * 1024,
         totalSize: 104857600,
         url: `rtmp://localhost/live/${id}`,
         video: {},
@@ -76,6 +78,8 @@ function buildPipeline(id, name, overrides = {}) {
         stats: {
             inputBitrateKbps: null,
             outputBitrateKbps: null,
+            processCpuPercent: null,
+            processMemoryBytes: null,
             readerCount: 0,
             outputCount: 0,
         },
@@ -152,9 +156,29 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
         buildPipeline('pipe-b', 'Pipeline B'),
         buildPipeline('pipe-a', 'Pipeline A', {
             key: 'pipe-a-secret',
+            input: {
+                status: 'on',
+                time: 65000,
+                video: {},
+                audio: {},
+                publisher: null,
+                unexpectedReadersCount: 0,
+            },
+            stats: {
+                inputBitrateKbps: 1234.5,
+                outputBitrateKbps: 5500,
+                processCpuPercent: 24.6,
+                processMemoryBytes: 1536 * 1024 * 1024,
+                readerCount: 2,
+                outputCount: 2,
+            },
             outs: [
                 buildOutput('out-a-1', 'Output A-1', { totalSize: 104857600 }),
-                buildOutput('out-a-2', 'Output A-2', { totalSize: 3 * 1024 * 1024 * 1024 }),
+                buildOutput('out-a-2', 'Output A-2', {
+                    totalSize: 3 * 1024 * 1024 * 1024,
+                    processCpuPercent: null,
+                    processMemoryBytes: null,
+                }),
             ],
         }),
     ];
@@ -192,6 +216,41 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
         .map((badge) => badge.textContent);
 
     assert.deepEqual(totalSizeBadges, ['100.0 MB', '3.0 GB']);
+
+    const processCpuBadges = [...document.querySelectorAll('#outputs-list .badge')]
+        .filter((badge) => badge.title === 'Output process CPU usage')
+        .map((badge) => badge.textContent);
+    assert.deepEqual(processCpuBadges, ['12.3%']);
+
+    const processMemoryBadges = [...document.querySelectorAll('#outputs-list .badge')]
+        .filter((badge) => badge.title === 'Output process memory usage')
+        .map((badge) => badge.textContent);
+    assert.deepEqual(processMemoryBadges, ['256.0 MB']);
+
+    assert.equal(processCpuBadges.includes('0.0%'), false);
+    assert.equal(processMemoryBadges.includes('0 B'), false);
+
+    const firstOutputBadgeTitles = [...document.querySelectorAll('#outputs-list > div:first-child .badge')]
+        .map((badge) => badge.title)
+        .filter(Boolean);
+    assert.deepEqual(firstOutputBadgeTitles, [
+        'Output uptime in the current session',
+        'Output process CPU usage',
+        'Output process memory usage',
+        'Output bitrate from FFmpeg progress',
+        'Output total size from FFmpeg progress',
+        'Output FPS from FFmpeg progress',
+    ]);
+
+    const firstOutputBadges = [...document.querySelectorAll('#outputs-list > div:first-child .badge')]
+        .filter((badge) => badge.title);
+    assert.equal(firstOutputBadges.length, 6);
+    firstOutputBadges.forEach((badge) => {
+        assert.ok(badge.querySelector('svg'));
+    });
+
+    assert.equal(document.getElementById('output-process-cpu').textContent, '24.6%');
+    assert.equal(document.getElementById('output-process-memory').textContent, '1.5 GB');
 });
 
 test('dashboard smoke renders RAM metric with adaptive shared byte units', () => {
