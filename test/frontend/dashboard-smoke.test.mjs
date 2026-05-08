@@ -195,12 +195,12 @@ test('dashboard smoke renders selection state and key/url visibility toggles', (
 });
 
 test('dashboard smoke renders RAM metric with adaptive shared byte units', () => {
-    const metricsHost = document.createElement('div');
-    metricsHost.innerHTML = `
-        <div class="ram-metric"></div>
-        <div class="ram-metric"></div>
-    `;
-    document.body.appendChild(metricsHost);
+    assert.equal(document.querySelectorAll('#pipe-info-col .ram-metric').length, 0);
+    assert.equal(document.querySelectorAll('#stats-col .ram-metric').length, 0);
+    assert.equal(document.querySelectorAll('#system-metrics-strip .ram-metric').length, 0);
+
+    const ramMetrics = [...document.querySelectorAll('#system-metrics-nav .ram-metric')];
+    assert.ok(ramMetrics.length > 0);
 
     state.metrics = {
         memory: {
@@ -211,12 +211,83 @@ test('dashboard smoke renders RAM metric with adaptive shared byte units', () =>
 
     renderServerMetrics();
 
-    const ramMetrics = [...document.querySelectorAll('.ram-metric')];
-    assert.ok(ramMetrics.length > 0);
     ramMetrics.forEach((metric) => {
         assert.match(metric.textContent, /512\.0\/3\.0/);
         assert.match(metric.textContent, /MB\/GB/);
     });
+});
+
+test('dashboard smoke keeps metric headings centered and renders 1/2/3-digit values across units', () => {
+    const metricSlots = [...document.querySelectorAll('#system-metrics-nav .stat')];
+    assert.equal(metricSlots.length, 5);
+    assert.equal(metricSlots[0].style.width, '5.8rem');
+    assert.equal(metricSlots[1].style.width, '9rem');
+    assert.equal(metricSlots[2].style.width, '5.8rem');
+    assert.equal(metricSlots[3].style.width, '8.2rem');
+    assert.equal(metricSlots[4].style.width, '8.2rem');
+
+    const metricsStrip = document.querySelector('#system-metrics-nav .stats.server-stats');
+    assert.ok(metricsStrip);
+    assert.match(metricsStrip.getAttribute('style') || '', /border-left:/);
+    assert.match(metricsStrip.getAttribute('style') || '', /border-right:/);
+
+    const metricTitles = [...document.querySelectorAll('#system-metrics-nav .stat-title')];
+    assert.equal(metricTitles.length, 5);
+    metricTitles.forEach((title) => {
+        assert.match(title.className, /\btext-center\b/);
+    });
+
+    const scenarios = [
+        {
+            cpu: 9,
+            disk: 7,
+            downKbps: 9,
+            upKbps: 99,
+            expectedDown: /9\.0\s*Kb\/s/,
+            expectedUp: /99\.0\s*Kb\/s/,
+        },
+        {
+            cpu: 42,
+            disk: 58,
+            downKbps: 1230,
+            upKbps: 12300,
+            expectedDown: /1\.2\s*Mb\/s/,
+            expectedUp: /12\.3\s*Mb\/s/,
+        },
+        {
+            cpu: 100,
+            disk: 100,
+            downKbps: 123000,
+            upKbps: 1230000,
+            expectedDown: /123\.0\s*Mb\/s/,
+            expectedUp: /1\.23\s*Gb\/s/,
+        },
+    ];
+
+    const downloadMetric = document.querySelector('#system-metrics-nav .downlink-metric');
+    const uploadMetric = document.querySelector('#system-metrics-nav .uplink-metric');
+    assert.ok(downloadMetric);
+    assert.ok(uploadMetric);
+
+    for (const scenario of scenarios) {
+        state.metrics = {
+            cpu: { usagePercent: scenario.cpu },
+            memory: {
+                usedBytes: 512 * 1024 * 1024,
+                totalBytes: 7 * 1024 * 1024 * 1024,
+            },
+            disk: { usedPercent: scenario.disk },
+            network: {
+                downloadKbps: scenario.downKbps,
+                uploadKbps: scenario.upKbps,
+            },
+        };
+
+        renderServerMetrics();
+
+        assert.match(downloadMetric.textContent, scenario.expectedDown);
+        assert.match(uploadMetric.textContent, scenario.expectedUp);
+    }
 });
 
 test('dashboard smoke wires output controls to the injected handlers', async () => {

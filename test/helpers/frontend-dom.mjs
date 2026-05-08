@@ -172,7 +172,33 @@ function buildDashboardSmokeFixture() {
         <input id="saving-badge" type="checkbox" />
         <div id="copied-notification" class="hidden"></div>
         <div id="error-alert" class="hidden"><span id="error-msg"></span></div>
-        <button id="server-name">Restream</button>
+        <div id="navbar-left">
+            <button id="server-name">Restream</button>
+            <div id="system-metrics-nav" style="border-radius: 0;">
+                <div class="stats server-stats shadow-none" style="border-left: 1px dashed color-mix(in oklab, currentColor 10%, transparent); border-right: 1px dashed color-mix(in oklab, currentColor 10%, transparent); border-radius: 0;">
+                    <div class="stat text-center" style="box-sizing: border-box; width: 5.8rem; min-width: 5.8rem; max-width: 5.8rem; padding: 0.4rem 0.35rem;">
+                        <div class="stat-title text-center">CPU</div>
+                        <div class="stat-value cpu-metric text-sm whitespace-nowrap" style="font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;"></div>
+                    </div>
+                    <div class="stat text-center" style="box-sizing: border-box; width: 9rem; min-width: 9rem; max-width: 9rem; padding: 0.4rem 0.35rem;">
+                        <div class="stat-title text-center">RAM</div>
+                        <div class="stat-value ram-metric text-sm whitespace-nowrap" style="font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;"></div>
+                    </div>
+                    <div class="stat text-center" style="box-sizing: border-box; width: 5.8rem; min-width: 5.8rem; max-width: 5.8rem; padding: 0.4rem 0.35rem;">
+                        <div class="stat-title text-center">Disk</div>
+                        <div class="stat-value disk-metric text-sm whitespace-nowrap" style="font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;"></div>
+                    </div>
+                    <div class="stat text-center" style="box-sizing: border-box; width: 8.2rem; min-width: 8.2rem; max-width: 8.2rem; padding: 0.4rem 0.35rem;">
+                        <div class="stat-title text-center">Download</div>
+                        <div class="stat-value downlink-metric text-sm whitespace-nowrap" style="font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;"></div>
+                    </div>
+                    <div class="stat text-center" style="box-sizing: border-box; width: 8.2rem; min-width: 8.2rem; max-width: 8.2rem; padding: 0.4rem 0.35rem;">
+                        <div class="stat-title text-center">Upload</div>
+                        <div class="stat-value uplink-metric text-sm whitespace-nowrap" style="font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <div id="dashboard-grid"></div>
 
