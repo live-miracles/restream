@@ -205,8 +205,9 @@ async function getConfig() {
 
     return {
         notModified: false,
-        snapshotVersion: result.data?.snapshotVersion || null,
-        configSnapshotVersion: result.data?.snapshotVersion || null,
+        // /config returns the snapshot body directly; snapshot version comes from SSE events.
+        snapshotVersion: null,
+        configSnapshotVersion: null,
         data: result.data,
     };
 }

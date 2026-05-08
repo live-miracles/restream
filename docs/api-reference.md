@@ -23,8 +23,8 @@ Behavior:
 ```json
 {
   "serverName": "Restream",
-  "pipelinesLimit": 10,
-  "outputsLimit": 50,
+  "pipelinesLimit": 25,
+  "outLimit": 95,
   "pipelines": [
     {
       "id": "a1b2c3d4e5f6a7b8",

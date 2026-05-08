@@ -13,6 +13,7 @@ const {
     apiRequest,
     buildOutputHistoryPath,
     buildPipelineHistoryPath,
+    getConfig,
     isMutationMethod,
     registerMutationSuccessListener,
 } = await loadBrowserModule('public/js/client.js');
@@ -43,6 +44,34 @@ test('api query helpers build output history paths for lifecycle and raw modes',
 
 test('api query helpers build pipeline history paths', () => {
     assert.equal(buildPipelineHistoryPath('pipe-a', '25'), '/pipelines/pipe-a/history?limit=25');
+});
+
+test('getConfig returns direct /config payload without requiring nested data wrappers', async () => {
+    const originalFetch = global.fetch;
+
+    try {
+        global.fetch = async () => ({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                serverName: 'Restream',
+                pipelinesLimit: 25,
+                outLimit: 95,
+                pipelines: [],
+                outputs: [],
+                jobs: [],
+            }),
+        });
+
+        const result = await getConfig();
+        assert.equal(result.notModified, false);
+        assert.equal(result.snapshotVersion, null);
+        assert.equal(result.configSnapshotVersion, null);
+        assert.equal(result.data.serverName, 'Restream');
+        assert.equal(result.data.outLimit, 95);
+    } finally {
+        global.fetch = originalFetch;
+    }
 });
 
 test('api request notifies mutation listeners only for successful mutation requests', async () => {
