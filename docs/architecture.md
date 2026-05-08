@@ -121,7 +121,7 @@ job_logs
 
 meta
   key         TEXT PK
-  value       TEXT           -- used for ETag persistence across restarts
+  value       TEXT           -- used for snapshot-version persistence across restarts
 ```
 
 ### 2.2 In-Memory State
@@ -192,7 +192,7 @@ spawn(ffmpegCmd, args)
   ▼
 db.createJob({ status: 'running', pid, startedAt })
 db.appendJobLog(jobId, '[lifecycle] started status=running pid=<pid|null>')
-recomputeEtag()
+recomputeSnapshotVersion()
 processes.set(jobId, child)
   │
   └─ ON CONFLICT(pipeline_id, output_id): updates existing row (no jobs-table growth)
@@ -210,7 +210,7 @@ Wait 250 ms → check if job still 'running'
                 append [lifecycle] retry_decision failureCount=<n> scheduled=<true|false>
                 input-unavailable clean stops append [lifecycle] retry_suppressed ... instead
                 if scheduled=false append [lifecycle] retry_exhausted ... action=give_up
-                           → recomputeEtag()
+                           → recomputeSnapshotVersion()
                            → processes.delete(jobId)
                            → stopRequestedJobIds.delete(jobId)
 ```
@@ -232,7 +232,7 @@ processes.get(jobId) → send SIGTERM
   │ if process still alive after 5 s → SIGKILL (setTimeout)
   │ if process ref missing → mark job 'stopped' in DB directly
   ▼
-recomputeEtag()
+recomputeSnapshotVersion()
 200 { jobId, result }
 ```
 
@@ -323,29 +323,30 @@ Return filtered logs:
 
 `job_logs.message` includes `[lifecycle] ...` lines for key job-table transitions (`started`, `stop_requested`, `failed_on_error`, `exited`, `retry_decision`, `retry_exhausted`, `marked_stopped_no_process`) so UI can render a structured timeline while preserving raw logs. The `exited` line includes `requestedStop=<true|false>` to distinguish intentional stops from failures.
 
-### 4.5 Config Snapshot (`GET /config`)
+### 4.5 Dashboard Stream + Recovery Snapshots
 
 ```
-Client (browser dashboard polls this)
-  │
-  ├── sends If-None-Match: "<etag>" (if known)
+Client dashboard opens EventSource('/dashboard/events')
   │
   ▼
-Server reads ETag from db.getEtag()
-  │ If-None-Match matches current ETag → 304 Not Modified (no body)
+Server emits dashboard.config immediately
+  ├── payload: { snapshotVersion, data }
+  └── re-emits only when config snapshot version changes
   │
   ▼
-Build snapshot:
-  { ...runtimeConfig,       ← from src/config/restream.json
-    streamKeys,             ← db.listStreamKeys()
-    pipelines,              ← db.listPipelines() + per-pipeline ingestUrls
-    outputs,                ← db.listOutputs()
-    jobs }                  ← db.listJobs()
-
-200 { snapshot }  +  ETag: "<hash>"
+Server emits dashboard.telemetry immediately and on interval
+  └── payload: { snapshotVersion, health, metrics }
+  │
+  ▼
+Client applies config/health/metrics slices and rerenders dashboard state
+  │
+  └── on stream silence/close: watchdog reconnects and fetches one-shot snapshots
+      via GET /config, GET /health, and GET /metrics/system
 ```
 
-ETag is recomputed (SHA-256 of deterministic JSON snapshot) on every job/pipeline/output state change and persisted in the `meta` table so it survives restarts.
+Snapshot versions are recomputed (SHA-256 over deterministic snapshot payloads) on
+pipeline/output/job state changes and persisted in the `meta` table so version tracking survives
+restarts.
 
 ### 4.6 Stream Key Creation (`POST /stream-keys`)
 
@@ -459,9 +460,9 @@ For the backend ownership map and module-selection guidance, see
 |-----------------------|---------------------------------------------------------------|
 | `public/index.html`   | Dashboard SPA shell                                           |
 | `public/stream-keys.html` | Stream key management page                               |
-| `public/js/client.js` | Shared mutable UI state plus API/ETag helpers |
+| `public/js/client.js` | Shared mutable UI state plus API/snapshot helpers |
 | `public/js/pipeline.js` | `parsePipelinesInfo()` and throughput helpers |
-| `public/js/features/dashboard.js` | Polling orchestration and config/version drift detection |
+| `public/js/features/dashboard.js` | SSE orchestration and snapshot-version drift detection |
 | `public/js/features/dashboard-view.js` | Dashboard DOM rendering, metrics, and health banner state |
 | `public/js/features/editor.js`    | Pipeline/output edit flows and start/stop controls             |
 | `public/js/features/view.js` | Selected-pipeline detail, ingest details, preview, and output-list wiring |
@@ -472,52 +473,53 @@ For the backend ownership map and module-selection guidance, see
 | `public/output.css`   | Compiled Tailwind + DaisyUI output (do not edit manually)     |
 | `input.css`           | Tailwind source (project root, compiled with `make css`)      |
 
-### 5.2 Dashboard Polling Call Flow
+### 5.2 Dashboard Stream Call Flow
 
 ```
 Page load
   │
   ▼
-fetchConfig()          GET /config (with If-None-Match ETag)
-fetchHealth()          GET /health
-fetchSystemMetrics()   GET /metrics/system (latest fixed background sample)
+connectDashboardEventStream()  GET /dashboard/events
+  ├── event: dashboard.config    { snapshotVersion, data }
+  └── event: dashboard.telemetry { snapshotVersion, health, metrics }
   │
   ▼
-parsePipelinesInfo()   merges config.pipelines + config.outputs + config.jobs
-                       + health.pipelines into pipeline view-model array
+applyConfigSlice()/applyHealthSlice()/applyMetricsSlice()
+parsePipelinesInfo()   merges config + health into pipeline view-model array
   │
   ▼
 renderPipelines()      DOM update for pipeline cards and output tables
 renderMetrics()        DOM update for system metrics (CPU, mem, disk, net)
   │
-  ▼
-guarded poll loop schedules the next refresh after the current one finishes
-visibility changes retune that loop between visible/hidden intervals
-setInterval(checkStreamingConfigs, 30000)       external-change detection (see below)
+  └── watchdog (30s silence timeout)
+      reconnect stream + one-shot recovery snapshot fetch if stream is silent/closed
 ```
 
-`GET /metrics/system` no longer advances the rate-calculation baseline on every request. A server-side timer samples CPU and network counters on a fixed cadence, and dashboard polls just read the latest completed sample.
+`GET /metrics/system` no longer advances the rate-calculation baseline on every request. A
+server-side timer samples CPU and network counters on a fixed cadence, and dashboard recovery
+fetches read the latest completed sample.
 
-Dashboard refresh triggers are also coalesced client-side. Poll ticks, visibility refreshes, and mutation-driven refreshes all funnel through a single in-flight gate, and the dashboard/history pollers now share the same guarded timeout-loop behavior so a slow refresh cannot overlap with another full fetch pass and later overwrite fresher state.
+Dashboard refresh triggers are coalesced client-side. SSE events, visibility-driven reconnects,
+and watchdog recovery fetches funnel through guarded state application so stale updates cannot
+overwrite fresher slices.
 
 `public/index.html` and `public/stream-keys.html` load frontend entry modules as ES modules (`<script type="module">`). The dashboard page now boots through `public/js/features/dashboard-entry.js`, which imports the dashboard/history/editor feature graph and registers the few cross-feature callbacks that would otherwise create circular dependencies. HTML-bound handlers used by inline attributes remain the only frontend functions intentionally exposed on `window`.
 
-#### External-change detection (`checkStreamingConfigs`)
+#### External-change detection
 
-The dashboard tracks two ETag variables:
+The dashboard tracks two snapshot-version variables:
 
 | Variable | Updated by | Purpose |
 |---|---|---|
-| `etag` | every `fetchConfig()` (background poll) | keeps conditional GET efficient |
-| `userConfigEtag` | only after this tab successfully mutates config | marks last change *this user* made |
+| `configSnapshotVersion` | every `dashboard.config` event | tracks latest known config stream version |
+| `userConfigSnapshotVersion` | successful local mutation baseline sync | marks last change *this user* made |
 
-Every 30 s, `checkStreamingConfigs` calls `GET /config` with `If-None-Match: userConfigEtag`. If the server returns 200 (current ETag differs from `userConfigEtag`), a mutation happened that this tab did not initiate. After a 5 s confirmation re-check, the `#streaming-config-changed-alert` warning banner is shown, prompting the user to refresh. A 304 keeps the banner hidden. Delayed re-checks are canceled when this tab updates its own baseline ETag, and stale re-checks (queued with an old baseline) are ignored so local edits do not trigger false warnings. After successful local mutations, the client re-syncs baseline from `HEAD /config/version` before storing `userConfigEtag`.
+When `configSnapshotVersion` differs from `userConfigSnapshotVersion`, the dashboard can surface
+`#streaming-config-changed-alert` to indicate another tab or operator changed config. Dismissing
+the alert is tied to the currently seen snapshot version so a newer config event re-opens it.
 
-The dashboard now also checks a shared `X-Snapshot-Version` token returned by both `/config` and
-`/health`. That token represents the config/jobs version seen by each endpoint. Health snapshots
-refresh themselves when their cached token is behind the current config/jobs state, and the client
-retries a refresh if the two responses still disagree, preventing mixed-moment merges after rapid
-mutations.
+The client also performs one-shot `/config` + `/health` recovery fetches when watchdog logic
+detects stream silence/closure, which protects against missed event windows after disconnects.
 
 ### 5.3 Throughput Computation (client-side)
 
@@ -573,7 +575,7 @@ ownership, import conventions, and refactor troubleshooting live in
 
 At the architecture level, the important frontend seams are:
 
-- `public/js/client.js` owns shared mutable dashboard state plus fetch and polling primitives.
+- `public/js/client.js` owns shared mutable dashboard state plus fetch and snapshot primitives.
 - `public/js/features/dashboard.js` owns full refresh orchestration and is the only normal writer of
   shared dashboard state.
 - `public/js/features/dashboard-actions.js` and `public/js/features/pipeline-view-actions.js` are

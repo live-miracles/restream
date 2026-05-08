@@ -111,7 +111,7 @@ After frontend module changes, run:
   only fall back to native HLS when `hls.js` is unavailable.
 
 When adding future preview enhancements, keep selection/change teardown logic in `view.js` and
-keep pure preview-runtime decisions in `input-preview-state.mjs` so dashboard polling does not
+keep pure preview-runtime decisions in `input-preview-state.mjs` so dashboard refresh flows do not
 leak stale playback elements.
 
 ## 9. Ingest URL Panel Behavior

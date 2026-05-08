@@ -7,7 +7,7 @@ A streaming control plane built on [MediaMTX](https://github.com/bluenviron/medi
 1. A publisher pushes an RTMP stream to MediaMTX.
 2. Restream's backend manages stream keys, pipelines, and output destinations in SQLite.
 3. When an output is started, the backend probes the RTSP relay, spawns an FFmpeg process to pull and push to the destination, and tracks its health.
-4. The browser polls `/config` (ETag-gated) and `/health` (live MediaMTX + DB aggregate) to render live status and metrics.
+4. The browser consumes `GET /dashboard/events` (SSE) for change-driven config and periodic telemetry updates, with one-shot `/config` + `/health` recovery snapshots when needed.
 
 ## Project Structure
 
@@ -34,7 +34,7 @@ public/
   index.html        — Dashboard SPA shell
   stream-keys.html  — Stream key management page
   js/
-    client.js        — Shared mutable UI state plus API/ETag/polling helpers
+    client.js        — Shared mutable UI state plus API/snapshot helpers
     history.js       — Output/pipeline history modal control, polling, and rendering
     pipeline.js      — parsePipelinesInfo(): merges config + health into view model
     utils.js         — Shared UI utilities: formatters, DOM helpers, masking, copy helpers
@@ -43,7 +43,7 @@ public/
     features/
       dashboard-actions.js — Dashboard refresh/baseline/visibility coordinator callbacks
       dashboard-entry.js — Dashboard page composition root
-      dashboard.js      — Dashboard polling orchestration and snapshot reconciliation
+      dashboard.js      — Dashboard SSE orchestration, watchdog recovery, and snapshot reconciliation
       dashboard-view.js — Dashboard DOM rendering, metrics, and banner state
       editor.js         — Output/pipeline modal edit interactions
       input-preview-state.mjs — Pure preview URL and runtime helpers

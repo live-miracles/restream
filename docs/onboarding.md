@@ -79,7 +79,8 @@ That sequence mirrors how the app starts, polls, and reacts to live stream state
 ### Config path
 
 `/config` is the dashboard's durable snapshot. It is built mostly from SQLite rows plus the public
-server config, then hashed into an ETag so the browser can skip full payloads when nothing changed.
+server config and carries a deterministic snapshot version used by the dashboard SSE stream and
+recovery sync.
 
 Relevant files:
 
@@ -157,7 +158,8 @@ Specific cases:
 - Output refuses to start: inspect desired state, input availability, and validation errors.
 - Output keeps restarting: inspect recovery logs and the output-recovery config.
 - Input shows `warning` or `off`: inspect MediaMTX path readiness and publisher presence.
-- Dashboard looks stale: compare `/config` ETag, `/health` snapshot version, and browser polling.
+- Dashboard looks stale: compare `/dashboard/events` payloads, `/config` snapshot version, and
+  `/health` snapshot version.
 
 ## 7. Safe First Tasks For New Contributors
 
@@ -172,6 +174,6 @@ Tasks that require extra care:
 
 - Changing FFmpeg command assembly.
 - Changing output retry policy or input-recovery rules.
-- Changing how `/config` and `/health` ETags or snapshot versions are computed.
+- Changing how `/config` and `/health` snapshot versions are computed.
 - Changing dashboard/history orchestration, which is sensitive to subtle coupling between the
-  polling loop, render timing, and selection state.
+  stream updates, render timing, and selection state.

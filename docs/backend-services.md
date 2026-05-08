@@ -35,7 +35,7 @@ The backend starts in this order:
 
 1. `src/index.js` creates the Express app and runtime registries.
 2. `registerConfigApi()` from `src/routes-pipeline.js` is called early because other services use
-   its ETag helpers.
+   its snapshot-version helpers.
 3. `createPipelineRuntimeStateService()` is created to own shared input transition history.
 4. `createHealthMonitorService()` is created with DB access, MediaMTX fetch access, the runtime
    FFmpeg Maps, and the shared pipeline runtime state service.
@@ -65,7 +65,8 @@ Three backend responses are easy to confuse. Treat them as separate products:
 
 - Built from SQLite plus the public config file.
 - Used for durable dashboard state and optimistic browser caching.
-- Has a stable ETag because `src/routes-pipeline.js` hashes a deterministic DB-backed snapshot.
+- Has a stable snapshot version because `src/routes-pipeline.js` hashes a deterministic DB-backed
+   snapshot.
 
 ### `/health`
 
