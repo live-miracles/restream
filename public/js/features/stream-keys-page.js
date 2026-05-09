@@ -1,5 +1,18 @@
-import { getStreamKeys, createStreamKey, updateStreamKey, deleteStreamKey, getConfig } from '../core/api.js';
-import { escapeHtml, maskSecret, copyText, showErrorAlert, setServerConfig, showCopiedNotification } from '../core/utils.js';
+import {
+    getStreamKeys,
+    createStreamKey,
+    updateStreamKey,
+    deleteStreamKey,
+    getConfig,
+} from '../core/api.js';
+import {
+    escapeHtml,
+    maskSecret,
+    copyText,
+    showErrorAlert,
+    setServerConfig,
+    showCopiedNotification,
+} from '../core/utils.js';
 
 let currentEditingKey = null;
 let pendingDeleteKey = null;

@@ -139,7 +139,8 @@ function createHealthMonitorService({
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
             const effectivePath = buildMediamtxPath(streamKey);
-            pathInfo = (paths.items || []).find((pathItem) => pathItem?.name === effectivePath) || null;
+            pathInfo =
+                (paths.items || []).find((pathItem) => pathItem?.name === effectivePath) || null;
         } catch (err) {
             return {
                 status: computeInputStatus({
@@ -650,14 +651,13 @@ function createHealthMonitorService({
         }
 
         try {
-            const [paths, rtspConns, rtspSessions, rtmpConns, srtConns] =
-                await Promise.all([
-                    fetchMediamtxJson('/v3/paths/list'),
-                    fetchMediamtxJson('/v3/rtspconns/list'),
-                    fetchMediamtxJson('/v3/rtspsessions/list'),
-                    fetchMediamtxJson('/v3/rtmpconns/list'),
-                    fetchMediamtxJson('/v3/srtconns/list'),
-                ]);
+            const [paths, rtspConns, rtspSessions, rtmpConns, srtConns] = await Promise.all([
+                fetchMediamtxJson('/v3/paths/list'),
+                fetchMediamtxJson('/v3/rtspconns/list'),
+                fetchMediamtxJson('/v3/rtspsessions/list'),
+                fetchMediamtxJson('/v3/rtmpconns/list'),
+                fetchMediamtxJson('/v3/srtconns/list'),
+            ]);
 
             log('debug', 'Fetched MediaMTX health sources', {
                 pathCount: paths.itemCount || 0,
@@ -680,11 +680,7 @@ function createHealthMonitorService({
             const pathByName = new Map((paths.items || []).map((item) => [item.name, item]));
             const { rtspByReaderTag, rtspConnectionById, rtspSessionRecordById } =
                 indexRtspConnectionsByReaderTag(rtspConns, rtspSessions, getReaderIdFromQuery);
-            const publisherByPath = indexPublishersByPath(
-                rtspSessions,
-                rtmpConns,
-                srtConns,
-            );
+            const publisherByPath = indexPublishersByPath(rtspSessions, rtmpConns, srtConns);
 
             if ((rtspConns.items || []).length > 0 && rtspByReaderTag.size === 0) {
                 log('warn', 'MediaMTX RTSP payload has no reader_id query for active readers', {

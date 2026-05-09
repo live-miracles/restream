@@ -19,9 +19,10 @@ const FORWARDED_RESPONSE_HEADERS = [
 ];
 
 function parseHlsAssetPath(rawAssetPath) {
-    const assetPath = typeof rawAssetPath === 'string' && rawAssetPath.trim()
-        ? rawAssetPath.trim()
-        : 'index.m3u8';
+    const assetPath =
+        typeof rawAssetPath === 'string' && rawAssetPath.trim()
+            ? rawAssetPath.trim()
+            : 'index.m3u8';
 
     if (assetPath.length > MAX_HLS_ASSET_PATH_CHARS) return null;
 
@@ -81,7 +82,10 @@ function clearForwardedUpstreamHeaders(res) {
 }
 
 function isManifestResponse(pathName, contentType) {
-    return pathName.toLowerCase().endsWith('.m3u8') || /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i.test(contentType || '');
+    return (
+        pathName.toLowerCase().endsWith('.m3u8') ||
+        /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i.test(contentType || '')
+    );
 }
 
 function toNodeReadable(body) {
@@ -231,7 +235,9 @@ async function streamUpstreamResponse({
             });
             if (!buffer) {
                 clearForwardedUpstreamHeaders(res);
-                return res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
+                return res
+                    .status(502)
+                    .json({ error: 'Preview manifest exceeds safe proxy size limit' });
             }
             return res.send(buffer);
         } catch (err) {
@@ -324,9 +330,7 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
 
     app.get('/preview/hls/:streamKey/*assetPath', async (req, res) => {
         const wildcard = req.params.assetPath;
-        const assetPath = Array.isArray(wildcard)
-            ? wildcard.join('/')
-            : wildcard || 'index.m3u8';
+        const assetPath = Array.isArray(wildcard) ? wildcard.join('/') : wildcard || 'index.m3u8';
         await proxyHlsAsset(req, res, assetPath);
     });
 }

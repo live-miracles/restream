@@ -583,7 +583,10 @@ function createOutputRecoveryService({
             }
 
             const latestJob = db.listJobsForOutput(pipelineId, output.id)[0] || null;
-            const inputUnavailableMatch = isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob);
+            const inputUnavailableMatch = isLatestJobLikelyInputUnavailableStop(
+                pipelineId,
+                latestJob,
+            );
 
             if (restartMode === 'inputUnavailableOnly') {
                 if (inputUnavailableMatch.matched) {

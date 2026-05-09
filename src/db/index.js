@@ -399,12 +399,7 @@ module.exports = {
             /* ignore logging failures */
         }
     },
-    appendPipelineEvent(
-        pipelineId,
-        message,
-        eventType = 'pipeline.event',
-        eventData = null,
-    ) {
+    appendPipelineEvent(pipelineId, message, eventType = 'pipeline.event', eventData = null) {
         try {
             insertJobLog.run({
                 job_id: null,

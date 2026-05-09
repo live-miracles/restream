@@ -96,8 +96,7 @@ function createOutputLifecycleService({
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
             const effectivePath = buildMediamtxPath(pipeline.streamKey);
-            pathInfo =
-                (paths.items || []).find((path) => path?.name === effectivePath) || null;
+            pathInfo = (paths.items || []).find((path) => path?.name === effectivePath) || null;
         } catch (err) {
             throw createHttpError(503, 'MediaMTX API unavailable', errMsg(err));
         }

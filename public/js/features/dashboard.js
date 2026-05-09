@@ -99,7 +99,8 @@ function reconcileSelectedPipeline(previousPipelines = []) {
     if (!selectedPipeId) return;
     if (state.pipelines.some((pipe) => pipe.id === selectedPipeId)) return;
 
-    const previousSelectionById = previousPipelines.find((pipe) => pipe.id === selectedPipeId) || null;
+    const previousSelectionById =
+        previousPipelines.find((pipe) => pipe.id === selectedPipeId) || null;
     const persistedHint = readSelectedPipelineHint();
 
     if (!previousSelectionById && !persistedHint) {
@@ -309,9 +310,4 @@ document
     .getElementById('dismiss-streaming-config-alert-btn')
     ?.addEventListener('click', dismissStreamingConfigAlert);
 
-export {
-    refreshDashboard,
-    markUserConfigBaseline,
-    syncUserConfigBaseline,
-    setDashboardHooks,
-};
+export { refreshDashboard, markUserConfigBaseline, syncUserConfigBaseline, setDashboardHooks };

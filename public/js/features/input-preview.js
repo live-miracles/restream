@@ -6,7 +6,7 @@ let hlsRuntimePromise = null;
 function canUseNativeHls(video) {
     return Boolean(
         video?.canPlayType('application/vnd.apple.mpegurl') ||
-            video?.canPlayType('application/x-mpegURL'),
+        video?.canPlayType('application/x-mpegURL'),
     );
 }
 
@@ -133,7 +133,8 @@ export function renderInputPreview(playerElem, pipe) {
     loadBtn.textContent = 'Play preview';
 
     const spinner = document.createElement('span');
-    spinner.style.cssText = 'display:none;width:2rem;height:2rem;border-radius:9999px;border:3px solid rgba(255,255,255,0.25);border-top-color:#fff;animation:spin 0.8s linear infinite';
+    spinner.style.cssText =
+        'display:none;width:2rem;height:2rem;border-radius:9999px;border:3px solid rgba(255,255,255,0.25);border-top-color:#fff;animation:spin 0.8s linear infinite';
     let previewStarted = false;
 
     function setOverlayVisible(isVisible) {
@@ -241,7 +242,9 @@ export function renderInputPreview(playerElem, pipe) {
             return;
         }
 
-        throw hlsRuntimeError || new Error('This browser does not support dashboard preview playback');
+        throw (
+            hlsRuntimeError || new Error('This browser does not support dashboard preview playback')
+        );
     };
 
     const primePreviewSource = async () => {
@@ -261,12 +264,16 @@ export function renderInputPreview(playerElem, pipe) {
     };
 
     loadBtn.addEventListener('click', primePreviewSource);
-    video.addEventListener('timeupdate', () => {
-        if (video.dataset.previewDisposed === 'true') return;
-        previewStarted = true;
-        video.controls = true;
-        setOverlayVisible(false);
-    }, { once: true });
+    video.addEventListener(
+        'timeupdate',
+        () => {
+            if (video.dataset.previewDisposed === 'true') return;
+            previewStarted = true;
+            video.controls = true;
+            setOverlayVisible(false);
+        },
+        { once: true },
+    );
     video.addEventListener('error', () => {
         if (video.dataset.previewDisposed === 'true') return;
         if (video._previewHls || previewStarted) return;

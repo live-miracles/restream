@@ -90,8 +90,4 @@ function getPublisherQualityAlerts(publisher) {
         }));
 }
 
-export {
-    normalizePublisherProtocolLabel,
-    getPublisherQualityMetrics,
-    getPublisherQualityAlerts,
-};
+export { normalizePublisherProtocolLabel, getPublisherQualityMetrics, getPublisherQualityAlerts };

@@ -121,9 +121,8 @@ function maskSecret(value) {
 
 function sanitizeLogMessage(msg, redacted = true) {
     if (!redacted) return String(msg);
-    return String(msg).replace(
-        /((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi,
-        (full, url) => maskSecret(url || full),
+    return String(msg).replace(/((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+        maskSecret(url || full),
     );
 }
 

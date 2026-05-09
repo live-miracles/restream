@@ -80,9 +80,7 @@ const outputLifecycle = createOutputLifecycleService({
 
 // Resolve circular dependency without late-binding let-variable workaround:
 // register the output recovery callback now that both services are created.
-healthMonitor.registerInputRecoveryHandler(
-    outputLifecycle.restartPipelineOutputsOnInputRecovery,
-);
+healthMonitor.registerInputRecoveryHandler(outputLifecycle.restartPipelineOutputsOnInputRecovery);
 
 const {
     clearOutputRestartState,

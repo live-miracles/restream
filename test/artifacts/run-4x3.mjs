@@ -98,7 +98,9 @@ async function main() {
         console.log('== Step 1b: Verify newly created outputs default to desiredState=stopped ==');
         await verifyDesiredStateForOutputs(newlyCreatedOutputs, 'stopped');
     } else {
-        console.log('== Step 1b: No new outputs were created; skipping default desiredState check ==');
+        console.log(
+            '== Step 1b: No new outputs were created; skipping default desiredState check ==',
+        );
     }
 
     console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
@@ -131,7 +133,9 @@ async function main() {
     console.log('== Step 10: Verify input recovery restarts outputs with desiredState=running ==');
     await verifyInputRecoveryRestart(
         resolved.pipelines[0],
-        resolved.outputs.filter((target) => target.pipelineId === resolved.pipelines[0]?.pipelineId),
+        resolved.outputs.filter(
+            (target) => target.pipelineId === resolved.pipelines[0]?.pipelineId,
+        ),
         inputPublishers,
     );
 
@@ -211,7 +215,9 @@ async function shutdown(leaveRunning) {
 
     shutdownPromise = (async () => {
         if (leaveRunning) {
-            console.log('== KEEP_RUNNING=1: leaving input publishers and manifest-scoped test resources in place; app stack was not started by this runner ==');
+            console.log(
+                '== KEEP_RUNNING=1: leaving input publishers and manifest-scoped test resources in place; app stack was not started by this runner ==',
+            );
             return;
         }
 
@@ -262,7 +268,11 @@ async function ensureApiReachable() {
 }
 
 async function ensureRunnerPrerequisites() {
-    await assertCommandAvailable('ffmpeg', ['-version'], 'Install ffmpeg before running the 4x3 suite.');
+    await assertCommandAvailable(
+        'ffmpeg',
+        ['-version'],
+        'Install ffmpeg before running the 4x3 suite.',
+    );
     await assertCommandAvailable(
         'docker',
         ['compose', 'version'],
@@ -470,9 +480,13 @@ async function cleanupTestResources(targets) {
             continue;
         }
 
-        const remainingOutputs = state.outputs.filter((item) => item.pipelineId === target.pipelineId);
+        const remainingOutputs = state.outputs.filter(
+            (item) => item.pipelineId === target.pipelineId,
+        );
         const manifestOutputIds = manifestOutputIdsByPipeline.get(target.pipelineId) || new Set();
-        const nonManifestOutputs = remainingOutputs.filter((item) => !manifestOutputIds.has(item.id));
+        const nonManifestOutputs = remainingOutputs.filter(
+            (item) => !manifestOutputIds.has(item.id),
+        );
 
         if (nonManifestOutputs.length > 0) {
             console.log(
@@ -503,7 +517,9 @@ async function cleanupTestResources(targets) {
 
         const stillReferenced = state.pipelines.some((item) => item.streamKey === target.key);
         if (stillReferenced) {
-            console.log(`Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`);
+            console.log(
+                `Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`,
+            );
             continue;
         }
 
@@ -668,19 +684,17 @@ async function stopAllInputPublishersForStreamKey(streamKey, inputPublishers) {
     const inputFileMarker = relativePath(config.inputFile);
     const ingestTargetMarkers = getIngestTargetMarkers(streamKey, matchedManagedPublishers);
     const processes = await listFfmpegProcesses();
-    const stalePublishers = processes.filter(
-        (proc) => {
-            const hasIngestTargetMarker = ingestTargetMarkers.some((marker) =>
-                proc.command.includes(marker),
-            );
+    const stalePublishers = processes.filter((proc) => {
+        const hasIngestTargetMarker = ingestTargetMarkers.some((marker) =>
+            proc.command.includes(marker),
+        );
 
-            return (
-                proc.command.includes('ffmpeg') &&
-                proc.command.includes(inputFileMarker) &&
-                hasIngestTargetMarker
-            );
-        },
-    );
+        return (
+            proc.command.includes('ffmpeg') &&
+            proc.command.includes(inputFileMarker) &&
+            hasIngestTargetMarker
+        );
+    });
 
     for (const proc of stalePublishers) {
         await terminateProcess({ pid: proc.pid, name: `stale-input-${streamKey}` });
@@ -713,7 +727,9 @@ function selectIngestUrl(streamKeyRecord, protocol) {
     if (protocol === 'rtsp' && ingestUrls.rtsp) return ingestUrls.rtsp;
     if (protocol === 'srt' && ingestUrls.srt) return ingestUrls.srt;
 
-    throw new Error(`Missing ingest URL for protocol=${protocol} streamKey=${streamKeyRecord?.key || 'unknown'}`);
+    throw new Error(
+        `Missing ingest URL for protocol=${protocol} streamKey=${streamKeyRecord?.key || 'unknown'}`,
+    );
 }
 
 function buildFfmpegArgs(protocol, targetUrl) {
@@ -1044,9 +1060,8 @@ async function verifyIdempotentOutputStopStart(target) {
 
 function findLatestJobForOutput(state, pipelineId, outputId) {
     return (
-        state.jobs.find(
-            (item) => item.pipelineId === pipelineId && item.outputId === outputId,
-        ) || null
+        state.jobs.find((item) => item.pipelineId === pipelineId && item.outputId === outputId) ||
+        null
     );
 }
 
@@ -1077,13 +1092,7 @@ async function waitForRunningJobStability(target, minAgeMs = 5000) {
 
 async function fetchOutputHistory(target, options = {}) {
     const query = new URLSearchParams();
-    const {
-        since = null,
-        until = null,
-        order = 'asc',
-        limit = 200,
-        filter = null,
-    } = options;
+    const { since = null, until = null, order = 'asc', limit = 200, filter = null } = options;
 
     if (filter) query.set('filter', filter);
     if (since) query.set('since', since);
@@ -1386,14 +1395,17 @@ async function verifyInputRecoveryRestart(pipelineTarget, pipelineOutputs, input
             const state = await fetchConfigState();
             const output = state.outputs.find(
                 (item) =>
-                    item.pipelineId === targetOutput.pipelineId && item.id === targetOutput.outputId,
+                    item.pipelineId === targetOutput.pipelineId &&
+                    item.id === targetOutput.outputId,
             );
             const latestJob = findLatestJobForOutput(
                 state,
                 targetOutput.pipelineId,
                 targetOutput.outputId,
             );
-            return output?.desiredState === 'running' && latestJob && latestJob.status !== 'running';
+            return (
+                output?.desiredState === 'running' && latestJob && latestJob.status !== 'running'
+            );
         },
         45000,
         500,
@@ -1452,7 +1464,9 @@ async function fetchConfigPipelineById(pipelineId) {
 }
 
 function resolveLoopbackUrlFromPayload(ingestUrl, streamKey, protocol) {
-    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    const normalizedProtocol = String(protocol || '')
+        .trim()
+        .toLowerCase();
     if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
         throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
     }
@@ -1492,9 +1506,7 @@ function resolveLoopbackUrlFromPayload(ingestUrl, streamKey, protocol) {
         .split('/')
         .filter(Boolean);
     const lastPathSegment =
-        pathSegments.length > 0
-            ? decodeURIComponent(pathSegments[pathSegments.length - 1])
-            : '';
+        pathSegments.length > 0 ? decodeURIComponent(pathSegments[pathSegments.length - 1]) : '';
     if (lastPathSegment !== streamKey) {
         throw new Error(
             `Target RTSP ingest URL path mismatch: expected terminal path segment ${streamKey}, got ${lastPathSegment || 'missing'}`,
@@ -1557,7 +1569,8 @@ async function startOutputWithRetry(target) {
 }
 
 function getHealthLoopbackSummary(health, sourceOutput, targetPipeline) {
-    const sourceHealth = health?.pipelines?.[sourceOutput.pipelineId]?.outputs?.[sourceOutput.outputId] || null;
+    const sourceHealth =
+        health?.pipelines?.[sourceOutput.pipelineId]?.outputs?.[sourceOutput.outputId] || null;
     const targetInput = health?.pipelines?.[targetPipeline.pipelineId]?.input || null;
     return {
         sourceOutput: {
@@ -1582,7 +1595,8 @@ async function waitForPipelineInputStatus(pipelineTarget, expectedStatus, timeou
         },
         timeoutMs,
         500,
-        label || `${pipelineTarget.name || pipelineTarget.pipelineId} input status=${expectedStatus}`,
+        label ||
+            `${pipelineTarget.name || pipelineTarget.pipelineId} input status=${expectedStatus}`,
     );
 }
 
@@ -1617,14 +1631,13 @@ async function waitForOutputStatus(outputTarget, expectedStatus, timeoutMs, labe
         async () => {
             const health = (await requestJson('/health')).json;
             return (
-                health?.pipelines?.[outputTarget.pipelineId]?.outputs?.[outputTarget.outputId]?.status ===
-                expectedStatus
+                health?.pipelines?.[outputTarget.pipelineId]?.outputs?.[outputTarget.outputId]
+                    ?.status === expectedStatus
             );
         },
         timeoutMs,
         500,
-        label ||
-            `${outputTarget.pipelineName}/${outputTarget.outputName} status=${expectedStatus}`,
+        label || `${outputTarget.pipelineName}/${outputTarget.outputName} status=${expectedStatus}`,
     );
 }
 
@@ -1634,7 +1647,8 @@ async function waitForOutputUrl(outputTarget, expectedUrl, timeoutMs, label) {
             const state = await fetchConfigState();
             const output = state.outputs.find(
                 (item) =>
-                    item.pipelineId === outputTarget.pipelineId && item.id === outputTarget.outputId,
+                    item.pipelineId === outputTarget.pipelineId &&
+                    item.id === outputTarget.outputId,
             );
             return output?.url === expectedUrl;
         },
@@ -1646,7 +1660,9 @@ async function waitForOutputUrl(outputTarget, expectedUrl, timeoutMs, label) {
 }
 
 async function verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, protocol) {
-    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    const normalizedProtocol = String(protocol || '')
+        .trim()
+        .toLowerCase();
     if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
         throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
     }
@@ -1823,7 +1839,9 @@ async function verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, pr
             try {
                 await waitForActive(resolved);
             } catch (error) {
-                cleanupErrors.push(`post-loopback stabilization failed: ${String(error?.message || error)}`);
+                cleanupErrors.push(
+                    `post-loopback stabilization failed: ${String(error?.message || error)}`,
+                );
             }
         }
 

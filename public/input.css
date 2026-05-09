@@ -5,7 +5,9 @@
 
 /* Spinner keyframe used by the HLS preview loading indicator. */
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* Timeline history badge override for stronger contrast in dim theme. */

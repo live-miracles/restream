@@ -145,10 +145,7 @@ function resolveOutputMediaSnapshot({
         };
     }
 
-    const fallbackMedia = deriveOutputMediaFromEncoding(
-        encoding,
-        inputMedia,
-    );
+    const fallbackMedia = deriveOutputMediaFromEncoding(encoding, inputMedia);
     if (fallbackMedia) {
         const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
         return {
