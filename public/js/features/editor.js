@@ -1,4 +1,14 @@
-import { getStreamKeys, startOut, stopOut, createPipeline, updatePipeline, deletePipeline, createOutput, updateOutput, deleteOutput } from '../core/api.js';
+import {
+    getStreamKeys,
+    startOut,
+    stopOut,
+    createPipeline,
+    updatePipeline,
+    deletePipeline,
+    createOutput,
+    updateOutput,
+    deleteOutput,
+} from '../core/api.js';
 import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard, syncUserConfigBaseline } from './dashboard.js';
@@ -12,8 +22,8 @@ async function updateLocalConfigBaseline() {
 }
 
 const OUTPUT_SERVER_PRESETS = {
-    // Keep the preferred RTMP default first; modal create/switch flows read rtmp[0].
     rtmp: [
+        { label: 'Custom', value: '' },
         { label: 'YouTube', value: 'rtmp://a.rtmp.youtube.com/live2/' },
         { label: 'YT Backup', value: 'rtmp://b.rtmp.youtube.com/live2?backup=1/' },
         { label: 'Facebook', value: 'rtmps://live-api-s.facebook.com:443/rtmp/' },
@@ -23,7 +33,6 @@ const OUTPUT_SERVER_PRESETS = {
         },
         { label: 'VDO Cipher', value: 'rtmp://live-ingest-01.vd0.co:1935/livestream/' },
         { label: 'VK Video', value: 'rtmp://ovsu.okcdn.ru/input/' },
-        { label: 'Custom', value: '' },
     ],
     hls: [
         {
@@ -207,39 +216,7 @@ function populateOutputServerOptions(protocol, selectedValue = '') {
     serverSelect.value = hasSelectedValue ? selectedValue : '';
 }
 
-function parseRtmpOperatorFields(rawUrl) {
-    const parsed = safeParseUrl(rawUrl);
-    const token = getDefaultOutputToken(rawUrl);
-    if (!parsed || (parsed.protocol !== 'rtmp:' && parsed.protocol !== 'rtmps:')) {
-        return {
-            host: getDefaultOutputHost(),
-            port: '1935',
-            appPath: '/live',
-            streamKey: token,
-            extraQuery: '',
-        };
-    }
-
-    const pathSegments = parsed.pathname.split('/').filter(Boolean);
-    const streamKey = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : token;
-    const appSegments =
-        pathSegments.length > 1 ? pathSegments.slice(0, pathSegments.length - 1) : ['live'];
-
-    const extraEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        extraEntries.push(`${key}=${value}`);
-    });
-
-    return {
-        host: parsed.hostname || getDefaultOutputHost(),
-        port: parsed.port || (parsed.protocol === 'rtmps:' ? '443' : '1935'),
-        appPath: `/${appSegments.join('/')}`,
-        streamKey,
-        extraQuery: extraEntries.join('&'),
-    };
-}
-
-function parseSrtOperatorFields(rawUrl) {
+function parseSrtFields(rawUrl) {
     const parsed = safeParseUrl(rawUrl);
     if (!parsed) {
         const token = getDefaultOutputToken(rawUrl);
@@ -273,93 +250,7 @@ function parseSrtOperatorFields(rawUrl) {
     };
 }
 
-function parseRtspOperatorFields(rawUrl) {
-    const parsed = safeParseUrl(rawUrl);
-    if (!parsed) {
-        const token = getDefaultOutputToken(rawUrl);
-        return {
-            host: getDefaultOutputHost(),
-            port: '554',
-            path: `/live/${token}`,
-            extraQuery: '',
-        };
-    }
-
-    const isRtsp = parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:';
-
-    const queryEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        queryEntries.push(`${key}=${value}`);
-    });
-
-    return {
-        host: parsed.hostname || getDefaultOutputHost(),
-        port: isRtsp ? parsed.port || '554' : '554',
-        path: isRtsp ? parsed.pathname || '/live/stream' : `/live/${getDefaultOutputToken(rawUrl)}`,
-        extraQuery: isRtsp ? queryEntries.join('&') : '',
-    };
-}
-
-function parseHlsOperatorFields(rawUrl) {
-    const parsed = safeParseUrl(rawUrl);
-    const token = getDefaultOutputToken(rawUrl);
-    if (
-        !parsed ||
-        (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
-        !isLikelyHlsOutputUrl(rawUrl)
-    ) {
-        return {
-            scheme: 'http',
-            host: getDefaultOutputHost(),
-            port: '',
-            path: `/hls/${token}/out.m3u8`,
-            extraQuery: '',
-        };
-    }
-
-    const queryEntries = [];
-    parsed.searchParams.forEach((value, key) => {
-        queryEntries.push(`${key}=${value}`);
-    });
-
-    return {
-        scheme: parsed.protocol === 'https:' ? 'https' : 'http',
-        host: parsed.hostname || getDefaultOutputHost(),
-        port: parsed.port || '',
-        path: parsed.pathname || `/hls/${token}/out.m3u8`,
-        extraQuery: queryEntries.join('&'),
-    };
-}
-
-function buildRtspUrlFromOperatorFields() {
-    const host = document.getElementById('out-rtsp-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-rtsp-port-input')?.value.trim() || '554';
-    const rawPath = document.getElementById('out-rtsp-path-input')?.value.trim() || '/live/stream';
-    const extraQueryRaw =
-        document.getElementById('out-rtsp-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const qs = query.toString();
-    return `rtsp://${host}:${port}${normalizedPath}${qs ? `?${qs}` : ''}`;
-}
-
-function buildSrtUrlFromOperatorFields() {
+function buildSrtUrlFromFields() {
     const host = document.getElementById('out-srt-host-input')?.value.trim() || '';
     const port = document.getElementById('out-srt-port-input')?.value.trim() || '6000';
     const streamId = document.getElementById('out-srt-streamid-input')?.value.trim() || '';
@@ -383,115 +274,38 @@ function buildSrtUrlFromOperatorFields() {
     return `srt://${host}:${port}${qs ? `?${qs}` : ''}`;
 }
 
-function buildRtmpUrlFromOperatorFields() {
-    const host = document.getElementById('out-rtmp-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-rtmp-port-input')?.value.trim() || '1935';
-    const rawAppPath = document.getElementById('out-rtmp-app-path-input')?.value.trim() || '/live';
-    const rawStreamKey =
-        document.getElementById('out-rtmp-stream-key-input')?.value.trim() || 'test';
-    const extraQueryRaw =
-        document.getElementById('out-rtmp-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const normalizedAppPath = (() => {
-        const cleaned = rawAppPath.replace(/^\/+|\/+$/g, '');
-        return cleaned ? `/${cleaned}` : '/live';
-    })();
-    const streamKey = rawStreamKey.replace(/^\/+/, '') || 'test';
-
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const qs = query.toString();
-    return `rtmp://${host}:${port}${normalizedAppPath}/${streamKey}${qs ? `?${qs}` : ''}`;
-}
-
-function buildHlsUrlFromOperatorFields() {
-    const schemeValue = document.getElementById('out-hls-scheme-input')?.value.trim() || 'http';
-    const host = document.getElementById('out-hls-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-hls-port-input')?.value.trim() || '';
-    const path =
-        document.getElementById('out-hls-path-input')?.value.trim() || '/hls/test/out.m3u8';
-    const extraQueryRaw = document.getElementById('out-hls-extra-query-input')?.value.trim() || '';
-
-    if (!host) return '';
-
-    const scheme = schemeValue === 'https' ? 'https' : 'http';
-    const origin = `${scheme}://${host}${port ? `:${port}` : ''}`;
-    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-
-    const query = new URLSearchParams();
-    if (extraQueryRaw) {
-        for (const segment of extraQueryRaw.split('&')) {
-            const part = segment.trim();
-            if (!part) continue;
-            const eqIdx = part.indexOf('=');
-            if (eqIdx < 0) {
-                query.set(part, '');
-            } else {
-                query.set(part.slice(0, eqIdx), part.slice(eqIdx + 1));
-            }
-        }
-    }
-
-    const qs = query.toString();
-    return `${origin}${normalizedPath}${qs ? `?${qs}` : ''}`;
-}
-
 function isCustomOutputServerSelected(protocol = 'rtmp') {
     const serverSelect = document.getElementById('out-server-url-input');
     if (!protocolUsesOutputServerPresets(protocol)) return true;
     return !serverSelect || !serverSelect.value;
 }
 
-function isCustomRtmpServerSelected() {
-    const serverSelect = document.getElementById('out-server-url-input');
-    return !serverSelect || isCustomOutputServerSelected('rtmp');
-}
-
 function applyOutputProtocolUi(protocol) {
     const urlLabel = document.getElementById('out-url-input-label');
-    const rtmpOperatorFields = document.getElementById('out-rtmp-operator-fields');
-    const hlsOperatorFields = document.getElementById('out-hls-operator-fields');
-    const rtspOperatorFields = document.getElementById('out-rtsp-operator-fields');
-    const srtOperatorFields = document.getElementById('out-srt-operator-fields');
+    const urlField = document.getElementById('out-url-field');
+    const serverField = document.getElementById('out-server-url-field');
     const serverSelect = document.getElementById('out-server-url-input');
+    const srtFields = document.getElementById('out-srt-fields');
 
-    const showRtmpOperatorFields = protocol === 'rtmp' && isCustomOutputServerSelected(protocol);
-    const showHlsOperatorFields = protocol === 'hls' && isCustomOutputServerSelected(protocol);
     const isPresetBackedMode =
         protocolUsesOutputServerPresets(protocol) && !isCustomOutputServerSelected(protocol);
+    const showPresetFields = protocolUsesOutputServerPresets(protocol);
+    const showUrlField = protocol !== 'srt';
 
     if (urlLabel) {
         urlLabel.textContent = isPresetBackedMode ? 'Stream Key' : 'Custom URL';
     }
-    if (rtmpOperatorFields) {
-        rtmpOperatorFields.classList.toggle('hidden', !showRtmpOperatorFields);
+    if (urlField) {
+        urlField.classList.toggle('hidden', !showUrlField);
     }
-    if (hlsOperatorFields) {
-        hlsOperatorFields.classList.toggle('hidden', !showHlsOperatorFields);
+    if (serverField) {
+        serverField.classList.toggle('hidden', !showPresetFields);
     }
-    if (rtspOperatorFields) {
-        rtspOperatorFields.classList.toggle('hidden', protocol !== 'rtsp');
-    }
-    if (srtOperatorFields) {
-        srtOperatorFields.classList.toggle('hidden', protocol !== 'srt');
+    if (srtFields) {
+        srtFields.classList.toggle('hidden', protocol !== 'srt');
     }
     if (serverSelect) {
-        serverSelect.disabled = !protocolUsesOutputServerPresets(protocol);
-        serverSelect.style.opacity = protocolUsesOutputServerPresets(protocol) ? '' : '0.75';
+        serverSelect.disabled = !showPresetFields;
     }
 }
 
@@ -500,90 +314,15 @@ function getEffectiveOutputUrlFromModal() {
     const serverUrl = document.getElementById('out-server-url-input')?.value || '';
     const rawInput = document.getElementById('out-rtmp-key-input')?.value.trim() || '';
 
-    if (isAbsoluteUrl(rawInput)) {
+    if (protocol === 'srt') {
+        return buildSrtUrlFromFields();
+    }
+
+    if (protocol === 'rtsp' || isAbsoluteUrl(rawInput)) {
         return rawInput;
     }
 
-    const operatorProtocol = OUTPUT_OPERATOR_PROTOCOLS[protocol];
-    if (
-        operatorProtocol &&
-        (!protocolUsesOutputServerPresets(protocol) || isCustomOutputServerSelected(protocol))
-    ) {
-        return operatorProtocol.build() || rawInput;
-    }
-
     return resolvePresetOutputUrl(serverUrl, rawInput);
-}
-
-const OUTPUT_OPERATOR_PROTOCOLS = {
-    rtmp: {
-        fieldIds: {
-            host: 'out-rtmp-host-input',
-            port: 'out-rtmp-port-input',
-            appPath: 'out-rtmp-app-path-input',
-            streamKey: 'out-rtmp-stream-key-input',
-            extraQuery: 'out-rtmp-extra-query-input',
-        },
-        parse: parseRtmpOperatorFields,
-        build: buildRtmpUrlFromOperatorFields,
-        shouldSyncRaw: isCustomRtmpServerSelected,
-    },
-    rtsp: {
-        fieldIds: {
-            host: 'out-rtsp-host-input',
-            port: 'out-rtsp-port-input',
-            path: 'out-rtsp-path-input',
-            extraQuery: 'out-rtsp-extra-query-input',
-        },
-        parse: parseRtspOperatorFields,
-        build: buildRtspUrlFromOperatorFields,
-        shouldSyncRaw: () => true,
-    },
-    srt: {
-        fieldIds: {
-            host: 'out-srt-host-input',
-            port: 'out-srt-port-input',
-            streamId: 'out-srt-streamid-input',
-            extraQuery: 'out-srt-extra-query-input',
-        },
-        parse: parseSrtOperatorFields,
-        build: buildSrtUrlFromOperatorFields,
-        shouldSyncRaw: () => true,
-    },
-    hls: {
-        fieldIds: {
-            scheme: 'out-hls-scheme-input',
-            host: 'out-hls-host-input',
-            port: 'out-hls-port-input',
-            path: 'out-hls-path-input',
-            extraQuery: 'out-hls-extra-query-input',
-        },
-        parse: parseHlsOperatorFields,
-        build: buildHlsUrlFromOperatorFields,
-        shouldSyncRaw: () => isCustomOutputServerSelected('hls'),
-    },
-};
-
-function syncOperatorFieldsFromRawInput(protocol, rawInput) {
-    const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
-    if (!config) return;
-
-    const parsed = config.parse(rawInput);
-    Object.entries(config.fieldIds).forEach(([key, fieldId]) => {
-        const field = document.getElementById(fieldId);
-        if (field) field.value = parsed[key] ?? '';
-    });
-}
-
-function syncRawInputFromOperatorFields(protocol) {
-    const rawInput = document.getElementById('out-rtmp-key-input');
-    const config = OUTPUT_OPERATOR_PROTOCOLS[protocol];
-    if (!rawInput || !config) return;
-
-    const crafted = config.build();
-    if (crafted) {
-        rawInput.value = crafted;
-    }
 }
 
 function setupOutputModalProtocolHandlers() {
@@ -598,36 +337,14 @@ function setupOutputModalProtocolHandlers() {
         const previousRaw = rawInput.value.trim();
 
         if (protocol === 'rtmp') {
-            let selectedServer = OUTPUT_SERVER_PRESETS.rtmp[0]?.value || '';
-            const parsed = safeParseUrl(previousRaw);
-            let normalizedRaw = previousRaw;
-
-            if (parsed && (parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:')) {
-                const rtmpOptions = OUTPUT_SERVER_PRESETS.rtmp || [];
-                const match = rtmpOptions.find(
-                    (item) => item.value && previousRaw.startsWith(item.value),
-                );
-                selectedServer = match?.value || '';
-                normalizedRaw = selectedServer
-                    ? previousRaw.replace(selectedServer, '')
-                    : previousRaw;
-            } else {
-                normalizedRaw = getDefaultOutputToken(previousRaw);
-            }
-
+            const matchedPreset = matchOutputServerPreset('rtmp', previousRaw);
+            const selectedServer = matchedPreset?.value || '';
             populateOutputServerOptions('rtmp', selectedServer);
-            if (selectedServer) {
-                rawInput.value = normalizedRaw || getDefaultOutputToken(previousRaw);
-                syncOperatorFieldsFromRawInput('rtmp', `${selectedServer}${rawInput.value}`);
-            } else {
-                const sourceUrl =
-                    isAbsoluteUrl(normalizedRaw)
-                        ? normalizedRaw
-                        : buildDefaultCustomOutputUrl('rtmp', normalizedRaw);
-                rawInput.value = sourceUrl;
-                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
-                syncRawInputFromOperatorFields('rtmp');
-            }
+            rawInput.value = matchedPreset
+                ? matchedPreset.inputValue
+                : isAbsoluteUrl(previousRaw)
+                  ? previousRaw
+                  : buildDefaultCustomOutputUrl('rtmp', previousRaw);
             applyOutputProtocolUi('rtmp');
             return;
         }
@@ -636,95 +353,69 @@ function setupOutputModalProtocolHandlers() {
             const matchedPreset = isLikelyHlsOutputUrl(previousRaw)
                 ? matchOutputServerPreset('hls', previousRaw)
                 : null;
-            const selectedServer = matchedPreset?.value || OUTPUT_SERVER_PRESETS.hls[0]?.value || '';
+            const selectedServer =
+                matchedPreset?.value || OUTPUT_SERVER_PRESETS.hls[0]?.value || '';
 
             populateOutputServerOptions('hls', selectedServer);
-            if (selectedServer) {
-                rawInput.value =
-                    matchedPreset?.inputValue ||
-                    extractCandidateStreamToken(previousRaw) ||
-                    getDefaultOutputToken(previousRaw);
-            } else {
-                rawInput.value =
-                    isLikelyHlsOutputUrl(previousRaw)
-                        ? previousRaw
-                        : buildDefaultCustomOutputUrl('hls', previousRaw);
-                syncOperatorFieldsFromRawInput('hls', rawInput.value);
-            }
+            rawInput.value =
+                matchedPreset?.inputValue ||
+                extractCandidateStreamToken(previousRaw) ||
+                getDefaultOutputToken(previousRaw);
             applyOutputProtocolUi('hls');
             return;
         }
 
-        populateOutputServerOptions(protocol, '');
+        populateOutputServerOptions('rtmp', '');
         applyOutputProtocolUi(protocol);
 
-        const parsed = safeParseUrl(previousRaw);
-        const sourceUrl =
-            (protocol === 'srt' && parsed?.protocol === 'srt:') ||
-            (protocol === 'rtsp' && (parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'))
-                ? previousRaw
-                : buildDefaultCustomOutputUrl(protocol, previousRaw);
-        rawInput.value = sourceUrl;
-        syncOperatorFieldsFromRawInput(protocol, sourceUrl);
-        syncRawInputFromOperatorFields(protocol);
+        if (protocol === 'rtsp') {
+            const parsed = safeParseUrl(previousRaw);
+            rawInput.value =
+                parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'
+                    ? previousRaw
+                    : buildDefaultCustomOutputUrl('rtsp', previousRaw);
+            return;
+        }
+
+        if (protocol === 'srt') {
+            const values = parseSrtFields(previousRaw);
+            document.getElementById('out-srt-host-input').value = values.host;
+            document.getElementById('out-srt-port-input').value = values.port;
+            document.getElementById('out-srt-streamid-input').value = values.streamId;
+            document.getElementById('out-srt-extra-query-input').value = values.extraQuery;
+        }
     };
 
     serverSelect.onchange = () => {
         const protocol = protocolSelect.value || 'rtmp';
-        if (protocol === 'rtmp') {
-            const rawValue = rawInput.value.trim();
-            if (serverSelect.value) {
-                rawInput.value =
-                    extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
-                syncOperatorFieldsFromRawInput('rtmp', `${serverSelect.value}${rawInput.value}`);
-            } else {
-                const sourceUrl =
-                    detectOutputProtocol(rawValue) === 'rtmp' && isAbsoluteUrl(rawValue)
-                        ? rawValue
-                        : buildDefaultCustomOutputUrl('rtmp', rawValue);
-                rawInput.value = sourceUrl;
-                syncOperatorFieldsFromRawInput('rtmp', sourceUrl);
-                syncRawInputFromOperatorFields('rtmp');
-            }
-            applyOutputProtocolUi('rtmp');
-            return;
-        }
-
-        if (protocol === 'hls') {
+        if (protocol === 'rtmp' || protocol === 'hls') {
             const rawValue = rawInput.value.trim();
             if (serverSelect.value) {
                 rawInput.value =
                     extractCandidateStreamToken(rawValue) || getDefaultOutputToken(rawValue);
             } else {
-                rawInput.value =
-                    isLikelyHlsOutputUrl(rawValue)
-                        ? rawValue
-                        : buildDefaultCustomOutputUrl('hls', rawValue);
-                syncOperatorFieldsFromRawInput('hls', rawInput.value);
+                rawInput.value = isAbsoluteUrl(rawValue)
+                    ? rawValue
+                    : buildDefaultCustomOutputUrl(protocol, rawValue);
             }
-            applyOutputProtocolUi('hls');
-            return;
+            applyOutputProtocolUi(protocol);
         }
     };
 
     rawInput.oninput = () => {
         const rawValue = rawInput.value.trim();
         const currentProtocol = protocolSelect.value || 'rtmp';
-        const preserveCustomHlsProtocol =
-            currentProtocol === 'hls' &&
-            isCustomOutputServerSelected('hls') &&
-            /^https?:\/\//i.test(rawValue);
         const detectedProtocol = isAbsoluteUrl(rawValue) ? detectOutputProtocol(rawValue) : null;
-        if (!preserveCustomHlsProtocol && detectedProtocol && detectedProtocol !== currentProtocol) {
+        if (detectedProtocol && detectedProtocol !== currentProtocol) {
             protocolSelect.value = detectedProtocol;
             populateOutputServerOptions(detectedProtocol, '');
             applyOutputProtocolUi(detectedProtocol);
         }
 
         const protocol = protocolSelect.value || 'rtmp';
-        if (protocol === 'hls' && isAbsoluteUrl(rawValue)) {
-            if (!isCustomOutputServerSelected('hls')) {
-                const matchedPreset = matchOutputServerPreset('hls', rawValue);
+        if (protocol === 'rtmp' || protocol === 'hls') {
+            if (!isCustomOutputServerSelected(protocol) && isAbsoluteUrl(rawValue)) {
+                const matchedPreset = matchOutputServerPreset(protocol, rawValue);
                 if (matchedPreset) {
                     serverSelect.value = matchedPreset.value;
                     rawInput.value = matchedPreset.inputValue;
@@ -733,503 +424,464 @@ function setupOutputModalProtocolHandlers() {
                 }
             }
 
-            if (isCustomOutputServerSelected('hls')) {
-                syncOperatorFieldsFromRawInput('hls', rawValue);
-            }
-            applyOutputProtocolUi('hls');
-            return;
-        }
-
-        if (OUTPUT_OPERATOR_PROTOCOLS[protocol]) {
-            const sourceUrl =
-                protocol === 'rtmp' && serverSelect.value
-                    ? `${serverSelect.value}${rawValue}`
-                    : rawValue;
-            syncOperatorFieldsFromRawInput(protocol, sourceUrl);
+            applyOutputProtocolUi(protocol);
         }
     };
-
-    Object.entries(OUTPUT_OPERATOR_PROTOCOLS).forEach(([protocol, config]) => {
-        Object.values(config.fieldIds).forEach((fieldId) => {
-            const field = document.getElementById(fieldId);
-            if (!field) return;
-
-            const syncFromField = () => {
-                if ((protocolSelect.value || 'rtmp') !== protocol) return;
-                if (!config.shouldSyncRaw()) return;
-                syncRawInputFromOperatorFields(protocol);
-            };
-
-            field.oninput = syncFromField;
-            field.onchange = syncFromField;
-        });
-    });
 }
 
 function setOutputToggleBusy(button, busy) {
-        if (!button) return;
-        button.disabled = busy;
-        button.classList.toggle('btn-disabled', busy);
-    }
+    if (!button) return;
+    button.disabled = busy;
+    button.classList.toggle('btn-disabled', busy);
+}
 
-    // Start/stop buttons use per-output pending keys so repeated clicks cannot queue overlapping
-    // API requests for the same output while the dashboard is refreshing.
-    const pendingOutputToggles = new Set();
+// Start/stop buttons use per-output pending keys so repeated clicks cannot queue overlapping
+// API requests for the same output while the dashboard is refreshing.
+const pendingOutputToggles = new Set();
 
-    function outputToggleKey(pipeId, outId) {
-        return `${pipeId}:${outId}`;
-    }
+function outputToggleKey(pipeId, outId) {
+    return `${pipeId}:${outId}`;
+}
 
-    function isOutputToggleBusy(pipeId, outId) {
-        return pendingOutputToggles.has(outputToggleKey(pipeId, outId));
-    }
+function isOutputToggleBusy(pipeId, outId) {
+    return pendingOutputToggles.has(outputToggleKey(pipeId, outId));
+}
 
-    function setOutputTogglePending(pipeId, outId, busy) {
-        const key = outputToggleKey(pipeId, outId);
-        if (busy) pendingOutputToggles.add(key);
-        else pendingOutputToggles.delete(key);
-    }
+function setOutputTogglePending(pipeId, outId, busy) {
+    const key = outputToggleKey(pipeId, outId);
+    if (busy) pendingOutputToggles.add(key);
+    else pendingOutputToggles.delete(key);
+}
 
-    let publisherQualityModalPipeId = null;
+let publisherQualityModalPipeId = null;
 
-    function renderPublisherQualityModal() {
-        const modal = document.getElementById('publisher-quality-modal');
-        if (!modal || !modal.open) return;
+function renderPublisherQualityModal() {
+    const modal = document.getElementById('publisher-quality-modal');
+    if (!modal || !modal.open) return;
 
-        const pipe = (state.pipelines || []).find((p) => p.id === publisherQualityModalPipeId);
-        const publisher = pipe?.input?.publisher || null;
+    const pipe = (state.pipelines || []).find((p) => p.id === publisherQualityModalPipeId);
+    const publisher = pipe?.input?.publisher || null;
 
-        const subtitle = document.getElementById('publisher-quality-subtitle');
-        const tbody = document.getElementById('publisher-quality-rows');
-        if (!subtitle || !tbody) return;
+    const subtitle = document.getElementById('publisher-quality-subtitle');
+    const tbody = document.getElementById('publisher-quality-rows');
+    if (!subtitle || !tbody) return;
 
-        if (!publisher) {
-            subtitle.textContent = 'No active publisher.';
-            tbody.replaceChildren();
-            return;
-        }
-
-        const proto = normalizePublisherProtocolLabel(publisher.protocol);
-        subtitle.textContent = `${proto} · ${publisher.remoteAddr || 'unknown'}`;
-
-        const rows = getPublisherQualityMetrics(publisher);
-
+    if (!publisher) {
+        subtitle.textContent = 'No active publisher.';
         tbody.replaceChildren();
-        for (const row of rows) {
-            const tr = document.createElement('tr');
-            const tdLabel = document.createElement('td');
-            tdLabel.textContent = row.label;
-            const tdValue = document.createElement('td');
-            tdValue.className = 'text-right font-mono';
-            tdValue.textContent = row.displayValue;
-            const tdStatus = document.createElement('td');
-            tdStatus.className = 'text-right';
-            const badge = document.createElement('span');
-            badge.className = `badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}`;
-            badge.textContent = row.isAlert ? 'Alert' : 'OK';
-            tdStatus.appendChild(badge);
-            tr.appendChild(tdLabel);
-            tr.appendChild(tdValue);
-            tr.appendChild(tdStatus);
-            tbody.appendChild(tr);
+        return;
+    }
+
+    const proto = normalizePublisherProtocolLabel(publisher.protocol);
+    subtitle.textContent = `${proto} · ${publisher.remoteAddr || 'unknown'}`;
+
+    const rows = getPublisherQualityMetrics(publisher);
+
+    tbody.replaceChildren();
+    for (const row of rows) {
+        const tr = document.createElement('tr');
+        const tdLabel = document.createElement('td');
+        tdLabel.textContent = row.label;
+        const tdValue = document.createElement('td');
+        tdValue.className = 'text-right font-mono';
+        tdValue.textContent = row.displayValue;
+        const tdStatus = document.createElement('td');
+        tdStatus.className = 'text-right';
+        const badge = document.createElement('span');
+        badge.className = `badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}`;
+        badge.textContent = row.isAlert ? 'Alert' : 'OK';
+        tdStatus.appendChild(badge);
+        tr.appendChild(tdLabel);
+        tr.appendChild(tdValue);
+        tr.appendChild(tdStatus);
+        tbody.appendChild(tr);
+    }
+
+    if (rows.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'text-center opacity-50 text-sm py-4';
+        td.textContent = 'No quality metrics available for this protocol.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    }
+}
+
+function openPublisherQualityModal(pipeId) {
+    const modal = document.getElementById('publisher-quality-modal');
+    if (!modal) return;
+    publisherQualityModalPipeId = pipeId;
+    const pipe = (state.pipelines || []).find((p) => p.id === pipeId);
+    const title = document.getElementById('publisher-quality-title');
+    if (title) title.textContent = `Publisher Quality — ${pipe?.name || pipeId}`;
+    modal.showModal();
+    renderPublisherQualityModal();
+}
+
+async function startOutBtn(pipeId, outId, button = null) {
+    // Wrap the raw API call with button state and dashboard refresh so the UI cannot drift from
+    // server intent even if the request succeeds after a visible delay.
+    if (isOutputToggleBusy(pipeId, outId)) return;
+    setOutputTogglePending(pipeId, outId, true);
+    setOutputToggleBusy(button, true);
+    try {
+        const res = await startOut(pipeId, outId);
+        if (res !== null) {
+            await refreshDashboard();
+            await updateLocalConfigBaseline();
         }
+    } finally {
+        setOutputTogglePending(pipeId, outId, false);
+        setOutputToggleBusy(button, false);
+    }
+}
 
-        if (rows.length === 0) {
-            const tr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.colSpan = 3;
-            td.className = 'text-center opacity-50 text-sm py-4';
-            td.textContent = 'No quality metrics available for this protocol.';
-            tr.appendChild(td);
-            tbody.appendChild(tr);
+async function stopOutBtn(pipeId, outId, button = null) {
+    if (isOutputToggleBusy(pipeId, outId)) return;
+    setOutputTogglePending(pipeId, outId, true);
+    setOutputToggleBusy(button, true);
+    try {
+        const res = await stopOut(pipeId, outId);
+        if (res !== null) {
+            await refreshDashboard();
+            await updateLocalConfigBaseline();
         }
+    } finally {
+        setOutputTogglePending(pipeId, outId, false);
+        setOutputToggleBusy(button, false);
     }
+}
 
-    function openPublisherQualityModal(pipeId) {
-        const modal = document.getElementById('publisher-quality-modal');
-        if (!modal) return;
-        publisherQualityModalPipeId = pipeId;
-        const pipe = (state.pipelines || []).find((p) => p.id === pipeId);
-        const title = document.getElementById('publisher-quality-title');
-        if (title) title.textContent = `Publisher Quality — ${pipe?.name || pipeId}`;
-        modal.showModal();
-        renderPublisherQualityModal();
+async function populatePipelineKeySelect(selectedKey = '') {
+    const keySelect = document.getElementById('pipe-stream-key-input');
+    const keys = (await getStreamKeys()) || [];
+
+    keySelect.replaceChildren();
+
+    const unassignedOption = document.createElement('option');
+    unassignedOption.value = '';
+    unassignedOption.textContent = 'Unassigned';
+    unassignedOption.selected = selectedKey === '';
+    keySelect.appendChild(unassignedOption);
+
+    keys.forEach((key) => {
+        const option = document.createElement('option');
+        option.value = key.key;
+        option.selected = key.key === selectedKey;
+        const label = typeof key.label === 'string' ? key.label.trim() : '';
+        option.textContent = `${label || 'Unnamed'} (${key.key})`;
+        keySelect.appendChild(option);
+    });
+}
+
+async function openPipeModal(mode, pipe = null, suggestedName = '') {
+    document.getElementById('pipe-id-input').value = pipe?.id || '';
+    document.getElementById('pipe-name-input').value = pipe?.name || suggestedName;
+    document.getElementById('pipe-modal-title').innerText =
+        mode === 'edit' ? 'Edit Pipeline' : 'Add Pipeline';
+    document.getElementById('pipe-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
+    await populatePipelineKeySelect(pipe?.key || '');
+
+    const keySelect = document.getElementById('pipe-stream-key-input');
+    const keyHint = document.getElementById('pipe-stream-key-locked-hint');
+    const hasRunningOutput =
+        mode === 'edit' && pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
+    keySelect.disabled = !!hasRunningOutput;
+    keyHint.classList.toggle('hidden', !hasRunningOutput);
+
+    document.getElementById('edit-pipe-modal').dataset.mode = mode;
+    document.getElementById('edit-pipe-modal').showModal();
+}
+
+async function pipeFormBtn(event) {
+    event.preventDefault();
+
+    const modal = document.getElementById('edit-pipe-modal');
+    const mode = modal.dataset.mode || 'create';
+    const pipeId = document.getElementById('pipe-id-input').value;
+    const nameInput = document.getElementById('pipe-name-input');
+    const streamKeyInput = document.getElementById('pipe-stream-key-input');
+    const name = nameInput.value.trim();
+    const streamKey = streamKeyInput.value || null;
+
+    if (!name) {
+        nameInput.classList.add('input-error');
+        return;
     }
+    nameInput.classList.remove('input-error');
 
-    async function startOutBtn(pipeId, outId, button = null) {
-        // Wrap the raw API call with button state and dashboard refresh so the UI cannot drift from
-        // server intent even if the request succeeds after a visible delay.
-        if (isOutputToggleBusy(pipeId, outId)) return;
-        setOutputTogglePending(pipeId, outId, true);
-        setOutputToggleBusy(button, true);
-        try {
-            const res = await startOut(pipeId, outId);
-            if (res !== null) {
-                await refreshDashboard();
-                await updateLocalConfigBaseline();
-            }
-        } finally {
-            setOutputTogglePending(pipeId, outId, false);
-            setOutputToggleBusy(button, false);
-        }
-    }
+    const response =
+        mode === 'edit'
+            ? await updatePipeline(pipeId, { name, streamKey })
+            : await createPipeline({ name, streamKey });
+    if (response === null) return;
 
-    async function stopOutBtn(pipeId, outId, button = null) {
-        if (isOutputToggleBusy(pipeId, outId)) return;
-        setOutputTogglePending(pipeId, outId, true);
-        setOutputToggleBusy(button, true);
-        try {
-            const res = await stopOut(pipeId, outId);
-            if (res !== null) {
-                await refreshDashboard();
-                await updateLocalConfigBaseline();
-            }
-        } finally {
-            setOutputTogglePending(pipeId, outId, false);
-            setOutputToggleBusy(button, false);
-        }
-    }
-
-    async function populatePipelineKeySelect(selectedKey = '') {
-        const keySelect = document.getElementById('pipe-stream-key-input');
-        const keys = (await getStreamKeys()) || [];
-
-        keySelect.replaceChildren();
-
-        const unassignedOption = document.createElement('option');
-        unassignedOption.value = '';
-        unassignedOption.textContent = 'Unassigned';
-        unassignedOption.selected = selectedKey === '';
-        keySelect.appendChild(unassignedOption);
-
-        keys.forEach((key) => {
-            const option = document.createElement('option');
-            option.value = key.key;
-            option.selected = key.key === selectedKey;
-            const label = typeof key.label === 'string' ? key.label.trim() : '';
-            option.textContent = `${label || 'Unnamed'} (${key.key})`;
-            keySelect.appendChild(option);
-        });
-    }
-
-    async function openPipeModal(mode, pipe = null, suggestedName = '') {
-        document.getElementById('pipe-id-input').value = pipe?.id || '';
-        document.getElementById('pipe-name-input').value = pipe?.name || suggestedName;
-        document.getElementById('pipe-modal-title').innerText =
-            mode === 'edit' ? 'Edit Pipeline' : 'Add Pipeline';
-        document.getElementById('pipe-submit-btn').innerText =
-            mode === 'edit' ? 'Update' : 'Create';
-        await populatePipelineKeySelect(pipe?.key || '');
-
-        const keySelect = document.getElementById('pipe-stream-key-input');
-        const keyHint = document.getElementById('pipe-stream-key-locked-hint');
-        const hasRunningOutput =
-            mode === 'edit' && pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
-        keySelect.disabled = !!hasRunningOutput;
-        keyHint.classList.toggle('hidden', !hasRunningOutput);
-
-        document.getElementById('edit-pipe-modal').dataset.mode = mode;
-        document.getElementById('edit-pipe-modal').showModal();
-    }
-
-    async function pipeFormBtn(event) {
-        event.preventDefault();
-
-        const modal = document.getElementById('edit-pipe-modal');
-        const mode = modal.dataset.mode || 'create';
-        const pipeId = document.getElementById('pipe-id-input').value;
-        const nameInput = document.getElementById('pipe-name-input');
-        const streamKeyInput = document.getElementById('pipe-stream-key-input');
-        const name = nameInput.value.trim();
-        const streamKey = streamKeyInput.value || null;
-
-        if (!name) {
-            nameInput.classList.add('input-error');
-            return;
-        }
-        nameInput.classList.remove('input-error');
-
-        const response =
-            mode === 'edit'
-                ? await updatePipeline(pipeId, { name, streamKey })
-                : await createPipeline({ name, streamKey });
-        if (response === null) return;
-
-        modal.close();
-        await refreshDashboard();
+    modal.close();
+    await refreshDashboard();
     await updateLocalConfigBaseline();
+}
+
+async function openOutModal(mode, pipe, output = null) {
+    document.getElementById('out-mode-input').value = mode;
+    document.getElementById('out-pipe-id-input').value = pipe.id;
+    document.getElementById('out-id-input').value = output?.id || '';
+    document.getElementById('out-modal-title').innerText =
+        mode === 'edit'
+            ? `Edit Output "${output?.name || pipe.name}"`
+            : `Add Output for "${pipe.name}"`;
+    document.getElementById('out-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
+    document.getElementById('out-name-input').value = output?.name || `Out_${pipe.outs.length + 1}`;
+    const encodingSelect = document.getElementById('out-encoding-input');
+    const rawEncoding = String(output?.encoding || 'source')
+        .trim()
+        .toLowerCase();
+    const isSupportedEncoding = [...encodingSelect.options].some(
+        (opt) => opt.value === rawEncoding,
+    );
+    const resolvedEncoding = isSupportedEncoding ? rawEncoding : 'source';
+    if (!isSupportedEncoding && rawEncoding !== 'source') {
+        console.warn(`Output encoding "${rawEncoding}" not supported; using 'source' instead`);
+    }
+    encodingSelect.value = resolvedEncoding;
+    const isRunningEdit =
+        mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
+
+    const baseRtmpUrl = `rtmp://${document.location.hostname}:1935/live/`;
+    const isCreateMode = mode !== 'edit' || !output;
+    const currentUrl = isCreateMode ? `${baseRtmpUrl}test` : output?.url || `${baseRtmpUrl}test`;
+    const detectedProtocol = detectOutputProtocol(currentUrl);
+    const protocolSelect = document.getElementById('out-protocol-input');
+    const serverSelect = document.getElementById('out-server-url-input');
+    const matchedPreset = protocolUsesOutputServerPresets(detectedProtocol)
+        ? matchOutputServerPreset(detectedProtocol, currentUrl)
+        : null;
+    if (protocolSelect) {
+        protocolSelect.value = detectedProtocol;
+    }
+    populateOutputServerOptions(detectedProtocol, matchedPreset?.value || '');
+
+    if (serverSelect) {
+        serverSelect.value = matchedPreset?.value || '';
     }
 
-    async function openOutModal(mode, pipe, output = null) {
-        document.getElementById('out-mode-input').value = mode;
-        document.getElementById('out-pipe-id-input').value = pipe.id;
-        document.getElementById('out-id-input').value = output?.id || '';
-        document.getElementById('out-modal-title').innerText =
-            mode === 'edit'
-                ? `Edit Output "${output?.name || pipe.name}"`
-                : `Add Output for "${pipe.name}"`;
-        document.getElementById('out-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
-        document.getElementById('out-name-input').value =
-            output?.name || `Out_${pipe.outs.length + 1}`;
-        const encodingSelect = document.getElementById('out-encoding-input');
-        const rawEncoding = String(output?.encoding || 'source')
-            .trim()
-            .toLowerCase();
-        const isSupportedEncoding = [...encodingSelect.options].some(
-            (opt) => opt.value === rawEncoding,
-        );
-        const resolvedEncoding = isSupportedEncoding ? rawEncoding : 'source';
-        if (!isSupportedEncoding && rawEncoding !== 'source') {
-            console.warn(`Output encoding "${rawEncoding}" not supported; using 'source' instead`);
-        }
-        encodingSelect.value = resolvedEncoding;
-        const isRunningEdit =
-            mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
+    const outUrlInput = document.getElementById('out-rtmp-key-input');
+    outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
+    if (detectedProtocol === 'srt') {
+        const values = parseSrtFields(currentUrl);
+        document.getElementById('out-srt-host-input').value = values.host;
+        document.getElementById('out-srt-port-input').value = values.port;
+        document.getElementById('out-srt-streamid-input').value = values.streamId;
+        document.getElementById('out-srt-extra-query-input').value = values.extraQuery;
+    }
+    applyOutputProtocolUi(detectedProtocol);
+    document.getElementById('out-rtmp-key-input').classList.remove('input-error');
+    document.getElementById('out-srt-host-input').classList.remove('input-error');
+    document.getElementById('out-rtmp-error').classList.add('hidden');
+    document.getElementById('out-running-edit-hint').classList.toggle('hidden', !isRunningEdit);
+    document.getElementById('out-name-input').classList.remove('input-error');
 
-        const baseRtmpUrl = `rtmp://${document.location.hostname}:1935/live/`;
-        const isCreateMode = mode !== 'edit' || !output;
-        const defaultRtmpServerUrl = OUTPUT_SERVER_PRESETS.rtmp[0]?.value || '';
-        const currentUrl = isCreateMode
-            ? `${defaultRtmpServerUrl || baseRtmpUrl}test`
-            : output?.url || `${baseRtmpUrl}test`;
-        const detectedProtocol = detectOutputProtocol(currentUrl);
-        const protocolSelect = document.getElementById('out-protocol-input');
-        const serverSelect = document.getElementById('out-server-url-input');
-        const matchedPreset = protocolUsesOutputServerPresets(detectedProtocol)
-            ? matchOutputServerPreset(detectedProtocol, currentUrl)
-            : null;
-        if (protocolSelect) {
-            protocolSelect.value = detectedProtocol;
-        }
-        populateOutputServerOptions(detectedProtocol, matchedPreset?.value || '');
+    encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
+    encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
+    serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
+    serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
+    const outRtmpInput = document.getElementById('out-rtmp-key-input');
+    outRtmpInput.readOnly = isRunningEdit;
+    outRtmpInput.classList.toggle('opacity-70', isRunningEdit);
+    const protocolField = document.getElementById('out-protocol-input');
+    protocolField.disabled = isRunningEdit;
+    protocolField.style.opacity = isRunningEdit ? '0.75' : '';
+    const srtFields = [
+        document.getElementById('out-srt-host-input'),
+        document.getElementById('out-srt-port-input'),
+        document.getElementById('out-srt-streamid-input'),
+        document.getElementById('out-srt-extra-query-input'),
+    ];
+    srtFields.forEach((field) => {
+        if (!field) return;
+        field.readOnly = isRunningEdit;
+        field.classList.toggle('opacity-70', isRunningEdit);
+    });
+    document.getElementById('edit-out-modal').dataset.runningEdit = isRunningEdit ? '1' : '';
 
-        if (serverSelect) {
-            serverSelect.value = matchedPreset?.value || '';
-        }
+    setupOutputModalProtocolHandlers();
 
-        const outUrlInput = document.getElementById('out-rtmp-key-input');
-        outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
-        if (OUTPUT_OPERATOR_PROTOCOLS[detectedProtocol]) {
-            const sourceUrl =
-                detectedProtocol === 'rtmp' && matchedPreset
-                    ? resolvePresetOutputUrl(matchedPreset.value, outUrlInput.value)
-                    : currentUrl;
-            syncOperatorFieldsFromRawInput(detectedProtocol, sourceUrl);
-        }
-        applyOutputProtocolUi(detectedProtocol);
-        document.getElementById('out-rtmp-key-input').classList.remove('input-error');
+    document.getElementById('edit-out-modal').showModal();
+}
+
+async function editOutBtn(pipeId, outId) {
+    const pipe = state.pipelines.find((p) => p.id === String(pipeId));
+    if (!pipe) {
+        console.error('Pipeline not found:', pipeId);
+        return;
+    }
+
+    const output = pipe.outs.find((o) => o.id === String(outId));
+    if (!output) {
+        console.error('Output not found:', pipeId, outId);
+        return;
+    }
+
+    await openOutModal('edit', pipe, output);
+}
+
+async function editOutFormBtn(event) {
+    event.preventDefault();
+
+    const mode = document.getElementById('out-mode-input').value || 'edit';
+    const modal = document.getElementById('edit-out-modal');
+    const isRunningEdit = modal.dataset.runningEdit === '1';
+    const pipeId = document.getElementById('out-pipe-id-input').value;
+    const serverUrl = document.getElementById('out-server-url-input').value;
+    const rawInputValue = document.getElementById('out-rtmp-key-input').value.trim();
+    const outId = document.getElementById('out-id-input').value;
+    const data = {
+        name: document.getElementById('out-name-input').value.trim(),
+        encoding: document.getElementById('out-encoding-input').value,
+        url: getEffectiveOutputUrlFromModal(),
+    };
+
+    if (serverUrl.includes('${s_prp}')) {
+        const params = new URLSearchParams(rawInputValue.split('?')[1]);
+        data.url = data.url.replaceAll('${s_prp}', params.get('s_prp') || '');
+    }
+
+    const isOutputUrlValid = isRunningEdit ? true : isValidOutput(data.url);
+    const outputErrorField =
+        document.getElementById('out-protocol-input')?.value === 'srt'
+            ? document.getElementById('out-srt-host-input')
+            : document.getElementById('out-rtmp-key-input');
+    if (isOutputUrlValid) {
+        outputErrorField?.classList.remove('input-error');
         document.getElementById('out-rtmp-error').classList.add('hidden');
-        document.getElementById('out-running-edit-hint').classList.toggle('hidden', !isRunningEdit);
+    } else {
+        outputErrorField?.classList.add('input-error');
+        document.getElementById('out-rtmp-error').classList.remove('hidden');
+    }
+
+    const isOutNameValid = !!data.name;
+    if (isOutNameValid) {
         document.getElementById('out-name-input').classList.remove('input-error');
-
-        encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
-        serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
-        const outRtmpInput = document.getElementById('out-rtmp-key-input');
-        outRtmpInput.readOnly = isRunningEdit;
-        outRtmpInput.classList.toggle('opacity-70', isRunningEdit);
-        const protocolField = document.getElementById('out-protocol-input');
-        protocolField.disabled = isRunningEdit;
-        protocolField.style.opacity = isRunningEdit ? '0.75' : '';
-        const srtOperatorFields = [
-            document.getElementById('out-rtmp-host-input'),
-            document.getElementById('out-rtmp-port-input'),
-            document.getElementById('out-rtmp-app-path-input'),
-            document.getElementById('out-rtmp-stream-key-input'),
-            document.getElementById('out-rtmp-extra-query-input'),
-            document.getElementById('out-srt-host-input'),
-            document.getElementById('out-srt-port-input'),
-            document.getElementById('out-srt-streamid-input'),
-            document.getElementById('out-srt-extra-query-input'),
-            document.getElementById('out-rtsp-host-input'),
-            document.getElementById('out-rtsp-port-input'),
-            document.getElementById('out-rtsp-path-input'),
-            document.getElementById('out-rtsp-extra-query-input'),
-        ];
-        srtOperatorFields.forEach((field) => {
-            if (!field) return;
-            field.readOnly = isRunningEdit;
-            field.classList.toggle('opacity-70', isRunningEdit);
-        });
-        document.getElementById('edit-out-modal').dataset.runningEdit = isRunningEdit ? '1' : '';
-
-        setupOutputModalProtocolHandlers();
-
-        document.getElementById('edit-out-modal').showModal();
+    } else {
+        document.getElementById('out-name-input').classList.add('input-error');
     }
 
-    async function editOutBtn(pipeId, outId) {
-        const pipe = state.pipelines.find((p) => p.id === String(pipeId));
-        if (!pipe) {
-            console.error('Pipeline not found:', pipeId);
-            return;
-        }
-
-        const output = pipe.outs.find((o) => o.id === String(outId));
-        if (!output) {
-            console.error('Output not found:', pipeId, outId);
-            return;
-        }
-
-        await openOutModal('edit', pipe, output);
+    if ((!isOutputUrlValid && !isRunningEdit) || !isOutNameValid) {
+        return;
     }
 
-    async function editOutFormBtn(event) {
-        event.preventDefault();
+    const res =
+        mode === 'edit'
+            ? await updateOutput(pipeId, outId, data)
+            : await createOutput(pipeId, data);
 
-        const mode = document.getElementById('out-mode-input').value || 'edit';
-        const modal = document.getElementById('edit-out-modal');
-        const isRunningEdit = modal.dataset.runningEdit === '1';
-        const pipeId = document.getElementById('out-pipe-id-input').value;
-        const serverUrl = document.getElementById('out-server-url-input').value;
-        const rawInputValue = document.getElementById('out-rtmp-key-input').value.trim();
-        const outId = document.getElementById('out-id-input').value;
-        const data = {
-            name: document.getElementById('out-name-input').value.trim(),
-            encoding: document.getElementById('out-encoding-input').value,
-            url: getEffectiveOutputUrlFromModal(),
-        };
-
-        if (serverUrl.includes('${s_prp}')) {
-            const params = new URLSearchParams(rawInputValue.split('?')[1]);
-            data.url = data.url.replaceAll('${s_prp}', params.get('s_prp') || '');
-        }
-
-        const isOutputUrlValid = isRunningEdit ? true : isValidOutput(data.url);
-        if (isOutputUrlValid) {
-            document.getElementById('out-rtmp-key-input').classList.remove('input-error');
-            document.getElementById('out-rtmp-error').classList.add('hidden');
-        } else {
-            document.getElementById('out-rtmp-key-input').classList.add('input-error');
-            document.getElementById('out-rtmp-error').classList.remove('hidden');
-        }
-
-        const isOutNameValid = !!data.name;
-        if (isOutNameValid) {
-            document.getElementById('out-name-input').classList.remove('input-error');
-        } else {
-            document.getElementById('out-name-input').classList.add('input-error');
-        }
-
-        if ((!isOutputUrlValid && !isRunningEdit) || !isOutNameValid) {
-            return;
-        }
-
-        const res =
-            mode === 'edit'
-                ? await updateOutput(pipeId, outId, data)
-                : await createOutput(pipeId, data);
-
-        if (res === null) {
-            return;
-        }
-
-        document.getElementById('edit-out-modal').close();
-        await refreshDashboard();
-        await updateLocalConfigBaseline();
+    if (res === null) {
+        return;
     }
 
-    async function deleteOutBtn(pipeId, outId) {
-        const pipe = state.pipelines.find((p) => p.id === String(pipeId));
-        if (!pipe) {
-            console.error('Pipeline not found:', pipeId);
-            return;
-        }
-
-        const output = pipe.outs.find((o) => o.id === String(outId));
-        if (!output) {
-            console.error('Output not found:', pipeId, outId);
-            return;
-        }
-
-        if (!confirm('Are you sure you want to delete output "' + output.name + '"?')) {
-            return;
-        }
-
-        const res = await deleteOutput(pipeId, outId);
-
-        if (res === null) {
-            return;
-        }
-
-        await refreshDashboard();
+    document.getElementById('edit-out-modal').close();
+    await refreshDashboard();
     await updateLocalConfigBaseline();
+}
+
+async function deleteOutBtn(pipeId, outId) {
+    const pipe = state.pipelines.find((p) => p.id === String(pipeId));
+    if (!pipe) {
+        console.error('Pipeline not found:', pipeId);
+        return;
     }
 
-    async function addOutBtn() {
-        const pipeId = getUrlParam('p');
-        if (!pipeId) {
-            console.error('Please select a pipeline first.');
-            return;
-        }
-
-        const pipe = state.pipelines.find((p) => p.id === pipeId);
-        if (!pipe) {
-            console.error('Pipeline not found:', pipeId);
-            return;
-        }
-
-        if (state.config?.outLimit && pipe.outs.length >= state.config?.outLimit) {
-            console.error(`Output limit reached. Max outputs per pipeline: ${state.config?.outLimit}`);
-            return;
-        }
-
-        await openOutModal('create', pipe);
+    const output = pipe.outs.find((o) => o.id === String(outId));
+    if (!output) {
+        console.error('Output not found:', pipeId, outId);
+        return;
     }
 
-    async function addPipeBtn() {
-        const numbers = state.pipelines
-            .filter((p) => p.name.startsWith('Pipeline '))
-            .map((p) => parseInt(p.name.split(' ')[1]));
-        const nextNumber = Math.max(...numbers, 0) + 1;
-
-        await openPipeModal('create', null, 'Pipeline ' + nextNumber);
+    if (!confirm('Are you sure you want to delete output "' + output.name + '"?')) {
+        return;
     }
 
-    async function editPipeBtn() {
-        const pipeId = getUrlParam('p');
-        if (!pipeId) {
-            console.error('Please select a pipeline first.');
-            return;
-        }
+    const res = await deleteOutput(pipeId, outId);
 
-        const pipe = state.pipelines.find((p) => p.id === String(pipeId));
-        if (!pipe) {
-            console.error('Pipeline not found:', pipeId);
-            return;
-        }
-
-        await openPipeModal('edit', pipe);
+    if (res === null) {
+        return;
     }
 
-    async function deletePipeBtn() {
-        const pipeId = getUrlParam('p');
-        if (!pipeId) {
-            console.error('Please select a pipeline first.');
-            return;
-        }
+    await refreshDashboard();
+    await updateLocalConfigBaseline();
+}
 
-        const pipe = state.pipelines.find((p) => p.id === pipeId);
-        if (!pipe) {
-            console.error('Pipeline not found:', pipeId);
-            return;
-        }
-
-        const confirmDelete = confirm(
-            'Are you sure you want to delete pipeline "' + pipe.name + '"?',
-        );
-        if (!confirmDelete) {
-            return;
-        }
-
-        const res = await deletePipeline(pipeId);
-        if (res === null) return;
-
-        setUrlParam('p', null);
-        await refreshDashboard();
-        await updateLocalConfigBaseline();
+async function addOutBtn() {
+    const pipeId = getUrlParam('p');
+    if (!pipeId) {
+        console.error('Please select a pipeline first.');
+        return;
     }
+
+    const pipe = state.pipelines.find((p) => p.id === pipeId);
+    if (!pipe) {
+        console.error('Pipeline not found:', pipeId);
+        return;
+    }
+
+    if (state.config?.outLimit && pipe.outs.length >= state.config?.outLimit) {
+        console.error(`Output limit reached. Max outputs per pipeline: ${state.config?.outLimit}`);
+        return;
+    }
+
+    await openOutModal('create', pipe);
+}
+
+async function addPipeBtn() {
+    const numbers = state.pipelines
+        .filter((p) => p.name.startsWith('Pipeline '))
+        .map((p) => parseInt(p.name.split(' ')[1]));
+    const nextNumber = Math.max(...numbers, 0) + 1;
+
+    await openPipeModal('create', null, 'Pipeline ' + nextNumber);
+}
+
+async function editPipeBtn() {
+    const pipeId = getUrlParam('p');
+    if (!pipeId) {
+        console.error('Please select a pipeline first.');
+        return;
+    }
+
+    const pipe = state.pipelines.find((p) => p.id === String(pipeId));
+    if (!pipe) {
+        console.error('Pipeline not found:', pipeId);
+        return;
+    }
+
+    await openPipeModal('edit', pipe);
+}
+
+async function deletePipeBtn() {
+    const pipeId = getUrlParam('p');
+    if (!pipeId) {
+        console.error('Please select a pipeline first.');
+        return;
+    }
+
+    const pipe = state.pipelines.find((p) => p.id === pipeId);
+    if (!pipe) {
+        console.error('Pipeline not found:', pipeId);
+        return;
+    }
+
+    const confirmDelete = confirm('Are you sure you want to delete pipeline "' + pipe.name + '"?');
+    if (!confirmDelete) {
+        return;
+    }
+
+    const res = await deletePipeline(pipeId);
+    if (res === null) return;
+
+    setUrlParam('p', null);
+    await refreshDashboard();
+    await updateLocalConfigBaseline();
+}
 
 window.pipeFormBtn = pipeFormBtn;
 window.editOutFormBtn = editOutFormBtn;
