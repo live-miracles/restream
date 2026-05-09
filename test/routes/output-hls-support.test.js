@@ -30,13 +30,12 @@ test('INVALID_OUTPUT_URL_ERROR mentions HLS playlist URLs', () => {
     assert.match(INVALID_OUTPUT_URL_ERROR, /https:\/\//i);
 });
 
-test('redactSensitiveUrl redacts HLS stream key query parameters', () => {
+test('redactSensitiveUrl masks long URLs as a compact prefix and suffix', () => {
     const redacted = redactSensitiveUrl(
         'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=out.m3u8',
     );
 
-    assert.match(redacted, /cid=%5BREDACTED%5D/);
-    assert.match(redacted, /file=out\.m3u8/);
+    assert.equal(redacted, 'https://a.uploa***.m3u8');
 });
 
 test('buildFfmpegOutputArgs uses the shared HLS muxer for HLS output URLs', () => {

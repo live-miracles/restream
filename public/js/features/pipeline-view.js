@@ -360,9 +360,10 @@ function renderOutsColumn(selectedPipe) {
         row.className = 'bg-base-100 px-3 py-2 shadow rounded-box w-full';
         row.style.display = 'grid';
         row.style.gridTemplateColumns = 'minmax(0, 1fr) auto';
-        row.style.gridTemplateRows = 'auto auto auto';
+        row.style.gridTemplateRows = 'auto auto';
         row.style.alignItems = 'center';
-        row.style.gap = '0.5rem';
+        row.style.columnGap = '0.5rem';
+        row.style.rowGap = '0.25rem';
 
         const content = document.createElement('div');
         content.className = 'min-w-0';
@@ -406,12 +407,18 @@ function renderOutsColumn(selectedPipe) {
         heading.appendChild(toggleBtn);
 
         const outputName = document.createElement('span');
-        outputName.className = 'min-w-0 truncate';
+        outputName.className = 'shrink-0 truncate';
         outputName.textContent = o.name;
         heading.appendChild(outputName);
 
+        const outputUrl = document.createElement('code');
+        outputUrl.className = 'text-sm font-normal opacity-70 truncate';
+        outputUrl.textContent = sanitizeLogMessage(o.url, true);
+        outputUrl.title = o.url || '';
+        heading.appendChild(outputUrl);
+
         const metadataRow = document.createElement('div');
-        metadataRow.className = 'mt-2 flex items-center gap-2 overflow-x-auto whitespace-nowrap';
+        metadataRow.className = 'flex items-center gap-2 overflow-x-auto whitespace-nowrap';
         metadataRow.style.gridColumn = '1 / -1';
 
         if (o.time !== null) {
@@ -462,12 +469,6 @@ function renderOutsColumn(selectedPipe) {
             metadataRow.appendChild(volumeBadge);
         }
 
-        const outputUrl = document.createElement('code');
-        outputUrl.className = 'text-sm opacity-70 truncate block mt-1';
-        outputUrl.textContent = sanitizeLogMessage(o.url, true);
-        outputUrl.title = 'Hidden by default';
-        outputUrl.style.gridColumn = '1 / -1';
-
         const actions = document.createElement('div');
         actions.className = 'flex items-center gap-2 self-start';
 
@@ -501,7 +502,6 @@ function renderOutsColumn(selectedPipe) {
         row.appendChild(content);
         row.appendChild(actions);
         if (metadataRow.childElementCount > 0) row.appendChild(metadataRow);
-        row.appendChild(outputUrl);
         outputsList.appendChild(row);
     });
 }

@@ -45,78 +45,14 @@ function isLikelyHlsOutputUrl(str) {
     }
 }
 
+const MASK_VISIBLE_PREFIX_CHARS = 20;
+const MASK_VISIBLE_SUFFIX_CHARS = 5;
+
 function maskSecret(value) {
     const s = String(value ?? '');
     if (!s) return '';
-
-    let parsed = null;
-    try {
-        parsed = new URL(s);
-    } catch {
-        parsed = null;
-    }
-
-    if (
-        parsed &&
-        (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-        !isLikelyHlsOutputUrl(s)
-    ) {
-        return s;
-    }
-
-    const maskToken = (token) => {
-        if (!token) return '';
-        if (token.length <= 4) {
-            return token.length === 1 ? token : `${token[0]}...${token[token.length - 1]}`;
-        }
-        return `${token.slice(0, 2)}...${token.slice(-2)}`;
-    };
-
-    const isRtmpLike = /^(rtmps?|rtsps?):\/\//i.test(s);
-    if (isRtmpLike) {
-        return s.replace(
-            /^((?:rtmps?|rtsps?):\/\/[^/\s?#]+(?:\/[^/\s?#]+)*\/)([^/\s?#]+)([?#].*)?$/i,
-            (full, prefix, secret, suffix) => `${prefix}${maskToken(secret)}${suffix || ''}`,
-        );
-    }
-
-    if (/^srt:\/\//i.test(s)) {
-        return s.replace(/([?&]streamid=)([^&]+)/i, (full, keyPrefix, streamIdValue) => {
-            const streamId = String(streamIdValue || '');
-            const publishPrefix = 'publish:';
-
-            if (streamId.startsWith(publishPrefix)) {
-                const streamPath = streamId.slice(publishPrefix.length);
-                const slashIdx = streamPath.lastIndexOf('/');
-                if (slashIdx >= 0) {
-                    const parent = streamPath.slice(0, slashIdx + 1);
-                    const secret = streamPath.slice(slashIdx + 1);
-                    return `${keyPrefix}${publishPrefix}${parent}${maskToken(secret)}`;
-                }
-                return `${keyPrefix}${publishPrefix}${maskToken(streamPath)}`;
-            }
-
-            return `${keyPrefix}${maskToken(streamId)}`;
-        });
-    }
-
-    if (parsed && isLikelyHlsOutputUrl(s)) {
-        const sensitiveParams =
-            /key|streamkey|stream_key|token|secret|pass|passphrase|signature|sig|auth|streamid|cid/i;
-
-        if (parsed.username) parsed.username = '[REDACTED]';
-        if (parsed.password) parsed.password = '[REDACTED]';
-
-        for (const [paramKey, paramValue] of parsed.searchParams.entries()) {
-            if (sensitiveParams.test(paramKey)) {
-                parsed.searchParams.set(paramKey, maskToken(paramValue));
-            }
-        }
-
-        return parsed.toString();
-    }
-
-    return maskToken(s);
+    if (s.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return s;
+    return `${s.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${s.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
 function sanitizeLogMessage(msg, redacted = true) {

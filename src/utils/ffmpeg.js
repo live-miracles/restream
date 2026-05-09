@@ -4,8 +4,6 @@
 // parsing, and encoding normalization. Services and API routes can require these directly
 // instead of receiving them via the DI parameter list in index.js.
 
-const { maskToken } = require('./app');
-
 // ── Shell / command helpers ───────────────────────────
 
 function shellQuote(arg) {
@@ -66,40 +64,13 @@ function shouldPersistFfmpegStderrLine(line, outputUrl) {
 
 // ── Credential redaction ──────────────────────────────
 
+const MASK_VISIBLE_PREFIX_CHARS = 20;
+const MASK_VISIBLE_SUFFIX_CHARS = 5;
+
 function redactSensitiveUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
-
-    let parsed;
-    try {
-        parsed = new URL(rawUrl);
-    } catch {
-        return maskToken(rawUrl);
-    }
-
-    if (parsed.username) parsed.username = '[REDACTED]';
-    if (parsed.password) parsed.password = '[REDACTED]';
-
-    const sensitiveParams =
-        /key|streamkey|stream_key|token|secret|pass|passphrase|signature|sig|auth|streamid|cid/i;
-    for (const [paramKey] of parsed.searchParams.entries()) {
-        if (sensitiveParams.test(paramKey)) {
-            parsed.searchParams.set(paramKey, '[REDACTED]');
-        }
-    }
-
-    // For RTMP/RTSP/SRT, mask the last path segment (often the stream key).
-    const protocol = String(parsed.protocol || '').toLowerCase();
-    if (['rtmp:', 'rtmps:', 'rtsp:', 'rtsps:', 'srt:'].includes(protocol)) {
-        const segments = parsed.pathname.split('/');
-        const lastIdx = segments.length - 1;
-        if (lastIdx >= 1 && segments[lastIdx]) {
-            segments[lastIdx] = maskToken(segments[lastIdx]);
-            parsed.pathname = segments.join('/');
-        }
-    }
-
-    parsed.hash = '';
-    return parsed.toString();
+    if (rawUrl.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return rawUrl;
+    return `${rawUrl.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${rawUrl.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
 function redactFfmpegArgs(args) {
