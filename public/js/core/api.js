@@ -4,7 +4,9 @@ let activeMutationRequestCount = 0;
 
 function isMutationMethod(method) {
     const normalizedMethod = String(method || 'GET').toUpperCase();
-    return normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS';
+    return (
+        normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS'
+    );
 }
 
 function beginMutationRequest() {
@@ -177,8 +179,7 @@ async function getHealth(etag = null) {
     return {
         notModified: false,
         etag: normalizeEtag(response.headers.get('ETag')),
-        snapshotVersion:
-            getSnapshotVersion(response, null) || normalizeEtag(data?.snapshotVersion),
+        snapshotVersion: getSnapshotVersion(response, null) || normalizeEtag(data?.snapshotVersion),
         data,
     };
 }

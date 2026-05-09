@@ -44,6 +44,9 @@ function createHealthMonitorService({
         findFirstVideoTrack,
         mergeProbeMediaInfo,
         parseFfmpegBitrateToKbps,
+        parseFfmpegProgressFps,
+        parseFfmpegProgressFrame,
+        parseFfmpegTotalSizeBytes,
         resolveOutputMediaSnapshot,
     } = require('../utils/health-media');
 
@@ -84,6 +87,8 @@ function createHealthMonitorService({
     function isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob) {
         // A clean stop close to an input-off transition is treated as input loss, not an output
         // failure, so retry logic can suppress noisy restarts during upstream outages.
+        // Example: if health sees the input drop at 12:00:06 and FFmpeg exits at 12:00:06.4,
+        // treat that as publisher loss within the grace window rather than a sink-side failure.
         if (!latestJob || latestJob.status === 'running') {
             return { matched: false, reason: 'no_terminal_job' };
         }
@@ -134,7 +139,8 @@ function createHealthMonitorService({
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
             const effectivePath = buildMediamtxPath(streamKey);
-            pathInfo = (paths.items || []).find((pathItem) => pathItem?.name === effectivePath) || null;
+            pathInfo =
+                (paths.items || []).find((pathItem) => pathItem?.name === effectivePath) || null;
         } catch (err) {
             return {
                 status: computeInputStatus({
@@ -504,6 +510,11 @@ function createHealthMonitorService({
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
             : null;
+        const totalSizeBytes = parseFfmpegTotalSizeBytes(ffmpegProgress?.total_size);
+        const bitrateKbps = parseFfmpegBitrateToKbps(ffmpegProgress?.bitrate);
+        const bitrate = bitrateKbps === null ? null : ffmpegProgress?.bitrate || null;
+        const progressFrame = parseFfmpegProgressFrame(ffmpegProgress?.frame);
+        const progressFps = parseFfmpegProgressFps(ffmpegProgress?.fps);
 
         if (latestJob?.status === 'failed') status = 'error';
         if (latestJob?.status === 'running') {
@@ -537,9 +548,11 @@ function createHealthMonitorService({
         return {
             status,
             jobId: latestJob?.id || null,
-            totalSize: ffmpegProgress?.total_size || null,
-            bitrate: ffmpegProgress?.bitrate || null,
-            bitrateKbps: parseFfmpegBitrateToKbps(ffmpegProgress?.bitrate),
+            totalSize: totalSizeBytes,
+            bitrate,
+            bitrateKbps,
+            progressFrame,
+            progressFps,
             media: outputMediaSnapshot.media,
             mediaSource: outputMediaSnapshot.mediaSource,
         };
@@ -638,14 +651,13 @@ function createHealthMonitorService({
         }
 
         try {
-            const [paths, rtspConns, rtspSessions, rtmpConns, srtConns] =
-                await Promise.all([
-                    fetchMediamtxJson('/v3/paths/list'),
-                    fetchMediamtxJson('/v3/rtspconns/list'),
-                    fetchMediamtxJson('/v3/rtspsessions/list'),
-                    fetchMediamtxJson('/v3/rtmpconns/list'),
-                    fetchMediamtxJson('/v3/srtconns/list'),
-                ]);
+            const [paths, rtspConns, rtspSessions, rtmpConns, srtConns] = await Promise.all([
+                fetchMediamtxJson('/v3/paths/list'),
+                fetchMediamtxJson('/v3/rtspconns/list'),
+                fetchMediamtxJson('/v3/rtspsessions/list'),
+                fetchMediamtxJson('/v3/rtmpconns/list'),
+                fetchMediamtxJson('/v3/srtconns/list'),
+            ]);
 
             log('debug', 'Fetched MediaMTX health sources', {
                 pathCount: paths.itemCount || 0,
@@ -668,11 +680,7 @@ function createHealthMonitorService({
             const pathByName = new Map((paths.items || []).map((item) => [item.name, item]));
             const { rtspByReaderTag, rtspConnectionById, rtspSessionRecordById } =
                 indexRtspConnectionsByReaderTag(rtspConns, rtspSessions, getReaderIdFromQuery);
-            const publisherByPath = indexPublishersByPath(
-                rtspSessions,
-                rtmpConns,
-                srtConns,
-            );
+            const publisherByPath = indexPublishersByPath(rtspSessions, rtmpConns, srtConns);
 
             if ((rtspConns.items || []).length > 0 && rtspByReaderTag.size === 0) {
                 log('warn', 'MediaMTX RTSP payload has no reader_id query for active readers', {

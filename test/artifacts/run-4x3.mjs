@@ -4,7 +4,7 @@ import { closeSync, openSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(rootDir);
@@ -18,6 +18,7 @@ const defaults = {
     verifyAppRetries: 30,
     inputFile: 'test/colorbar-timer.mp4',
     rtmpOutputBase: '',
+    hlsOutputBase: '',
     inputProtocols: 'rtmp,rtsp,srt',
     maxRetries: 30,
     retryDelaySec: 1,
@@ -37,6 +38,7 @@ const config = {
     verifyAppRetries: Number(process.env.VERIFY_APP_RETRIES || defaults.verifyAppRetries),
     inputFile: resolvePath(process.env.INPUT_FILE || defaults.inputFile),
     rtmpOutputBase: process.env.RTMP_OUTPUT_BASE || defaults.rtmpOutputBase,
+    hlsOutputBase: process.env.HLS_OUTPUT_BASE || defaults.hlsOutputBase,
     inputProtocols: process.env.INPUT_PROTOCOLS || defaults.inputProtocols,
     maxRetries: Number(process.env.MAX_RETRIES || defaults.maxRetries),
     retryDelaySec: Number(process.env.RETRY_DELAY_SEC || defaults.retryDelaySec),
@@ -55,24 +57,26 @@ const ownedProcesses = [];
 let shutdownPromise = null;
 let cleanupTargets = createCleanupTargets();
 
-if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    printHelp();
-    process.exit(0);
-}
+if (isDirectExecution()) {
+    if (process.argv.includes('--help') || process.argv.includes('-h')) {
+        printHelp();
+        process.exit(0);
+    }
 
-registerSignalHandlers();
+    registerSignalHandlers();
 
-try {
-    await main();
-} catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-} finally {
     try {
-        await shutdown(config.keepRunning);
+        await main();
     } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
+    } finally {
+        try {
+            await shutdown(config.keepRunning);
+        } catch (error) {
+            console.error(error instanceof Error ? error.message : String(error));
+            process.exitCode = 1;
+        }
     }
 }
 
@@ -94,7 +98,9 @@ async function main() {
         console.log('== Step 1b: Verify newly created outputs default to desiredState=stopped ==');
         await verifyDesiredStateForOutputs(newlyCreatedOutputs, 'stopped');
     } else {
-        console.log('== Step 1b: No new outputs were created; skipping default desiredState check ==');
+        console.log(
+            '== Step 1b: No new outputs were created; skipping default desiredState check ==',
+        );
     }
 
     console.log('== Step 2: Start mixed-protocol input publishers (RTMP/RTSP/SRT) ==');
@@ -127,7 +133,9 @@ async function main() {
     console.log('== Step 10: Verify input recovery restarts outputs with desiredState=running ==');
     await verifyInputRecoveryRestart(
         resolved.pipelines[0],
-        resolved.outputs.filter((target) => target.pipelineId === resolved.pipelines[0]?.pipelineId),
+        resolved.outputs.filter(
+            (target) => target.pipelineId === resolved.pipelines[0]?.pipelineId,
+        ),
         inputPublishers,
     );
 
@@ -181,7 +189,7 @@ function readBooleanEnv(name, defaultValue) {
 
 function printHelp() {
     console.log(
-        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1    Leave input publishers and manifest-scoped test resources in place after the run\n  MANIFEST_PATH     Path to the tracked 4x3 manifest\n  API_URL           Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL     nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE  Base URL used to normalize RTMP output URLs (if set)`,
+        `Usage: node test/artifacts/run-4x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1    Leave input publishers and manifest-scoped test resources in place after the run\n  MANIFEST_PATH     Path to the tracked 4x3 manifest\n  API_URL           Backend base URL (default: ${defaults.apiUrl})\n  RTMP_STAT_URL     nginx-rtmp stat URL (default: ${defaults.rtmpStatUrl})\n  RTMP_OUTPUT_BASE  Base URL used to normalize RTMP output URLs (if set)\n  HLS_OUTPUT_BASE   Base URL used to normalize HLS playlist output URLs (if set)`,
     );
 }
 
@@ -207,7 +215,9 @@ async function shutdown(leaveRunning) {
 
     shutdownPromise = (async () => {
         if (leaveRunning) {
-            console.log('== KEEP_RUNNING=1: leaving input publishers and manifest-scoped test resources in place; app stack was not started by this runner ==');
+            console.log(
+                '== KEEP_RUNNING=1: leaving input publishers and manifest-scoped test resources in place; app stack was not started by this runner ==',
+            );
             return;
         }
 
@@ -258,7 +268,11 @@ async function ensureApiReachable() {
 }
 
 async function ensureRunnerPrerequisites() {
-    await assertCommandAvailable('ffmpeg', ['-version'], 'Install ffmpeg before running the 4x3 suite.');
+    await assertCommandAvailable(
+        'ffmpeg',
+        ['-version'],
+        'Install ffmpeg before running the 4x3 suite.',
+    );
     await assertCommandAvailable(
         'docker',
         ['compose', 'version'],
@@ -466,9 +480,13 @@ async function cleanupTestResources(targets) {
             continue;
         }
 
-        const remainingOutputs = state.outputs.filter((item) => item.pipelineId === target.pipelineId);
+        const remainingOutputs = state.outputs.filter(
+            (item) => item.pipelineId === target.pipelineId,
+        );
         const manifestOutputIds = manifestOutputIdsByPipeline.get(target.pipelineId) || new Set();
-        const nonManifestOutputs = remainingOutputs.filter((item) => !manifestOutputIds.has(item.id));
+        const nonManifestOutputs = remainingOutputs.filter(
+            (item) => !manifestOutputIds.has(item.id),
+        );
 
         if (nonManifestOutputs.length > 0) {
             console.log(
@@ -499,7 +517,9 @@ async function cleanupTestResources(targets) {
 
         const stillReferenced = state.pipelines.some((item) => item.streamKey === target.key);
         if (stillReferenced) {
-            console.log(`Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`);
+            console.log(
+                `Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`,
+            );
             continue;
         }
 
@@ -664,19 +684,17 @@ async function stopAllInputPublishersForStreamKey(streamKey, inputPublishers) {
     const inputFileMarker = relativePath(config.inputFile);
     const ingestTargetMarkers = getIngestTargetMarkers(streamKey, matchedManagedPublishers);
     const processes = await listFfmpegProcesses();
-    const stalePublishers = processes.filter(
-        (proc) => {
-            const hasIngestTargetMarker = ingestTargetMarkers.some((marker) =>
-                proc.command.includes(marker),
-            );
+    const stalePublishers = processes.filter((proc) => {
+        const hasIngestTargetMarker = ingestTargetMarkers.some((marker) =>
+            proc.command.includes(marker),
+        );
 
-            return (
-                proc.command.includes('ffmpeg') &&
-                proc.command.includes(inputFileMarker) &&
-                hasIngestTargetMarker
-            );
-        },
-    );
+        return (
+            proc.command.includes('ffmpeg') &&
+            proc.command.includes(inputFileMarker) &&
+            hasIngestTargetMarker
+        );
+    });
 
     for (const proc of stalePublishers) {
         await terminateProcess({ pid: proc.pid, name: `stale-input-${streamKey}` });
@@ -709,7 +727,9 @@ function selectIngestUrl(streamKeyRecord, protocol) {
     if (protocol === 'rtsp' && ingestUrls.rtsp) return ingestUrls.rtsp;
     if (protocol === 'srt' && ingestUrls.srt) return ingestUrls.srt;
 
-    throw new Error(`Missing ingest URL for protocol=${protocol} streamKey=${streamKeyRecord?.key || 'unknown'}`);
+    throw new Error(
+        `Missing ingest URL for protocol=${protocol} streamKey=${streamKeyRecord?.key || 'unknown'}`,
+    );
 }
 
 function buildFfmpegArgs(protocol, targetUrl) {
@@ -737,9 +757,126 @@ function buildFfmpegArgs(protocol, targetUrl) {
     throw new Error(`Unsupported input protocol: ${protocol}`);
 }
 
+function isHlsPlaylistUrl(parsedUrl) {
+    if (!(parsedUrl instanceof URL)) {
+        return false;
+    }
+
+    const protocol = String(parsedUrl.protocol || '').toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+        return false;
+    }
+
+    if (/\.m3u8$/i.test(parsedUrl.pathname || '')) {
+        return true;
+    }
+
+    for (const value of parsedUrl.searchParams.values()) {
+        if (/\.m3u8$/i.test(String(value || '').trim())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function getOutputProtocol(outputUrl) {
+    if (!outputUrl || typeof outputUrl !== 'string') {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(outputUrl);
+        if (parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:') {
+            return 'rtmp';
+        }
+        if (parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:') {
+            return 'rtsp';
+        }
+        if (parsed.protocol === 'srt:') {
+            return 'srt';
+        }
+        if (isHlsPlaylistUrl(parsed)) {
+            return 'hls';
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function extractHlsPlaylistName(outputUrl) {
+    try {
+        const parsedOutputUrl =
+            outputUrl instanceof URL ? outputUrl : new URL(String(outputUrl || ''));
+        if (!isHlsPlaylistUrl(parsedOutputUrl)) {
+            return null;
+        }
+
+        // Some upload endpoints put the real playlist target in a query param instead of the path.
+        // Example: https://.../http_upload_hls?cid=abc&file=out.m3u8 should resolve to out.m3u8,
+        // not to the pathname stem http_upload_hls.
+        const pathname = String(parsedOutputUrl.pathname || '');
+        if (/\.m3u8$/i.test(pathname)) {
+            const playlistName = path.posix.basename(pathname);
+            if (playlistName) {
+                return playlistName;
+            }
+        }
+
+        for (const value of parsedOutputUrl.searchParams.values()) {
+            const normalizedValue = String(value || '').trim();
+            if (!/\.m3u8$/i.test(normalizedValue)) {
+                continue;
+            }
+
+            const playlistName = path.posix.basename(normalizedValue);
+            if (playlistName) {
+                return playlistName;
+            }
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function normalizeHlsOutputUrl(outputUrl, hlsOutputBase = config.hlsOutputBase) {
+    if (!outputUrl || typeof outputUrl !== 'string' || !hlsOutputBase) {
+        return outputUrl;
+    }
+
+    try {
+        const parsedOutputUrl = new URL(outputUrl);
+        if (!isHlsPlaylistUrl(parsedOutputUrl)) {
+            return outputUrl;
+        }
+
+        const parsedBaseUrl = new URL(hlsOutputBase);
+        const normalizedOutputUrl = new URL(parsedBaseUrl.toString());
+        const playlistName = extractHlsPlaylistName(parsedOutputUrl) || 'out.m3u8';
+        const normalizedBasePath = String(parsedBaseUrl.pathname || '').replace(/\/+$/, '');
+
+        // Keep only the playlist filename from the original URL and graft it onto the override base.
+        // Example: HLS_OUTPUT_BASE=http://nginx-rtmp/hls-upload plus file=out.m3u8 becomes
+        // http://nginx-rtmp/hls-upload/out.m3u8 regardless of the original host or query string.
+        normalizedOutputUrl.pathname = `${normalizedBasePath}/${playlistName}`.replace(/\/+/g, '/');
+        normalizedOutputUrl.search = parsedBaseUrl.search;
+        normalizedOutputUrl.hash = '';
+        return normalizedOutputUrl.toString();
+    } catch {
+        return outputUrl;
+    }
+}
+
 function normalizeOutputUrl(outputUrl) {
     if (!outputUrl || typeof outputUrl !== 'string') {
         return outputUrl;
+    }
+
+    if (getOutputProtocol(outputUrl) === 'hls') {
+        return normalizeHlsOutputUrl(outputUrl);
     }
 
     if (!config.rtmpOutputBase) {
@@ -923,9 +1060,8 @@ async function verifyIdempotentOutputStopStart(target) {
 
 function findLatestJobForOutput(state, pipelineId, outputId) {
     return (
-        state.jobs.find(
-            (item) => item.pipelineId === pipelineId && item.outputId === outputId,
-        ) || null
+        state.jobs.find((item) => item.pipelineId === pipelineId && item.outputId === outputId) ||
+        null
     );
 }
 
@@ -956,13 +1092,7 @@ async function waitForRunningJobStability(target, minAgeMs = 5000) {
 
 async function fetchOutputHistory(target, options = {}) {
     const query = new URLSearchParams();
-    const {
-        since = null,
-        until = null,
-        order = 'asc',
-        limit = 200,
-        filter = null,
-    } = options;
+    const { since = null, until = null, order = 'asc', limit = 200, filter = null } = options;
 
     if (filter) query.set('filter', filter);
     if (since) query.set('since', since);
@@ -1265,14 +1395,17 @@ async function verifyInputRecoveryRestart(pipelineTarget, pipelineOutputs, input
             const state = await fetchConfigState();
             const output = state.outputs.find(
                 (item) =>
-                    item.pipelineId === targetOutput.pipelineId && item.id === targetOutput.outputId,
+                    item.pipelineId === targetOutput.pipelineId &&
+                    item.id === targetOutput.outputId,
             );
             const latestJob = findLatestJobForOutput(
                 state,
                 targetOutput.pipelineId,
                 targetOutput.outputId,
             );
-            return output?.desiredState === 'running' && latestJob && latestJob.status !== 'running';
+            return (
+                output?.desiredState === 'running' && latestJob && latestJob.status !== 'running'
+            );
         },
         45000,
         500,
@@ -1331,7 +1464,9 @@ async function fetchConfigPipelineById(pipelineId) {
 }
 
 function resolveLoopbackUrlFromPayload(ingestUrl, streamKey, protocol) {
-    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    const normalizedProtocol = String(protocol || '')
+        .trim()
+        .toLowerCase();
     if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
         throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
     }
@@ -1371,9 +1506,7 @@ function resolveLoopbackUrlFromPayload(ingestUrl, streamKey, protocol) {
         .split('/')
         .filter(Boolean);
     const lastPathSegment =
-        pathSegments.length > 0
-            ? decodeURIComponent(pathSegments[pathSegments.length - 1])
-            : '';
+        pathSegments.length > 0 ? decodeURIComponent(pathSegments[pathSegments.length - 1]) : '';
     if (lastPathSegment !== streamKey) {
         throw new Error(
             `Target RTSP ingest URL path mismatch: expected terminal path segment ${streamKey}, got ${lastPathSegment || 'missing'}`,
@@ -1436,7 +1569,8 @@ async function startOutputWithRetry(target) {
 }
 
 function getHealthLoopbackSummary(health, sourceOutput, targetPipeline) {
-    const sourceHealth = health?.pipelines?.[sourceOutput.pipelineId]?.outputs?.[sourceOutput.outputId] || null;
+    const sourceHealth =
+        health?.pipelines?.[sourceOutput.pipelineId]?.outputs?.[sourceOutput.outputId] || null;
     const targetInput = health?.pipelines?.[targetPipeline.pipelineId]?.input || null;
     return {
         sourceOutput: {
@@ -1461,7 +1595,8 @@ async function waitForPipelineInputStatus(pipelineTarget, expectedStatus, timeou
         },
         timeoutMs,
         500,
-        label || `${pipelineTarget.name || pipelineTarget.pipelineId} input status=${expectedStatus}`,
+        label ||
+            `${pipelineTarget.name || pipelineTarget.pipelineId} input status=${expectedStatus}`,
     );
 }
 
@@ -1496,14 +1631,13 @@ async function waitForOutputStatus(outputTarget, expectedStatus, timeoutMs, labe
         async () => {
             const health = (await requestJson('/health')).json;
             return (
-                health?.pipelines?.[outputTarget.pipelineId]?.outputs?.[outputTarget.outputId]?.status ===
-                expectedStatus
+                health?.pipelines?.[outputTarget.pipelineId]?.outputs?.[outputTarget.outputId]
+                    ?.status === expectedStatus
             );
         },
         timeoutMs,
         500,
-        label ||
-            `${outputTarget.pipelineName}/${outputTarget.outputName} status=${expectedStatus}`,
+        label || `${outputTarget.pipelineName}/${outputTarget.outputName} status=${expectedStatus}`,
     );
 }
 
@@ -1513,7 +1647,8 @@ async function waitForOutputUrl(outputTarget, expectedUrl, timeoutMs, label) {
             const state = await fetchConfigState();
             const output = state.outputs.find(
                 (item) =>
-                    item.pipelineId === outputTarget.pipelineId && item.id === outputTarget.outputId,
+                    item.pipelineId === outputTarget.pipelineId &&
+                    item.id === outputTarget.outputId,
             );
             return output?.url === expectedUrl;
         },
@@ -1525,7 +1660,9 @@ async function waitForOutputUrl(outputTarget, expectedUrl, timeoutMs, label) {
 }
 
 async function verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, protocol) {
-    const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+    const normalizedProtocol = String(protocol || '')
+        .trim()
+        .toLowerCase();
     if (!['srt', 'rtsp'].includes(normalizedProtocol)) {
         throw new Error(`Unsupported loopback protocol: ${normalizedProtocol || 'unknown'}`);
     }
@@ -1702,7 +1839,9 @@ async function verifyOutputLoopbackToPipelineInput(resolved, inputPublishers, pr
             try {
                 await waitForActive(resolved);
             } catch (error) {
-                cleanupErrors.push(`post-loopback stabilization failed: ${String(error?.message || error)}`);
+                cleanupErrors.push(
+                    `post-loopback stabilization failed: ${String(error?.message || error)}`,
+                );
             }
         }
 
@@ -1834,11 +1973,18 @@ async function verifyRtmpStat(resolved) {
         console.log(`Saved nginx stat summary: ${relativePath(statOutFile)}`);
     };
 
-    const expected = resolved.outputs.map((output) => ({
-        streamName: extractStreamName(output.outputUrl),
-        pipelineId: output.pipelineId,
-        outputId: output.outputId,
-    }));
+    const expected = resolved.outputs
+        .filter((output) => getOutputProtocol(output.outputUrl) === 'rtmp')
+        .map((output) => ({
+            streamName: extractStreamName(output.outputUrl),
+            pipelineId: output.pipelineId,
+            outputId: output.outputId,
+        }));
+
+    if (expected.length === 0) {
+        console.log('No RTMP outputs in manifest; skipping nginx /stat correlation');
+        return;
+    }
 
     let lastIssues = [];
     let lastStreamBlocks = 0;
@@ -1871,10 +2017,10 @@ async function verifyRtmpStat(resolved) {
         if (streamBlocks < expected.length) {
             lastStreamBlocks = streamBlocks;
             lastIssues = [
-                `stream blocks in /stat (${streamBlocks}) are less than expected outputs (${expected.length})`,
+                `stream blocks in /stat (${streamBlocks}) are less than expected RTMP outputs (${expected.length})`,
             ];
             console.log(
-                `nginx /stat correlation (attempt ${attempt}/10): expected_streams=${expected.length} stream_blocks=${streamBlocks} issues=1`,
+                `nginx /stat correlation (attempt ${attempt}/10): expected_rtmp_streams=${expected.length} stream_blocks=${streamBlocks} issues=1`,
             );
             await sleep(1000);
             continue;
@@ -1915,13 +2061,13 @@ async function verifyRtmpStat(resolved) {
         lastStreamBlocks = streamBlocks;
 
         console.log(
-            `nginx /stat correlation (attempt ${attempt}/10): expected_streams=${expected.length} stream_blocks=${streamBlocks} issues=${issues.length}`,
+            `nginx /stat correlation (attempt ${attempt}/10): expected_rtmp_streams=${expected.length} stream_blocks=${streamBlocks} issues=${issues.length}`,
         );
 
         if (issues.length === 0) {
             await writeNginxStatSummary(summary);
             console.log(
-                'nginx /stat correlation passed: expected stream blocks present and each output has video+audio meta',
+                'nginx /stat correlation passed: expected RTMP stream blocks present and each RTMP output has video+audio meta',
             );
             return;
         }
@@ -1930,7 +2076,7 @@ async function verifyRtmpStat(resolved) {
     }
 
     console.log(
-        `nginx /stat correlation: expected_streams=${expected.length} stream_blocks=${lastStreamBlocks}`,
+        `nginx /stat correlation: expected_rtmp_streams=${expected.length} stream_blocks=${lastStreamBlocks}`,
     );
     console.log('---- nginx /stat issues ----');
     for (const issue of lastIssues) {
@@ -2148,3 +2294,13 @@ function timestampUtc() {
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function isDirectExecution() {
+    if (!process.argv[1]) {
+        return false;
+    }
+
+    return pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+}
+
+export { extractHlsPlaylistName, normalizeHlsOutputUrl };

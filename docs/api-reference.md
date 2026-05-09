@@ -242,7 +242,7 @@ Creates an output for a pipeline.
 }
 ```
 
-`url` supports `rtmp://`, `rtmps://`, `rtsp://`, `rtsps://`, and `srt://` output targets.
+`url` supports `rtmp://`, `rtmps://`, `rtsp://`, `rtsps://`, `srt://`, and `http://` and `https://` HLS playlist upload targets. For HLS uploads, use either a direct `.m3u8` playlist URL or a query-based upload URL whose playlist parameter resolves to `.m3u8`.
 
 **Response 201:**
 ```json
@@ -277,7 +277,9 @@ Updates an output.
 
 **Errors:** `400` invalid encoding; `404` output or pipeline not found; `409` cannot change URL/encoding while running.
 
-FFmpeg output settings vary by protocol: SRT outputs use `-f mpegts`; RTMP/RTMPS outputs use `-f flv` with RTMP flags; RTSP/RTSPS outputs use `-f rtsp -rtsp_transport tcp`.
+FFmpeg output settings vary by protocol: SRT outputs use `-f mpegts`; RTMP/RTMPS outputs use `-f flv` with RTMP flags; RTSP/RTSPS outputs use `-f rtsp -rtsp_transport tcp`; HLS outputs use `-f hls -method PUT -http_persistent 1` with a rolling live playlist (`-hls_time 2 -hls_list_size 5 -hls_flags delete_segments`). Non-source HLS transcodes also use `libx264 -preset veryfast -tune zerolatency` with the configured bitrate profile.
+
+Operational note: on FFmpeg `6.1.x`, HLS uploads using `-http_persistent 1` can hit an upstream `hlsenc` retry bug when the HTTP sink disappears mid-segment. In practice, HLS `source` copy outputs usually exit with a normal muxer failure, while transcoded HLS outputs can terminate with `SIGSEGV` before Restream's retry logic restarts them. FFmpeg `7.1+` contains the upstream fix and is recommended for HLS upload deployments.
 
 ---
 
@@ -596,9 +598,11 @@ Headers:
         "<outputId>": {
           "status": "on",
           "jobId": "3f2e1d0c9b8a7f6e",
-          "totalSize": "120000000",
+          "totalSize": 120000000,
           "bitrate": "1842.5kbits/s",
           "bitrateKbps": 1842.5,
+          "progressFrame": 397,
+          "progressFps": 29.97,
           "mediaSource": "ffmpeg",
           "media": {
             "video": {
@@ -674,9 +678,15 @@ If a collector cycle fails after startup, `/health` returns a degraded snapshot 
 
 For each output, ffmpeg runtime progress contributes:
 
-- `totalSize` from ffmpeg `total_size` (raw cumulative bytes written)
-- `bitrate` from ffmpeg `bitrate` (raw ffmpeg rate string, for example `1842.5kbits/s`, kept for debugging)
+- `totalSize` from ffmpeg `total_size`, normalized to a numeric byte count or `null`
+- `bitrate` from ffmpeg `bitrate` (raw ffmpeg rate string, for example `1842.5kbits/s`, kept for debugging, or `null` when unavailable)
 - `bitrateKbps` server-normalized numeric bitrate in Kbps for UI consumption
+- `progressFrame` from ffmpeg `frame`, normalized to an integer or `null`
+- `progressFps` from ffmpeg `fps`, normalized to a numeric FPS value or `null`
+
+When ffmpeg reports `N/A` for progress values, the backend normalizes them to `null` before
+emitting `/health`. This is common for HLS uploads: `bitrate` and `totalSize` are often
+unavailable, and HLS `source` copy outputs may also omit `progressFrame` and `progressFps`.
 
 Output media metadata is server-resolved and included as:
 

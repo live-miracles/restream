@@ -1,13 +1,9 @@
-const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { setupDatabaseSchema } = require('./schema');
 const projectRoot = path.join(__dirname, '..', '..');
-const dataDir = path.join(projectRoot, 'data');
-const dbPath = path.join(dataDir, 'data.db');
-
-fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(projectRoot, 'data.db');
 
 const db = new Database(dbPath);
 setupDatabaseSchema(db);
@@ -403,12 +399,7 @@ module.exports = {
             /* ignore logging failures */
         }
     },
-    appendPipelineEvent(
-        pipelineId,
-        message,
-        eventType = 'pipeline.event',
-        eventData = null,
-    ) {
+    appendPipelineEvent(pipelineId, message, eventType = 'pipeline.event', eventData = null) {
         try {
             insertJobLog.run({
                 job_id: null,

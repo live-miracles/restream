@@ -15,7 +15,7 @@ The 4x3 workflow is driven by one tracked manifest and one Node runner.
 4. Ensures missing stream keys, pipelines, and outputs exist without mutating conflicting existing outputs.
 5. Starts ffmpeg input publishers for the manifest stream keys.
 6. Starts outputs for the resolved pipeline/output IDs.
-7. Waits for manifest-scoped inputs and outputs to become `on`.
+7. Waits for manifest-scoped inputs and outputs to become `on`; one tracked manifest output is an HLS playlist upload target, so this stage also exercises HTTP PUT HLS egress.
 8. Captures a `/health` snapshot into test/artifacts/runs.
 9. Verifies output auto-retry by dropping and restoring the RTMP output sink.
 10. Verifies output auto-retry after an unexpected FFmpeg `SIGKILL` while desired state remains `running`.
@@ -40,7 +40,7 @@ Leave input publishers and resources created by the current run in place after c
 - KEEP_RUNNING=1 make run-4x3
 
 Docker mode output URL normalization:
-- RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" make run-4x3
+- RTMP_OUTPUT_BASE="rtmp://nginx-rtmp/live" HLS_OUTPUT_BASE="http://nginx-rtmp/hls-upload" make run-4x3
 
 ## Notes
 
@@ -54,6 +54,7 @@ Docker mode output URL normalization:
 - When `KEEP_RUNNING` is unset or `0`, shutdown removes only the stream keys, pipelines, and outputs created during the current run.
 - SRT/RTSP loopback activation and restore checks use a fixed 30-second window.
 - If an output omits `encoding`, the runner assigns a fallback encoding with a safety cap: at most one each of `vertical-crop`, `vertical-rotate`, `720p`, and `1080p`; remaining unspecified outputs default to `source`.
+- The tracked manifest includes two HLS outputs targeting a dedicated nginx `/hls-upload/` blackhole endpoint: one `source` output and one transcoded `720p` output, making it clear that missing Frame/FPS badges are tied to encoding mode rather than HLS itself.
 - Logs go to test/artifacts/logs.
 - Health snapshots go to test/artifacts/runs.
 - During loopback verification, the runner logs the exact source output and target pipeline selection as a structured `[srt-loopback] selection ...` or `[rtsp-loopback] selection ...` line for auditability.

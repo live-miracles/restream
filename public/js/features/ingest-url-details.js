@@ -42,7 +42,8 @@ export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
             .split('/')
             .filter(Boolean)
             .map((segment) => safeDecodeUrlComponent(segment));
-        const pathname = pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '';
+        const pathname =
+            pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '';
         const queryEntries = Array.from(parsed.searchParams.entries());
         const details = {
             rawUrl,
@@ -69,7 +70,14 @@ export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
 
         if (protocol === 'srt') {
             const streamId = parsed.searchParams.get('streamid') || '';
-            const knownParams = new Set(['streamid', 'latency', 'mode', 'passphrase', 'pbkeylen', 'maxbw']);
+            const knownParams = new Set([
+                'streamid',
+                'latency',
+                'mode',
+                'passphrase',
+                'pbkeylen',
+                'maxbw',
+            ]);
             details.streamId = streamId;
             details.latency = parsed.searchParams.get('latency') || '';
             details.mode = parsed.searchParams.get('mode') || '';
@@ -276,13 +284,15 @@ export function renderProtocolDetails(gridEl, protocol, parsedDetails) {
 
         const value = document.createElement('code');
         value.id = `ingest-detail-${protocol}-${index}`;
-        value.className = 'col-span-2 block break-all font-mono text-[0.94rem] leading-6 text-base-content/90';
+        value.className =
+            'col-span-2 block break-all font-mono text-[0.94rem] leading-6 text-base-content/90';
         value.textContent = item.value || '--';
         value.dataset.copy = item.copyValue || item.value || '';
 
         const copyBtn = document.createElement('button');
         copyBtn.type = 'button';
-        copyBtn.className = 'btn btn-xs btn-outline btn-accent row-span-1 shrink-0 self-start rounded-lg px-3 shadow-none';
+        copyBtn.className =
+            'btn btn-xs btn-outline btn-accent row-span-1 shrink-0 self-start rounded-lg px-3 shadow-none';
         copyBtn.textContent = 'Copy';
         copyBtn.setAttribute('aria-label', `Copy ${item.label}`);
         copyBtn.disabled = !item.value;

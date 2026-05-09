@@ -1,9 +1,5 @@
 const { errMsg, maskToken, validateName, validateStreamKey } = require('../utils/app');
-const {
-    getMediamtxApiBaseUrl,
-    buildMediamtxPath,
-    buildIngestUrls,
-} = require('../utils/mediamtx');
+const { getMediamtxApiBaseUrl, buildMediamtxPath, buildIngestUrls } = require('../utils/mediamtx');
 
 function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline) {
     if (!pipelineId || !previousPipeline || !nextPipeline) return;
@@ -41,9 +37,7 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
                 fromMasked: previousPipeline.streamKey
                     ? maskToken(previousPipeline.streamKey)
                     : 'unassigned',
-                toMasked: nextPipeline.streamKey
-                    ? maskToken(nextPipeline.streamKey)
-                    : 'unassigned',
+                toMasked: nextPipeline.streamKey ? maskToken(nextPipeline.streamKey) : 'unassigned',
             },
         );
     }
@@ -86,9 +80,7 @@ function registerPipelineApi({
                 );
             }
 
-            throw new Error(
-                `${errMsg(dbError)}; MediaMTX change was rolled back`,
-            );
+            throw new Error(`${errMsg(dbError)}; MediaMTX change was rolled back`);
         }
     }
 
@@ -129,9 +121,14 @@ function registerPipelineApi({
 
     app.post('/stream-keys', async (req, res) => {
         try {
-            const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'streamKey');
+            const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(
+                req.body || {},
+                'streamKey',
+            );
             const key = hasCustomStreamKey
-                ? (typeof req.body?.streamKey === 'string' ? req.body.streamKey.trim() : req.body?.streamKey)
+                ? typeof req.body?.streamKey === 'string'
+                    ? req.body.streamKey.trim()
+                    : req.body?.streamKey
                 : crypto.randomBytes(12).toString('hex');
             const label = req.body?.label ?? null;
 
@@ -146,10 +143,8 @@ function registerPipelineApi({
                 return res.status(409).json({ error: 'Stream key already exists' });
             }
 
-            const streamKey = await mutateMediamtxPathWithRollback(
-                key,
-                'add',
-                () => db.createStreamKey({
+            const streamKey = await mutateMediamtxPathWithRollback(key, 'add', () =>
+                db.createStreamKey({
                     key,
                     label,
                     createdAt: new Date().toISOString(),
@@ -295,7 +290,10 @@ function registerPipelineApi({
             if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
 
             const name = req.body?.name ?? existing.name;
-            const hasStreamKeyUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, 'streamKey');
+            const hasStreamKeyUpdate = Object.prototype.hasOwnProperty.call(
+                req.body || {},
+                'streamKey',
+            );
             const streamKey = hasStreamKeyUpdate
                 ? normalizePipelineStreamKey(req.body?.streamKey)
                 : existing.streamKey;

@@ -75,13 +75,13 @@
                 },
                 {
                     "name": "Output 4-2",
-                    "url": "rtmp://localhost:1936/live/out4_2",
+                    "url": "http://localhost:8081/hls-upload/out4_2.m3u8",
                     "encoding": "source"
                 },
                 {
                     "name": "Output 4-3",
-                    "url": "rtmp://localhost:1936/live/out4_3",
-                    "encoding": "source"
+                    "url": "http://localhost:8081/hls-upload/out4_3.m3u8",
+                    "encoding": "720p"
                 }
             ]
         }

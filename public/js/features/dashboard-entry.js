@@ -8,10 +8,7 @@ import {
     startOutBtn,
     stopOutBtn,
 } from './editor.js';
-import {
-    openOutputHistoryModal,
-    openPipelineHistoryModal,
-} from '../history/controller.js';
+import { openOutputHistoryModal, openPipelineHistoryModal } from '../history/controller.js';
 import { setPipelineViewDependencies } from './pipeline-view.js';
 
 setDashboardHooks({

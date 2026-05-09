@@ -166,6 +166,8 @@ function parsePipelinesInfo(config, health) {
 
         const outputTotalSize = outHealth?.totalSize || null;
         const outputBitrateKbps = outHealth?.bitrateKbps ?? null;
+        const outputProgressFrame = outHealth?.progressFrame ?? null;
+        const outputProgressFps = outHealth?.progressFps ?? null;
 
         const encoding = out.encoding || 'source';
         const outVideo = outHealth?.media?.video ?? null;
@@ -192,6 +194,8 @@ function parsePipelinesInfo(config, health) {
             job: latestJob || null,
             totalSize: outputTotalSize,
             bitrateKbps: outputBitrateKbps,
+            progressFrame: outputProgressFrame,
+            progressFps: outputProgressFps,
         });
     });
 

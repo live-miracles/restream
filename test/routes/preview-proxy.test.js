@@ -57,17 +57,20 @@ test('proxies wildcard asset route to expected upstream path', async () => {
 test('proxies explicit manifest asset paths unchanged', async () => {
     const { app, calls } = createHarness({
         fetchImpl: async () =>
-            new Response(`#EXTM3U
+            new Response(
+                `#EXTM3U
 #EXT-X-VERSION:9
 #EXT-X-INDEPENDENT-SEGMENTS
 #EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS="avc1.640028,mp4a.40.2",AUDIO="audio"
 stream_variant.m3u8
-`, {
-                status: 200,
-                headers: {
-                    'content-type': 'application/vnd.apple.mpegurl',
+`,
+                {
+                    status: 200,
+                    headers: {
+                        'content-type': 'application/vnd.apple.mpegurl',
+                    },
                 },
-            }),
+            ),
     });
 
     const res = await request(app).get('/preview/hls/abc123/stream_variant.m3u8').expect(200);

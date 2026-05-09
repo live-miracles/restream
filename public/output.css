@@ -24,12 +24,15 @@
     --text-lg--line-height: calc(1.75 / 1.125);
     --text-xl: 1.25rem;
     --text-xl--line-height: calc(1.75 / 1.25);
+    --font-weight-normal: 400;
     --font-weight-medium: 500;
     --font-weight-semibold: 600;
     --font-weight-bold: 700;
     --radius-lg: 0.5rem;
     --radius-xl: 0.75rem;
     --radius-2xl: 1rem;
+    --ease-out: cubic-bezier(0, 0, 0.2, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
     --default-transition-duration: 150ms;
     --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     --default-font-family: var(--font-sans);
@@ -191,7 +194,7 @@
       display: grid;
       width: 100%;
       overflow: hidden;
-      -webkit-user-select: none;
+      webkit-user-select: none;
       user-select: none;
       grid-template-rows: 1fr 1.8rem 1fr;
       direction: ltr;
@@ -290,92 +293,6 @@
         &.modal-open, &[open], &:target, .modal-toggle:checked + & {
           opacity: 0%;
         }
-      }
-    }
-  }
-  .tab {
-    @layer daisyui.l1.l2.l3 {
-      position: relative;
-      display: inline-flex;
-      cursor: pointer;
-      appearance: none;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      -webkit-user-select: none;
-      user-select: none;
-      &:hover {
-        @media (hover: hover) {
-          color: var(--color-base-content);
-        }
-      }
-      --tab-p: 0.75rem;
-      --tab-bg: var(--color-base-100);
-      --tab-border-color: var(--color-base-300);
-      --tab-radius-ss: 0;
-      --tab-radius-se: 0;
-      --tab-radius-es: 0;
-      --tab-radius-ee: 0;
-      --tab-order: 0;
-      --tab-radius-min: calc(0.75rem - var(--border));
-      --tab-radius-limit: min(var(--radius-field), var(--tab-radius-min));
-      --tab-radius-grad: #0000 calc(69% - var(--border)),
-      var(--tab-border-color) calc(69% - var(--border) + 0.25px),
-      var(--tab-border-color) 69%,
-      var(--tab-bg) calc(69% + 0.25px);
-      border-color: #0000;
-      order: var(--tab-order);
-      height: var(--tab-height);
-      font-size: 0.875rem;
-      padding-inline: var(--tab-p);
-      &:is(input[type="radio"]) {
-        min-width: fit-content;
-        &:after {
-          --tw-content: attr(aria-label);
-          content: var(--tw-content);
-        }
-      }
-      &:is(label) {
-        position: relative;
-        input {
-          position: absolute;
-          inset: calc(0.25rem * 0);
-          cursor: pointer;
-          appearance: none;
-          opacity: 0%;
-        }
-      }
-      &:checked, &:is(label:has(:checked)), &:is(.tab-active, [aria-selected="true"], [aria-current="true"], [aria-current="page"]) {
-        & + .tab-content {
-          display: block;
-        }
-      }
-      &:not( :checked, label:has(:checked), :hover, .tab-active, [aria-selected="true"], [aria-current="true"], [aria-current="page"] ) {
-        color: var(--color-base-content);
-        @supports (color: color-mix(in lab, red, red)) {
-          color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
-        }
-      }
-      &:not(input):empty {
-        flex-grow: 1;
-        cursor: default;
-      }
-      &:focus {
-        --tw-outline-style: none;
-        outline-style: none;
-        @media (forced-colors: active) {
-          outline: 2px solid transparent;
-          outline-offset: 2px;
-        }
-      }
-      &:focus-visible, &:is(label:has(:checked:focus-visible)) {
-        outline: 2px solid currentColor;
-        outline-offset: -5px;
-      }
-      &[disabled] {
-        pointer-events: none;
-        opacity: 40%;
       }
     }
   }
@@ -573,7 +490,7 @@
       text-align: center;
       vertical-align: middle;
       outline-offset: 2px;
-      -webkit-user-select: none;
+      webkit-user-select: none;
       user-select: none;
       padding-inline: var(--btn-p);
       color: var(--btn-fg);
@@ -852,7 +769,7 @@
       appearance: none;
       place-content: center;
       vertical-align: middle;
-      -webkit-user-select: none;
+      webkit-user-select: none;
       user-select: none;
       grid-template-columns: 0fr 1fr 1fr;
       --radius-selector-max: calc(
@@ -1501,7 +1418,7 @@
       cursor: pointer;
       place-content: center;
       vertical-align: middle;
-      -webkit-user-select: none;
+      webkit-user-select: none;
       user-select: none;
       input {
         appearance: none;
@@ -2508,8 +2425,8 @@
   .hidden {
     display: none;
   }
-  .inline {
-    display: inline;
+  .inline-block {
+    display: inline-block;
   }
   .table {
     display: table;
@@ -2533,8 +2450,8 @@
   .h-6 {
     height: calc(var(--spacing) * 6);
   }
-  .h-\[600px\] {
-    height: 600px;
+  .h-150 {
+    height: calc(var(--spacing) * 150);
   }
   .h-screen {
     height: 100vh;
@@ -2558,8 +2475,23 @@
   .w-6 {
     width: calc(var(--spacing) * 6);
   }
-  .w-\[min\(94vw\,1120px\)\] {
-    width: min(94vw, 1120px);
+  .w-16 {
+    width: calc(var(--spacing) * 16);
+  }
+  .w-24 {
+    width: calc(var(--spacing) * 24);
+  }
+  .w-40 {
+    width: calc(var(--spacing) * 40);
+  }
+  .w-44 {
+    width: calc(var(--spacing) * 44);
+  }
+  .w-48 {
+    width: calc(var(--spacing) * 48);
+  }
+  .w-64 {
+    width: calc(var(--spacing) * 64);
   }
   .w-fit {
     width: fit-content;
@@ -2576,6 +2508,9 @@
   .max-w-175 {
     max-width: calc(var(--spacing) * 175);
   }
+  .max-w-200 {
+    max-width: calc(var(--spacing) * 200);
+  }
   .max-w-\[18rem\] {
     max-width: 18rem;
   }
@@ -2584,9 +2519,6 @@
   }
   .max-w-md {
     max-width: var(--container-md);
-  }
-  .max-w-none {
-    max-width: none;
   }
   .max-w-xl {
     max-width: var(--container-xl);
@@ -2609,9 +2541,6 @@
   .flex-none {
     flex: none;
   }
-  .flex-shrink-0 {
-    flex-shrink: 0;
-  }
   .shrink-0 {
     flex-shrink: 0;
   }
@@ -2624,9 +2553,6 @@
   }
   .cursor-pointer {
     cursor: pointer;
-  }
-  .grid-cols-1 {
-    grid-template-columns: repeat(1, minmax(0, 1fr));
   }
   .grid-cols-\[88px_auto\] {
     grid-template-columns: 88px auto;
@@ -2701,9 +2627,6 @@
   }
   .overflow-x-auto {
     overflow-x: auto;
-  }
-  .overflow-x-hidden {
-    overflow-x: hidden;
   }
   .overflow-y-auto {
     overflow-y: auto;
@@ -2900,16 +2823,6 @@
   .p-4 {
     padding: calc(var(--spacing) * 4);
   }
-  .select-sm {
-    @layer daisyui.l1.l2 {
-      --size: calc(var(--size-field, 0.25rem) * 8);
-      font-size: 0.75rem;
-      option {
-        padding-inline: calc(0.25rem * 2.5);
-        padding-block: calc(0.25rem * 1);
-      }
-    }
-  }
   .table-sm {
     @layer daisyui.l1.l2 {
       :not(thead, tfoot) tr {
@@ -3030,6 +2943,10 @@
   .font-medium {
     --tw-font-weight: var(--font-weight-medium);
     font-weight: var(--font-weight-medium);
+  }
+  .font-normal {
+    --tw-font-weight: var(--font-weight-normal);
+    font-weight: var(--font-weight-normal);
   }
   .font-semibold {
     --tw-font-weight: var(--font-weight-semibold);
@@ -3311,16 +3228,6 @@
   .sm\:grid-cols-2 {
     @media (width >= 40rem) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-  .md\:gap-3 {
-    @media (width >= 48rem) {
-      gap: calc(var(--spacing) * 3);
-    }
-  }
-  .md\:px-4 {
-    @media (width >= 48rem) {
-      padding-inline: calc(var(--spacing) * 4);
     }
   }
 }

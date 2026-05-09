@@ -4,8 +4,6 @@
 // parsing, and encoding normalization. Services and API routes can require these directly
 // instead of receiving them via the DI parameter list in index.js.
 
-const { maskToken } = require('./app');
-
 // ── Shell / command helpers ───────────────────────────
 
 function shellQuote(arg) {
@@ -18,42 +16,61 @@ function buildCommandPreview(cmd, args) {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
+function isHlsPlaylistReference(value) {
+    return /\.m3u8$/i.test(String(value || '').trim());
+}
+
+function isHlsOutputUrl(parsedUrl) {
+    if (!(parsedUrl instanceof URL)) return false;
+
+    const protocol = String(parsedUrl.protocol || '').toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+        return false;
+    }
+
+    if (isHlsPlaylistReference(parsedUrl.pathname)) {
+        return true;
+    }
+
+    for (const value of parsedUrl.searchParams.values()) {
+        if (isHlsPlaylistReference(value)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function shouldPersistFfmpegStderrLine(line, outputUrl) {
+    const text = String(line || '').trim();
+    if (!text) return false;
+
+    let parsedOutputUrl = null;
+    try {
+        parsedOutputUrl = new URL(String(outputUrl || ''));
+    } catch {
+        parsedOutputUrl = null;
+    }
+
+    if (!isHlsOutputUrl(parsedOutputUrl)) {
+        return true;
+    }
+
+    // HLS emits an "Opening '... for writing'" line for every playlist or segment PUT.
+    // Example: playlist.m3u8 plus seg-001.ts can spam stderr every couple of seconds, so drop
+    // only this pattern for HLS while still keeping actual HTTP errors and all non-HLS stderr.
+    return !/^\[[^\]]+\]\s+Opening 'https?:\/\/[^']+' for writing$/i.test(text);
+}
+
 // ── Credential redaction ──────────────────────────────
+
+const MASK_VISIBLE_PREFIX_CHARS = 20;
+const MASK_VISIBLE_SUFFIX_CHARS = 5;
 
 function redactSensitiveUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
-
-    let parsed;
-    try {
-        parsed = new URL(rawUrl);
-    } catch {
-        return maskToken(rawUrl);
-    }
-
-    if (parsed.username) parsed.username = '[REDACTED]';
-    if (parsed.password) parsed.password = '[REDACTED]';
-
-    const sensitiveParams =
-        /key|streamkey|stream_key|token|secret|pass|passphrase|signature|sig|auth|streamid/i;
-    for (const [paramKey] of parsed.searchParams.entries()) {
-        if (sensitiveParams.test(paramKey)) {
-            parsed.searchParams.set(paramKey, '[REDACTED]');
-        }
-    }
-
-    // For RTMP/RTSP/SRT, mask the last path segment (often the stream key).
-    const protocol = String(parsed.protocol || '').toLowerCase();
-    if (['rtmp:', 'rtmps:', 'rtsp:', 'rtsps:', 'srt:'].includes(protocol)) {
-        const segments = parsed.pathname.split('/');
-        const lastIdx = segments.length - 1;
-        if (lastIdx >= 1 && segments[lastIdx]) {
-            segments[lastIdx] = maskToken(segments[lastIdx]);
-            parsed.pathname = segments.join('/');
-        }
-    }
-
-    parsed.hash = '';
-    return parsed.toString();
+    if (rawUrl.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return rawUrl;
+    return `${rawUrl.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${rawUrl.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
 function redactFfmpegArgs(args) {
@@ -74,7 +91,7 @@ const SUPPORTED_OUTPUT_ENCODINGS = new Set([
 ]);
 
 const INVALID_OUTPUT_URL_ERROR =
-    'Output URL must be a valid rtmp://, rtmps://, rtsp://, rtsps://, or srt:// URL';
+    'Output URL must be a valid rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https:// HLS playlist URL';
 
 function normalizeOutputEncoding(value) {
     const normalized = String(value ?? 'source')
@@ -97,6 +114,7 @@ function validateOutputUrl(url) {
         return false;
     }
     if (!parsed.hostname) return false;
+    if (isHlsOutputUrl(parsed)) return true;
     return (
         parsed.protocol === 'rtmp:' ||
         parsed.protocol === 'rtmps:' ||
@@ -111,11 +129,14 @@ function validateOutputUrl(url) {
 function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
     const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
     let outputProtocol = '';
+    let parsedOutputUrl = null;
     try {
-        outputProtocol = new URL(outputUrl).protocol;
+        parsedOutputUrl = new URL(outputUrl);
+        outputProtocol = parsedOutputUrl.protocol;
     } catch {
         outputProtocol = '';
     }
+    const isHlsOutput = isHlsOutputUrl(parsedOutputUrl);
     const args = [
         '-nostdin',
         '-hide_banner',
@@ -170,6 +191,8 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
             'libx264',
             '-preset',
             'veryfast',
+            '-tune',
+            'zerolatency',
             '-pix_fmt',
             'yuv420p',
             '-profile:v',
@@ -206,6 +229,25 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
 
     if (outputProtocol === 'rtsp:' || outputProtocol === 'rtsps:') {
         args.push('-f', 'rtsp', '-rtsp_transport', 'tcp', outputUrl);
+        return args;
+    }
+
+    if (isHlsOutput) {
+        args.push(
+            '-f',
+            'hls',
+            '-method',
+            'PUT',
+            '-http_persistent',
+            '1',
+            '-hls_time',
+            '2',
+            '-hls_list_size',
+            '5',
+            '-hls_flags',
+            'delete_segments',
+            outputUrl,
+        );
         return args;
     }
 
@@ -280,6 +322,7 @@ function tryParseOutputMedia(stderrText) {
 module.exports = {
     shellQuote,
     buildCommandPreview,
+    shouldPersistFfmpegStderrLine,
     redactSensitiveUrl,
     redactFfmpegArgs,
     normalizeOutputEncoding,

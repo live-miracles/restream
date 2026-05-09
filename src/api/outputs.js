@@ -115,19 +115,12 @@ function registerOutputApi({
             'lifecycle.config_changed',
             { changes },
         );
-
     }
 
     async function applyOutputStateChange(pid, oid, options) {
         // Start/stop routes differ in response payload, but both share the same state-change,
         // recovery-reset, and reconcile sequence.
-        const {
-            desiredState,
-            stateReason,
-            resetReason,
-            trigger,
-            reconcileReason,
-        } = options;
+        const { desiredState, stateReason, resetReason, trigger, reconcileReason } = options;
 
         const desiredStateChange = setOutputDesiredState(pid, oid, desiredState, {
             source: 'api',
@@ -151,8 +144,8 @@ function registerOutputApi({
         const existingEncoding = existing
             ? normalizeOutputEncoding(existing.encoding) || 'source'
             : null;
-        const name = existing ? body?.name ?? existing.name : body?.name;
-        const url = existing ? body?.url ?? existing.url : body?.url;
+        const name = existing ? (body?.name ?? existing.name) : body?.name;
+        const url = existing ? (body?.url ?? existing.url) : body?.url;
         const encoding = existing
             ? body?.encoding === undefined
                 ? existingEncoding

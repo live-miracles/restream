@@ -25,52 +25,39 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
+function isLikelyHlsOutputUrl(str) {
+    try {
+        const parsed = new URL(str);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return false;
+        }
+        if (/\.m3u8$/i.test(parsed.pathname || '')) {
+            return true;
+        }
+        for (const value of parsed.searchParams.values()) {
+            if (/\.m3u8$/i.test(String(value || '').trim())) {
+                return true;
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+const MASK_VISIBLE_PREFIX_CHARS = 20;
+const MASK_VISIBLE_SUFFIX_CHARS = 5;
+
 function maskSecret(value) {
     const s = String(value ?? '');
     if (!s) return '';
-
-    const maskToken = (token) => {
-        if (!token) return '';
-        if (token.length <= 4) {
-            return token.length === 1 ? token : `${token[0]}...${token[token.length - 1]}`;
-        }
-        return `${token.slice(0, 2)}...${token.slice(-2)}`;
-    };
-
-    const isRtmpLike = /^(rtmps?|rtsps?):\/\//i.test(s);
-    if (isRtmpLike) {
-        return s.replace(
-            /^((?:rtmps?|rtsps?):\/\/[^/\s?#]+(?:\/[^/\s?#]+)*\/)([^/\s?#]+)([?#].*)?$/i,
-            (full, prefix, secret, suffix) => `${prefix}${maskToken(secret)}${suffix || ''}`,
-        );
-    }
-
-    if (/^srt:\/\//i.test(s)) {
-        return s.replace(/([?&]streamid=)([^&]+)/i, (full, keyPrefix, streamIdValue) => {
-            const streamId = String(streamIdValue || '');
-            const publishPrefix = 'publish:';
-
-            if (streamId.startsWith(publishPrefix)) {
-                const streamPath = streamId.slice(publishPrefix.length);
-                const slashIdx = streamPath.lastIndexOf('/');
-                if (slashIdx >= 0) {
-                    const parent = streamPath.slice(0, slashIdx + 1);
-                    const secret = streamPath.slice(slashIdx + 1);
-                    return `${keyPrefix}${publishPrefix}${parent}${maskToken(secret)}`;
-                }
-                return `${keyPrefix}${publishPrefix}${maskToken(streamPath)}`;
-            }
-
-            return `${keyPrefix}${maskToken(streamId)}`;
-        });
-    }
-
-    return maskToken(s);
+    if (s.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return s;
+    return `${s.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${s.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
 function sanitizeLogMessage(msg, redacted = true) {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+    return String(msg).replace(/((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
         maskSecret(url || full),
     );
 }
@@ -101,7 +88,8 @@ function isValidOutput(str) {
                 parsed.protocol === 'rtmps:' ||
                 parsed.protocol === 'rtsp:' ||
                 parsed.protocol === 'rtsps:' ||
-                parsed.protocol === 'srt:')
+                parsed.protocol === 'srt:' ||
+                isLikelyHlsOutputUrl(str))
         );
     } catch {
         return false;
@@ -285,6 +273,7 @@ export {
     msToHHMMSS,
     setInnerText,
     escapeHtml,
+    isLikelyHlsOutputUrl,
     maskSecret,
     sanitizeLogMessage,
     formatCodecName,

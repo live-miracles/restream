@@ -7,11 +7,11 @@ This guide deploys Restream directly on a Linux host using native services only.
 - `mediamtx` system service
 - `restream` (Node.js app) system service
 - Optional reverse proxy (nginx/caddy) for TLS termination
-- SQLite on local disk (`data/data.db`)
+- SQLite on local disk (`data.db`)
 
 No Docker or container runtime is required.
 
-This guide intentionally avoids `make deps` and `make run-host`. Those helpers target repo-managed local Linux workflows, install project dependencies into the checkout, and download MediaMTX under `bin/mediamtx/` instead of laying out a system-wide deployment.
+This guide uses systemd services instead of the local two-terminal workflow from the README.
 
 ## 2. Host Requirements
 
@@ -29,6 +29,13 @@ Software:
 - ffmpeg/ffprobe
 - MediaMTX
 - git (for deployment from source)
+
+FFmpeg version note:
+
+- Ubuntu 24.04 currently ships FFmpeg `6.1.1` in the standard `apt` repositories.
+- Restream's HLS upload outputs use FFmpeg's HLS muxer with `-method PUT -http_persistent 1`.
+- On FFmpeg `6.1.x`, transient loss of the HLS upload HTTP sink can trigger an upstream HLS retry-path bug. In observed runs, HLS `source` copy outputs usually fail cleanly with a muxer error, while transcoded HLS outputs can terminate with `SIGSEGV` before Restream retries them.
+- Restream's output recovery still restarts the output, but FFmpeg `7.1+` includes the upstream fix and is preferred for HLS upload deployments.
 
 ## 3. Create Service User and Paths
 
@@ -66,7 +73,6 @@ Adjust values in `/etc/restream/restream.json` for server name and limits.
 1. Install the MediaMTX binary from official [releases](https://github.com/bluenviron/mediamtx/releases).
 
    For a systemd-managed host, placing it at `/usr/local/bin/mediamtx` is the simplest option.
-   If you want to mirror the repo-managed layout used by `scripts/up.sh`, place it at `/opt/restream/bin/mediamtx/mediamtx` and adjust the systemd `ExecStart` line accordingly.
 2. Place config:
 
 ```sh
@@ -117,8 +123,6 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 ```
 
-If you chose the repo-managed binary path instead, change `ExecStart` to `/opt/restream/bin/mediamtx/mediamtx /etc/restream/mediamtx.yml`.
-
 ## 7. Systemd Unit: Restream
 
 Create `/etc/systemd/system/restream.service`:
@@ -146,16 +150,17 @@ RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/var/lib/restream /opt/restream/data
+ReadWritePaths=/var/lib/restream /opt/restream
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Link runtime DB path to persistent storage (optional but recommended):
+Link the root-level runtime database to persistent storage (optional but recommended):
 
 ```sh
-sudo -u restream ln -sfn /var/lib/restream /opt/restream/data
+sudo -u restream touch /var/lib/restream/data.db
+sudo -u restream ln -sfn /var/lib/restream/data.db /opt/restream/data.db
 ```
 
 ## 8. Start Services

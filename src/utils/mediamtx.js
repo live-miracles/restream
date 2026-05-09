@@ -48,10 +48,7 @@ function parsePortFromAddress(address) {
 
 async function getMediamtxIngestPorts() {
     const nowMs = Date.now();
-    if (
-        cachedIngestPorts &&
-        nowMs - cachedIngestPortsAtMs < MEDIAMTX_INGEST_PORTS_CACHE_MS
-    ) {
+    if (cachedIngestPorts && nowMs - cachedIngestPortsAtMs < MEDIAMTX_INGEST_PORTS_CACHE_MS) {
         return cachedIngestPorts;
     }
 
@@ -88,7 +85,9 @@ async function buildIngestUrls(streamKey, getConfig) {
     return {
         rtmp: ingestPorts.rtmp ? `rtmp://${ingestHost}:${ingestPorts.rtmp}/${effectivePath}` : null,
         rtsp: ingestPorts.rtsp ? `rtsp://${ingestHost}:${ingestPorts.rtsp}/${effectivePath}` : null,
-        srt: ingestPorts.srt ? `srt://${ingestHost}:${ingestPorts.srt}?streamid=publish:${effectivePath}` : null,
+        srt: ingestPorts.srt
+            ? `srt://${ingestHost}:${ingestPorts.srt}?streamid=publish:${effectivePath}`
+            : null,
     };
 }
 

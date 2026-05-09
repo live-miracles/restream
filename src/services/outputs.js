@@ -13,6 +13,7 @@ const {
     normalizeOutputEncoding,
     redactFfmpegArgs,
     redactSensitiveUrl,
+    shouldPersistFfmpegStderrLine,
     tryParseOutputMedia,
     validateOutputUrl,
 } = require('../utils/ffmpeg');
@@ -95,8 +96,7 @@ function createOutputLifecycleService({
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
             const effectivePath = buildMediamtxPath(pipeline.streamKey);
-            pathInfo =
-                (paths.items || []).find((path) => path?.name === effectivePath) || null;
+            pathInfo = (paths.items || []).find((path) => path?.name === effectivePath) || null;
         } catch (err) {
             throw createHttpError(503, 'MediaMTX API unavailable', errMsg(err));
         }
@@ -247,11 +247,45 @@ function createOutputLifecycleService({
             });
 
         let stderrBuf = '';
+        let stderrLogBuffer = '';
+        let hlsStderrNoiseSuppressed = false;
+        const flushPersistedStderrLogs = (chunk = '', flushPartial = false) => {
+            stderrLogBuffer += chunk;
+            const lines = stderrLogBuffer.split(/\r?\n/);
+            if (!flushPartial) {
+                stderrLogBuffer = lines.pop() || '';
+            } else {
+                stderrLogBuffer = '';
+            }
+
+            for (const rawLine of lines) {
+                const line = String(rawLine || '').trimEnd();
+                if (!line.trim()) continue;
+
+                if (shouldPersistFfmpegStderrLine(line, outputUrl)) {
+                    pushLog(`[stderr] ${line}`, 'output.stderr');
+                    continue;
+                }
+
+                if (!hlsStderrNoiseSuppressed) {
+                    hlsStderrNoiseSuppressed = true;
+                    pushLog(
+                        '[control] suppressing repetitive HLS HTTP write-open stderr lines',
+                        'output.control',
+                        {
+                            kind: 'stderr_suppression',
+                            protocol: 'hls',
+                            pattern: 'http_open_for_writing',
+                        },
+                    );
+                }
+            }
+        };
         let outputMediaParsed = false;
         if (child.stderr)
             child.stderr.on('data', (d) => {
                 const s = d.toString();
-                pushLog(`[stderr] ${s}`, 'output.stderr');
+                flushPersistedStderrLogs(s);
                 if (outputMediaParsed) return;
                 stderrBuf += s;
                 const media = tryParseOutputMedia(stderrBuf);
@@ -264,6 +298,7 @@ function createOutputLifecycleService({
             });
 
         child.on('exit', (code, signal) => {
+            flushPersistedStderrLogs('', true);
             const wasStopRequested = consumeStopRequested(job.id);
 
             const st = wasStopRequested || code === 0 ? 'stopped' : 'failed';

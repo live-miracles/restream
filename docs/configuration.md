@@ -156,74 +156,28 @@ Backend internal URLs are hardcoded as:
 - RTSP base: `rtsp://localhost:8554`
 
 
-## 3. Run Modes
+## 3. Local Host Run
 
-There are two supported modes:
-
-### Host Mode (app + MediaMTX on host)
-
-This section covers the local helper scripts. For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
+For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
 
 MediaMTX and the Node.js app run as host processes.
 
 ```sh
-make run-host
+npm ci
+./mediamtx     # or mediamtx.exe on Windows
+npm start      # run in a second terminal
 ```
 
-Before running host mode, install the host dependencies with `make deps`. Re-run it whenever `package.json` or `package-lock.json` changes.
-
-**With hot reload (DEV mode):**
-```sh
-DEV=1 make deps
-DEV=1 make run-host
-```
-
-This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`. It does not start any Docker services.
-
-**Details:**
-- Host mode does not use Docker, including `DEV=1`.
-- MediaMTX is downloaded by running `make deps` into `bin/mediamtx/`.
-- `DEV=1 make run-host` requires the `DEV=1 make deps` install because nodemon comes from dev dependencies.
-- The helper scripts are Linux-oriented: `make deps` installs Debian/Ubuntu packages and downloads a Linux MediaMTX release.
-- On macOS/Windows, the blocker is this Linux-only host-process workflow rather than Docker host networking. Use `make run-docker` there unless you are manually provisioning equivalent host binaries.
-- MediaMTX is started as a background process; logs are written to `log/mediamtx.log` and PID to `.mediamtx.pid`.
-- Node app is started as a background process; logs are in `log/app.log` and PID in `.app.pid`.
-- To stop all processes and clean up, run `make down` (kills processes, removes PID files, stops Docker containers).
-- If you previously used Docker for MediaMTX in host mode, see the migration note below.
-
-**Migration Note:**
-As of April 2026, `make run-host` no longer runs MediaMTX in Docker. It is now managed as a host process. Remove any old containers and use `make down` to clean up lingering processes.
-
-If you encounter port conflicts, check for running MediaMTX or Node processes and use `make down`.
-
-If you prefer a fully containerized stack, use Docker mode (`make run-docker`).
-
-### Docker Mode (all containers)
-
-App, MediaMTX, and nginx-rtmp all run as containers. Use this for a fully containerized stack.
+For development mode:
 
 ```sh
-make run-docker
+npm run dev
+npm run css-watch
 ```
 
-### app container environment
+This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`.
 
-`app` service environment:
-
-```yaml
-environment:
-  NODE_ENV: production
-  PORT: 3030
-```
-
-The app automatically connects to MediaMTX on `localhost:9997` (API) and `localhost:8554` (RTSP).
-
-Optional publisher-facing overrides:
-
-```yaml
-environment:
-  MEDIAMTX_INGEST_HOST: your-public-host
-```
+If you encounter port conflicts, check for running MediaMTX or Node processes and stop them manually.
 
 ## 4. MediaMTX Ports
 
