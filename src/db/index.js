@@ -1,13 +1,9 @@
-const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { setupDatabaseSchema } = require('./schema');
 const projectRoot = path.join(__dirname, '..', '..');
-const dataDir = path.join(projectRoot, 'data');
-const dbPath = path.join(dataDir, 'data.db');
-
-fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(projectRoot, 'data.db');
 
 const db = new Database(dbPath);
 setupDatabaseSchema(db);

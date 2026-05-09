@@ -28,5 +28,4 @@ test/artifacts/logs/
 test/artifacts/runs/
 
 # Keep data directory, ignore its runtime content
-data/*
-!data/.gitkeep
+data.db
