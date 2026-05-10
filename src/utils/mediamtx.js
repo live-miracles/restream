@@ -19,6 +19,7 @@ const MEDIAMTX_INGEST_PORTS_CACHE_MS = 5000;
 
 let cachedIngestPorts = null;
 let cachedIngestPortsAtMs = 0;
+let permanentStreamKeys = null;
 
 function getMediamtxApiBaseUrl() {
     return MEDIAMTX_API_BASE;
@@ -33,8 +34,84 @@ function getMediamtxHlsBaseUrl() {
 }
 
 function buildMediamtxPath(streamKey) {
-    if (!streamKey) return '';
     return `${LIVE_PATH_PREFIX}${streamKey}`;
+}
+
+function getStreamKeyLabelFromPath(pathName) {
+    const normalized = String(pathName || '').trim();
+    if (!normalized) return '';
+    return normalized.split('_')[0] || normalized;
+}
+
+function normalizePathConfigItem(item) {
+    if (typeof item === 'string') return { name: item };
+    if (!item || typeof item !== 'object') return null;
+
+    const name = item.name || item.path || item.confName || item.key;
+    if (!name || typeof name !== 'string') return null;
+    return { name };
+}
+
+function pathConfigToStreamKey(item) {
+    const pathConfig = normalizePathConfigItem(item);
+    const pathName = pathConfig?.name?.trim();
+    if (
+        !pathName ||
+        pathName === 'all' ||
+        pathName === 'all_others' ||
+        !pathName.startsWith(LIVE_PATH_PREFIX)
+    ) {
+        return null;
+    }
+
+    const key = pathName.slice(LIVE_PATH_PREFIX.length);
+    if (!key || key.includes('/')) return null;
+
+    return {
+        key,
+        label: getStreamKeyLabelFromPath(key),
+        createdAt: null,
+    };
+}
+
+function normalizePathConfigList(data) {
+    const rawItems = Array.isArray(data?.items)
+        ? data.items
+        : data?.items && typeof data.items === 'object'
+          ? Object.keys(data.items)
+          : Array.isArray(data)
+            ? data
+            : data?.paths && typeof data.paths === 'object' && !Array.isArray(data.paths)
+              ? Object.keys(data.paths)
+              : Array.isArray(data?.paths)
+                ? data.paths
+                : [];
+
+    return rawItems
+        .map(pathConfigToStreamKey)
+        .filter(Boolean)
+        .sort((a, b) => (a.label || a.key).localeCompare(b.label || b.key));
+}
+
+async function loadPermanentStreamKeys({ force = false } = {}) {
+    if (permanentStreamKeys && !force) return permanentStreamKeys;
+
+    const pathConfigs = await fetchMediamtxJson('/v3/config/paths/list');
+    permanentStreamKeys = normalizePathConfigList(pathConfigs);
+    return permanentStreamKeys;
+}
+
+function getCachedPermanentStreamKeys() {
+    return permanentStreamKeys ? [...permanentStreamKeys] : null;
+}
+
+async function getPermanentStreamKeys() {
+    return loadPermanentStreamKeys();
+}
+
+async function isPermanentStreamKey(streamKey) {
+    const keys = await getPermanentStreamKeys();
+    return keys.some((item) => item.key === streamKey);
 }
 
 function parsePortFromAddress(address) {
@@ -72,10 +149,6 @@ async function getMediamtxIngestPorts() {
 }
 
 async function buildIngestUrls(streamKey, getConfig) {
-    if (!streamKey) {
-        return { rtmp: null, rtsp: null, srt: null };
-    }
-
     const config = typeof getConfig === 'function' ? getConfig() : null;
     const ingestConfig = config?.mediamtx?.ingest || {};
     const ingestHost = ingestConfig.host || 'localhost';
@@ -144,6 +217,10 @@ module.exports = {
     getMediamtxRtspBaseUrl,
     getMediamtxHlsBaseUrl,
     buildMediamtxPath,
+    getStreamKeyLabelFromPath,
+    getCachedPermanentStreamKeys,
+    getPermanentStreamKeys,
+    isPermanentStreamKey,
     buildIngestUrls,
     fetchMediamtxJson,
     generateReaderTag,

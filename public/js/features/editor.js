@@ -553,57 +553,78 @@ async function stopOutBtn(pipeId, outId, button = null) {
     }
 }
 
+function formatMaskedStreamKey(streamKey) {
+    const normalized = String(streamKey || '');
+    const underscoreIdx = normalized.indexOf('_');
+    if (underscoreIdx < 0) return normalized;
+
+    const name = normalized.slice(0, underscoreIdx);
+    const secret = normalized.slice(underscoreIdx + 1);
+    if (secret.length <= 4) return `${name}_${secret}`;
+
+    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
+}
+
 async function populatePipelineKeySelect(selectedKey = '') {
     const keySelect = document.getElementById('pipe-stream-key-input');
-    const keys = (await getStreamKeys()) || [];
+    const keys = await loadStreamKeysOnce();
 
     keySelect.replaceChildren();
-
-    const unassignedOption = document.createElement('option');
-    unassignedOption.value = '';
-    unassignedOption.textContent = 'Unassigned';
-    unassignedOption.selected = selectedKey === '';
-    keySelect.appendChild(unassignedOption);
 
     keys.forEach((key) => {
         const option = document.createElement('option');
         option.value = key.key;
         option.selected = key.key === selectedKey;
-        const label = typeof key.label === 'string' ? key.label.trim() : '';
-        option.textContent = `${label || 'Unnamed'} (${key.key})`;
+        option.textContent = formatMaskedStreamKey(key.key);
         keySelect.appendChild(option);
     });
 }
 
-async function openPipeModal(mode, pipe = null, suggestedName = '') {
-    document.getElementById('pipe-id-input').value = pipe?.id || '';
-    document.getElementById('pipe-name-input').value = pipe?.name || suggestedName;
-    document.getElementById('pipe-modal-title').innerText =
-        mode === 'edit' ? 'Edit Pipeline' : 'Add Pipeline';
-    document.getElementById('pipe-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
-    await populatePipelineKeySelect(pipe?.key || '');
+let streamKeysCache = null;
+let streamKeysRequest = null;
+async function loadStreamKeysOnce() {
+    if (streamKeysCache) return streamKeysCache;
+    if (!streamKeysRequest) {
+        streamKeysRequest = getStreamKeys().then((keys) => {
+            if (!Array.isArray(keys)) {
+                streamKeysRequest = null;
+                return [];
+            }
+            streamKeysCache = keys;
+            return streamKeysCache;
+        });
+    }
+    return streamKeysRequest;
+}
 
+async function openPipeModal(pipe) {
+    document.getElementById('pipe-id-input').value = pipe.id;
+    document.getElementById('pipe-name-input').value = pipe?.name;
+
+    await populatePipelineKeySelect(pipe.key);
     const keySelect = document.getElementById('pipe-stream-key-input');
     const keyHint = document.getElementById('pipe-stream-key-locked-hint');
-    const hasRunningOutput =
-        mode === 'edit' && pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
-    keySelect.disabled = !!hasRunningOutput;
-    keyHint.classList.toggle('hidden', !hasRunningOutput);
+    const keyLocked = isPipelineKeyChangeLocked(pipe);
+    keySelect.disabled = keyLocked;
+    keyHint.classList.toggle('hidden', !keyLocked);
 
-    document.getElementById('edit-pipe-modal').dataset.mode = mode;
+    const nameInput = document.getElementById('pipe-name-input');
+    nameInput.classList.remove('input-error');
+
     document.getElementById('edit-pipe-modal').showModal();
+}
+
+function isPipelineKeyChangeLocked(pipe) {
+    return !!pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
 }
 
 async function pipeFormBtn(event) {
     event.preventDefault();
 
     const modal = document.getElementById('edit-pipe-modal');
-    const mode = modal.dataset.mode || 'create';
     const pipeId = document.getElementById('pipe-id-input').value;
     const nameInput = document.getElementById('pipe-name-input');
-    const streamKeyInput = document.getElementById('pipe-stream-key-input');
     const name = nameInput.value.trim();
-    const streamKey = streamKeyInput.value || null;
 
     if (!name) {
         nameInput.classList.add('input-error');
@@ -611,10 +632,8 @@ async function pipeFormBtn(event) {
     }
     nameInput.classList.remove('input-error');
 
-    const response =
-        mode === 'edit'
-            ? await updatePipeline(pipeId, { name, streamKey })
-            : await createPipeline({ name, streamKey });
+    const streamKey = document.getElementById('pipe-stream-key-input').value;
+    const response = await updatePipeline(pipeId, { name, streamKey });
     if (response === null) return;
 
     modal.close();
@@ -838,7 +857,12 @@ async function addPipeBtn() {
         .map((p) => parseInt(p.name.split(' ')[1]));
     const nextNumber = Math.max(...numbers, 0) + 1;
 
-    await openPipeModal('create', null, 'Pipeline ' + nextNumber);
+    const response = await createPipeline({ name: 'Pipeline ' + nextNumber });
+    if (response === null) return;
+
+    setUrlParam('p', response.pipeline?.id || null);
+    await refreshDashboard();
+    await updateLocalConfigBaseline();
 }
 
 async function editPipeBtn() {
@@ -854,7 +878,7 @@ async function editPipeBtn() {
         return;
     }
 
-    await openPipeModal('edit', pipe);
+    await openPipeModal(pipe);
 }
 
 async function deletePipeBtn() {

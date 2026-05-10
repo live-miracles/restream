@@ -48,12 +48,13 @@ const ffmpegOutputMediaByJobId = new Map(); // jobId -> { video: {...}, audio: {
 const processes = new Map(); // jobId -> ChildProcess
 
 // ── Config API (provides normalizeEtag + recomputeEtag) ──────────
-const { normalizeEtag, recomputeConfigEtag, recomputeEtag } = registerConfigApi({
-    app,
-    db,
-    getConfig,
-    toPublicConfig,
-});
+const { normalizeEtag, initializeConfigSnapshotVersions, recomputeConfigEtag, recomputeEtag } =
+    registerConfigApi({
+        app,
+        db,
+        getConfig,
+        toPublicConfig,
+    });
 
 // ── Health monitor ────────────────────────────────────
 const healthMonitor = createHealthMonitorService({
@@ -97,8 +98,6 @@ registerPipelineApi({
     app,
     db,
     getConfig,
-    fetch,
-    crypto,
     healthMonitor,
     resetOutputFailureCount,
     clearOutputRestartState,
@@ -174,7 +173,15 @@ app.use(
     }),
 );
 
-startServer({ app, healthMonitor, db, log, appPort, appHost }).catch((err) => {
+startServer({
+    app,
+    healthMonitor,
+    db,
+    log,
+    appPort,
+    appHost,
+    initializeConfigSnapshotVersions,
+}).catch((err) => {
     console.error('Fatal startup error:', err);
     process.exit(1);
 });

@@ -94,7 +94,6 @@ Unexpected output exits can be retried according to the output recovery config. 
 The dashboard is a static ES-module frontend under `public/`.
 
 - `public/index.html`: main dashboard
-- `public/stream-keys.html`: stream-key management
 - `public/js/core/`: API, shared state, view-model helpers, utilities
 - `public/js/features/`: dashboard rendering and interaction flows
 - `public/js/history/`: output and pipeline history modals

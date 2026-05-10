@@ -127,14 +127,6 @@ function createHealthMonitorService({
     async function resolveRuntimeInputState(streamKey, existingEverSeenLive = 0) {
         // inputEverSeenLive lets the UI and recovery logic distinguish “never published” from
         // “was live before, but is currently missing”.
-        const hasKey = !!streamKey;
-        if (!hasKey) {
-            return {
-                status: 'off',
-                inputEverSeenLive: 0,
-            };
-        }
-
         let pathInfo = null;
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
@@ -144,7 +136,6 @@ function createHealthMonitorService({
         } catch (err) {
             return {
                 status: computeInputStatus({
-                    hasKey: true,
                     pathAvailable: false,
                     pathOnline: false,
                     hasEverSeenLive: Number(existingEverSeenLive || 0) === 1,
@@ -159,7 +150,6 @@ function createHealthMonitorService({
 
         return {
             status: computeInputStatus({
-                hasKey: true,
                 pathAvailable,
                 pathOnline,
                 hasEverSeenLive: nextEverSeenLive === 1,
@@ -233,15 +223,13 @@ function createHealthMonitorService({
         }
 
         for (const pipeline of pipelines) {
-            const key = pipeline.streamKey || '';
-            const hasKey = !!key;
-            const effectivePath = hasKey ? buildMediamtxPath(key) : '';
-            const pathInfo = hasKey ? pathByName.get(effectivePath) : null;
+            const key = pipeline.streamKey;
+            const effectivePath = buildMediamtxPath(key);
+            const pathInfo = pathByName.get(effectivePath) || null;
             const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
             const pathOnline = !!pathInfo?.online;
             const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1 || pathAvailable;
             const status = computeInputStatus({
-                hasKey,
                 pathAvailable,
                 pathOnline,
                 hasEverSeenLive,
@@ -249,7 +237,7 @@ function createHealthMonitorService({
 
             pipelineInputStatusHistory.set(pipeline.id, status);
 
-            if (hasKey && pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
+            if (pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
                 db.markPipelineInputSeenLive(pipeline.id);
             }
         }
@@ -333,7 +321,7 @@ function createHealthMonitorService({
     }
 
     async function getCachedRtspProbeInfo(streamKey, inputUrl) {
-        if (!streamKey || !inputUrl) return null;
+        if (!inputUrl) return null;
         const now = Date.now();
         const cached = streamProbeCache.get(streamKey);
         if (cached && now - cached.ts < probeCacheTtlMs) return cached.info;
@@ -378,8 +366,6 @@ function createHealthMonitorService({
     }
 
     function getPipelineProbeInfo(streamKey, pathAvailable, nowMs) {
-        if (!streamKey) return null;
-
         const cachedProbe = streamProbeCache.get(streamKey);
         const probeCacheAgeMs = cachedProbe ? nowMs - cachedProbe.ts : Number.POSITIVE_INFINITY;
         const probeCacheExpired = probeCacheAgeMs >= probeCacheTtlMs;
@@ -467,7 +453,7 @@ function createHealthMonitorService({
         return {
             status: inputStatus,
             publishStartedAt: pathInfo?.availableTime || pathInfo?.readyTime || null,
-            streamKey: streamKey || null,
+            streamKey,
             publisher: publisher || null,
             readers: readers.length,
             bytesReceived: pathInfo?.bytesReceived || 0,
@@ -569,23 +555,22 @@ function createHealthMonitorService({
         publisherByPath,
         nowMs,
     ) {
-        const streamKey = pipeline.streamKey || '';
+        const streamKey = pipeline.streamKey;
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
         const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1;
         const inputStatus = computeInputStatus({
-            hasKey: !!streamKey,
             pathAvailable,
             pathOnline,
             hasEverSeenLive,
         });
 
-        if (streamKey && pathAvailable && !hasEverSeenLive) {
+        if (pathAvailable && !hasEverSeenLive) {
             db.markPipelineInputSeenLive(pipeline.id);
         }
 
-        const effectivePath = streamKey ? buildMediamtxPath(streamKey) : '';
-        const publisher = streamKey ? publisherByPath.get(effectivePath) || null : null;
+        const effectivePath = buildMediamtxPath(streamKey);
+        const publisher = publisherByPath.get(effectivePath) || null;
 
         const inputTransition = updatePipelineInputStatusHistory(pipeline.id, inputStatus, {
             publisher,
@@ -658,7 +643,6 @@ function createHealthMonitorService({
                 fetchMediamtxJson('/v3/rtmpconns/list'),
                 fetchMediamtxJson('/v3/srtconns/list'),
             ]);
-
             log('debug', 'Fetched MediaMTX health sources', {
                 pathCount: paths.itemCount || 0,
                 rtspConnCount: rtspConns.itemCount || 0,
@@ -706,9 +690,9 @@ function createHealthMonitorService({
             const nowMs = Date.now();
 
             for (const pipeline of pipelines) {
-                const streamKey = pipeline.streamKey || '';
-                const effectivePath = streamKey ? buildMediamtxPath(streamKey) : '';
-                const pathInfo = streamKey ? pathByName.get(effectivePath) : null;
+                const streamKey = pipeline.streamKey;
+                const effectivePath = buildMediamtxPath(streamKey);
+                const pathInfo = pathByName.get(effectivePath) || null;
                 const pipelineOutputs = outputsByPipeline.get(pipeline.id) || [];
 
                 health.pipelines[pipeline.id] = buildPipelineHealthSnapshot(

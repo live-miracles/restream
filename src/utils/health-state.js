@@ -1,7 +1,7 @@
 const { buildMediamtxPath } = require('./mediamtx');
 
 function generateProbeReaderTag(streamKey) {
-    const suffix = String(streamKey || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const suffix = String(streamKey).replace(/[^a-zA-Z0-9_-]/g, '_');
     return `probe_${suffix}`;
 }
 

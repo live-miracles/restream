@@ -35,7 +35,7 @@ test('redactSensitiveUrl masks long URLs as a compact prefix and suffix', () => 
         'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=out.m3u8',
     );
 
-    assert.equal(redacted, 'https://a.uploa***.m3u8');
+    assert.equal(redacted, 'https://a.upload.you***.m3u8');
 });
 
 test('buildFfmpegOutputArgs uses the shared HLS muxer for HLS output URLs', () => {

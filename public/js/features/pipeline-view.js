@@ -28,19 +28,10 @@ const pipelineViewDependencies = {
 
 const ingestUiState = {
     selectedProtocol: 'rtmp',
-    keyVisible: false,
     urlVisible: false,
 };
 
 let ingestVisibilityPipeId = null;
-
-function createOutputMetricBadge(text, title) {
-    const badge = document.createElement('span');
-    badge.className = 'badge badge-sm whitespace-nowrap';
-    badge.textContent = text;
-    badge.title = title;
-    return badge;
-}
 
 function formatProgressFps(value) {
     if (!Number.isFinite(value) || value <= 0) return null;
@@ -49,6 +40,18 @@ function formatProgressFps(value) {
 
 function setPipelineViewDependencies(dependencies) {
     Object.assign(pipelineViewDependencies, dependencies || {});
+}
+
+function formatMaskedStreamKey(streamKey) {
+    const normalized = String(streamKey || '');
+    const underscoreIdx = normalized.indexOf('_');
+    if (underscoreIdx < 0) return normalized;
+
+    const name = normalized.slice(0, underscoreIdx);
+    const secret = normalized.slice(underscoreIdx + 1);
+    if (secret.length <= 4) return `${name}_${secret}`;
+
+    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
 function renderPipelineInfoColumn(selectedPipe) {
@@ -60,7 +63,6 @@ function renderPipelineInfoColumn(selectedPipe) {
 
     if (selectedPipe !== ingestVisibilityPipeId) {
         ingestVisibilityPipeId = selectedPipe;
-        ingestUiState.keyVisible = false;
         ingestUiState.urlVisible = false;
     }
 
@@ -94,33 +96,18 @@ function renderPipelineInfoColumn(selectedPipe) {
         deletePipeBtn.title = '';
     }
 
-    const streamKey = pipe.key || '';
-    const streamKeyValue = document.getElementById('stream-key');
-    const streamKeySurface = document.getElementById('stream-key-surface');
-    const streamKeyVisibilityBtn = document.getElementById('stream-key-visibility-btn');
+    const streamKey = pipe.key;
+    const streamKeyInline = document.getElementById('stream-key-inline');
     const streamKeyCopyBtn = document.getElementById('stream-key-copy-btn');
-    if (streamKeyValue) {
-        streamKeyValue.dataset.copy = '';
-        streamKeyValue.textContent = ingestUiState.keyVisible ? streamKey || 'Unassigned' : '';
-    }
-    if (streamKeySurface) {
-        streamKeySurface.classList.toggle('hidden', !ingestUiState.keyVisible || !streamKey);
-    }
-    if (streamKeyVisibilityBtn) {
-        streamKeyVisibilityBtn.disabled = !streamKey;
-        streamKeyVisibilityBtn.classList.toggle('btn-disabled', !streamKey);
-        streamKeyVisibilityBtn.textContent = ingestUiState.keyVisible ? 'Hide Key' : 'View Key';
-        streamKeyVisibilityBtn.onclick = () => {
-            if (!pipe.key) return;
-            ingestUiState.keyVisible = !ingestUiState.keyVisible;
-            renderPipelineInfoColumn(selectedPipe);
-        };
+    if (streamKeyInline) {
+        streamKeyInline.dataset.copy = streamKey;
+        streamKeyInline.textContent = formatMaskedStreamKey(streamKey);
+        streamKeyInline.title = '';
     }
     if (streamKeyCopyBtn) {
-        streamKeyCopyBtn.disabled = !streamKey;
-        streamKeyCopyBtn.classList.toggle('btn-disabled', !streamKey);
+        streamKeyCopyBtn.disabled = false;
+        streamKeyCopyBtn.classList.remove('btn-disabled');
         streamKeyCopyBtn.onclick = async () => {
-            if (!streamKey) return;
             if (await copyText(streamKey)) showCopiedNotification();
         };
     }
@@ -341,169 +328,152 @@ function renderOutsColumn(selectedPipe) {
         return;
     }
 
+    const metricBadge = (text, title, extraAttrs = '') =>
+        `<span class="badge badge-sm whitespace-nowrap" title="${title}" ${extraAttrs}>${text}</span>`;
+
     const outputsList = document.getElementById('outputs-list');
-    outputsList.replaceChildren();
+    outputsList.innerHTML = pipe.outs
+        .map((o, outputIndex) => {
+            const statusColor =
+                o.status === 'on'
+                    ? 'status-primary'
+                    : o.status === 'warning'
+                      ? 'status-warning'
+                      : o.status === 'error'
+                        ? 'status-error'
+                        : 'status-neutral';
 
-    pipe.outs.forEach((o, outputIndex) => {
-        const statusColor =
-            o.status === 'on'
-                ? 'status-primary'
-                : o.status === 'warning'
-                  ? 'status-warning'
-                  : o.status === 'error'
-                    ? 'status-error'
-                    : 'status-neutral';
+            const isRunning = o.status === 'on' || o.status === 'warning';
+            const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
+            const metadata = [];
 
-        const isRunning = o.status === 'on' || o.status === 'warning';
+            if (o.time !== null) {
+                metadata.push(
+                    metricBadge(msToHHMMSS(o.time), 'Output uptime in the current session'),
+                );
+            }
 
-        const row = document.createElement('div');
-        row.className = 'bg-base-100 px-3 py-2 shadow rounded-box w-full';
-        row.style.display = 'grid';
-        row.style.gridTemplateColumns = 'minmax(0, 1fr) auto';
-        row.style.gridTemplateRows = 'auto auto';
-        row.style.alignItems = 'center';
-        row.style.columnGap = '0.5rem';
-        row.style.rowGap = '0.25rem';
+            const outputProgressFrame = Number(o.progressFrame);
+            if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
+                metadata.push(
+                    metricBadge(
+                        `Frame ${Math.trunc(outputProgressFrame)}`,
+                        'Output frame count from FFmpeg progress',
+                    ),
+                );
+            }
 
-        const content = document.createElement('div');
-        content.className = 'min-w-0';
+            const outputProgressFps = Number(o.progressFps);
+            const outputFpsText = formatProgressFps(outputProgressFps);
+            if (outputFpsText) {
+                metadata.push(metricBadge(outputFpsText, 'Output FPS from FFmpeg progress'));
+            }
 
-        const heading = document.createElement('div');
-        heading.className = 'font-semibold flex items-center gap-2 min-w-0';
+            if (isRunning) {
+                const outputBitrateKbps = Number(o.bitrateKbps);
+                if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
+                    metadata.push(
+                        metricBadge(
+                            '',
+                            'Output bitrate from FFmpeg progress',
+                            `data-output-bitrate="${outputBitrateKbps}"`,
+                        ),
+                    );
+                }
+            }
 
-        const status = document.createElement('div');
-        status.setAttribute('aria-label', 'status');
-        status.className = `status status-lg ${statusColor} mx-1`;
-        heading.appendChild(status);
+            const outputTotalSizeBytes = Number(o.totalSize);
+            if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+                metadata.push(
+                    metricBadge(
+                        `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+                        'Output total size from FFmpeg progress',
+                    ),
+                );
+            }
 
-        const toggleBtn = document.createElement('button');
-        toggleBtn.className = `btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'}`;
-        toggleBtn.dataset.outputIndex = String(outputIndex);
-        toggleBtn.textContent = isRunning ? 'Stop' : 'Start';
-        const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
-        toggleBtn.disabled = !!toggleBusy;
-        toggleBtn.classList.toggle('btn-disabled', !!toggleBusy);
-        toggleBtn.addEventListener('click', async () => {
-            if (toggleBtn.disabled) return;
-            const out = pipe.outs[outputIndex];
-            if (!out) return;
-            toggleBtn.disabled = true;
-            toggleBtn.classList.add('btn-disabled');
+            return `
+            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full"
+                style="display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: center; column-gap: 0.5rem; row-gap: 0.25rem;">
+                <div class="min-w-0">
+                    <div class="font-semibold flex items-center gap-2 min-w-0">
+                        <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
+                        <button class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'} ${toggleBusy ? 'btn-disabled' : ''}"
+                            data-action="toggle-output"
+                            data-output-index="${outputIndex}"
+                            ${toggleBusy ? 'disabled' : ''}>
+                            ${isRunning ? 'Stop' : 'Start'}
+                        </button>
+                        <span class="shrink-0 truncate">${o.name}</span>
+                        <code class="text-sm font-normal opacity-70 truncate" data-output-url="${outputIndex}">
+                            ${sanitizeLogMessage(o.url, true)}
+                        </code>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 self-start">
+                    <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
+                    <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
+                    <button class="btn btn-xs btn-error btn-outline ${isRunning ? 'btn-disabled' : ''}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
+                </div>
+                ${
+                    metadata.length
+                        ? `<div class="flex items-center gap-2 overflow-x-auto whitespace-nowrap" style="grid-column: 1 / -1;">${metadata.join('')}</div>`
+                        : ''
+                }
+            </div>`;
+        })
+        .join('');
+
+    outputsList.querySelectorAll('[data-output-url]').forEach((urlElem) => {
+        const out = pipe.outs[Number(urlElem.dataset.outputUrl)];
+        urlElem.title = out?.url || '';
+    });
+
+    outputsList.querySelectorAll('[data-output-bitrate]').forEach((badge) => {
+        setBadgeBitrateWithSubtleUnit(badge, Number(badge.dataset.outputBitrate));
+    });
+
+    outputsList.onclick = async (event) => {
+        const button = event.target.closest?.('[data-action]');
+        if (!button) return;
+
+        const outputIndex = Number(button.dataset.outputIndex);
+        const out = pipe.outs[outputIndex];
+        if (!out) return;
+
+        if (button.dataset.action === 'toggle-output') {
+            if (button.disabled) return;
+            button.disabled = true;
+            button.classList.add('btn-disabled');
             try {
                 const running = out.status === 'on' || out.status === 'warning';
                 if (running) {
-                    await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, toggleBtn);
+                    await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, button);
                 } else {
-                    await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, toggleBtn);
+                    await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, button);
                 }
             } finally {
                 const stillBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, out.id);
                 if (!stillBusy) {
-                    toggleBtn.disabled = false;
-                    toggleBtn.classList.remove('btn-disabled');
+                    button.disabled = false;
+                    button.classList.remove('btn-disabled');
                 }
             }
-        });
-        heading.appendChild(toggleBtn);
-
-        const outputName = document.createElement('span');
-        outputName.className = 'shrink-0 truncate';
-        outputName.textContent = o.name;
-        heading.appendChild(outputName);
-
-        const outputUrl = document.createElement('code');
-        outputUrl.className = 'text-sm font-normal opacity-70 truncate';
-        outputUrl.textContent = sanitizeLogMessage(o.url, true);
-        outputUrl.title = o.url || '';
-        heading.appendChild(outputUrl);
-
-        const metadataRow = document.createElement('div');
-        metadataRow.className = 'flex items-center gap-2 overflow-x-auto whitespace-nowrap';
-        metadataRow.style.gridColumn = '1 / -1';
-
-        if (o.time !== null) {
-            const timeBadge = createOutputMetricBadge(
-                msToHHMMSS(o.time),
-                'Output uptime in the current session',
-            );
-            metadataRow.appendChild(timeBadge);
         }
 
-        const outputProgressFrame = Number(o.progressFrame);
-        if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
-            const frameBadge = createOutputMetricBadge(
-                `Frame ${Math.trunc(outputProgressFrame)}`,
-                'Output frame count from FFmpeg progress',
-            );
-            metadataRow.appendChild(frameBadge);
+        if (button.dataset.action === 'history-output') {
+            pipelineViewDependencies.openOutputHistoryModal?.(pipe.id, out.id, out.name);
         }
 
-        const outputProgressFps = Number(o.progressFps);
-        const outputFpsText = formatProgressFps(outputProgressFps);
-        if (outputFpsText) {
-            const fpsBadge = createOutputMetricBadge(
-                outputFpsText,
-                'Output FPS from FFmpeg progress',
-            );
-            metadataRow.appendChild(fpsBadge);
+        if (button.dataset.action === 'edit-output') {
+            pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);
         }
 
-        if (isRunning) {
-            const outputBitrateKbps = Number(o.bitrateKbps);
-            if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
-                const throughputBadge = createOutputMetricBadge(
-                    '',
-                    'Output bitrate from FFmpeg progress',
-                );
-                setBadgeBitrateWithSubtleUnit(throughputBadge, outputBitrateKbps);
-                metadataRow.appendChild(throughputBadge);
-            }
+        if (button.dataset.action === 'delete-output') {
+            if (button.classList.contains('btn-disabled')) return;
+            pipelineViewDependencies.deleteOutBtn?.(pipe.id, out.id);
         }
-
-        const outputTotalSizeBytes = Number(o.totalSize);
-        if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-            const volumeBadge = createOutputMetricBadge(
-                `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
-                'Output total size from FFmpeg progress',
-            );
-            metadataRow.appendChild(volumeBadge);
-        }
-
-        const actions = document.createElement('div');
-        actions.className = 'flex items-center gap-2 self-start';
-
-        const historyBtn = document.createElement('button');
-        historyBtn.className = 'btn btn-xs btn-accent btn-outline';
-        historyBtn.textContent = 'History';
-        historyBtn.addEventListener('click', () => {
-            pipelineViewDependencies.openOutputHistoryModal?.(pipe.id, o.id, o.name);
-        });
-
-        const editBtn = document.createElement('button');
-        editBtn.className = 'btn btn-xs btn-accent btn-outline';
-        editBtn.textContent = '✎';
-        editBtn.addEventListener('click', () => {
-            pipelineViewDependencies.editOutBtn?.(pipe.id, o.id);
-        });
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = `btn btn-xs btn-accent btn-outline ${isRunning ? 'btn-disabled' : ''}`;
-        deleteBtn.textContent = '✖';
-        deleteBtn.addEventListener('click', () => {
-            if (deleteBtn.classList.contains('btn-disabled')) return;
-            pipelineViewDependencies.deleteOutBtn?.(pipe.id, o.id);
-        });
-
-        actions.appendChild(historyBtn);
-        actions.appendChild(editBtn);
-        actions.appendChild(deleteBtn);
-
-        content.appendChild(heading);
-        row.appendChild(content);
-        row.appendChild(actions);
-        if (metadataRow.childElementCount > 0) row.appendChild(metadataRow);
-        outputsList.appendChild(row);
-    });
+    };
 }
 
 export { renderPipelineInfoColumn, renderOutsColumn, setPipelineViewDependencies };

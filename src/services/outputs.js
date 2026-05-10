@@ -88,10 +88,6 @@ function createOutputLifecycleService({
             });
         }
 
-        if (!pipeline.streamKey) {
-            throw createHttpError(400, 'Pipeline has no stream key assigned');
-        }
-
         let pathInfo = null;
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
