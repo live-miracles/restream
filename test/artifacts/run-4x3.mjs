@@ -273,11 +273,6 @@ async function ensureRunnerPrerequisites() {
         ['-version'],
         'Install ffmpeg before running the 4x3 suite.',
     );
-    await assertCommandAvailable(
-        'docker',
-        ['compose', 'version'],
-        'Install Docker with the compose plugin before running the 4x3 suite.',
-    );
 }
 
 async function assertCommandAvailable(command, args, helpText) {
@@ -306,32 +301,6 @@ async function ensureResources(manifest, trackedTargets = createCleanupTargets()
     let state = await fetchConfigState();
 
     for (const [pipelineIndex, pipelineDef] of manifest.pipelines.entries()) {
-        let streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
-        let streamKeyWasCreated = false;
-        if (!streamKey) {
-            await requestJson('/stream-keys', {
-                method: 'POST',
-                body: { streamKey: pipelineDef.streamKey, label: pipelineDef.name },
-                okStatuses: [201],
-            });
-            console.log(`Created stream key for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
-            state = await fetchConfigState();
-            streamKey = state.streamKeys.find((item) => item.key === pipelineDef.streamKey);
-            streamKeyWasCreated = true;
-        } else {
-            console.log(`Stream key exists for ${pipelineDef.name}: ${pipelineDef.streamKey}`);
-        }
-
-        trackUnique(
-            streamKeyTargets,
-            {
-                key: pipelineDef.streamKey,
-                label: pipelineDef.name,
-                wasCreated: streamKeyWasCreated,
-            },
-            (item) => item.key,
-        );
-
         let pipeline = state.pipelines.find(
             (item) => item.name === pipelineDef.name && item.streamKey === pipelineDef.streamKey,
         );
@@ -509,34 +478,6 @@ async function cleanupTestResources(targets) {
         }
     }
 
-    for (const target of [...streamKeyTargets].reverse()) {
-        const streamKey = state.streamKeys.find((item) => item.key === target.key);
-        if (!streamKey) {
-            continue;
-        }
-
-        const stillReferenced = state.pipelines.some((item) => item.streamKey === target.key);
-        if (stillReferenced) {
-            console.log(
-                `Skipping stream key cleanup for ${target.key}; it is still referenced by another pipeline.`,
-            );
-            continue;
-        }
-
-        try {
-            await requestJson(`/stream-keys/${encodeURIComponent(target.key)}`, {
-                method: 'DELETE',
-                okStatuses: [200],
-            });
-            console.log(`Deleted test stream key ${target.key}`);
-            state = await fetchConfigState();
-        } catch (error) {
-            cleanupErrors.push(
-                `delete stream key ${target.key}: ${String(error?.message || error)}`,
-            );
-        }
-    }
-
     cleanupTargets = createCleanupTargets();
 
     if (cleanupErrors.length > 0) {
@@ -568,15 +509,22 @@ function normalizeOutputEncodingValue(encodingValue) {
 }
 
 async function fetchConfigState() {
-    const [streamKeysResult, pipelinesResult, configResult] = await Promise.all([
-        requestJson('/stream-keys'),
-        requestJson('/pipelines'),
-        requestJson('/config'),
-    ]);
+    const configResult = await requestJson('/config');
+
+    const pipelines = Array.isArray(configResult.json?.pipelines)
+        ? configResult.json.pipelines
+        : [];
+
+    // The pipelines from /config contain the ingestUrls we need.
+    const streamKeys = pipelines.map((p) => ({
+        key: p.streamKey,
+        label: p.name,
+        ingestUrls: p.ingestUrls,
+    }));
 
     return {
-        streamKeys: Array.isArray(streamKeysResult.json) ? streamKeysResult.json : [],
-        pipelines: Array.isArray(pipelinesResult.json) ? pipelinesResult.json : [],
+        streamKeys: streamKeys,
+        pipelines: pipelines,
         outputs: Array.isArray(configResult.json?.outputs) ? configResult.json.outputs : [],
         jobs: Array.isArray(configResult.json?.jobs) ? configResult.json.jobs : [],
     };
