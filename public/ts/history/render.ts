@@ -1,10 +1,6 @@
 import { sanitizeLogMessage } from '../core/utils.js';
 import type { HistoryLog } from '../types.js';
-import type {
-    OutputHistoryState,
-    PipelineHistoryState,
-    HistoryConstants,
-} from './state.js';
+import type { OutputHistoryState, PipelineHistoryState, HistoryConstants } from './state.js';
 
 interface HistoryRenderCallbacks {
     toggleOutputHistoryContext: ((log: HistoryLog) => void) | null;
@@ -229,17 +225,25 @@ function classifyPipelineHistoryEvent(log: HistoryLog): HistoryEventClassificati
     }
     if (eventType === 'pipeline.input_state.initialized') {
         const finalState = String(eventData?.state || '').toLowerCase();
-        if (finalState === 'on') return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
-        if (finalState === 'warning') return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
-        if (finalState === 'error') return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
-        if (finalState === 'off') return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
+        if (finalState === 'on')
+            return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
+        if (finalState === 'warning')
+            return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
+        if (finalState === 'error')
+            return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
+        if (finalState === 'off')
+            return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
     }
     if (eventType === 'pipeline.input_state.transitioned') {
         const finalState = String(eventData?.to || '').toLowerCase();
-        if (finalState === 'on') return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
-        if (finalState === 'warning') return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
-        if (finalState === 'error') return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
-        if (finalState === 'off') return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
+        if (finalState === 'on')
+            return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
+        if (finalState === 'warning')
+            return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
+        if (finalState === 'error')
+            return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
+        if (finalState === 'off')
+            return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
     }
     if (eventType === 'pipeline.input_state.reset') {
         return { type: 'reset', label: 'Input Reset', badgeClass: 'badge-info' };
@@ -262,10 +266,14 @@ function classifyPipelineHistoryEvent(log: HistoryLog): HistoryEventClassificati
             finalState = (match && match[1] ? match[1] : '').toLowerCase();
         }
 
-        if (finalState === 'on') return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
-        if (finalState === 'warning') return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
-        if (finalState === 'error') return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
-        if (finalState === 'off') return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
+        if (finalState === 'on')
+            return { type: 'on', label: 'Input On', badgeClass: 'badge-success' };
+        if (finalState === 'warning')
+            return { type: 'warning', label: 'Input Warning', badgeClass: 'badge-warning' };
+        if (finalState === 'error')
+            return { type: 'error', label: 'Input Error', badgeClass: 'badge-error' };
+        if (finalState === 'off')
+            return { type: 'off', label: 'Input Off', badgeClass: 'badge-stopped' };
     }
 
     return { type: 'log', label: 'Event', badgeClass: 'badge-ghost' };
@@ -418,17 +426,31 @@ export function renderOutputHistory(
     const searchWrap = document.getElementById('output-history-search-wrap');
     const searchInput = document.getElementById('output-history-search') as HTMLInputElement | null;
     const searchStatus = document.getElementById('output-history-search-status');
-    const searchPrevBtn = document.getElementById('output-history-search-prev') as HTMLButtonElement | null;
-    const searchNextBtn = document.getElementById('output-history-search-next') as HTMLButtonElement | null;
+    const searchPrevBtn = document.getElementById(
+        'output-history-search-prev',
+    ) as HTMLButtonElement | null;
+    const searchNextBtn = document.getElementById(
+        'output-history-search-next',
+    ) as HTMLButtonElement | null;
     const timelineBtn = document.getElementById('output-history-mode-timeline');
     const rawBtn = document.getElementById('output-history-mode-raw');
     const newestBtn = document.getElementById('output-history-order-newest');
     const oldestBtn = document.getElementById('output-history-order-oldest');
 
     if (
-        !list || !empty || !timelineBtn || !rawBtn || !newestBtn || !oldestBtn ||
-        !searchWrap || !searchInput || !searchStatus || !searchPrevBtn || !searchNextBtn
-    ) return;
+        !list ||
+        !empty ||
+        !timelineBtn ||
+        !rawBtn ||
+        !newestBtn ||
+        !oldestBtn ||
+        !searchWrap ||
+        !searchInput ||
+        !searchStatus ||
+        !searchPrevBtn ||
+        !searchNextBtn
+    )
+        return;
 
     const mode = state.mode;
     timelineBtn.classList.toggle('btn-accent', mode === 'timeline');

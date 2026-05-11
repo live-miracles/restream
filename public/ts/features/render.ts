@@ -190,7 +190,7 @@ function renderStatsColumn(selectedPipe: string | null): void {
         appendRow(
             [
                 p.input.time !== null && p.input.time !== undefined
-                    ? msToHHMMSS(p.input.time) ?? '--'
+                    ? (msToHHMMSS(p.input.time) ?? '--')
                     : '--',
                 p.name,
                 inputBw !== null && inputBw !== undefined ? Number(inputBw).toFixed(1) : '--',
@@ -214,7 +214,7 @@ function renderStatsColumn(selectedPipe: string | null): void {
             o.mediaSource === 'fallback-source' || o.mediaSource === 'fallback-profile';
         appendRow(
             [
-                o.time !== null && o.time !== undefined ? msToHHMMSS(o.time) ?? '--' : '--',
+                o.time !== null && o.time !== undefined ? (msToHHMMSS(o.time) ?? '--') : '--',
                 `${o.pipe}: ${o.name}`,
                 outputBw !== null && outputBw !== undefined ? Number(outputBw).toFixed(1) : '--',
                 formatCodecName(video.codec) || '--',

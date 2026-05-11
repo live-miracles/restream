@@ -11,6 +11,7 @@
         "css": "npx tailwindcss -i public/input.css -o public/output.css",
         "css-watch": "npx tailwindcss -i public/input.css -o public/output.css --watch",
         "format": "npx prettier --write .",
+        "format:check": "npx prettier --check .",
         "test": "echo \"Error: no test specified\" && exit 1",
         "test:routes": "node --test test/routes/*.test.js",
         "test:normalization": "node --test test/artifacts/run-2x3-normalization.test.mjs",

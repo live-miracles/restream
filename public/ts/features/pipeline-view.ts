@@ -20,8 +20,12 @@ interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
     openPublisherQualityModal: ((pipeId: string) => void) | null;
     isOutputToggleBusy: ((pipeId: string, outId: string) => boolean) | null;
-    startOutBtn: ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>) | null;
-    stopOutBtn: ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>) | null;
+    startOutBtn:
+        | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
+        | null;
+    stopOutBtn:
+        | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
+        | null;
     openOutputHistoryModal: ((pipeId: string, outId: string, outName: string) => void) | null;
     editOutBtn: ((pipeId: string, outId: string) => void) | null;
     deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
@@ -50,9 +54,7 @@ function formatProgressFps(value: number | null | undefined): string | null {
     return Number.isInteger(value) ? `${value} FPS` : `${(value as number).toFixed(1)} FPS`;
 }
 
-export function setPipelineViewDependencies(
-    dependencies: Partial<PipelineViewDependencies>,
-): void {
+export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
     Object.assign(pipelineViewDependencies, dependencies || {});
 }
 
@@ -116,7 +118,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
 
     const streamKey = pipe.key;
     const streamKeyInline = document.getElementById('stream-key-inline');
-    const streamKeyCopyBtn = document.getElementById('stream-key-copy-btn') as HTMLButtonElement | null;
+    const streamKeyCopyBtn = document.getElementById(
+        'stream-key-copy-btn',
+    ) as HTMLButtonElement | null;
     if (streamKeyInline) {
         streamKeyInline.dataset.copy = streamKey ?? '';
         streamKeyInline.textContent = formatMaskedStreamKey(streamKey);
@@ -150,8 +154,13 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         btn.toggleAttribute('disabled', !isAvailable);
         btn.classList.toggle('btn-disabled', !isAvailable);
         btn.classList.remove(
-            'border-accent/35', 'bg-accent/18', 'text-accent',
-            'border-base-content/10', 'bg-base-100/70', 'text-base-content/80', 'opacity-60',
+            'border-accent/35',
+            'bg-accent/18',
+            'text-accent',
+            'border-base-content/10',
+            'bg-base-100/70',
+            'text-base-content/80',
+            'opacity-60',
         );
         if (isActive && isAvailable) {
             btn.classList.add('border-accent/35', 'bg-accent/18', 'text-accent');
@@ -170,7 +179,8 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     });
 
     const selectedProtocol = ingestUiState.selectedProtocol;
-    const selectedUrl = (ingestUrls as unknown as Record<string, string | null>)[selectedProtocol] || '';
+    const selectedUrl =
+        (ingestUrls as unknown as Record<string, string | null>)[selectedProtocol] || '';
 
     const ingestUrlSection = document.getElementById('ingest-url-section');
     if (ingestUrlSection) {
@@ -193,7 +203,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         ingestUrlSurface.classList.toggle('hidden', !ingestUiState.urlVisible || !selectedUrl);
     }
 
-    const ingestUrlVisibilityBtn = document.getElementById('ingest-url-visibility-btn') as HTMLButtonElement | null;
+    const ingestUrlVisibilityBtn = document.getElementById(
+        'ingest-url-visibility-btn',
+    ) as HTMLButtonElement | null;
     if (ingestUrlVisibilityBtn) {
         ingestUrlVisibilityBtn.disabled = !selectedUrl;
         ingestUrlVisibilityBtn.classList.toggle('btn-disabled', !selectedUrl);
@@ -205,7 +217,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         };
     }
 
-    const ingestUrlCopyBtn = document.getElementById('ingest-url-copy-btn') as HTMLButtonElement | null;
+    const ingestUrlCopyBtn = document.getElementById(
+        'ingest-url-copy-btn',
+    ) as HTMLButtonElement | null;
     if (ingestUrlCopyBtn) {
         ingestUrlCopyBtn.disabled = !selectedUrl;
         ingestUrlCopyBtn.classList.toggle('btn-disabled', !selectedUrl);
@@ -456,7 +470,9 @@ export function renderOutsColumn(selectedPipe: string | null): void {
     });
 
     outputsList.onclick = async (event: MouseEvent) => {
-        const button = (event.target as Element)?.closest?.('[data-action]') as HTMLButtonElement | null;
+        const button = (event.target as Element)?.closest?.(
+            '[data-action]',
+        ) as HTMLButtonElement | null;
         if (!button) return;
 
         const outputIndex = Number(button.dataset.outputIndex);

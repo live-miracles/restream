@@ -195,7 +195,9 @@ function buildDefaultCustomOutputUrl(protocol: string, rawSeed = ''): string {
 }
 
 function populateOutputServerOptions(protocol: string, selectedValue = ''): void {
-    const serverSelect = document.getElementById('out-server-url-input') as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     if (!serverSelect) return;
 
     const presets = OUTPUT_SERVER_PRESETS[protocol] || OUTPUT_SERVER_PRESETS.rtmp;
@@ -261,11 +263,13 @@ function buildSrtUrlFromFields(): string {
         (document.getElementById('out-srt-port-input') as HTMLInputElement | null)?.value.trim() ||
         '6000';
     const streamId =
-        (document.getElementById('out-srt-streamid-input') as HTMLInputElement | null)?.value.trim() ||
-        '';
+        (
+            document.getElementById('out-srt-streamid-input') as HTMLInputElement | null
+        )?.value.trim() || '';
     const extraQueryRaw =
-        (document.getElementById('out-srt-extra-query-input') as HTMLInputElement | null)?.value.trim() ||
-        '';
+        (
+            document.getElementById('out-srt-extra-query-input') as HTMLInputElement | null
+        )?.value.trim() || '';
 
     if (!host) return '';
 
@@ -286,7 +290,9 @@ function buildSrtUrlFromFields(): string {
 }
 
 function isCustomOutputServerSelected(protocol = 'rtmp'): boolean {
-    const serverSelect = document.getElementById('out-server-url-input') as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     if (!protocolUsesOutputServerPresets(protocol)) return true;
     return !serverSelect || !serverSelect.value;
 }
@@ -295,7 +301,9 @@ function applyOutputProtocolUi(protocol: string): void {
     const urlLabel = document.getElementById('out-url-input-label');
     const urlField = document.getElementById('out-url-field');
     const serverField = document.getElementById('out-server-url-field');
-    const serverSelect = document.getElementById('out-server-url-input') as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     const srtFields = document.getElementById('out-srt-fields');
 
     const isPresetBackedMode =
@@ -342,8 +350,12 @@ function getEffectiveOutputUrlFromModal(): string {
 }
 
 function setupOutputModalProtocolHandlers(): void {
-    const protocolSelect = document.getElementById('out-protocol-input') as HTMLSelectElement | null;
-    const serverSelect = document.getElementById('out-server-url-input') as HTMLSelectElement | null;
+    const protocolSelect = document.getElementById(
+        'out-protocol-input',
+    ) as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     const rawInput = document.getElementById('out-rtmp-key-input') as HTMLInputElement | null;
 
     if (!protocolSelect || !serverSelect || !rawInput) return;
@@ -388,8 +400,10 @@ function setupOutputModalProtocolHandlers(): void {
             const values = parseSrtFields(previousRaw);
             (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
             (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
-            (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value = values.streamId;
-            (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value = values.extraQuery;
+            (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =
+                values.streamId;
+            (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value =
+                values.extraQuery;
         }
     };
 
@@ -675,9 +689,13 @@ async function openOutModal(
     (document.getElementById('out-name-input') as HTMLInputElement).value =
         output?.name || `Out_${pipe.outs.length + 1}`;
 
-    const encodingSelect = document.getElementById('out-encoding-input') as HTMLSelectElement | null;
+    const encodingSelect = document.getElementById(
+        'out-encoding-input',
+    ) as HTMLSelectElement | null;
     if (encodingSelect) {
-        const rawEncoding = String(output?.encoding || 'source').trim().toLowerCase();
+        const rawEncoding = String(output?.encoding || 'source')
+            .trim()
+            .toLowerCase();
         const isSupportedEncoding = [...encodingSelect.options].some(
             (opt) => opt.value === rawEncoding,
         );
@@ -695,8 +713,12 @@ async function openOutModal(
     const isCreateMode = mode !== 'edit' || !output;
     const currentUrl = isCreateMode ? `${baseRtmpUrl}test` : output?.url || `${baseRtmpUrl}test`;
     const detectedProtocol = detectOutputProtocol(currentUrl);
-    const protocolSelect = document.getElementById('out-protocol-input') as HTMLSelectElement | null;
-    const serverSelect = document.getElementById('out-server-url-input') as HTMLSelectElement | null;
+    const protocolSelect = document.getElementById(
+        'out-protocol-input',
+    ) as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     const matchedPreset = protocolUsesOutputServerPresets(detectedProtocol)
         ? matchOutputServerPreset(detectedProtocol, currentUrl)
         : null;
@@ -717,17 +739,17 @@ async function openOutModal(
         const values = parseSrtFields(currentUrl);
         (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
         (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
-        (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value = values.streamId;
-        (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value = values.extraQuery;
+        (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =
+            values.streamId;
+        (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value =
+            values.extraQuery;
     }
     applyOutputProtocolUi(detectedProtocol);
 
     document.getElementById('out-rtmp-key-input')?.classList.remove('input-error');
     document.getElementById('out-srt-host-input')?.classList.remove('input-error');
     document.getElementById('out-rtmp-error')?.classList.add('hidden');
-    document
-        .getElementById('out-running-edit-hint')
-        ?.classList.toggle('hidden', !isRunningEdit);
+    document.getElementById('out-running-edit-hint')?.classList.toggle('hidden', !isRunningEdit);
     document.getElementById('out-name-input')?.classList.remove('input-error');
 
     if (encodingSelect) {
@@ -798,8 +820,7 @@ export async function editOutFormBtn(event: Event): Promise<void> {
     const rawInputValue =
         (document.getElementById('out-rtmp-key-input') as HTMLInputElement | null)?.value.trim() ||
         '';
-    const outId =
-        (document.getElementById('out-id-input') as HTMLInputElement | null)?.value || '';
+    const outId = (document.getElementById('out-id-input') as HTMLInputElement | null)?.value || '';
     const data: { name: string; encoding: string; url: string } = {
         name:
             (document.getElementById('out-name-input') as HTMLInputElement | null)?.value.trim() ||

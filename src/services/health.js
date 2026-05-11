@@ -21,10 +21,7 @@ function createHealthMonitorService({
     ffmpegOutputMediaByJobId,
     spawn,
 }) {
-    const {
-        buildUnexpectedReaders,
-        indexPublishersByPath,
-    } = require('../utils/health-connection');
+    const { buildUnexpectedReaders, indexPublishersByPath } = require('../utils/health-connection');
     const {
         buildDefaultHealthSnapshot,
         generateProbeReaderTag,
@@ -576,15 +573,10 @@ function createHealthMonitorService({
 
         for (const output of pipelineOutputs) {
             const latestJob = jobByOutputId.get(output.id) || null;
-            outputsHealth[output.id] = buildOutputHealthSnapshot(
-                pipeline,
-                output,
-                latestJob,
-                {
-                    video: inputHealth.video,
-                    audio: inputHealth.audio,
-                },
-            );
+            outputsHealth[output.id] = buildOutputHealthSnapshot(pipeline, output, latestJob, {
+                video: inputHealth.video,
+                audio: inputHealth.audio,
+            });
         }
 
         return {

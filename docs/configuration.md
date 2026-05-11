@@ -17,7 +17,8 @@ Restream configuration uses two layers with precedence:
 
 The backend assumes MediaMTX is always available on `localhost` with default ports:
 - API: `http://localhost:9997`
-- RTSP: `rtsp://localhost:8554`
+- RTMP: `rtmp://localhost:1935`
+- SRT: `srt://localhost:8890`
 - HLS: `http://localhost:8888`
 
 These are hardcoded in the application and cannot be overridden via environment variables.
@@ -143,17 +144,11 @@ Ingest URLs are precomputed by backend helpers and returned on stream-key and pi
 The effective MediaMTX path is always `live/<streamKey>`.
 
 - RTMP: `rtmp://<ingest.host>:<rtmpPort>/live/<streamKey>`
-- RTSP: `rtsp://<ingest.host>:<rtspPort>/live/<streamKey>`
 - SRT: `srt://<ingest.host>:<srtPort>?streamid=publish:live/<streamKey>`
 
-`rtmpPort`, `rtspPort`, and `srtPort` are derived from MediaMTX global runtime config (`/v3/config/global/get`).
+`rtmpPort` and `srtPort` are derived from MediaMTX global runtime config (`/v3/config/global/get`).
 
 `GET /config` exposes only `ingestHost` in the public config payload. Ports are not app-configurable and are resolved from MediaMTX at runtime for server-side `ingestUrls` generation.
-
-Backend internal URLs are hardcoded as:
-
-- API: `http://localhost:9997`
-- RTSP base: `rtsp://localhost:8554`
 
 
 ## 3. Local Host Run
@@ -183,11 +178,10 @@ If you encounter port conflicts, check for running MediaMTX or Node processes an
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `1935` | RTMP | RTMP ingest |
-| `8554` | RTSP | RTSP ingest/relay |
-| `8890` | SRT | SRT ingest |
+| `1935` | RTMP | RTMP ingest and internal FFmpeg pull |
+| `8890` | SRT | SRT ingest and internal FFmpeg pull/probe |
 | `9997` | HTTP | MediaMTX API |
-| `8888` | HTTP | HLS / HTTP interface |
+| `8888` | HTTP | HLS preview interface (localhost-only) |
 
 ## 5. Input Preview Proxy
 

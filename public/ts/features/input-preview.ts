@@ -9,7 +9,7 @@ let hlsRuntimePromise: Promise<HlsConstructor> | null = null;
 function canUseNativeHls(video: HTMLVideoElement | null): boolean {
     return Boolean(
         video?.canPlayType('application/vnd.apple.mpegurl') ||
-            video?.canPlayType('application/x-mpegURL'),
+        video?.canPlayType('application/x-mpegURL'),
     );
 }
 
@@ -175,7 +175,13 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         void playPromise.catch((err: unknown) => {
             if (video.dataset.previewDisposed === 'true') return;
             if ((err as Error)?.name === 'AbortError') {
-                video.addEventListener('canplay', () => { attemptPlayback(); }, { once: true });
+                video.addEventListener(
+                    'canplay',
+                    () => {
+                        attemptPlayback();
+                    },
+                    { once: true },
+                );
                 return;
             }
             video.dataset.previewLoaded = 'false';
@@ -247,7 +253,9 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             return;
         }
 
-        throw hlsRuntimeError || new Error('This browser does not support dashboard preview playback');
+        throw (
+            hlsRuntimeError || new Error('This browser does not support dashboard preview playback')
+        );
     };
 
     const primePreviewSource = async (): Promise<void> => {

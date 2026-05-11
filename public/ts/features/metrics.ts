@@ -46,21 +46,18 @@ function renderServerMetrics(): void {
         (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
 
     const cpuParts =
-        state.metrics?.cpu?.usagePercent !== null &&
-        state.metrics?.cpu?.usagePercent !== undefined
+        state.metrics?.cpu?.usagePercent !== null && state.metrics?.cpu?.usagePercent !== undefined
             ? { valueText: state.metrics.cpu.usagePercent.toFixed(1), unitText: '%' }
             : null;
     const ramParts =
-        state.metrics?.memory?.usedBytes !== null &&
-        state.metrics?.memory?.totalBytes !== null
+        state.metrics?.memory?.usedBytes !== null && state.metrics?.memory?.totalBytes !== null
             ? {
                   valueText: `${toGiB(state.metrics.memory?.usedBytes)}/${toGiB(state.metrics.memory?.totalBytes)}`,
                   unitText: 'G',
               }
             : null;
     const diskParts =
-        state.metrics?.disk?.usedPercent !== null &&
-        state.metrics?.disk?.usedPercent !== undefined
+        state.metrics?.disk?.usedPercent !== null && state.metrics?.disk?.usedPercent !== undefined
             ? { valueText: state.metrics.disk.usedPercent.toFixed(1), unitText: '%' }
             : null;
     const downKbps = state.metrics?.network?.downloadKbps;
@@ -138,6 +135,8 @@ function renderHealthBanner(): void {
     previousHealthStatus = currentStatus;
 }
 
-document.getElementById('dismiss-health-banner-btn')?.addEventListener('click', dismissHealthBanner);
+document
+    .getElementById('dismiss-health-banner-btn')
+    ?.addEventListener('click', dismissHealthBanner);
 
 export { dismissHealthBanner, renderHealthBanner, renderServerMetrics };

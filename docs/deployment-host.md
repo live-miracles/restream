@@ -97,7 +97,6 @@ sudo chown restream:restream /etc/restream/mediamtx.yml
 5. Open ingest ports to publishers as needed:
 
 - 1935 (RTMP)
-- 8554 (RTSP)
 - 8890 (SRT)
 
 ## 6. Systemd Unit: MediaMTX

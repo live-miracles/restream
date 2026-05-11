@@ -116,9 +116,7 @@ function validateOutputUrl(url) {
     if (!parsed.hostname) return false;
     if (isHlsOutputUrl(parsed)) return true;
     return (
-        parsed.protocol === 'rtmp:' ||
-        parsed.protocol === 'rtmps:' ||
-        parsed.protocol === 'srt:'
+        parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:' || parsed.protocol === 'srt:'
     );
 }
 

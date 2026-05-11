@@ -23,7 +23,6 @@ Returns all stream keys ordered by creation date descending.
     "createdAt": "2026-04-10T10:59:00.000Z",
     "ingestUrls": {
       "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
-      "rtsp": "rtsp://stream.example.com:8554/live/c1518f5ef0d917ef1b6547d7",
       "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
     }
   }
@@ -66,7 +65,6 @@ When provided, `streamKey` must match these rules:
     "createdAt": "2026-04-10T10:59:00.000Z",
     "ingestUrls": {
       "rtmp": "rtmp://stream.example.com:1935/live/mystream",
-      "rtsp": "rtsp://stream.example.com:8554/live/mystream",
       "srt": "srt://stream.example.com:8890?streamid=publish:live/mystream"
     }
   }
@@ -242,7 +240,7 @@ Creates an output for a pipeline.
 }
 ```
 
-`url` supports `rtmp://`, `rtmps://`, `rtsp://`, `rtsps://`, `srt://`, and `http://` and `https://` HLS playlist upload targets. For HLS uploads, use either a direct `.m3u8` playlist URL or a query-based upload URL whose playlist parameter resolves to `.m3u8`.
+`url` supports `rtmp://`, `rtmps://`, `srt://`, and `http://` / `https://` HLS playlist upload targets. For HLS uploads, use either a direct `.m3u8` playlist URL or a query-based upload URL whose playlist parameter resolves to `.m3u8`.
 
 **Response 201:**
 ```json
@@ -277,7 +275,7 @@ Updates an output.
 
 **Errors:** `400` invalid encoding; `404` output or pipeline not found; `409` cannot change URL/encoding while running.
 
-FFmpeg output settings vary by protocol: SRT outputs use `-f mpegts`; RTMP/RTMPS outputs use `-f flv` with RTMP flags; RTSP/RTSPS outputs use `-f rtsp -rtsp_transport tcp`; HLS outputs use `-f hls -method PUT -http_persistent 1` with a rolling live playlist (`-hls_time 2 -hls_list_size 5 -hls_flags delete_segments`). Non-source HLS transcodes also use `libx264 -preset veryfast -tune zerolatency` with the configured bitrate profile.
+FFmpeg output settings vary by protocol: SRT outputs use `-f mpegts`; RTMP/RTMPS outputs use `-f flv` with RTMP flags; HLS outputs use `-f hls -method PUT -http_persistent 1` with a rolling live playlist (`-hls_time 2 -hls_list_size 5 -hls_flags delete_segments`). Non-source HLS transcodes also use `libx264 -preset veryfast -tune zerolatency` with the configured bitrate profile.
 
 Operational note: on FFmpeg `6.1.x`, HLS uploads using `-http_persistent 1` can hit an upstream `hlsenc` retry bug when the HTTP sink disappears mid-segment. In practice, HLS `source` copy outputs usually exit with a normal muxer failure, while transcoded HLS outputs can terminate with `SIGSEGV` before Restream's retry logic restarts them. FFmpeg `7.1+` contains the upstream fix and is recommended for HLS upload deployments.
 
@@ -306,10 +304,10 @@ Sets this output's desired state to `running` and reconciles runtime toward that
 2. Acquire an in-memory start lock for `(pipelineId, outputId)` if a start is needed.
 3. Validate pipeline + output exist.
 4. Check for an existing running job.
-5. Require `pipeline.streamKey`; resolve probe URL `rtsp://localhost:8554/<streamKey>`.
-6. Run `ffprobe -rtsp_transport tcp <probeUrl>` with 8 s timeout.
-7. Build tagged pull URL: `rtsp://localhost:8554/<streamKey>?reader_id=reader_<pipelineId>_<outputId>`.
-8. Spawn FFmpeg for the selected output encoding:
+5. Confirm the MediaMTX path for `pipeline.streamKey` is available via `/v3/paths/list`.
+6. Resolve the FFmpeg pull protocol from the output URL: SRT for `srt://` and HLS outputs, RTMP for `rtmp://`/`rtmps://`.
+7. Build pull URL: `srt://localhost:8890?streamid=read:live/<streamKey>` or `rtmp://localhost:1935/live/<streamKey>`.
+8. Spawn FFmpeg with `-progress pipe:3` for the selected output encoding:
   - `source`: codec copy (`-c:v copy -c:a copy`)
   - `vertical-crop`: `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
   - `vertical-rotate`: `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
@@ -510,7 +508,6 @@ X-Snapshot-Version: "..."   // shared config/jobs state version used to align /c
       "streamKey": "c1518f5ef0d917ef1b6547d7",
       "ingestUrls": {
         "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
-        "rtsp": "rtsp://stream.example.com:8554/live/c1518f5ef0d917ef1b6547d7",
         "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
       }
     }
@@ -546,7 +543,7 @@ Returns the current ETag without a response body. Used to poll for changes witho
 
 ### `GET /health`
 
-Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtspconns/list`, `/v3/rtspsessions/list`, `/v3/rtmpconns/list`, and `/v3/srtconns/list`, then merging that runtime state with DB job state and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtmpconns/list`, and `/v3/srtconns/list`, then merging that runtime state with DB job state, FFmpeg progress data, and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 `GET /health` itself does not call MediaMTX. It returns the most recent cached snapshot immediately.
 
@@ -563,7 +560,6 @@ Headers:
   "status": "ready",
   "mediamtx": {
     "pathCount": 2,
-    "rtspConnCount": 3,
     "rtmpConnCount": 1,
     "srtConnCount": 0,
     "ready": true
@@ -635,7 +631,6 @@ During startup, before MediaMTX is ready, `/health` returns an initialization sn
   "status": "initializing",
   "mediamtx": {
     "pathCount": 0,
-    "rtspConnCount": 0,
     "rtmpConnCount": 0,
     "srtConnCount": 0,
     "ready": false
@@ -653,7 +648,6 @@ If a collector cycle fails after startup, `/health` returns a degraded snapshot 
   "status": "degraded",
   "mediamtx": {
     "pathCount": 2,
-    "rtspConnCount": 3,
     "ready": true
   },
   "pipelines": {}
@@ -669,12 +663,12 @@ If a collector cycle fails after startup, `/health` returns a degraded snapshot 
 | `off`  | No path info, or path is neither online nor available |
 
 **Output status values:**
-| Status    | Meaning                                              |
-|-----------|------------------------------------------------------|
-| `on`      | Job running + RTSP reader tag matched in MediaMTX    |
-| `warning` | Job running but no matching RTSP reader tag          |
-| `error`   | Latest job status is `failed`                        |
-| `off`     | No running job                                       |
+| Status | Meaning |
+|--------|---------|
+| `on` | Job running and FFmpeg has emitted progress data via fd3 |
+| `warning` | Job running but no FFmpeg progress data received yet |
+| `error` | Latest job status is `failed` |
+| `off` | No running job |
 
 For each output, ffmpeg runtime progress contributes:
 

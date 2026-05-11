@@ -93,7 +93,14 @@ export function parseProtocolAwareIngestUrl(
 
         if (protocol === 'srt') {
             const streamId = parsed.searchParams.get('streamid') || '';
-            const knownParams = new Set(['streamid', 'latency', 'mode', 'passphrase', 'pbkeylen', 'maxbw']);
+            const knownParams = new Set([
+                'streamid',
+                'latency',
+                'mode',
+                'passphrase',
+                'pbkeylen',
+                'maxbw',
+            ]);
             details.streamId = streamId;
             details.latency = parsed.searchParams.get('latency') || '';
             details.mode = parsed.searchParams.get('mode') || '';

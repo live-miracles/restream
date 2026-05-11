@@ -14,9 +14,7 @@ let activeMutationRequestCount = 0;
 function isMutationMethod(method: string): boolean {
     const normalizedMethod = String(method || 'GET').toUpperCase();
     return (
-        normalizedMethod !== 'GET' &&
-        normalizedMethod !== 'HEAD' &&
-        normalizedMethod !== 'OPTIONS'
+        normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD' && normalizedMethod !== 'OPTIONS'
     );
 }
 

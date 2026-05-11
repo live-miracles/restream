@@ -37,13 +37,17 @@ async function ensureOutputHistoryContext(log: HistoryLog): Promise<void> {
     outputHistoryState.contextLoadingKeys.add(contextKey);
     renderOutputHistory(false);
 
-    const res = await getOutputHistory(outputHistoryState.pipelineId!, outputHistoryState.outputId!, {
-        since: range.since,
-        until: range.until,
-        order: 'asc',
-        limit: OUTPUT_HISTORY_CONTEXT_LIMIT,
-        prefixes: ['stderr', 'exit', 'control'],
-    });
+    const res = await getOutputHistory(
+        outputHistoryState.pipelineId!,
+        outputHistoryState.outputId!,
+        {
+            since: range.since,
+            until: range.until,
+            order: 'asc',
+            limit: OUTPUT_HISTORY_CONTEXT_LIMIT,
+            prefixes: ['stderr', 'exit', 'control'],
+        },
+    );
 
     outputHistoryState.contextLoadingKeys.delete(contextKey);
     outputHistoryState.contextLogsByKey.set(
@@ -327,10 +331,7 @@ export function togglePipelineHistoryPlayPause(): void {
     }
 }
 
-export async function openPipelineHistoryModal(
-    pipeId: string,
-    pipeName = '',
-): Promise<void> {
+export async function openPipelineHistoryModal(pipeId: string, pipeName = ''): Promise<void> {
     const modal = document.getElementById('pipeline-history-modal') as HTMLDialogElement | null;
     const title = document.getElementById('pipeline-history-title');
     const loading = document.getElementById('pipeline-history-loading');

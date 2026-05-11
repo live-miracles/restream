@@ -365,7 +365,9 @@ async function cleanupTestResources(targets) {
         const pipeline = state.pipelines.find((item) => item.id === target.pipelineId);
         if (!pipeline) continue;
 
-        const remainingOutputs = state.outputs.filter((item) => item.pipelineId === target.pipelineId);
+        const remainingOutputs = state.outputs.filter(
+            (item) => item.pipelineId === target.pipelineId,
+        );
         const manifestIds = manifestOutputIdsByPipeline.get(target.pipelineId) || new Set();
         const nonManifestOutputs = remainingOutputs.filter((item) => !manifestIds.has(item.id));
 
@@ -414,7 +416,9 @@ function resolveOutputEncoding(encodingValue) {
 }
 
 function normalizeOutputEncodingValue(encodingValue) {
-    return String(encodingValue || '').trim().toLowerCase();
+    return String(encodingValue || '')
+        .trim()
+        .toLowerCase();
 }
 
 async function fetchConfigState() {
@@ -438,9 +442,7 @@ async function startInputPublishers(manifest) {
     await mkdir(config.logDir, { recursive: true });
 
     const state = await fetchConfigState();
-    const streamKeysByKey = new Map(
-        (state.streamKeys || []).map((sk) => [sk.key, sk]),
-    );
+    const streamKeysByKey = new Map((state.streamKeys || []).map((sk) => [sk.key, sk]));
 
     const protocols = config.inputProtocols
         .split(',')
@@ -540,7 +542,8 @@ function getOutputProtocol(outputUrl) {
 
 function extractHlsPlaylistName(outputUrl) {
     try {
-        const parsedOutputUrl = outputUrl instanceof URL ? outputUrl : new URL(String(outputUrl || ''));
+        const parsedOutputUrl =
+            outputUrl instanceof URL ? outputUrl : new URL(String(outputUrl || ''));
         if (!isHlsPlaylistUrl(parsedOutputUrl)) return null;
         const pathname = String(parsedOutputUrl.pathname || '');
         if (/\.m3u8$/i.test(pathname)) {
