@@ -11,16 +11,12 @@ import {
 } from '../core/api.js';
 import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../core/utils.js';
 import { state } from '../core/state.js';
-import { refreshDashboard, syncUserConfigBaseline } from './dashboard.js';
+import { refreshDashboard } from './dashboard.js';
 import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
 } from './publisher-quality.js';
 import type { PipelineView, OutputView, StreamKey } from '../types.js';
-
-async function updateLocalConfigBaseline(): Promise<void> {
-    await syncUserConfigBaseline();
-}
 
 interface OutputServerPreset {
     label: string;
@@ -550,7 +546,6 @@ export async function startOutBtn(
         const res = await startOut(pipeId, outId);
         if (res !== null) {
             await refreshDashboard();
-            await updateLocalConfigBaseline();
         }
     } finally {
         setOutputTogglePending(pipeId, outId, false);
@@ -570,7 +565,6 @@ export async function stopOutBtn(
         const res = await stopOut(pipeId, outId);
         if (res !== null) {
             await refreshDashboard();
-            await updateLocalConfigBaseline();
         }
     } finally {
         setOutputTogglePending(pipeId, outId, false);
@@ -666,7 +660,6 @@ export async function pipeFormBtn(event: Event): Promise<void> {
 
     modal?.close();
     await refreshDashboard();
-    await updateLocalConfigBaseline();
 }
 
 async function openOutModal(
@@ -871,7 +864,6 @@ export async function editOutFormBtn(event: Event): Promise<void> {
 
     (document.getElementById('edit-out-modal') as HTMLDialogElement | null)?.close();
     await refreshDashboard();
-    await updateLocalConfigBaseline();
 }
 
 export async function deleteOutBtn(pipeId: string, outId: string): Promise<void> {
@@ -898,7 +890,6 @@ export async function deleteOutBtn(pipeId: string, outId: string): Promise<void>
     }
 
     await refreshDashboard();
-    await updateLocalConfigBaseline();
 }
 
 export async function addOutBtn(): Promise<void> {
@@ -937,7 +928,6 @@ export async function addPipeBtn(): Promise<void> {
 
     setUrlParam('p', response.pipeline?.id || null);
     await refreshDashboard();
-    await updateLocalConfigBaseline();
 }
 
 export async function editPipeBtn(): Promise<void> {
@@ -979,7 +969,6 @@ export async function deletePipeBtn(): Promise<void> {
 
     setUrlParam('p', null);
     await refreshDashboard();
-    await updateLocalConfigBaseline();
 }
 
 window.pipeFormBtn = pipeFormBtn;

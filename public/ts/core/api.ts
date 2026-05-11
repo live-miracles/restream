@@ -6,7 +6,6 @@ import type {
     StreamKey,
     GetConfigResult,
     GetHealthResult,
-    GetConfigVersionResult,
 } from '../types.js';
 
 let activeMutationRequestCount = 0;
@@ -37,16 +36,6 @@ function endMutationRequest(): void {
     }
 }
 
-function getSnapshotVersion(response: Response, fallback: string | null = null): string | null {
-    return normalizeEtag(response.headers.get('X-Snapshot-Version')) || fallback;
-}
-
-function buildEtagHeaders(etag: string | null): Record<string, string> {
-    const headers: Record<string, string> = {};
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    return headers;
-}
-
 interface FetchWithEtagOptions {
     etag?: string | null;
     method?: string;
@@ -57,11 +46,9 @@ async function fetchWithEtag(
     url: string,
     { etag = null, method = 'GET', networkErrorMessage = null }: FetchWithEtagOptions = {},
 ): Promise<Response | null> {
-    const options: RequestInit = {
-        method,
-        headers: buildEtagHeaders(etag),
-        cache: 'no-store',
-    };
+    const headers: Record<string, string> = {};
+    if (etag) headers['If-None-Match'] = `"${etag}"`;
+    const options: RequestInit = { method, headers, cache: 'no-store' };
 
     if (!networkErrorMessage) {
         return fetch(url, options);
@@ -130,12 +117,7 @@ async function getConfig(etag: string | null = null): Promise<GetConfigResult | 
     if (!response) return null;
 
     if (response.status === 304) {
-        return {
-            notModified: true,
-            etag,
-            snapshotVersion: getSnapshotVersion(response, etag),
-            data: null,
-        };
+        return { notModified: true, etag, data: null };
     }
 
     const data = await parseJsonResponse<ConfigData & { error?: string }>(response);
@@ -146,32 +128,11 @@ async function getConfig(etag: string | null = null): Promise<GetConfigResult | 
         return null;
     }
 
-    const newEtag = normalizeEtag(response.headers.get('ETag'));
-    const configEtag = normalizeEtag(response.headers.get('X-Config-ETag'));
-
     return {
         notModified: false,
-        etag: newEtag,
-        configEtag: configEtag || newEtag,
-        snapshotVersion: getSnapshotVersion(response, newEtag),
+        etag: normalizeEtag(response.headers.get('ETag')),
         data: data as ConfigData,
     };
-}
-
-async function getConfigVersion(
-    etag: string | null = null,
-): Promise<GetConfigVersionResult | null> {
-    const response = await fetchWithEtag('/config/version', { etag, method: 'HEAD' });
-    if (!response) return null;
-
-    if (response.status === 304) return { notModified: true, etag };
-    if (!response.ok) {
-        showErrorAlert(`Request failed with ${response.status}`);
-        return null;
-    }
-
-    const newEtag = normalizeEtag(response.headers.get('ETag'));
-    return { notModified: false, etag: newEtag };
 }
 
 async function getHealth(etag: string | null = null): Promise<GetHealthResult | null> {
@@ -182,17 +143,10 @@ async function getHealth(etag: string | null = null): Promise<GetHealthResult | 
     if (!response) return null;
 
     if (response.status === 304) {
-        return {
-            notModified: true,
-            etag,
-            snapshotVersion: getSnapshotVersion(response, null),
-            data: null,
-        };
+        return { notModified: true, etag, data: null };
     }
 
-    const data = await parseJsonResponse<HealthData & { error?: string; snapshotVersion?: string }>(
-        response,
-    );
+    const data = await parseJsonResponse<HealthData & { error?: string }>(response);
     if (data === null) return null;
 
     if (!response.ok) {
@@ -203,8 +157,6 @@ async function getHealth(etag: string | null = null): Promise<GetHealthResult | 
     return {
         notModified: false,
         etag: normalizeEtag(response.headers.get('ETag')),
-        snapshotVersion:
-            getSnapshotVersion(response, null) || normalizeEtag(data?.snapshotVersion ?? null),
         data: data as HealthData,
     };
 }
@@ -382,7 +334,6 @@ async function getPipelineHistory(
 export {
     apiRequest,
     getConfig,
-    getConfigVersion,
     getHealth,
     getSystemMetrics,
     getStreamKeys,

@@ -104,8 +104,6 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
                 res.set('ETag', `"${etag}"`);
-                if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-                if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
                 return res.status(304).end();
             }
 
@@ -127,42 +125,9 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             };
 
             if (etag) res.set('ETag', `"${etag}"`);
-            if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-            if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
             return res.json(snapshot);
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
-        }
-    });
-
-    app.head('/config/version', async (req, res) => {
-        try {
-            let configEtag = db.getConfigEtag();
-            if (!configEtag) configEtag = recomputeConfigEtag();
-
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-            if (ifNoneMatch && configEtag && ifNoneMatch === configEtag) {
-                res.set('ETag', `"${configEtag}"`);
-                return res.status(304).end();
-            }
-
-            if (configEtag) res.set('ETag', `"${configEtag}"`);
-            return res.status(200).end();
-        } catch (err) {
-            return res.status(500).end();
-        }
-    });
-
-    app.head('/config', (req, res) => {
-        try {
-            const etag = db.getEtag();
-            const configEtag = db.getConfigEtag();
-            if (etag) res.set('ETag', `"${etag}"`);
-            if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-            if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
-            return res.status(200).end();
-        } catch (err) {
-            return res.status(500).end();
         }
     });
 

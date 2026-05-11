@@ -56,7 +56,9 @@ function getSessionBytesOut(record) {
 function findFirstVideoTrack(pathInfo) {
     return (
         (pathInfo?.tracks2 || []).find((track) =>
-            String(track.codec || '').toLowerCase().includes('264'),
+            String(track.codec || '')
+                .toLowerCase()
+                .includes('264'),
         ) || null
     );
 }
@@ -144,7 +146,11 @@ function groupOutputsByPipeline(outputs) {
     return map;
 }
 
-function buildDefaultHealthSnapshot(status = 'initializing', mediamtxReady = false, snapshotVersion = null) {
+function buildDefaultHealthSnapshot(
+    status = 'initializing',
+    mediamtxReady = false,
+    snapshotVersion = null,
+) {
     return {
         generatedAt: new Date().toISOString(),
         snapshotVersion,
@@ -158,7 +164,12 @@ function getHealthSnapshotHashSource(snapshot) {
     return {
         snapshotVersion: snapshot?.snapshotVersion || null,
         status: snapshot?.status || 'initializing',
-        mediamtx: snapshot?.mediamtx || { pathCount: 0, rtmpConnCount: 0, srtConnCount: 0, ready: false },
+        mediamtx: snapshot?.mediamtx || {
+            pathCount: 0,
+            rtmpConnCount: 0,
+            srtConnCount: 0,
+            ready: false,
+        },
         pipelines: snapshot?.pipelines || {},
     };
 }
@@ -343,7 +354,10 @@ function createHealthMonitorService({
     function updatePipelineInputStatusHistory(pipelineId, inputStatus, options = {}) {
         const previousInputStatus = pipelineInputStatusHistory.get(pipelineId);
         const publisher = options.publisher;
-        const protocol = String(publisher?.protocol || '').trim().toLowerCase() || null;
+        const protocol =
+            String(publisher?.protocol || '')
+                .trim()
+                .toLowerCase() || null;
         const remoteAddr = String(publisher?.remoteAddr || '').trim() || null;
         const inputBecameOn = inputStatus === 'on';
         const transitionDetails = inputBecameOn
@@ -375,7 +389,11 @@ function createHealthMonitorService({
             );
         }
 
-        if (previousInputStatus !== undefined && previousInputStatus === 'on' && inputStatus !== 'on') {
+        if (
+            previousInputStatus !== undefined &&
+            previousInputStatus === 'on' &&
+            inputStatus !== 'on'
+        ) {
             pipelineLastInputUnavailableAtMs.set(pipelineId, Date.now());
         }
 
@@ -457,7 +475,13 @@ function createHealthMonitorService({
         };
     }
 
-    function buildPipelineHealthSnapshot(pipeline, pathInfo, pipelineOutputs, jobByOutputId, publisherByPath) {
+    function buildPipelineHealthSnapshot(
+        pipeline,
+        pathInfo,
+        pipelineOutputs,
+        jobByOutputId,
+        publisherByPath,
+    ) {
         const streamKey = pipeline.streamKey;
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
@@ -470,7 +494,9 @@ function createHealthMonitorService({
 
         const effectivePath = buildMediamtxPath(streamKey);
         const publisher = publisherByPath.get(effectivePath) || null;
-        const inputTransition = updatePipelineInputStatusHistory(pipeline.id, inputStatus, { publisher });
+        const inputTransition = updatePipelineInputStatusHistory(pipeline.id, inputStatus, {
+            publisher,
+        });
         if (
             inputTransition.changed &&
             inputTransition.previous !== undefined &&
@@ -494,7 +520,13 @@ function createHealthMonitorService({
             }
         }
 
-        const inputHealth = buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, publisher, inputFps });
+        const inputHealth = buildPipelineInputHealth({
+            streamKey,
+            pathInfo,
+            inputStatus,
+            publisher,
+            inputFps,
+        });
         inputHealth.unexpectedReaders = buildUnexpectedReaders(pathInfo);
 
         const outputsHealth = {};
@@ -590,7 +622,9 @@ function createHealthMonitorService({
     }
 
     function startHealthCollector() {
-        setLatestHealthSnapshot(buildDefaultHealthSnapshot('initializing', mediamtxReadiness.ready));
+        setLatestHealthSnapshot(
+            buildDefaultHealthSnapshot('initializing', mediamtxReadiness.ready),
+        );
         void collectHealthSnapshot().catch((err) => {
             log('error', 'Initial health snapshot collection failed', { error: errMsg(err) });
         });

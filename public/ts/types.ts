@@ -173,31 +173,14 @@ export interface HistoryLog {
     eventData?: Record<string, unknown>;
 }
 
-export type GetConfigResult =
-    | {
-          notModified: true;
-          etag: string | null;
-          snapshotVersion: string | null;
-          data: null;
-          configEtag?: undefined;
-      }
-    | {
-          notModified: false;
-          etag: string | null;
-          configEtag: string | null;
-          snapshotVersion: string | null;
-          data: ConfigData;
-      };
+export interface GetConfigResult {
+    notModified: boolean;
+    etag: string | null;
+    data: ConfigData | null;
+}
 
-export type GetHealthResult =
-    | { notModified: true; etag: string | null; snapshotVersion: string | null; data: null }
-    | {
-          notModified: false;
-          etag: string | null;
-          snapshotVersion: string | null;
-          data: HealthData;
-      };
-
-export type GetConfigVersionResult =
-    | { notModified: true; etag: string | null }
-    | { notModified: false; etag: string | null };
+export interface GetHealthResult {
+    notModified: boolean;
+    etag: string | null;
+    data: HealthData | null;
+}
