@@ -1,4 +1,9 @@
-function formatBitrateKbpsParts(kbps) {
+interface MetricParts {
+    valueText: string;
+    unitText: string;
+}
+
+function formatBitrateKbpsParts(kbps: number | null | undefined): MetricParts | null {
     const value = Number(kbps);
     if (!Number.isFinite(value) || value < 0) return null;
     if (value >= 1000 * 1000) {
@@ -10,7 +15,11 @@ function formatBitrateKbpsParts(kbps) {
     return { valueText: value.toFixed(1), unitText: 'Kb/s' };
 }
 
-function setMetricValueWithSubtleUnit(target, parts, fallback = '--') {
+function setMetricValueWithSubtleUnit(
+    target: Element | null,
+    parts: MetricParts | null,
+    fallback = '--',
+): void {
     if (!target) return;
 
     if (!parts) {
@@ -28,7 +37,11 @@ function setMetricValueWithSubtleUnit(target, parts, fallback = '--') {
     target.replaceChildren(valueSpan, unitSpan);
 }
 
-function setBitrateWithSubtleUnit(elemId, kbps, fallback = '--') {
+function setBitrateWithSubtleUnit(
+    elemId: string,
+    kbps: number | null | undefined,
+    fallback = '--',
+): void {
     const target = document.getElementById(elemId);
     if (!target) return;
 
@@ -36,7 +49,11 @@ function setBitrateWithSubtleUnit(elemId, kbps, fallback = '--') {
     setMetricValueWithSubtleUnit(target, parts, fallback);
 }
 
-function setBadgeBitrateWithSubtleUnit(badgeElem, kbps, fallback = 'warming...') {
+function setBadgeBitrateWithSubtleUnit(
+    badgeElem: Element | null,
+    kbps: number | null | undefined,
+    fallback = 'warming...',
+): void {
     if (!badgeElem) return;
 
     const parts = formatBitrateKbpsParts(kbps);
@@ -48,7 +65,11 @@ function setBadgeBitrateWithSubtleUnit(badgeElem, kbps, fallback = 'warming...')
     badgeElem.textContent = `${parts.valueText} ${parts.unitText}`;
 }
 
-function setMetricsBitrateWithSubtleUnit(selector, kbps, fallback = '--') {
+function setMetricsBitrateWithSubtleUnit(
+    selector: string,
+    kbps: number | null | undefined,
+    fallback = '--',
+): void {
     const targets = document.querySelectorAll(selector);
     const parts = formatBitrateKbpsParts(kbps);
 
@@ -57,7 +78,11 @@ function setMetricsBitrateWithSubtleUnit(selector, kbps, fallback = '--') {
     });
 }
 
-function setMetricsValueWithSubtleUnit(selector, parts, fallback = '--') {
+function setMetricsValueWithSubtleUnit(
+    selector: string,
+    parts: MetricParts | null,
+    fallback = '--',
+): void {
     document.querySelectorAll(selector).forEach((target) => {
         setMetricValueWithSubtleUnit(target, parts, fallback);
     });
@@ -71,3 +96,5 @@ export {
     setMetricsBitrateWithSubtleUnit,
     setMetricsValueWithSubtleUnit,
 };
+
+export type { MetricParts };

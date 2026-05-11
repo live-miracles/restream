@@ -16,12 +16,18 @@ import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
 } from './publisher-quality.js';
+import type { PipelineView, OutputView, StreamKey } from '../types.js';
 
-async function updateLocalConfigBaseline() {
+async function updateLocalConfigBaseline(): Promise<void> {
     await syncUserConfigBaseline();
 }
 
-const OUTPUT_SERVER_PRESETS = {
+interface OutputServerPreset {
+    label: string;
+    value: string;
+}
+
+const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
     rtmp: [
         { label: 'Custom', value: '' },
         { label: 'YouTube', value: 'rtmp://a.rtmp.youtube.com/live2/' },
@@ -45,11 +51,10 @@ const OUTPUT_SERVER_PRESETS = {
         },
         { label: 'Custom', value: '' },
     ],
-    rtsp: [{ label: 'Custom', value: '' }],
     srt: [{ label: 'Custom', value: '' }],
 };
 
-function safeParseUrl(rawUrl) {
+function safeParseUrl(rawUrl: string): URL | null {
     try {
         return new URL(rawUrl);
     } catch {
@@ -57,7 +62,7 @@ function safeParseUrl(rawUrl) {
     }
 }
 
-function safeDecodeUrlComponent(value) {
+function safeDecodeUrlComponent(value: string): string {
     try {
         return decodeURIComponent(value);
     } catch {
@@ -65,11 +70,11 @@ function safeDecodeUrlComponent(value) {
     }
 }
 
-function protocolUsesOutputServerPresets(protocol) {
+function protocolUsesOutputServerPresets(protocol: string): boolean {
     return protocol === 'rtmp' || protocol === 'hls';
 }
 
-function resolvePresetOutputUrl(serverUrl, rawInput) {
+function resolvePresetOutputUrl(serverUrl: string, rawInput: string): string {
     const normalizedInput = String(rawInput || '').trim();
     if (!serverUrl) return normalizedInput;
     if (serverUrl.includes('${stream_key}')) {
@@ -78,7 +83,12 @@ function resolvePresetOutputUrl(serverUrl, rawInput) {
     return `${serverUrl}${normalizedInput}`;
 }
 
-function matchOutputServerPreset(protocol, rawUrl) {
+interface MatchedPreset {
+    value: string;
+    inputValue: string;
+}
+
+function matchOutputServerPreset(protocol: string, rawUrl: string): MatchedPreset | null {
     const presets = OUTPUT_SERVER_PRESETS[protocol] || [];
     const candidateUrl = String(rawUrl || '').trim();
     if (!candidateUrl) return null;
@@ -93,43 +103,36 @@ function matchOutputServerPreset(protocol, rawUrl) {
                     prefix.length,
                     candidateUrl.length - suffix.length,
                 );
-                return {
-                    value: preset.value,
-                    inputValue: safeDecodeUrlComponent(capturedValue),
-                };
+                return { value: preset.value, inputValue: safeDecodeUrlComponent(capturedValue) };
             }
             continue;
         }
 
         if (candidateUrl.startsWith(preset.value)) {
-            return {
-                value: preset.value,
-                inputValue: candidateUrl.slice(preset.value.length),
-            };
+            return { value: preset.value, inputValue: candidateUrl.slice(preset.value.length) };
         }
     }
 
     return null;
 }
 
-function detectOutputProtocol(url) {
+function detectOutputProtocol(url: string): string {
     if (isLikelyHlsOutputUrl(url)) return 'hls';
     const parsed = safeParseUrl(url);
     if (!parsed) return 'rtmp';
-    if (parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:') return 'rtsp';
     if (parsed.protocol === 'srt:') return 'srt';
     return 'rtmp';
 }
 
-function isAbsoluteUrl(rawValue) {
+function isAbsoluteUrl(rawValue: string): boolean {
     return /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue || '');
 }
 
-function getDefaultOutputHost() {
+function getDefaultOutputHost(): string {
     return document.location.hostname || 'localhost';
 }
 
-function extractCandidateStreamToken(rawUrl) {
+function extractCandidateStreamToken(rawUrl: string): string {
     const parsed = safeParseUrl(rawUrl);
     if (parsed) {
         const streamKeyQuery = parsed.searchParams.get('cid');
@@ -146,9 +149,6 @@ function extractCandidateStreamToken(rawUrl) {
 
         const segments = parsed.pathname.split('/').filter(Boolean);
         if (isLikelyHlsOutputUrl(rawUrl)) {
-            // Preset-backed HLS uses /<token>/out.m3u8, while custom HLS may be a direct playlist.
-            // Example: /hls/demo/out.m3u8 should yield demo, but /hls-upload/out4_2.m3u8 should keep
-            // the playlist stem out4_2 instead of falling back to the parent folder hls-upload.
             const lastSegment = segments.length > 0 ? segments[segments.length - 1] : '';
             if (/\.m3u8$/i.test(lastSegment)) {
                 const playlistStem = lastSegment.replace(/\.m3u8$/i, '');
@@ -168,7 +168,6 @@ function extractCandidateStreamToken(rawUrl) {
     const segments = protocollessBase.split('/').filter(Boolean);
     const lastSegment = segments.length > 0 ? segments[segments.length - 1] : base;
     if (/\.m3u8$/i.test(lastSegment)) {
-        // Mirror the parsed-URL rule above so partially typed or protocolless values behave the same.
         const playlistStem = lastSegment.replace(/\.m3u8$/i, '');
         if (/^out$/i.test(playlistStem) && segments.length > 1) {
             return segments[segments.length - 2];
@@ -178,11 +177,11 @@ function extractCandidateStreamToken(rawUrl) {
     return segments.length > 1 ? lastSegment : base;
 }
 
-function getDefaultOutputToken(rawUrl) {
+function getDefaultOutputToken(rawUrl: string): string {
     return extractCandidateStreamToken(rawUrl) || 'test';
 }
 
-function buildDefaultCustomOutputUrl(protocol, rawSeed = '') {
+function buildDefaultCustomOutputUrl(protocol: string, rawSeed = ''): string {
     const host = getDefaultOutputHost();
     const token = getDefaultOutputToken(rawSeed);
 
@@ -192,14 +191,13 @@ function buildDefaultCustomOutputUrl(protocol, rawSeed = '') {
     if (protocol === 'srt') {
         return `srt://${host}:6000?streamid=publish:live/${token}`;
     }
-    if (protocol === 'rtsp') {
-        return `rtsp://${host}:554/live/${token}`;
-    }
     return `rtmp://${host}:1935/live/${token}`;
 }
 
-function populateOutputServerOptions(protocol, selectedValue = '') {
-    const serverSelect = document.getElementById('out-server-url-input');
+function populateOutputServerOptions(protocol: string, selectedValue = ''): void {
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     if (!serverSelect) return;
 
     const presets = OUTPUT_SERVER_PRESETS[protocol] || OUTPUT_SERVER_PRESETS.rtmp;
@@ -216,7 +214,14 @@ function populateOutputServerOptions(protocol, selectedValue = '') {
     serverSelect.value = hasSelectedValue ? selectedValue : '';
 }
 
-function parseSrtFields(rawUrl) {
+interface SrtFields {
+    host: string;
+    port: string;
+    streamId: string;
+    extraQuery: string;
+}
+
+function parseSrtFields(rawUrl: string): SrtFields {
     const parsed = safeParseUrl(rawUrl);
     if (!parsed) {
         const token = getDefaultOutputToken(rawUrl);
@@ -230,7 +235,7 @@ function parseSrtFields(rawUrl) {
 
     const isSrt = parsed.protocol === 'srt:';
     const knownKeys = new Set(['streamid']);
-    const extraEntries = [];
+    const extraEntries: string[] = [];
     parsed.searchParams.forEach((value, key) => {
         if (!knownKeys.has(key)) {
             extraEntries.push(`${key}=${value}`);
@@ -250,15 +255,25 @@ function parseSrtFields(rawUrl) {
     };
 }
 
-function buildSrtUrlFromFields() {
-    const host = document.getElementById('out-srt-host-input')?.value.trim() || '';
-    const port = document.getElementById('out-srt-port-input')?.value.trim() || '6000';
-    const streamId = document.getElementById('out-srt-streamid-input')?.value.trim() || '';
-    const extraQueryRaw = document.getElementById('out-srt-extra-query-input')?.value.trim() || '';
+function buildSrtUrlFromFields(): string {
+    const host =
+        (document.getElementById('out-srt-host-input') as HTMLInputElement | null)?.value.trim() ||
+        '';
+    const port =
+        (document.getElementById('out-srt-port-input') as HTMLInputElement | null)?.value.trim() ||
+        '6000';
+    const streamId =
+        (
+            document.getElementById('out-srt-streamid-input') as HTMLInputElement | null
+        )?.value.trim() || '';
+    const extraQueryRaw =
+        (
+            document.getElementById('out-srt-extra-query-input') as HTMLInputElement | null
+        )?.value.trim() || '';
 
     if (!host) return '';
 
-    const queryParts = [];
+    const queryParts: string[] = [];
     if (streamId) {
         queryParts.push(`streamid=${streamId}`);
     }
@@ -274,17 +289,21 @@ function buildSrtUrlFromFields() {
     return `srt://${host}:${port}${qs ? `?${qs}` : ''}`;
 }
 
-function isCustomOutputServerSelected(protocol = 'rtmp') {
-    const serverSelect = document.getElementById('out-server-url-input');
+function isCustomOutputServerSelected(protocol = 'rtmp'): boolean {
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     if (!protocolUsesOutputServerPresets(protocol)) return true;
     return !serverSelect || !serverSelect.value;
 }
 
-function applyOutputProtocolUi(protocol) {
+function applyOutputProtocolUi(protocol: string): void {
     const urlLabel = document.getElementById('out-url-input-label');
     const urlField = document.getElementById('out-url-field');
     const serverField = document.getElementById('out-server-url-field');
-    const serverSelect = document.getElementById('out-server-url-input');
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     const srtFields = document.getElementById('out-srt-fields');
 
     const isPresetBackedMode =
@@ -309,26 +328,35 @@ function applyOutputProtocolUi(protocol) {
     }
 }
 
-function getEffectiveOutputUrlFromModal() {
-    const protocol = document.getElementById('out-protocol-input')?.value || 'rtmp';
-    const serverUrl = document.getElementById('out-server-url-input')?.value || '';
-    const rawInput = document.getElementById('out-rtmp-key-input')?.value.trim() || '';
+function getEffectiveOutputUrlFromModal(): string {
+    const protocol =
+        (document.getElementById('out-protocol-input') as HTMLSelectElement | null)?.value ||
+        'rtmp';
+    const serverUrl =
+        (document.getElementById('out-server-url-input') as HTMLSelectElement | null)?.value || '';
+    const rawInput =
+        (document.getElementById('out-rtmp-key-input') as HTMLInputElement | null)?.value.trim() ||
+        '';
 
     if (protocol === 'srt') {
         return buildSrtUrlFromFields();
     }
 
-    if (protocol === 'rtsp' || isAbsoluteUrl(rawInput)) {
+    if (isAbsoluteUrl(rawInput)) {
         return rawInput;
     }
 
     return resolvePresetOutputUrl(serverUrl, rawInput);
 }
 
-function setupOutputModalProtocolHandlers() {
-    const protocolSelect = document.getElementById('out-protocol-input');
-    const serverSelect = document.getElementById('out-server-url-input');
-    const rawInput = document.getElementById('out-rtmp-key-input');
+function setupOutputModalProtocolHandlers(): void {
+    const protocolSelect = document.getElementById(
+        'out-protocol-input',
+    ) as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
+    const rawInput = document.getElementById('out-rtmp-key-input') as HTMLInputElement | null;
 
     if (!protocolSelect || !serverSelect || !rawInput) return;
 
@@ -368,21 +396,14 @@ function setupOutputModalProtocolHandlers() {
         populateOutputServerOptions('rtmp', '');
         applyOutputProtocolUi(protocol);
 
-        if (protocol === 'rtsp') {
-            const parsed = safeParseUrl(previousRaw);
-            rawInput.value =
-                parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'
-                    ? previousRaw
-                    : buildDefaultCustomOutputUrl('rtsp', previousRaw);
-            return;
-        }
-
         if (protocol === 'srt') {
             const values = parseSrtFields(previousRaw);
-            document.getElementById('out-srt-host-input').value = values.host;
-            document.getElementById('out-srt-port-input').value = values.port;
-            document.getElementById('out-srt-streamid-input').value = values.streamId;
-            document.getElementById('out-srt-extra-query-input').value = values.extraQuery;
+            (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
+            (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
+            (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =
+                values.streamId;
+            (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value =
+                values.extraQuery;
         }
     };
 
@@ -429,34 +450,32 @@ function setupOutputModalProtocolHandlers() {
     };
 }
 
-function setOutputToggleBusy(button, busy) {
+function setOutputToggleBusy(button: HTMLButtonElement | null, busy: boolean): void {
     if (!button) return;
     button.disabled = busy;
     button.classList.toggle('btn-disabled', busy);
 }
 
-// Start/stop buttons use per-output pending keys so repeated clicks cannot queue overlapping
-// API requests for the same output while the dashboard is refreshing.
-const pendingOutputToggles = new Set();
+const pendingOutputToggles = new Set<string>();
 
-function outputToggleKey(pipeId, outId) {
+function outputToggleKey(pipeId: string, outId: string): string {
     return `${pipeId}:${outId}`;
 }
 
-function isOutputToggleBusy(pipeId, outId) {
+export function isOutputToggleBusy(pipeId: string, outId: string): boolean {
     return pendingOutputToggles.has(outputToggleKey(pipeId, outId));
 }
 
-function setOutputTogglePending(pipeId, outId, busy) {
+function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): void {
     const key = outputToggleKey(pipeId, outId);
     if (busy) pendingOutputToggles.add(key);
     else pendingOutputToggles.delete(key);
 }
 
-let publisherQualityModalPipeId = null;
+let publisherQualityModalPipeId: string | null = null;
 
-function renderPublisherQualityModal() {
-    const modal = document.getElementById('publisher-quality-modal');
+export function renderPublisherQualityModal(): void {
+    const modal = document.getElementById('publisher-quality-modal') as HTMLDialogElement | null;
     if (!modal || !modal.open) return;
 
     const pipe = (state.pipelines || []).find((p) => p.id === publisherQualityModalPipeId);
@@ -508,20 +527,22 @@ function renderPublisherQualityModal() {
     }
 }
 
-function openPublisherQualityModal(pipeId) {
-    const modal = document.getElementById('publisher-quality-modal');
+export function openPublisherQualityModal(pipeId: string): void {
+    const modal = document.getElementById('publisher-quality-modal') as HTMLDialogElement | null;
     if (!modal) return;
     publisherQualityModalPipeId = pipeId;
-    const pipe = (state.pipelines || []).find((p) => p.id === pipeId);
+    const pipe = (state.pipelines || []).find((p: PipelineView) => p.id === pipeId);
     const title = document.getElementById('publisher-quality-title');
     if (title) title.textContent = `Publisher Quality — ${pipe?.name || pipeId}`;
     modal.showModal();
     renderPublisherQualityModal();
 }
 
-async function startOutBtn(pipeId, outId, button = null) {
-    // Wrap the raw API call with button state and dashboard refresh so the UI cannot drift from
-    // server intent even if the request succeeds after a visible delay.
+export async function startOutBtn(
+    pipeId: string,
+    outId: string,
+    button: HTMLButtonElement | null = null,
+): Promise<void> {
     if (isOutputToggleBusy(pipeId, outId)) return;
     setOutputTogglePending(pipeId, outId, true);
     setOutputToggleBusy(button, true);
@@ -537,7 +558,11 @@ async function startOutBtn(pipeId, outId, button = null) {
     }
 }
 
-async function stopOutBtn(pipeId, outId, button = null) {
+export async function stopOutBtn(
+    pipeId: string,
+    outId: string,
+    button: HTMLButtonElement | null = null,
+): Promise<void> {
     if (isOutputToggleBusy(pipeId, outId)) return;
     setOutputTogglePending(pipeId, outId, true);
     setOutputToggleBusy(button, true);
@@ -553,7 +578,7 @@ async function stopOutBtn(pipeId, outId, button = null) {
     }
 }
 
-function formatMaskedStreamKey(streamKey) {
+function formatMaskedStreamKey(streamKey: string): string {
     const normalized = String(streamKey || '');
     const underscoreIdx = normalized.indexOf('_');
     if (underscoreIdx < 0) return normalized;
@@ -565,8 +590,9 @@ function formatMaskedStreamKey(streamKey) {
     return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
-async function populatePipelineKeySelect(selectedKey = '') {
-    const keySelect = document.getElementById('pipe-stream-key-input');
+async function populatePipelineKeySelect(selectedKey = ''): Promise<void> {
+    const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
+    if (!keySelect) return;
     const keys = await loadStreamKeysOnce();
 
     keySelect.replaceChildren();
@@ -580,9 +606,10 @@ async function populatePipelineKeySelect(selectedKey = '') {
     });
 }
 
-let streamKeysCache = null;
-let streamKeysRequest = null;
-async function loadStreamKeysOnce() {
+let streamKeysCache: StreamKey[] | null = null;
+let streamKeysRequest: Promise<StreamKey[]> | null = null;
+
+async function loadStreamKeysOnce(): Promise<StreamKey[]> {
     if (streamKeysCache) return streamKeysCache;
     if (!streamKeysRequest) {
         streamKeysRequest = getStreamKeys().then((keys) => {
@@ -597,72 +624,88 @@ async function loadStreamKeysOnce() {
     return streamKeysRequest;
 }
 
-async function openPipeModal(pipe) {
-    document.getElementById('pipe-id-input').value = pipe.id;
-    document.getElementById('pipe-name-input').value = pipe?.name;
+async function openPipeModal(pipe: PipelineView): Promise<void> {
+    (document.getElementById('pipe-id-input') as HTMLInputElement).value = pipe.id;
+    (document.getElementById('pipe-name-input') as HTMLInputElement).value = pipe?.name;
 
-    await populatePipelineKeySelect(pipe.key);
-    const keySelect = document.getElementById('pipe-stream-key-input');
+    await populatePipelineKeySelect(pipe.key ?? '');
+    const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
     const keyHint = document.getElementById('pipe-stream-key-locked-hint');
     const keyLocked = isPipelineKeyChangeLocked(pipe);
-    keySelect.disabled = keyLocked;
-    keyHint.classList.toggle('hidden', !keyLocked);
+    if (keySelect) keySelect.disabled = keyLocked;
+    if (keyHint) keyHint.classList.toggle('hidden', !keyLocked);
 
-    const nameInput = document.getElementById('pipe-name-input');
-    nameInput.classList.remove('input-error');
+    const nameInput = document.getElementById('pipe-name-input') as HTMLInputElement | null;
+    nameInput?.classList.remove('input-error');
 
-    document.getElementById('edit-pipe-modal').showModal();
+    (document.getElementById('edit-pipe-modal') as HTMLDialogElement).showModal();
 }
 
-function isPipelineKeyChangeLocked(pipe) {
+function isPipelineKeyChangeLocked(pipe: PipelineView): boolean {
     return !!pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
 }
 
-async function pipeFormBtn(event) {
+export async function pipeFormBtn(event: Event): Promise<void> {
     event.preventDefault();
 
-    const modal = document.getElementById('edit-pipe-modal');
-    const pipeId = document.getElementById('pipe-id-input').value;
-    const nameInput = document.getElementById('pipe-name-input');
-    const name = nameInput.value.trim();
+    const modal = document.getElementById('edit-pipe-modal') as HTMLDialogElement | null;
+    const pipeId = (document.getElementById('pipe-id-input') as HTMLInputElement).value;
+    const nameInput = document.getElementById('pipe-name-input') as HTMLInputElement | null;
+    const name = nameInput?.value.trim() || '';
 
     if (!name) {
-        nameInput.classList.add('input-error');
+        nameInput?.classList.add('input-error');
         return;
     }
-    nameInput.classList.remove('input-error');
+    nameInput?.classList.remove('input-error');
 
-    const streamKey = document.getElementById('pipe-stream-key-input').value;
+    const streamKey =
+        (document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null)?.value || '';
     const response = await updatePipeline(pipeId, { name, streamKey });
     if (response === null) return;
 
-    modal.close();
+    modal?.close();
     await refreshDashboard();
     await updateLocalConfigBaseline();
 }
 
-async function openOutModal(mode, pipe, output = null) {
-    document.getElementById('out-mode-input').value = mode;
-    document.getElementById('out-pipe-id-input').value = pipe.id;
-    document.getElementById('out-id-input').value = output?.id || '';
-    document.getElementById('out-modal-title').innerText =
-        mode === 'edit'
-            ? `Edit Output "${output?.name || pipe.name}"`
-            : `Add Output for "${pipe.name}"`;
-    document.getElementById('out-submit-btn').innerText = mode === 'edit' ? 'Update' : 'Create';
-    document.getElementById('out-name-input').value = output?.name || `Out_${pipe.outs.length + 1}`;
-    const encodingSelect = document.getElementById('out-encoding-input');
-    const rawEncoding = String(output?.encoding || 'source')
-        .trim()
-        .toLowerCase();
-    const isSupportedEncoding = [...encodingSelect.options].some(
-        (opt) => opt.value === rawEncoding,
-    );
-    const resolvedEncoding = isSupportedEncoding ? rawEncoding : 'source';
-    if (!isSupportedEncoding && rawEncoding !== 'source') {
-        console.warn(`Output encoding "${rawEncoding}" not supported; using 'source' instead`);
+async function openOutModal(
+    mode: 'edit' | 'create',
+    pipe: PipelineView,
+    output: OutputView | null = null,
+): Promise<void> {
+    (document.getElementById('out-mode-input') as HTMLInputElement).value = mode;
+    (document.getElementById('out-pipe-id-input') as HTMLInputElement).value = pipe.id;
+    (document.getElementById('out-id-input') as HTMLInputElement).value = output?.id || '';
+    const outModalTitle = document.getElementById('out-modal-title');
+    if (outModalTitle) {
+        outModalTitle.innerText =
+            mode === 'edit'
+                ? `Edit Output "${output?.name || pipe.name}"`
+                : `Add Output for "${pipe.name}"`;
     }
-    encodingSelect.value = resolvedEncoding;
+    const outSubmitBtn = document.getElementById('out-submit-btn');
+    if (outSubmitBtn) outSubmitBtn.innerText = mode === 'edit' ? 'Update' : 'Create';
+    (document.getElementById('out-name-input') as HTMLInputElement).value =
+        output?.name || `Out_${pipe.outs.length + 1}`;
+
+    const encodingSelect = document.getElementById(
+        'out-encoding-input',
+    ) as HTMLSelectElement | null;
+    if (encodingSelect) {
+        const rawEncoding = String(output?.encoding || 'source')
+            .trim()
+            .toLowerCase();
+        const isSupportedEncoding = [...encodingSelect.options].some(
+            (opt) => opt.value === rawEncoding,
+        );
+        const resolvedEncoding = isSupportedEncoding ? rawEncoding : 'source';
+        if (!isSupportedEncoding && rawEncoding !== 'source') {
+            console.warn(`Output encoding "${rawEncoding}" not supported; using 'source' instead`);
+        }
+        encodingSelect.value = resolvedEncoding;
+    }
+
     const isRunningEdit =
         mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
 
@@ -670,8 +713,12 @@ async function openOutModal(mode, pipe, output = null) {
     const isCreateMode = mode !== 'edit' || !output;
     const currentUrl = isCreateMode ? `${baseRtmpUrl}test` : output?.url || `${baseRtmpUrl}test`;
     const detectedProtocol = detectOutputProtocol(currentUrl);
-    const protocolSelect = document.getElementById('out-protocol-input');
-    const serverSelect = document.getElementById('out-server-url-input');
+    const protocolSelect = document.getElementById(
+        'out-protocol-input',
+    ) as HTMLSelectElement | null;
+    const serverSelect = document.getElementById(
+        'out-server-url-input',
+    ) as HTMLSelectElement | null;
     const matchedPreset = protocolUsesOutputServerPresets(detectedProtocol)
         ? matchOutputServerPreset(detectedProtocol, currentUrl)
         : null;
@@ -684,51 +731,66 @@ async function openOutModal(mode, pipe, output = null) {
         serverSelect.value = matchedPreset?.value || '';
     }
 
-    const outUrlInput = document.getElementById('out-rtmp-key-input');
-    outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
+    const outUrlInput = document.getElementById('out-rtmp-key-input') as HTMLInputElement | null;
+    if (outUrlInput) {
+        outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
+    }
     if (detectedProtocol === 'srt') {
         const values = parseSrtFields(currentUrl);
-        document.getElementById('out-srt-host-input').value = values.host;
-        document.getElementById('out-srt-port-input').value = values.port;
-        document.getElementById('out-srt-streamid-input').value = values.streamId;
-        document.getElementById('out-srt-extra-query-input').value = values.extraQuery;
+        (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
+        (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
+        (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =
+            values.streamId;
+        (document.getElementById('out-srt-extra-query-input') as HTMLInputElement).value =
+            values.extraQuery;
     }
     applyOutputProtocolUi(detectedProtocol);
-    document.getElementById('out-rtmp-key-input').classList.remove('input-error');
-    document.getElementById('out-srt-host-input').classList.remove('input-error');
-    document.getElementById('out-rtmp-error').classList.add('hidden');
-    document.getElementById('out-running-edit-hint').classList.toggle('hidden', !isRunningEdit);
-    document.getElementById('out-name-input').classList.remove('input-error');
 
-    encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-    encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
-    serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-    serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
-    const outRtmpInput = document.getElementById('out-rtmp-key-input');
-    outRtmpInput.readOnly = isRunningEdit;
-    outRtmpInput.classList.toggle('opacity-70', isRunningEdit);
-    const protocolField = document.getElementById('out-protocol-input');
-    protocolField.disabled = isRunningEdit;
-    protocolField.style.opacity = isRunningEdit ? '0.75' : '';
-    const srtFields = [
-        document.getElementById('out-srt-host-input'),
-        document.getElementById('out-srt-port-input'),
-        document.getElementById('out-srt-streamid-input'),
-        document.getElementById('out-srt-extra-query-input'),
+    document.getElementById('out-rtmp-key-input')?.classList.remove('input-error');
+    document.getElementById('out-srt-host-input')?.classList.remove('input-error');
+    document.getElementById('out-rtmp-error')?.classList.add('hidden');
+    document.getElementById('out-running-edit-hint')?.classList.toggle('hidden', !isRunningEdit);
+    document.getElementById('out-name-input')?.classList.remove('input-error');
+
+    if (encodingSelect) {
+        encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
+        encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
+    }
+    if (serverSelect) {
+        serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
+        serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
+    }
+    if (outUrlInput) {
+        outUrlInput.readOnly = isRunningEdit;
+        outUrlInput.classList.toggle('opacity-70', isRunningEdit);
+    }
+    if (protocolSelect) {
+        protocolSelect.disabled = isRunningEdit;
+        protocolSelect.style.opacity = isRunningEdit ? '0.75' : '';
+    }
+    const srtInputIds = [
+        'out-srt-host-input',
+        'out-srt-port-input',
+        'out-srt-streamid-input',
+        'out-srt-extra-query-input',
     ];
-    srtFields.forEach((field) => {
+    srtInputIds.forEach((id) => {
+        const field = document.getElementById(id) as HTMLInputElement | null;
         if (!field) return;
         field.readOnly = isRunningEdit;
         field.classList.toggle('opacity-70', isRunningEdit);
     });
-    document.getElementById('edit-out-modal').dataset.runningEdit = isRunningEdit ? '1' : '';
+
+    const editOutModal = document.getElementById('edit-out-modal');
+    if (editOutModal) {
+        editOutModal.dataset.runningEdit = isRunningEdit ? '1' : '';
+    }
 
     setupOutputModalProtocolHandlers();
-
-    document.getElementById('edit-out-modal').showModal();
+    (document.getElementById('edit-out-modal') as HTMLDialogElement).showModal();
 }
 
-async function editOutBtn(pipeId, outId) {
+export async function editOutBtn(pipeId: string, outId: string): Promise<void> {
     const pipe = state.pipelines.find((p) => p.id === String(pipeId));
     if (!pipe) {
         console.error('Pipeline not found:', pipeId);
@@ -744,19 +806,28 @@ async function editOutBtn(pipeId, outId) {
     await openOutModal('edit', pipe, output);
 }
 
-async function editOutFormBtn(event) {
+export async function editOutFormBtn(event: Event): Promise<void> {
     event.preventDefault();
 
-    const mode = document.getElementById('out-mode-input').value || 'edit';
-    const modal = document.getElementById('edit-out-modal');
-    const isRunningEdit = modal.dataset.runningEdit === '1';
-    const pipeId = document.getElementById('out-pipe-id-input').value;
-    const serverUrl = document.getElementById('out-server-url-input').value;
-    const rawInputValue = document.getElementById('out-rtmp-key-input').value.trim();
-    const outId = document.getElementById('out-id-input').value;
-    const data = {
-        name: document.getElementById('out-name-input').value.trim(),
-        encoding: document.getElementById('out-encoding-input').value,
+    const mode =
+        (document.getElementById('out-mode-input') as HTMLInputElement | null)?.value || 'edit';
+    const modal = document.getElementById('edit-out-modal') as HTMLDialogElement | null;
+    const isRunningEdit = modal?.dataset.runningEdit === '1';
+    const pipeId =
+        (document.getElementById('out-pipe-id-input') as HTMLInputElement | null)?.value || '';
+    const serverUrl =
+        (document.getElementById('out-server-url-input') as HTMLSelectElement | null)?.value || '';
+    const rawInputValue =
+        (document.getElementById('out-rtmp-key-input') as HTMLInputElement | null)?.value.trim() ||
+        '';
+    const outId = (document.getElementById('out-id-input') as HTMLInputElement | null)?.value || '';
+    const data: { name: string; encoding: string; url: string } = {
+        name:
+            (document.getElementById('out-name-input') as HTMLInputElement | null)?.value.trim() ||
+            '',
+        encoding:
+            (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
+            'source',
         url: getEffectiveOutputUrlFromModal(),
     };
 
@@ -767,22 +838,22 @@ async function editOutFormBtn(event) {
 
     const isOutputUrlValid = isRunningEdit ? true : isValidOutput(data.url);
     const outputErrorField =
-        document.getElementById('out-protocol-input')?.value === 'srt'
+        (document.getElementById('out-protocol-input') as HTMLSelectElement | null)?.value === 'srt'
             ? document.getElementById('out-srt-host-input')
             : document.getElementById('out-rtmp-key-input');
     if (isOutputUrlValid) {
         outputErrorField?.classList.remove('input-error');
-        document.getElementById('out-rtmp-error').classList.add('hidden');
+        document.getElementById('out-rtmp-error')?.classList.add('hidden');
     } else {
         outputErrorField?.classList.add('input-error');
-        document.getElementById('out-rtmp-error').classList.remove('hidden');
+        document.getElementById('out-rtmp-error')?.classList.remove('hidden');
     }
 
     const isOutNameValid = !!data.name;
     if (isOutNameValid) {
-        document.getElementById('out-name-input').classList.remove('input-error');
+        document.getElementById('out-name-input')?.classList.remove('input-error');
     } else {
-        document.getElementById('out-name-input').classList.add('input-error');
+        document.getElementById('out-name-input')?.classList.add('input-error');
     }
 
     if ((!isOutputUrlValid && !isRunningEdit) || !isOutNameValid) {
@@ -798,12 +869,12 @@ async function editOutFormBtn(event) {
         return;
     }
 
-    document.getElementById('edit-out-modal').close();
+    (document.getElementById('edit-out-modal') as HTMLDialogElement | null)?.close();
     await refreshDashboard();
     await updateLocalConfigBaseline();
 }
 
-async function deleteOutBtn(pipeId, outId) {
+export async function deleteOutBtn(pipeId: string, outId: string): Promise<void> {
     const pipe = state.pipelines.find((p) => p.id === String(pipeId));
     if (!pipe) {
         console.error('Pipeline not found:', pipeId);
@@ -830,7 +901,7 @@ async function deleteOutBtn(pipeId, outId) {
     await updateLocalConfigBaseline();
 }
 
-async function addOutBtn() {
+export async function addOutBtn(): Promise<void> {
     const pipeId = getUrlParam('p');
     if (!pipeId) {
         console.error('Please select a pipeline first.');
@@ -843,21 +914,25 @@ async function addOutBtn() {
         return;
     }
 
-    if (state.config?.outLimit && pipe.outs.length >= state.config?.outLimit) {
-        console.error(`Output limit reached. Max outputs per pipeline: ${state.config?.outLimit}`);
+    const outLimit = (state.config as { outLimit?: number }).outLimit;
+    if (outLimit && pipe.outs.length >= outLimit) {
+        console.error(`Output limit reached. Max outputs per pipeline: ${outLimit}`);
         return;
     }
 
     await openOutModal('create', pipe);
 }
 
-async function addPipeBtn() {
+export async function addPipeBtn(): Promise<void> {
     const numbers = state.pipelines
         .filter((p) => p.name.startsWith('Pipeline '))
         .map((p) => parseInt(p.name.split(' ')[1]));
     const nextNumber = Math.max(...numbers, 0) + 1;
 
-    const response = await createPipeline({ name: 'Pipeline ' + nextNumber });
+    const response = (await createPipeline({
+        name: 'Pipeline ' + nextNumber,
+        streamKey: '',
+    })) as { pipeline?: { id: string } } | null;
     if (response === null) return;
 
     setUrlParam('p', response.pipeline?.id || null);
@@ -865,7 +940,7 @@ async function addPipeBtn() {
     await updateLocalConfigBaseline();
 }
 
-async function editPipeBtn() {
+export async function editPipeBtn(): Promise<void> {
     const pipeId = getUrlParam('p');
     if (!pipeId) {
         console.error('Please select a pipeline first.');
@@ -881,7 +956,7 @@ async function editPipeBtn() {
     await openPipeModal(pipe);
 }
 
-async function deletePipeBtn() {
+export async function deletePipeBtn(): Promise<void> {
     const pipeId = getUrlParam('p');
     if (!pipeId) {
         console.error('Please select a pipeline first.');
@@ -913,19 +988,3 @@ window.addOutBtn = addOutBtn;
 window.addPipeBtn = addPipeBtn;
 window.editPipeBtn = editPipeBtn;
 window.deletePipeBtn = deletePipeBtn;
-
-export {
-    isOutputToggleBusy,
-    openPublisherQualityModal,
-    renderPublisherQualityModal,
-    startOutBtn,
-    stopOutBtn,
-    pipeFormBtn,
-    editOutBtn,
-    editOutFormBtn,
-    deleteOutBtn,
-    addOutBtn,
-    addPipeBtn,
-    editPipeBtn,
-    deletePipeBtn,
-};

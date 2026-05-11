@@ -4,29 +4,35 @@ import { getUrlParam, readSelectedPipelineHint, setServerConfig } from '../core/
 import { renderPipelines, renderMetrics } from './render.js';
 import { syncHistoryPollingWithVisibility } from '../history/controller.js';
 import { state } from '../core/state.js';
+import type { GetConfigResult, GetHealthResult, GetConfigVersionResult } from '../types.js';
+import type { PipelineView } from '../types.js';
 
-const dashboardHooks = {
+interface DashboardHooks {
+    afterRender: (() => void) | null;
+}
+
+const dashboardHooks: DashboardHooks = {
     afterRender: null,
 };
 
-let dashboardRefreshInFlight = null;
+let dashboardRefreshInFlight: Promise<void> | null = null;
 let dashboardRefreshQueued = false;
 
-function setDashboardHooks(hooks) {
+export function setDashboardHooks(hooks: Partial<DashboardHooks>): void {
     Object.assign(dashboardHooks, hooks || {});
 }
 
-async function refreshDashboard() {
+export async function refreshDashboard(): Promise<void> {
     await requestDashboardRefresh();
 }
 
-async function requestDashboardRefresh() {
+async function requestDashboardRefresh(): Promise<void> {
     if (dashboardRefreshInFlight) {
         dashboardRefreshQueued = true;
         return dashboardRefreshInFlight;
     }
 
-    let lastRefreshPromise = null;
+    let lastRefreshPromise: Promise<void> | null = null;
 
     do {
         dashboardRefreshQueued = false;
@@ -41,21 +47,19 @@ async function requestDashboardRefresh() {
             }
         }
     } while (dashboardRefreshQueued);
-
-    return lastRefreshPromise;
 }
 
-function resolveConfigSnapshotVersion(result) {
+function resolveConfigSnapshotVersion(result: GetConfigResult | null): string | null {
     if (!result) return configSnapshotVersion;
     return result.snapshotVersion || result.etag || configSnapshotVersion;
 }
 
-function resolveHealthSnapshotVersion(result) {
+function resolveHealthSnapshotVersion(result: GetHealthResult | null): string | null {
     if (!result) return healthSnapshotVersion;
     return result.snapshotVersion || healthSnapshotVersion;
 }
 
-function applyConfigSlice(result) {
+function applyConfigSlice(result: GetConfigResult | null): void {
     if (!result) return;
 
     if (result.etag) etag = result.etag;
@@ -68,7 +72,7 @@ function applyConfigSlice(result) {
     setServerConfig(state.config?.serverName);
 }
 
-function applyHealthSlice(result) {
+function applyHealthSlice(result: GetHealthResult | null): void {
     if (!result) return;
 
     if (result.etag) healthEtag = result.etag;
@@ -79,13 +83,13 @@ function applyHealthSlice(result) {
     state.health = result.data;
 }
 
-function applyMetricsSlice(result) {
+function applyMetricsSlice(result: unknown): void {
     if (result === null) return;
-    state.metrics = result;
+    state.metrics = result as typeof state.metrics;
 }
 
-function replaceUrlParam(param, value) {
-    const url = new URL(window.location);
+function replaceUrlParam(param: string, value: string | null): void {
+    const url = new URL(window.location.href);
     if (value === null) {
         url.searchParams.delete(param);
     } else {
@@ -94,7 +98,7 @@ function replaceUrlParam(param, value) {
     window.history.replaceState({}, '', url);
 }
 
-function reconcileSelectedPipeline(previousPipelines = []) {
+function reconcileSelectedPipeline(previousPipelines: PipelineView[] = []): void {
     const selectedPipeId = getUrlParam('p');
     if (!selectedPipeId) return;
     if (state.pipelines.some((pipe) => pipe.id === selectedPipeId)) return;
@@ -118,7 +122,7 @@ function reconcileSelectedPipeline(previousPipelines = []) {
     replaceUrlParam('p', replacement?.id ?? null);
 }
 
-function applyUserConfigBaseline(etagValue) {
+function applyUserConfigBaseline(etagValue: string | null): void {
     userConfigEtag = etagValue || null;
     dismissedStreamingConfigEtag = null;
 
@@ -131,11 +135,11 @@ function applyUserConfigBaseline(etagValue) {
     clearStreamingConfigRecheckTimer();
 }
 
-function markUserConfigBaseline() {
+export function markUserConfigBaseline(): void {
     applyUserConfigBaseline(configEtag);
 }
 
-async function syncUserConfigBaseline() {
+export async function syncUserConfigBaseline(): Promise<void> {
     const version = await getConfigVersion();
     if (version && !version.notModified && version.etag) {
         configEtag = version.etag;
@@ -143,7 +147,7 @@ async function syncUserConfigBaseline() {
     applyUserConfigBaseline(configEtag);
 }
 
-function dismissStreamingConfigAlert() {
+function dismissStreamingConfigAlert(): void {
     const alertElem = document.getElementById('streaming-config-changed-alert');
     if (!alertElem) return;
 
@@ -153,13 +157,16 @@ function dismissStreamingConfigAlert() {
     clearStreamingConfigRecheckTimer();
 }
 
-function clearStreamingConfigRecheckTimer() {
+function clearStreamingConfigRecheckTimer(): void {
     if (!streamingConfigRecheckTimer) return;
     clearTimeout(streamingConfigRecheckTimer);
     streamingConfigRecheckTimer = null;
 }
 
-async function checkStreamingConfigs(secondTime = false, baselineEtag = userConfigEtag) {
+async function checkStreamingConfigs(
+    secondTime = false,
+    baselineEtag: string | null = userConfigEtag,
+): Promise<void> {
     if (document.hidden) return;
     const alertElem = document.getElementById('streaming-config-changed-alert');
     if (!alertElem) return;
@@ -169,7 +176,6 @@ async function checkStreamingConfigs(secondTime = false, baselineEtag = userConf
         return;
     }
 
-    // Ignore stale checks queued with an old baseline (e.g., before local edits).
     if (baselineEtag !== userConfigEtag) {
         alertElem.classList.add('hidden');
         alertElem.dataset.configVersion = '';
@@ -197,18 +203,14 @@ async function checkStreamingConfigs(secondTime = false, baselineEtag = userConf
         return;
     }
 
-    // Require two changed-version checks before surfacing the banner so brief config churn does
-    // not interrupt the dashboard while the user is actively editing.
     clearStreamingConfigRecheckTimer();
     streamingConfigRecheckTimer = setTimeout(() => {
         streamingConfigRecheckTimer = null;
-        checkStreamingConfigs(true, baselineEtag);
+        void checkStreamingConfigs(true, baselineEtag);
     }, 5000);
 }
 
-async function fetchAndRerender(attempt = 0) {
-    // Fetch config, health, and metrics together so one render pass always sees a consistent view
-    // of the latest server state instead of mixing fresh and stale slices.
+async function fetchAndRerender(attempt = 0): Promise<void> {
     const [configResult, healthResult, metricsResult] = await Promise.all([
         fetchConfig(),
         fetchHealth(),
@@ -238,11 +240,11 @@ async function fetchAndRerender(attempt = 0) {
     dashboardHooks.afterRender?.();
 }
 
-async function fetchConfig() {
+async function fetchConfig(): Promise<GetConfigResult | null> {
     return getConfig(etag);
 }
 
-async function fetchHealth() {
+async function fetchHealth(): Promise<GetHealthResult | null> {
     return getHealth(healthEtag);
 }
 
@@ -250,40 +252,38 @@ async function fetchSystemMetrics() {
     return getSystemMetrics();
 }
 
-let etag = null;
-let healthEtag = null;
-let configEtag = null;
-let configSnapshotVersion = null;
-let healthSnapshotVersion = null;
-let userConfigEtag = null;
-let dismissedStreamingConfigEtag = null;
+let etag: string | null = null;
+let healthEtag: string | null = null;
+let configEtag: string | null = null;
+let configSnapshotVersion: string | null = null;
+let healthSnapshotVersion: string | null = null;
+let userConfigEtag: string | null = null;
+let dismissedStreamingConfigEtag: string | null = null;
 
-// configEtag tracks the latest server config version; userConfigEtag is the version the current
-// page state considers “accepted”, which is what powers the reload-needed banner.
 const DASHBOARD_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
 const STREAMING_CONFIG_CHECK_INTERVAL_MS = 30000;
-let dashboardPollTimer = null;
-let dashboardPollEveryMs = null;
-let streamingConfigCheckTimer = null;
-let streamingConfigRecheckTimer = null;
+let dashboardPollTimer: ReturnType<typeof setInterval> | null = null;
+let dashboardPollEveryMs: number | null = null;
+let streamingConfigCheckTimer: ReturnType<typeof setInterval> | null = null;
+let streamingConfigRecheckTimer: ReturnType<typeof setTimeout> | null = null;
 
-function startDashboardPolling(intervalMs) {
+function startDashboardPolling(intervalMs: number): void {
     if (dashboardPollTimer && dashboardPollEveryMs === intervalMs) return;
     if (dashboardPollTimer) clearInterval(dashboardPollTimer);
     dashboardPollEveryMs = intervalMs;
-    dashboardPollTimer = setInterval(() => requestDashboardRefresh(), intervalMs);
+    dashboardPollTimer = setInterval(() => void requestDashboardRefresh(), intervalMs);
 }
 
-function startStreamingConfigPolling() {
+function startStreamingConfigPolling(): void {
     if (streamingConfigCheckTimer) return;
     streamingConfigCheckTimer = setInterval(
-        () => checkStreamingConfigs(),
+        () => void checkStreamingConfigs(),
         STREAMING_CONFIG_CHECK_INTERVAL_MS,
     );
 }
 
-async function onVisibilityChange() {
+async function onVisibilityChange(): Promise<void> {
     if (document.hidden) {
         startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
         await syncHistoryPollingWithVisibility();
@@ -295,7 +295,7 @@ async function onVisibilityChange() {
     await checkStreamingConfigs();
 }
 
-(async () => {
+void (async () => {
     await requestDashboardRefresh();
     markUserConfigBaseline();
     startDashboardPolling(
@@ -304,10 +304,8 @@ async function onVisibilityChange() {
     startStreamingConfigPolling();
 })();
 
-document.addEventListener('visibilitychange', onVisibilityChange);
+document.addEventListener('visibilitychange', () => void onVisibilityChange());
 
 document
     .getElementById('dismiss-streaming-config-alert-btn')
     ?.addEventListener('click', dismissStreamingConfigAlert);
-
-export { refreshDashboard, markUserConfigBaseline, syncUserConfigBaseline, setDashboardHooks };

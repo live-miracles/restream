@@ -307,7 +307,7 @@ check_cmd ffmpeg ffmpeg
 check_cmd ffprobe ffmpeg
 
 echo
-# Process management (used by up.sh, down.sh, and run-4x3.mjs).
+# Process management (used by up.sh, down.sh, and run-2x3.mjs).
 check_cmd setsid util-linux
 check_cmd nohup coreutils
 check_cmd ps procps
@@ -319,14 +319,14 @@ check_cmd nc netcat-openbsd
 
 # Docker is optional here and only needed for Docker-backed workflows.
 if have_cmd docker; then
-  ok "docker (optional: run-docker/run-4x3)"
+  ok "docker (optional: run-docker/run-2x3)"
   if docker compose version >/dev/null 2>&1; then
-    ok "docker compose (optional: run-docker/run-4x3)"
+    ok "docker compose (optional: run-docker/run-2x3)"
   else
-    warn "docker compose (optional: install it for run-docker/run-4x3)"
+    warn "docker compose (optional: install it for run-docker/run-2x3)"
   fi
 else
-  warn "docker (optional: install it for run-docker/run-4x3)"
+  warn "docker (optional: install it for run-docker/run-2x3)"
 fi
 
 # down.sh uses fuser if present, else falls back to lsof.
@@ -410,7 +410,7 @@ fi
 echo
 warn "Notes:"
 echo "  - For Node 20+ on older Debian releases, use NodeSource or nvm if apt is behind."
-echo "  - Docker is optional for make deps; install it for make run-docker or make run-4x3."
+echo "  - Docker is optional for make deps; install it for make run-docker or make run-2x3."
 echo "  - Docker compose plugin package name may vary by distro/repo setup."
 echo "  - MediaMTX binary is downloaded by: make deps (or --install flag)."
 

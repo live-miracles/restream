@@ -1,10 +1,22 @@
+import type {
+    ConfigData,
+    HealthData,
+    IngestUrls,
+    Job,
+    PipelineView,
+    VideoTrack,
+} from '../types.js';
+
 const throughputState = {
-    inputBytes: new Map(),
+    inputBytes: new Map<string, { ts: number; bytes: number }>(),
 };
 
-function computeKbps(stateMap, key, totalBytes, nowMs) {
-    // Bitrate is inferred from monotonically increasing byte counters, so the first sample only
-    // establishes a baseline and later samples compute delta-bytes over delta-time.
+function computeKbps(
+    stateMap: Map<string, { ts: number; bytes: number }>,
+    key: string | null | undefined,
+    totalBytes: number,
+    nowMs: number,
+): number | null {
     if (!key) return null;
     const safeBytes = Number(totalBytes || 0);
     const prev = stateMap.get(key);
@@ -18,10 +30,13 @@ function computeKbps(stateMap, key, totalBytes, nowMs) {
     return Number(((deltaBytes * 8) / (dtMs / 1000) / 1000).toFixed(1));
 }
 
-function resolveIngestUrls(pipeline, config) {
+function resolveIngestUrls(
+    pipeline: { ingestUrls?: IngestUrls },
+    config: Partial<ConfigData>,
+): IngestUrls {
     const ingestUrls = pipeline?.ingestUrls;
     if (!ingestUrls) {
-        return { rtmp: null, rtsp: null, srt: null };
+        return { rtmp: null, srt: null };
     }
 
     const ingestHost = config?.ingestHost;
@@ -37,30 +52,30 @@ function resolveIngestUrls(pipeline, config) {
         return ingestUrls;
     }
 
-    const rewriteHost = (url) => {
+    const rewriteHost = (url: string | null): string | null => {
         if (!url) return null;
         try {
             const parsed = new URL(url);
             if (parsed.hostname !== 'localhost') return url;
             parsed.hostname = currentHost;
             return parsed.toString();
-        } catch (_) {
+        } catch {
             return url;
         }
     };
 
     return {
         rtmp: rewriteHost(ingestUrls.rtmp),
-        rtsp: rewriteHost(ingestUrls.rtsp),
         srt: rewriteHost(ingestUrls.srt),
     };
 }
 
-function parsePipelinesInfo(config, health) {
-    // The dashboard consumes one merged model that combines persisted config, current health, and
-    // latest job state; this keeps renderers simple even though the source data lives in 3 APIs.
-    const newPipelines = [];
-    const latestJobsByOutput = new Map();
+function parsePipelinesInfo(
+    config: Partial<ConfigData>,
+    health: Partial<HealthData>,
+): PipelineView[] {
+    const newPipelines: PipelineView[] = [];
+    const latestJobsByOutput = new Map<string, Job>();
     const healthByPipeline = health?.pipelines || {};
     const nowMs = Date.now();
 
@@ -77,15 +92,14 @@ function parsePipelinesInfo(config, health) {
         if (currentTime >= previousTime) latestJobsByOutput.set(key, job);
     });
 
-    config?.pipelines.forEach((p) => {
+    (config?.pipelines || []).forEach((p) => {
         const inputBytesReceived = healthByPipeline[p.id]?.input?.bytesReceived || 0;
         const inputPublisher = healthByPipeline[p.id]?.input?.publisher || null;
         const unexpectedReadersCount = Number(
             healthByPipeline[p.id]?.input?.unexpectedReaders?.count || 0,
         );
-        const inputVideo = healthByPipeline[p.id]?.input?.video
-            ? { ...healthByPipeline[p.id].input.video }
-            : null;
+        const rawInputVideo = healthByPipeline[p.id]?.input?.video;
+        const inputVideo: VideoTrack | null = rawInputVideo ? { ...rawInputVideo } : null;
         const inputKbps = computeKbps(throughputState.inputBytes, p.id, inputBytesReceived, nowMs);
 
         if (inputVideo) inputVideo.bw = inputKbps;
@@ -94,7 +108,7 @@ function parsePipelinesInfo(config, health) {
         const publishStartedAt = healthByPipeline[p.id]?.input?.publishStartedAt || null;
         const publishStartedTs = publishStartedAt ? new Date(publishStartedAt).getTime() : NaN;
 
-        let inputTime = null;
+        let inputTime: number | null = null;
         if (inputStatus === 'on' && Number.isFinite(publishStartedTs) && publishStartedTs > 0) {
             inputTime = Math.max(0, nowMs - publishStartedTs);
         }
@@ -113,7 +127,7 @@ function parsePipelinesInfo(config, health) {
                 bytesSent: healthByPipeline[p.id]?.input?.bytesSent || 0,
                 readers: healthByPipeline[p.id]?.input?.readers || 0,
                 bitrateKbps: inputKbps,
-                publisher: inputPublisher,
+                publisher: inputPublisher ?? null,
                 unexpectedReadersCount,
             },
             outs: [],
@@ -128,7 +142,7 @@ function parsePipelinesInfo(config, health) {
         });
     });
 
-    config?.outputs.forEach((out) => {
+    (config?.outputs || []).forEach((out) => {
         let pipe = newPipelines.find((p) => p.id === out.pipelineId);
         const latestJob = latestJobsByOutput.get(`${out.pipelineId}:${out.id}`);
         const outHealth = healthByPipeline[out.pipelineId]?.outputs?.[out.id] || null;
@@ -146,11 +160,13 @@ function parsePipelinesInfo(config, health) {
                     video: null,
                     audio: null,
                     bitrateKbps: null,
+                    bytesReceived: 0,
+                    bytesSent: 0,
                     readers: 0,
                     publisher: null,
                     unexpectedReadersCount: 0,
                 },
-                ingestUrls: { rtmp: null, rtsp: null, srt: null },
+                ingestUrls: { rtmp: null, srt: null },
                 outs: [],
                 stats: {
                     inputBitrateKbps: null,
@@ -164,7 +180,7 @@ function parsePipelinesInfo(config, health) {
             newPipelines.push(pipe);
         }
 
-        const outputTotalSize = outHealth?.totalSize || null;
+        const outputTotalSize = outHealth?.totalSize ?? null;
         const outputBitrateKbps = outHealth?.bitrateKbps ?? null;
         const outputProgressFrame = outHealth?.progressFrame ?? null;
         const outputProgressFps = outHealth?.progressFps ?? null;
@@ -174,7 +190,7 @@ function parsePipelinesInfo(config, health) {
         const outAudio = outHealth?.media?.audio ?? null;
         const mediaSource = outHealth?.mediaSource || 'unknown';
 
-        let outTime = null;
+        let outTime: number | null = null;
         if (status === 'on' && latestJob?.startedAt) {
             outTime = Math.max(0, nowMs - new Date(latestJob.startedAt).getTime());
         }
@@ -188,8 +204,8 @@ function parsePipelinesInfo(config, health) {
             url: out.url,
             status,
             time: outTime,
-            video: outVideo,
-            audio: outAudio,
+            video: outVideo ?? null,
+            audio: outAudio ?? null,
             mediaSource,
             job: latestJob || null,
             totalSize: outputTotalSize,
@@ -204,7 +220,7 @@ function parsePipelinesInfo(config, health) {
         const readerCount = pipe.input.readers || 0;
         const activeOutputBitratesKbps = pipe.outs
             .map((out) => out.bitrateKbps)
-            .filter((value) => Number.isFinite(value));
+            .filter((value): value is number => Number.isFinite(value as number));
         const outputBitrateKbps =
             activeOutputBitratesKbps.length > 0
                 ? Number(activeOutputBitratesKbps.reduce((sum, value) => sum + value, 0).toFixed(1))

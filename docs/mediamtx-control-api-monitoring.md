@@ -20,7 +20,7 @@ Restream currently uses MediaMTX for three control-plane jobs:
 |---|---|---|
 | Readiness and ingest URL discovery | `GET /v3/config/global/get` | Confirms the API is reachable and reads active protocol ports |
 | Stream key provisioning | `POST /v3/config/paths/add/{name}`, `DELETE /v3/config/paths/delete/{name}` | Creates and removes `live/<streamKey>` path config |
-| Health snapshot | `GET /v3/paths/list`, `GET /v3/rtspconns/list`, `GET /v3/rtspsessions/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list` | Builds input/output status, publisher details, and protocol quality signals |
+| Health snapshot | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list` | Builds input status, publisher identity, and protocol quality signals |
 
 The health model is intentionally ingest-centric today. Details are in [health-mapping.md](./health-mapping.md).
 
@@ -57,7 +57,8 @@ Useful checks include API disabled, unexpected port changes, missing HLS setting
 Add backend drilldown endpoints instead of expanding `/health` indefinitely:
 
 - one MediaMTX path
-- one RTSP session or connection
+- one RTMP connection
+- one SRT connection
 - one RTMP connection
 - one SRT connection
 - one HLS muxer, if HLS playback monitoring matters

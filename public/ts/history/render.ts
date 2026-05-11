@@ -1,33 +1,37 @@
 import { sanitizeLogMessage } from '../core/utils.js';
+import type { HistoryLog } from '../types.js';
+import type { OutputHistoryState, PipelineHistoryState, HistoryConstants } from './state.js';
 
-const historyRenderCallbacks = {
+interface HistoryRenderCallbacks {
+    toggleOutputHistoryContext: ((log: HistoryLog) => void) | null;
+}
+
+const historyRenderCallbacks: HistoryRenderCallbacks = {
     toggleOutputHistoryContext: null,
 };
 
-function setHistoryRenderCallbacks(callbacks) {
+export function setHistoryRenderCallbacks(callbacks: Partial<HistoryRenderCallbacks>): void {
     Object.assign(historyRenderCallbacks, callbacks || {});
 }
 
-function formatHistoryTime(ts) {
+function formatHistoryTime(ts: string | null | undefined): string {
     if (!ts) return '--';
     const d = new Date(ts);
     if (Number.isNaN(d.getTime())) return ts;
     return d.toLocaleString();
 }
 
-function getNormalizedEventType(log) {
+function getNormalizedEventType(log: HistoryLog | null | undefined): string {
     return String(log?.eventType || '')
         .trim()
         .toLowerCase();
 }
 
-function getEventData(log) {
+function getEventData(log: HistoryLog | null | undefined): Record<string, unknown> | null {
     return log?.eventData && typeof log.eventData === 'object' ? log.eventData : null;
 }
 
-function inferIntentionalStop(logs, index) {
-    // Exit logs alone are ambiguous, so we scan nearby lifecycle/control messages to decide
-    // whether a terminal ffmpeg exit came from a user stop or from an unexpected failure.
+function inferIntentionalStop(logs: HistoryLog[], index: number): boolean {
     const entries = Array.isArray(logs) ? logs : [];
     const target = entries[index];
     if (!target) return false;
@@ -62,7 +66,17 @@ function inferIntentionalStop(logs, index) {
     return false;
 }
 
-function classifyHistoryEvent(log, logs = [], index = -1) {
+interface HistoryEventClassification {
+    type: string;
+    label: string;
+    badgeClass: string;
+}
+
+function classifyHistoryEvent(
+    log: HistoryLog,
+    logs: HistoryLog[] = [],
+    index = -1,
+): HistoryEventClassification {
     const eventType = getNormalizedEventType(log);
     const eventData = getEventData(log);
 
@@ -88,11 +102,7 @@ function classifyHistoryEvent(log, logs = [], index = -1) {
     }
     if (eventType === 'lifecycle.retry_decision') {
         if (eventData?.scheduled === false && eventData?.reason === 'desired_state_stopped') {
-            return {
-                type: 'retry_suppressed',
-                label: 'Retry skipped',
-                badgeClass: 'badge-info',
-            };
+            return { type: 'retry_suppressed', label: 'Retry skipped', badgeClass: 'badge-info' };
         }
         if (eventData?.scheduled === false) {
             return {
@@ -104,11 +114,7 @@ function classifyHistoryEvent(log, logs = [], index = -1) {
         return { type: 'retry_update', label: 'Retry queued', badgeClass: 'badge-warning' };
     }
     if (eventType === 'lifecycle.retry_suppressed') {
-        return {
-            type: 'retry_suppressed',
-            label: 'Retry skipped',
-            badgeClass: 'badge-info',
-        };
+        return { type: 'retry_suppressed', label: 'Retry skipped', badgeClass: 'badge-info' };
     }
     if (eventType === 'lifecycle.retry_exhausted') {
         return { type: 'retry_exhausted', label: 'Retry exhausted', badgeClass: 'badge-error' };
@@ -165,11 +171,7 @@ function classifyHistoryEvent(log, logs = [], index = -1) {
     }
     if (message.startsWith('[lifecycle] retry_decision')) {
         if (/scheduled=false/.test(message) && /reason=desired_state_stopped/.test(message)) {
-            return {
-                type: 'retry_suppressed',
-                label: 'Retry skipped',
-                badgeClass: 'badge-info',
-            };
+            return { type: 'retry_suppressed', label: 'Retry skipped', badgeClass: 'badge-info' };
         }
         if (/scheduled=false/.test(message)) {
             return {
@@ -211,7 +213,7 @@ function classifyHistoryEvent(log, logs = [], index = -1) {
     return { type: 'log', label: 'Log', badgeClass: 'badge-ghost' };
 }
 
-function classifyPipelineHistoryEvent(log) {
+function classifyPipelineHistoryEvent(log: HistoryLog): HistoryEventClassification {
     const eventType = getNormalizedEventType(log);
     const eventData = getEventData(log);
 
@@ -258,7 +260,7 @@ function classifyPipelineHistoryEvent(log) {
     if (message.startsWith('[input_state]')) {
         let finalState = '';
         if (message.includes('->')) {
-            finalState = message.split('->').pop().trim().toLowerCase();
+            finalState = message.split('->').pop()!.trim().toLowerCase();
         } else {
             const match = message.match(/initial_state\s*=\s*([a-z_]+)/i);
             finalState = (match && match[1] ? match[1] : '').toLowerCase();
@@ -277,7 +279,7 @@ function classifyPipelineHistoryEvent(log) {
     return { type: 'log', label: 'Event', badgeClass: 'badge-ghost' };
 }
 
-function getPipelineTimelineLogs(logs) {
+function getPipelineTimelineLogs(logs: HistoryLog[]): HistoryLog[] {
     const items = Array.isArray(logs) ? logs : [];
     return items.filter((log) => {
         const eventType = getNormalizedEventType(log);
@@ -292,7 +294,7 @@ function getPipelineTimelineLogs(logs) {
     });
 }
 
-function getOrderedOutputLogs(logs, order) {
+function getOrderedOutputLogs(logs: HistoryLog[], order: string): HistoryLog[] {
     const items = Array.isArray(logs) ? [...logs] : [];
     items.sort((a, b) => {
         const ta = Date.parse(a?.ts || '');
@@ -304,26 +306,26 @@ function getOrderedOutputLogs(logs, order) {
     return order === 'asc' ? items : items.reverse();
 }
 
-function parseHistoryTimeMs(ts) {
+function parseHistoryTimeMs(ts: string | undefined): number | null {
     const value = Date.parse(ts || '');
     return Number.isNaN(value) ? null : value;
 }
 
-function getOutputHistoryContextKey(log) {
+export function getOutputHistoryContextKey(log: HistoryLog | null | undefined): string {
     return `${log?.ts || ''}::${log?.message || ''}`;
 }
 
-function getRawHistorySearchValue(state) {
+function getRawHistorySearchValue(state: OutputHistoryState): string {
     return String(state.rawQuery || '')
         .trim()
         .toLowerCase();
 }
 
-function getFilteredRawOutputLogs(state) {
+function getFilteredRawOutputLogs(state: OutputHistoryState): HistoryLog[] {
     return getOrderedOutputLogs(state.rawLogs, state.order);
 }
 
-function getMatchingRawOutputLogs(state) {
+export function getMatchingRawOutputLogs(state: OutputHistoryState): HistoryLog[] {
     const query = getRawHistorySearchValue(state);
     if (!query) return [];
     return getFilteredRawOutputLogs(state).filter((log) => {
@@ -332,11 +334,15 @@ function getMatchingRawOutputLogs(state) {
     });
 }
 
-function getTimelineContextLogs(state, log) {
+function getTimelineContextLogs(state: OutputHistoryState, log: HistoryLog): HistoryLog[] {
     return state.contextLogsByKey.get(getOutputHistoryContextKey(log)) || [];
 }
 
-function getTimelineContextRange(state, constants, log) {
+export function getTimelineContextRange(
+    state: OutputHistoryState,
+    constants: HistoryConstants,
+    log: HistoryLog,
+): { since: string; until: string } | null {
     const targetMs = parseHistoryTimeMs(log?.ts);
     if (targetMs === null) return null;
 
@@ -361,7 +367,7 @@ function getTimelineContextRange(state, constants, log) {
     };
 }
 
-function renderHighlightedLogMessage(container, text, query) {
+function renderHighlightedLogMessage(container: HTMLElement, text: string, query: string): void {
     container.replaceChildren();
     if (!query) {
         container.textContent = text;
@@ -397,26 +403,35 @@ function renderHighlightedLogMessage(container, text, query) {
     }
 }
 
-function focusOutputHistoryRawMatch(state) {
+export function focusOutputHistoryRawMatch(state: OutputHistoryState): void {
     const list = document.getElementById('output-history-list');
     if (!list) return;
     const target = list.querySelector(`[data-raw-match-index="${state.rawMatchIndex}"]`);
     if (!target) return;
-    target.scrollIntoView({ block: 'nearest' });
+    (target as HTMLElement).scrollIntoView({ block: 'nearest' });
 }
 
-function renderOutputHistory(
-    state,
-    constants,
-    { scrollToTop = false, anchorContextKey = null } = {},
-) {
+interface RenderOutputHistoryOptions {
+    scrollToTop?: boolean;
+    anchorContextKey?: string | null;
+}
+
+export function renderOutputHistory(
+    state: OutputHistoryState,
+    constants: HistoryConstants,
+    { scrollToTop = false, anchorContextKey = null }: RenderOutputHistoryOptions = {},
+): void {
     const list = document.getElementById('output-history-list');
     const empty = document.getElementById('output-history-empty');
     const searchWrap = document.getElementById('output-history-search-wrap');
-    const searchInput = document.getElementById('output-history-search');
+    const searchInput = document.getElementById('output-history-search') as HTMLInputElement | null;
     const searchStatus = document.getElementById('output-history-search-status');
-    const searchPrevBtn = document.getElementById('output-history-search-prev');
-    const searchNextBtn = document.getElementById('output-history-search-next');
+    const searchPrevBtn = document.getElementById(
+        'output-history-search-prev',
+    ) as HTMLButtonElement | null;
+    const searchNextBtn = document.getElementById(
+        'output-history-search-next',
+    ) as HTMLButtonElement | null;
     const timelineBtn = document.getElementById('output-history-mode-timeline');
     const rawBtn = document.getElementById('output-history-mode-raw');
     const newestBtn = document.getElementById('output-history-order-newest');
@@ -573,7 +588,6 @@ function renderOutputHistory(
         toggle.setAttribute('aria-label', expanded ? 'Hide context' : 'Show context');
         toggle.onclick = () => historyRenderCallbacks.toggleOutputHistoryContext?.(log);
         left.appendChild(toggle);
-
         left.appendChild(badge);
 
         const ts = document.createElement('span');
@@ -641,13 +655,16 @@ function renderOutputHistory(
 
     if (anchorContextKey) {
         const target = list.querySelector(`[data-context-key="${CSS.escape(anchorContextKey)}"]`);
-        if (target) target.scrollIntoView({ block: 'nearest' });
+        if (target) (target as HTMLElement).scrollIntoView({ block: 'nearest' });
     } else if (scrollToTop) {
         list.scrollTop = 0;
     }
 }
 
-function renderPipelineHistory(state, { scrollToTop = false } = {}) {
+export function renderPipelineHistory(
+    state: PipelineHistoryState,
+    { scrollToTop = false }: { scrollToTop?: boolean } = {},
+): void {
     const list = document.getElementById('pipeline-history-list');
     const empty = document.getElementById('pipeline-history-empty');
 
@@ -694,13 +711,3 @@ function renderPipelineHistory(state, { scrollToTop = false } = {}) {
 
     if (scrollToTop) list.scrollTop = 0;
 }
-
-export {
-    focusOutputHistoryRawMatch,
-    getMatchingRawOutputLogs,
-    getOutputHistoryContextKey,
-    getTimelineContextRange,
-    renderOutputHistory,
-    renderPipelineHistory,
-    setHistoryRenderCallbacks,
-};

@@ -1,34 +1,57 @@
 import { copyData } from '../core/utils.js';
 
-export const PROTOCOL_LABELS = {
+export const PROTOCOL_LABELS: Record<string, string> = {
     rtmp: 'RTMP',
-    rtsp: 'RTSP',
     srt: 'SRT',
 };
 
-const PROTOCOL_DEFAULT_PORTS = {
+const PROTOCOL_DEFAULT_PORTS: Record<string, string> = {
     rtmp: '1935',
-    rtsp: '8554',
     srt: '8890',
 };
 
-function safeDecodeUrlComponent(value) {
+function safeDecodeUrlComponent(value: string | null | undefined): string {
     if (!value) return '';
-
     try {
         return decodeURIComponent(value);
-    } catch (_err) {
+    } catch {
         return value;
     }
 }
 
-function formatPortDisplay(parsedDetails) {
+export interface ParsedIngestDetails {
+    rawUrl: string;
+    scheme: string;
+    host: string;
+    port: string;
+    authority: string;
+    hasExplicitPort: boolean;
+    application: string;
+    credentials: string;
+    endpoint: string;
+    latency: string;
+    maxbw: string;
+    mode: string;
+    otherParams: string;
+    passphrase: string;
+    path: string;
+    pbkeylen: string;
+    queryEntries: Array<[string, string]>;
+    serverUrl: string;
+    streamId: string;
+    streamKey: string;
+}
+
+function formatPortDisplay(parsedDetails: ParsedIngestDetails | null): string {
     if (!parsedDetails?.port) return '';
     if (parsedDetails.hasExplicitPort) return parsedDetails.port;
     return `${parsedDetails.port} (default)`;
 }
 
-export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
+export function parseProtocolAwareIngestUrl(
+    protocol: string,
+    rawUrl: string,
+): ParsedIngestDetails | null {
     if (typeof rawUrl !== 'string' || rawUrl.trim() === '') return null;
 
     try {
@@ -45,7 +68,7 @@ export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
         const pathname =
             pathSegments.length > 0 ? `/${pathSegments.join('/')}` : parsed.pathname || '';
         const queryEntries = Array.from(parsed.searchParams.entries());
-        const details = {
+        const details: ParsedIngestDetails = {
             rawUrl,
             scheme,
             host,
@@ -116,18 +139,30 @@ export function parseProtocolAwareIngestUrl(protocol, rawUrl) {
         }
 
         return details;
-    } catch (_err) {
+    } catch {
         return null;
     }
 }
 
-function buildProtocolDetailModel(protocol, parsedDetails) {
+interface DetailRow {
+    label: string;
+    value: string;
+    copyValue?: string;
+    wide?: boolean;
+}
+
+interface DetailModel {
+    heading: string;
+    note: string;
+    rows: DetailRow[];
+}
+
+function buildProtocolDetailModel(
+    protocol: string,
+    parsedDetails: ParsedIngestDetails | null,
+): DetailModel {
     if (!parsedDetails) {
-        return {
-            heading: 'Operator Fields',
-            note: '',
-            rows: [],
-        };
+        return { heading: 'Operator Fields', note: '', rows: [] };
     }
 
     if (protocol === 'rtmp') {
@@ -137,127 +172,76 @@ function buildProtocolDetailModel(protocol, parsedDetails) {
                 parsedDetails.scheme === 'rtmps'
                     ? 'Push ingest over TLS. Most encoders want Server URL plus Stream Key.'
                     : 'Push ingest. Most encoders want Server URL plus Stream Key.',
-            rows: [
-                {
-                    label: 'Server URL',
-                    value: parsedDetails.serverUrl,
-                    wide: true,
-                },
-                {
-                    label: 'Stream Key',
-                    value: parsedDetails.streamKey,
-                    wide: true,
-                },
-                {
-                    label: 'Host',
-                    value: parsedDetails.host,
-                },
-                {
-                    label: 'Port',
-                    value: formatPortDisplay(parsedDetails),
-                    copyValue: parsedDetails.port,
-                },
-                {
-                    label: 'App Name',
-                    value: parsedDetails.application,
-                },
-            ].filter((row) => row.value),
-        };
-    }
-
-    if (protocol === 'rtsp') {
-        return {
-            heading: 'Operator Fields',
-            note: parsedDetails.credentials
-                ? 'Use the full URL above. Embedded credentials are plaintext unless you use RTSPS or another secure tunnel.'
-                : '',
-            rows: [
-                parsedDetails.credentials
-                    ? {
-                          label: 'Credentials',
-                          value: parsedDetails.credentials,
-                      }
-                    : null,
-                {
-                    label: 'Host',
-                    value: parsedDetails.host,
-                },
-                {
-                    label: 'Port',
-                    value: formatPortDisplay(parsedDetails),
-                    copyValue: parsedDetails.port,
-                },
-                {
-                    label: 'Stream Path',
-                    value: `${parsedDetails.path}${new URL(parsedDetails.rawUrl).search || ''}`,
-                    wide: true,
-                },
-            ].filter(Boolean),
+            rows: (
+                [
+                    { label: 'Server URL', value: parsedDetails.serverUrl, wide: true },
+                    { label: 'Stream Key', value: parsedDetails.streamKey, wide: true },
+                    { label: 'Host', value: parsedDetails.host },
+                    {
+                        label: 'Port',
+                        value: formatPortDisplay(parsedDetails),
+                        copyValue: parsedDetails.port,
+                    },
+                    { label: 'App Name', value: parsedDetails.application },
+                ] as DetailRow[]
+            ).filter((row) => row.value),
         };
     }
 
     return {
         heading: 'Operator Fields',
         note: 'Most SRT setups need Host, Port, and Stream ID. Latency is the main operator tuning knob for unstable networks.',
-        rows: [
-            {
-                label: 'Host',
-                value: parsedDetails.host,
-            },
-            {
-                label: 'Port',
-                value: formatPortDisplay(parsedDetails),
-                copyValue: parsedDetails.port,
-            },
-            {
-                label: 'Stream ID',
-                value: parsedDetails.streamId,
-                wide: true,
-            },
-            parsedDetails.latency
-                ? {
-                      label: 'Latency',
-                      value: `${parsedDetails.latency} ms`,
-                      copyValue: parsedDetails.latency,
-                  }
-                : null,
-            {
-                label: 'Mode',
-                value: parsedDetails.mode || 'caller (default)',
-                copyValue: parsedDetails.mode || 'caller',
-            },
-            parsedDetails.passphrase
-                ? {
-                      label: 'Passphrase',
-                      value: parsedDetails.passphrase,
-                  }
-                : null,
-            parsedDetails.pbkeylen
-                ? {
-                      label: 'PB Key Len',
-                      value: `${parsedDetails.pbkeylen} bytes`,
-                      copyValue: parsedDetails.pbkeylen,
-                  }
-                : null,
-            parsedDetails.maxbw
-                ? {
-                      label: 'Max BW',
-                      value: `${parsedDetails.maxbw} B/s`,
-                      copyValue: parsedDetails.maxbw,
-                  }
-                : null,
-            parsedDetails.otherParams
-                ? {
-                      label: 'Other Params',
-                      value: parsedDetails.otherParams,
-                      wide: true,
-                  }
-                : null,
-        ].filter(Boolean),
+        rows: (
+            [
+                { label: 'Host', value: parsedDetails.host },
+                {
+                    label: 'Port',
+                    value: formatPortDisplay(parsedDetails),
+                    copyValue: parsedDetails.port,
+                },
+                { label: 'Stream ID', value: parsedDetails.streamId, wide: true },
+                parsedDetails.latency
+                    ? {
+                          label: 'Latency',
+                          value: `${parsedDetails.latency} ms`,
+                          copyValue: parsedDetails.latency,
+                      }
+                    : null,
+                {
+                    label: 'Mode',
+                    value: parsedDetails.mode || 'caller (default)',
+                    copyValue: parsedDetails.mode || 'caller',
+                },
+                parsedDetails.passphrase
+                    ? { label: 'Passphrase', value: parsedDetails.passphrase }
+                    : null,
+                parsedDetails.pbkeylen
+                    ? {
+                          label: 'PB Key Len',
+                          value: `${parsedDetails.pbkeylen} bytes`,
+                          copyValue: parsedDetails.pbkeylen,
+                      }
+                    : null,
+                parsedDetails.maxbw
+                    ? {
+                          label: 'Max BW',
+                          value: `${parsedDetails.maxbw} B/s`,
+                          copyValue: parsedDetails.maxbw,
+                      }
+                    : null,
+                parsedDetails.otherParams
+                    ? { label: 'Other Params', value: parsedDetails.otherParams, wide: true }
+                    : null,
+            ] as (DetailRow | null)[]
+        ).filter((row): row is DetailRow => !!row),
     };
 }
 
-export function renderProtocolDetails(gridEl, protocol, parsedDetails) {
+export function renderProtocolDetails(
+    gridEl: HTMLElement | null,
+    protocol: string,
+    parsedDetails: ParsedIngestDetails | null,
+): void {
     const headingEl = document.getElementById('ingest-url-details-heading');
     const noteEl = document.getElementById('ingest-url-details-note');
     if (!gridEl) return;

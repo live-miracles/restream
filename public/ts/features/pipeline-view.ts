@@ -14,8 +14,24 @@ import {
     renderProtocolDetails,
 } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
+import type { PipelineView, OutputView } from '../types.js';
 
-const pipelineViewDependencies = {
+interface PipelineViewDependencies {
+    openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
+    openPublisherQualityModal: ((pipeId: string) => void) | null;
+    isOutputToggleBusy: ((pipeId: string, outId: string) => boolean) | null;
+    startOutBtn:
+        | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
+        | null;
+    stopOutBtn:
+        | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
+        | null;
+    openOutputHistoryModal: ((pipeId: string, outId: string, outName: string) => void) | null;
+    editOutBtn: ((pipeId: string, outId: string) => void) | null;
+    deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
+}
+
+const pipelineViewDependencies: PipelineViewDependencies = {
     openPipelineHistoryModal: null,
     openPublisherQualityModal: null,
     isOutputToggleBusy: null,
@@ -31,18 +47,18 @@ const ingestUiState = {
     urlVisible: false,
 };
 
-let ingestVisibilityPipeId = null;
+let ingestVisibilityPipeId: string | null = null;
 
-function formatProgressFps(value) {
-    if (!Number.isFinite(value) || value <= 0) return null;
-    return Number.isInteger(value) ? `${value} FPS` : `${value.toFixed(1)} FPS`;
+function formatProgressFps(value: number | null | undefined): string | null {
+    if (!Number.isFinite(value) || (value as number) <= 0) return null;
+    return Number.isInteger(value) ? `${value} FPS` : `${(value as number).toFixed(1)} FPS`;
 }
 
-function setPipelineViewDependencies(dependencies) {
+export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
     Object.assign(pipelineViewDependencies, dependencies || {});
 }
 
-function formatMaskedStreamKey(streamKey) {
+function formatMaskedStreamKey(streamKey: string | null | undefined): string {
     const normalized = String(streamKey || '');
     const underscoreIdx = normalized.indexOf('_');
     if (underscoreIdx < 0) return normalized;
@@ -54,10 +70,10 @@ function formatMaskedStreamKey(streamKey) {
     return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
-function renderPipelineInfoColumn(selectedPipe) {
+export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     if (!selectedPipe) {
         ingestVisibilityPipeId = null;
-        document.getElementById('pipe-info-col').classList.add('hidden');
+        document.getElementById('pipe-info-col')?.classList.add('hidden');
         return;
     }
 
@@ -66,7 +82,7 @@ function renderPipelineInfoColumn(selectedPipe) {
         ingestUiState.urlVisible = false;
     }
 
-    document.getElementById('pipe-info-col').classList.remove('hidden');
+    document.getElementById('pipe-info-col')?.classList.remove('hidden');
 
     const pipe = state.pipelines.find((p) => p.id === selectedPipe);
     if (!pipe) {
@@ -74,7 +90,9 @@ function renderPipelineInfoColumn(selectedPipe) {
         return;
     }
 
-    document.getElementById('pipe-name').textContent = pipe.name;
+    const pipeNameEl = document.getElementById('pipe-name');
+    if (pipeNameEl) pipeNameEl.textContent = pipe.name;
+
     const historyBtn = document.getElementById('pipe-history-btn');
     if (historyBtn) {
         historyBtn.onclick = () => {
@@ -88,19 +106,23 @@ function renderPipelineInfoColumn(selectedPipe) {
     }
 
     const deletePipeBtn = document.getElementById('delete-pipe-btn');
-    if (pipe.outs.find((o) => o.status !== 'off')) {
-        deletePipeBtn.classList.add('btn-disabled');
-        deletePipeBtn.title = 'Stop all outputs before deleting the pipeline';
-    } else {
-        deletePipeBtn.classList.remove('btn-disabled');
-        deletePipeBtn.title = '';
+    if (deletePipeBtn) {
+        if (pipe.outs.find((o) => o.status !== 'off')) {
+            deletePipeBtn.classList.add('btn-disabled');
+            deletePipeBtn.title = 'Stop all outputs before deleting the pipeline';
+        } else {
+            deletePipeBtn.classList.remove('btn-disabled');
+            deletePipeBtn.title = '';
+        }
     }
 
     const streamKey = pipe.key;
     const streamKeyInline = document.getElementById('stream-key-inline');
-    const streamKeyCopyBtn = document.getElementById('stream-key-copy-btn');
+    const streamKeyCopyBtn = document.getElementById(
+        'stream-key-copy-btn',
+    ) as HTMLButtonElement | null;
     if (streamKeyInline) {
-        streamKeyInline.dataset.copy = streamKey;
+        streamKeyInline.dataset.copy = streamKey ?? '';
         streamKeyInline.textContent = formatMaskedStreamKey(streamKey);
         streamKeyInline.title = '';
     }
@@ -108,28 +130,28 @@ function renderPipelineInfoColumn(selectedPipe) {
         streamKeyCopyBtn.disabled = false;
         streamKeyCopyBtn.classList.remove('btn-disabled');
         streamKeyCopyBtn.onclick = async () => {
-            if (await copyText(streamKey)) showCopiedNotification();
+            if (streamKey && (await copyText(streamKey))) showCopiedNotification();
         };
     }
 
     const ingestUrls = pipe.ingestUrls || {};
-    const availableProtocols = ['rtmp', 'rtsp', 'srt'].filter((protocol) => {
+    const availableProtocols = (['rtmp', 'srt'] as const).filter((protocol) => {
         const url = ingestUrls[protocol];
         return typeof url === 'string' && url.trim() !== '';
     });
 
-    if (!availableProtocols.includes(ingestUiState.selectedProtocol)) {
+    if (!availableProtocols.includes(ingestUiState.selectedProtocol as 'rtmp' | 'srt')) {
         ingestUiState.selectedProtocol = availableProtocols[0] || 'rtmp';
     }
 
-    ['rtmp', 'rtsp', 'srt'].forEach((protocol) => {
+    (['rtmp', 'srt'] as const).forEach((protocol) => {
         const btn = document.getElementById(`ingest-protocol-${protocol}`);
         if (!btn) return;
 
         const isAvailable = availableProtocols.includes(protocol);
         const isActive = ingestUiState.selectedProtocol === protocol;
 
-        btn.disabled = !isAvailable;
+        btn.toggleAttribute('disabled', !isAvailable);
         btn.classList.toggle('btn-disabled', !isAvailable);
         btn.classList.remove(
             'border-accent/35',
@@ -157,7 +179,8 @@ function renderPipelineInfoColumn(selectedPipe) {
     });
 
     const selectedProtocol = ingestUiState.selectedProtocol;
-    const selectedUrl = ingestUrls[selectedProtocol] || '';
+    const selectedUrl =
+        (ingestUrls as unknown as Record<string, string | null>)[selectedProtocol] || '';
 
     const ingestUrlSection = document.getElementById('ingest-url-section');
     if (ingestUrlSection) {
@@ -180,7 +203,9 @@ function renderPipelineInfoColumn(selectedPipe) {
         ingestUrlSurface.classList.toggle('hidden', !ingestUiState.urlVisible || !selectedUrl);
     }
 
-    const ingestUrlVisibilityBtn = document.getElementById('ingest-url-visibility-btn');
+    const ingestUrlVisibilityBtn = document.getElementById(
+        'ingest-url-visibility-btn',
+    ) as HTMLButtonElement | null;
     if (ingestUrlVisibilityBtn) {
         ingestUrlVisibilityBtn.disabled = !selectedUrl;
         ingestUrlVisibilityBtn.classList.toggle('btn-disabled', !selectedUrl);
@@ -192,7 +217,9 @@ function renderPipelineInfoColumn(selectedPipe) {
         };
     }
 
-    const ingestUrlCopyBtn = document.getElementById('ingest-url-copy-btn');
+    const ingestUrlCopyBtn = document.getElementById(
+        'ingest-url-copy-btn',
+    ) as HTMLButtonElement | null;
     if (ingestUrlCopyBtn) {
         ingestUrlCopyBtn.disabled = !selectedUrl;
         ingestUrlCopyBtn.classList.toggle('btn-disabled', !selectedUrl);
@@ -203,7 +230,7 @@ function renderPipelineInfoColumn(selectedPipe) {
     }
 
     const ingestUrlDetails = document.getElementById('ingest-url-details');
-    const ingestDetailsGrid = document.getElementById('ingest-details-grid');
+    const ingestDetailsGrid = document.getElementById('ingest-details-grid') as HTMLElement | null;
     const parsedIngestDetails = parseProtocolAwareIngestUrl(selectedProtocol, selectedUrl);
     if (ingestUrlDetails) {
         ingestUrlDetails.classList.toggle(
@@ -213,15 +240,15 @@ function renderPipelineInfoColumn(selectedPipe) {
     }
     renderProtocolDetails(ingestDetailsGrid, selectedProtocol, parsedIngestDetails);
 
-    const playerElem = document.getElementById('video-player');
+    const playerElem = document.getElementById('video-player') as HTMLElement | null;
     const inputStatsElem = document.getElementById('input-stats');
     if (pipe.input.status === 'off') {
-        playerElem.classList.add('hidden');
-        inputStatsElem.classList.add('hidden');
+        playerElem?.classList.add('hidden');
+        inputStatsElem?.classList.add('hidden');
         clearInputPreview(playerElem);
     } else {
-        playerElem.classList.remove('hidden');
-        inputStatsElem.classList.remove('hidden');
+        playerElem?.classList.remove('hidden');
+        inputStatsElem?.classList.remove('hidden');
         renderInputPreview(playerElem, pipe);
 
         const video = pipe.input.video || {};
@@ -229,38 +256,45 @@ function renderPipelineInfoColumn(selectedPipe) {
         const stats = pipe.stats || {};
         const hasAudioTrack = !!audio.codec;
 
-        document.getElementById('input-video-codec').textContent =
-            formatCodecName(video.codec) || '--';
-        document.getElementById('input-video-resolution').textContent =
-            video.width && video.height ? video.width + 'x' + video.height : '--';
-        document.getElementById('input-video-fps').textContent =
-            video.fps !== null && video.fps !== undefined ? video.fps : '--';
-        document.getElementById('input-video-level').textContent = video.level || '--';
-        document.getElementById('input-video-profile').textContent = video.profile || '--';
+        const setTextContent = (id: string, value: unknown): void => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = String(value ?? '--');
+        };
 
-        document.getElementById('input-audio-codec').textContent = hasAudioTrack
-            ? formatCodecName(audio.codec) || audio.codec
-            : 'No audio track';
-        document.getElementById('input-audio-channels').textContent = hasAudioTrack
-            ? audio.channels || '--'
-            : '--';
-        document.getElementById('input-audio-sample-rate').textContent = hasAudioTrack
-            ? audio.sample_rate || '--'
-            : '--';
-        document.getElementById('input-audio-profile').textContent = hasAudioTrack
-            ? audio.profile || '--'
-            : '--';
+        setTextContent('input-video-codec', formatCodecName(video.codec) || '--');
+        setTextContent(
+            'input-video-resolution',
+            video.width && video.height ? `${video.width}x${video.height}` : '--',
+        );
+        setTextContent(
+            'input-video-fps',
+            video.fps !== null && video.fps !== undefined ? video.fps : '--',
+        );
+        setTextContent('input-video-level', video.level || '--');
+        setTextContent('input-video-profile', video.profile || '--');
+
+        setTextContent(
+            'input-audio-codec',
+            hasAudioTrack ? formatCodecName(audio.codec) || audio.codec : 'No audio track',
+        );
+        setTextContent('input-audio-channels', hasAudioTrack ? audio.channels || '--' : '--');
+        setTextContent('input-audio-sample-rate', hasAudioTrack ? audio.sample_rate || '--' : '--');
+        setTextContent('input-audio-profile', hasAudioTrack ? audio.profile || '--' : '--');
 
         setBitrateWithSubtleUnit('input-total-bw', stats.inputBitrateKbps);
         setBitrateWithSubtleUnit('output-total-bw', stats.outputBitrateKbps);
-        document.getElementById('input-reader-count').textContent =
+        setTextContent(
+            'input-reader-count',
             stats.readerCount !== null && stats.readerCount !== undefined
                 ? stats.readerCount
-                : '--';
-        document.getElementById('input-output-count').textContent =
+                : '--',
+        );
+        setTextContent(
+            'input-output-count',
             stats.outputCount !== null && stats.outputCount !== undefined
                 ? stats.outputCount
-                : '--';
+                : '--',
+        );
     }
 
     let publisherMeta = document.getElementById('publisher-meta');
@@ -268,7 +302,7 @@ function renderPipelineInfoColumn(selectedPipe) {
         publisherMeta = document.createElement('div');
         publisherMeta.id = 'publisher-meta';
         publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
-        inputStatsElem.parentNode.insertBefore(publisherMeta, inputStatsElem);
+        inputStatsElem?.parentNode?.insertBefore(publisherMeta, inputStatsElem);
     }
     publisherMeta.replaceChildren();
 
@@ -314,13 +348,13 @@ function renderPipelineInfoColumn(selectedPipe) {
     }
 }
 
-function renderOutsColumn(selectedPipe) {
+export function renderOutsColumn(selectedPipe: string | null): void {
     if (!selectedPipe) {
-        document.getElementById('outs-col').classList.add('hidden');
+        document.getElementById('outs-col')?.classList.add('hidden');
         return;
     }
 
-    document.getElementById('outs-col').classList.remove('hidden');
+    document.getElementById('outs-col')?.classList.remove('hidden');
 
     const pipe = state.pipelines.find((p) => p.id === selectedPipe);
     if (!pipe) {
@@ -328,12 +362,14 @@ function renderOutsColumn(selectedPipe) {
         return;
     }
 
-    const metricBadge = (text, title, extraAttrs = '') =>
+    const metricBadge = (text: string, title: string, extraAttrs = ''): string =>
         `<span class="badge badge-sm whitespace-nowrap" title="${title}" ${extraAttrs}>${text}</span>`;
 
     const outputsList = document.getElementById('outputs-list');
+    if (!outputsList) return;
+
     outputsList.innerHTML = pipe.outs
-        .map((o, outputIndex) => {
+        .map((o: OutputView, outputIndex: number) => {
             const statusColor =
                 o.status === 'on'
                     ? 'status-primary'
@@ -345,11 +381,11 @@ function renderOutsColumn(selectedPipe) {
 
             const isRunning = o.status === 'on' || o.status === 'warning';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
-            const metadata = [];
+            const metadata: string[] = [];
 
             if (o.time !== null) {
                 metadata.push(
-                    metricBadge(msToHHMMSS(o.time), 'Output uptime in the current session'),
+                    metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
                 );
             }
 
@@ -424,17 +460,19 @@ function renderOutsColumn(selectedPipe) {
         })
         .join('');
 
-    outputsList.querySelectorAll('[data-output-url]').forEach((urlElem) => {
+    outputsList.querySelectorAll<HTMLElement>('[data-output-url]').forEach((urlElem) => {
         const out = pipe.outs[Number(urlElem.dataset.outputUrl)];
         urlElem.title = out?.url || '';
     });
 
-    outputsList.querySelectorAll('[data-output-bitrate]').forEach((badge) => {
+    outputsList.querySelectorAll<HTMLElement>('[data-output-bitrate]').forEach((badge) => {
         setBadgeBitrateWithSubtleUnit(badge, Number(badge.dataset.outputBitrate));
     });
 
-    outputsList.onclick = async (event) => {
-        const button = event.target.closest?.('[data-action]');
+    outputsList.onclick = async (event: MouseEvent) => {
+        const button = (event.target as Element)?.closest?.(
+            '[data-action]',
+        ) as HTMLButtonElement | null;
         if (!button) return;
 
         const outputIndex = Number(button.dataset.outputIndex);
@@ -475,5 +513,3 @@ function renderOutsColumn(selectedPipe) {
         }
     };
 }
-
-export { renderPipelineInfoColumn, renderOutsColumn, setPipelineViewDependencies };

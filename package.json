@@ -5,13 +5,17 @@
     "main": "src/index.js",
     "scripts": {
         "start": "node src/index.js",
-        "dev": "npx nodemon --ignore 'test/artifacts/**' src/index.js",
+        "dev": "npx nodemon --ignore 'test/artifacts/**' --ignore 'public/ts/**' src/index.js",
+        "ts-build": "npx tsc",
+        "ts-watch": "npx tsc --watch",
         "css": "npx tailwindcss -i public/input.css -o public/output.css",
         "css-watch": "npx tailwindcss -i public/input.css -o public/output.css --watch",
         "format": "npx prettier --write .",
+        "format:check": "npx prettier --check .",
         "test": "echo \"Error: no test specified\" && exit 1",
         "test:routes": "node --test test/routes/*.test.js",
-        "test:4x3": "node test/artifacts/run-4x3.mjs"
+        "test:normalization": "node --test test/artifacts/run-2x3-normalization.test.mjs",
+        "test:integration": "node test/artifacts/run-2x3.mjs"
     },
     "keywords": [],
     "author": "",
@@ -34,6 +38,7 @@
         "prettier": "3.7.4",
         "prettier-plugin-tailwindcss": "0.7.2",
         "supertest": "^7.2.2",
-        "tailwindcss": "4.1.18"
+        "tailwindcss": "4.1.18",
+        "typescript": "^5.9.3"
     }
 }

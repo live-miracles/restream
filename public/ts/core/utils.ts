@@ -1,4 +1,4 @@
-function msToHHMMSS(ms) {
+function msToHHMMSS(ms: number | null): string | null {
     if (ms === null) return null;
 
     const totalSecs = Math.floor(ms / 1000);
@@ -9,13 +9,13 @@ function msToHHMMSS(ms) {
     return [hours, mins.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
 }
 
-function setInnerText(id, text) {
+function setInnerText(id: string, text: string | number): void {
     const elem = document.getElementById(id);
     if (!elem) return;
-    elem.innerText = text;
+    elem.innerText = String(text);
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: unknown): string {
     if (str == null) return '';
     return String(str)
         .replace(/&/g, '&amp;')
@@ -25,7 +25,7 @@ function escapeHtml(str) {
         .replace(/'/g, '&#39;');
 }
 
-function isLikelyHlsOutputUrl(str) {
+function isLikelyHlsOutputUrl(str: string): boolean {
     try {
         const parsed = new URL(str);
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -48,21 +48,21 @@ function isLikelyHlsOutputUrl(str) {
 const MASK_VISIBLE_PREFIX_CHARS = 20;
 const MASK_VISIBLE_SUFFIX_CHARS = 5;
 
-function maskSecret(value) {
+function maskSecret(value: unknown): string {
     const s = String(value ?? '');
     if (!s) return '';
     if (s.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return s;
     return `${s.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${s.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
-function sanitizeLogMessage(msg, redacted = true) {
+function sanitizeLogMessage(msg: unknown, redacted = true): string {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+    return String(msg).replace(/((?:https?|rtmps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
         maskSecret(url || full),
     );
 }
 
-function formatCodecName(codec) {
+function formatCodecName(codec: string | undefined | null): string | null {
     if (!codec) return null;
     const c = String(codec)
         .toLowerCase()
@@ -78,7 +78,7 @@ function formatCodecName(codec) {
     return codec;
 }
 
-function isValidOutput(str) {
+function isValidOutput(str: string): boolean {
     if (!str || str.includes(' ')) return false;
     try {
         const parsed = new URL(str);
@@ -86,8 +86,6 @@ function isValidOutput(str) {
             !!parsed.hostname &&
             (parsed.protocol === 'rtmp:' ||
                 parsed.protocol === 'rtmps:' ||
-                parsed.protocol === 'rtsp:' ||
-                parsed.protocol === 'rtsps:' ||
                 parsed.protocol === 'srt:' ||
                 isLikelyHlsOutputUrl(str))
         );
@@ -96,11 +94,10 @@ function isValidOutput(str) {
     }
 }
 
-function legacyCopy(text) {
+function legacyCopy(text: string): boolean {
     const textarea = document.createElement('textarea');
     textarea.value = text;
 
-    // Prevent scrolling to bottom
     textarea.style.position = 'fixed';
     textarea.style.top = '0';
     textarea.style.left = '0';
@@ -121,7 +118,7 @@ function legacyCopy(text) {
     return success;
 }
 
-async function copyText(text) {
+async function copyText(text: string): Promise<boolean> {
     if (navigator.clipboard) {
         try {
             await navigator.clipboard.writeText(text);
@@ -133,16 +130,20 @@ async function copyText(text) {
     return legacyCopy(text);
 }
 
-async function copyData(id) {
+async function copyData(id: string): Promise<void> {
     const elem = document.getElementById(id);
     if (!elem) return;
 
-    const value = elem.dataset.copy || elem.innerText || elem.textContent || '';
+    const value =
+        (elem as HTMLElement & { dataset: DOMStringMap }).dataset.copy ||
+        elem.innerText ||
+        elem.textContent ||
+        '';
     if (await copyText(value)) showCopiedNotification();
 }
 
-function setUrlParam(param, value) {
-    const url = new URL(window.location);
+function setUrlParam(param: string, value: string | null): void {
+    const url = new URL(window.location.href);
     if (value === null) {
         url.searchParams.delete(param);
     } else {
@@ -151,27 +152,32 @@ function setUrlParam(param, value) {
     window.history.pushState({}, '', url);
 }
 
-function getUrlParam(param) {
-    const url = new URL(window.location);
+function getUrlParam(param: string): string | null {
+    const url = new URL(window.location.href);
     return url.searchParams.get(param);
 }
 
 const SELECTED_PIPELINE_STORAGE_KEY = 'dashboard:selected-pipeline';
 
-function readSelectedPipelineHint() {
+interface PipelineHint {
+    id: string | null;
+    name: string | null;
+}
+
+function readSelectedPipelineHint(): PipelineHint | null {
     try {
         const rawValue = window.sessionStorage.getItem(SELECTED_PIPELINE_STORAGE_KEY);
         if (!rawValue) return null;
 
-        const parsed = JSON.parse(rawValue);
+        const parsed: unknown = JSON.parse(rawValue);
         if (!parsed || typeof parsed !== 'object') return null;
 
-        const sanitizedHint = {
-            id: typeof parsed.id === 'string' ? parsed.id : null,
-            name: typeof parsed.name === 'string' ? parsed.name : null,
+        const p = parsed as Record<string, unknown>;
+        const sanitizedHint: PipelineHint = {
+            id: typeof p.id === 'string' ? p.id : null,
+            name: typeof p.name === 'string' ? p.name : null,
         };
 
-        // Migrate older session hints that persisted secret fields.
         if (Object.prototype.hasOwnProperty.call(parsed, 'key')) {
             window.sessionStorage.setItem(
                 SELECTED_PIPELINE_STORAGE_KEY,
@@ -180,12 +186,12 @@ function readSelectedPipelineHint() {
         }
 
         return sanitizedHint;
-    } catch (_) {
+    } catch {
         return null;
     }
 }
 
-function writeSelectedPipelineHint(pipe) {
+function writeSelectedPipelineHint(pipe: { id?: string; name?: string } | null): void {
     try {
         if (!pipe) {
             window.sessionStorage.removeItem(SELECTED_PIPELINE_STORAGE_KEY);
@@ -199,30 +205,33 @@ function writeSelectedPipelineHint(pipe) {
                 name: pipe.name || null,
             }),
         );
-    } catch (_) {
+    } catch {
         // Ignore storage failures so dashboard rendering continues.
     }
 }
 
-function normalizeEtag(s) {
+function normalizeEtag(s: string | null | undefined): string | null {
     if (!s) return null;
     return s.replace(/^"(.*)"$/, '$1');
 }
 
-function setServerConfig(serverName) {
+function setServerConfig(serverName: string | undefined): void {
     const name = serverName || 'Restream';
-    const viewName = document.querySelector('title').getAttribute('data-name');
-    document.title = name + ': ' + viewName;
-    document.getElementById('server-name').textContent = 'Restream: ' + name;
+    const titleEl = document.querySelector('title');
+    const viewName = titleEl?.getAttribute('data-name') || 'Dashboard';
+    if (titleEl) document.title = name + ': ' + viewName;
+    const serverNameEl = document.getElementById('server-name');
+    if (serverNameEl) serverNameEl.textContent = 'Restream: ' + name;
 }
 
 let alertCount = 0;
-function showErrorAlert(error) {
+
+function showErrorAlert(error: unknown): void {
     const errorAlertElem = document.getElementById('error-alert');
     const errorMsgElem = document.getElementById('error-msg');
     if (!errorAlertElem) return;
     errorAlertElem.classList.remove('hidden');
-    if (errorMsgElem) errorMsgElem.innerText = error;
+    if (errorMsgElem) errorMsgElem.innerText = String(error);
     console.error(error);
     const alertId = ++alertCount;
     setTimeout(() => {
@@ -231,16 +240,17 @@ function showErrorAlert(error) {
     }, 5000);
 }
 
-function showLoading() {
-    document.getElementById('saving-badge').checked = true;
+function showLoading(): void {
+    (document.getElementById('saving-badge') as HTMLInputElement | null)!.checked = true;
 }
 
-function hideLoading() {
-    document.getElementById('saving-badge').checked = false;
+function hideLoading(): void {
+    (document.getElementById('saving-badge') as HTMLInputElement | null)!.checked = false;
 }
 
 let copyCount = 0;
-function showCopiedNotification() {
+
+function showCopiedNotification(): void {
     const notification = document.getElementById('copied-notification');
     if (!notification) return;
 
@@ -252,7 +262,7 @@ function showCopiedNotification() {
     }, 1200);
 }
 
-function getStatusColor(status) {
+function getStatusColor(status: string): string {
     switch (status) {
         case 'on':
             return 'green';

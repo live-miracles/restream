@@ -1,4 +1,4 @@
-# Health Mapping: Status Derivation and Reader Correlation
+# Health Mapping: Status Derivation
 
 This document explains exactly how input and output health statuses are derived for the periodic health collector that backs `GET /health`.
 
@@ -11,13 +11,12 @@ The background health collector fetches multiple MediaMTX APIs in parallel on a 
 | Source | What it provides |
 |---|---|
 | `GET /v3/paths/list` | Per-path: online, available, availableTime (plus deprecated ready/readyTime), bytesReceived, bytesSent, tracks2, readers list |
-| `GET /v3/rtspconns/list` | RTSP control connections including `query` (`reader_id`) for output correlation |
-| `GET /v3/rtspsessions/list` | RTSP sessions for publish-side RTP quality and session fallback lookup |
 | `GET /v3/rtmpconns/list` | RTMP publisher sessions (state/path/remote and byte counters) |
 | `GET /v3/srtconns/list` | SRT publisher sessions and ingest quality counters (RTT/loss/retrans/drop/undecrypt/rate) |
 | DB: `listPipelines()` | Pipeline ↔ stream key mapping |
 | DB: `listOutputs()` | Output ↔ pipeline mapping |
 | DB: `listJobs()` | One current job row per output (upsert model) |
+| FFmpeg progress (in-memory) | Per-job `key=value` progress from fd3; used for output health and runtime stats |
 
 The collector loop also performs bounded DB writes for lifecycle bookkeeping:
 
@@ -48,16 +47,16 @@ flowchart TD
 
 **Input status values:**
 
-| Value | Condition                                                            |
-|-------|----------------------------------------------------------------------|
-| `on`  | Path exists AND `pathInfo.available === true` *(fallback to deprecated `ready` for older MediaMTX versions)* |
+| Value | Condition |
+|-------|-----------|
+| `on` | Path exists AND `pathInfo.available === true` *(fallback to deprecated `ready` for older MediaMTX versions)* |
 | `warning` | Path exists, `pathInfo.online === true`, but not yet `available` |
 | `error` | Stream key is configured, path is neither online nor available, and `inputEverSeenLive === 1` |
 | `off` | No stream key configured, or stream key configured but never seen live |
 
 **Additional input fields from MediaMTX:**
 
-- `publishStartedAt` — `pathInfo.availableTime` (fallback `readyTime`) ISO timestamp when input became available, across publisher protocols (RTMP, RTSP, SRT)
+- `publishStartedAt` — `pathInfo.availableTime` (fallback `readyTime`) ISO timestamp when input became available, across publisher protocols (RTMP, SRT)
 - `video` — from `pathInfo.tracks2` (first H264 track) + `ffprobe` cache for FPS only
 - `audio` — from `pathInfo.tracks2` (first non-video codec) + `ffprobe` cache for codec/profile, with fallback for channels/sample rate
 - `readers` — `pathInfo.readers.length`
@@ -65,18 +64,18 @@ flowchart TD
 
 **ffprobe caching:**
 
-When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe -rtsp_transport tcp rtsp://localhost:8554/live/<streamKey>` refreshes using stale-while-revalidate semantics. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
+When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe` refreshes using stale-while-revalidate semantics. The probe connects via SRT (`srt://localhost:8890?streamid=read:live/<streamKey>`) and reads codec and format details. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
 
-The probe URL includes a dedicated reader tag (`reader_id=probe_<streamKey>`). This allows the health collector to explicitly ignore internal probe readers when computing unexpected-reader alerts.
+Probe connections are tracked by the health collector using the SRT `streamid` pattern so they can be excluded from unexpected-reader counts.
 
 ### 2.1 Publisher And Reader-Safety Signals
 
-The input health payload now also includes:
+The input health payload also includes:
 
-- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTSP/RTMP/SRT)
+- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT)
 - `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
 
-`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes expected managed output readers, internal probe readers, and one internal `hlsMuxer` reader per path (MediaMTX's own muxer process). Remaining reader types, including non-RTSP readers, are reported as unexpected.
+`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes managed output types (`rtmpconn`, `srtconn`, `hlsMuxer`) and internal probe readers.
 
 ---
 
@@ -84,85 +83,54 @@ The input health payload now also includes:
 
 ### 3.1 Overview
 
-Output health combines the latest DB job state with live RTSP reader connection data from MediaMTX.
+Output health combines the latest DB job state with live FFmpeg progress data from the in-memory progress map (populated via fd3).
 
 ```mermaid
 flowchart TD
   A["output.id"] --> B["jobByOutputId.get(outputId)"]
-    B --> C{latest job\nstatus?}
+  B --> C{latest job\nstatus?}
 
-    C -->|"failed"| ERR["status = 'error'"]
-    C -->|"stopped / null"| OFF["status = 'off'"]
-    C -->|"running"| D["Look up RTSP reader by reader_id tag"]
+  C -->|"failed"| ERR["status = 'error'"]
+  C -->|"stopped / null"| OFF["status = 'off'"]
+  C -->|"running"| D["Check ffmpegProgressByJobId"]
 
-    D --> E["expectedTag = reader_<pipelineId>_<outputId>"]
-    E --> F["rtspByReaderTag.get(expectedTag)"]
-    F --> G{match found?}
-
-    G -->|yes| ON["status = 'on'\nmetrics from matched RTSP connection"]
-    G -->|no| WARN["status = 'warning'"]
+  D --> E{progress\nentries?}
+  E -->|yes| ON["status = 'on'\nmetrics from ffmpeg progress"]
+  E -->|no| WARN["status = 'warning'"]
 ```
 
-### 3.2 Reader Tag Correlation (Primary Mechanism)
+### 3.2 FFmpeg Progress (Primary Mechanism)
 
-Each FFmpeg output is launched with a unique `reader_id` embedded in its RTSP pull URL:
+Each FFmpeg output process writes progress data to fd3 (`-progress pipe:3`). The app reads that stream and stores the latest key=value block in `ffmpegProgressByJobId` keyed by job ID.
 
-```
-rtsp://localhost:8554/live/<streamKey>?reader_id=reader_<pipelineId>_<outputId>
-```
+When a job is running:
 
-MediaMTX surfaces the full query string in `/v3/rtspconns/list` as `conn.query`. The health endpoint parses `reader_id` from each connection's query at run-time:
+- **`on`** — `ffmpegProgressByJobId.get(jobId)` has at least one entry (FFmpeg has sent progress)
+- **`warning`** — the map entry exists but is empty, meaning FFmpeg is running but has not emitted progress yet
 
-```
-getReaderIdFromQuery(conn.query)
-  → URLSearchParams.get('reader_id')
-  → "reader_<pipelineId>_<outputId>"
-```
+This approach is direct: the presence of progress data from the process is the health signal, without any dependency on MediaMTX connection tracking.
 
-This builds `rtspByReaderTag: Map<tag, conn[]>`. For each running output, the expected tag is regenerated identically:
+Output runtime progress fields sourced from FFmpeg fd3:
 
-```
-generateReaderTag(pipelineId, outputId)
-  → "reader_" + (pipelineId + "_" + outputId).replace(/[^a-zA-Z0-9_-]/g, '_')
-```
+- `totalSize` — from `total_size`, normalized to a numeric byte count (`N/A` → `null`)
+- `bitrate` — raw `bitrate` string (e.g. `1842.5kbits/s`), or `null`
+- `bitrateKbps` — server-normalized numeric Kbps
+- `progressFrame` — from `frame`, normalized to an integer (`N/A` → `null`)
+- `progressFps` — from `fps`, normalized to a numeric value (`N/A` → `null`)
 
-If `rtspByReaderTag.get(expectedTag)` returns at least one connection, status is `on`. Output
-progress is sourced from ffmpeg progress keyed by `jobId`: `total_size`, `bitrate`, `frame`, and
-`fps`. The backend normalizes those values into `/health` as `totalSize`, `bitrate`,
-`bitrateKbps`, `progressFrame`, and `progressFps`, converting ffmpeg `N/A` values to `null`.
+### 3.3 Diagnosing `warning` Output Status
 
-```mermaid
-flowchart LR
-    A["output pipelineId + outputId"] --> B["Build RTSP URL:\nrtsp://host/key?reader_id=reader_pid_oid"]
-    B --> C["FFmpeg spawned with tagged URL"]
-    C --> D["FFmpeg connects to MediaMTX RTSP"]
-    D --> E["MediaMTX stores conn.query = '?reader_id=...'"]
-    E --> F["/v3/rtspconns/list"]
-    F --> G["Parse reader_id from each conn.query"]
-    G --> H["rtspByReaderTag Map"]
-    H --> I["Health: lookup expectedTag"]
-    I --> J{match?}
-    J -->|yes| K["status = 'on'"]
-    J -->|no| L["status = 'warning'"]
-```
+A running output stuck at `warning` means the job is running but FFmpeg has not emitted any progress data yet. Common causes:
 
-### 3.3 User-Agent (Diagnostics Only)
-
-Reader correlation is exclusively `reader_id` query-param based.
-
-### 3.4 Why Query Param, Not Position-Based
-
-An earlier design inferred output→reader mapping by ordering (output N maps to reader N). This was fragile under dynamic starts/stops and restarts. The `reader_id` approach is:
-
-- **Deterministic**: the same tag is generated identically on every health check with no stored state
-- **Restart-safe**: no dependency on order or startup timing
-- **Strict 1:1**: each output has a unique tag; no ambiguity even when multiple outputs share the same pipeline/path
+1. **FFmpeg failed immediately at startup.** Check `job_logs` in SQLite for the latest output job; the 250 ms stability check will usually have caught a fast exit, but borderline cases can slip through.
+2. **FFmpeg is running but stalled before producing output.** This can happen if the source path is not actually delivering data even though the MediaMTX path shows as available.
+3. **Transient startup delay.** Status is briefly `warning` for 1–2 poll cycles while FFmpeg initialises and begins writing progress.
 
 ---
 
 ## 4. `jobByOutputId` Map Construction
 
-With upsert in place, `jobs` has at most one row per `(pipeline_id, output_id)`. `/health` now maps rows directly by `outputId` without timestamp reduction:
+With upsert in place, `jobs` has at most one row per `(pipeline_id, output_id)`. `/health` maps rows directly by `outputId` without timestamp reduction:
 
 ```
 for each job from db.listJobs():
@@ -177,41 +145,20 @@ This keeps `/health` processing bounded to output count and avoids scanning hist
 
 The split badge on each pipeline card in the dashboard maps statuses to colors:
 
-| Status    | Badge color | Applies to      |
-|-----------|-------------|-----------------|
-| `on`      | Green       | input + output  |
-| `warning` | Yellow      | input + output  |
-| `error`   | Red         | input + output  |
-| `off`     | Grey        | input + output  |
+| Status | Badge color | Applies to |
+|--------|-------------|------------|
+| `on` | Green | input + output |
+| `warning` | Yellow | input + output |
+| `error` | Red | input + output |
+| `off` | Grey | input + output |
 
 The left half shows input status (`on` / `warning` / `off`); the right half shows the aggregate of all output statuses for that pipeline (worst-case wins: `error` > `warning` > `on` > `off`).
 
 ---
 
-## 6. Diagnosing `warning` Output Status
+## 6. Field Source Matrix (MediaMTX vs ffprobe)
 
-A running output stuck at `warning` means MediaMTX has no RTSP connection with the expected `reader_id`. Common causes:
-
-1. **MediaMTX version does not expose `query` on RTSP connections.** Check `/v3/rtspconns/list` manually — if `conn.query` is always empty, the query-param approach will not work. The server logs a `warn`-level entry if RTSP connections exist but `rtspByReaderTag` is empty.
-2. **FFmpeg failed to connect to RTSP.** Check `job_logs` in SQLite for the latest output job details.
-3. **FFmpeg is running but using a different path.** Verify MediaMTX is listening on `localhost:8554`.
-4. **Race condition at startup.** Status may briefly be `warning` for 1–2 poll cycles while MediaMTX registers the RTSP session.
-
----
-
-## 7. Future Hardening
-
-- If `conn.query` exposure is lost in a future MediaMTX release, fall back to user-agent based correlation by parsing `conn.useragent`.
-- Add timestamps to reader tags for audit trails.
-- Validate output existence server-side on job start to enforce 1:1 output→reader invariant.
-
----
-
-## 8. Field Source Matrix (MediaMTX vs ffprobe)
-
-This section lists where each input/output field is sourced from in the current implementation.
-
-### 8.1 Input Fields
+### 6.1 Input Fields
 
 | Field | Source | Notes |
 |---|---|---|
@@ -226,8 +173,8 @@ This section lists where each input/output field is sourced from in the current 
 | `input.video.height` | MediaMTX | `firstVideoTrack.codecProps.height`. |
 | `input.video.profile` | MediaMTX | `firstVideoTrack.codecProps.profile`. |
 | `input.video.level` | MediaMTX | `firstVideoTrack.codecProps.level`. |
-| `input.video.fps` | ffprobe | `probeInfo.video.fps` from cached RTSP probe; MediaMTX does not expose FPS. |
-| `input.audio.codec` | Mixed | Prefer `probeInfo.audio.codec` (for example `aac`), fallback to MediaMTX track codec (for example `MPEG-4 Audio`). |
+| `input.video.fps` | ffprobe | `probeInfo.video.fps` from cached SRT probe; MediaMTX does not expose FPS. |
+| `input.audio.codec` | Mixed | Prefer `probeInfo.audio.codec` (e.g. `aac`), fallback to MediaMTX track codec. |
 | `input.audio.channels` | Mixed | Prefer `probeInfo.audio.channels`, fallback to `firstAudioTrack.codecProps.channelCount`. |
 | `input.audio.sample_rate` | Mixed | Prefer `probeInfo.audio.sampleRate`, fallback to `firstAudioTrack.codecProps.sampleRate`. |
 | `input.audio.profile` | Mixed | Prefer `probeInfo.audio.profile`; MediaMTX often does not expose audio profile. |
@@ -239,36 +186,20 @@ Frontend-only derived input stats:
 | `input.bitrateKbps` | Computed in UI | Calculated from deltas of `input.bytesReceived` across poll intervals. |
 | `input.time` | Computed in UI | Derived from `publishStartedAt` to now. |
 
-### 8.2 Output Fields
+### 6.2 Output Fields
 
 | Field | Source | Notes |
 |---|---|---|
-| `outputs[outputId].status` (backend `/health`) | Mixed | Base from latest DB job status, then runtime `on/warning` from MediaMTX reader-tag match. |
+| `outputs[outputId].status` | Mixed | Base from latest DB job status, then `on/warning` from FFmpeg progress presence. |
 | `outputs[outputId].jobId` | DB | Latest job row ID for this output. |
-| `outputs[outputId].totalSize` | Server-normalized ffmpeg progress | Parsed from ffmpeg `total_size` into a numeric byte count; `N/A` becomes `null`. |
-| `outputs[outputId].bitrate` | ffmpeg progress | Raw ffmpeg `bitrate` string from in-memory progress map for the running `jobId`, or `null` when unavailable. |
-| `outputs[outputId].bitrateKbps` | Server-normalized | Parsed from ffmpeg `bitrate` into numeric Kbps in backend health aggregation; `N/A` becomes `null`. |
-| `outputs[outputId].progressFrame` | Server-normalized ffmpeg progress | Parsed from ffmpeg `frame` into an integer frame count; `N/A` becomes `null`. |
-| `outputs[outputId].progressFps` | Server-normalized ffmpeg progress | Parsed from ffmpeg `fps` into a numeric FPS value; `N/A` becomes `null`. |
-
-Frontend-only derived output stats and display values:
-
-| Field | Source | Notes |
-|---|---|---|
-| `out.status` (dashboard model) | Backend `/health` | UI treats backend `outputs[outputId].status` as source of truth. |
-| `out.totalSize` | Backend `/health` | Direct passthrough from `outputs[outputId].totalSize` (numeric bytes or `null`). |
-| `out.bitrateKbps` | Backend `/health` | Direct passthrough from `outputs[outputId].bitrateKbps` (numeric). |
-| `out.progressFrame` | Backend `/health` | Direct passthrough from `outputs[outputId].progressFrame` (integer or `null`). |
-| `out.progressFps` | Backend `/health` | Direct passthrough from `outputs[outputId].progressFps` (numeric or `null`). |
-| `out.time` | Computed in UI | Wall-clock uptime since the latest output job `startedAt`. |
-| `pipe.stats.outputBitrateKbps` | Computed in UI | Sum of active `out.bitrateKbps` values for display. |
-| `out.video`, `out.audio` | Backend `/health` (`outputs[outputId].media`) | Output media is resolved server-side from parsed FFmpeg `Output #0` stream info, with fallback derivation when FFmpeg details are not yet available. |
-| `out.mediaSource` | Backend `/health` (`outputs[outputId].mediaSource`) | Source tag used by UI to distinguish confirmed FFmpeg media (`ffmpeg`) from fallback-derived values (`fallback-source`, `fallback-profile`, `unknown`). |
+| `outputs[outputId].totalSize` | FFmpeg progress (fd3) | Parsed from `total_size` into a numeric byte count; `N/A` becomes `null`. |
+| `outputs[outputId].bitrate` | FFmpeg progress (fd3) | Raw `bitrate` string from in-memory progress map, or `null`. |
+| `outputs[outputId].bitrateKbps` | Server-normalized | Parsed from `bitrate` into numeric Kbps; `N/A` becomes `null`. |
+| `outputs[outputId].progressFrame` | FFmpeg progress (fd3) | Parsed from `frame` into an integer frame count; `N/A` becomes `null`. |
+| `outputs[outputId].progressFps` | FFmpeg progress (fd3) | Parsed from `fps` into a numeric FPS value; `N/A` becomes `null`. |
 
 Notes on HLS outputs:
 
 - Transcoded HLS outputs can emit `progressFrame` and `progressFps` normally.
-- HLS `source` copy outputs may omit `frame` and `fps` in ffmpeg progress, so those fields can
-  remain `null` even while the output is healthy.
-- HLS uploads commonly report `N/A` for `bitrate` and `total_size`; the backend converts those to
-  `null` before the dashboard sees them.
+- HLS `source` copy outputs may omit `frame` and `fps` in ffmpeg progress, so those fields can remain `null` even while the output is healthy.
+- HLS uploads commonly report `N/A` for `bitrate` and `total_size`; the backend converts those to `null` before the dashboard sees them.

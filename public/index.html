@@ -134,7 +134,6 @@
             <select class="select" id="out-protocol-input">
               <option selected="" value="rtmp">RTMP</option>
               <option value="hls">HLS</option>
-              <option value="rtsp">RTSP</option>
               <option value="srt">SRT</option>
             </select>
           </fieldset>
@@ -160,7 +159,7 @@
           <fieldset class="fieldset" id="out-url-field">
             <legend class="fieldset-legend" id="out-url-input-label">Stream Key</legend>
             <input type="text" id="out-rtmp-key-input" class="input w-full" placeholder="Type here" />
-            <p id="out-rtmp-error" class="text-error hidden text-sm">Enter a valid RTMP, RTSP, SRT, or HLS playlist URL.</p>
+            <p id="out-rtmp-error" class="text-error hidden text-sm">Enter a valid RTMP, SRT, or HLS playlist URL.</p>
             <p id="out-running-edit-hint" class="text-warning hidden text-sm">Output is running. Only name can be edited.</p>
           </fieldset>
 
@@ -521,13 +520,6 @@
                   data-protocol="rtmp"
                   class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-xl px-4 shadow-none">
                   RTMP
-                </button>
-                <button
-                  type="button"
-                  id="ingest-protocol-rtsp"
-                  data-protocol="rtsp"
-                  class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-xl px-4 shadow-none">
-                  RTSP
                 </button>
                 <button
                   type="button"

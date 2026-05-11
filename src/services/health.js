@@ -3,9 +3,6 @@ const {
     MEDIAMTX_FETCH_TIMEOUT_MS,
     fetchMediamtxJson,
     getMediamtxApiBaseUrl,
-    getMediamtxRtspBaseUrl,
-    getExpectedReaderTag,
-    getReaderIdFromQuery,
     buildMediamtxPath,
 } = require('../utils/mediamtx');
 const { normalizeOutputEncoding } = require('../utils/ffmpeg');
@@ -24,16 +21,12 @@ function createHealthMonitorService({
     ffmpegOutputMediaByJobId,
     spawn,
 }) {
-    const {
-        buildUnexpectedReaders,
-        indexPublishersByPath,
-        indexRtspConnectionsByReaderTag,
-    } = require('../utils/health-connection');
+    const { buildUnexpectedReaders, indexPublishersByPath } = require('../utils/health-connection');
     const {
         buildDefaultHealthSnapshot,
         generateProbeReaderTag,
         getHealthSnapshotHashSource,
-        getPipelineProbeRtspUrl,
+        getPipelineProbeUrl,
         groupOutputsByPipeline,
         hashSnapshot,
     } = require('../utils/health-state');
@@ -248,13 +241,11 @@ function createHealthMonitorService({
         });
     }
 
-    async function probeRtspInput(inputUrl) {
+    async function probeInput(inputUrl) {
         return new Promise((resolve) => {
             const args = [
                 '-v',
                 'error',
-                '-rtsp_transport',
-                'tcp',
                 '-show_entries',
                 'stream=codec_type,codec_name,profile,avg_frame_rate,r_frame_rate,channels,sample_rate',
                 '-of',
@@ -320,13 +311,13 @@ function createHealthMonitorService({
         });
     }
 
-    async function getCachedRtspProbeInfo(streamKey, inputUrl) {
+    async function getCachedProbeInfo(streamKey, inputUrl) {
         if (!inputUrl) return null;
         const now = Date.now();
         const cached = streamProbeCache.get(streamKey);
         if (cached && now - cached.ts < probeCacheTtlMs) return cached.info;
 
-        const probe = await probeRtspInput(inputUrl);
+        const probe = await probeInput(inputUrl);
         if (!probe.ok || !probe.info) {
             if (cached) return cached.info;
             return null;
@@ -355,10 +346,7 @@ function createHealthMonitorService({
 
     function startPipelineProbeRefresh(streamKey, nowMs) {
         probeRefreshStartedAt.set(streamKey, nowMs);
-        getCachedRtspProbeInfo(
-            streamKey,
-            getPipelineProbeRtspUrl(streamKey, getMediamtxRtspBaseUrl),
-        )
+        getCachedProbeInfo(streamKey, getPipelineProbeUrl(streamKey))
             .catch(() => {})
             .finally(() => {
                 probeRefreshStartedAt.delete(streamKey);
@@ -491,7 +479,7 @@ function createHealthMonitorService({
         };
     }
 
-    function buildOutputHealthSnapshot(pipeline, output, latestJob, rtspByReaderTag, inputMedia) {
+    function buildOutputHealthSnapshot(pipeline, output, latestJob, inputMedia) {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -504,23 +492,10 @@ function createHealthMonitorService({
 
         if (latestJob?.status === 'failed') status = 'error';
         if (latestJob?.status === 'running') {
-            const expectedReaderTag = getExpectedReaderTag(pipeline.id, output.id);
-            const matches = rtspByReaderTag.get(expectedReaderTag) || [];
-            const readerConn = matches[0] || null;
-            status = readerConn ? 'on' : 'warning';
-
-            log('debug', 'Output health match result', {
-                pipelineId: pipeline.id,
-                outputId: output.id,
-                jobId: latestJob?.id || null,
-                jobPid: Number.isFinite(Number(latestJob.pid)) ? Number(latestJob.pid) : null,
-                jobStatus: latestJob?.status || null,
-                expectedReaderTag,
-                hasReaderTagMatch: !!readerConn,
-                matchedReaderCount: matches.length,
-                knownReaderTagCount: rtspByReaderTag.size,
-                finalStatus: status,
-            });
+            // Use FFmpeg progress output as the health signal: once FFmpeg starts producing
+            // progress frames it has successfully connected to both source and destination.
+            const hasProgress = ffmpegProgress && Object.keys(ffmpegProgress).length > 0;
+            status = hasProgress ? 'on' : 'warning';
         }
 
         const outputMediaSnapshot = resolveOutputMediaSnapshot({
@@ -549,9 +524,6 @@ function createHealthMonitorService({
         pathInfo,
         pipelineOutputs,
         jobByOutputId,
-        rtspByReaderTag,
-        rtspConnectionById,
-        rtspSessionRecordById,
         publisherByPath,
         nowMs,
     ) {
@@ -594,28 +566,17 @@ function createHealthMonitorService({
         });
         inputHealth.unexpectedReaders = buildUnexpectedReaders({
             pathInfo,
-            pipelineOutputs,
-            rtspConnectionById,
-            streamKey,
-            rtspSessionRecordById,
-            getExpectedReaderTag,
             generateProbeReaderTag,
-            getReaderIdFromQuery,
+            streamKey,
         });
         const outputsHealth = {};
 
         for (const output of pipelineOutputs) {
             const latestJob = jobByOutputId.get(output.id) || null;
-            outputsHealth[output.id] = buildOutputHealthSnapshot(
-                pipeline,
-                output,
-                latestJob,
-                rtspByReaderTag,
-                {
-                    video: inputHealth.video,
-                    audio: inputHealth.audio,
-                },
-            );
+            outputsHealth[output.id] = buildOutputHealthSnapshot(pipeline, output, latestJob, {
+                video: inputHealth.video,
+                audio: inputHealth.audio,
+            });
         }
 
         return {
@@ -636,44 +597,19 @@ function createHealthMonitorService({
         }
 
         try {
-            const [paths, rtspConns, rtspSessions, rtmpConns, srtConns] = await Promise.all([
+            const [paths, rtmpConns, srtConns] = await Promise.all([
                 fetchMediamtxJson('/v3/paths/list'),
-                fetchMediamtxJson('/v3/rtspconns/list'),
-                fetchMediamtxJson('/v3/rtspsessions/list'),
                 fetchMediamtxJson('/v3/rtmpconns/list'),
                 fetchMediamtxJson('/v3/srtconns/list'),
             ]);
             log('debug', 'Fetched MediaMTX health sources', {
                 pathCount: paths.itemCount || 0,
-                rtspConnCount: rtspConns.itemCount || 0,
-                rtspSessionCount: rtspSessions.itemCount || 0,
                 rtmpConnCount: rtmpConns.itemCount || 0,
                 srtConnCount: srtConns.itemCount || 0,
-                rtspConnSummaries: (rtspConns.items || []).slice(0, 20).map((conn) => ({
-                    id: conn?.id || null,
-                    state: conn?.state || null,
-                    path: conn?.path || null,
-                    useragent: conn?.useragent || null,
-                    userAgent: conn?.userAgent || null,
-                    remoteAddr: conn?.remoteAddr || null,
-                    bytesReceived: conn?.bytesReceived || 0,
-                    bytesSent: conn?.bytesSent || 0,
-                })),
             });
 
             const pathByName = new Map((paths.items || []).map((item) => [item.name, item]));
-            const { rtspByReaderTag, rtspConnectionById, rtspSessionRecordById } =
-                indexRtspConnectionsByReaderTag(rtspConns, rtspSessions, getReaderIdFromQuery);
-            const publisherByPath = indexPublishersByPath(rtspSessions, rtmpConns, srtConns);
-
-            if ((rtspConns.items || []).length > 0 && rtspByReaderTag.size === 0) {
-                log('warn', 'MediaMTX RTSP payload has no reader_id query for active readers', {
-                    rtspConnCount: rtspConns.itemCount || 0,
-                    rtspSessionCount: rtspSessions.itemCount || 0,
-                    sampleRtspConnKeys: Object.keys((rtspConns.items || [])[0] || {}),
-                    sampleRtspSessionKeys: Object.keys((rtspSessions.items || [])[0] || {}),
-                });
-            }
+            const publisherByPath = indexPublishersByPath(rtmpConns, srtConns);
 
             const snapshotVersion = getCurrentStateVersion();
             const pipelines = db.listPipelines();
@@ -700,9 +636,6 @@ function createHealthMonitorService({
                     pathInfo,
                     pipelineOutputs,
                     jobByOutputId,
-                    rtspByReaderTag,
-                    rtspConnectionById,
-                    rtspSessionRecordById,
                     publisherByPath,
                     nowMs,
                 );
@@ -714,7 +647,6 @@ function createHealthMonitorService({
                 status: 'ready',
                 mediamtx: {
                     pathCount: paths.itemCount || 0,
-                    rtspConnCount: rtspConns.itemCount || 0,
                     rtmpConnCount: rtmpConns.itemCount || 0,
                     srtConnCount: srtConns.itemCount || 0,
                     ready: mediamtxReadiness.ready,
@@ -732,7 +664,6 @@ function createHealthMonitorService({
                 status: 'degraded',
                 mediamtx: {
                     pathCount: latestHealthSnapshot?.mediamtx?.pathCount || 0,
-                    rtspConnCount: latestHealthSnapshot?.mediamtx?.rtspConnCount || 0,
                     rtmpConnCount: latestHealthSnapshot?.mediamtx?.rtmpConnCount || 0,
                     srtConnCount: latestHealthSnapshot?.mediamtx?.srtConnCount || 0,
                     ready: mediamtxReadiness.ready,

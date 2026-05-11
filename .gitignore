@@ -23,6 +23,9 @@ log/
 .env
 .env.*
 
+# Generated TypeScript output
+public/js/
+
 # Generated test artifacts
 test/artifacts/logs/
 test/artifacts/runs/

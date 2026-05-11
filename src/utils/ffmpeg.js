@@ -91,7 +91,7 @@ const SUPPORTED_OUTPUT_ENCODINGS = new Set([
 ]);
 
 const INVALID_OUTPUT_URL_ERROR =
-    'Output URL must be a valid rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https:// HLS playlist URL';
+    'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL';
 
 function normalizeOutputEncoding(value) {
     const normalized = String(value ?? 'source')
@@ -116,11 +116,7 @@ function validateOutputUrl(url) {
     if (!parsed.hostname) return false;
     if (isHlsOutputUrl(parsed)) return true;
     return (
-        parsed.protocol === 'rtmp:' ||
-        parsed.protocol === 'rtmps:' ||
-        parsed.protocol === 'rtsp:' ||
-        parsed.protocol === 'rtsps:' ||
-        parsed.protocol === 'srt:'
+        parsed.protocol === 'rtmp:' || parsed.protocol === 'rtmps:' || parsed.protocol === 'srt:'
     );
 }
 
@@ -147,8 +143,6 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
         '1',
         '-progress',
         'pipe:3',
-        '-rtsp_transport',
-        'tcp',
         '-i',
         inputUrl,
     ];
@@ -224,11 +218,6 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
 
     if (outputProtocol === 'srt:') {
         args.push('-f', 'mpegts', outputUrl);
-        return args;
-    }
-
-    if (outputProtocol === 'rtsp:' || outputProtocol === 'rtsps:') {
-        args.push('-f', 'rtsp', '-rtsp_transport', 'tcp', outputUrl);
         return args;
     }
 
