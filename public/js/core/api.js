@@ -195,34 +195,11 @@ async function getStreamKeys() {
     return apiRequest('/stream-keys');
 }
 
-async function createStreamKey(name) {
-    if (!name) {
-        showErrorAlert('createStreamKey - Invalid name: ' + name);
-    }
-
-    return apiRequest('/stream-keys', { method: 'POST', body: { label: name } });
-}
-
-async function updateStreamKey(key, name) {
-    if (!key) throw new Error('Stream key is required');
-
-    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, {
-        method: 'POST',
-        body: { label: name },
-    });
-}
-
-async function deleteStreamKey(key) {
-    if (!key) throw new Error('Stream key is required');
-
-    return apiRequest(`/stream-keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
-}
-
 // =====
 // ===== Pipelines API =====
 // =====
 
-async function createPipeline({ name, streamKey = null, encoding = null }) {
+async function createPipeline({ name, streamKey, encoding = null }) {
     if (!name) {
         showErrorAlert('Invalid pipeline name');
         return;
@@ -374,9 +351,6 @@ export {
     getHealth,
     getSystemMetrics,
     getStreamKeys,
-    createStreamKey,
-    updateStreamKey,
-    deleteStreamKey,
     createPipeline,
     updatePipeline,
     deletePipeline,

@@ -1,10 +1,10 @@
 # Restream — minimal MediaMTX configuration
 #
-# Ingestion:  RTMP  rtmp://<host>:1935/<streamKey>
-#             RTSP  rtsp://<host>:8554/<streamKey>
-#             SRT   srt://<host>:8890?streamid=publish:<streamKey>
+# Ingestion:  RTMP  rtmp://<host>:1935/<streamPath>
+#             RTSP  rtsp://<host>:8554/<streamPath>
+#             SRT   srt://<host>:8890?streamid=publish:<streamPath>
 #
-# Viewing:    RTSP    rtsp://localhost:8554/<streamKey>  (localhost only)
+# Viewing:    RTSP    rtsp://localhost:8554/<streamPath>  (localhost only)
 #
 # Internal:   API     http://localhost:9997  (used by restream backend)
 
@@ -53,6 +53,29 @@ authInternalUsers:
           - action: publish
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-# No explicit paths needed — MediaMTX accepts any path on demand.
-# Add per-path overrides here only if custom behaviour is required.
-paths: {}
+# Restream reads these fixed paths through the MediaMTX control API.
+# Restream exposes the final path segment as the stream key. The display name
+# is the part before the first underscore.
+#
+# Important: Change the secret keys before deploying the production version.
+paths:
+    live/key01_6c71124cde80358ca7c13081: {}
+    live/key02_fff2adcf55a26d31ae93464b: {}
+    live/key03_c8087d1adb6b3bdf8e806d8f: {}
+    live/key04_4a1fe99ef35b0d0768076be7: {}
+    live/key05_ea839930dce5e021c629751d: {}
+    live/key06_48355e726bdc24afb9d08214: {}
+    live/key07_19eb3db7cb3d3f0831335701: {}
+    live/key08_3d4c645db62dac4449bbcea5: {}
+    live/key09_dc3f631793cadc287a509bf8: {}
+    live/key10_5d0f9109044f0cfb15d73ff8: {}
+    live/key11_c714ec6d94055e4e0175c9fd: {}
+    live/key12_0920bf2ce11eb518726ba3f7: {}
+    live/key13_88408b620477bc316f692c31: {}
+    live/key14_22893f11de0be7f49813dd8c: {}
+    live/key15_c1499536bc52e16281345ee8: {}
+    live/key16_794d51b9d1af088c00c2b5c1: {}
+    live/key17_b36de7b3fcaec34947a29d27: {}
+    live/key18_b301a17694098473a6bd2513: {}
+    live/key19_522561d0ec2e70bc79dda155: {}
+    live/key20_f6b326ffccc2f5a22477f1f9: {}

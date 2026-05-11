@@ -9,9 +9,6 @@ function normalizeEtag(value) {
 
 function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
     function buildConfigSnapshot() {
-        const streamKeys = db
-            .listStreamKeys()
-            .map((sk) => ({ key: sk.key, label: sk.label, createdAt: sk.createdAt }));
         const pipelines = db.listPipelines().map((p) => ({
             id: p.id,
             name: p.name,
@@ -41,10 +38,9 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             pipeline.outputs = outs;
         }
 
-        streamKeys.sort((a, b) => (a.key || '').localeCompare(b.key || ''));
         pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
 
-        return { streamKeys, pipelines };
+        return { pipelines };
     }
 
     function buildJobsSnapshot() {
@@ -93,14 +89,10 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
         }
     }
 
-    (async () => {
-        try {
-            if (!db.getConfigEtag()) recomputeConfigEtag();
-            if (!db.getEtag()) recomputeEtag();
-        } catch (e) {
-            /* ignore */
-        }
-    })();
+    function initializeConfigSnapshotVersions() {
+        recomputeConfigEtag();
+        recomputeEtag();
+    }
 
     app.get('/config', async (req, res) => {
         try {
@@ -143,7 +135,7 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
         }
     });
 
-    app.head('/config/version', (req, res) => {
+    app.head('/config/version', async (req, res) => {
         try {
             let configEtag = db.getConfigEtag();
             if (!configEtag) configEtag = recomputeConfigEtag();
@@ -176,6 +168,7 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
 
     return {
         normalizeEtag,
+        initializeConfigSnapshotVersions,
         recomputeConfigEtag,
         recomputeEtag,
     };

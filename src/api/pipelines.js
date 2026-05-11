@@ -1,5 +1,5 @@
 const { errMsg, maskToken, validateName, validateStreamKey } = require('../utils/app');
-const { getMediamtxApiBaseUrl, buildMediamtxPath, buildIngestUrls } = require('../utils/mediamtx');
+const { buildIngestUrls, getPermanentStreamKeys } = require('../utils/mediamtx');
 
 function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline) {
     if (!pipelineId || !previousPipeline || !nextPipeline) return;
@@ -31,13 +31,11 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
     if (previousPipeline.streamKey !== nextPipeline.streamKey) {
         db.appendPipelineEvent(
             pipelineId,
-            `[config] stream_key changed from ${previousPipeline.streamKey ? maskToken(previousPipeline.streamKey) : 'unassigned'} to ${nextPipeline.streamKey ? maskToken(nextPipeline.streamKey) : 'unassigned'}`,
+            `[config] stream_key changed from ${maskToken(previousPipeline.streamKey)} to ${maskToken(nextPipeline.streamKey)}`,
             'pipeline.config.stream_key_changed',
             {
-                fromMasked: previousPipeline.streamKey
-                    ? maskToken(previousPipeline.streamKey)
-                    : 'unassigned',
-                toMasked: nextPipeline.streamKey ? maskToken(nextPipeline.streamKey) : 'unassigned',
+                fromMasked: maskToken(previousPipeline.streamKey),
+                toMasked: maskToken(nextPipeline.streamKey),
             },
         );
     }
@@ -51,12 +49,52 @@ function normalizePipelineStreamKey(value) {
     return normalized || null;
 }
 
+function chooseAutomaticStreamKey(permanentStreamKeys, pipelines, excludedPipelineId = null) {
+    const availableKeys = (permanentStreamKeys || []).map((item) => item?.key).filter(Boolean);
+    if (availableKeys.length === 0) return null;
+
+    const usedKeys = new Set(
+        (pipelines || [])
+            .filter((pipeline) => pipeline?.id !== excludedPipelineId)
+            .map((pipeline) => pipeline?.streamKey)
+            .filter(Boolean),
+    );
+
+    return availableKeys.find((key) => !usedKeys.has(key)) || availableKeys[0];
+}
+
+async function resolvePipelineStreamKey({ requestedStreamKey, db, excludedPipelineId = null }) {
+    const permanentStreamKeys = await getPermanentStreamKeys();
+
+    if (requestedStreamKey !== null) {
+        const streamKeyError = validateStreamKey(requestedStreamKey);
+        if (streamKeyError) {
+            return { error: streamKeyError };
+        }
+
+        if (!permanentStreamKeys.some((item) => item.key === requestedStreamKey)) {
+            return { error: 'Stream key must match one of the permanent MediaMTX paths' };
+        }
+
+        return { streamKey: requestedStreamKey };
+    }
+
+    const streamKey = chooseAutomaticStreamKey(
+        permanentStreamKeys,
+        db.listPipelines(),
+        excludedPipelineId,
+    );
+    if (!streamKey) {
+        return { error: 'No permanent MediaMTX stream paths are configured' };
+    }
+
+    return { streamKey };
+}
+
 function registerPipelineApi({
     app,
     db,
     getConfig,
-    fetch,
-    crypto,
     healthMonitor,
     resetOutputFailureCount,
     clearOutputRestartState,
@@ -65,152 +103,10 @@ function registerPipelineApi({
     recomputeConfigEtag,
     recomputeEtag,
 }) {
-    async function mutateMediamtxPathWithRollback(key, action, applyDbChange) {
-        await mutateMediamtxPath(key, action);
-
-        try {
-            return await applyDbChange();
-        } catch (dbError) {
-            const rollbackAction = action === 'add' ? 'delete' : 'add';
-            try {
-                await mutateMediamtxPath(key, rollbackAction);
-            } catch (rollbackError) {
-                throw new Error(
-                    `${errMsg(dbError)}; MediaMTX rollback (${rollbackAction}) failed: ${errMsg(rollbackError)}`,
-                );
-            }
-
-            throw new Error(`${errMsg(dbError)}; MediaMTX change was rolled back`);
-        }
-    }
-
-    async function mutateMediamtxPath(key, action) {
-        // Stream-key creation/deletion must stay in sync with MediaMTX path config, so the route
-        // handlers share one request/parse/error path instead of duplicating control-plane logic.
-        const methodByAction = {
-            add: 'POST',
-            delete: 'DELETE',
-        };
-
-        const method = methodByAction[action];
-        if (!method) {
-            throw new Error(`Unsupported MediaMTX path action: ${action}`);
-        }
-
-        const effectivePath = buildMediamtxPath(key);
-        const url = `${getMediamtxApiBaseUrl()}/v3/config/paths/${action}/${encodeURIComponent(effectivePath)}`;
-        const resp = await fetch(url, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: effectivePath }),
-        });
-
-        let data = null;
-        try {
-            data = await resp.json();
-        } catch (e) {
-            /* ignore parse errors */
-        }
-
-        if (!resp.ok || data?.error) {
-            throw new Error(data?.error || `MediaMTX returned ${resp.status}`);
-        }
-
-        return data;
-    }
-
-    app.post('/stream-keys', async (req, res) => {
-        try {
-            const hasCustomStreamKey = Object.prototype.hasOwnProperty.call(
-                req.body || {},
-                'streamKey',
-            );
-            const key = hasCustomStreamKey
-                ? typeof req.body?.streamKey === 'string'
-                    ? req.body.streamKey.trim()
-                    : req.body?.streamKey
-                : crypto.randomBytes(12).toString('hex');
-            const label = req.body?.label ?? null;
-
-            if (hasCustomStreamKey) {
-                const streamKeyError = validateStreamKey(key);
-                if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
-                }
-            }
-
-            if (db.getStreamKey(key)) {
-                return res.status(409).json({ error: 'Stream key already exists' });
-            }
-
-            const streamKey = await mutateMediamtxPathWithRollback(key, 'add', () =>
-                db.createStreamKey({
-                    key,
-                    label,
-                    createdAt: new Date().toISOString(),
-                }),
-            );
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.status(201).json({
-                message: 'Stream key created',
-                streamKey: {
-                    ...streamKey,
-                    ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
-                },
-            });
-        } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
-        }
-    });
-
-    app.post('/stream-keys/:key', (req, res) => {
-        try {
-            const { key } = req.params;
-            const { label } = req.body || {};
-
-            const existing = db.getStreamKey(key);
-            if (!existing) {
-                return res.status(404).json({ error: 'Stream key not found' });
-            }
-
-            const streamKey = db.updateStreamKey(key, label ?? null);
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: 'Stream key updated', streamKey });
-        } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
-        }
-    });
-
-    app.delete('/stream-keys/:key', async (req, res) => {
-        try {
-            const { key } = req.params;
-            const existing = db.getStreamKey(key);
-            if (!existing) {
-                return res.status(404).json({ error: 'Stream key not found' });
-            }
-
-            await mutateMediamtxPathWithRollback(key, 'delete', () => {
-                const deleted = db.deleteStreamKey(key);
-                if (!deleted) {
-                    throw new Error('Failed to remove stream key from DB');
-                }
-                return deleted;
-            });
-
-            recomputeConfigEtag();
-            recomputeEtag();
-            return res.json({ message: 'Stream key deleted' });
-        } catch (err) {
-            return res.status(500).json({ error: errMsg(err) });
-        }
-    });
-
     app.get('/stream-keys', async (req, res) => {
         try {
             const streamKeys = await Promise.all(
-                db.listStreamKeys().map(async (streamKey) => ({
+                (await getPermanentStreamKeys()).map(async (streamKey) => ({
                     ...streamKey,
                     ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
                 })),
@@ -230,18 +126,21 @@ function registerPipelineApi({
             }
 
             const name = req.body?.name;
-            const streamKey = normalizePipelineStreamKey(req.body?.streamKey);
+            const requestedStreamKey = normalizePipelineStreamKey(req.body?.streamKey);
             const encoding = req.body?.encoding ?? null;
             const nameError = validateName(name, 'Pipeline name');
             if (nameError) {
                 return res.status(400).json({ error: nameError });
             }
-            if (streamKey !== null) {
-                const streamKeyError = validateStreamKey(streamKey);
-                if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
-                }
+
+            const resolvedStreamKey = await resolvePipelineStreamKey({
+                requestedStreamKey,
+                db,
+            });
+            if (resolvedStreamKey.error) {
+                return res.status(400).json({ error: resolvedStreamKey.error });
             }
+            const streamKey = resolvedStreamKey.streamKey;
 
             const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
             const pipeline = db.createPipeline({ name, streamKey, encoding });
@@ -255,13 +154,11 @@ function registerPipelineApi({
 
             db.appendPipelineEvent(
                 pipelineWithState.id,
-                `[config] created name="${pipelineWithState.name}" stream_key=${pipelineWithState.streamKey ? maskToken(pipelineWithState.streamKey) : 'unassigned'} encoding=${pipelineWithState.encoding || 'null'}`,
+                `[config] created name="${pipelineWithState.name}" stream_key=${maskToken(pipelineWithState.streamKey)} encoding=${pipelineWithState.encoding || 'null'}`,
                 'pipeline.config.created',
                 {
                     name: pipelineWithState.name,
-                    streamKeyMasked: pipelineWithState.streamKey
-                        ? maskToken(pipelineWithState.streamKey)
-                        : 'unassigned',
+                    streamKeyMasked: maskToken(pipelineWithState.streamKey),
                     encoding: pipelineWithState.encoding || null,
                 },
             );
@@ -294,7 +191,7 @@ function registerPipelineApi({
                 req.body || {},
                 'streamKey',
             );
-            const streamKey = hasStreamKeyUpdate
+            const requestedStreamKey = hasStreamKeyUpdate
                 ? normalizePipelineStreamKey(req.body?.streamKey)
                 : existing.streamKey;
             const encoding = req.body?.encoding ?? existing.encoding;
@@ -303,12 +200,15 @@ function registerPipelineApi({
                 return res.status(400).json({ error: nameError });
             }
 
-            if (hasStreamKeyUpdate && streamKey !== null) {
-                const streamKeyError = validateStreamKey(streamKey);
-                if (streamKeyError) {
-                    return res.status(400).json({ error: streamKeyError });
-                }
+            const resolvedStreamKey = await resolvePipelineStreamKey({
+                requestedStreamKey,
+                db,
+                excludedPipelineId: id,
+            });
+            if (resolvedStreamKey.error) {
+                return res.status(400).json({ error: resolvedStreamKey.error });
             }
+            const streamKey = resolvedStreamKey.streamKey;
 
             const streamKeyChanging = streamKey !== existing.streamKey;
             if (streamKeyChanging) {

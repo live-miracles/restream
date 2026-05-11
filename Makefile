@@ -31,9 +31,6 @@ deps:
 	npm ci $(NPM_FLAGS)
 	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
 
-run-docker:
-	docker compose up -d --build --force-recreate --renew-anon-volumes --remove-orphans
-
 format:
 	npm run format
 
@@ -61,5 +58,4 @@ probe-output:
 	-probesize 10M -analyzeduration 10M $(OUTPUT_URL)
 
 run-4x3:
-	docker compose up -d nginx-rtmp
 	node test/artifacts/run-4x3.mjs

@@ -16,19 +16,6 @@ function normalizeOutputEncodingValue(encoding) {
     return normalized;
 }
 
-/* StreamKey statements */
-const insertStreamKey = db.prepare(
-    'INSERT INTO stream_keys (key, label, created_at) VALUES (@key, @label, @created_at)',
-);
-const getStreamKeyStmt = db.prepare(
-    'SELECT key, label, created_at AS createdAt FROM stream_keys WHERE key = ?',
-);
-const listStreamKeysStmt = db.prepare(
-    'SELECT key, label, created_at AS createdAt FROM stream_keys ORDER BY created_at DESC',
-);
-const updateStreamKeyStmt = db.prepare('UPDATE stream_keys SET label = @label WHERE key = @key');
-const deleteStreamKeyStmt = db.prepare('DELETE FROM stream_keys WHERE key = ?');
-
 /* Pipeline statements */
 const insertPipeline = db.prepare(
     'INSERT INTO pipelines (id, name, stream_key, encoding, input_ever_seen_live, created_at, updated_at) VALUES (@id, @name, @stream_key, @encoding, @input_ever_seen_live, @created_at, @updated_at)',
@@ -213,29 +200,12 @@ function parseLogRows(rows) {
 }
 
 module.exports = {
-    /* stream key helpers */
-    createStreamKey({ key, label, createdAt }) {
-        insertStreamKey.run({ key, label, created_at: createdAt });
-        return getStreamKeyStmt.get(key);
-    },
-    getStreamKey(key) {
-        return getStreamKeyStmt.get(key);
-    },
-    listStreamKeys() {
-        return listStreamKeysStmt.all();
-    },
-    updateStreamKey(key, label) {
-        const info = updateStreamKeyStmt.run({ key, label });
-        return info.changes > 0 ? getStreamKeyStmt.get(key) : null;
-    },
-    deleteStreamKey(key) {
-        const info = deleteStreamKeyStmt.run(key);
-        return info.changes > 0;
-    },
-
     /* pipeline helpers */
-    createPipeline({ id, name, streamKey = null, encoding = null, createdAt }) {
+    createPipeline({ id, name, streamKey, encoding = null, createdAt }) {
         if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
+        if (!streamKey || typeof streamKey !== 'string') {
+            throw new Error('Pipeline.streamKey is required');
+        }
         const pid = id || crypto.randomBytes(8).toString('hex');
         const now = createdAt || new Date().toISOString();
         insertPipeline.run({

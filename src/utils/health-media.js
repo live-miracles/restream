@@ -1,14 +1,14 @@
 const { normalizeOutputEncoding } = require('./ffmpeg');
 
-function computeInputStatus({ hasKey, pathAvailable, pathOnline, hasEverSeenLive }) {
+function computeInputStatus({ pathAvailable, pathOnline, hasEverSeenLive }) {
     // Status priority is deliberate:
-    // - hasKey + pathAvailable => on
-    // - hasKey + pathOnline but not available yet => warning during startup
-    // - hasKey + hasEverSeenLive but no longer online => error regression
+    // - pathAvailable => on
+    // - pathOnline but not available yet => warning during startup
+    // - hasEverSeenLive but no longer online => error regression
     // - otherwise => off
-    if (hasKey && pathAvailable) return 'on';
-    if (hasKey && pathOnline) return 'warning';
-    if (hasKey && hasEverSeenLive) return 'error';
+    if (pathAvailable) return 'on';
+    if (pathOnline) return 'warning';
+    if (hasEverSeenLive) return 'error';
     return 'off';
 }
 

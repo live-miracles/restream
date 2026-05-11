@@ -21,8 +21,17 @@ function createCleanupRunners({ db, log }) {
     return { runJobCleanup, runJobLogCleanup };
 }
 
-async function startServer({ app, healthMonitor, db, log, appPort, appHost }) {
+async function startServer({
+    app,
+    healthMonitor,
+    db,
+    log,
+    appPort,
+    appHost,
+    initializeConfigSnapshotVersions,
+}) {
     const { runJobCleanup, runJobLogCleanup } = createCleanupRunners({ db, log });
+    initializeConfigSnapshotVersions?.();
     await healthMonitor.start();
 
     app.listen(appPort, appHost, () => {
