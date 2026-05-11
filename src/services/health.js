@@ -6,7 +6,6 @@ const {
     buildMediamtxPath,
 } = require('../utils/mediamtx');
 const { normalizeOutputEncoding } = require('../utils/ffmpeg');
-const { getInputUnavailableExitGraceMs } = require('../utils/retry');
 
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 
@@ -193,44 +192,12 @@ function createHealthMonitorService({
     const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
 
     const pipelineInputStatusHistory = new Map();
-    const pipelineLastInputUnavailableAtMs = new Map();
     let latestHealthSnapshot = null;
     let latestHealthSnapshotEtag = null;
     let healthCollectorInFlight = null;
     let healthCollectorTimer = null;
     const mediamtxReadiness = { ready: false, checkedAt: null, readyAt: null, error: null };
     let mediamtxReadinessTimer = null;
-
-    function isLatestJobLikelyInputUnavailableStop(pipelineId, latestJob) {
-        if (!latestJob || latestJob.status === 'running') {
-            return { matched: false, reason: 'no_terminal_job' };
-        }
-        if (latestJob.status !== 'stopped') {
-            return { matched: false, reason: 'job_not_stopped' };
-        }
-        const lastInputUnavailableAtMs = pipelineLastInputUnavailableAtMs.get(pipelineId);
-        if (!Number.isFinite(lastInputUnavailableAtMs)) {
-            return { matched: false, reason: 'no_input_unavailable_transition' };
-        }
-        const endedAtMs = Date.parse(latestJob.endedAt || '');
-        if (!Number.isFinite(endedAtMs)) {
-            return { matched: false, reason: 'missing_job_end_time' };
-        }
-        const graceMs = getInputUnavailableExitGraceMs();
-        const deltaMs = Math.abs(endedAtMs - lastInputUnavailableAtMs);
-        if (deltaMs > graceMs) {
-            return { matched: false, reason: 'outside_grace_window', deltaMs, graceMs };
-        }
-        return {
-            matched: true,
-            reason: 'near_input_unavailable_transition',
-            deltaMs,
-            graceMs,
-            exitStatus: latestJob.status,
-            exitCode: latestJob.exitCode ?? null,
-            exitSignal: latestJob.exitSignal || null,
-        };
-    }
 
     async function resolveRuntimeInputState(streamKey, existingEverSeenLive = 0) {
         let pathInfo = null;
@@ -387,14 +354,6 @@ function createHealthMonitorService({
                     remoteAddr: inputBecameOn ? remoteAddr : null,
                 },
             );
-        }
-
-        if (
-            previousInputStatus !== undefined &&
-            previousInputStatus === 'on' &&
-            inputStatus !== 'on'
-        ) {
-            pipelineLastInputUnavailableAtMs.set(pipelineId, Date.now());
         }
 
         pipelineInputStatusHistory.set(pipelineId, inputStatus);
@@ -678,12 +637,10 @@ function createHealthMonitorService({
 
     function seedPipelineRuntimeState(pipelineId, status) {
         pipelineInputStatusHistory.set(pipelineId, status || 'off');
-        pipelineLastInputUnavailableAtMs.delete(pipelineId);
     }
 
     function clearPipelineRuntimeState(pipelineId) {
         pipelineInputStatusHistory.delete(pipelineId);
-        pipelineLastInputUnavailableAtMs.delete(pipelineId);
     }
 
     async function start() {
@@ -692,9 +649,13 @@ function createHealthMonitorService({
         startHealthCollector();
     }
 
+    function isInputOn(pipelineId) {
+        return pipelineInputStatusHistory.get(pipelineId) === 'on';
+    }
+
     return {
         clearPipelineRuntimeState,
-        isLatestJobLikelyInputUnavailableStop,
+        isInputOn,
         registerInputRecoveryHandler(fn) {
             inputRecoveryHandler = fn;
         },

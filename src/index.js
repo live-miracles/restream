@@ -69,13 +69,12 @@ const healthMonitor = createHealthMonitorService({
 // ── Output lifecycle (FFmpeg process management) ──────
 const outputLifecycle = createOutputLifecycleService({
     db,
-    getConfig,
     spawn,
     processes,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
     recomputeEtag,
-    isLatestJobLikelyInputUnavailableStop: healthMonitor.isLatestJobLikelyInputUnavailableStop,
+    isInputOn: healthMonitor.isInputOn,
 });
 
 // Resolve circular dependency without late-binding let-variable workaround:
