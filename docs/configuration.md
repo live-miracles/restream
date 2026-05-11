@@ -1,8 +1,8 @@
 # Configuration Reference
 
-Restream configuration uses two layers with precedence:
+Restream is configured through environment variables. There is no JSON config file.
 
-`ENV > src/config/restream.json > defaults`
+Server name and custom encodings are managed at runtime via the Settings page (`/settings.html`) and stored in SQLite.
 
 ## 1. Environment Variables
 
@@ -21,16 +21,9 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 - SRT: `srt://localhost:8890`
 - HLS: `http://localhost:8888`
 
-These are hardcoded in the application and cannot be overridden via environment variables.
+These are hardcoded and cannot be overridden via environment variables.
 
-### MediaMTX Ingest (publisher-facing URLs in UI)
-
-| Variable | Default | Description |
-|---|---|---|
-| `MEDIAMTX_INGEST_HOST` | dashboard host | Hostname/IP shown to publishers |
-
-Protocol ports are read from MediaMTX runtime config via `GET /v3/config/global/get`.
-If port discovery fails, backend leaves the corresponding `ingestUrls` field as `null`.
+Publisher-facing ingest URLs shown in the dashboard are rewritten by the frontend to use the browser's current hostname, so they automatically reflect the correct public address without any configuration.
 
 ### FFmpeg and ffprobe
 
@@ -38,12 +31,6 @@ If port discovery fails, backend leaves the corresponding `ingestUrls` field as 
 |---|---|---|
 | `FFMPEG_PATH` | `ffmpeg` | FFmpeg executable |
 | `FFPROBE_PATH` | `ffprobe` | ffprobe executable |
-
-### App Config Path
-
-| Variable | Default | Description |
-|---|---|---|
-| `RESTREAM_CONFIG_PATH` | `src/config/restream.json` | Path to app JSON config |
 
 ### Probe Cache
 
@@ -70,7 +57,7 @@ If port discovery fails, backend leaves the corresponding `ingestUrls` field as 
 ### Output Recovery Semantics
 
 - Total retry budget per failure streak is `immediateRetries + backoffRetries`.
-- `failureCount` counts failures, not retries. The first failed run is `failureCount=1`.
+- `failureCount` counts failures regardless of whether input was on or off at the time. After 100 total failures, the output gives up.
 - Retry is scheduled only while `failureCount <= totalRetries`.
 - Output control is intent-driven: each output persists `desiredState` as either `running` or `stopped`.
 - Manual stop sets `desiredState=stopped`, clears pending retry timers, and suppresses retry and input-recovery restarts until a later start sets `desiredState=running` again.
@@ -85,71 +72,15 @@ If port discovery fails, backend leaves the corresponding `ingestUrls` field as 
   - This means retries can continue across long runtimes instead of permanently exhausting after one early burst.
 - `inputUnavailableOnly` and `failedOnly` input-recovery selection correlate output exits with the most recent `on -> non-on` input transition using a built-in grace window of `max(3 * HEALTH_SNAPSHOT_INTERVAL_MS, 15000ms)`.
 - Retry and input-recovery timers only attempt starts for outputs whose `desiredState` is still `running`.
-- `outputRecovery` in `src/config/restream.json` is optional. If omitted, built-in defaults are still active and env overrides still apply.
 
-## 2. Application Config File
+## 2. Runtime Settings (UI)
 
-File: `src/config/restream.json`
+Server name and custom encodings are stored in the SQLite `meta` and `encodings` tables and managed through the Settings page at `/settings.html`.
 
-`outputRecovery` is optional in this file; this example shows all available fields.
-
-```json
-{
-  "serverName": "Server Name",
-  "pipelinesLimit": 25,
-  "outLimit": 95,
-  "outputRecovery": {
-    "enabled": true,
-    "immediateRetries": 3,
-    "immediateDelayMs": 1000,
-    "backoffRetries": 5,
-    "backoffBaseDelayMs": 2000,
-    "backoffMaxDelayMs": 60000,
-    "resetFailureCountAfterMs": 30000,
-    "restartOnInputRecovery": true,
-    "inputRecoveryRestartMode": "inputUnavailableOnly",
-    "inputRecoveryRestartDelayMs": 1000,
-    "inputRecoveryRestartStaggerMs": 250
-  },
-  "mediamtx": {
-    "ingest": {
-      "host": "stream.example.com"
-    }
-  }
-}
-```
-
-### Config Keys
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `host` | string | `0.0.0.0` | Express bind host. Overridden by `HOST` env when set |
-| `serverName` | string | `Server Name` | Display name in UI |
-| `pipelinesLimit` | integer | `25` | Positive integer |
-| `outLimit` | integer | `95` | Positive integer |
-| `outputRecovery.enabled` | boolean | `true` | Master switch for output auto-restart logic |
-| `outputRecovery.immediateRetries` | integer | `3` | Fixed-delay retry attempts after eligible unexpected output exits |
-| `outputRecovery.immediateDelayMs` | integer | `1000` | Delay for fixed-delay retries |
-| `outputRecovery.backoffRetries` | integer | `5` | Exponential-backoff retry attempts after immediate retries |
-| `outputRecovery.backoffBaseDelayMs` | integer | `2000` | Base delay for exponential backoff |
-| `outputRecovery.backoffMaxDelayMs` | integer | `60000` | Maximum backoff delay |
-| `outputRecovery.resetFailureCountAfterMs` | integer | `30000` | Failure streak reset threshold for long-running jobs |
-| `outputRecovery.restartOnInputRecovery` | boolean | `true` | Enable restart scheduling when pipeline input comes back |
-| `outputRecovery.inputRecoveryRestartMode` | string | `inputUnavailableOnly` | Recovery restart mode: `inputUnavailableOnly`, `failedOnly`, or `all` |
-| `outputRecovery.inputRecoveryRestartDelayMs` | integer | `1000` | Initial delay before recovery restart |
-| `outputRecovery.inputRecoveryRestartStaggerMs` | integer | `250` | Stagger between output restarts during recovery |
-| `mediamtx.ingest.host` | string | `null` | Publisher-facing host. If omitted, UI uses dashboard hostname |
-
-Ingest URLs are precomputed by backend helpers and returned on stream-key and pipeline payloads.
-The effective MediaMTX path is always `live/<streamKey>`.
-
-- RTMP: `rtmp://<ingest.host>:<rtmpPort>/live/<streamKey>`
-- SRT: `srt://<ingest.host>:<srtPort>?streamid=publish:live/<streamKey>`
-
-`rtmpPort` and `srtPort` are derived from MediaMTX global runtime config (`/v3/config/global/get`).
-
-`GET /config` exposes only `ingestHost` in the public config payload. Ports are not app-configurable and are resolved from MediaMTX at runtime for server-side `ingestUrls` generation.
-
+| Setting | Default | Description |
+|---|---|---|
+| Server name | `Restream` | Display name shown in the dashboard navbar |
+| Encodings | — | Custom FFmpeg encoding presets; see [API Reference](./api-reference.md) for the `/encodings` endpoints |
 
 ## 3. Local Host Run
 

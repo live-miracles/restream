@@ -62,14 +62,6 @@ sudo -u restream npm run ts-build
 sudo -u restream npm prune --omit=dev
 ```
 
-Set config file:
-
-```sh
-sudo -u restream cp src/config/restream.json /etc/restream/restream.json
-```
-
-Adjust values in `/etc/restream/restream.json` for server name and limits.
-
 ## 5. Install and Configure MediaMTX
 
 1. Install the MediaMTX binary from official [releases](https://github.com/bluenviron/mediamtx/releases).
@@ -142,7 +134,6 @@ Group=restream
 WorkingDirectory=/opt/restream
 Environment=NODE_ENV=production
 Environment=PORT=3030
-Environment=RESTREAM_CONFIG_PATH=/etc/restream/restream.json
 Environment=FFMPEG_PATH=/usr/local/bin/ffmpeg
 Environment=FFPROBE_PATH=/usr/local/bin/ffprobe
 ExecStart=/usr/bin/node /opt/restream/src/index.js
@@ -195,7 +186,8 @@ curl -fsS http://127.0.0.1:3030/health
 
 UI:
 
-- Open `http://<host>:3030/`
+- Dashboard: `http://<host>:3030/`
+- Settings (server name, encodings): `http://<host>:3030/settings.html`
 
 ## 10. Reverse Proxy and TLS (Recommended)
 

@@ -74,7 +74,6 @@ These are runtime or generated artifacts and should not be edited directly unles
 - `src/api/`: REST route modules
 - `src/services/`: health collection, output lifecycle, recovery, and startup timers
 - `src/db/`: SQLite schema and query helpers
-- `src/config/`: runtime config loading and defaults
 - `src/utils/`: shared backend helpers for FFmpeg, MediaMTX, retries, validation, and health shaping
 - `public/ts/`: TypeScript source for the dashboard frontend
   - `public/ts/types.ts`: shared type definitions for all API shapes and view models
@@ -151,12 +150,13 @@ sudo bash /opt/restream/scripts/server-setup.sh
 
 The script installs Node.js 22, FFmpeg 7.1.4 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers systemd services that start on every boot. Both services run as the non-root `restream` user.
 
-Edit config files directly in the cloned repo and apply with the update script:
+To change the server name or manage custom encodings, open the Settings page in the dashboard (`http://<VM-external-IP>:3030/settings.html`).
+
+To update MediaMTX config and restart services:
 
 ```sh
-sudo vim /opt/restream/src/config/restream.json  # server name, limits, recovery settings
-sudo vim /opt/restream/mediamtx.yml               # MediaMTX config
-sudo bash /opt/restream/scripts/server-update.sh  # copies configs and restarts services
+sudo vim /opt/restream/mediamtx.yml
+sudo bash /opt/restream/scripts/server-update.sh
 ```
 
 ### GCP Firewall Rules

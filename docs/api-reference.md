@@ -236,7 +236,8 @@ Creates an output for a pipeline.
 {
   "name": "YouTube",
   "url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx",
-  "encoding": "source"   // one of: source | vertical-crop | vertical-rotate | 720p | 1080p
+  "encoding": "source"   // system: source | vertical-crop | vertical-rotate | 720p | 1080p
+                         // or any custom encoding key from GET /encodings
 }
 ```
 
@@ -465,7 +466,7 @@ Guardrails:
 
 Returns the full state snapshot used by the dashboard. Supports conditional GET via `If-None-Match` / ETag.
 
-Response headers now include a shared `X-Snapshot-Version` token that identifies the config/jobs
+Response headers include a shared `X-Snapshot-Version` token that identifies the config/jobs
 state version represented by this snapshot. The dashboard compares that token with the health
 response before committing a render.
 
@@ -485,22 +486,6 @@ X-Snapshot-Version: "..."   // shared config/jobs state version used to align /c
 ```json
 {
   "serverName": "My Server",
-  "pipelinesLimit": 25,
-  "outLimit": 95,
-  "outputRecovery": {
-    "enabled": true,
-    "immediateRetries": 3,
-    "immediateDelayMs": 1000,
-    "backoffRetries": 5,
-    "backoffBaseDelayMs": 2000,
-    "backoffMaxDelayMs": 60000,
-    "resetFailureCountAfterMs": 30000,
-    "restartOnInputRecovery": true,
-    "inputRecoveryRestartMode": "inputUnavailableOnly",
-    "inputRecoveryRestartDelayMs": 1000,
-    "inputRecoveryRestartStaggerMs": 250
-  },
-  "ingestHost": null,
   "pipelines": [
     {
       "id": "a1b2c3d4e5f6a7b8",
@@ -517,17 +502,31 @@ X-Snapshot-Version: "..."   // shared config/jobs state version used to align /c
 }
 ```
 
-Each output now includes `desiredState`, which is the persistent operator intent (`running` or `stopped`).
+Each output includes `desiredState`, the persistent operator intent (`running` or `stopped`).
 
-**Response headers:**
-```
-ETag: "abc123def456..."
-X-Config-ETag: "7890abcd1234..."
-```
+`ingestUrls` hostnames are set to `localhost` by the backend; the dashboard frontend rewrites them to the browser's current hostname before displaying them to users.
 
 **Response 304:** ETag matches — no body, no change.
 
 > The ETag is a SHA-256 hash of a deterministic state snapshot, persisted in the `meta` table.
+
+---
+
+### `PATCH /config`
+
+Updates server settings.
+
+**Request body:**
+```json
+{ "serverName": "My Server" }
+```
+
+**Response 200:**
+```json
+{ "serverName": "My Server" }
+```
+
+**Errors:** `400` serverName is empty or invalid.
 
 ---
 
@@ -739,7 +738,87 @@ Returns host system metrics from a fixed background sampler. Throughput and CPU 
 
 ---
 
-## 7. Error Model
+## 7. Encodings
+
+Custom FFmpeg encoding presets. System encodings (`source`, `vertical-crop`, `vertical-rotate`, `720p`, `1080p`) are always available and cannot be modified or deleted.
+
+### `GET /encodings`
+
+Returns all encodings — system encodings first, then custom ones ordered by creation.
+
+**Response 200:**
+```json
+[
+  { "id": null, "key": "source",          "ffmpegArgs": null,  "isSystem": true },
+  { "id": null, "key": "vertical-crop",   "ffmpegArgs": null,  "isSystem": true },
+  { "id": null, "key": "vertical-rotate", "ffmpegArgs": null,  "isSystem": true },
+  { "id": null, "key": "720p",            "ffmpegArgs": null,  "isSystem": true },
+  { "id": null, "key": "1080p",           "ffmpegArgs": null,  "isSystem": true },
+  {
+    "id": "a1b2c3d4e5f6a7b8",
+    "key": "vertical-blur",
+    "ffmpegArgs": "-vf scale=720:1280,gblur=sigma=10 -c:v libx264 -preset veryfast -b:v 2500k -c:a aac -b:a 128k",
+    "isSystem": false
+  }
+]
+```
+
+---
+
+### `POST /encodings`
+
+Creates a custom encoding.
+
+`key` must be lowercase alphanumeric with hyphens (e.g. `vertical-blur`), max 50 characters, and must not conflict with a system encoding key.
+
+**Request body:**
+```json
+{
+  "key": "vertical-blur",
+  "ffmpegArgs": "-vf scale=720:1280,gblur=sigma=10 -c:v libx264 -preset veryfast -b:v 2500k -c:a aac -b:a 128k"
+}
+```
+
+**Response 201:**
+```json
+{
+  "id": "a1b2c3d4e5f6a7b8",
+  "key": "vertical-blur",
+  "ffmpegArgs": "-vf scale=720:1280,gblur=sigma=10 -c:v libx264 -preset veryfast -b:v 2500k -c:a aac -b:a 128k",
+  "isSystem": false
+}
+```
+
+**Errors:** `400` invalid key or missing ffmpegArgs; `409` key already exists.
+
+---
+
+### `PUT /encodings/:id`
+
+Updates the `ffmpegArgs` of an existing custom encoding. The key is not editable after creation.
+
+**Request body:**
+```json
+{ "ffmpegArgs": "-vf scale=720:1280,gblur=sigma=5 -c:v libx264 -preset veryfast -b:v 3000k -c:a aac -b:a 128k" }
+```
+
+**Response 200:** updated encoding object.
+
+**Errors:** `400` missing ffmpegArgs; `404` encoding not found.
+
+---
+
+### `DELETE /encodings/:id`
+
+Deletes a custom encoding. Outputs currently using it fall back to `source` encoding at their next start.
+
+**Response 204:** no body.
+
+**Errors:** `404` encoding not found.
+
+---
+
+## 8. Error Model
 
 All errors return:
 ```json
@@ -755,7 +834,7 @@ All errors return:
 
 ---
 
-## 8. Response ETag Lifecycle
+## 9. Response ETag Lifecycle
 
 ```
 POST /pipelines            → recomputeEtag()
