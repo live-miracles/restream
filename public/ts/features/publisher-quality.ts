@@ -1,7 +1,7 @@
 import type { Publisher } from '../types.js';
 
 function normalizePublisherProtocolLabel(protocol: string): string {
-    const map: Record<string, string> = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT' };
+    const map: Record<string, string> = { rtmp: 'RTMP', srt: 'SRT' };
     return map[protocol] || String(protocol || '').toUpperCase();
 }
 

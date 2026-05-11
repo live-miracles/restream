@@ -4,9 +4,9 @@ Restream is a host-run streaming control plane built on [MediaMTX](https://githu
 
 ## How It Works
 
-1. A publisher sends RTMP/RTSP/SRT ingest to MediaMTX.
+1. A publisher sends RTMP or SRT ingest to MediaMTX.
 2. Restream stores stream keys, pipelines, outputs, job state, and logs in local SQLite (`data.db`).
-3. When an output starts, Restream probes the MediaMTX RTSP relay, spawns FFmpeg, and tracks the process.
+3. When an output starts, Restream probes the MediaMTX path, spawns FFmpeg pulling from MediaMTX, and tracks the process.
 4. The dashboard reads `/config` and `/health` to show pipeline state, output state, system metrics, and logs.
 
 MediaMTX owns media routing. Restream owns orchestration and state.
@@ -50,9 +50,17 @@ npm run ts-build
 Useful commands:
 
 ```sh
-npm run css        # rebuild public/output.css from public/input.css
-npm run format     # run prettier
-npm run test:routes
+npm run css              # rebuild public/output.css from public/input.css
+npm run format           # run prettier
+npm run test:routes      # unit tests for REST routes
+npm run test:normalization  # unit tests for URL normalization helpers
+npm run test:integration # 2x3 end-to-end test (requires app + MediaMTX running)
+```
+
+Or run the integration test via Make:
+
+```sh
+make run-2x3
 ```
 
 The dashboard runs on `http://localhost:3030/` by default.

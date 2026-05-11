@@ -1,6 +1,6 @@
 'use strict';
 
-// MediaMTX client utilities: base URLs, JSON fetcher, and reader-tag helpers.
+// MediaMTX client utilities: base URLs, JSON fetcher, and pull-URL builders.
 // All constants are derived from the fixed localhost binding that MediaMTX uses in this
 // deployment. Any module that talks to MediaMTX can require this directly instead of
 // receiving these helpers through the DI parameter list in index.js.
@@ -9,9 +9,10 @@ const { errMsg } = require('./app');
 
 const fetch = global.fetch || require('node-fetch');
 
-// MediaMTX API, RTSP, and HLS are always on localhost with hardcoded ports.
+// MediaMTX API, RTMP, SRT, and HLS are always on localhost with hardcoded ports.
 const MEDIAMTX_API_BASE = 'http://localhost:9997';
-const MEDIAMTX_RTSP_BASE = 'rtsp://localhost:8554';
+const MEDIAMTX_RTMP_BASE = 'rtmp://localhost:1935';
+const MEDIAMTX_SRT_BASE = 'srt://localhost:8890';
 const MEDIAMTX_HLS_BASE = 'http://localhost:8888';
 const LIVE_PATH_PREFIX = 'live/';
 const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
@@ -23,10 +24,6 @@ let permanentStreamKeys = null;
 
 function getMediamtxApiBaseUrl() {
     return MEDIAMTX_API_BASE;
-}
-
-function getMediamtxRtspBaseUrl() {
-    return MEDIAMTX_RTSP_BASE;
 }
 
 function getMediamtxHlsBaseUrl() {
@@ -133,13 +130,11 @@ async function getMediamtxIngestPorts() {
         const globalConfig = await fetchMediamtxJson('/v3/config/global/get');
         cachedIngestPorts = {
             rtmp: parsePortFromAddress(globalConfig?.rtmpAddress),
-            rtsp: parsePortFromAddress(globalConfig?.rtspAddress),
             srt: parsePortFromAddress(globalConfig?.srtAddress),
         };
     } catch {
         cachedIngestPorts = {
             rtmp: null,
-            rtsp: null,
             srt: null,
         };
     }
@@ -157,7 +152,6 @@ async function buildIngestUrls(streamKey, getConfig) {
 
     return {
         rtmp: ingestPorts.rtmp ? `rtmp://${ingestHost}:${ingestPorts.rtmp}/${effectivePath}` : null,
-        rtsp: ingestPorts.rtsp ? `rtsp://${ingestHost}:${ingestPorts.rtsp}/${effectivePath}` : null,
         srt: ingestPorts.srt
             ? `srt://${ingestHost}:${ingestPorts.srt}?streamid=publish:${effectivePath}`
             : null,
@@ -181,40 +175,28 @@ async function fetchMediamtxJson(endpoint) {
     return data;
 }
 
-// ── Reader-tag helpers ────────────────────────────────
-// FFmpeg output jobs embed a reader_id query param in the RTSP URL so the health collector
-// can correlate live RTSP connections back to specific pipeline+output pairs.
+// ── Pull URL builders ─────────────────────────────────
+// FFmpeg output jobs pull the stream from MediaMTX using a protocol that matches the
+// output destination: RTMP outputs pull via RTMP, SRT and HLS outputs pull via SRT.
 
-function generateReaderTag(pipelineId, outputId) {
-    return `reader_${pipelineId}_${outputId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-function getPipelineTaggedRtspUrl(streamKey, pipelineId, outputId) {
-    const readerTag = generateReaderTag(pipelineId, outputId);
+function buildPullInputUrl(streamKey, pullProtocol) {
     const effectivePath = buildMediamtxPath(streamKey);
-    return `${MEDIAMTX_RTSP_BASE}/${effectivePath}?reader_id=${encodeURIComponent(readerTag)}`;
-}
-
-function getExpectedReaderTag(pipelineId, outputId) {
-    return generateReaderTag(pipelineId, outputId);
-}
-
-function getReaderIdFromQuery(query) {
-    if (!query || typeof query !== 'string') return null;
-    const normalized = query.startsWith('?') ? query.slice(1) : query;
-    if (!normalized) return null;
-    try {
-        const params = new URLSearchParams(normalized);
-        return params.get('reader_id') || null;
-    } catch {
-        return null;
+    if (pullProtocol === 'srt') {
+        return `${MEDIAMTX_SRT_BASE}?streamid=read:${effectivePath}`;
     }
+    return `${MEDIAMTX_RTMP_BASE}/${effectivePath}`;
+}
+
+function generateProbeReaderTag(streamKey) {
+    const suffix = String(streamKey).replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `probe_${suffix}`;
 }
 
 module.exports = {
     MEDIAMTX_FETCH_TIMEOUT_MS,
+    MEDIAMTX_RTMP_BASE,
+    MEDIAMTX_SRT_BASE,
     getMediamtxApiBaseUrl,
-    getMediamtxRtspBaseUrl,
     getMediamtxHlsBaseUrl,
     buildMediamtxPath,
     getStreamKeyLabelFromPath,
@@ -223,8 +205,6 @@ module.exports = {
     isPermanentStreamKey,
     buildIngestUrls,
     fetchMediamtxJson,
-    generateReaderTag,
-    getPipelineTaggedRtspUrl,
-    getExpectedReaderTag,
-    getReaderIdFromQuery,
+    buildPullInputUrl,
+    generateProbeReaderTag,
 };

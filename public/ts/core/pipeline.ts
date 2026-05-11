@@ -36,7 +36,7 @@ function resolveIngestUrls(
 ): IngestUrls {
     const ingestUrls = pipeline?.ingestUrls;
     if (!ingestUrls) {
-        return { rtmp: null, rtsp: null, srt: null };
+        return { rtmp: null, srt: null };
     }
 
     const ingestHost = config?.ingestHost;
@@ -66,7 +66,6 @@ function resolveIngestUrls(
 
     return {
         rtmp: rewriteHost(ingestUrls.rtmp),
-        rtsp: rewriteHost(ingestUrls.rtsp),
         srt: rewriteHost(ingestUrls.srt),
     };
 }
@@ -167,7 +166,7 @@ function parsePipelinesInfo(
                     publisher: null,
                     unexpectedReadersCount: 0,
                 },
-                ingestUrls: { rtmp: null, rtsp: null, srt: null },
+                ingestUrls: { rtmp: null, srt: null },
                 outs: [],
                 stats: {
                     inputBitrateKbps: null,

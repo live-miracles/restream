@@ -51,7 +51,6 @@ const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
         },
         { label: 'Custom', value: '' },
     ],
-    rtsp: [{ label: 'Custom', value: '' }],
     srt: [{ label: 'Custom', value: '' }],
 };
 
@@ -121,7 +120,6 @@ function detectOutputProtocol(url: string): string {
     if (isLikelyHlsOutputUrl(url)) return 'hls';
     const parsed = safeParseUrl(url);
     if (!parsed) return 'rtmp';
-    if (parsed.protocol === 'rtsp:' || parsed.protocol === 'rtsps:') return 'rtsp';
     if (parsed.protocol === 'srt:') return 'srt';
     return 'rtmp';
 }
@@ -192,9 +190,6 @@ function buildDefaultCustomOutputUrl(protocol: string, rawSeed = ''): string {
     }
     if (protocol === 'srt') {
         return `srt://${host}:6000?streamid=publish:live/${token}`;
-    }
-    if (protocol === 'rtsp') {
-        return `rtsp://${host}:554/live/${token}`;
     }
     return `rtmp://${host}:1935/live/${token}`;
 }
@@ -339,7 +334,7 @@ function getEffectiveOutputUrlFromModal(): string {
         return buildSrtUrlFromFields();
     }
 
-    if (protocol === 'rtsp' || isAbsoluteUrl(rawInput)) {
+    if (isAbsoluteUrl(rawInput)) {
         return rawInput;
     }
 
@@ -388,15 +383,6 @@ function setupOutputModalProtocolHandlers(): void {
 
         populateOutputServerOptions('rtmp', '');
         applyOutputProtocolUi(protocol);
-
-        if (protocol === 'rtsp') {
-            const parsed = safeParseUrl(previousRaw);
-            rawInput.value =
-                parsed?.protocol === 'rtsp:' || parsed?.protocol === 'rtsps:'
-                    ? previousRaw
-                    : buildDefaultCustomOutputUrl('rtsp', previousRaw);
-            return;
-        }
 
         if (protocol === 'srt') {
             const values = parseSrtFields(previousRaw);

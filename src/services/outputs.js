@@ -1,11 +1,6 @@
 const { createOutputRecoveryService } = require('./recovery');
 const { errMsg, log, createHttpError } = require('../utils/app');
-const {
-    fetchMediamtxJson,
-    getPipelineTaggedRtspUrl,
-    getExpectedReaderTag,
-    buildMediamtxPath,
-} = require('../utils/mediamtx');
+const { fetchMediamtxJson, buildPullInputUrl, buildMediamtxPath } = require('../utils/mediamtx');
 const {
     buildCommandPreview,
     buildFfmpegOutputArgs,
@@ -20,6 +15,17 @@ const {
 
 const JOB_STABILITY_CHECK_MS = 250;
 const SIGKILL_ESCALATION_MS = 5000;
+
+function resolvePullProtocol(outputUrl) {
+    try {
+        const parsed = new URL(outputUrl);
+        if (parsed.protocol === 'srt:') return 'srt';
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return 'srt';
+    } catch {
+        // fall through
+    }
+    return 'rtmp';
+}
 
 function createOutputLifecycleService({
     db,
@@ -108,9 +114,9 @@ function createOutputLifecycleService({
             );
         }
 
-        const inputUrl = getPipelineTaggedRtspUrl(pipeline.streamKey, pipelineId, outputId);
-        const expectedReaderTag = getExpectedReaderTag(pipelineId, outputId);
         const outputUrl = output.url;
+        const pullProtocol = resolvePullProtocol(outputUrl);
+        const inputUrl = buildPullInputUrl(pipeline.streamKey, pullProtocol);
         if (!outputUrl) throw createHttpError(400, 'Output URL is empty');
         if (!validateOutputUrl(outputUrl)) {
             throw createHttpError(400, INVALID_OUTPUT_URL_ERROR);
@@ -126,7 +132,6 @@ function createOutputLifecycleService({
             trigger,
             reason,
             inputUrl: redactSensitiveUrl(inputUrl),
-            expectedReaderTag,
             outputEncoding,
             outputUrl: redactSensitiveUrl(outputUrl),
             ffmpegCmd,

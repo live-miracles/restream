@@ -2,13 +2,11 @@ import { copyData } from '../core/utils.js';
 
 export const PROTOCOL_LABELS: Record<string, string> = {
     rtmp: 'RTMP',
-    rtsp: 'RTSP',
     srt: 'SRT',
 };
 
 const PROTOCOL_DEFAULT_PORTS: Record<string, string> = {
     rtmp: '1935',
-    rtsp: '8554',
     srt: '8890',
 };
 
@@ -180,33 +178,6 @@ function buildProtocolDetailModel(
                     { label: 'App Name', value: parsedDetails.application },
                 ] as DetailRow[]
             ).filter((row) => row.value),
-        };
-    }
-
-    if (protocol === 'rtsp') {
-        return {
-            heading: 'Operator Fields',
-            note: parsedDetails.credentials
-                ? 'Use the full URL above. Embedded credentials are plaintext unless you use RTSPS or another secure tunnel.'
-                : '',
-            rows: (
-                [
-                    parsedDetails.credentials
-                        ? { label: 'Credentials', value: parsedDetails.credentials }
-                        : null,
-                    { label: 'Host', value: parsedDetails.host },
-                    {
-                        label: 'Port',
-                        value: formatPortDisplay(parsedDetails),
-                        copyValue: parsedDetails.port,
-                    },
-                    {
-                        label: 'Stream Path',
-                        value: `${parsedDetails.path}${new URL(parsedDetails.rawUrl).search || ''}`,
-                        wide: true,
-                    },
-                ] as (DetailRow | null)[]
-            ).filter((row): row is DetailRow => !!row),
         };
     }
 

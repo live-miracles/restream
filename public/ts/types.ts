@@ -22,7 +22,6 @@ export interface AudioTrack {
 
 export interface IngestUrls {
     rtmp: string | null;
-    rtsp: string | null;
     srt: string | null;
 }
 

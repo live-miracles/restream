@@ -1,14 +1,13 @@
-const { buildMediamtxPath } = require('./mediamtx');
+const { buildMediamtxPath, MEDIAMTX_SRT_BASE } = require('./mediamtx');
 
 function generateProbeReaderTag(streamKey) {
     const suffix = String(streamKey).replace(/[^a-zA-Z0-9_-]/g, '_');
     return `probe_${suffix}`;
 }
 
-function getPipelineProbeRtspUrl(streamKey, getMediamtxRtspBaseUrl) {
-    const probeTag = generateProbeReaderTag(streamKey);
+function getPipelineProbeUrl(streamKey) {
     const effectivePath = buildMediamtxPath(streamKey);
-    return `${getMediamtxRtspBaseUrl()}/${effectivePath}?reader_id=${encodeURIComponent(probeTag)}`;
+    return `${MEDIAMTX_SRT_BASE}?streamid=read:${effectivePath}`;
 }
 
 function buildDefaultHealthSnapshot(
@@ -22,7 +21,6 @@ function buildDefaultHealthSnapshot(
         status,
         mediamtx: {
             pathCount: 0,
-            rtspConnCount: 0,
             rtmpConnCount: 0,
             srtConnCount: 0,
             ready: mediamtxReady,
@@ -37,7 +35,6 @@ function getHealthSnapshotHashSource(snapshot) {
         status: snapshot?.status || 'initializing',
         mediamtx: snapshot?.mediamtx || {
             pathCount: 0,
-            rtspConnCount: 0,
             rtmpConnCount: 0,
             srtConnCount: 0,
             ready: false,
@@ -69,7 +66,7 @@ module.exports = {
     buildDefaultHealthSnapshot,
     generateProbeReaderTag,
     getHealthSnapshotHashSource,
-    getPipelineProbeRtspUrl,
+    getPipelineProbeUrl,
     groupOutputsByPipeline,
     hashSnapshot,
 };

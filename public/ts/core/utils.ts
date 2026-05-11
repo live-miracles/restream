@@ -57,7 +57,7 @@ function maskSecret(value: unknown): string {
 
 function sanitizeLogMessage(msg: unknown, redacted = true): string {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:https?|rtmps?|rtsps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+    return String(msg).replace(/((?:https?|rtmps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
         maskSecret(url || full),
     );
 }
@@ -86,8 +86,6 @@ function isValidOutput(str: string): boolean {
             !!parsed.hostname &&
             (parsed.protocol === 'rtmp:' ||
                 parsed.protocol === 'rtmps:' ||
-                parsed.protocol === 'rtsp:' ||
-                parsed.protocol === 'rtsps:' ||
                 parsed.protocol === 'srt:' ||
                 isLikelyHlsOutputUrl(str))
         );

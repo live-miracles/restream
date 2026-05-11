@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractHlsPlaylistName, normalizeHlsOutputUrl } from './run-4x3.mjs';
+import { extractHlsPlaylistName, normalizeHlsOutputUrl } from './run-2x3.mjs';
 
 test('extractHlsPlaylistName prefers query-based playlist targets for upload URLs', () => {
     assert.equal(

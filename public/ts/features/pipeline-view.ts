@@ -131,16 +131,16 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     }
 
     const ingestUrls = pipe.ingestUrls || {};
-    const availableProtocols = (['rtmp', 'rtsp', 'srt'] as const).filter((protocol) => {
+    const availableProtocols = (['rtmp', 'srt'] as const).filter((protocol) => {
         const url = ingestUrls[protocol];
         return typeof url === 'string' && url.trim() !== '';
     });
 
-    if (!availableProtocols.includes(ingestUiState.selectedProtocol as 'rtmp' | 'rtsp' | 'srt')) {
+    if (!availableProtocols.includes(ingestUiState.selectedProtocol as 'rtmp' | 'srt')) {
         ingestUiState.selectedProtocol = availableProtocols[0] || 'rtmp';
     }
 
-    (['rtmp', 'rtsp', 'srt'] as const).forEach((protocol) => {
+    (['rtmp', 'srt'] as const).forEach((protocol) => {
         const btn = document.getElementById(`ingest-protocol-${protocol}`);
         if (!btn) return;
 
