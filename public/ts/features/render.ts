@@ -162,21 +162,12 @@ function renderStatsColumn(selectedPipe: string | null): void {
         statsTable.appendChild(row);
     };
 
-    const appendRow = (
-        values: (string | number)[],
-        warning = false,
-        dimmedValueIndices: number[] = [],
-    ): void => {
+    const appendRow = (values: (string | number)[], warning = false): void => {
         const row = document.createElement('tr');
         if (warning) row.className = 'bg-warning/10';
         values.forEach((value) => {
             const cell = document.createElement('td');
             cell.textContent = String(value);
-            if (dimmedValueIndices.includes(row.children.length)) {
-                cell.style.opacity = '0.6';
-                cell.title =
-                    'Estimated value (fallback), not yet confirmed from FFmpeg output stream';
-            }
             row.appendChild(cell);
         });
         statsTable.appendChild(row);
@@ -210,8 +201,6 @@ function renderStatsColumn(selectedPipe: string | null): void {
         const outputBw = o.bitrateKbps;
         const video = o.video || {};
         const audio = o.audio || {};
-        const usesFallbackMedia =
-            o.mediaSource === 'fallback-source' || o.mediaSource === 'fallback-profile';
         appendRow(
             [
                 o.time !== null && o.time !== undefined ? (msToHHMMSS(o.time) ?? '--') : '--',
@@ -225,7 +214,6 @@ function renderStatsColumn(selectedPipe: string | null): void {
                 audio.sample_rate ? String(audio.sample_rate) : '--',
             ],
             o.status === 'warning',
-            usesFallbackMedia ? [3, 4, 5, 6, 7, 8] : [],
         );
     });
 }

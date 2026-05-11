@@ -64,7 +64,6 @@ const healthMonitor = createHealthMonitorService({
     normalizeEtag,
     ffmpegProgressByJobId,
     ffmpegOutputMediaByJobId,
-    spawn,
 });
 
 // ── Output lifecycle (FFmpeg process management) ──────

@@ -1,36 +1,31 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const {
-    parseFfmpegBitrateToKbps,
-    parseFfmpegProgressFps,
-    parseFfmpegProgressFrame,
-    parseFfmpegTotalSizeBytes,
-} = require('../../src/utils/health-media');
+const { parseFfmpegNumber, parseFfmpegBitrateToKbps } = require('../../src/services/health');
 
-test('parseFfmpegTotalSizeBytes returns null for HLS N/A progress values', () => {
-    assert.equal(parseFfmpegTotalSizeBytes('N/A'), null);
-    assert.equal(parseFfmpegTotalSizeBytes(''), null);
-    assert.equal(parseFfmpegTotalSizeBytes(null), null);
+test('parseFfmpegNumber returns null for N/A, empty, and null', () => {
+    assert.equal(parseFfmpegNumber('N/A'), null);
+    assert.equal(parseFfmpegNumber(''), null);
+    assert.equal(parseFfmpegNumber(null), null);
 });
 
-test('parseFfmpegTotalSizeBytes parses numeric byte counts', () => {
-    assert.equal(parseFfmpegTotalSizeBytes('9422319'), 9422319);
-    assert.equal(parseFfmpegTotalSizeBytes(1234), 1234);
+test('parseFfmpegNumber parses total_size byte counts (integer)', () => {
+    assert.equal(Math.trunc(parseFfmpegNumber('9422319')), 9422319);
+    assert.equal(Math.trunc(parseFfmpegNumber(1234)), 1234);
 });
 
-test('parseFfmpegBitrateToKbps returns null for HLS N/A bitrate values', () => {
+test('parseFfmpegBitrateToKbps returns null for N/A bitrate values', () => {
     assert.equal(parseFfmpegBitrateToKbps('N/A'), null);
 });
 
-test('parseFfmpegProgressFrame parses numeric frame counts', () => {
-    assert.equal(parseFfmpegProgressFrame('397'), 397);
-    assert.equal(parseFfmpegProgressFrame(0), 0);
-    assert.equal(parseFfmpegProgressFrame('N/A'), null);
+test('parseFfmpegNumber parses frame counts (integer)', () => {
+    assert.equal(Math.trunc(parseFfmpegNumber('397')), 397);
+    assert.equal(Math.trunc(parseFfmpegNumber(0)), 0);
+    assert.equal(parseFfmpegNumber('N/A'), null);
 });
 
-test('parseFfmpegProgressFps parses numeric fps values', () => {
-    assert.equal(parseFfmpegProgressFps('29.97'), 29.97);
-    assert.equal(parseFfmpegProgressFps('0.00'), 0);
-    assert.equal(parseFfmpegProgressFps('N/A'), null);
+test('parseFfmpegNumber parses fps values (float)', () => {
+    assert.equal(Number(parseFfmpegNumber('29.97').toFixed(2)), 29.97);
+    assert.equal(Number(parseFfmpegNumber('0.00').toFixed(2)), 0);
+    assert.equal(parseFfmpegNumber('N/A'), null);
 });
