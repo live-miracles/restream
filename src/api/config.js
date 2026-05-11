@@ -14,8 +14,6 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             name: p.name,
             streamKey: p.streamKey,
             encoding: p.encoding,
-            createdAt: p.createdAt,
-            updatedAt: p.updatedAt,
         }));
 
         const outputsByPipeline = db.listOutputs().reduce((acc, output) => {
@@ -32,7 +30,6 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
                 url: output.url,
                 desiredState: output.desiredState,
                 encoding: output.encoding,
-                createdAt: output.createdAt,
             }));
             outs.sort((a, b) => a.id.localeCompare(b.id));
             pipeline.outputs = outs;

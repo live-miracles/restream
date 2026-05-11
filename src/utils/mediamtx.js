@@ -67,7 +67,6 @@ function pathConfigToStreamKey(item) {
     return {
         key,
         label: getStreamKeyLabelFromPath(key),
-        createdAt: null,
     };
 }
 

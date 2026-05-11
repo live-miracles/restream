@@ -9,9 +9,7 @@ function setupDatabaseSchema(db) {
     name TEXT NOT NULL,
     stream_key TEXT NOT NULL,
     encoding TEXT,
-    input_ever_seen_live INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT,
-    updated_at TEXT
+    input_ever_seen_live INTEGER NOT NULL DEFAULT 0
   )
 `,
     ).run();
@@ -28,7 +26,6 @@ function setupDatabaseSchema(db) {
     url TEXT NOT NULL,
     desired_state TEXT NOT NULL DEFAULT 'running',
     encoding TEXT,
-    created_at TEXT,
     FOREIGN KEY(pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE
   )
 `,
