@@ -19,7 +19,6 @@ DATA_DIR=/var/lib/restream
 LOG_DIR=/var/log/restream
 CONF_DIR=/etc/restream
 SERVICE_USER=restream
-SERVER_NAME="${SERVER_NAME:-Restream}"
 
 MEDIAMTX_VERSION=1.17.1
 FFMPEG_VERSION=7.1.4
@@ -104,7 +103,6 @@ else
 fi
 mkdir -p "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
-echo "Server name: $SERVER_NAME"
 
 # ── 6. Clone and build ───────────────────────────────────────────────────────
 
@@ -186,21 +184,13 @@ systemctl daemon-reload
 systemctl enable --now mediamtx.service
 systemctl enable --now restream.service
 
-# Seed server name in database (wait briefly for the app to initialize the DB)
-sleep 2
-curl -s -X PATCH http://127.0.0.1:3030/config \
-    -H 'Content-Type: application/json' \
-    -d "{\"serverName\": \"$SERVER_NAME\"}" > /dev/null && echo "Server name set to: $SERVER_NAME"
-
 echo
 echo "=============================="
 echo " Setup complete"
 echo "=============================="
 echo "Dashboard: http://<VM-external-IP>:3030/"
+echo "Settings:  http://<VM-external-IP>:3030/settings.html"
 echo "Data:      $DATA_DIR/data.db"
-echo ""
-echo "Change server name:"
-echo "  curl -X PATCH http://127.0.0.1:3030/config -H 'Content-Type: application/json' -d '{\"serverName\": \"My Server\"}'"
 echo ""
 echo "Check status:"
 echo "  systemctl status mediamtx.service"
