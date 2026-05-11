@@ -9,6 +9,7 @@ import {
     renderPipelineHistory as renderPipelineHistoryView,
     setHistoryRenderCallbacks,
 } from './render.js';
+import type { HistoryLog } from '../types.js';
 
 const {
     OUTPUT_HISTORY_POLL_INTERVAL_MS,
@@ -17,9 +18,7 @@ const {
     OUTPUT_HISTORY_CONTEXT_LIMIT,
 } = historyConstants;
 
-async function ensureOutputHistoryContext(log) {
-    // Timeline rows only fetch nearby stderr/exit/control logs on demand so the main history
-    // request can stay small while still letting users drill into a suspicious event.
+async function ensureOutputHistoryContext(log: HistoryLog): Promise<void> {
     const contextKey = getOutputHistoryContextKey(log);
     if (
         !contextKey ||
@@ -38,7 +37,7 @@ async function ensureOutputHistoryContext(log) {
     outputHistoryState.contextLoadingKeys.add(contextKey);
     renderOutputHistory(false);
 
-    const res = await getOutputHistory(outputHistoryState.pipelineId, outputHistoryState.outputId, {
+    const res = await getOutputHistory(outputHistoryState.pipelineId!, outputHistoryState.outputId!, {
         since: range.since,
         until: range.until,
         order: 'asc',
@@ -47,35 +46,38 @@ async function ensureOutputHistoryContext(log) {
     });
 
     outputHistoryState.contextLoadingKeys.delete(contextKey);
-    outputHistoryState.contextLogsByKey.set(contextKey, Array.isArray(res?.logs) ? res.logs : []);
+    outputHistoryState.contextLogsByKey.set(
+        contextKey,
+        Array.isArray(res?.logs) ? (res.logs as HistoryLog[]) : [],
+    );
     renderOutputHistory(false);
 }
 
-function toggleOutputHistoryContext(log) {
+function toggleOutputHistoryContext(log: HistoryLog): void {
     const contextKey = getOutputHistoryContextKey(log);
     if (!contextKey) return;
     if (outputHistoryState.expandedContextKeys.has(contextKey)) {
         outputHistoryState.expandedContextKeys.delete(contextKey);
     } else {
         outputHistoryState.expandedContextKeys.add(contextKey);
-        ensureOutputHistoryContext(log);
+        void ensureOutputHistoryContext(log);
     }
     renderOutputHistory(false, contextKey);
 }
 
-function setOutputHistorySearch(query) {
+export function setOutputHistorySearch(query: string): void {
     outputHistoryState.rawQuery = String(query || '');
     outputHistoryState.rawMatchIndex = 0;
     renderOutputHistory(true);
 }
 
-function onOutputHistorySearchKeydown(event) {
+export function onOutputHistorySearchKeydown(event: KeyboardEvent): void {
     if (!event || event.key !== 'Enter') return;
     event.preventDefault();
     navigateOutputHistorySearch(event.shiftKey ? -1 : 1);
 }
 
-function navigateOutputHistorySearch(direction) {
+export function navigateOutputHistorySearch(direction: number): void {
     if (outputHistoryState.mode !== 'raw') return;
     const matchingLogs = getMatchingRawOutputLogs(outputHistoryState);
     if (matchingLogs.length === 0) return;
@@ -90,28 +92,28 @@ function navigateOutputHistorySearch(direction) {
     focusOutputHistoryRawMatch(outputHistoryState);
 }
 
-function setOutputHistoryOrder(order) {
-    const nextOrder = order === 'asc' ? 'asc' : 'desc';
+export function setOutputHistoryOrder(order: string): void {
+    const nextOrder = order === 'asc' ? 'asc' : ('desc' as const);
     if (outputHistoryState.order === nextOrder) return;
     outputHistoryState.order = nextOrder;
     renderOutputHistory(true);
 }
 
-function renderOutputHistory(scrollToTop = false, anchorContextKey = null) {
+function renderOutputHistory(scrollToTop = false, anchorContextKey: string | null = null): void {
     renderOutputHistoryView(outputHistoryState, historyConstants, {
         scrollToTop,
         anchorContextKey,
     });
 }
 
-function setOutputHistoryMode(mode) {
-    const newMode = mode === 'raw' ? 'raw' : 'timeline';
+export function setOutputHistoryMode(mode: string): void {
+    const newMode = mode === 'raw' ? 'raw' : ('timeline' as const);
     if (outputHistoryState.mode === newMode) return;
     outputHistoryState.mode = newMode;
-    pollHistoryOnce(true);
+    void pollHistoryOnce(true);
 }
 
-function toggleHistoryRedaction() {
+export function toggleHistoryRedaction(): void {
     outputHistoryState.redacted = !outputHistoryState.redacted;
     const btn = document.getElementById('output-history-redact');
     if (btn) {
@@ -124,7 +126,7 @@ function toggleHistoryRedaction() {
     renderOutputHistory(false);
 }
 
-function stopHistoryPoll() {
+function stopHistoryPoll(): void {
     if (outputHistoryState.pollTimer) {
         clearTimeout(outputHistoryState.pollTimer);
         outputHistoryState.pollTimer = null;
@@ -134,14 +136,12 @@ function stopHistoryPoll() {
     updateHistoryPlayPauseBtn();
 }
 
-function startHistoryPolling(intervalMs) {
+function startHistoryPolling(intervalMs: number): void {
     if (outputHistoryState.pollTimer && outputHistoryState.pollEveryMs === intervalMs) return;
     if (outputHistoryState.pollTimer) clearTimeout(outputHistoryState.pollTimer);
     outputHistoryState.pollEveryMs = intervalMs;
     outputHistoryState.isPolling = false;
-    const pollWithGuard = async () => {
-        // setTimeout plus isPolling avoids overlapping requests when a fetch takes longer than
-        // the nominal interval, which is safer here than stacking setInterval callbacks.
+    const pollWithGuard = async (): Promise<void> => {
         if (outputHistoryState.isPolling) return;
         outputHistoryState.isPolling = true;
         try {
@@ -154,7 +154,7 @@ function startHistoryPolling(intervalMs) {
     outputHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
 }
 
-function updateHistoryPlayPauseBtn() {
+function updateHistoryPlayPauseBtn(): void {
     const btn = document.getElementById('output-history-playpause');
     if (!btn) return;
     btn.textContent = outputHistoryState.playing ? '⏸ Pause' : '▶ Live';
@@ -162,7 +162,7 @@ function updateHistoryPlayPauseBtn() {
     btn.classList.toggle('btn-outline', !outputHistoryState.playing);
 }
 
-async function pollHistoryOnce(scrollToTop = false) {
+async function pollHistoryOnce(scrollToTop = false): Promise<void> {
     const { pipelineId, outputId, mode } = outputHistoryState;
     if (!pipelineId || !outputId) return;
     if (mode === 'timeline') {
@@ -171,27 +171,27 @@ async function pollHistoryOnce(scrollToTop = false) {
         });
         if (lifecycleRes === null) return;
         outputHistoryState.lifecycleLogs = Array.isArray(lifecycleRes.logs)
-            ? lifecycleRes.logs
+            ? (lifecycleRes.logs as HistoryLog[])
             : [];
     } else {
         const rawRes = await getOutputHistory(pipelineId, outputId, {
             limit: OUTPUT_HISTORY_RAW_LIMIT,
         });
         if (rawRes === null) return;
-        outputHistoryState.rawLogs = Array.isArray(rawRes.logs) ? rawRes.logs : [];
+        outputHistoryState.rawLogs = Array.isArray(rawRes.logs)
+            ? (rawRes.logs as HistoryLog[])
+            : [];
     }
     renderOutputHistory(scrollToTop);
 }
 
-function toggleHistoryPlayPause() {
-    // “Live” mode is just polling plus an immediate fetch; pausing stops both the timer and
-    // the button state so the modal can stay open without consuming background requests.
+export function toggleHistoryPlayPause(): void {
     if (outputHistoryState.playing) {
         stopHistoryPoll();
     } else {
         outputHistoryState.playing = true;
         updateHistoryPlayPauseBtn();
-        pollHistoryOnce();
+        void pollHistoryOnce();
         startHistoryPolling(
             document.hidden
                 ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
@@ -200,8 +200,12 @@ function toggleHistoryPlayPause() {
     }
 }
 
-async function openOutputHistoryModal(pipeId, outId, outName = '') {
-    const modal = document.getElementById('output-history-modal');
+export async function openOutputHistoryModal(
+    pipeId: string,
+    outId: string,
+    outName = '',
+): Promise<void> {
+    const modal = document.getElementById('output-history-modal') as HTMLDialogElement | null;
     const title = document.getElementById('output-history-title');
     const loading = document.getElementById('output-history-loading');
 
@@ -239,16 +243,18 @@ async function openOutputHistoryModal(pipeId, outId, outName = '') {
     loading.classList.add('hidden');
     if (lifecycleRes === null) return;
 
-    outputHistoryState.lifecycleLogs = Array.isArray(lifecycleRes.logs) ? lifecycleRes.logs : [];
+    outputHistoryState.lifecycleLogs = Array.isArray(lifecycleRes.logs)
+        ? (lifecycleRes.logs as HistoryLog[])
+        : [];
     renderOutputHistory(true);
     modal.addEventListener('close', stopHistoryPoll, { once: true });
 }
 
-function renderPipelineHistory(scrollToTop = false) {
+function renderPipelineHistory(scrollToTop = false): void {
     renderPipelineHistoryView(pipelineHistoryState, { scrollToTop });
 }
 
-function stopPipelineHistoryPoll() {
+function stopPipelineHistoryPoll(): void {
     if (pipelineHistoryState.pollTimer) {
         clearTimeout(pipelineHistoryState.pollTimer);
         pipelineHistoryState.pollTimer = null;
@@ -259,19 +265,19 @@ function stopPipelineHistoryPoll() {
     updatePipelineHistoryPlayPauseBtn();
 }
 
-function startPipelineHistoryPolling(intervalMs) {
+function startPipelineHistoryPolling(intervalMs: number): void {
     if (pipelineHistoryState.pollTimer && pipelineHistoryState.pollEveryMs === intervalMs) return;
     if (pipelineHistoryState.pollTimer) clearTimeout(pipelineHistoryState.pollTimer);
     pipelineHistoryState.pollEveryMs = intervalMs;
 
-    const scheduleNextPoll = () => {
+    const scheduleNextPoll = (): void => {
         if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
             return;
         }
         pipelineHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
     };
 
-    const pollWithGuard = async () => {
+    const pollWithGuard = async (): Promise<void> => {
         if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
             return;
         }
@@ -283,7 +289,7 @@ function startPipelineHistoryPolling(intervalMs) {
     scheduleNextPoll();
 }
 
-function updatePipelineHistoryPlayPauseBtn() {
+function updatePipelineHistoryPlayPauseBtn(): void {
     const btn = document.getElementById('pipeline-history-playpause');
     if (!btn) return;
     btn.textContent = pipelineHistoryState.playing ? '⏸ Pause' : '▶ Live';
@@ -291,7 +297,7 @@ function updatePipelineHistoryPlayPauseBtn() {
     btn.classList.toggle('btn-outline', !pipelineHistoryState.playing);
 }
 
-async function pollPipelineHistoryOnce() {
+async function pollPipelineHistoryOnce(): Promise<void> {
     const { pipelineId } = pipelineHistoryState;
     if (!pipelineId || pipelineHistoryState.isPolling) return;
 
@@ -299,20 +305,20 @@ async function pollPipelineHistoryOnce() {
     try {
         const res = await getPipelineHistory(pipelineId, 200);
         if (res === null) return;
-        pipelineHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+        pipelineHistoryState.logs = Array.isArray(res.logs) ? (res.logs as HistoryLog[]) : [];
         renderPipelineHistory(false);
     } finally {
         pipelineHistoryState.isPolling = false;
     }
 }
 
-function togglePipelineHistoryPlayPause() {
+export function togglePipelineHistoryPlayPause(): void {
     if (pipelineHistoryState.playing) {
         stopPipelineHistoryPoll();
     } else {
         pipelineHistoryState.playing = true;
         updatePipelineHistoryPlayPauseBtn();
-        pollPipelineHistoryOnce();
+        void pollPipelineHistoryOnce();
         startPipelineHistoryPolling(
             document.hidden
                 ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
@@ -321,8 +327,11 @@ function togglePipelineHistoryPlayPause() {
     }
 }
 
-async function openPipelineHistoryModal(pipeId, pipeName = '') {
-    const modal = document.getElementById('pipeline-history-modal');
+export async function openPipelineHistoryModal(
+    pipeId: string,
+    pipeName = '',
+): Promise<void> {
+    const modal = document.getElementById('pipeline-history-modal') as HTMLDialogElement | null;
     const title = document.getElementById('pipeline-history-title');
     const loading = document.getElementById('pipeline-history-loading');
 
@@ -344,12 +353,12 @@ async function openPipelineHistoryModal(pipeId, pipeName = '') {
     loading.classList.add('hidden');
     if (res === null) return;
 
-    pipelineHistoryState.logs = Array.isArray(res.logs) ? res.logs : [];
+    pipelineHistoryState.logs = Array.isArray(res.logs) ? (res.logs as HistoryLog[]) : [];
     renderPipelineHistory(true);
     modal.addEventListener('close', stopPipelineHistoryPoll, { once: true });
 }
 
-async function syncHistoryPollingWithVisibility() {
+export async function syncHistoryPollingWithVisibility(): Promise<void> {
     if (document.hidden) {
         if (outputHistoryState.playing) {
             startHistoryPolling(OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS);
@@ -382,17 +391,3 @@ window.setOutputHistorySearch = setOutputHistorySearch;
 window.onOutputHistorySearchKeydown = onOutputHistorySearchKeydown;
 window.navigateOutputHistorySearch = navigateOutputHistorySearch;
 window.togglePipelineHistoryPlayPause = togglePipelineHistoryPlayPause;
-
-export {
-    openOutputHistoryModal,
-    openPipelineHistoryModal,
-    syncHistoryPollingWithVisibility,
-    toggleHistoryPlayPause,
-    toggleHistoryRedaction,
-    setOutputHistoryMode,
-    setOutputHistoryOrder,
-    setOutputHistorySearch,
-    onOutputHistorySearchKeydown,
-    navigateOutputHistorySearch,
-    togglePipelineHistoryPlayPause,
-};

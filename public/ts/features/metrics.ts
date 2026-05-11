@@ -2,13 +2,13 @@ import { setMetricsBitrateWithSubtleUnit, setMetricsValueWithSubtleUnit } from '
 import { state } from '../core/state.js';
 
 const HEALTH_RECOVERY_BANNER_MS = 6000;
-let previousHealthStatus = null;
+let previousHealthStatus: string | null = null;
 let recoveryBannerVisible = false;
-let recoveryBannerTimer = null;
-let activeHealthBannerState = 'hidden';
-let dismissedHealthBannerState = null;
+let recoveryBannerTimer: ReturnType<typeof setTimeout> | null = null;
+let activeHealthBannerState: 'hidden' | 'degraded' | 'recovered' = 'hidden';
+let dismissedHealthBannerState: string | null = null;
 
-function dismissHealthBanner() {
+function dismissHealthBanner(): void {
     const banner = document.getElementById('health-banner');
     if (!banner || activeHealthBannerState === 'hidden') return;
 
@@ -21,16 +21,16 @@ function dismissHealthBanner() {
     banner.classList.add('hidden');
 }
 
-function getHealthBannerState(currentStatus) {
+function getHealthBannerState(currentStatus: string | null): 'hidden' | 'degraded' | 'recovered' {
     if (currentStatus === 'degraded') return 'degraded';
     if (previousHealthStatus === 'degraded') return 'recovered';
     return 'hidden';
 }
 
-function renderServerMetrics() {
-    const setAll = (selector, value) =>
+function renderServerMetrics(): void {
+    const setAll = (selector: string, value: string): void =>
         document.querySelectorAll(selector).forEach((elem) => {
-            elem.innerText = value;
+            (elem as HTMLElement).innerText = value;
         });
 
     if (!state.metrics || Object.keys(state.metrics).length === 0) {
@@ -42,21 +42,25 @@ function renderServerMetrics() {
         return;
     }
 
-    const toGiB = (bytes) => (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
+    const toGiB = (bytes: number | null | undefined): string =>
+        (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
 
     const cpuParts =
-        state.metrics?.cpu?.usagePercent !== null && state.metrics?.cpu?.usagePercent !== undefined
+        state.metrics?.cpu?.usagePercent !== null &&
+        state.metrics?.cpu?.usagePercent !== undefined
             ? { valueText: state.metrics.cpu.usagePercent.toFixed(1), unitText: '%' }
             : null;
     const ramParts =
-        state.metrics?.memory?.usedBytes !== null && state.metrics?.memory?.totalBytes !== null
+        state.metrics?.memory?.usedBytes !== null &&
+        state.metrics?.memory?.totalBytes !== null
             ? {
-                  valueText: `${toGiB(state.metrics.memory.usedBytes)}/${toGiB(state.metrics.memory.totalBytes)}`,
+                  valueText: `${toGiB(state.metrics.memory?.usedBytes)}/${toGiB(state.metrics.memory?.totalBytes)}`,
                   unitText: 'G',
               }
             : null;
     const diskParts =
-        state.metrics?.disk?.usedPercent !== null && state.metrics?.disk?.usedPercent !== undefined
+        state.metrics?.disk?.usedPercent !== null &&
+        state.metrics?.disk?.usedPercent !== undefined
             ? { valueText: state.metrics.disk.usedPercent.toFixed(1), unitText: '%' }
             : null;
     const downKbps = state.metrics?.network?.downloadKbps;
@@ -69,9 +73,7 @@ function renderServerMetrics() {
     setMetricsBitrateWithSubtleUnit('.uplink-metric', upKbps);
 }
 
-function renderHealthBanner() {
-    // The banner behaves like a small state machine: degraded stays visible, recovered shows
-    // briefly, and hidden means either healthy steady-state or user dismissal.
+function renderHealthBanner(): void {
     const banner = document.getElementById('health-banner');
     const text = document.getElementById('health-banner-text');
     if (!banner || !text) return;
@@ -136,8 +138,6 @@ function renderHealthBanner() {
     previousHealthStatus = currentStatus;
 }
 
-document
-    .getElementById('dismiss-health-banner-btn')
-    ?.addEventListener('click', dismissHealthBanner);
+document.getElementById('dismiss-health-banner-btn')?.addEventListener('click', dismissHealthBanner);
 
 export { dismissHealthBanner, renderHealthBanner, renderServerMetrics };

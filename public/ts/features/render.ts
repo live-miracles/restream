@@ -10,20 +10,21 @@ import {
 import { renderPipelineInfoColumn, renderOutsColumn } from './pipeline-view.js';
 import { renderHealthBanner, renderServerMetrics } from './metrics.js';
 import { state } from '../core/state.js';
+import type { OutputView, PipelineView } from '../types.js';
 
-function isOutputIntentStopped(output) {
+function isOutputIntentStopped(output: OutputView | null | undefined): boolean {
     return output?.desiredState === 'stopped';
 }
 
-function isOutputRunning(output) {
+function isOutputRunning(output: OutputView | null | undefined): boolean {
     return output?.status === 'on' || output?.status === 'warning';
 }
 
-function isOutputUnexpectedlyDown(output) {
+function isOutputUnexpectedlyDown(output: OutputView | null | undefined): boolean {
     return !isOutputIntentStopped(output) && !isOutputRunning(output);
 }
 
-function renderPipelinesList(selectedPipe) {
+function renderPipelinesList(selectedPipe: string | null): void {
     const inputOn = state.pipelines.filter((p) => p.input.status === 'on').length;
     const inputWarning = state.pipelines.filter((p) => p.input.status === 'warning').length;
     const inputError = state.pipelines.filter((p) => p.input.status === 'error').length;
@@ -61,9 +62,10 @@ function renderPipelinesList(selectedPipe) {
 
     const sortedPipelines = [...state.pipelines].sort((a, b) => a.name.localeCompare(b.name));
     const pipelinesList = document.getElementById('pipelines');
+    if (!pipelinesList) return;
     pipelinesList.replaceChildren();
 
-    sortedPipelines.forEach((p, pipelineIndex) => {
+    sortedPipelines.forEach((p: PipelineView, pipelineIndex: number) => {
         let outStatus = 'off';
         if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) {
             outStatus = 'error';
@@ -131,20 +133,22 @@ function renderPipelinesList(selectedPipe) {
     });
 }
 
-function renderStatsColumn(selectedPipe) {
+function renderStatsColumn(selectedPipe: string | null): void {
+    const statsCol = document.getElementById('stats-col');
     if (selectedPipe) {
-        document.getElementById('stats-col').classList.add('hidden');
+        statsCol?.classList.add('hidden');
         return;
     } else {
-        document.getElementById('stats-col').classList.remove('hidden');
+        statsCol?.classList.remove('hidden');
     }
 
     const activeInputs = state.pipelines;
     const activeOuts = state.pipelines.flatMap((p) => p.outs);
     const statsTable = document.getElementById('stats-table');
+    if (!statsTable) return;
     statsTable.replaceChildren();
 
-    const addSectionHeader = (label, count) => {
+    const addSectionHeader = (label: string, count: number): void => {
         const row = document.createElement('tr');
         row.className = 'bg-base-100';
         const header = document.createElement('th');
@@ -158,12 +162,16 @@ function renderStatsColumn(selectedPipe) {
         statsTable.appendChild(row);
     };
 
-    const appendRow = (values, warning = false, dimmedValueIndices = []) => {
+    const appendRow = (
+        values: (string | number)[],
+        warning = false,
+        dimmedValueIndices: number[] = [],
+    ): void => {
         const row = document.createElement('tr');
         if (warning) row.className = 'bg-warning/10';
         values.forEach((value) => {
             const cell = document.createElement('td');
-            cell.textContent = value;
+            cell.textContent = String(value);
             if (dimmedValueIndices.includes(row.children.length)) {
                 cell.style.opacity = '0.6';
                 cell.title =
@@ -182,7 +190,7 @@ function renderStatsColumn(selectedPipe) {
         appendRow(
             [
                 p.input.time !== null && p.input.time !== undefined
-                    ? msToHHMMSS(p.input.time)
+                    ? msToHHMMSS(p.input.time) ?? '--'
                     : '--',
                 p.name,
                 inputBw !== null && inputBw !== undefined ? Number(inputBw).toFixed(1) : '--',
@@ -206,7 +214,7 @@ function renderStatsColumn(selectedPipe) {
             o.mediaSource === 'fallback-source' || o.mediaSource === 'fallback-profile';
         appendRow(
             [
-                o.time !== null && o.time !== undefined ? msToHHMMSS(o.time) : '--',
+                o.time !== null && o.time !== undefined ? msToHHMMSS(o.time) ?? '--' : '--',
                 `${o.pipe}: ${o.name}`,
                 outputBw !== null && outputBw !== undefined ? Number(outputBw).toFixed(1) : '--',
                 formatCodecName(video.codec) || '--',
@@ -222,13 +230,13 @@ function renderStatsColumn(selectedPipe) {
     });
 }
 
-function getRenderableSelectedPipe() {
+function getRenderableSelectedPipe(): string | null {
     const selectedPipe = getUrlParam('p');
     if (!selectedPipe) return null;
     return state.pipelines.some((pipe) => pipe.id === selectedPipe) ? selectedPipe : null;
 }
 
-function renderPipelines() {
+function renderPipelines(): void {
     const selectedPipe = getRenderableSelectedPipe();
     writeSelectedPipelineHint(
         selectedPipe ? state.pipelines.find((pipe) => pipe.id === selectedPipe) || null : null,
@@ -251,12 +259,12 @@ function renderPipelines() {
     renderStatsColumn(selectedPipe);
 }
 
-function renderMetrics() {
+function renderMetrics(): void {
     renderHealthBanner();
     renderServerMetrics();
 }
 
-function selectPipeline(id) {
+function selectPipeline(id: string | null): void {
     setUrlParam('p', id);
     renderPipelines();
 }

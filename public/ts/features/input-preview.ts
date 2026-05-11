@@ -1,37 +1,42 @@
+import type { HlsConstructor, HlsInstance, HlsErrorData, PreviewVideoElement } from '../global.js';
+import type { PipelineView } from '../types.js';
+
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
 const HLS_RUNTIME_URL = '/vendor/hls.min.js';
 
-let hlsRuntimePromise = null;
+let hlsRuntimePromise: Promise<HlsConstructor> | null = null;
 
-function canUseNativeHls(video) {
+function canUseNativeHls(video: HTMLVideoElement | null): boolean {
     return Boolean(
         video?.canPlayType('application/vnd.apple.mpegurl') ||
-        video?.canPlayType('application/x-mpegURL'),
+            video?.canPlayType('application/x-mpegURL'),
     );
 }
 
-function destroyPreviewController(video) {
+function destroyPreviewController(video: PreviewVideoElement): void {
     if (!video?._previewHls) return;
     video._previewHls.destroy();
     delete video._previewHls;
 }
 
-function loadHlsRuntime() {
-    if (globalThis.Hls) return Promise.resolve(globalThis.Hls);
+function loadHlsRuntime(): Promise<HlsConstructor> {
+    if (window.Hls) return Promise.resolve(window.Hls);
     if (hlsRuntimePromise) return hlsRuntimePromise;
 
-    hlsRuntimePromise = new Promise((resolve, reject) => {
-        const existingScript = document.querySelector('script[data-role="hls-runtime"]');
+    hlsRuntimePromise = new Promise<HlsConstructor>((resolve, reject) => {
+        const existingScript = document.querySelector<HTMLScriptElement>(
+            'script[data-role="hls-runtime"]',
+        );
 
-        function handleLoad() {
-            if (globalThis.Hls) {
-                resolve(globalThis.Hls);
+        function handleLoad(): void {
+            if (window.Hls) {
+                resolve(window.Hls);
                 return;
             }
             reject(new Error('hls.js loaded without exporting a global Hls object'));
         }
 
-        function handleError() {
+        function handleError(): void {
             reject(new Error('Failed to load hls.js runtime'));
         }
 
@@ -48,7 +53,7 @@ function loadHlsRuntime() {
         script.addEventListener('load', handleLoad, { once: true });
         script.addEventListener('error', handleError, { once: true });
         document.head.appendChild(script);
-    }).catch((err) => {
+    }).catch((err: unknown) => {
         hlsRuntimePromise = null;
         throw err;
     });
@@ -56,13 +61,15 @@ function loadHlsRuntime() {
     return hlsRuntimePromise;
 }
 
-function buildInputPreviewUrl(streamKey) {
+function buildInputPreviewUrl(streamKey: string): string {
     return `/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`;
 }
 
-export function clearInputPreview(playerElem) {
+export function clearInputPreview(playerElem: HTMLElement | null): void {
     if (!playerElem) return;
-    const existingVideo = playerElem.querySelector(INPUT_PREVIEW_VIDEO_SELECTOR);
+    const existingVideo = playerElem.querySelector<PreviewVideoElement>(
+        INPUT_PREVIEW_VIDEO_SELECTOR,
+    );
     if (existingVideo) {
         existingVideo.dataset.previewDisposed = 'true';
         destroyPreviewController(existingVideo);
@@ -74,7 +81,7 @@ export function clearInputPreview(playerElem) {
     delete playerElem.dataset.previewSrc;
 }
 
-function setPreviewMessage(playerElem, message) {
+function setPreviewMessage(playerElem: HTMLElement, message: string): void {
     clearInputPreview(playerElem);
     const messageEl = document.createElement('p');
     messageEl.className = 'text-sm opacity-70 px-3 py-4';
@@ -82,7 +89,7 @@ function setPreviewMessage(playerElem, message) {
     playerElem.appendChild(messageEl);
 }
 
-export function renderInputPreview(playerElem, pipe) {
+export function renderInputPreview(playerElem: HTMLElement | null, pipe: PipelineView): void {
     if (!playerElem) return;
 
     if (!pipe?.key) {
@@ -105,7 +112,7 @@ export function renderInputPreview(playerElem, pipe) {
     shell.style.background = 'var(--fallback-b3, oklch(var(--b3)/1))';
     shell.style.aspectRatio = '16 / 9';
 
-    const video = document.createElement('video');
+    const video = document.createElement('video') as PreviewVideoElement;
     video.dataset.role = 'input-preview-video';
     video.style.width = '100%';
     video.style.height = '100%';
@@ -137,12 +144,18 @@ export function renderInputPreview(playerElem, pipe) {
         'display:none;width:2rem;height:2rem;border-radius:9999px;border:3px solid rgba(255,255,255,0.25);border-top-color:#fff;animation:spin 0.8s linear infinite';
     let previewStarted = false;
 
-    function setOverlayVisible(isVisible) {
+    function setOverlayVisible(isVisible: boolean): void {
         overlay.style.display = isVisible ? 'flex' : 'none';
         overlay.setAttribute('aria-hidden', isVisible ? 'false' : 'true');
     }
 
-    function setOverlayButtonState({ buttonText, buttonDisabled }) {
+    function setOverlayButtonState({
+        buttonText,
+        buttonDisabled,
+    }: {
+        buttonText: string;
+        buttonDisabled: boolean;
+    }): void {
         loadBtn.textContent = buttonText;
         loadBtn.disabled = !!buttonDisabled;
         loadBtn.classList.toggle('btn-disabled', !!buttonDisabled);
@@ -155,20 +168,14 @@ export function renderInputPreview(playerElem, pipe) {
         }
     }
 
-    const attemptPlayback = () => {
+    const attemptPlayback = (): void => {
         if (video.dataset.previewDisposed === 'true') return;
         const playPromise = video.play();
         if (!playPromise || typeof playPromise.then !== 'function') return;
-        void playPromise.catch((err) => {
+        void playPromise.catch((err: unknown) => {
             if (video.dataset.previewDisposed === 'true') return;
-            if (err?.name === 'AbortError') {
-                video.addEventListener(
-                    'canplay',
-                    () => {
-                        attemptPlayback();
-                    },
-                    { once: true },
-                );
+            if ((err as Error)?.name === 'AbortError') {
+                video.addEventListener('canplay', () => { attemptPlayback(); }, { once: true });
                 return;
             }
             video.dataset.previewLoaded = 'false';
@@ -176,7 +183,7 @@ export function renderInputPreview(playerElem, pipe) {
         });
     };
 
-    const resetPreviewLoadState = () => {
+    const resetPreviewLoadState = (): void => {
         if (video.dataset.previewDisposed === 'true') return;
         previewStarted = false;
         video.dataset.previewLoaded = 'false';
@@ -188,9 +195,9 @@ export function renderInputPreview(playerElem, pipe) {
         setOverlayButtonState({ buttonText: 'Play preview', buttonDisabled: false });
     };
 
-    const bindHlsController = async () => {
-        let Hls = null;
-        let hlsRuntimeError = null;
+    const bindHlsController = async (): Promise<void> => {
+        let Hls: HlsConstructor | null = null;
+        let hlsRuntimeError: unknown = null;
 
         try {
             Hls = await loadHlsRuntime();
@@ -201,13 +208,11 @@ export function renderInputPreview(playerElem, pipe) {
         if (video.dataset.previewDisposed === 'true') return;
 
         if (Hls?.isSupported?.()) {
-            const hls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-            });
+            const hls: HlsInstance = new Hls({ enableWorker: true, lowLatencyMode: false });
             video._previewHls = hls;
 
-            hls.on(Hls.Events.ERROR, (_event, data) => {
+            hls.on(Hls.Events.ERROR, (...args: unknown[]) => {
+                const data = args[1] as HlsErrorData | undefined;
                 if (video.dataset.previewDisposed === 'true') return;
                 if (!data?.fatal) return;
 
@@ -242,12 +247,10 @@ export function renderInputPreview(playerElem, pipe) {
             return;
         }
 
-        throw (
-            hlsRuntimeError || new Error('This browser does not support dashboard preview playback')
-        );
+        throw hlsRuntimeError || new Error('This browser does not support dashboard preview playback');
     };
 
-    const primePreviewSource = async () => {
+    const primePreviewSource = async (): Promise<void> => {
         if (video.dataset.previewLoaded === 'true') return;
         previewStarted = false;
         video.dataset.previewLoaded = 'true';

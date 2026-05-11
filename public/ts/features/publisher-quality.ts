@@ -1,15 +1,39 @@
-function normalizePublisherProtocolLabel(protocol) {
-    const map = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT' };
+import type { Publisher } from '../types.js';
+
+function normalizePublisherProtocolLabel(protocol: string): string {
+    const map: Record<string, string> = { rtsp: 'RTSP', rtmp: 'RTMP', srt: 'SRT' };
     return map[protocol] || String(protocol || '').toUpperCase();
 }
 
-function getPublisherQualityMetrics(publisher) {
+interface QualityMetric {
+    code: string;
+    label: string;
+    value: number;
+    displayValue: string;
+    isAlert: boolean;
+}
+
+interface NumericMetricArgs {
+    code: string;
+    label: string;
+    rawValue: number | null | undefined;
+    alertCheck: (v: number) => boolean;
+    formatter?: (v: number) => string;
+}
+
+function getPublisherQualityMetrics(publisher: Publisher | null): QualityMetric[] {
     if (!publisher) return [];
 
     const q = publisher.quality || {};
-    const metrics = [];
+    const metrics: QualityMetric[] = [];
 
-    const addNumericMetric = ({ code, label, rawValue, alertCheck, formatter }) => {
+    const addNumericMetric = ({
+        code,
+        label,
+        rawValue,
+        alertCheck,
+        formatter,
+    }: NumericMetricArgs): void => {
         if (rawValue === null || rawValue === undefined) return;
         const num = Number(rawValue) || 0;
         const rounded = Math.round(num);
@@ -81,7 +105,12 @@ function getPublisherQualityMetrics(publisher) {
     return metrics;
 }
 
-function getPublisherQualityAlerts(publisher) {
+interface QualityAlert {
+    code: string;
+    label: string;
+}
+
+function getPublisherQualityAlerts(publisher: Publisher | null): QualityAlert[] {
     return getPublisherQualityMetrics(publisher)
         .filter((metric) => metric.isAlert)
         .map((metric) => ({
@@ -91,3 +120,4 @@ function getPublisherQualityAlerts(publisher) {
 }
 
 export { normalizePublisherProtocolLabel, getPublisherQualityMetrics, getPublisherQualityAlerts };
+export type { QualityMetric, QualityAlert };
