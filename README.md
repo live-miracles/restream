@@ -136,6 +136,58 @@ GitHub Actions (`.github/workflows/ci.yml`) runs three jobs on every push and pu
 - **unit** — route and normalization tests
 - **integration** — 2x3 end-to-end test; only runs after unit passes; installs ffmpeg via apt, downloads MediaMTX, starts both services, then runs the test; uploads `test/artifacts/logs/` as an artifact on failure
 
+## Linux VM Deployment (GCP)
+
+For a full walkthrough see [docs/deployment-host.md](docs/deployment-host.md). The setup script automates the whole process.
+
+### Initial Setup
+
+SSH into a fresh Ubuntu 22.04 or 24.04 VM, clone the repo, and run the setup script as root:
+
+```sh
+git clone https://github.com/live-miracles/restream /opt/restream
+sudo bash /opt/restream/scripts/server-setup.sh
+```
+
+The script installs Node.js 22, FFmpeg 7.1.4 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers systemd services that start on every boot. Both services run as the non-root `restream` user.
+
+Edit config files directly in the cloned repo and apply with the update script:
+
+```sh
+sudo vim /opt/restream/src/config/restream.json  # server name, limits, recovery settings
+sudo vim /opt/restream/mediamtx.yml               # MediaMTX config
+sudo bash /opt/restream/scripts/server-update.sh  # copies configs and restarts services
+```
+
+### GCP Firewall Rules
+
+Open these ports in your VPC firewall (VPC Network → Firewall):
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `3030` | TCP | Dashboard (or put a reverse proxy on 80/443 instead) |
+| `1935` | TCP | RTMP ingest |
+| `8890` | UDP/TCP | SRT ingest |
+
+MediaMTX API (`9997`) and HLS preview (`8888`) stay localhost-only.
+
+### Updating
+
+```sh
+sudo bash /opt/restream/scripts/server-update.sh
+```
+
+This pulls the latest code, rebuilds, copies config files from the repo to `/etc/restream/`, and restarts both services.
+
+### Useful Commands
+
+```sh
+journalctl -u restream.service -f          # follow app logs
+journalctl -u mediamtx.service -f         # follow MediaMTX logs
+systemctl status restream.service         # check service status
+curl -fsS http://127.0.0.1:3030/healthz   # health check
+```
+
 ## Docs
 
 - [Architecture](docs/architecture.md): short system map and core behavior
