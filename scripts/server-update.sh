@@ -25,10 +25,9 @@ sudo -u restream npm prune --omit=dev
 
 echo
 echo "=== Deploy configs ==="
-cp "$APP_DIR/src/config/restream.json" "$CONF_DIR/restream.json"
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
-chown restream:restream "$CONF_DIR/restream.json" "$CONF_DIR/mediamtx.yml"
-echo "Copied configs to $CONF_DIR/"
+chown restream:restream "$CONF_DIR/mediamtx.yml"
+echo "Copied mediamtx.yml to $CONF_DIR/"
 
 echo
 echo "=== Restart services ==="

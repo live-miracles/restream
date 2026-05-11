@@ -12,6 +12,7 @@ import {
 import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
+import { populateEncodingSelect } from './settings.js';
 import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
@@ -689,14 +690,7 @@ async function openOutModal(
         const rawEncoding = String(output?.encoding || 'source')
             .trim()
             .toLowerCase();
-        const isSupportedEncoding = [...encodingSelect.options].some(
-            (opt) => opt.value === rawEncoding,
-        );
-        const resolvedEncoding = isSupportedEncoding ? rawEncoding : 'source';
-        if (!isSupportedEncoding && rawEncoding !== 'source') {
-            console.warn(`Output encoding "${rawEncoding}" not supported; using 'source' instead`);
-        }
-        encodingSelect.value = resolvedEncoding;
+        await populateEncodingSelect(encodingSelect, rawEncoding);
     }
 
     const isRunningEdit =
@@ -902,12 +896,6 @@ export async function addOutBtn(): Promise<void> {
     const pipe = state.pipelines.find((p) => p.id === pipeId);
     if (!pipe) {
         console.error('Pipeline not found:', pipeId);
-        return;
-    }
-
-    const outLimit = (state.config as { outLimit?: number }).outLimit;
-    if (outLimit && pipe.outs.length >= outLimit) {
-        console.error(`Output limit reached. Max outputs per pipeline: ${outLimit}`);
         return;
     }
 

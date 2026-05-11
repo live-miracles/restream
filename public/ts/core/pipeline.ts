@@ -32,16 +32,11 @@ function computeKbps(
 
 function resolveIngestUrls(
     pipeline: { ingestUrls?: IngestUrls },
-    config: Partial<ConfigData>,
+    _config: Partial<ConfigData>,
 ): IngestUrls {
     const ingestUrls = pipeline?.ingestUrls;
     if (!ingestUrls) {
         return { rtmp: null, srt: null };
-    }
-
-    const ingestHost = config?.ingestHost;
-    if (ingestHost && ingestHost !== 'localhost') {
-        return ingestUrls;
     }
 
     const currentHost =

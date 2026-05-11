@@ -241,11 +241,13 @@ function showErrorAlert(error: unknown): void {
 }
 
 function showLoading(): void {
-    (document.getElementById('saving-badge') as HTMLInputElement | null)!.checked = true;
+    const el = document.getElementById('saving-badge') as HTMLInputElement | null;
+    if (el) el.checked = true;
 }
 
 function hideLoading(): void {
-    (document.getElementById('saving-badge') as HTMLInputElement | null)!.checked = false;
+    const el = document.getElementById('saving-badge') as HTMLInputElement | null;
+    if (el) el.checked = false;
 }
 
 let copyCount = 0;

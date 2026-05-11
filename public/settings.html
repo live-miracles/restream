@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en" data-theme="dim">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Settings</title>
+    <link rel="icon" type="image/png" href="logo.png" />
+    <link rel="stylesheet" type="text/css" href="output.css" />
+    <script type="module" src="js/features/settings-entry.js"></script>
+  </head>
+  <body class="bg-base-100 text-base-content flex h-screen flex-col">
+    <div class="navbar bg-base-100 shrink-0">
+      <div class="flex-1">
+        <span class="px-2 text-xl font-semibold">Restream</span>
+      </div>
+      <div class="flex flex-1 justify-end">
+        <ul class="menu menu-horizontal px-1">
+          <li><a href="/">Dashboard</a></li>
+          <li><a href="/settings.html">Settings</a></li>
+          <li><a href="https://github.com/live-miracles/restream">GitHub</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div
+      id="top-banner-stack"
+      class="fixed left-1/2 z-999 flex -translate-x-1/2 transform flex-col items-center gap-2"
+      style="top: 0.5rem; pointer-events: none">
+      <div role="alert" id="error-alert" class="alert alert-error hidden max-w-175 opacity-90" style="pointer-events: auto">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span id="error-msg"></span>
+      </div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto p-6">
+      <div class="mx-auto max-w-3xl space-y-8">
+        <h1 class="text-2xl font-bold">Settings</h1>
+
+        <!-- Server Name -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <h2 class="mb-4 text-lg font-semibold">Server Name</h2>
+          <div class="flex items-center gap-3">
+            <input type="text" id="settings-server-name" class="input w-64" placeholder="Restream" />
+            <button class="btn btn-accent btn-sm" onclick="saveServerName()">Save</button>
+            <span id="server-name-saved" class="text-success hidden text-sm">Saved</span>
+          </div>
+        </section>
+
+        <!-- Encodings -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Encodings</h2>
+            <button class="btn btn-accent btn-sm btn-outline" onclick="openAddEncodingModal()">+ Add</button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="table-sm table w-full">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>FFmpeg Args</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="encodings-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Encoding Add/Edit Modal -->
+    <dialog id="encoding-modal" class="modal">
+      <div class="modal-box max-w-lg">
+        <input type="hidden" id="enc-id-input" />
+        <h3 class="mb-4 text-lg font-bold" id="enc-modal-title">Add Encoding</h3>
+
+        <div class="space-y-3">
+          <div id="enc-key-field">
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Key <span class="text-xs opacity-60">(slug, e.g. vertical-blur)</span></legend>
+              <input type="text" id="enc-key-input" class="input w-full font-mono" placeholder="my-encoding" />
+            </fieldset>
+          </div>
+
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">FFmpeg Args</legend>
+            <textarea
+              id="enc-args-input"
+              class="textarea w-full font-mono text-sm"
+              rows="4"
+              placeholder="-vf scale=-2:720 -c:v libx264 -preset veryfast -b:v 3000k -c:a aac -b:a 128k"></textarea>
+          </fieldset>
+        </div>
+
+        <div class="modal-action">
+          <form method="dialog">
+            <button class="btn mx-2">Cancel</button>
+            <button type="button" class="btn btn-accent" onclick="saveEncodingBtn()">Save</button>
+          </form>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+  </body>
+</html>

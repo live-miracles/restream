@@ -7,8 +7,9 @@ function normalizeEtag(value) {
     return value.replace(/^"(.*)"$/, '$1');
 }
 
-function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
+function registerConfigApi({ app, db }) {
     function buildConfigSnapshot() {
+        const serverName = db.getServerName();
         const pipelines = db.listPipelines().map((p) => ({
             id: p.id,
             name: p.name,
@@ -37,7 +38,7 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
 
         pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
 
-        return { pipelines };
+        return { serverName, pipelines };
     }
 
     function buildJobsSnapshot() {
@@ -107,15 +108,14 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             const pipelines = await Promise.all(
                 db.listPipelines().map(async (pipeline) => ({
                     ...pipeline,
-                    ingestUrls: await buildIngestUrls(pipeline.streamKey, getConfig),
+                    ingestUrls: await buildIngestUrls(pipeline.streamKey),
                 })),
             );
             const outputs = db.listOutputs();
             const jobs = db.listJobs();
-            const publicConfig = toPublicConfig(getConfig());
 
             const snapshot = {
-                ...publicConfig,
+                serverName: db.getServerName(),
                 pipelines,
                 outputs,
                 jobs,
@@ -123,6 +123,23 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
 
             if (etag) res.set('ETag', `"${etag}"`);
             return res.json(snapshot);
+        } catch (err) {
+            return res.status(500).json({ error: errMsg(err) });
+        }
+    });
+
+    app.patch('/config', (req, res) => {
+        try {
+            const { serverName } = req.body || {};
+            if (serverName !== undefined) {
+                if (typeof serverName !== 'string' || !serverName.trim()) {
+                    return res.status(400).json({ error: 'serverName must be a non-empty string' });
+                }
+                db.setServerName(serverName);
+            }
+            recomputeConfigEtag();
+            recomputeEtag();
+            return res.json({ serverName: db.getServerName() });
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
         }

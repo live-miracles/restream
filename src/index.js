@@ -6,10 +6,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const db = require('./db');
-const { getConfig, toPublicConfig } = require('./config');
 const { registerConfigApi } = require('./api/config');
 const { registerPreviewProxyRoutes } = require('./api/preview');
 const { registerOutputApi } = require('./api/outputs');
+const { registerEncodingsApi } = require('./api/encodings');
 const { registerPipelineApi } = require('./api/pipelines');
 const { createHealthMonitorService } = require('./services/health');
 const { createOutputLifecycleService } = require('./services/outputs');
@@ -37,7 +37,6 @@ app.use(
 );
 
 const appPort = Number(process.env.PORT || 3030);
-const appHost = getConfig().host;
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
 const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
@@ -49,12 +48,7 @@ const processes = new Map(); // jobId -> ChildProcess
 
 // ── Config API (provides normalizeEtag + recomputeEtag) ──────────
 const { normalizeEtag, initializeConfigSnapshotVersions, recomputeConfigEtag, recomputeEtag } =
-    registerConfigApi({
-        app,
-        db,
-        getConfig,
-        toPublicConfig,
-    });
+    registerConfigApi({ app, db });
 
 // ── Health monitor ────────────────────────────────────
 const healthMonitor = createHealthMonitorService({
@@ -95,7 +89,6 @@ const {
 registerPipelineApi({
     app,
     db,
-    getConfig,
     healthMonitor,
     resetOutputFailureCount,
     clearOutputRestartState,
@@ -108,7 +101,6 @@ registerPipelineApi({
 registerOutputApi({
     app,
     db,
-    getConfig,
     recomputeConfigEtag,
     recomputeEtag,
     clearOutputRestartState,
@@ -121,6 +113,7 @@ registerOutputApi({
 });
 
 healthMonitor.registerRoutes(app);
+registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
 registerPreviewProxyRoutes({
     app,
@@ -177,7 +170,6 @@ startServer({
     db,
     log,
     appPort,
-    appHost,
     initializeConfigSnapshotVersions,
 }).catch((err) => {
     console.error('Fatal startup error:', err);

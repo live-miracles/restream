@@ -4,6 +4,7 @@ import type {
     HealthData,
     SystemMetrics,
     StreamKey,
+    Encoding,
     GetConfigResult,
     GetHealthResult,
 } from '../types.js';
@@ -93,6 +94,10 @@ async function apiRequest<T = unknown>(
         return null;
     } finally {
         if (showMutationLoading) endMutationRequest();
+    }
+
+    if (response.status === 204) {
+        return null;
     }
 
     let data: T | null = null;
@@ -331,6 +336,56 @@ async function getPipelineHistory(
     );
 }
 
+async function patchConfig(body: { serverName?: string }): Promise<{ serverName: string } | null> {
+    return apiRequest<{ serverName: string }>('/config', { method: 'PATCH', body });
+}
+
+async function getEncodings(): Promise<Encoding[] | null> {
+    return apiRequest<Encoding[]>('/encodings');
+}
+
+async function createEncoding(data: Omit<Encoding, 'id' | 'isSystem'>): Promise<Encoding | null> {
+    return apiRequest<Encoding>('/encodings', { method: 'POST', body: data });
+}
+
+async function updateEncoding(
+    id: string,
+    data: Omit<Encoding, 'id' | 'key' | 'isSystem'>,
+): Promise<Encoding | null> {
+    return apiRequest<Encoding>(`/encodings/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: data,
+    });
+}
+
+async function deleteEncoding(id: string): Promise<boolean> {
+    const normalizedMethod = 'DELETE';
+    beginMutationRequest();
+    let response: Response | null = null;
+    try {
+        response = await fetch(`/encodings/${encodeURIComponent(id)}`, {
+            method: normalizedMethod,
+        });
+    } catch (e) {
+        showErrorAlert('Network request failed: ' + e);
+        return false;
+    } finally {
+        endMutationRequest();
+    }
+    if (!response.ok) {
+        let errMsg = `Request failed with ${response.status}`;
+        try {
+            const errData = (await response.json()) as Record<string, unknown>;
+            if (errData?.error) errMsg = String(errData.error);
+        } catch {
+            /* ignore */
+        }
+        showErrorAlert(errMsg);
+        return false;
+    }
+    return true;
+}
+
 export {
     apiRequest,
     getConfig,
@@ -347,4 +402,9 @@ export {
     stopOut,
     getOutputHistory,
     getPipelineHistory,
+    patchConfig,
+    getEncodings,
+    createEncoding,
+    updateEncoding,
+    deleteEncoding,
 };

@@ -66,10 +66,15 @@ export interface Job {
     endedAt?: string;
 }
 
+export interface Encoding {
+    id: string | null;
+    key: string;
+    ffmpegArgs: string | null;
+    isSystem: boolean;
+}
+
 export interface ConfigData {
     serverName?: string;
-    ingestHost?: string;
-    outLimit?: number;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];
     jobs: Job[];

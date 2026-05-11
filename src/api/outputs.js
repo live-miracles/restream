@@ -3,6 +3,7 @@ const {
     normalizeOutputEncoding,
     validateOutputUrl,
     INVALID_OUTPUT_URL_ERROR,
+    SYSTEM_ENCODING_KEYS,
 } = require('../utils/ffmpeg');
 
 const HISTORY_MESSAGE_PREFIXES = {
@@ -17,8 +18,7 @@ const HISTORY_MAX_LIMIT = 1000;
 const HISTORY_MAX_RANGE_MS = 24 * 60 * 60 * 1000;
 const HISTORY_MAX_HIGH_VOLUME_RANGE_MS = 10 * 60 * 1000;
 const HISTORY_HIGH_VOLUME_PREFIXES = new Set(['[stderr]', '[exit]', '[control]']);
-const INVALID_OUTPUT_ENCODING_ERROR =
-    'Encoding must be one of: source, vertical-crop, vertical-rotate, 720p, 1080p';
+const INVALID_OUTPUT_ENCODING_ERROR = 'Encoding must be a valid encoding key';
 const OUTPUT_MUTATION_WHILE_RUNNING_ERROR =
     'Cannot change output URL or encoding while output is running. Stop output first.';
 
@@ -65,7 +65,6 @@ function parseHistoryPrefixes(value) {
 function registerOutputApi({
     app,
     db,
-    getConfig,
     recomputeConfigEtag,
     recomputeEtag,
     clearOutputRestartState,
@@ -175,7 +174,7 @@ function registerOutputApi({
             return { status: 400, error: nameError };
         }
 
-        if (!encoding) {
+        if (!encoding || (!SYSTEM_ENCODING_KEYS.has(encoding) && !db.getEncodingByKey(encoding))) {
             return { status: 400, error: INVALID_OUTPUT_ENCODING_ERROR };
         }
 
@@ -195,15 +194,6 @@ function registerOutputApi({
             const pid = req.params.pipelineId;
             const pipeline = db.getPipeline(pid);
             if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
-
-            const runtimeConfig = getConfig();
-            const outLimit = Number(runtimeConfig.outLimit);
-            const currentOutCount = db.listOutputsForPipeline(pid).length;
-            if (Number.isFinite(outLimit) && currentOutCount >= outLimit) {
-                return res
-                    .status(400)
-                    .json({ error: `Output limit reached for pipeline: ${outLimit}` });
-            }
 
             const { name, url, encoding } = normalizeOutputPayload(req.body);
             const validationError = getOutputValidationError({ name, url, encoding });

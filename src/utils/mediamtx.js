@@ -142,10 +142,8 @@ async function getMediamtxIngestPorts() {
     return cachedIngestPorts;
 }
 
-async function buildIngestUrls(streamKey, getConfig) {
-    const config = typeof getConfig === 'function' ? getConfig() : null;
-    const ingestConfig = config?.mediamtx?.ingest || {};
-    const ingestHost = ingestConfig.host || 'localhost';
+async function buildIngestUrls(streamKey) {
+    const ingestHost = 'localhost';
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
 

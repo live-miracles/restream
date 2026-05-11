@@ -19,6 +19,7 @@ DATA_DIR=/var/lib/restream
 LOG_DIR=/var/log/restream
 CONF_DIR=/etc/restream
 SERVICE_USER=restream
+SERVER_NAME="${SERVER_NAME:-Restream}"
 
 MEDIAMTX_VERSION=1.17.1
 FFMPEG_VERSION=7.1.4
@@ -103,6 +104,7 @@ else
 fi
 mkdir -p "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
+echo "Server name: $SERVER_NAME"
 
 # ── 6. Clone and build ───────────────────────────────────────────────────────
 
@@ -121,11 +123,8 @@ echo "Build complete."
 # ── 7. Config and data ───────────────────────────────────────────────────────
 
 step "7/8 Config and data"
-# Copy configs from the repo to /etc/restream/ — this is the canonical source.
-# To change config, edit files in $APP_DIR and re-run server-update.sh.
-cp "$APP_DIR/src/config/restream.json" "$CONF_DIR/restream.json"
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
-chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/restream.json" "$CONF_DIR/mediamtx.yml"
+chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml"
 echo "Config written to $CONF_DIR/"
 
 sudo -u "$SERVICE_USER" touch "$DATA_DIR/data.db"
@@ -155,7 +154,7 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/restream.service <<'EOF'
+cat > /etc/systemd/system/restream.service <<EOF
 [Unit]
 Description=Restream Control Plane
 After=network-online.target mediamtx.service
@@ -169,7 +168,6 @@ Group=restream
 WorkingDirectory=/opt/restream
 Environment=NODE_ENV=production
 Environment=PORT=3030
-Environment=RESTREAM_CONFIG_PATH=/etc/restream/restream.json
 Environment=FFMPEG_PATH=/usr/local/bin/ffmpeg
 Environment=FFPROBE_PATH=/usr/local/bin/ffprobe
 ExecStart=/usr/bin/node /opt/restream/src/index.js
@@ -188,13 +186,21 @@ systemctl daemon-reload
 systemctl enable --now mediamtx.service
 systemctl enable --now restream.service
 
+# Seed server name in database (wait briefly for the app to initialize the DB)
+sleep 2
+curl -s -X PATCH http://127.0.0.1:3030/config \
+    -H 'Content-Type: application/json' \
+    -d "{\"serverName\": \"$SERVER_NAME\"}" > /dev/null && echo "Server name set to: $SERVER_NAME"
+
 echo
 echo "=============================="
 echo " Setup complete"
 echo "=============================="
 echo "Dashboard: http://<VM-external-IP>:3030/"
-echo "Config:    $APP_DIR/src/config/restream.json (edit here, apply with server-update.sh)"
 echo "Data:      $DATA_DIR/data.db"
+echo ""
+echo "Change server name:"
+echo "  curl -X PATCH http://127.0.0.1:3030/config -H 'Content-Type: application/json' -d '{\"serverName\": \"My Server\"}'"
 echo ""
 echo "Check status:"
 echo "  systemctl status mediamtx.service"

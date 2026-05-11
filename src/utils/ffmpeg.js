@@ -82,13 +82,19 @@ function redactFfmpegArgs(args) {
 
 // ── Output encoding normalization ─────────────────────
 
-const SUPPORTED_OUTPUT_ENCODINGS = new Set([
-    'source',
-    'vertical-crop',
-    'vertical-rotate',
-    '720p',
-    '1080p',
-]);
+const VIDEO_BASE =
+    '-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -profile:v high -level:v 4.1 -g 60 -keyint_min 60 -sc_threshold 0';
+const AUDIO_BASE = '-c:a aac -b:a 128k -ar 48000 -ac 2';
+
+const SYSTEM_ENCODING_ARGS = {
+    source: null,
+    'vertical-crop': `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
+    'vertical-rotate': `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
+    '720p': `-vf scale=-2:720  ${VIDEO_BASE} -b:v 3000k -maxrate 3500k -bufsize 5000k ${AUDIO_BASE}`,
+    '1080p': `-vf scale=-2:1080 ${VIDEO_BASE} -b:v 5000k -maxrate 5800k -bufsize 8000k ${AUDIO_BASE}`,
+};
+
+const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
 const INVALID_OUTPUT_URL_ERROR =
     'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL';
@@ -99,7 +105,6 @@ function normalizeOutputEncoding(value) {
         .toLowerCase();
     if (!normalized) return 'source';
     if (normalized === 'vertical') return 'vertical-crop';
-    if (!SUPPORTED_OUTPUT_ENCODINGS.has(normalized)) return null;
     return normalized;
 }
 
@@ -122,7 +127,7 @@ function validateOutputUrl(url) {
 
 // ── FFmpeg argument builder ───────────────────────────
 
-function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
+function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', customArgs = null }) {
     const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
     let outputProtocol = '';
     let parsedOutputUrl = null;
@@ -147,73 +152,13 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source' }) {
         inputUrl,
     ];
 
-    if (normalizedEncoding === 'source') {
+    // customArgs (from a DB encoding) takes priority; then system encoding args; null = source copy.
+    const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
+
+    if (!resolvedArgStr) {
         args.push('-c:v', 'copy', '-c:a', 'copy');
     } else {
-        const profileByEncoding = {
-            'vertical-crop': {
-                vf: 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
-                videoBitrate: '2500k',
-                maxrate: '2800k',
-                bufsize: '4200k',
-            },
-            'vertical-rotate': {
-                vf: 'transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
-                videoBitrate: '2500k',
-                maxrate: '2800k',
-                bufsize: '4200k',
-            },
-            '720p': {
-                vf: 'scale=-2:720',
-                videoBitrate: '3000k',
-                maxrate: '3500k',
-                bufsize: '5000k',
-            },
-            '1080p': {
-                vf: 'scale=-2:1080',
-                videoBitrate: '5000k',
-                maxrate: '5800k',
-                bufsize: '8000k',
-            },
-        };
-
-        const profile = profileByEncoding[normalizedEncoding] || profileByEncoding['720p'];
-        args.push(
-            '-vf',
-            profile.vf,
-            '-c:v',
-            'libx264',
-            '-preset',
-            'veryfast',
-            '-tune',
-            'zerolatency',
-            '-pix_fmt',
-            'yuv420p',
-            '-profile:v',
-            'high',
-            '-level:v',
-            '4.1',
-            '-g',
-            '60',
-            '-keyint_min',
-            '60',
-            '-sc_threshold',
-            '0',
-            '-b:v',
-            profile.videoBitrate,
-            '-maxrate',
-            profile.maxrate,
-            '-bufsize',
-            profile.bufsize,
-            '-c:a',
-            'aac',
-            '-b:a',
-            '128k',
-            '-ar',
-            '48000',
-            '-ac',
-            '2',
-        );
+        args.push(...resolvedArgStr.trim().split(/\s+/).filter(Boolean));
     }
 
     if (outputProtocol === 'srt:') {
@@ -315,6 +260,8 @@ module.exports = {
     redactSensitiveUrl,
     redactFfmpegArgs,
     normalizeOutputEncoding,
+    SYSTEM_ENCODING_ARGS,
+    SYSTEM_ENCODING_KEYS,
     INVALID_OUTPUT_URL_ERROR,
     validateOutputUrl,
     buildFfmpegOutputArgs,

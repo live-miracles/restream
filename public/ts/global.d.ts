@@ -44,5 +44,10 @@ declare global {
         onOutputHistorySearchKeydown: (event: KeyboardEvent) => void;
         navigateOutputHistorySearch: (direction: number) => void;
         togglePipelineHistoryPlayPause: () => void;
+        saveServerName: () => Promise<void>;
+        openAddEncodingModal: () => void;
+        saveEncodingBtn: () => Promise<void>;
+        editEncodingBtn: (id: string) => void;
+        deleteEncodingBtn: (id: string) => Promise<void>;
     }
 }

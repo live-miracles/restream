@@ -92,6 +92,16 @@ function setupDatabaseSchema(db) {
   )
 `,
     ).run();
+
+    db.prepare(
+        `
+  CREATE TABLE IF NOT EXISTS encodings (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    ffmpeg_args TEXT NOT NULL
+  )
+`,
+    ).run();
 }
 
 module.exports = { setupDatabaseSchema };

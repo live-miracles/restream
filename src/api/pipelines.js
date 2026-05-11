@@ -94,7 +94,6 @@ async function resolvePipelineStreamKey({ requestedStreamKey, db, excludedPipeli
 function registerPipelineApi({
     app,
     db,
-    getConfig,
     healthMonitor,
     resetOutputFailureCount,
     clearOutputRestartState,
@@ -108,7 +107,7 @@ function registerPipelineApi({
             const streamKeys = await Promise.all(
                 (await getPermanentStreamKeys()).map(async (streamKey) => ({
                     ...streamKey,
-                    ingestUrls: await buildIngestUrls(streamKey.key, getConfig),
+                    ingestUrls: await buildIngestUrls(streamKey.key),
                 })),
             );
             return res.json(streamKeys);
@@ -119,12 +118,6 @@ function registerPipelineApi({
 
     app.post('/pipelines', async (req, res) => {
         try {
-            const runtimeConfig = getConfig();
-            const pipelineLimit = Number(runtimeConfig.pipelinesLimit);
-            if (Number.isFinite(pipelineLimit) && db.listPipelines().length >= pipelineLimit) {
-                return res.status(400).json({ error: `Pipeline limit reached: ${pipelineLimit}` });
-            }
-
             const name = req.body?.name;
             const requestedStreamKey = normalizePipelineStreamKey(req.body?.streamKey);
             const encoding = req.body?.encoding ?? null;
