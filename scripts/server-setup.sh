@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # One-shot setup for a Restream GCP Linux VM.
-# Installs Node.js 22, FFmpeg 7.1.4, MediaMTX 1.17.1, builds the app,
+# Installs Node.js 22, FFmpeg 7.1, MediaMTX 1.17.1, builds the app,
 # and registers systemd services that start on boot.
 #
 # Usage (run as root on the VM):
+#   sudo git clone https://github.com/live-miracles/restream /opt/restream
 #   sudo bash /opt/restream/scripts/server-setup.sh
+#
+# To use a fork:
 #   REPO_URL=https://github.com/your-fork/restream sudo bash scripts/server-setup.sh
+#
+# Idempotent: safe to re-run. Already-installed components are skipped.
+# If the repo was cloned as root, re-running fixes ownership before building.
 set -euo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -21,14 +27,7 @@ CONF_DIR=/etc/restream
 SERVICE_USER=restream
 
 MEDIAMTX_VERSION=1.17.1
-FFMPEG_VERSION=7.1.4
-
-arch="$(uname -m)"
-case "$arch" in
-    x86_64) MEDIAMTX_ARCH=amd64; FFMPEG_ARCH=linux64 ;;
-    aarch64) MEDIAMTX_ARCH=arm64; FFMPEG_ARCH=linuxarm64 ;;
-    *) echo "ERROR: unsupported architecture: $arch" >&2; exit 1 ;;
-esac
+FFMPEG_VERSION=7.1
 
 WORK="$(mktemp -d)"
 trap "rm -rf $WORK" EXIT
@@ -55,8 +54,12 @@ fi
 # ── 3. FFmpeg 7.1.4 (BtbN static build) ────────────────────────────────────
 
 step "3/8 FFmpeg $FFMPEG_VERSION"
-FFMPEG_FILENAME="ffmpeg-n${FFMPEG_VERSION}-${FFMPEG_ARCH}-gpl.tar.xz"
-FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/n${FFMPEG_VERSION}/${FFMPEG_FILENAME}"
+# Ubuntu 24.04 ships FFmpeg 6.1.x in apt. On 6.1.x, transient loss of an HLS
+# upload sink can trigger a retry-path bug: source-copy outputs usually fail
+# cleanly, but transcoded HLS outputs can terminate with SIGSEGV before
+# Restream retries them. FFmpeg 7.1+ includes the upstream fix.
+FFMPEG_FILENAME="ffmpeg-n${FFMPEG_VERSION}-latest-linux64-gpl-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_FILENAME}"
 
 if /usr/local/bin/ffmpeg -version 2>/dev/null | grep -q "ffmpeg version n${FFMPEG_VERSION}"; then
     echo "FFmpeg $FFMPEG_VERSION already installed."
@@ -76,7 +79,7 @@ step "4/8 MediaMTX $MEDIAMTX_VERSION"
 if /usr/local/bin/mediamtx --version 2>/dev/null | grep -q "$MEDIAMTX_VERSION"; then
     echo "MediaMTX $MEDIAMTX_VERSION already installed."
 else
-    MEDIAMTX_FILENAME="mediamtx_v${MEDIAMTX_VERSION}_linux_${MEDIAMTX_ARCH}.tar.gz"
+    MEDIAMTX_FILENAME="mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
     MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${MEDIAMTX_FILENAME}"
     CHECKSUMS_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/checksums.sha256"
     echo "Downloading MediaMTX v${MEDIAMTX_VERSION}..."
@@ -95,14 +98,16 @@ fi
 # ── 5. Service user and directories ─────────────────────────────────────────
 
 step "5/8 Service user and directories"
+# restream is a no-login system user; the app and both services run as this
+# user so that neither has root privileges at runtime.
 if ! id "$SERVICE_USER" &>/dev/null; then
     useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
     echo "Created user: $SERVICE_USER"
 else
     echo "User $SERVICE_USER already exists."
 fi
-mkdir -p "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
-chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
+mkdir -p "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
+chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 
 # ── 6. Clone and build ───────────────────────────────────────────────────────
 
@@ -111,6 +116,7 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
     sudo -u "$SERVICE_USER" git clone "$REPO_URL" "$APP_DIR"
 else
     echo "Repository already present at $APP_DIR, skipping clone."
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 fi
 cd "$APP_DIR"
 sudo -u "$SERVICE_USER" npm ci
@@ -125,6 +131,8 @@ cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml"
 echo "Config written to $CONF_DIR/"
 
+# data.db lives in DATA_DIR so it survives a full re-clone of the app.
+# A symlink in the app root keeps the app's default path working without config changes.
 sudo -u "$SERVICE_USER" touch "$DATA_DIR/data.db"
 if [[ ! -L "$APP_DIR/data.db" ]]; then
     sudo -u "$SERVICE_USER" ln -sfn "$DATA_DIR/data.db" "$APP_DIR/data.db"
@@ -133,6 +141,10 @@ fi
 # ── 8. Systemd units ─────────────────────────────────────────────────────────
 
 step "8/8 Systemd"
+# mediamtx.yml keeps apiAddress and hlsAddress bound to 127.0.0.1 so the
+# MediaMTX control API and HLS preview are never exposed directly to the network.
+# hlsAlwaysRemux is off: HLS muxers spin up on first viewer request, which
+# saves CPU/RAM when inputs are idle at the cost of a slower first preview load.
 cat > /etc/systemd/system/mediamtx.service <<'EOF'
 [Unit]
 Description=MediaMTX Streaming Server

@@ -137,27 +137,22 @@ GitHub Actions (`.github/workflows/ci.yml`) runs three jobs on every push and pu
 
 ## Linux VM Deployment (GCP)
 
-For a full walkthrough see [docs/deployment-host.md](docs/deployment-host.md). The setup script automates the whole process.
+### Host Requirements
+
+- 2 vCPU, 4 GB RAM, 20 GB disk
+- Ubuntu 22.04 or 24.04 with systemd
+- Node.js 22, FFmpeg 7.1+, MediaMTX, git — all installed by the setup script
 
 ### Initial Setup
 
-SSH into a fresh Ubuntu 22.04 or 24.04 VM, clone the repo, and run the setup script as root:
+SSH into a fresh VM, clone the repo, and run the setup script as root:
 
 ```sh
-git clone https://github.com/live-miracles/restream /opt/restream
+sudo git clone https://github.com/live-miracles/restream /opt/restream
 sudo bash /opt/restream/scripts/server-setup.sh
 ```
 
-The script installs Node.js 22, FFmpeg 7.1.4 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers systemd services that start on every boot. Both services run as the non-root `restream` user.
-
-To change the server name or manage custom encodings, open the Settings page in the dashboard (`http://<VM-external-IP>:3030/settings.html`).
-
-To update MediaMTX config and restart services:
-
-```sh
-sudo vim /opt/restream/mediamtx.yml
-sudo bash /opt/restream/scripts/server-update.sh
-```
+The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
 
 ### GCP Firewall Rules
 
@@ -171,22 +166,65 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 
 MediaMTX API (`9997`) and HLS preview (`8888`) stay localhost-only.
 
+### Settings
+
+To change the server name or manage custom encodings, open the Settings page: `http://<VM-external-IP>:3030/settings.html`.
+
+To edit MediaMTX config and apply it:
+
+```sh
+sudo vim /opt/restream/mediamtx.yml
+sudo bash /opt/restream/scripts/server-update.sh
+```
+
 ### Updating
 
 ```sh
 sudo bash /opt/restream/scripts/server-update.sh
 ```
 
-This pulls the latest code, rebuilds, copies config files from the repo to `/etc/restream/`, and restarts both services.
+Pulls the latest code, rebuilds, copies config to `/etc/restream/`, and restarts both services.
 
-### Useful Commands
+### Operations
+
+Follow logs:
 
 ```sh
-journalctl -u restream.service -f          # follow app logs
-journalctl -u mediamtx.service -f         # follow MediaMTX logs
-systemctl status restream.service         # check service status
-curl -fsS http://127.0.0.1:3030/healthz   # health check
+journalctl -u restream.service -f
+journalctl -u mediamtx.service -f
 ```
+
+Restart services:
+
+```sh
+sudo systemctl restart mediamtx.service
+sudo systemctl restart restream.service
+```
+
+Check health:
+
+```sh
+curl -fsS http://127.0.0.1:3030/healthz
+curl -fsS http://127.0.0.1:3030/health
+```
+
+Backup SQLite:
+
+```sh
+cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
+```
+
+### Reverse Proxy and TLS
+
+Put a reverse proxy (nginx, Caddy) in front of port `3030` and terminate TLS at `443`. Keep MediaMTX API (`9997`) bound to localhost. Restrict direct access to port `3030` via firewall once the proxy is in place.
+
+### Security Baseline
+
+- Both services run as non-root (`restream` user).
+- Keep `9997` and `8888` local-only.
+- Use firewall rules to restrict ingest and UI ports.
+- Rotate stream keys periodically.
+- Apply OS and package updates on a maintenance schedule.
 
 ## Docs
 
@@ -194,4 +232,3 @@ curl -fsS http://127.0.0.1:3030/healthz   # health check
 - [Configuration](docs/configuration.md): environment variables and app config
 - [API Reference](docs/api-reference.md): REST endpoints
 - [Health Mapping](docs/health-mapping.md): how statuses are derived
-- [Host Deployment](docs/deployment-host.md): systemd-style Linux deployment

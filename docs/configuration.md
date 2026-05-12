@@ -84,7 +84,7 @@ Server name and custom encodings are stored in the SQLite `meta` and `encodings`
 
 ## 3. Local Host Run
 
-For long-lived systemd deployment on a Linux host, see [deployment-host.md](./deployment-host.md).
+For long-lived systemd deployment on a Linux host, see the [Linux VM Deployment](../README.md#linux-vm-deployment-gcp) section in the README.
 
 MediaMTX and the Node.js app run as host processes.
 
