@@ -122,18 +122,22 @@ function renderStatsColumn(selectedPipe: string | null): void {
     const sectionHeader = (label: string, count: number) =>
         `<tr class="bg-base-100"><th colspan="9">${label} <span class="badge mx-1">${count}</span></th></tr>`;
 
-    const tableRow = (values: (string | number)[], warning = false) =>
-        `<tr${warning ? ' class="bg-warning/10"' : ''}>${values.map((v) => `<td>${v}</td>`).join('')}</tr>`;
+    const tableRow = (values: (string | number)[], warning = false, error = false) => {
+        const rowClass = error ? ' class="bg-error/10"' : warning ? ' class="bg-warning/10"' : '';
+        return `<tr${rowClass}>${values.map((v) => `<td>${v}</td>`).join('')}</tr>`;
+    };
 
     let html = sectionHeader('Inputs', activeInputs.length);
     activeInputs.forEach((p) => {
         const video = p.input.video || {};
         const audio = p.input.audio || {};
+        const bitrateMbps =
+            p.input.bitrateKbps != null ? (p.input.bitrateKbps / 1000).toFixed(2) : '--';
         html += tableRow(
             [
                 p.input.time != null ? (msToHHMMSS(p.input.time) ?? '--') : '--',
                 p.name,
-                p.input.bitrateKbps != null ? Number(p.input.bitrateKbps).toFixed(1) : '--',
+                bitrateMbps,
                 formatCodecName(video.codec) || '--',
                 video.width && video.height ? `${video.width}x${video.height}` : '--',
                 video.fps != null ? String(video.fps) : '--',
@@ -146,25 +150,49 @@ function renderStatsColumn(selectedPipe: string | null): void {
     });
 
     html += sectionHeader('Outputs', activeOuts.length);
-    activeOuts.forEach((o) => {
-        const totalSizeMb =
-            o.totalSize != null && o.totalSize > 0
-                ? `${(o.totalSize / (1024 * 1024)).toFixed(1)} MB`
-                : '--';
-        html += tableRow(
-            [
-                o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--',
-                `${o.pipe}: ${o.name}`,
-                totalSizeMb,
-                '--',
-                '--',
-                '--',
-                '--',
-                '--',
-                '--',
-            ],
-            o.status === 'warning',
-        );
+    state.pipelines.forEach((p) => {
+        p.outs.forEach((o) => {
+            const isActive = o.status === 'on' || o.status === 'warning';
+            const isUnexpectedlyDown = isOutputUnexpectedlyDown(o);
+            const bitrateMbps =
+                isActive && o.bitrateKbps != null && o.bitrateKbps >= 0
+                    ? (o.bitrateKbps / 1000).toFixed(2)
+                    : '--';
+
+            let videoCodec = '--';
+            let videoSize = '--';
+            let videoFps = '--';
+            let audioCodec = '--';
+            let audioCh = '--';
+            let audioFreq = '--';
+
+            if (isActive && o.encoding === 'source') {
+                const video = p.input.video || {};
+                const audio = p.input.audio || {};
+                videoCodec = formatCodecName(video.codec) || '--';
+                videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';
+                videoFps = video.fps != null ? String(video.fps) : '--';
+                audioCodec = formatCodecName(audio.codec) || '--';
+                audioCh = audio.channels ? String(audio.channels) : '--';
+                audioFreq = audio.sample_rate ? String(audio.sample_rate) : '--';
+            }
+
+            html += tableRow(
+                [
+                    o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--',
+                    `${o.pipe}: ${o.name}`,
+                    bitrateMbps,
+                    videoCodec,
+                    videoSize,
+                    videoFps,
+                    audioCodec,
+                    audioCh,
+                    audioFreq,
+                ],
+                o.status === 'warning',
+                isUnexpectedlyDown,
+            );
+        });
     });
 
     statsTable.innerHTML = html;
