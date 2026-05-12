@@ -686,7 +686,9 @@ async function openOutModal(
         'out-encoding-input',
     ) as HTMLSelectElement | null;
     if (encodingSelect) {
-        const rawEncoding = String(output?.encoding || 'source').trim().toLowerCase();
+        const rawEncoding = String(output?.encoding || 'source')
+            .trim()
+            .toLowerCase();
         encodingSelect.value = rawEncoding || 'source';
     }
 

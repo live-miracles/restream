@@ -37,7 +37,6 @@ declare global {
         editPipeBtn: () => Promise<void>;
         deletePipeBtn: () => Promise<void>;
         toggleHistoryPlayPause: () => void;
-        toggleHistoryRedaction: () => void;
         setOutputHistoryMode: (mode: string) => void;
         setOutputHistoryOrder: (order: string) => void;
         setOutputHistorySearch: (query: string) => void;

@@ -198,20 +198,21 @@ function renderStatsColumn(selectedPipe: string | null): void {
 
     addSectionHeader('Outputs', activeOuts.length);
     activeOuts.forEach((o) => {
-        const outputBw = o.bitrateKbps;
-        const video = o.video || {};
-        const audio = o.audio || {};
+        const totalSizeMb =
+            o.totalSize !== null && o.totalSize !== undefined && o.totalSize > 0
+                ? `${(o.totalSize / (1024 * 1024)).toFixed(1)} MB`
+                : '--';
         appendRow(
             [
                 o.time !== null && o.time !== undefined ? (msToHHMMSS(o.time) ?? '--') : '--',
                 `${o.pipe}: ${o.name}`,
-                outputBw !== null && outputBw !== undefined ? Number(outputBw).toFixed(1) : '--',
-                formatCodecName(video.codec) || '--',
-                video.width && video.height ? `${video.width}x${video.height}` : '--',
-                video.fps !== null && video.fps !== undefined ? String(video.fps) : '--',
-                formatCodecName(audio.codec) || '--',
-                audio.channels ? String(audio.channels) : '--',
-                audio.sample_rate ? String(audio.sample_rate) : '--',
+                totalSizeMb,
+                '--',
+                '--',
+                '--',
+                '--',
+                '--',
+                '--',
             ],
             o.status === 'warning',
         );

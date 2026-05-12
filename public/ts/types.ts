@@ -94,12 +94,7 @@ export interface InputHealth {
 
 export interface OutputHealth {
     status?: string;
-    bitrateKbps?: number | null;
     totalSize?: number | null;
-    progressFrame?: number | null;
-    progressFps?: number | null;
-    media?: { video?: VideoTrack; audio?: AudioTrack };
-    mediaSource?: string;
 }
 
 export interface PipelineHealth {
@@ -142,14 +137,8 @@ export interface OutputView {
     url: string;
     status: string;
     time: number | null;
-    video: VideoTrack | null;
-    audio: AudioTrack | null;
-    mediaSource: string;
     job: Job | null;
     totalSize: number | null;
-    bitrateKbps: number | null;
-    progressFrame: number | null;
-    progressFps: number | null;
 }
 
 export interface PipelineStats {

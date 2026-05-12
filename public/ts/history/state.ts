@@ -13,7 +13,6 @@ export interface OutputHistoryState {
     expandedContextKeys: Set<string>;
     contextLogsByKey: Map<string, HistoryLog[]>;
     contextLoadingKeys: Set<string>;
-    redacted: boolean;
     playing: boolean;
     pollTimer: ReturnType<typeof setTimeout> | null;
     pollEveryMs: number | null;
@@ -51,7 +50,6 @@ export const outputHistoryState: OutputHistoryState = {
     expandedContextKeys: new Set(),
     contextLogsByKey: new Map(),
     contextLoadingKeys: new Set(),
-    redacted: true,
     playing: false,
     pollTimer: null,
     pollEveryMs: null,

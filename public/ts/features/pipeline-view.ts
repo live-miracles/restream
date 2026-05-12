@@ -379,7 +379,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                         ? 'status-error'
                         : 'status-neutral';
 
-            const isRunning = o.status === 'on' || o.status === 'warning';
+            const isStopped = o.desiredState === 'stopped';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
             const metadata: string[] = [];
 
@@ -387,35 +387,6 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 metadata.push(
                     metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
                 );
-            }
-
-            const outputProgressFrame = Number(o.progressFrame);
-            if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
-                metadata.push(
-                    metricBadge(
-                        `Frame ${Math.trunc(outputProgressFrame)}`,
-                        'Output frame count from FFmpeg progress',
-                    ),
-                );
-            }
-
-            const outputProgressFps = Number(o.progressFps);
-            const outputFpsText = formatProgressFps(outputProgressFps);
-            if (outputFpsText) {
-                metadata.push(metricBadge(outputFpsText, 'Output FPS from FFmpeg progress'));
-            }
-
-            if (isRunning) {
-                const outputBitrateKbps = Number(o.bitrateKbps);
-                if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
-                    metadata.push(
-                        metricBadge(
-                            '',
-                            'Output bitrate from FFmpeg progress',
-                            `data-output-bitrate="${outputBitrateKbps}"`,
-                        ),
-                    );
-                }
             }
 
             const outputTotalSizeBytes = Number(o.totalSize);
@@ -434,11 +405,11 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 <div class="min-w-0">
                     <div class="font-semibold flex items-center gap-2 min-w-0">
                         <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                        <button class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'} ${toggleBusy ? 'btn-disabled' : ''}"
+                        <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
                             data-action="toggle-output"
                             data-output-index="${outputIndex}"
                             ${toggleBusy ? 'disabled' : ''}>
-                            ${isRunning ? 'Stop' : 'Start'}
+                            ${isStopped ? 'Start' : 'Stop'}
                         </button>
                         <span class="shrink-0 truncate">${o.name}</span>
                         <code class="text-sm font-normal opacity-70 truncate" data-output-url="${outputIndex}">
@@ -448,8 +419,8 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 </div>
                 <div class="flex items-center gap-2 self-start">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
-                    <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
-                    <button class="btn btn-xs btn-error btn-outline ${isRunning ? 'btn-disabled' : ''}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
+                    <button class="btn btn-xs btn-accent btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
+                    <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
                 ${
                     metadata.length
@@ -484,8 +455,8 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             button.disabled = true;
             button.classList.add('btn-disabled');
             try {
-                const running = out.status === 'on' || out.status === 'warning';
-                if (running) {
+                const shouldStop = out.desiredState !== 'stopped';
+                if (shouldStop) {
                     await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, button);
                 } else {
                     await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, button);
@@ -504,6 +475,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         }
 
         if (button.dataset.action === 'edit-output') {
+            if (button.classList.contains('btn-disabled')) return;
             pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);
         }
 

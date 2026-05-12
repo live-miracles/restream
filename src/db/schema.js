@@ -92,7 +92,6 @@ function setupDatabaseSchema(db) {
   )
 `,
     ).run();
-
 }
 
 module.exports = { setupDatabaseSchema };

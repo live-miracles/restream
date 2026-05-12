@@ -190,70 +190,6 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', custo
     return args;
 }
 
-// ── FFmpeg stderr output media parser ────────────────
-// Parse FFmpeg's "Output #0" stderr section to extract actual output stream media info.
-// FFmpeg prints these lines before encoding starts; we capture them once and discard the buffer.
-// Example lines:
-//   Stream #0:0: Video: h264 (libx264), yuv420p, 1280x720, q=-1--1, 3000 kb/s, 30 fps, 1k tbn
-//   Stream #0:1: Audio: aac, 48000 Hz, stereo, fltp, 128 kb/s
-// Returns { video: {...}, audio: {...} } once both are found, or null if not yet complete.
-function tryParseOutputMedia(stderrText) {
-    // Only look at the region after "Output #0" to avoid capturing input stream info.
-    const outputSectionIdx = stderrText.indexOf('Output #0');
-    if (outputSectionIdx === -1) return null;
-    const outputSection = stderrText.slice(outputSectionIdx);
-
-    let video = null;
-    let audio = null;
-
-    const streamLineRe = /Stream #\d+:\d+(?:\([^)]*\))?: (Video|Audio): (.+)/g;
-    let m;
-    while ((m = streamLineRe.exec(outputSection)) !== null) {
-        const type = m[1];
-        const rest = m[2];
-        if (type === 'Video' && !video) {
-            const codecMatch = rest.match(/^(\w+)/);
-            // Anchor to pixel-format token to avoid matching the RTMP/FLV hex codec tag.
-            const dimMatch = rest.match(
-                /\b(?:yuv|nv|p0|gray|rgb|bgr)\w*(?:\([^)]*\))?,\s*(\d+)x(\d+)/i,
-            );
-            const fpsMatch = rest.match(/[\s,](\d+(?:\.\d+)?)\s*fps/);
-            video = {
-                codec: codecMatch ? codecMatch[1].toLowerCase() : null,
-                width: dimMatch ? Number(dimMatch[1]) : null,
-                height: dimMatch ? Number(dimMatch[2]) : null,
-                fps: fpsMatch ? Number(fpsMatch[1]) : null,
-                profile: null,
-                level: null,
-            };
-        } else if (type === 'Audio' && !audio) {
-            const codecMatch = rest.match(/^(\w+)/);
-            const rateMatch = rest.match(/(\d+)\s*Hz/);
-            const chMatch = rest.match(/\b(stereo|mono|5\.1|7\.1|quadraphonic)\b/i);
-            const chNumMatch = rest.match(/\b(\d+)\s*channels?\b/i);
-            let channels = null;
-            if (chMatch) {
-                const ch = chMatch[1].toLowerCase();
-                if (ch === 'stereo') channels = 2;
-                else if (ch === 'mono') channels = 1;
-                else if (ch === '5.1') channels = 6;
-                else if (ch === '7.1') channels = 8;
-                else if (ch === 'quadraphonic') channels = 4;
-            } else if (chNumMatch) {
-                channels = Number(chNumMatch[1]);
-            }
-            audio = {
-                codec: codecMatch ? codecMatch[1].toLowerCase() : null,
-                sample_rate: rateMatch ? Number(rateMatch[1]) : null,
-                channels,
-            };
-        }
-    }
-
-    if (!video) return null;
-    return { video, audio };
-}
-
 module.exports = {
     shellQuote,
     buildCommandPreview,
@@ -266,5 +202,4 @@ module.exports = {
     INVALID_OUTPUT_URL_ERROR,
     validateOutputUrl,
     buildFfmpegOutputArgs,
-    tryParseOutputMedia,
 };

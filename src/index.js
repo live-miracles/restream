@@ -39,9 +39,7 @@ app.use(
 const appPort = Number(process.env.PORT || 3030);
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
-const ffmpegProgressByJobId = new Map(); // jobId -> latest ffmpeg progress block
-// Parsed output media info from FFmpeg stderr "Output #0" section.
-const ffmpegOutputMediaByJobId = new Map(); // jobId -> { video: {...}, audio: {...} }
+const ffmpegProgressByJobId = new Map(); // jobId -> { total_size }
 
 // ── Shared child-process handle registry ─────────────
 const processes = new Map(); // jobId -> ChildProcess
@@ -57,7 +55,6 @@ const healthMonitor = createHealthMonitorService({
     createHash: crypto.createHash.bind(crypto),
     normalizeEtag,
     ffmpegProgressByJobId,
-    ffmpegOutputMediaByJobId,
 });
 
 // ── Output lifecycle (FFmpeg process management) ──────
@@ -66,7 +63,6 @@ const outputLifecycle = createOutputLifecycleService({
     spawn,
     processes,
     ffmpegProgressByJobId,
-    ffmpegOutputMediaByJobId,
     recomputeEtag,
     isInputOn: healthMonitor.isInputOn,
 });

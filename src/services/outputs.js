@@ -10,7 +10,6 @@ const {
     redactFfmpegArgs,
     redactSensitiveUrl,
     shouldPersistFfmpegStderrLine,
-    tryParseOutputMedia,
     validateOutputUrl,
 } = require('../utils/ffmpeg');
 
@@ -36,7 +35,6 @@ function createOutputLifecycleService({
     spawn,
     processes,
     ffmpegProgressByJobId,
-    ffmpegOutputMediaByJobId,
     recomputeEtag,
     isInputOn,
 }) {
@@ -363,12 +361,6 @@ function createOutputLifecycleService({
         const pushLog = (msg, type = 'output.log', data = null) =>
             db.appendJobLog(job.id, msg, pipelineId, outputId, type, data);
 
-        pushLog(
-            `[lifecycle] started pid=${child.pid ?? 'null'} trigger=${trigger} reason=${reason}`,
-            'lifecycle.started',
-            { pid: child.pid ?? null, trigger, reason },
-        );
-
         child.on('error', (err) => {
             pushLog(`[error] ${errMsg(err)}`, 'output.error', { error: errMsg(err) });
             db.updateJob(job.id, {
@@ -384,11 +376,11 @@ function createOutputLifecycleService({
             stopRequestedJobIds.delete(job.id);
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
-            ffmpegOutputMediaByJobId.delete(job.id);
         });
 
-        // fd3 progress pipe
+        // fd3 progress pipe — only track total_size for output byte counter
         let progressBuf = '';
+        let loggedConnected = false;
         child.stdio[3]?.on('data', (d) => {
             progressBuf += d.toString();
             const lines = progressBuf.split('\n');
@@ -396,17 +388,27 @@ function createOutputLifecycleService({
             const latest = ffmpegProgressByJobId.get(job.id) || {};
             for (const raw of lines) {
                 const line = raw.trim();
-                const eq = line.indexOf('=');
-                if (eq > 0) latest[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+                if (line.startsWith('total_size=')) {
+                    latest.total_size = line.slice('total_size='.length).trim();
+                    if (!loggedConnected) {
+                        const size = Number(String(latest.total_size || '0').trim());
+                        if (Number.isFinite(size) && size > 0) {
+                            loggedConnected = true;
+                            pushLog(
+                                `[lifecycle] connected pid=${child.pid ?? 'null'} trigger=${trigger}`,
+                                'lifecycle.connected',
+                                { pid: child.pid ?? null, trigger },
+                            );
+                        }
+                    }
+                }
             }
             ffmpegProgressByJobId.set(job.id, latest);
         });
 
-        // stderr
-        let stderrBuf = '';
+        // stderr — log to history, suppress repetitive HLS noise
         let stderrLogBuf = '';
         let hlsNoiseSuppressed = false;
-        let mediaParsed = false;
 
         const flushStderr = (chunk = '', flushAll = false) => {
             stderrLogBuf += chunk;
@@ -428,19 +430,7 @@ function createOutputLifecycleService({
             }
         };
 
-        child.stderr?.on('data', (d) => {
-            const s = d.toString();
-            flushStderr(s);
-            if (!mediaParsed) {
-                stderrBuf += s;
-                const media = tryParseOutputMedia(stderrBuf);
-                if (media && stderrBuf.includes('Stream mapping:')) {
-                    mediaParsed = true;
-                    ffmpegOutputMediaByJobId.set(job.id, media);
-                    stderrBuf = '';
-                }
-            }
-        });
+        child.stderr?.on('data', (d) => flushStderr(d.toString()));
 
         child.on('exit', (code, signal) => {
             flushStderr('', true);
@@ -462,6 +452,7 @@ function createOutputLifecycleService({
                 exitCode: code ?? null,
                 exitSignal: signal ?? null,
             });
+
             pushLog(
                 `[lifecycle] exited status=${status} requestedStop=${wasStopRequested} code=${code ?? 'null'} signal=${signal ?? 'null'}`,
                 'lifecycle.exited',
@@ -479,7 +470,6 @@ function createOutputLifecycleService({
             recomputeEtag();
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
-            ffmpegOutputMediaByJobId.delete(job.id);
 
             if (!wasStopRequested) {
                 const currentOutput = db.getOutput(pipelineId, outputId);

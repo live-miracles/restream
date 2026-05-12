@@ -117,19 +117,6 @@ export function setOutputHistoryMode(mode: string): void {
     void pollHistoryOnce(true);
 }
 
-export function toggleHistoryRedaction(): void {
-    outputHistoryState.redacted = !outputHistoryState.redacted;
-    const btn = document.getElementById('output-history-redact');
-    if (btn) {
-        const label = outputHistoryState.redacted ? 'Show URLs' : 'Hide URLs';
-        btn.title = label;
-        btn.setAttribute('aria-label', label);
-        btn.classList.toggle('btn-outline', outputHistoryState.redacted);
-        btn.classList.toggle('btn-warning', !outputHistoryState.redacted);
-    }
-    renderOutputHistory(false);
-}
-
 function stopHistoryPoll(): void {
     if (outputHistoryState.pollTimer) {
         clearTimeout(outputHistoryState.pollTimer);
@@ -229,16 +216,8 @@ export async function openOutputHistoryModal(
     outputHistoryState.expandedContextKeys = new Set();
     outputHistoryState.contextLogsByKey = new Map();
     outputHistoryState.contextLoadingKeys = new Set();
-    outputHistoryState.redacted = true;
-
     title.textContent = `History: ${outputHistoryState.outputName}`;
     updateHistoryPlayPauseBtn();
-    const redactBtn = document.getElementById('output-history-redact');
-    if (redactBtn) {
-        redactBtn.title = 'Show URLs';
-        redactBtn.classList.add('btn-outline');
-        redactBtn.classList.remove('btn-warning');
-    }
     loading.classList.remove('hidden');
     renderOutputHistory();
     modal.showModal();
@@ -385,7 +364,6 @@ setHistoryRenderCallbacks({
 });
 
 window.toggleHistoryPlayPause = toggleHistoryPlayPause;
-window.toggleHistoryRedaction = toggleHistoryRedaction;
 window.setOutputHistoryMode = setOutputHistoryMode;
 window.setOutputHistoryOrder = setOutputHistoryOrder;
 window.setOutputHistorySearch = setOutputHistorySearch;

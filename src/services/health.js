@@ -1,11 +1,26 @@
+const { execFile } = require('child_process');
 const { errMsg, log } = require('../utils/app');
 const {
     MEDIAMTX_FETCH_TIMEOUT_MS,
     fetchMediamtxJson,
     getMediamtxApiBaseUrl,
     buildMediamtxPath,
+    buildRtspInputUrl,
 } = require('../utils/mediamtx');
-const { normalizeOutputEncoding } = require('../utils/ffmpeg');
+
+const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
+const FFPROBE_DELAYS_MS = [3000, 10000, 20000, 40000]; // initial delay + 3 retries
+
+function parseFrameRate(str) {
+    if (!str) return null;
+    const parts = String(str).split('/');
+    if (parts.length !== 2) return null;
+    const num = Number(parts[0]);
+    const den = Number(parts[1]);
+    if (!den || !Number.isFinite(num) || !Number.isFinite(den)) return null;
+    const fps = num / den;
+    return Number.isFinite(fps) && fps > 0 ? Number(fps.toFixed(3)) : null;
+}
 
 const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 
@@ -28,54 +43,12 @@ function parseFfmpegNumber(raw) {
     return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-function parseFfmpegBitrateToKbps(rateValue) {
-    if (rateValue === null || rateValue === undefined) return null;
-    const raw = String(rateValue).trim();
-    if (!raw || raw.toUpperCase() === 'N/A') return null;
-    const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*([kKmMgG]?)\s*(?:bits\/s)?$/);
-    if (!match) return null;
-    const value = Number(match[1]);
-    if (!Number.isFinite(value) || value < 0) return null;
-    const unit = (match[2] || '').toLowerCase();
-    let bps = value;
-    if (unit === 'k') bps = value * 1000;
-    else if (unit === 'm') bps = value * 1000 * 1000;
-    else if (unit === 'g') bps = value * 1000 * 1000 * 1000;
-    return Number((bps / 1000).toFixed(1));
-}
-
 function getSessionBytesIn(record) {
     return record?.inboundBytes || record?.bytesReceived || 0;
 }
 
 function getSessionBytesOut(record) {
     return record?.outboundBytes || record?.bytesSent || 0;
-}
-
-function findFirstVideoTrack(pathInfo) {
-    return (
-        (pathInfo?.tracks2 || []).find((track) =>
-            String(track.codec || '')
-                .toLowerCase()
-                .includes('264'),
-        ) || null
-    );
-}
-
-function findFirstAudioTrack(pathInfo) {
-    return (
-        (pathInfo?.tracks2 || []).find((track) => {
-            const codec = String(track.codec || '').toLowerCase();
-            if (!codec) return false;
-            return (
-                !codec.includes('264') &&
-                !codec.includes('265') &&
-                !codec.includes('vp8') &&
-                !codec.includes('vp9') &&
-                !codec.includes('av1')
-            );
-        }) || null
-    );
 }
 
 function indexPublishersByPath(rtmpConns, srtConns) {
@@ -185,9 +158,97 @@ function createHealthMonitorService({
     createHash,
     normalizeEtag,
     ffmpegProgressByJobId,
-    ffmpegOutputMediaByJobId,
 }) {
     let inputRecoveryHandler = null;
+
+    const ffprobeResultByPipelineId = new Map(); // pipelineId -> { video, audio }
+    const ffprobeRetryByPipelineId = new Map(); // pipelineId -> { timer, attempt }
+
+    function runFfprobe(streamKey) {
+        const url = buildRtspInputUrl(streamKey);
+        return new Promise((resolve) => {
+            execFile(
+                ffprobeCmd,
+                [
+                    '-v',
+                    'quiet',
+                    '-print_format',
+                    'json',
+                    '-show_streams',
+                    '-rtsp_transport',
+                    'tcp',
+                    url,
+                ],
+                { timeout: 15000 },
+                (err, stdout) => {
+                    if (err) {
+                        resolve(null);
+                        return;
+                    }
+                    try {
+                        const data = JSON.parse(stdout);
+                        const streams = data.streams || [];
+                        const vs = streams.find((s) => s.codec_type === 'video') || null;
+                        const as_ = streams.find((s) => s.codec_type === 'audio') || null;
+                        resolve({
+                            video: vs
+                                ? {
+                                      codec: vs.codec_name || null,
+                                      width: vs.width || null,
+                                      height: vs.height || null,
+                                      fps: parseFrameRate(vs.r_frame_rate),
+                                      profile: vs.profile || null,
+                                      level: vs.level != null ? String(vs.level / 10) : null,
+                                  }
+                                : null,
+                            audio: as_
+                                ? {
+                                      codec: as_.codec_name || null,
+                                      channels: as_.channels || null,
+                                      sample_rate: as_.sample_rate ? Number(as_.sample_rate) : null,
+                                      profile: as_.profile || null,
+                                  }
+                                : null,
+                        });
+                    } catch {
+                        resolve(null);
+                    }
+                },
+            );
+        });
+    }
+
+    function clearFfprobeState(pipelineId) {
+        const entry = ffprobeRetryByPipelineId.get(pipelineId);
+        if (entry?.timer) clearTimeout(entry.timer);
+        ffprobeRetryByPipelineId.delete(pipelineId);
+        ffprobeResultByPipelineId.delete(pipelineId);
+    }
+
+    function scheduleFfprobe(pipelineId, streamKey, attempt = 0) {
+        if (attempt >= FFPROBE_DELAYS_MS.length) return;
+        const entry = { timer: null, attempt };
+        ffprobeRetryByPipelineId.set(pipelineId, entry);
+        entry.timer = setTimeout(async () => {
+            entry.timer = null;
+            if (!ffprobeRetryByPipelineId.has(pipelineId)) return;
+            log('debug', 'Running ffprobe for input', { pipelineId, attempt });
+            const result = await runFfprobe(streamKey);
+            if (!ffprobeRetryByPipelineId.has(pipelineId)) return;
+            if (result) {
+                ffprobeResultByPipelineId.set(pipelineId, result);
+                ffprobeRetryByPipelineId.delete(pipelineId);
+                log('info', 'ffprobe captured input stream info', { pipelineId });
+            } else if (attempt + 1 < FFPROBE_DELAYS_MS.length) {
+                log('debug', 'ffprobe failed, retrying', { pipelineId, nextAttempt: attempt + 1 });
+                scheduleFfprobe(pipelineId, streamKey, attempt + 1);
+            } else {
+                ffprobeRetryByPipelineId.delete(pipelineId);
+                log('warn', 'ffprobe exhausted all attempts for input', { pipelineId });
+            }
+        }, FFPROBE_DELAYS_MS[attempt]);
+        entry.timer.unref?.();
+    }
 
     const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
 
@@ -364,9 +425,13 @@ function createHealthMonitorService({
         };
     }
 
-    function buildPipelineInputHealth({ streamKey, pathInfo, inputStatus, publisher, inputFps }) {
-        const firstVideoTrack = findFirstVideoTrack(pathInfo);
-        const firstAudioTrack = findFirstAudioTrack(pathInfo);
+    function buildPipelineInputHealth({
+        streamKey,
+        pathInfo,
+        inputStatus,
+        publisher,
+        ffprobeResult,
+    }) {
         return {
             status: inputStatus,
             publishStartedAt: pathInfo?.availableTime || pathInfo?.readyTime || null,
@@ -375,62 +440,28 @@ function createHealthMonitorService({
             readers: (pathInfo?.readers || []).length,
             bytesReceived: pathInfo?.bytesReceived || 0,
             bytesSent: pathInfo?.bytesSent || 0,
-            video: firstVideoTrack
-                ? {
-                      codec: firstVideoTrack.codec || null,
-                      width: firstVideoTrack.codecProps?.width || null,
-                      height: firstVideoTrack.codecProps?.height || null,
-                      profile: firstVideoTrack.codecProps?.profile || null,
-                      level: firstVideoTrack.codecProps?.level || null,
-                      fps: inputFps ?? null,
-                      bw: null,
-                  }
-                : null,
-            audio: firstAudioTrack
-                ? {
-                      codec: firstAudioTrack.codec ?? null,
-                      channels: firstAudioTrack.codecProps?.channels ?? null,
-                      sample_rate: firstAudioTrack.codecProps?.sampleRate ?? null,
-                      profile: firstAudioTrack.codecProps?.profile ?? null,
-                      bw: null,
-                  }
-                : null,
+            video: ffprobeResult?.video || null,
+            audio: ffprobeResult?.audio || null,
         };
     }
 
-    function buildOutputHealthSnapshot(pipeline, output, latestJob) {
+    function buildOutputHealthSnapshot(latestJob) {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
             : null;
-
         const totalSizeRaw = parseFfmpegNumber(ffmpegProgress?.total_size);
-        const totalSizeBytes = totalSizeRaw === null ? null : Math.trunc(totalSizeRaw);
-        const bitrateKbps = parseFfmpegBitrateToKbps(ffmpegProgress?.bitrate);
-        const bitrate = bitrateKbps === null ? null : ffmpegProgress?.bitrate || null;
-        const progressFrameRaw = parseFfmpegNumber(ffmpegProgress?.frame);
-        const progressFrame = progressFrameRaw === null ? null : Math.trunc(progressFrameRaw);
-        const progressFpsRaw = parseFfmpegNumber(ffmpegProgress?.fps);
-        const progressFps = progressFpsRaw === null ? null : Number(progressFpsRaw.toFixed(2));
+        const totalSize = totalSizeRaw === null ? null : Math.trunc(totalSizeRaw);
 
         if (latestJob?.status === 'failed') status = 'error';
         if (latestJob?.status === 'running') {
-            status = ffmpegProgress && Object.keys(ffmpegProgress).length > 0 ? 'on' : 'warning';
+            status = ffmpegProgress?.total_size != null ? 'on' : 'warning';
         }
-
-        const jobId = latestJob?.id || null;
-        const ffmpegMedia = jobId ? ffmpegOutputMediaByJobId.get(jobId) || null : null;
 
         return {
             status,
-            jobId,
-            totalSize: totalSizeBytes,
-            bitrate,
-            bitrateKbps,
-            progressFrame,
-            progressFps,
-            media: ffmpegMedia,
-            mediaSource: ffmpegMedia ? 'ffmpeg' : 'unknown',
+            jobId: latestJob?.id || null,
+            totalSize,
         };
     }
 
@@ -464,18 +495,12 @@ function createHealthMonitorService({
         ) {
             inputRecoveryHandler?.(pipeline.id);
         }
-
-        // Derive input fps from a running source-encoding output: FFmpeg reports the stream fps
-        // when copying source, giving us accurate input fps without a separate ffprobe.
-        let inputFps = null;
-        for (const output of pipelineOutputs) {
-            if ((normalizeOutputEncoding(output.encoding) || 'source') !== 'source') continue;
-            const job = jobByOutputId.get(output.id);
-            if (!job || job.status !== 'running') continue;
-            const media = ffmpegOutputMediaByJobId.get(job.id);
-            if (media?.video?.fps != null) {
-                inputFps = media.video.fps;
-                break;
+        if (inputTransition.changed) {
+            if (inputTransition.current === 'on') {
+                clearFfprobeState(pipeline.id);
+                scheduleFfprobe(pipeline.id, streamKey);
+            } else {
+                clearFfprobeState(pipeline.id);
             }
         }
 
@@ -484,15 +509,13 @@ function createHealthMonitorService({
             pathInfo,
             inputStatus,
             publisher,
-            inputFps,
+            ffprobeResult: ffprobeResultByPipelineId.get(pipeline.id) || null,
         });
         inputHealth.unexpectedReaders = buildUnexpectedReaders(pathInfo);
 
         const outputsHealth = {};
         for (const output of pipelineOutputs) {
             outputsHealth[output.id] = buildOutputHealthSnapshot(
-                pipeline,
-                output,
                 jobByOutputId.get(output.id) || null,
             );
         }
@@ -666,4 +689,4 @@ function createHealthMonitorService({
     };
 }
 
-module.exports = { createHealthMonitorService, parseFfmpegNumber, parseFfmpegBitrateToKbps };
+module.exports = { createHealthMonitorService, parseFfmpegNumber };

@@ -56,7 +56,7 @@ fi
 
 step "3/8 FFmpeg $FFMPEG_VERSION"
 FFMPEG_FILENAME="ffmpeg-n${FFMPEG_VERSION}-${FFMPEG_ARCH}-gpl.tar.xz"
-FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_FILENAME}"
+FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/n${FFMPEG_VERSION}/${FFMPEG_FILENAME}"
 
 if /usr/local/bin/ffmpeg -version 2>/dev/null | grep -q "ffmpeg version n${FFMPEG_VERSION}"; then
     echo "FFmpeg $FFMPEG_VERSION already installed."

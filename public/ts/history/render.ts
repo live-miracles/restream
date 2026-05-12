@@ -536,7 +536,7 @@ export function renderOutputHistory(
 
             const msg = document.createElement('pre');
             msg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-            const safeMessage = sanitizeLogMessage(log.message || '', state.redacted);
+            const safeMessage = sanitizeLogMessage(log.message || '', false);
             renderHighlightedLogMessage(
                 msg,
                 safeMessage,
@@ -599,7 +599,7 @@ export function renderOutputHistory(
 
         const details = document.createElement('pre');
         details.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-        details.textContent = sanitizeLogMessage(log.message || '', state.redacted);
+        details.textContent = sanitizeLogMessage(log.message || '', false);
 
         row.appendChild(header);
         row.appendChild(details);
@@ -636,10 +636,7 @@ export function renderOutputHistory(
 
                     const contextMsg = document.createElement('pre');
                     contextMsg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-                    contextMsg.textContent = sanitizeLogMessage(
-                        contextLog.message || '',
-                        state.redacted,
-                    );
+                    contextMsg.textContent = sanitizeLogMessage(contextLog.message || '', false);
 
                     contextRow.appendChild(contextTs);
                     contextRow.appendChild(contextMsg);
