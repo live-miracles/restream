@@ -9,7 +9,24 @@ import {
     updateOutput,
     deleteOutput,
 } from '../core/api.js';
-import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../core/utils.js';
+import {
+    getUrlParam,
+    isLikelyHlsOutputUrl,
+    isValidOutput,
+    setUrlParam,
+    isAbsoluteUrl,
+    protocolUsesOutputServerPresets,
+    resolvePresetOutputUrl,
+    matchOutputServerPreset,
+    detectOutputProtocol,
+    extractCandidateStreamToken,
+    getDefaultOutputToken,
+    parseSrtFields,
+    buildDefaultCustomOutputUrl,
+    formatMaskedStreamKey,
+    OUTPUT_SERVER_PRESETS,
+} from '../core/utils.js';
+import type { MatchedPreset, SrtFields } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
 import {
@@ -18,176 +35,8 @@ import {
 } from './publisher-quality.js';
 import type { PipelineView, OutputView, StreamKey } from '../types.js';
 
-interface OutputServerPreset {
-    label: string;
-    value: string;
-}
-
-const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
-    rtmp: [
-        { label: 'Custom', value: '' },
-        { label: 'YouTube', value: 'rtmp://a.rtmp.youtube.com/live2/' },
-        { label: 'YT Backup', value: 'rtmp://b.rtmp.youtube.com/live2?backup=1/' },
-        { label: 'Facebook', value: 'rtmps://live-api-s.facebook.com:443/rtmp/' },
-        {
-            label: 'Instagram',
-            value: 'rtmps://edgetee-upload-${s_prp}.xx.fbcdn.net:443/rtmp/',
-        },
-        { label: 'VDO Cipher', value: 'rtmp://live-ingest-01.vd0.co:1935/livestream/' },
-        { label: 'VK Video', value: 'rtmp://ovsu.okcdn.ru/input/' },
-    ],
-    hls: [
-        {
-            label: 'YouTube HLS',
-            value: 'https://a.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=0&file=out.m3u8',
-        },
-        {
-            label: 'YT Backup HLS',
-            value: 'https://b.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=1&file=out.m3u8',
-        },
-        { label: 'Custom', value: '' },
-    ],
-    srt: [{ label: 'Custom', value: '' }],
-};
-
-function safeParseUrl(rawUrl: string): URL | null {
-    try {
-        return new URL(rawUrl);
-    } catch {
-        return null;
-    }
-}
-
-function safeDecodeUrlComponent(value: string): string {
-    try {
-        return decodeURIComponent(value);
-    } catch {
-        return value;
-    }
-}
-
-function protocolUsesOutputServerPresets(protocol: string): boolean {
-    return protocol === 'rtmp' || protocol === 'hls';
-}
-
-function resolvePresetOutputUrl(serverUrl: string, rawInput: string): string {
-    const normalizedInput = String(rawInput || '').trim();
-    if (!serverUrl) return normalizedInput;
-    if (serverUrl.includes('${stream_key}')) {
-        return serverUrl.replaceAll('${stream_key}', encodeURIComponent(normalizedInput));
-    }
-    return `${serverUrl}${normalizedInput}`;
-}
-
-interface MatchedPreset {
-    value: string;
-    inputValue: string;
-}
-
-function matchOutputServerPreset(protocol: string, rawUrl: string): MatchedPreset | null {
-    const presets = OUTPUT_SERVER_PRESETS[protocol] || [];
-    const candidateUrl = String(rawUrl || '').trim();
-    if (!candidateUrl) return null;
-
-    for (const preset of presets) {
-        if (!preset.value) continue;
-
-        if (preset.value.includes('${stream_key}')) {
-            const [prefix, suffix] = preset.value.split('${stream_key}');
-            if (candidateUrl.startsWith(prefix) && candidateUrl.endsWith(suffix)) {
-                const capturedValue = candidateUrl.slice(
-                    prefix.length,
-                    candidateUrl.length - suffix.length,
-                );
-                return { value: preset.value, inputValue: safeDecodeUrlComponent(capturedValue) };
-            }
-            continue;
-        }
-
-        if (candidateUrl.startsWith(preset.value)) {
-            return { value: preset.value, inputValue: candidateUrl.slice(preset.value.length) };
-        }
-    }
-
-    return null;
-}
-
-function detectOutputProtocol(url: string): string {
-    if (isLikelyHlsOutputUrl(url)) return 'hls';
-    const parsed = safeParseUrl(url);
-    if (!parsed) return 'rtmp';
-    if (parsed.protocol === 'srt:') return 'srt';
-    return 'rtmp';
-}
-
-function isAbsoluteUrl(rawValue: string): boolean {
-    return /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue || '');
-}
-
 function getDefaultOutputHost(): string {
     return document.location.hostname || 'localhost';
-}
-
-function extractCandidateStreamToken(rawUrl: string): string {
-    const parsed = safeParseUrl(rawUrl);
-    if (parsed) {
-        const streamKeyQuery = parsed.searchParams.get('cid');
-        if (streamKeyQuery) return streamKeyQuery;
-
-        const srtStreamId = parsed.searchParams.get('streamid');
-        if (srtStreamId) {
-            const normalizedStreamId = srtStreamId.replace(/^publish:/, '');
-            const streamIdSegments = normalizedStreamId.split('/').filter(Boolean);
-            return streamIdSegments.length > 0
-                ? streamIdSegments[streamIdSegments.length - 1]
-                : srtStreamId;
-        }
-
-        const segments = parsed.pathname.split('/').filter(Boolean);
-        if (isLikelyHlsOutputUrl(rawUrl)) {
-            const lastSegment = segments.length > 0 ? segments[segments.length - 1] : '';
-            if (/\.m3u8$/i.test(lastSegment)) {
-                const playlistStem = lastSegment.replace(/\.m3u8$/i, '');
-                if (/^out$/i.test(playlistStem) && segments.length > 1) {
-                    return segments[segments.length - 2];
-                }
-                return playlistStem;
-            }
-        }
-        return segments.length > 0 ? segments[segments.length - 1] : '';
-    }
-
-    const plain = String(rawUrl || '').trim();
-    if (!plain) return '';
-    const base = plain.split('?')[0].split('#')[0];
-    const protocollessBase = base.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-    const segments = protocollessBase.split('/').filter(Boolean);
-    const lastSegment = segments.length > 0 ? segments[segments.length - 1] : base;
-    if (/\.m3u8$/i.test(lastSegment)) {
-        const playlistStem = lastSegment.replace(/\.m3u8$/i, '');
-        if (/^out$/i.test(playlistStem) && segments.length > 1) {
-            return segments[segments.length - 2];
-        }
-        return playlistStem;
-    }
-    return segments.length > 1 ? lastSegment : base;
-}
-
-function getDefaultOutputToken(rawUrl: string): string {
-    return extractCandidateStreamToken(rawUrl) || 'test';
-}
-
-function buildDefaultCustomOutputUrl(protocol: string, rawSeed = ''): string {
-    const host = getDefaultOutputHost();
-    const token = getDefaultOutputToken(rawSeed);
-
-    if (protocol === 'hls') {
-        return `http://${host}/hls/${token}/out.m3u8`;
-    }
-    if (protocol === 'srt') {
-        return `srt://${host}:6000?streamid=publish:live/${token}`;
-    }
-    return `rtmp://${host}:1935/live/${token}`;
 }
 
 function populateOutputServerOptions(protocol: string, selectedValue = ''): void {
@@ -197,58 +46,10 @@ function populateOutputServerOptions(protocol: string, selectedValue = ''): void
     if (!serverSelect) return;
 
     const presets = OUTPUT_SERVER_PRESETS[protocol] || OUTPUT_SERVER_PRESETS.rtmp;
-    serverSelect.replaceChildren();
-
-    presets.forEach((preset) => {
-        const option = document.createElement('option');
-        option.value = preset.value;
-        option.textContent = preset.label;
-        serverSelect.appendChild(option);
-    });
-
-    const hasSelectedValue = presets.some((preset) => preset.value === selectedValue);
-    serverSelect.value = hasSelectedValue ? selectedValue : '';
-}
-
-interface SrtFields {
-    host: string;
-    port: string;
-    streamId: string;
-    extraQuery: string;
-}
-
-function parseSrtFields(rawUrl: string): SrtFields {
-    const parsed = safeParseUrl(rawUrl);
-    if (!parsed) {
-        const token = getDefaultOutputToken(rawUrl);
-        return {
-            host: getDefaultOutputHost(),
-            port: '6000',
-            streamId: `publish:live/${token}`,
-            extraQuery: '',
-        };
-    }
-
-    const isSrt = parsed.protocol === 'srt:';
-    const knownKeys = new Set(['streamid']);
-    const extraEntries: string[] = [];
-    parsed.searchParams.forEach((value, key) => {
-        if (!knownKeys.has(key)) {
-            extraEntries.push(`${key}=${value}`);
-        }
-    });
-
-    let streamId = parsed.searchParams.get('streamid') || '';
-    if (!streamId && !isSrt) {
-        streamId = `publish:live/${getDefaultOutputToken(rawUrl)}`;
-    }
-
-    return {
-        host: parsed.hostname || getDefaultOutputHost(),
-        port: isSrt ? parsed.port || '6000' : '6000',
-        streamId,
-        extraQuery: isSrt ? extraEntries.join('&') : '',
-    };
+    serverSelect.innerHTML = presets
+        .map((p) => `<option value="${p.value}">${p.label}</option>`)
+        .join('');
+    serverSelect.value = presets.some((p) => p.value === selectedValue) ? selectedValue : '';
 }
 
 function buildSrtUrlFromFields(): string {
@@ -368,7 +169,7 @@ function setupOutputModalProtocolHandlers(): void {
                 ? matchedPreset.inputValue
                 : isAbsoluteUrl(previousRaw)
                   ? previousRaw
-                  : buildDefaultCustomOutputUrl('rtmp', previousRaw);
+                  : buildDefaultCustomOutputUrl('rtmp', previousRaw, getDefaultOutputHost());
             applyOutputProtocolUi('rtmp');
             return;
         }
@@ -393,7 +194,7 @@ function setupOutputModalProtocolHandlers(): void {
         applyOutputProtocolUi(protocol);
 
         if (protocol === 'srt') {
-            const values = parseSrtFields(previousRaw);
+            const values = parseSrtFields(previousRaw, getDefaultOutputHost());
             (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
             (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
             (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =
@@ -413,7 +214,7 @@ function setupOutputModalProtocolHandlers(): void {
             } else {
                 rawInput.value = isAbsoluteUrl(rawValue)
                     ? rawValue
-                    : buildDefaultCustomOutputUrl(protocol, rawValue);
+                    : buildDefaultCustomOutputUrl(protocol, rawValue, getDefaultOutputHost());
             }
             applyOutputProtocolUi(protocol);
         }
@@ -492,35 +293,17 @@ export function renderPublisherQualityModal(): void {
 
     const rows = getPublisherQualityMetrics(publisher);
 
-    tbody.replaceChildren();
-    for (const row of rows) {
-        const tr = document.createElement('tr');
-        const tdLabel = document.createElement('td');
-        tdLabel.textContent = row.label;
-        const tdValue = document.createElement('td');
-        tdValue.className = 'text-right font-mono';
-        tdValue.textContent = row.displayValue;
-        const tdStatus = document.createElement('td');
-        tdStatus.className = 'text-right';
-        const badge = document.createElement('span');
-        badge.className = `badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}`;
-        badge.textContent = row.isAlert ? 'Alert' : 'OK';
-        tdStatus.appendChild(badge);
-        tr.appendChild(tdLabel);
-        tr.appendChild(tdValue);
-        tr.appendChild(tdStatus);
-        tbody.appendChild(tr);
-    }
-
-    if (rows.length === 0) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 3;
-        td.className = 'text-center opacity-50 text-sm py-4';
-        td.textContent = 'No quality metrics available for this protocol.';
-        tr.appendChild(td);
-        tbody.appendChild(tr);
-    }
+    tbody.innerHTML = rows.length
+        ? rows
+              .map(
+                  (row) => `<tr>
+                <td>${row.label}</td>
+                <td class="text-right font-mono">${row.displayValue}</td>
+                <td class="text-right"><span class="badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}">${row.isAlert ? 'Alert' : 'OK'}</span></td>
+            </tr>`,
+              )
+              .join('')
+        : '<tr><td colspan="3" class="text-center opacity-50 text-sm py-4">No quality metrics available for this protocol.</td></tr>';
 }
 
 export function openPublisherQualityModal(pipeId: string): void {
@@ -572,32 +355,14 @@ export async function stopOutBtn(
     }
 }
 
-function formatMaskedStreamKey(streamKey: string): string {
-    const normalized = String(streamKey || '');
-    const underscoreIdx = normalized.indexOf('_');
-    if (underscoreIdx < 0) return normalized;
-
-    const name = normalized.slice(0, underscoreIdx);
-    const secret = normalized.slice(underscoreIdx + 1);
-    if (secret.length <= 4) return `${name}_${secret}`;
-
-    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
-}
-
 async function populatePipelineKeySelect(selectedKey = ''): Promise<void> {
     const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
     if (!keySelect) return;
     const keys = await loadStreamKeysOnce();
 
-    keySelect.replaceChildren();
-
-    keys.forEach((key) => {
-        const option = document.createElement('option');
-        option.value = key.key;
-        option.selected = key.key === selectedKey;
-        option.textContent = formatMaskedStreamKey(key.key);
-        keySelect.appendChild(option);
-    });
+    keySelect.innerHTML = keys
+        .map((key) => `<option value="${key.key}"${key.key === selectedKey ? ' selected' : ''}>${formatMaskedStreamKey(key.key)}</option>`)
+        .join('');
 }
 
 let streamKeysCache: StreamKey[] | null = null;
@@ -722,7 +487,7 @@ async function openOutModal(
         outUrlInput.value = matchedPreset ? matchedPreset.inputValue : currentUrl;
     }
     if (detectedProtocol === 'srt') {
-        const values = parseSrtFields(currentUrl);
+        const values = parseSrtFields(currentUrl, getDefaultOutputHost());
         (document.getElementById('out-srt-host-input') as HTMLInputElement).value = values.host;
         (document.getElementById('out-srt-port-input') as HTMLInputElement).value = values.port;
         (document.getElementById('out-srt-streamid-input') as HTMLInputElement).value =

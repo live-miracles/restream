@@ -117,40 +117,47 @@ export function setOutputHistoryMode(mode: string): void {
     void pollHistoryOnce(true);
 }
 
-function stopHistoryPoll(): void {
-    if (outputHistoryState.pollTimer) {
-        clearTimeout(outputHistoryState.pollTimer);
-        outputHistoryState.pollTimer = null;
-    }
-    outputHistoryState.pollEveryMs = null;
-    outputHistoryState.playing = false;
-    updateHistoryPlayPauseBtn();
-}
+type PollerState = {
+    playing: boolean;
+    isPolling: boolean;
+    pollTimer: ReturnType<typeof setTimeout> | null;
+    pollEveryMs: number | null;
+};
 
-function startHistoryPolling(intervalMs: number): void {
-    if (outputHistoryState.pollTimer && outputHistoryState.pollEveryMs === intervalMs) return;
-    if (outputHistoryState.pollTimer) clearTimeout(outputHistoryState.pollTimer);
-    outputHistoryState.pollEveryMs = intervalMs;
-    outputHistoryState.isPolling = false;
-    const pollWithGuard = async (): Promise<void> => {
-        if (outputHistoryState.isPolling) return;
-        outputHistoryState.isPolling = true;
+function startPoller(s: PollerState, intervalMs: number, pollFn: () => Promise<void>): void {
+    if (s.pollTimer && s.pollEveryMs === intervalMs) return;
+    if (s.pollTimer) clearTimeout(s.pollTimer);
+    s.pollEveryMs = intervalMs;
+    s.isPolling = false;
+    const run = async (): Promise<void> => {
+        if (s.isPolling || s.pollEveryMs !== intervalMs) return;
+        s.isPolling = true;
         try {
-            await pollHistoryOnce();
+            await pollFn();
         } finally {
-            outputHistoryState.isPolling = false;
+            s.isPolling = false;
         }
-        outputHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
+        if (s.playing && s.pollEveryMs === intervalMs) {
+            s.pollTimer = setTimeout(run, intervalMs);
+        }
     };
-    outputHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
+    s.pollTimer = setTimeout(run, intervalMs);
 }
 
-function updateHistoryPlayPauseBtn(): void {
-    const btn = document.getElementById('output-history-playpause');
+function stopPoller(s: PollerState): void {
+    if (s.pollTimer) clearTimeout(s.pollTimer);
+    s.pollTimer = null;
+    s.pollEveryMs = null;
+    s.isPolling = false;
+    s.playing = false;
+}
+
+function updatePlayPauseBtn(id: string, playing: boolean): void {
+    const btn = document.getElementById(id);
     if (!btn) return;
-    btn.textContent = outputHistoryState.playing ? '⏸ Pause' : '▶ Live';
-    btn.classList.toggle('btn-accent', outputHistoryState.playing);
-    btn.classList.toggle('btn-outline', !outputHistoryState.playing);
+    btn.textContent = playing ? '⏸ Pause' : '▶ Live';
+    btn.classList.toggle('btn-accent', playing);
+    btn.classList.toggle('btn-outline', !playing);
 }
 
 async function pollHistoryOnce(scrollToTop = false): Promise<void> {
@@ -178,15 +185,16 @@ async function pollHistoryOnce(scrollToTop = false): Promise<void> {
 
 export function toggleHistoryPlayPause(): void {
     if (outputHistoryState.playing) {
-        stopHistoryPoll();
+        stopPoller(outputHistoryState);
+        updatePlayPauseBtn('output-history-playpause', false);
     } else {
         outputHistoryState.playing = true;
-        updateHistoryPlayPauseBtn();
+        updatePlayPauseBtn('output-history-playpause', true);
         void pollHistoryOnce();
-        startHistoryPolling(
-            document.hidden
-                ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
-                : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+        startPoller(
+            outputHistoryState,
+            document.hidden ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+            pollHistoryOnce,
         );
     }
 }
@@ -202,7 +210,8 @@ export async function openOutputHistoryModal(
 
     if (!modal || !title || !loading) return;
 
-    stopHistoryPoll();
+    stopPoller(outputHistoryState);
+    updatePlayPauseBtn('output-history-playpause', false);
 
     outputHistoryState.pipelineId = pipeId;
     outputHistoryState.outputId = outId;
@@ -217,7 +226,7 @@ export async function openOutputHistoryModal(
     outputHistoryState.contextLogsByKey = new Map();
     outputHistoryState.contextLoadingKeys = new Set();
     title.textContent = `History: ${outputHistoryState.outputName}`;
-    updateHistoryPlayPauseBtn();
+    updatePlayPauseBtn('output-history-playpause', outputHistoryState.playing);
     loading.classList.remove('hidden');
     renderOutputHistory();
     modal.showModal();
@@ -230,54 +239,14 @@ export async function openOutputHistoryModal(
         ? (lifecycleRes.logs as HistoryLog[])
         : [];
     renderOutputHistory(true);
-    modal.addEventListener('close', stopHistoryPoll, { once: true });
+    modal.addEventListener('close', () => {
+        stopPoller(outputHistoryState);
+        updatePlayPauseBtn('output-history-playpause', false);
+    }, { once: true });
 }
 
 function renderPipelineHistory(scrollToTop = false): void {
     renderPipelineHistoryView(pipelineHistoryState, { scrollToTop });
-}
-
-function stopPipelineHistoryPoll(): void {
-    if (pipelineHistoryState.pollTimer) {
-        clearTimeout(pipelineHistoryState.pollTimer);
-        pipelineHistoryState.pollTimer = null;
-    }
-    pipelineHistoryState.pollEveryMs = null;
-    pipelineHistoryState.isPolling = false;
-    pipelineHistoryState.playing = false;
-    updatePipelineHistoryPlayPauseBtn();
-}
-
-function startPipelineHistoryPolling(intervalMs: number): void {
-    if (pipelineHistoryState.pollTimer && pipelineHistoryState.pollEveryMs === intervalMs) return;
-    if (pipelineHistoryState.pollTimer) clearTimeout(pipelineHistoryState.pollTimer);
-    pipelineHistoryState.pollEveryMs = intervalMs;
-
-    const scheduleNextPoll = (): void => {
-        if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
-            return;
-        }
-        pipelineHistoryState.pollTimer = setTimeout(pollWithGuard, intervalMs);
-    };
-
-    const pollWithGuard = async (): Promise<void> => {
-        if (!pipelineHistoryState.playing || pipelineHistoryState.pollEveryMs !== intervalMs) {
-            return;
-        }
-
-        await pollPipelineHistoryOnce();
-        scheduleNextPoll();
-    };
-
-    scheduleNextPoll();
-}
-
-function updatePipelineHistoryPlayPauseBtn(): void {
-    const btn = document.getElementById('pipeline-history-playpause');
-    if (!btn) return;
-    btn.textContent = pipelineHistoryState.playing ? '⏸ Pause' : '▶ Live';
-    btn.classList.toggle('btn-accent', pipelineHistoryState.playing);
-    btn.classList.toggle('btn-outline', !pipelineHistoryState.playing);
 }
 
 async function pollPipelineHistoryOnce(): Promise<void> {
@@ -297,15 +266,16 @@ async function pollPipelineHistoryOnce(): Promise<void> {
 
 export function togglePipelineHistoryPlayPause(): void {
     if (pipelineHistoryState.playing) {
-        stopPipelineHistoryPoll();
+        stopPoller(pipelineHistoryState);
+        updatePlayPauseBtn('pipeline-history-playpause', false);
     } else {
         pipelineHistoryState.playing = true;
-        updatePipelineHistoryPlayPauseBtn();
+        updatePlayPauseBtn('pipeline-history-playpause', true);
         void pollPipelineHistoryOnce();
-        startPipelineHistoryPolling(
-            document.hidden
-                ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
-                : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+        startPoller(
+            pipelineHistoryState,
+            document.hidden ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+            pollPipelineHistoryOnce,
         );
     }
 }
@@ -317,14 +287,14 @@ export async function openPipelineHistoryModal(pipeId: string, pipeName = ''): P
 
     if (!modal || !title || !loading) return;
 
-    stopPipelineHistoryPoll();
+    stopPoller(pipelineHistoryState);
 
     pipelineHistoryState.pipelineId = pipeId;
     pipelineHistoryState.pipelineName = pipeName || pipeId;
     pipelineHistoryState.logs = [];
 
     title.textContent = `Pipeline History: ${pipelineHistoryState.pipelineName}`;
-    updatePipelineHistoryPlayPauseBtn();
+    updatePlayPauseBtn('pipeline-history-playpause', pipelineHistoryState.playing);
     loading.classList.remove('hidden');
     renderPipelineHistory();
     modal.showModal();
@@ -335,27 +305,24 @@ export async function openPipelineHistoryModal(pipeId: string, pipeName = ''): P
 
     pipelineHistoryState.logs = Array.isArray(res.logs) ? (res.logs as HistoryLog[]) : [];
     renderPipelineHistory(true);
-    modal.addEventListener('close', stopPipelineHistoryPoll, { once: true });
+    modal.addEventListener('close', () => {
+        stopPoller(pipelineHistoryState);
+        updatePlayPauseBtn('pipeline-history-playpause', false);
+    }, { once: true });
 }
 
 export async function syncHistoryPollingWithVisibility(): Promise<void> {
-    if (document.hidden) {
-        if (outputHistoryState.playing) {
-            startHistoryPolling(OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS);
-        }
-        if (pipelineHistoryState.playing) {
-            startPipelineHistoryPolling(OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS);
-        }
-        return;
-    }
+    const interval = document.hidden
+        ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
+        : OUTPUT_HISTORY_POLL_INTERVAL_MS;
 
     if (outputHistoryState.playing) {
-        startHistoryPolling(OUTPUT_HISTORY_POLL_INTERVAL_MS);
-        await pollHistoryOnce();
+        startPoller(outputHistoryState, interval, pollHistoryOnce);
+        if (!document.hidden) await pollHistoryOnce();
     }
     if (pipelineHistoryState.playing) {
-        startPipelineHistoryPolling(OUTPUT_HISTORY_POLL_INTERVAL_MS);
-        await pollPipelineHistoryOnce();
+        startPoller(pipelineHistoryState, interval, pollPipelineHistoryOnce);
+        if (!document.hidden) await pollPipelineHistoryOnce();
     }
 }
 

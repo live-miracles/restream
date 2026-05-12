@@ -1,6 +1,7 @@
 import {
     copyText,
     formatCodecName,
+    formatMaskedStreamKey,
     msToHHMMSS,
     sanitizeLogMessage,
     showCopiedNotification,
@@ -56,18 +57,6 @@ function formatProgressFps(value: number | null | undefined): string | null {
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
     Object.assign(pipelineViewDependencies, dependencies || {});
-}
-
-function formatMaskedStreamKey(streamKey: string | null | undefined): string {
-    const normalized = String(streamKey || '');
-    const underscoreIdx = normalized.indexOf('_');
-    if (underscoreIdx < 0) return normalized;
-
-    const name = normalized.slice(0, underscoreIdx);
-    const secret = normalized.slice(underscoreIdx + 1);
-    if (secret.length <= 4) return `${name}_${secret}`;
-
-    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
 export function renderPipelineInfoColumn(selectedPipe: string | null): void {
@@ -304,48 +293,33 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
         inputStatsElem?.parentNode?.insertBefore(publisherMeta, inputStatsElem);
     }
-    publisherMeta.replaceChildren();
-
-    if (pipe.input.time !== null) {
-        const uptimeBadge = document.createElement('span');
-        uptimeBadge.className = 'badge text-sm px-3';
-        uptimeBadge.textContent = msToHHMMSS(pipe.input.time);
-        publisherMeta.appendChild(uptimeBadge);
-    }
 
     const publisher = pipe.input.publisher;
-    if (publisher) {
-        const protoBadge = document.createElement('span');
-        protoBadge.className = 'badge badge-info text-sm px-3';
-        protoBadge.textContent = normalizePublisherProtocolLabel(publisher.protocol);
-        publisherMeta.appendChild(protoBadge);
-
-        if (publisher.remoteAddr) {
-            const addrBadge = document.createElement('span');
-            addrBadge.className = 'badge badge-outline font-mono text-sm px-3';
-            addrBadge.textContent = publisher.remoteAddr;
-            publisherMeta.appendChild(addrBadge);
-        }
-
-        const qualityAlerts = getPublisherQualityAlerts(publisher);
-        const isHealthy = qualityAlerts.length === 0;
-        const qualityBtn = document.createElement('button');
-        qualityBtn.type = 'button';
-        qualityBtn.className = `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`;
-        qualityBtn.textContent = isHealthy ? 'Healthy' : 'Unhealthy';
-        qualityBtn.addEventListener('click', () => {
-            pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
-        });
-        publisherMeta.appendChild(qualityBtn);
-    }
-
+    const qualityAlerts = publisher ? getPublisherQualityAlerts(publisher) : [];
+    const isHealthy = qualityAlerts.length === 0;
     const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
-    if (unexpectedCount > 0) {
-        const urBadge = document.createElement('span');
-        urBadge.className = 'badge badge-sm badge-error';
-        urBadge.textContent = `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}`;
-        publisherMeta.appendChild(urBadge);
-    }
+
+    publisherMeta.innerHTML = [
+        pipe.input.time !== null
+            ? `<span class="badge text-sm px-3">${msToHHMMSS(pipe.input.time)}</span>`
+            : '',
+        publisher
+            ? `<span class="badge badge-info text-sm px-3">${normalizePublisherProtocolLabel(publisher.protocol)}</span>`
+            : '',
+        publisher?.remoteAddr
+            ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
+            : '',
+        publisher
+            ? `<button type="button" class="badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'} js-quality-btn">${isHealthy ? 'Healthy' : 'Unhealthy'}</button>`
+            : '',
+        unexpectedCount > 0
+            ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}</span>`
+            : '',
+    ].join('');
+
+    publisherMeta.querySelector('.js-quality-btn')?.addEventListener('click', () => {
+        pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
+    });
 }
 
 export function renderOutsColumn(selectedPipe: string | null): void {

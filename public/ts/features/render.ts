@@ -63,74 +63,46 @@ function renderPipelinesList(selectedPipe: string | null): void {
     const sortedPipelines = [...state.pipelines].sort((a, b) => a.name.localeCompare(b.name));
     const pipelinesList = document.getElementById('pipelines');
     if (!pipelinesList) return;
-    pipelinesList.replaceChildren();
 
-    sortedPipelines.forEach((p: PipelineView, pipelineIndex: number) => {
-        let outStatus = 'off';
-        if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) {
-            outStatus = 'error';
-        } else if (p.outs.some((o) => o.status === 'warning')) {
-            outStatus = 'warning';
-        } else if (p.outs.some((o) => o.status === 'on')) {
-            outStatus = 'on';
-        }
-        const style = p.id === selectedPipe ? 'bg-base-100' : '';
-        const inputColor = getStatusColor(p.input.status);
-        const outColor = getStatusColor(outStatus);
+    const badge = (val: number, cls: string, title = '') =>
+        val
+            ? `<div class="badge badge-sm ${cls} px-2"${title ? ` title="${title}"` : ''}>${val}</div>`
+            : '';
 
-        const outOks = p.outs.filter((o) => o.status === 'on').length;
-        const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
-        const outErrors = p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length;
-        const outOffs = p.outs.filter((o) => isOutputIntentStopped(o)).length;
+    pipelinesList.innerHTML = sortedPipelines
+        .map((p: PipelineView) => {
+            let outStatus = 'off';
+            if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) outStatus = 'error';
+            else if (p.outs.some((o) => o.status === 'warning')) outStatus = 'warning';
+            else if (p.outs.some((o) => o.status === 'on')) outStatus = 'on';
 
-        const li = document.createElement('li');
-        const row = document.createElement('div');
-        row.className = `flex items-center gap-2 ${style} js-select-pipeline`;
-        row.dataset.pipelineIndex = String(pipelineIndex);
+            const inputColor = getStatusColor(p.input.status);
+            const outColor = getStatusColor(outStatus);
+            const selected = p.id === selectedPipe ? 'bg-base-100' : '';
 
-        const statusTile = document.createElement('div');
-        statusTile.className = 'rounded-box h-5 w-5';
-        statusTile.style.background = `linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)`;
-        row.appendChild(statusTile);
+            const outOks = p.outs.filter((o) => o.status === 'on').length;
+            const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
+            const outErrors = p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length;
+            const outOffs = p.outs.filter((o) => isOutputIntentStopped(o)).length;
 
-        const badges = [
-            { value: outOks, className: 'badge badge-sm badge-success px-2' },
-            { value: outWarnings, className: 'badge badge-sm badge-warning px-2' },
-            {
-                value: outErrors,
-                className: 'badge badge-sm badge-error px-2',
-                title: 'Unexpectedly down outputs',
-            },
-            {
-                value: outOffs,
-                className: 'badge badge-sm badge-ghost px-2',
-                title: 'Outputs intentionally stopped',
-            },
-        ];
+            return `<li>
+                <div class="flex items-center gap-2 ${selected} js-select-pipeline" data-pipeline-id="${p.id}">
+                    <div class="rounded-box h-5 w-5" style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></div>
+                    ${badge(outOks, 'badge-success')}
+                    ${badge(outWarnings, 'badge-warning')}
+                    ${badge(outErrors, 'badge-error', 'Unexpectedly down outputs')}
+                    ${badge(outOffs, 'badge-ghost', 'Outputs intentionally stopped')}
+                    <a class="active">${p.name}</a>
+                </div>
+            </li>`;
+        })
+        .join('');
 
-        badges.forEach(({ value, className, title = '' }) => {
-            const badge = document.createElement('div');
-            badge.className = className;
-            if (!value) badge.classList.add('hidden');
-            badge.textContent = String(value);
-            if (title) badge.title = title;
-            row.appendChild(badge);
-        });
-
-        const name = document.createElement('a');
-        name.className = 'active';
-        name.textContent = p.name;
-        row.appendChild(name);
-
-        row.addEventListener('click', () => {
-            const idx = Number(row.dataset.pipelineIndex);
-            if (!Number.isInteger(idx) || idx < 0 || idx >= sortedPipelines.length) return;
-            selectPipeline(sortedPipelines[idx].id);
-        });
-
-        li.appendChild(row);
-        pipelinesList.appendChild(li);
-    });
+    pipelinesList.onclick = (e: MouseEvent) => {
+        const row = (e.target as Element).closest('.js-select-pipeline') as HTMLElement | null;
+        if (!row?.dataset.pipelineId) return;
+        selectPipeline(row.dataset.pipelineId);
+    };
 }
 
 function renderStatsColumn(selectedPipe: string | null): void {
@@ -146,48 +118,25 @@ function renderStatsColumn(selectedPipe: string | null): void {
     const activeOuts = state.pipelines.flatMap((p) => p.outs);
     const statsTable = document.getElementById('stats-table');
     if (!statsTable) return;
-    statsTable.replaceChildren();
 
-    const addSectionHeader = (label: string, count: number): void => {
-        const row = document.createElement('tr');
-        row.className = 'bg-base-100';
-        const header = document.createElement('th');
-        header.colSpan = 9;
-        header.textContent = `${label} `;
-        const badge = document.createElement('span');
-        badge.className = 'badge mx-1';
-        badge.textContent = String(count);
-        header.appendChild(badge);
-        row.appendChild(header);
-        statsTable.appendChild(row);
-    };
+    const sectionHeader = (label: string, count: number) =>
+        `<tr class="bg-base-100"><th colspan="9">${label} <span class="badge mx-1">${count}</span></th></tr>`;
 
-    const appendRow = (values: (string | number)[], warning = false): void => {
-        const row = document.createElement('tr');
-        if (warning) row.className = 'bg-warning/10';
-        values.forEach((value) => {
-            const cell = document.createElement('td');
-            cell.textContent = String(value);
-            row.appendChild(cell);
-        });
-        statsTable.appendChild(row);
-    };
+    const tableRow = (values: (string | number)[], warning = false) =>
+        `<tr${warning ? ' class="bg-warning/10"' : ''}>${values.map((v) => `<td>${v}</td>`).join('')}</tr>`;
 
-    addSectionHeader('Inputs', activeInputs.length);
+    let html = sectionHeader('Inputs', activeInputs.length);
     activeInputs.forEach((p) => {
-        const inputBw = p.input.bitrateKbps;
         const video = p.input.video || {};
         const audio = p.input.audio || {};
-        appendRow(
+        html += tableRow(
             [
-                p.input.time !== null && p.input.time !== undefined
-                    ? (msToHHMMSS(p.input.time) ?? '--')
-                    : '--',
+                p.input.time != null ? (msToHHMMSS(p.input.time) ?? '--') : '--',
                 p.name,
-                inputBw !== null && inputBw !== undefined ? Number(inputBw).toFixed(1) : '--',
+                p.input.bitrateKbps != null ? Number(p.input.bitrateKbps).toFixed(1) : '--',
                 formatCodecName(video.codec) || '--',
                 video.width && video.height ? `${video.width}x${video.height}` : '--',
-                video.fps !== null && video.fps !== undefined ? String(video.fps) : '--',
+                video.fps != null ? String(video.fps) : '--',
                 formatCodecName(audio.codec) || '--',
                 audio.channels ? String(audio.channels) : '--',
                 audio.sample_rate ? String(audio.sample_rate) : '--',
@@ -196,27 +145,19 @@ function renderStatsColumn(selectedPipe: string | null): void {
         );
     });
 
-    addSectionHeader('Outputs', activeOuts.length);
+    html += sectionHeader('Outputs', activeOuts.length);
     activeOuts.forEach((o) => {
         const totalSizeMb =
-            o.totalSize !== null && o.totalSize !== undefined && o.totalSize > 0
+            o.totalSize != null && o.totalSize > 0
                 ? `${(o.totalSize / (1024 * 1024)).toFixed(1)} MB`
                 : '--';
-        appendRow(
-            [
-                o.time !== null && o.time !== undefined ? (msToHHMMSS(o.time) ?? '--') : '--',
-                `${o.pipe}: ${o.name}`,
-                totalSizeMb,
-                '--',
-                '--',
-                '--',
-                '--',
-                '--',
-                '--',
-            ],
+        html += tableRow(
+            [o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--', `${o.pipe}: ${o.name}`, totalSizeMb, '--', '--', '--', '--', '--', '--'],
             o.status === 'warning',
         );
     });
+
+    statsTable.innerHTML = html;
 }
 
 function getRenderableSelectedPipe(): string | null {

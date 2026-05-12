@@ -278,6 +278,186 @@ function getStatusColor(status: string): string {
     }
 }
 
+// ── Output URL parsing ───────────────────────────────────────────────────────
+
+export interface OutputServerPreset {
+    label: string;
+    value: string;
+}
+
+export const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
+    rtmp: [
+        { label: 'Custom', value: '' },
+        { label: 'YouTube', value: 'rtmp://a.rtmp.youtube.com/live2/' },
+        { label: 'YT Backup', value: 'rtmp://b.rtmp.youtube.com/live2?backup=1/' },
+        { label: 'Facebook', value: 'rtmps://live-api-s.facebook.com:443/rtmp/' },
+        { label: 'Instagram', value: 'rtmps://edgetee-upload-${s_prp}.xx.fbcdn.net:443/rtmp/' },
+        { label: 'VDO Cipher', value: 'rtmp://live-ingest-01.vd0.co:1935/livestream/' },
+        { label: 'VK Video', value: 'rtmp://ovsu.okcdn.ru/input/' },
+    ],
+    hls: [
+        { label: 'YouTube HLS', value: 'https://a.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=0&file=out.m3u8' },
+        { label: 'YT Backup HLS', value: 'https://b.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=1&file=out.m3u8' },
+        { label: 'Custom', value: '' },
+    ],
+    srt: [{ label: 'Custom', value: '' }],
+};
+
+function safeParseUrl(rawUrl: string): URL | null {
+    try {
+        return new URL(rawUrl);
+    } catch {
+        return null;
+    }
+}
+
+function safeDecodeUrlComponent(value: string): string {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
+function isAbsoluteUrl(rawValue: string): boolean {
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue || '');
+}
+
+function protocolUsesOutputServerPresets(protocol: string): boolean {
+    return protocol === 'rtmp' || protocol === 'hls';
+}
+
+function resolvePresetOutputUrl(serverUrl: string, rawInput: string): string {
+    const normalizedInput = String(rawInput || '').trim();
+    if (!serverUrl) return normalizedInput;
+    if (serverUrl.includes('${stream_key}')) {
+        return serverUrl.replaceAll('${stream_key}', encodeURIComponent(normalizedInput));
+    }
+    return `${serverUrl}${normalizedInput}`;
+}
+
+export interface MatchedPreset {
+    value: string;
+    inputValue: string;
+}
+
+function matchOutputServerPreset(protocol: string, rawUrl: string): MatchedPreset | null {
+    const presets = OUTPUT_SERVER_PRESETS[protocol] || [];
+    const candidateUrl = String(rawUrl || '').trim();
+    if (!candidateUrl) return null;
+    for (const preset of presets) {
+        if (!preset.value) continue;
+        if (preset.value.includes('${stream_key}')) {
+            const [prefix, suffix] = preset.value.split('${stream_key}');
+            if (candidateUrl.startsWith(prefix) && candidateUrl.endsWith(suffix)) {
+                const captured = candidateUrl.slice(prefix.length, candidateUrl.length - suffix.length);
+                return { value: preset.value, inputValue: safeDecodeUrlComponent(captured) };
+            }
+            continue;
+        }
+        if (candidateUrl.startsWith(preset.value)) {
+            return { value: preset.value, inputValue: candidateUrl.slice(preset.value.length) };
+        }
+    }
+    return null;
+}
+
+function detectOutputProtocol(url: string): string {
+    if (isLikelyHlsOutputUrl(url)) return 'hls';
+    const parsed = safeParseUrl(url);
+    if (!parsed) return 'rtmp';
+    return parsed.protocol === 'srt:' ? 'srt' : 'rtmp';
+}
+
+function extractCandidateStreamToken(rawUrl: string): string {
+    const parsed = safeParseUrl(rawUrl);
+    if (parsed) {
+        const streamKeyQuery = parsed.searchParams.get('cid');
+        if (streamKeyQuery) return streamKeyQuery;
+
+        const srtStreamId = parsed.searchParams.get('streamid');
+        if (srtStreamId) {
+            const normalized = srtStreamId.replace(/^publish:/, '');
+            const segs = normalized.split('/').filter(Boolean);
+            return segs.length > 0 ? segs[segs.length - 1] : srtStreamId;
+        }
+
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        if (isLikelyHlsOutputUrl(rawUrl)) {
+            const last = segments.length > 0 ? segments[segments.length - 1] : '';
+            if (/\.m3u8$/i.test(last)) {
+                const stem = last.replace(/\.m3u8$/i, '');
+                if (/^out$/i.test(stem) && segments.length > 1) return segments[segments.length - 2];
+                return stem;
+            }
+        }
+        return segments.length > 0 ? segments[segments.length - 1] : '';
+    }
+
+    const plain = String(rawUrl || '').trim();
+    if (!plain) return '';
+    const base = plain.split('?')[0].split('#')[0];
+    const protocollessBase = base.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    const segments = protocollessBase.split('/').filter(Boolean);
+    const last = segments.length > 0 ? segments[segments.length - 1] : base;
+    if (/\.m3u8$/i.test(last)) {
+        const stem = last.replace(/\.m3u8$/i, '');
+        if (/^out$/i.test(stem) && segments.length > 1) return segments[segments.length - 2];
+        return stem;
+    }
+    return segments.length > 1 ? last : base;
+}
+
+function getDefaultOutputToken(rawUrl: string): string {
+    return extractCandidateStreamToken(rawUrl) || 'test';
+}
+
+export interface SrtFields {
+    host: string;
+    port: string;
+    streamId: string;
+    extraQuery: string;
+}
+
+function parseSrtFields(rawUrl: string, defaultHost = 'localhost'): SrtFields {
+    const parsed = safeParseUrl(rawUrl);
+    if (!parsed) {
+        const token = getDefaultOutputToken(rawUrl);
+        return { host: defaultHost, port: '6000', streamId: `publish:live/${token}`, extraQuery: '' };
+    }
+    const isSrt = parsed.protocol === 'srt:';
+    const knownKeys = new Set(['streamid']);
+    const extraEntries: string[] = [];
+    parsed.searchParams.forEach((value, key) => {
+        if (!knownKeys.has(key)) extraEntries.push(`${key}=${value}`);
+    });
+    let streamId = parsed.searchParams.get('streamid') || '';
+    if (!streamId && !isSrt) streamId = `publish:live/${getDefaultOutputToken(rawUrl)}`;
+    return {
+        host: parsed.hostname || defaultHost,
+        port: isSrt ? parsed.port || '6000' : '6000',
+        streamId,
+        extraQuery: isSrt ? extraEntries.join('&') : '',
+    };
+}
+
+function buildDefaultCustomOutputUrl(protocol: string, rawSeed = '', hostname = 'localhost'): string {
+    const token = getDefaultOutputToken(rawSeed);
+    if (protocol === 'hls') return `http://${hostname}/hls/${token}/out.m3u8`;
+    if (protocol === 'srt') return `srt://${hostname}:6000?streamid=publish:live/${token}`;
+    return `rtmp://${hostname}:1935/live/${token}`;
+}
+
+function formatMaskedStreamKey(streamKey: string | null | undefined): string {
+    const normalized = String(streamKey || '');
+    const underscoreIdx = normalized.indexOf('_');
+    if (underscoreIdx < 0) return normalized;
+    const name = normalized.slice(0, underscoreIdx);
+    const secret = normalized.slice(underscoreIdx + 1);
+    if (secret.length <= 4) return `${name}_${secret}`;
+    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
+}
+
 // HTML-bound handler — keep accessible as a global
 window.copyData = copyData;
 
@@ -304,4 +484,15 @@ export {
     showCopiedNotification,
     getStatusColor,
     writeSelectedPipelineHint,
+    safeParseUrl,
+    isAbsoluteUrl,
+    protocolUsesOutputServerPresets,
+    resolvePresetOutputUrl,
+    matchOutputServerPreset,
+    detectOutputProtocol,
+    extractCandidateStreamToken,
+    getDefaultOutputToken,
+    parseSrtFields,
+    buildDefaultCustomOutputUrl,
+    formatMaskedStreamKey,
 };
