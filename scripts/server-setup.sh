@@ -120,7 +120,7 @@ else
 fi
 cd "$APP_DIR"
 sudo -u "$SERVICE_USER" npm ci
-sudo -u "$SERVICE_USER" npm run ts-build
+sudo -u "$SERVICE_USER" npm run build
 sudo -u "$SERVICE_USER" npm prune --omit=dev
 echo "Build complete."
 
@@ -180,7 +180,7 @@ Environment=NODE_ENV=production
 Environment=PORT=3030
 Environment=FFMPEG_PATH=/usr/local/bin/ffmpeg
 Environment=FFPROBE_PATH=/usr/local/bin/ffprobe
-ExecStart=/usr/bin/node /opt/restream/src/index.js
+ExecStart=/usr/bin/node /opt/restream/dist/index.js
 Restart=always
 RestartSec=2
 NoNewPrivileges=true

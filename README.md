@@ -19,6 +19,12 @@ Install Node dependencies:
 npm ci
 ```
 
+Build the TypeScript (backend + frontend):
+
+```sh
+npm run build
+```
+
 Start MediaMTX with the checked-in config:
 
 ```sh
@@ -33,18 +39,22 @@ In another terminal, start the app:
 npm start
 ```
 
-For development mode (run each in its own terminal):
+For development mode, run each in its own terminal:
 
 ```sh
-npm run dev         # Node server with hot-reload
-npm run ts-watch    # TypeScript compiler in watch mode
-npm run css-watch   # Tailwind CSS in watch mode
+npm run dev             # backend server with live reload via tsx watch
+npm run watch:frontend  # frontend TypeScript in watch mode
+npm run css-watch       # Tailwind CSS in watch mode
 ```
 
-After making TypeScript changes, rebuild once:
+The `dev` script runs the backend TypeScript source directly via `tsx` — no compile step needed. Any change to `src/**/*.ts` is picked up immediately.
+
+To build once for production:
 
 ```sh
-npm run ts-build
+npm run build           # compiles both backend (src/ → dist/) and frontend (public/ts/ → public/js/)
+npm run build:backend   # backend only
+npm run build:frontend  # frontend only
 ```
 
 Useful commands:
@@ -64,17 +74,20 @@ The dashboard runs on `http://localhost:3030/` by default.
 
 - `data.db`: local SQLite database
 - `public/output.css`: generated CSS
-- `public/js/`: compiled JavaScript (generated from `public/ts/`, do not edit directly)
+- `public/js/`: compiled frontend JavaScript (generated from `public/ts/`, do not edit directly)
+- `dist/`: compiled backend JavaScript (generated from `src/`, do not edit directly)
 
 These are runtime or generated artifacts and should not be edited directly unless noted.
 
 ## Code Map
 
-- `src/index.js`: Express app composition and route wiring
+- `src/index.ts`: Express app composition and route wiring
+- `src/types.ts`: shared backend TypeScript interfaces (Pipeline, Output, Job, Db, etc.)
 - `src/api/`: REST route modules
 - `src/services/`: health collection, output lifecycle, recovery, and startup timers
 - `src/db/`: SQLite schema and query helpers
 - `src/utils/`: shared backend helpers for FFmpeg, MediaMTX, retries, validation, and health shaping
+- `dist/`: compiled backend output (generated from `src/` by `npm run build:backend`)
 - `public/ts/`: TypeScript source for the dashboard frontend
   - `public/ts/types.ts`: shared type definitions for all API shapes and view models
   - `public/ts/global.d.ts`: `Window` augmentation and HLS.js interface declarations
@@ -152,7 +165,7 @@ sudo git clone https://github.com/live-miracles/restream /opt/restream
 sudo bash /opt/restream/scripts/server-setup.sh
 ```
 
-The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
+The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, compiles the TypeScript source (`npm run build`), and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
 
 ### GCP Firewall Rules
 

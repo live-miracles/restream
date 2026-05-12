@@ -1,4 +1,3 @@
-import { setMetricsBitrateWithSubtleUnit, setMetricsValueWithSubtleUnit } from './metric-format.js';
 import { state } from '../core/state.js';
 
 const HEALTH_RECOVERY_BANNER_MS = 6000;
@@ -28,46 +27,56 @@ function getHealthBannerState(currentStatus: string | null): 'hidden' | 'degrade
 }
 
 function renderServerMetrics(): void {
-    const setAll = (selector: string, value: string): void =>
-        document.querySelectorAll(selector).forEach((elem) => {
-            (elem as HTMLElement).innerText = value;
-        });
+    const setText = (id: string, text: string): void => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
 
     if (!state.metrics || Object.keys(state.metrics).length === 0) {
-        setAll('.cpu-metric', '...');
-        setAll('.ram-metric', '...');
-        setAll('.disk-metric', '...');
-        setAll('.downlink-metric', '...');
-        setAll('.uplink-metric', '...');
+        setText('navbar-cpu-value', 'CPU ...');
+        setText('navbar-ram-value', 'RAM ...');
+        setText('navbar-disk-value', 'Disk ...');
+        setText('navbar-down-value', '↓ ...');
+        setText('navbar-up-value', '↑ ...');
         return;
     }
 
     const toGiB = (bytes: number | null | undefined): string =>
         (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
 
-    const cpuParts =
-        state.metrics?.cpu?.usagePercent !== null && state.metrics?.cpu?.usagePercent !== undefined
-            ? { valueText: state.metrics.cpu.usagePercent.toFixed(1), unitText: '%' }
-            : null;
-    const ramParts =
-        state.metrics?.memory?.usedBytes !== null && state.metrics?.memory?.totalBytes !== null
-            ? {
-                  valueText: `${toGiB(state.metrics.memory?.usedBytes)}/${toGiB(state.metrics.memory?.totalBytes)}`,
-                  unitText: 'G',
-              }
-            : null;
-    const diskParts =
-        state.metrics?.disk?.usedPercent !== null && state.metrics?.disk?.usedPercent !== undefined
-            ? { valueText: state.metrics.disk.usedPercent.toFixed(1), unitText: '%' }
-            : null;
-    const downKbps = state.metrics?.network?.downloadKbps;
-    const upKbps = state.metrics?.network?.uploadKbps;
+    const pct = (v: number | null | undefined): string =>
+        v != null ? `${Math.round(Number(v))}%` : '--';
 
-    setMetricsValueWithSubtleUnit('.cpu-metric', cpuParts);
-    setMetricsValueWithSubtleUnit('.ram-metric', ramParts);
-    setMetricsValueWithSubtleUnit('.disk-metric', diskParts);
-    setMetricsBitrateWithSubtleUnit('.downlink-metric', downKbps);
-    setMetricsBitrateWithSubtleUnit('.uplink-metric', upKbps);
+    const toMbps = (kbps: number | null | undefined): string => {
+        const v = Number(kbps);
+        return Number.isFinite(v) && v >= 0 ? `${(v / 1000).toFixed(2)} Mb/s` : '--';
+    };
+
+    const cores = state.metrics?.cpu?.cores;
+    const cpuStr =
+        cores != null
+            ? `${cores}c CPU: ${pct(state.metrics?.cpu?.usagePercent)}`
+            : `CPU: ${pct(state.metrics?.cpu?.usagePercent)}`;
+
+    const totalRamGiB =
+        state.metrics?.memory?.totalBytes != null ? toGiB(state.metrics.memory.totalBytes) : null;
+    const ramStr =
+        totalRamGiB != null
+            ? `${totalRamGiB}G RAM: ${pct(state.metrics?.memory?.usedPercent)}`
+            : `RAM: ${pct(state.metrics?.memory?.usedPercent)}`;
+
+    const totalDiskGiB =
+        state.metrics?.disk?.totalBytes != null ? toGiB(state.metrics.disk.totalBytes) : null;
+    const diskStr =
+        totalDiskGiB != null
+            ? `${totalDiskGiB}G Disk: ${pct(state.metrics?.disk?.usedPercent)}`
+            : `Disk: ${pct(state.metrics?.disk?.usedPercent)}`;
+
+    setText('navbar-cpu-value', cpuStr);
+    setText('navbar-ram-value', ramStr);
+    setText('navbar-disk-value', diskStr);
+    setText('navbar-down-value', `↓ ${toMbps(state.metrics?.network?.downloadKbps)}`);
+    setText('navbar-up-value', `↑ ${toMbps(state.metrics?.network?.uploadKbps)}`);
 }
 
 function renderHealthBanner(): void {

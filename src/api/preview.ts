@@ -1,7 +1,6 @@
-'use strict';
-
-const { Readable } = require('stream');
-const { validateStreamKey } = require('../utils/app');
+import { Readable } from 'stream';
+import type { Express, Request, Response } from 'express';
+import { validateStreamKey } from '../utils/app';
 
 const HLS_ASSET_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_HLS_ASSET_PATH_CHARS = 512;
@@ -18,7 +17,7 @@ const FORWARDED_RESPONSE_HEADERS = [
     'content-length',
 ];
 
-function parseHlsAssetPath(rawAssetPath) {
+function parseHlsAssetPath(rawAssetPath: unknown): { encodedPath: string; rawPath: string } | null {
     const assetPath =
         typeof rawAssetPath === 'string' && rawAssetPath.trim()
             ? rawAssetPath.trim()
@@ -47,8 +46,8 @@ function parseHlsAssetPath(rawAssetPath) {
     };
 }
 
-function buildForwardRequestHeaders(req) {
-    const headers = {};
+function buildForwardRequestHeaders(req: Request): Record<string, string> {
+    const headers: Record<string, string> = {};
     const ifNoneMatch = req.headers['if-none-match'];
     const ifModifiedSince = req.headers['if-modified-since'];
     const range = req.headers.range;
@@ -66,37 +65,37 @@ function buildForwardRequestHeaders(req) {
     return headers;
 }
 
-function copyAllowedUpstreamHeaders(upstreamResponse, res) {
+function copyAllowedUpstreamHeaders(upstreamResponse: globalThis.Response, res: Response) {
     FORWARDED_RESPONSE_HEADERS.forEach((headerName) => {
         const headerValue = upstreamResponse.headers.get(headerName);
         if (headerValue) res.setHeader(headerName, headerValue);
     });
-
     res.setHeader('x-content-type-options', 'nosniff');
 }
 
-function clearForwardedUpstreamHeaders(res) {
+function clearForwardedUpstreamHeaders(res: Response) {
     FORWARDED_RESPONSE_HEADERS.forEach((headerName) => {
         res.removeHeader(headerName);
     });
 }
 
-function isManifestResponse(pathName, contentType) {
+function isManifestResponse(pathName: string, contentType: string): boolean {
     return (
         pathName.toLowerCase().endsWith('.m3u8') ||
         /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i.test(contentType || '')
     );
 }
 
-function toNodeReadable(body) {
+function toNodeReadable(body: globalThis.ReadableStream | null): Readable | null {
     if (!body) return null;
-    if (typeof body.pipe === 'function') return body;
-    if (typeof body.getReader === 'function') return Readable.fromWeb(body);
-    if (typeof body[Symbol.asyncIterator] === 'function') return Readable.from(body);
-    return Readable.from(body);
+    if (typeof (body as unknown as { pipe?: unknown }).pipe === 'function')
+        return body as unknown as Readable;
+    if (typeof (body as globalThis.ReadableStream).getReader === 'function')
+        return Readable.fromWeb(body as import('stream/web').ReadableStream);
+    return Readable.from(body as AsyncIterable<unknown>);
 }
 
-function runCleanupOnce(cleanup) {
+function runCleanupOnce(cleanup: (() => void) | undefined): () => void {
     let cleanedUp = false;
     return () => {
         if (cleanedUp) return;
@@ -105,12 +104,20 @@ function runCleanupOnce(cleanup) {
     };
 }
 
-async function readManifestBufferWithLimit({ body, maxBytes, abortController }) {
+async function readManifestBufferWithLimit({
+    body,
+    maxBytes,
+    abortController,
+}: {
+    body: globalThis.ReadableStream | null;
+    maxBytes: number;
+    abortController: AbortController;
+}): Promise<Buffer | null> {
     if (!body) return Buffer.alloc(0);
 
-    if (typeof body.getReader === 'function') {
-        const reader = body.getReader();
-        const chunks = [];
+    if (typeof (body as globalThis.ReadableStream).getReader === 'function') {
+        const reader = (body as globalThis.ReadableStream<Uint8Array>).getReader();
+        const chunks: Buffer[] = [];
         let totalBytes = 0;
 
         try {
@@ -133,19 +140,20 @@ async function readManifestBufferWithLimit({ body, maxBytes, abortController }) 
         } finally {
             try {
                 reader.releaseLock();
-            } catch (_) {
-                // Ignore release failures after cancel/close.
+            } catch {
+                // ignore release failures
             }
         }
     }
 
     const nodeStream = toNodeReadable(body);
-    const chunks = [];
+    if (!nodeStream) return Buffer.alloc(0);
+    const chunks: Buffer[] = [];
     let totalBytes = 0;
 
     try {
         for await (const value of nodeStream) {
-            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value as Uint8Array);
             totalBytes += chunk.length;
             if (totalBytes > maxBytes) {
                 abortController?.abort();
@@ -154,7 +162,6 @@ async function readManifestBufferWithLimit({ body, maxBytes, abortController }) 
                 }
                 return null;
             }
-
             chunks.push(chunk);
         }
 
@@ -175,13 +182,27 @@ async function fetchUpstreamAsset({
     req,
     res,
     fetch,
-    log,
     streamKey,
     assetPath,
     query,
     getMediamtxHlsBaseUrl,
     buildMediamtxPath,
-}) {
+    log,
+}: {
+    req: Request;
+    res: Response;
+    fetch: typeof globalThis.fetch;
+    streamKey: string;
+    assetPath: string;
+    query: string;
+    getMediamtxHlsBaseUrl: () => string;
+    buildMediamtxPath: (key: string) => string;
+    log: (level: string, message: string, fields?: Record<string, unknown>) => void;
+}): Promise<{
+    abortController: AbortController;
+    cleanup: () => void;
+    upstreamResponse: globalThis.Response;
+} | null> {
     const upstreamUrl = `${getMediamtxHlsBaseUrl()}/${buildMediamtxPath(streamKey)}/${assetPath}${query || ''}`;
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), HLS_PROXY_TIMEOUT_MS);
@@ -200,17 +221,13 @@ async function fetchUpstreamAsset({
             signal: abortController.signal,
         });
 
-        return {
-            abortController,
-            cleanup,
-            upstreamResponse,
-        };
+        return { abortController, cleanup, upstreamResponse };
     } catch (err) {
         cleanup();
         log('warn', 'HLS preview proxy upstream request failed', {
             streamKey,
             assetPath,
-            error: err?.message || String(err),
+            error: (err as Error)?.message || String(err),
         });
         return null;
     }
@@ -223,7 +240,14 @@ async function streamUpstreamResponse({
     abortController,
     cleanup,
     log,
-}) {
+}: {
+    upstreamResponse: globalThis.Response;
+    res: Response;
+    pathName: string;
+    abortController: AbortController;
+    cleanup: () => void;
+    log: (level: string, message: string, fields?: Record<string, unknown>) => void;
+}): Promise<void> {
     const finalize = runCleanupOnce(cleanup);
     const contentType = upstreamResponse.headers.get('content-type') || '';
     if (isManifestResponse(pathName, contentType)) {
@@ -235,36 +259,42 @@ async function streamUpstreamResponse({
             });
             if (!buffer) {
                 clearForwardedUpstreamHeaders(res);
-                return res
-                    .status(502)
-                    .json({ error: 'Preview manifest exceeds safe proxy size limit' });
+                res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
+                return;
             }
-            return res.send(buffer);
+            res.send(buffer);
         } catch (err) {
             log?.('warn', 'HLS preview proxy manifest read failed', {
                 pathName,
-                error: err?.message || String(err),
+                error: (err as Error)?.message || String(err),
             });
             if (res.headersSent || res.writableEnded) {
-                res.destroy(err);
+                res.destroy(err as Error);
                 return;
             }
             clearForwardedUpstreamHeaders(res);
-            return res.status(502).json({ error: 'Failed to read preview manifest' });
+            res.status(502).json({ error: 'Failed to read preview manifest' });
         } finally {
             finalize();
         }
+        return;
     }
 
     if (!upstreamResponse.body) {
         try {
-            return res.end();
+            res.end();
         } finally {
             finalize();
         }
+        return;
     }
 
     const bodyStream = toNodeReadable(upstreamResponse.body);
+    if (!bodyStream) {
+        finalize();
+        res.end();
+        return;
+    }
     bodyStream.once('error', (err) => {
         finalize();
         if (res.headersSent || res.writableEnded) {
@@ -279,14 +309,26 @@ async function streamUpstreamResponse({
     bodyStream.pipe(res);
 }
 
-function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, buildMediamtxPath }) {
-    async function proxyHlsAsset(req, res, rawAssetPath) {
+export function registerPreviewProxyRoutes({
+    app,
+    fetch: fetchImpl = globalThis.fetch,
+    log,
+    getMediamtxHlsBaseUrl,
+    buildMediamtxPath,
+}: {
+    app: Express;
+    fetch?: typeof globalThis.fetch;
+    log: (level: string, message: string, fields?: Record<string, unknown>) => void;
+    getMediamtxHlsBaseUrl: () => string;
+    buildMediamtxPath: (key: string) => string;
+}): void {
+    async function proxyHlsAsset(req: Request, res: Response, rawAssetPath: unknown) {
         const streamKey = String(req.params.streamKey || '').trim();
         if (validateStreamKey(streamKey)) {
             return res.status(400).json({ error: 'Invalid stream key' });
         }
 
-        let parsedAsset = parseHlsAssetPath(rawAssetPath);
+        const parsedAsset = parseHlsAssetPath(rawAssetPath);
         if (!parsedAsset) {
             return res.status(400).json({ error: 'Invalid HLS asset path' });
         }
@@ -297,13 +339,13 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
         const upstreamResult = await fetchUpstreamAsset({
             req,
             res,
-            fetch,
-            log,
+            fetch: fetchImpl,
             streamKey,
             assetPath: parsedAsset.encodedPath,
             query,
             getMediamtxHlsBaseUrl,
             buildMediamtxPath,
+            log,
         });
 
         if (!upstreamResult) {
@@ -334,7 +376,3 @@ function registerPreviewProxyRoutes({ app, fetch, log, getMediamtxHlsBaseUrl, bu
         await proxyHlsAsset(req, res, assetPath);
     });
 }
-
-module.exports = {
-    registerPreviewProxyRoutes,
-};

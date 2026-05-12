@@ -1,22 +1,21 @@
-/* top requires */
-const express = require('express');
-const compression = require('compression');
-const fetch = global.fetch || require('node-fetch'); // keep compatibility
-const path = require('path');
-const crypto = require('crypto');
-const { spawn } = require('child_process');
-const db = require('./db');
-const { registerConfigApi } = require('./api/config');
-const { registerPreviewProxyRoutes } = require('./api/preview');
-const { registerOutputApi } = require('./api/outputs');
-const { registerEncodingsApi } = require('./api/encodings');
-const { registerPipelineApi } = require('./api/pipelines');
-const { createHealthMonitorService } = require('./services/health');
-const { createOutputLifecycleService } = require('./services/outputs');
-const { startServer } = require('./services/bootstrap');
-const { registerSystemMetricsApi } = require('./api/metrics');
-const { log } = require('./utils/app');
-const { buildMediamtxPath, getMediamtxHlsBaseUrl } = require('./utils/mediamtx');
+import express from 'express';
+import compression from 'compression';
+import path from 'path';
+import crypto from 'crypto';
+import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import * as db from './db';
+import { registerConfigApi } from './api/config';
+import { registerPreviewProxyRoutes } from './api/preview';
+import { registerOutputApi } from './api/outputs';
+import { registerEncodingsApi } from './api/encodings';
+import { registerPipelineApi } from './api/pipelines';
+import { createHealthMonitorService } from './services/health';
+import { createOutputLifecycleService } from './services/outputs';
+import { startServer } from './services/bootstrap';
+import { registerSystemMetricsApi } from './api/metrics';
+import { log } from './utils/app';
+import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
 
 const app = express();
 const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
@@ -24,7 +23,7 @@ app.use(express.json());
 app.use(
     compression({
         threshold: 1024,
-        brotli: { enabled: true },
+        brotli: { enabled: true } as Record<string, unknown>,
         filter: (req, res) => {
             if (req.headers['x-no-compression']) return false;
             const contentType = res.getHeader('Content-Type');
@@ -39,10 +38,10 @@ app.use(
 const appPort = Number(process.env.PORT || 3030);
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
-const ffmpegProgressByJobId = new Map(); // jobId -> { total_size }
+const ffmpegProgressByJobId = new Map<string, Record<string, string>>();
 
 // ── Shared child-process handle registry ─────────────
-const processes = new Map(); // jobId -> ChildProcess
+const processes = new Map<string, ChildProcess>();
 
 // ── Config API (provides normalizeEtag + recomputeEtag) ──────────
 const { normalizeEtag, initializeConfigSnapshotVersions, recomputeConfigEtag, recomputeEtag } =
@@ -67,8 +66,7 @@ const outputLifecycle = createOutputLifecycleService({
     isInputOn: healthMonitor.isInputOn,
 });
 
-// Resolve circular dependency without late-binding let-variable workaround:
-// register the output recovery callback now that both services are created.
+// Resolve circular dependency: register the output recovery callback now that both services exist.
 healthMonitor.registerInputRecoveryHandler(outputLifecycle.restartPipelineOutputsOnInputRecovery);
 
 const {

@@ -1,13 +1,20 @@
-const { createHash } = require('crypto');
-const { errMsg } = require('../utils/app');
-const { buildIngestUrls } = require('../utils/mediamtx');
+import { createHash } from 'crypto';
+import type { Express } from 'express';
+import { errMsg } from '../utils/app';
+import { buildIngestUrls } from '../utils/mediamtx';
+import type { Db } from '../types';
 
-function normalizeEtag(value) {
+export function normalizeEtag(value: string | null | undefined): string | null {
     if (!value) return null;
     return value.replace(/^"(.*)"$/, '$1');
 }
 
-function registerConfigApi({ app, db }) {
+export function registerConfigApi({ app, db }: { app: Express; db: Db }): {
+    normalizeEtag: typeof normalizeEtag;
+    initializeConfigSnapshotVersions: () => void;
+    recomputeConfigEtag: () => string | null;
+    recomputeEtag: () => string | null;
+} {
     function buildConfigSnapshot() {
         const serverName = db.getServerName();
         const pipelines = db.listPipelines().map((p) => ({
@@ -15,14 +22,23 @@ function registerConfigApi({ app, db }) {
             name: p.name,
             streamKey: p.streamKey,
             encoding: p.encoding,
+            outputs: [] as {
+                id: string;
+                name: string;
+                url: string;
+                desiredState: string;
+                encoding: string;
+            }[],
         }));
 
-        const outputsByPipeline = db.listOutputs().reduce((acc, output) => {
-            const pipelineId = output.pipelineId;
-            if (!acc[pipelineId]) acc[pipelineId] = [];
-            acc[pipelineId].push(output);
-            return acc;
-        }, {});
+        const outputsByPipeline = db
+            .listOutputs()
+            .reduce<Record<string, (typeof pipelines)[0]['outputs']>>((acc, output) => {
+                const pid = output.pipelineId;
+                if (!acc[pid]) acc[pid] = [];
+                acc[pid].push(output);
+                return acc;
+            }, {});
 
         for (const pipeline of pipelines) {
             const outs = (outputsByPipeline[pipeline.id] || []).map((output) => ({
@@ -57,11 +73,11 @@ function registerConfigApi({ app, db }) {
         return jobs;
     }
 
-    function hashSnapshot(snapshot) {
+    function hashSnapshot(snapshot: unknown): string {
         return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     }
 
-    function recomputeConfigEtag() {
+    function recomputeConfigEtag(): string | null {
         try {
             const etag = hashSnapshot(buildConfigSnapshot());
             db.setConfigEtag(etag);
@@ -72,13 +88,9 @@ function registerConfigApi({ app, db }) {
         }
     }
 
-    function recomputeEtag() {
+    function recomputeEtag(): string | null {
         try {
-            const etag = hashSnapshot({
-                ...buildConfigSnapshot(),
-                jobs: buildJobsSnapshot(),
-            });
-
+            const etag = hashSnapshot({ ...buildConfigSnapshot(), jobs: buildJobsSnapshot() });
             db.setEtag(etag);
             return etag;
         } catch (err) {
@@ -114,12 +126,7 @@ function registerConfigApi({ app, db }) {
             const outputs = db.listOutputs();
             const jobs = db.listJobs();
 
-            const snapshot = {
-                serverName: db.getServerName(),
-                pipelines,
-                outputs,
-                jobs,
-            };
+            const snapshot = { serverName: db.getServerName(), pipelines, outputs, jobs };
 
             if (etag) res.set('ETag', `"${etag}"`);
             return res.json(snapshot);
@@ -130,7 +137,7 @@ function registerConfigApi({ app, db }) {
 
     app.patch('/config', (req, res) => {
         try {
-            const { serverName } = req.body || {};
+            const { serverName } = (req.body as { serverName?: unknown }) || {};
             if (serverName !== undefined) {
                 if (typeof serverName !== 'string' || !serverName.trim()) {
                     return res.status(400).json({ error: 'serverName must be a non-empty string' });
@@ -145,14 +152,5 @@ function registerConfigApi({ app, db }) {
         }
     });
 
-    return {
-        normalizeEtag,
-        initializeConfigSnapshotVersions,
-        recomputeConfigEtag,
-        recomputeEtag,
-    };
+    return { normalizeEtag, initializeConfigSnapshotVersions, recomputeConfigEtag, recomputeEtag };
 }
-
-module.exports = {
-    registerConfigApi,
-};

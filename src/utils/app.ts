@@ -1,41 +1,32 @@
-'use strict';
-
-// General-purpose app utilities: error formatting, structured logging, token masking,
-// HTTP error construction, and name validation. All functions are stateless pure utilities
-// that any module can require directly without going through the DI wiring in index.js.
+import type { HttpError } from '../types';
 
 const MAX_NAME_LENGTH = 128;
 const MAX_STREAM_KEY_LENGTH = 128;
 const STREAM_KEY_SEGMENT_RE = /^[0-9a-zA-Z_.-]+$/;
 
-function errMsg(err) {
-    return (err && err.message) || String(err);
+export function errMsg(err: unknown): string {
+    return (err instanceof Error && err.message) || String(err);
 }
 
 // ── Structured logging ────────────────────────────────
-const levelOrder = { error: 0, warn: 1, info: 2, debug: 3 };
+const levelOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
 const logLevel = (process.env.LOG_LEVEL || 'info').toLowerCase();
 
-function shouldLog(level) {
+function shouldLog(level: string): boolean {
     const current = levelOrder[logLevel] ?? levelOrder.info;
     const target = levelOrder[level] ?? levelOrder.info;
-    return target <= current;
+    return (target ?? 0) <= (current ?? 0);
 }
 
-function log(level, message, fields = {}) {
+export function log(level: string, message: string, fields: Record<string, unknown> = {}): void {
     if (!shouldLog(level)) return;
-    const payload = {
-        ts: new Date().toISOString(),
-        level,
-        message,
-        ...fields,
-    };
+    const payload = { ts: new Date().toISOString(), level, message, ...fields };
     // Keep logs single-line JSON to simplify grep and diff across runs.
     console.log(JSON.stringify(payload));
 }
 
 // ── Token / secret masking ────────────────────────────
-function maskToken(value) {
+export function maskToken(value: unknown): string {
     const s = String(value ?? '');
     if (!s) return '';
     if (s.length <= 4) {
@@ -46,7 +37,7 @@ function maskToken(value) {
 }
 
 // ── Input validation ──────────────────────────────────
-function validateName(name, fieldLabel = 'Name') {
+export function validateName(name: unknown, fieldLabel = 'Name'): string | null {
     if (typeof name !== 'string' || !name.trim()) {
         return `${fieldLabel} is required and must be a non-empty string`;
     }
@@ -56,7 +47,7 @@ function validateName(name, fieldLabel = 'Name') {
     return null;
 }
 
-function validateStreamKey(streamKey, fieldLabel = 'Stream key') {
+export function validateStreamKey(streamKey: unknown, fieldLabel = 'Stream key'): string | null {
     if (typeof streamKey !== 'string') {
         return `${fieldLabel} is required and must be a string`;
     }
@@ -82,24 +73,20 @@ function validateStreamKey(streamKey, fieldLabel = 'Stream key') {
 }
 
 // ── HTTP error constructor ─────────────────────────────
-// Creates a structured error object that route handlers can catch and translate to a response.
 // `publicError` is safe to send to the client; `detail` and `extra` are for logging only.
-function createHttpError(status, error, detail, extra = {}) {
-    const err = new Error(error);
-    err.status = status;
-    err.publicError = error;
+export function createHttpError(
+    status: number,
+    error: string,
+    detail?: string,
+    extra: Record<string, unknown> = {},
+): HttpError {
+    const err = Object.assign(new Error(error), {
+        status,
+        publicError: error,
+        ...extra,
+    }) as HttpError;
     if (detail) err.detail = detail;
-    Object.assign(err, extra);
     return err;
 }
 
-module.exports = {
-    errMsg,
-    log,
-    maskToken,
-    validateName,
-    validateStreamKey,
-    createHttpError,
-    MAX_NAME_LENGTH,
-    MAX_STREAM_KEY_LENGTH,
-};
+export { MAX_NAME_LENGTH, MAX_STREAM_KEY_LENGTH };

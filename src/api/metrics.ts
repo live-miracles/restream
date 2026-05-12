@@ -1,15 +1,41 @@
-const fs = require('fs');
-const os = require('os');
-const { errMsg } = require('../utils/app');
+import fs from 'fs';
+import os from 'os';
+import type { Express } from 'express';
+import { errMsg } from '../utils/app';
 
 const SYSTEM_METRICS_SAMPLE_INTERVAL_MS = Number(
     process.env.SYSTEM_METRICS_SAMPLE_INTERVAL_MS || 1000,
 );
 
-function getCpuTotals(cpuInfo = os.cpus()) {
-    const totals = cpuInfo.reduce(
+interface CpuTotals {
+    total: number;
+    idle: number;
+}
+
+interface MetricsSample {
+    ts: number;
+    cpu: CpuTotals;
+    net: { rx: number; tx: number };
+    cores: number;
+    load1: number;
+    memory: {
+        totalBytes: number;
+        usedBytes: number;
+        freeBytes: number;
+        usedPercent: number | null;
+    };
+    disk: {
+        totalBytes: number | null;
+        usedBytes: number | null;
+        freeBytes: number | null;
+        usedPercent: number | null;
+    };
+}
+
+function getCpuTotals(cpuInfo = os.cpus()): CpuTotals {
+    return cpuInfo.reduce(
         (acc, cpu) => {
-            const times = cpu.times || {};
+            const times = cpu.times || ({} as os.CpuInfo['times']);
             const total =
                 Number(times.user || 0) +
                 Number(times.nice || 0) +
@@ -22,24 +48,17 @@ function getCpuTotals(cpuInfo = os.cpus()) {
         },
         { total: 0, idle: 0 },
     );
-    return totals;
 }
 
-function getMemoryUsage() {
+function getMemoryUsage(): MetricsSample['memory'] {
     const totalBytes = os.totalmem();
     const freeBytes = os.freemem();
     const usedBytes = Math.max(0, totalBytes - freeBytes);
     const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
-
-    return {
-        totalBytes,
-        usedBytes,
-        freeBytes,
-        usedPercent,
-    };
+    return { totalBytes, usedBytes, freeBytes, usedPercent };
 }
 
-function getNetworkTotals() {
+function getNetworkTotals(): { rx: number; tx: number } {
     try {
         const content = fs.readFileSync('/proc/net/dev', 'utf8');
         const lines = content.split('\n').slice(2).filter(Boolean);
@@ -60,14 +79,19 @@ function getNetworkTotals() {
         }
 
         return { rx, tx };
-    } catch (err) {
+    } catch {
         return { rx: 0, tx: 0 };
     }
 }
 
-function getDiskUsage(pathname = '/') {
+function getDiskUsage(pathname = '/'): MetricsSample['disk'] {
     try {
-        const stats = fs.statfsSync(pathname);
+        const stats = fs.statfsSync(pathname) as {
+            bsize?: number;
+            blocks?: number;
+            bavail?: number;
+            bfree?: number;
+        };
         const blockSize = Number(stats.bsize || 0);
         const totalBlocks = Number(stats.blocks || 0);
         const availBlocks = Number(stats.bavail || stats.bfree || 0);
@@ -78,17 +102,12 @@ function getDiskUsage(pathname = '/') {
         const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
 
         return { totalBytes, usedBytes, freeBytes, usedPercent };
-    } catch (err) {
-        return {
-            totalBytes: null,
-            usedBytes: null,
-            freeBytes: null,
-            usedPercent: null,
-        };
+    } catch {
+        return { totalBytes: null, usedBytes: null, freeBytes: null, usedPercent: null };
     }
 }
 
-function captureSystemMetricsSample(now = Date.now()) {
+function captureSystemMetricsSample(now = Date.now()): MetricsSample {
     const cpuInfo = os.cpus();
     return {
         ts: now,
@@ -101,7 +120,10 @@ function captureSystemMetricsSample(now = Date.now()) {
     };
 }
 
-function buildSystemMetricsSnapshot(previousSample, currentSample) {
+function buildSystemMetricsSnapshot(
+    previousSample: MetricsSample,
+    currentSample: MetricsSample,
+): Record<string, unknown> {
     const dtSec = Math.max((currentSample.ts - previousSample.ts) / 1000, 0.001);
     const cpuTotalDiff = currentSample.cpu.total - previousSample.cpu.total;
     const cpuIdleDiff = currentSample.cpu.idle - previousSample.cpu.idle;
@@ -144,7 +166,7 @@ function buildSystemMetricsSnapshot(previousSample, currentSample) {
     };
 }
 
-function registerSystemMetricsApi({ app }) {
+export function registerSystemMetricsApi({ app }: { app: Express }): void {
     let previousSystemMetricsSample = captureSystemMetricsSample();
     let latestSystemMetricsSnapshot = buildSystemMetricsSnapshot(
         previousSystemMetricsSample,
@@ -179,5 +201,3 @@ function registerSystemMetricsApi({ app }) {
         }
     });
 }
-
-module.exports = { registerSystemMetricsApi };

@@ -110,9 +110,9 @@ export interface HealthData {
 }
 
 export interface SystemMetrics {
-    cpu?: { usagePercent?: number | null };
-    memory?: { usedBytes?: number | null; totalBytes?: number | null };
-    disk?: { usedPercent?: number | null };
+    cpu?: { usagePercent?: number | null; cores?: number | null; load1?: number | null };
+    memory?: { usedBytes?: number | null; totalBytes?: number | null; usedPercent?: number | null };
+    disk?: { usedPercent?: number | null; totalBytes?: number | null };
     network?: { downloadKbps?: number | null; uploadKbps?: number | null };
 }
 

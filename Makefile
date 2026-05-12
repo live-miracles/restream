@@ -16,6 +16,7 @@ DEPS_MODE := $(if $(DEV),dev,prod)
 
 check:
 	@test -d node_modules || (echo "Run 'make deps' first. 'DEV=1 make deps' for dev dependencies."; exit 1)
+	@test -d dist || (echo "Run 'make build' first to compile TypeScript."; exit 1)
 	@test -f $(DEPS_STAMP) || (echo "Dependency metadata missing. Run 'make deps' again."; exit 1)
 	@test ! package.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
 	@test ! package-lock.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
@@ -30,6 +31,9 @@ deps:
 	scripts/check-debian-binaries.sh --install
 	npm ci $(NPM_FLAGS)
 	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
+
+build:
+	npm run build
 
 format:
 	npm run format

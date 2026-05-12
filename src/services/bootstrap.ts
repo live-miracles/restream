@@ -1,5 +1,21 @@
-function createCleanupRunners({ db, log }) {
-    function runJobCleanup(label) {
+import type { Express } from 'express';
+import type { Db } from '../types';
+
+interface HealthMonitor {
+    start(): Promise<void>;
+}
+
+interface BootstrapOptions {
+    app: Express;
+    healthMonitor: HealthMonitor;
+    db: Db;
+    log: (level: string, message: string, fields?: Record<string, unknown>) => void;
+    appPort: number;
+    initializeConfigSnapshotVersions?: () => void;
+}
+
+function createCleanupRunners({ db, log }: Pick<BootstrapOptions, 'db' | 'log'>) {
+    function runJobCleanup(label: string) {
         try {
             const cleaned = db.cleanupOldJobs();
             if (cleaned.deletedJobs || cleaned.deletedLogs) {
@@ -21,14 +37,14 @@ function createCleanupRunners({ db, log }) {
     return { runJobCleanup, runJobLogCleanup };
 }
 
-async function startServer({
+export async function startServer({
     app,
     healthMonitor,
     db,
     log,
     appPort,
     initializeConfigSnapshotVersions,
-}) {
+}: BootstrapOptions): Promise<void> {
     const { runJobCleanup, runJobLogCleanup } = createCleanupRunners({ db, log });
     initializeConfigSnapshotVersions?.();
     await healthMonitor.start();
@@ -42,11 +58,9 @@ async function startServer({
             () => runJobCleanup('Periodic job cleanup'),
             24 * 60 * 60 * 1000,
         );
-        dailyCleanupTimer.unref?.();
+        (dailyCleanupTimer as NodeJS.Timeout).unref?.();
 
         const hourlyJobLogCleanupTimer = setInterval(() => runJobLogCleanup(7), 60 * 60 * 1000);
-        hourlyJobLogCleanupTimer.unref?.();
+        (hourlyJobLogCleanupTimer as NodeJS.Timeout).unref?.();
     });
 }
-
-module.exports = { startServer };

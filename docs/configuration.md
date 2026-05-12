@@ -94,14 +94,15 @@ npm ci
 npm start      # run in a second terminal
 ```
 
-For development mode:
+For development mode, run each in its own terminal:
 
 ```sh
-npm run dev
-npm run css-watch
+npm run dev             # backend with live reload via tsx watch
+npm run watch:frontend  # frontend TypeScript in watch mode
+npm run css-watch       # Tailwind CSS in watch mode
 ```
 
-This runs the app with `npm run dev` (nodemon) instead of `node src/index.js`.
+`npm run dev` runs the backend TypeScript source directly via `tsx` — no compile step needed.
 
 If you encounter port conflicts, check for running MediaMTX or Node processes and stop them manually.
 

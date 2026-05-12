@@ -1,7 +1,16 @@
-const { errMsg, maskToken, validateName, validateStreamKey } = require('../utils/app');
-const { buildIngestUrls, getPermanentStreamKeys } = require('../utils/mediamtx');
+import type { Express } from 'express';
+import { errMsg, maskToken, validateName, validateStreamKey } from '../utils/app';
+import { buildIngestUrls, getPermanentStreamKeys } from '../utils/mediamtx';
+import type { Db, Pipeline } from '../types';
+import type { HealthMonitor } from '../services/health';
+import type { OutputLifecycle } from '../services/outputs';
 
-function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline) {
+function logPipelineConfigChanges(
+    db: Db,
+    pipelineId: string,
+    previousPipeline: Pipeline,
+    nextPipeline: Pipeline,
+) {
     if (!pipelineId || !previousPipeline || !nextPipeline) return;
 
     if (previousPipeline.name !== nextPipeline.name) {
@@ -9,10 +18,7 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
             pipelineId,
             `[config] name changed from "${previousPipeline.name}" to "${nextPipeline.name}"`,
             'pipeline.config.name_changed',
-            {
-                from: previousPipeline.name,
-                to: nextPipeline.name,
-            },
+            { from: previousPipeline.name, to: nextPipeline.name },
         );
     }
 
@@ -21,10 +27,7 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
             pipelineId,
             `[config] encoding changed from ${previousPipeline.encoding || 'null'} to ${nextPipeline.encoding || 'null'}`,
             'pipeline.config.encoding_changed',
-            {
-                from: previousPipeline.encoding || null,
-                to: nextPipeline.encoding || null,
-            },
+            { from: previousPipeline.encoding || null, to: nextPipeline.encoding || null },
         );
     }
 
@@ -41,15 +44,18 @@ function logPipelineConfigChanges(db, pipelineId, previousPipeline, nextPipeline
     }
 }
 
-function normalizePipelineStreamKey(value) {
+function normalizePipelineStreamKey(value: unknown): string | null {
     if (value === null || value === undefined) return null;
-    if (typeof value !== 'string') return value;
-
+    if (typeof value !== 'string') return value as string;
     const normalized = value.trim();
     return normalized || null;
 }
 
-function chooseAutomaticStreamKey(permanentStreamKeys, pipelines, excludedPipelineId = null) {
+function chooseAutomaticStreamKey(
+    permanentStreamKeys: { key: string }[],
+    pipelines: Pipeline[],
+    excludedPipelineId: string | null = null,
+): string | null {
     const availableKeys = (permanentStreamKeys || []).map((item) => item?.key).filter(Boolean);
     if (availableKeys.length === 0) return null;
 
@@ -63,14 +69,20 @@ function chooseAutomaticStreamKey(permanentStreamKeys, pipelines, excludedPipeli
     return availableKeys.find((key) => !usedKeys.has(key)) || availableKeys[0];
 }
 
-async function resolvePipelineStreamKey({ requestedStreamKey, db, excludedPipelineId = null }) {
+async function resolvePipelineStreamKey({
+    requestedStreamKey,
+    db,
+    excludedPipelineId = null,
+}: {
+    requestedStreamKey: string | null;
+    db: Db;
+    excludedPipelineId?: string | null;
+}): Promise<{ streamKey?: string; error?: string }> {
     const permanentStreamKeys = await getPermanentStreamKeys();
 
     if (requestedStreamKey !== null) {
         const streamKeyError = validateStreamKey(requestedStreamKey);
-        if (streamKeyError) {
-            return { error: streamKeyError };
-        }
+        if (streamKeyError) return { error: streamKeyError };
 
         if (!permanentStreamKeys.some((item) => item.key === requestedStreamKey)) {
             return { error: 'Stream key must match one of the permanent MediaMTX paths' };
@@ -91,7 +103,7 @@ async function resolvePipelineStreamKey({ requestedStreamKey, db, excludedPipeli
     return { streamKey };
 }
 
-function registerPipelineApi({
+export function registerPipelineApi({
     app,
     db,
     healthMonitor,
@@ -101,7 +113,17 @@ function registerPipelineApi({
     stopRunningJob,
     recomputeConfigEtag,
     recomputeEtag,
-}) {
+}: {
+    app: Express;
+    db: Db;
+    healthMonitor: HealthMonitor;
+    resetOutputFailureCount: OutputLifecycle['resetOutputFailureCount'];
+    clearOutputRestartState: OutputLifecycle['clearOutputRestartState'];
+    stopRunningJobAndWait: OutputLifecycle['stopRunningJobAndWait'];
+    stopRunningJob: OutputLifecycle['stopRunningJob'];
+    recomputeConfigEtag: () => string | null;
+    recomputeEtag: () => string | null;
+}): void {
     app.get('/stream-keys', async (req, res) => {
         try {
             const streamKeys = await Promise.all(
@@ -118,25 +140,21 @@ function registerPipelineApi({
 
     app.post('/pipelines', async (req, res) => {
         try {
-            const name = req.body?.name;
-            const requestedStreamKey = normalizePipelineStreamKey(req.body?.streamKey);
-            const encoding = req.body?.encoding ?? null;
+            const body = (req.body || {}) as Record<string, unknown>;
+            const name = body?.name;
+            const requestedStreamKey = normalizePipelineStreamKey(body?.streamKey);
+            const encoding = (body?.encoding as string | null | undefined) ?? null;
             const nameError = validateName(name, 'Pipeline name');
-            if (nameError) {
-                return res.status(400).json({ error: nameError });
-            }
+            if (nameError) return res.status(400).json({ error: nameError });
 
-            const resolvedStreamKey = await resolvePipelineStreamKey({
-                requestedStreamKey,
-                db,
-            });
+            const resolvedStreamKey = await resolvePipelineStreamKey({ requestedStreamKey, db });
             if (resolvedStreamKey.error) {
                 return res.status(400).json({ error: resolvedStreamKey.error });
             }
-            const streamKey = resolvedStreamKey.streamKey;
+            const streamKey = resolvedStreamKey.streamKey!;
 
             const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
-            const pipeline = db.createPipeline({ name, streamKey, encoding });
+            const pipeline = db.createPipeline({ name: name as string, streamKey, encoding });
             const pipelineWithState =
                 db.updatePipeline(pipeline.id, {
                     name: pipeline.name,
@@ -169,7 +187,7 @@ function registerPipelineApi({
                 .status(201)
                 .json({ message: 'Pipeline created', pipeline: pipelineWithState });
         } catch (err) {
-            return res.status(400).json({ error: err.message });
+            return res.status(400).json({ error: (err as Error).message });
         }
     });
 
@@ -179,19 +197,15 @@ function registerPipelineApi({
             const existing = db.getPipeline(id);
             if (!existing) return res.status(404).json({ error: 'Pipeline not found' });
 
-            const name = req.body?.name ?? existing.name;
-            const hasStreamKeyUpdate = Object.prototype.hasOwnProperty.call(
-                req.body || {},
-                'streamKey',
-            );
+            const body = (req.body || {}) as Record<string, unknown>;
+            const name = (body?.name ?? existing.name) as string;
+            const hasStreamKeyUpdate = Object.prototype.hasOwnProperty.call(body, 'streamKey');
             const requestedStreamKey = hasStreamKeyUpdate
-                ? normalizePipelineStreamKey(req.body?.streamKey)
+                ? normalizePipelineStreamKey(body?.streamKey)
                 : existing.streamKey;
-            const encoding = req.body?.encoding ?? existing.encoding;
+            const encoding = (body?.encoding ?? existing.encoding) as string | null;
             const nameError = validateName(name, 'Pipeline name');
-            if (nameError) {
-                return res.status(400).json({ error: nameError });
-            }
+            if (nameError) return res.status(400).json({ error: nameError });
 
             const resolvedStreamKey = await resolvePipelineStreamKey({
                 requestedStreamKey,
@@ -201,7 +215,7 @@ function registerPipelineApi({
             if (resolvedStreamKey.error) {
                 return res.status(400).json({ error: resolvedStreamKey.error });
             }
-            const streamKey = resolvedStreamKey.streamKey;
+            const streamKey = resolvedStreamKey.streamKey!;
 
             const streamKeyChanging = streamKey !== existing.streamKey;
             if (streamKeyChanging) {
@@ -217,7 +231,7 @@ function registerPipelineApi({
             }
 
             let inputEverSeenLive = Number(existing.inputEverSeenLive || 0);
-            let initialInputStatus = null;
+            let initialInputStatus: string | null = null;
 
             if (streamKeyChanging) {
                 const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
@@ -225,12 +239,7 @@ function registerPipelineApi({
                 initialInputStatus = runtimeState.status;
             }
 
-            const updated = db.updatePipeline(id, {
-                name,
-                streamKey,
-                encoding,
-                inputEverSeenLive,
-            });
+            const updated = db.updatePipeline(id, { name, streamKey, encoding, inputEverSeenLive });
             if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
 
             if (streamKeyChanging) {
@@ -250,7 +259,7 @@ function registerPipelineApi({
 
                 const outputs = db.listOutputsForPipeline(id);
                 for (const output of outputs) {
-                    resetOutputFailureCount(id, output.id, 'stream_key_change');
+                    resetOutputFailureCount(id, output.id);
                 }
             }
 
@@ -259,7 +268,7 @@ function registerPipelineApi({
             recomputeEtag();
             return res.json({ message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
-            return res.status(400).json({ error: err.message });
+            return res.status(400).json({ error: (err as Error).message });
         }
     });
 
@@ -272,23 +281,20 @@ function registerPipelineApi({
             const outputs = db.listOutputsForPipeline(id);
             const runningJobs = outputs
                 .map((output) => db.getRunningJobFor(id, output.id))
-                .filter(Boolean);
+                .filter((j): j is NonNullable<typeof j> => j !== undefined && j !== null);
 
             if (runningJobs.length > 0) {
                 const stopResults = await Promise.all(
                     runningJobs.map((job) => stopRunningJobAndWait(job)),
                 );
-                const failedStops = stopResults.filter(
-                    (result) => !result.stopped || !result.completed,
-                );
+                const failedStops = stopResults.filter((r) => !r.stopped || !r.completed);
 
                 if (failedStops.length > 0) {
                     return res.status(409).json({
                         error: 'Failed to stop all outputs before deleting pipeline',
                         outputs: failedStops.map((result) => ({
-                            outputId: result.outputId,
                             jobId: result.jobId,
-                            detail: result.waitReason || result.reason,
+                            detail: result.reason,
                         })),
                     });
                 }
@@ -318,7 +324,3 @@ function registerPipelineApi({
         }
     });
 }
-
-module.exports = {
-    registerPipelineApi,
-};
