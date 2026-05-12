@@ -57,7 +57,9 @@ Recommended layout:
 ```sh
 sudo -u restream git clone https://github.com/live-miracles/restream /opt/restream
 cd /opt/restream
-sudo -u restream npm ci --omit=dev
+sudo -u restream npm ci
+sudo -u restream npm run ts-build
+sudo -u restream npm prune --omit=dev
 ```
 
 Set config file:
@@ -76,7 +78,7 @@ Adjust values in `/etc/restream/restream.json` for server name and limits.
 2. Place config:
 
 ```sh
-sudo cp /opt/restream/infra/mediamtx.yml /etc/restream/mediamtx.yml
+sudo cp /opt/restream/mediamtx.yml /etc/restream/mediamtx.yml
 sudo chown restream:restream /etc/restream/mediamtx.yml
 ```
 
@@ -141,8 +143,8 @@ WorkingDirectory=/opt/restream
 Environment=NODE_ENV=production
 Environment=PORT=3030
 Environment=RESTREAM_CONFIG_PATH=/etc/restream/restream.json
-Environment=FFMPEG_PATH=/usr/bin/ffmpeg
-Environment=FFPROBE_PATH=/usr/bin/ffprobe
+Environment=FFMPEG_PATH=/usr/local/bin/ffmpeg
+Environment=FFPROBE_PATH=/usr/local/bin/ffprobe
 ExecStart=/usr/bin/node /opt/restream/src/index.js
 Restart=always
 RestartSec=2
