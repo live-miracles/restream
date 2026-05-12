@@ -43,6 +43,17 @@ function parseFfmpegNumber(raw) {
     return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+// Parses FFmpeg progress bitrate string (e.g. "3000.5kbits/s") → kbps number, or null.
+function parseFfmpegBitrateKbps(raw) {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    if (!s || s.toUpperCase() === 'N/A') return null;
+    const match = s.match(/^([\d.]+)\s*kbits\/s$/i);
+    if (!match) return null;
+    const n = Number(match[1]);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function getSessionBytesIn(record) {
     return record?.inboundBytes || record?.bytesReceived || 0;
 }
@@ -455,16 +466,20 @@ function createHealthMonitorService({
             : null;
         const totalSizeRaw = parseFfmpegNumber(ffmpegProgress?.total_size);
         const totalSize = totalSizeRaw === null ? null : Math.trunc(totalSizeRaw);
+        const bitrateKbps = parseFfmpegBitrateKbps(ffmpegProgress?.bitrate);
 
         if (latestJob?.status === 'failed') status = 'error';
         if (latestJob?.status === 'running') {
-            status = ffmpegProgress?.total_size != null ? 'on' : 'warning';
+            // HLS reports total_size=N/A; treat a live bitrate reading as connected too
+            const hasData = (totalSize !== null && totalSize > 0) || bitrateKbps !== null;
+            status = hasData ? 'on' : 'warning';
         }
 
         return {
             status,
             jobId: latestJob?.id || null,
             totalSize,
+            bitrateKbps,
         };
     }
 

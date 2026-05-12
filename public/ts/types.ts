@@ -95,6 +95,7 @@ export interface InputHealth {
 export interface OutputHealth {
     status?: string;
     totalSize?: number | null;
+    bitrateKbps?: number | null;
 }
 
 export interface PipelineHealth {
@@ -139,6 +140,7 @@ export interface OutputView {
     time: number | null;
     job: Job | null;
     totalSize: number | null;
+    bitrateKbps: number | null;
 }
 
 export interface PipelineStats {

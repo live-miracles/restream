@@ -378,7 +378,7 @@ function createOutputLifecycleService({
             ffmpegProgressByJobId.delete(job.id);
         });
 
-        // fd3 progress pipe — only track total_size for output byte counter
+        // fd3 progress pipe — track total_size and bitrate for output metrics
         let progressBuf = '';
         let loggedConnected = false;
         child.stdio[3]?.on('data', (d) => {
@@ -390,16 +390,22 @@ function createOutputLifecycleService({
                 const line = raw.trim();
                 if (line.startsWith('total_size=')) {
                     latest.total_size = line.slice('total_size='.length).trim();
-                    if (!loggedConnected) {
-                        const size = Number(String(latest.total_size || '0').trim());
-                        if (Number.isFinite(size) && size > 0) {
-                            loggedConnected = true;
-                            pushLog(
-                                `[lifecycle] connected pid=${child.pid ?? 'null'} trigger=${trigger}`,
-                                'lifecycle.connected',
-                                { pid: child.pid ?? null, trigger },
-                            );
-                        }
+                } else if (line.startsWith('bitrate=')) {
+                    latest.bitrate = line.slice('bitrate='.length).trim();
+                }
+                if (!loggedConnected) {
+                    const size = Number(String(latest.total_size || '0').trim());
+                    const hasBitrate =
+                        latest.bitrate &&
+                        latest.bitrate.toUpperCase() !== 'N/A' &&
+                        latest.bitrate !== '0.0kbits/s';
+                    if ((Number.isFinite(size) && size > 0) || hasBitrate) {
+                        loggedConnected = true;
+                        pushLog(
+                            `[lifecycle] connected pid=${child.pid ?? 'null'} trigger=${trigger}`,
+                            'lifecycle.connected',
+                            { pid: child.pid ?? null, trigger },
+                        );
                     }
                 }
             }

@@ -193,7 +193,9 @@ export function toggleHistoryPlayPause(): void {
         void pollHistoryOnce();
         startPoller(
             outputHistoryState,
-            document.hidden ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+            document.hidden
+                ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
+                : OUTPUT_HISTORY_POLL_INTERVAL_MS,
             pollHistoryOnce,
         );
     }
@@ -239,10 +241,14 @@ export async function openOutputHistoryModal(
         ? (lifecycleRes.logs as HistoryLog[])
         : [];
     renderOutputHistory(true);
-    modal.addEventListener('close', () => {
-        stopPoller(outputHistoryState);
-        updatePlayPauseBtn('output-history-playpause', false);
-    }, { once: true });
+    modal.addEventListener(
+        'close',
+        () => {
+            stopPoller(outputHistoryState);
+            updatePlayPauseBtn('output-history-playpause', false);
+        },
+        { once: true },
+    );
 }
 
 function renderPipelineHistory(scrollToTop = false): void {
@@ -274,7 +280,9 @@ export function togglePipelineHistoryPlayPause(): void {
         void pollPipelineHistoryOnce();
         startPoller(
             pipelineHistoryState,
-            document.hidden ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS : OUTPUT_HISTORY_POLL_INTERVAL_MS,
+            document.hidden
+                ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
+                : OUTPUT_HISTORY_POLL_INTERVAL_MS,
             pollPipelineHistoryOnce,
         );
     }
@@ -305,10 +313,14 @@ export async function openPipelineHistoryModal(pipeId: string, pipeName = ''): P
 
     pipelineHistoryState.logs = Array.isArray(res.logs) ? (res.logs as HistoryLog[]) : [];
     renderPipelineHistory(true);
-    modal.addEventListener('close', () => {
-        stopPoller(pipelineHistoryState);
-        updatePlayPauseBtn('pipeline-history-playpause', false);
-    }, { once: true });
+    modal.addEventListener(
+        'close',
+        () => {
+            stopPoller(pipelineHistoryState);
+            updatePlayPauseBtn('pipeline-history-playpause', false);
+        },
+        { once: true },
+    );
 }
 
 export async function syncHistoryPollingWithVisibility(): Promise<void> {

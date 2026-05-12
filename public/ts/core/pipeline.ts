@@ -9,6 +9,7 @@ import type {
 
 const throughputState = {
     inputBytes: new Map<string, { ts: number; bytes: number }>(),
+    outputBytes: new Map<string, { ts: number; bytes: number }>(),
 };
 
 function computeKbps(
@@ -176,6 +177,16 @@ function parsePipelinesInfo(
         }
 
         const outputTotalSize = outHealth?.totalSize ?? null;
+        // Prefer the direct bitrate reading from ffmpeg progress (reliable for all protocols
+        // including HLS where total_size may report N/A). Fall back to computing from byte delta.
+        const outBitrateKbps =
+            outHealth?.bitrateKbps ??
+            computeKbps(
+                throughputState.outputBytes,
+                `${out.pipelineId}:${out.id}`,
+                outputTotalSize ?? 0,
+                nowMs,
+            );
 
         let outTime: number | null = null;
         if (status === 'on' && latestJob?.startedAt) {
@@ -193,6 +204,7 @@ function parsePipelinesInfo(
             time: outTime,
             job: latestJob || null,
             totalSize: outputTotalSize,
+            bitrateKbps: outBitrateKbps,
         });
     });
 
@@ -200,9 +212,18 @@ function parsePipelinesInfo(
         const outputCount = pipe.outs.length;
         const readerCount = pipe.input.readers || 0;
 
+        const activeOutputKbps = pipe.outs
+            .filter((o) => o.status === 'on' || o.status === 'warning')
+            .map((o) => o.bitrateKbps)
+            .filter((k): k is number => k !== null && k >= 0);
+        const outputBitrateKbps =
+            activeOutputKbps.length > 0
+                ? Number(activeOutputKbps.reduce((a, b) => a + b, 0).toFixed(1))
+                : null;
+
         pipe.stats = {
             inputBitrateKbps: pipe.input.bitrateKbps,
-            outputBitrateKbps: null,
+            outputBitrateKbps,
             readerCount,
             outputCount,
             readerMismatch: readerCount !== outputCount,

@@ -629,18 +629,16 @@ export function renderPipelineHistory(
 
     const logs = getPipelineTimelineLogs(state.logs);
     list.innerHTML = logs
-        .map(
-            (log) => {
-                const event = classifyPipelineHistoryEvent(log);
-                return `<div class="rounded bg-base-100 p-2">
+        .map((log) => {
+            const event = classifyPipelineHistoryEvent(log);
+            return `<div class="rounded bg-base-100 p-2">
                     <div class="flex items-center justify-between gap-2">
                         <span class="badge badge-sm ${event.badgeClass}">${event.label}</span>
                         <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
                     </div>
                     <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-msg"></pre>
                 </div>`;
-            },
-        )
+        })
         .join('');
     list.querySelectorAll<HTMLPreElement>('.js-msg').forEach((pre, i) => {
         pre.textContent = String(logs[i].message || '');

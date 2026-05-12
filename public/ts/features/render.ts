@@ -152,7 +152,17 @@ function renderStatsColumn(selectedPipe: string | null): void {
                 ? `${(o.totalSize / (1024 * 1024)).toFixed(1)} MB`
                 : '--';
         html += tableRow(
-            [o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--', `${o.pipe}: ${o.name}`, totalSizeMb, '--', '--', '--', '--', '--', '--'],
+            [
+                o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--',
+                `${o.pipe}: ${o.name}`,
+                totalSizeMb,
+                '--',
+                '--',
+                '--',
+                '--',
+                '--',
+                '--',
+            ],
             o.status === 'warning',
         );
     });

@@ -11,7 +11,6 @@ import {
 } from '../core/api.js';
 import {
     getUrlParam,
-    isLikelyHlsOutputUrl,
     isValidOutput,
     setUrlParam,
     isAbsoluteUrl,
@@ -175,9 +174,10 @@ function setupOutputModalProtocolHandlers(): void {
         }
 
         if (protocol === 'hls') {
-            const matchedPreset = isLikelyHlsOutputUrl(previousRaw)
-                ? matchOutputServerPreset('hls', previousRaw)
-                : null;
+            const matchedPreset =
+                detectOutputProtocol(previousRaw) === 'hls'
+                    ? matchOutputServerPreset('hls', previousRaw)
+                    : null;
             const selectedServer =
                 matchedPreset?.value || OUTPUT_SERVER_PRESETS.hls[0]?.value || '';
 
@@ -361,7 +361,10 @@ async function populatePipelineKeySelect(selectedKey = ''): Promise<void> {
     const keys = await loadStreamKeysOnce();
 
     keySelect.innerHTML = keys
-        .map((key) => `<option value="${key.key}"${key.key === selectedKey ? ' selected' : ''}>${formatMaskedStreamKey(key.key)}</option>`)
+        .map(
+            (key) =>
+                `<option value="${key.key}"${key.key === selectedKey ? ' selected' : ''}>${formatMaskedStreamKey(key.key)}</option>`,
+        )
         .join('');
 }
 

@@ -16,29 +16,10 @@ function buildCommandPreview(cmd, args) {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
-function isHlsPlaylistReference(value) {
-    return /\.m3u8$/i.test(String(value || '').trim());
-}
-
 function isHlsOutputUrl(parsedUrl) {
     if (!(parsedUrl instanceof URL)) return false;
-
-    const protocol = String(parsedUrl.protocol || '').toLowerCase();
-    if (protocol !== 'http:' && protocol !== 'https:') {
-        return false;
-    }
-
-    if (isHlsPlaylistReference(parsedUrl.pathname)) {
-        return true;
-    }
-
-    for (const value of parsedUrl.searchParams.values()) {
-        if (isHlsPlaylistReference(value)) {
-            return true;
-        }
-    }
-
-    return false;
+    const protocol = parsedUrl.protocol;
+    return protocol === 'http:' || protocol === 'https:';
 }
 
 function shouldPersistFfmpegStderrLine(line, outputUrl) {
@@ -98,7 +79,7 @@ const SYSTEM_ENCODING_ARGS = {
 const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
 const INVALID_OUTPUT_URL_ERROR =
-    'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL';
+    'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// URL';
 
 function normalizeOutputEncoding(value) {
     const normalized = String(value ?? 'source')
@@ -174,15 +155,22 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', custo
             '-method',
             'PUT',
             '-http_persistent',
-            '1',
+            '0',
             '-hls_time',
             '2',
             '-hls_list_size',
             '5',
             '-hls_flags',
-            'delete_segments',
-            outputUrl,
+            'delete_segments+append_list',
         );
+        // YouTube uses file= as a query param rather than a path component, so ffmpeg cannot
+        // auto-derive segment URLs from the playlist URL. Use string replacement to preserve
+        // the %05d format specifier — URL.searchParams.set() would encode % as %25.
+        const segmentUrl = outputUrl.replace(/([?&]file=)[^&#]*/i, '$1segment_%05d.ts');
+        if (segmentUrl !== outputUrl) {
+            args.push('-hls_segment_filename', segmentUrl);
+        }
+        args.push(outputUrl);
         return args;
     }
 

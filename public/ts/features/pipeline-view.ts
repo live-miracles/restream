@@ -354,30 +354,43 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                         : 'status-neutral';
 
             const isStopped = o.desiredState === 'stopped';
+            const isActive = o.status === 'on' || o.status === 'warning';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
-            const metadata: string[] = [];
+            const badges: string[] = [];
 
-            if (o.time !== null) {
-                metadata.push(
+            badges.push(metricBadge(o.encoding, 'Selected encoding'));
+
+            if (isActive && o.time !== null) {
+                badges.push(
                     metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
                 );
             }
 
-            const outputTotalSizeBytes = Number(o.totalSize);
-            if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-                metadata.push(
-                    metricBadge(
-                        `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
-                        'Output total size from FFmpeg progress',
-                    ),
-                );
+            if (isActive) {
+                const outputTotalSizeBytes = Number(o.totalSize);
+                if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+                    badges.push(
+                        metricBadge(
+                            `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+                            'Output total size from FFmpeg progress',
+                        ),
+                    );
+                }
+
+                if (o.bitrateKbps !== null && o.bitrateKbps >= 0) {
+                    const kbps = o.bitrateKbps;
+                    const bitrateText =
+                        kbps >= 1000
+                            ? `${(kbps / 1000).toFixed(1)} Mb/s`
+                            : `${kbps.toFixed(1)} Kb/s`;
+                    badges.push(metricBadge(bitrateText, 'Output bitrate from FFmpeg progress'));
+                }
             }
 
             return `
-            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full"
-                style="display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: center; column-gap: 0.5rem; row-gap: 0.25rem;">
-                <div class="min-w-0">
-                    <div class="font-semibold flex items-center gap-2 min-w-0">
+            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full flex gap-2 items-start">
+                <div class="min-w-0 flex-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <div class="flex items-center gap-2 shrink-0 font-semibold">
                         <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
                         <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
                             data-action="toggle-output"
@@ -385,22 +398,18 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                             ${toggleBusy ? 'disabled' : ''}>
                             ${isStopped ? 'Start' : 'Stop'}
                         </button>
-                        <span class="shrink-0 truncate">${o.name}</span>
-                        <code class="text-sm font-normal opacity-70 truncate" data-output-url="${outputIndex}">
-                            ${sanitizeLogMessage(o.url, true)}
-                        </code>
+                        <span>${o.name}</span>
                     </div>
+                    <code class="text-sm font-normal opacity-70 truncate shrink min-w-0" style="max-width:min(28rem,40%)" data-output-url="${outputIndex}">
+                        ${sanitizeLogMessage(o.url, true)}
+                    </code>
+                    ${badges.join('')}
                 </div>
-                <div class="flex items-center gap-2 self-start">
+                <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
                     <button class="btn btn-xs btn-accent btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
                     <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
-                ${
-                    metadata.length
-                        ? `<div class="flex items-center gap-2 overflow-x-auto whitespace-nowrap" style="grid-column: 1 / -1;">${metadata.join('')}</div>`
-                        : ''
-                }
             </div>`;
         })
         .join('');
