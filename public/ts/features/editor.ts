@@ -12,7 +12,6 @@ import {
 import { getUrlParam, isLikelyHlsOutputUrl, isValidOutput, setUrlParam } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
-import { populateEncodingSelect } from './settings.js';
 import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
@@ -687,10 +686,8 @@ async function openOutModal(
         'out-encoding-input',
     ) as HTMLSelectElement | null;
     if (encodingSelect) {
-        const rawEncoding = String(output?.encoding || 'source')
-            .trim()
-            .toLowerCase();
-        await populateEncodingSelect(encodingSelect, rawEncoding);
+        const rawEncoding = String(output?.encoding || 'source').trim().toLowerCase();
+        encodingSelect.value = rawEncoding || 'source';
     }
 
     const isRunningEdit =

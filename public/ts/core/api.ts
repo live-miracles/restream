@@ -4,7 +4,6 @@ import type {
     HealthData,
     SystemMetrics,
     StreamKey,
-    Encoding,
     GetConfigResult,
     GetHealthResult,
 } from '../types.js';
@@ -340,50 +339,15 @@ async function patchConfig(body: { serverName?: string }): Promise<{ serverName:
     return apiRequest<{ serverName: string }>('/config', { method: 'PATCH', body });
 }
 
-async function getEncodings(): Promise<Encoding[] | null> {
-    return apiRequest<Encoding[]>('/encodings');
+async function getCustomEncoding(): Promise<{ ffmpegArgs: string | null } | null> {
+    return apiRequest<{ ffmpegArgs: string | null }>('/encodings/custom');
 }
 
-async function createEncoding(data: Omit<Encoding, 'id' | 'isSystem'>): Promise<Encoding | null> {
-    return apiRequest<Encoding>('/encodings', { method: 'POST', body: data });
-}
-
-async function updateEncoding(
-    id: string,
-    data: Omit<Encoding, 'id' | 'key' | 'isSystem'>,
-): Promise<Encoding | null> {
-    return apiRequest<Encoding>(`/encodings/${encodeURIComponent(id)}`, {
+async function updateCustomEncoding(ffmpegArgs: string): Promise<{ ffmpegArgs: string } | null> {
+    return apiRequest<{ ffmpegArgs: string }>('/encodings/custom', {
         method: 'PUT',
-        body: data,
+        body: { ffmpegArgs },
     });
-}
-
-async function deleteEncoding(id: string): Promise<boolean> {
-    const normalizedMethod = 'DELETE';
-    beginMutationRequest();
-    let response: Response | null = null;
-    try {
-        response = await fetch(`/encodings/${encodeURIComponent(id)}`, {
-            method: normalizedMethod,
-        });
-    } catch (e) {
-        showErrorAlert('Network request failed: ' + e);
-        return false;
-    } finally {
-        endMutationRequest();
-    }
-    if (!response.ok) {
-        let errMsg = `Request failed with ${response.status}`;
-        try {
-            const errData = (await response.json()) as Record<string, unknown>;
-            if (errData?.error) errMsg = String(errData.error);
-        } catch {
-            /* ignore */
-        }
-        showErrorAlert(errMsg);
-        return false;
-    }
-    return true;
 }
 
 export {
@@ -403,8 +367,6 @@ export {
     getOutputHistory,
     getPipelineHistory,
     patchConfig,
-    getEncodings,
-    createEncoding,
-    updateEncoding,
-    deleteEncoding,
+    getCustomEncoding,
+    updateCustomEncoding,
 };

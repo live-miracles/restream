@@ -174,7 +174,7 @@ function registerOutputApi({
             return { status: 400, error: nameError };
         }
 
-        if (!encoding || (!SYSTEM_ENCODING_KEYS.has(encoding) && !db.getEncodingByKey(encoding))) {
+        if (!encoding || !SYSTEM_ENCODING_KEYS.has(encoding)) {
             return { status: 400, error: INVALID_OUTPUT_ENCODING_ERROR };
         }
 

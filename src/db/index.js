@@ -159,24 +159,6 @@ const deleteOldJobs = db.prepare(`
        OR datetime(COALESCE(ended_at, started_at)) < datetime('now', '-30 days')
 `);
 
-/* Encoding statements */
-const insertEncoding = db.prepare(
-    `INSERT INTO encodings (id, key, ffmpeg_args) VALUES (@id, @key, @ffmpeg_args)`,
-);
-const getEncodingByIdStmt = db.prepare(
-    `SELECT id, key, ffmpeg_args AS ffmpegArgs FROM encodings WHERE id = ?`,
-);
-const getEncodingByKeyStmt = db.prepare(
-    `SELECT id, key, ffmpeg_args AS ffmpegArgs FROM encodings WHERE key = ?`,
-);
-const listEncodingsStmt = db.prepare(
-    `SELECT id, key, ffmpeg_args AS ffmpegArgs FROM encodings ORDER BY rowid ASC`,
-);
-const updateEncodingStmt = db.prepare(
-    `UPDATE encodings SET ffmpeg_args = @ffmpeg_args WHERE id = @id`,
-);
-const deleteEncodingStmt = db.prepare(`DELETE FROM encodings WHERE id = ?`);
-
 /* Meta statements */
 const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
 const setMetaStmt = db.prepare(`
@@ -440,36 +422,20 @@ module.exports = {
         return module.exports.setMeta('config_etag', v);
     },
 
-    /* encoding helpers */
-    createEncoding({ key, ffmpegArgs }) {
-        const id = crypto.randomBytes(8).toString('hex');
-        insertEncoding.run({ id, key, ffmpeg_args: ffmpegArgs });
-        return getEncodingByIdStmt.get(id);
+    /* custom encoding helpers */
+    getCustomEncoding() {
+        return module.exports.getMeta('custom_encoding') || null;
     },
-    getEncodingById(id) {
-        return getEncodingByIdStmt.get(id);
-    },
-    getEncodingByKey(key) {
-        return getEncodingByKeyStmt.get(key);
-    },
-    listEncodings() {
-        return listEncodingsStmt.all();
-    },
-    updateEncoding(id, { ffmpegArgs }) {
-        const info = updateEncodingStmt.run({ id, ffmpeg_args: ffmpegArgs });
-        return info.changes > 0 ? getEncodingByIdStmt.get(id) : null;
-    },
-    deleteEncoding(id) {
-        const info = deleteEncodingStmt.run(id);
-        return info.changes > 0;
+    setCustomEncoding(ffmpegArgs) {
+        return module.exports.setMeta('custom_encoding', ffmpegArgs || '');
     },
 
     getServerName() {
-        return module.exports.getMeta('server_name') || 'Restream';
+        return module.exports.getMeta('server_name') || 'Name';
     },
 
     setServerName(name) {
         const trimmed = typeof name === 'string' ? name.trim() : '';
-        return module.exports.setMeta('server_name', trimmed || 'Restream');
+        return module.exports.setMeta('server_name', trimmed || 'Name');
     },
 };

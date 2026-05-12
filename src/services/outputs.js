@@ -7,7 +7,6 @@ const {
     buildFfmpegOutputArgs,
     INVALID_OUTPUT_URL_ERROR,
     normalizeOutputEncoding,
-    SYSTEM_ENCODING_KEYS,
     redactFfmpegArgs,
     redactSensitiveUrl,
     shouldPersistFfmpegStderrLine,
@@ -317,17 +316,8 @@ function createOutputLifecycleService({
         const inputUrl = buildPullInputUrl(pipeline.streamKey, pullProtocol);
         const encoding = normalizeOutputEncoding(output.encoding) || 'source';
         let customArgs = null;
-        if (!SYSTEM_ENCODING_KEYS.has(encoding)) {
-            const dbEncoding = db.getEncodingByKey(encoding);
-            if (dbEncoding) {
-                customArgs = dbEncoding.ffmpegArgs;
-            } else {
-                log('warn', 'Unknown encoding, falling back to source', {
-                    pipelineId,
-                    outputId,
-                    encoding,
-                });
-            }
+        if (encoding === 'custom') {
+            customArgs = db.getCustomEncoding() || null;
         }
         const ffArgs = buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding, customArgs });
 
