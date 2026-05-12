@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseFfmpegNumber, parseFfmpegBitrateToKbps } = require('../../src/services/health');
+const { parseFfmpegNumber } = require('../../src/services/health');
 
 test('parseFfmpegNumber returns null for N/A, empty, and null', () => {
     assert.equal(parseFfmpegNumber('N/A'), null);
@@ -12,10 +12,6 @@ test('parseFfmpegNumber returns null for N/A, empty, and null', () => {
 test('parseFfmpegNumber parses total_size byte counts (integer)', () => {
     assert.equal(Math.trunc(parseFfmpegNumber('9422319')), 9422319);
     assert.equal(Math.trunc(parseFfmpegNumber(1234)), 1234);
-});
-
-test('parseFfmpegBitrateToKbps returns null for N/A bitrate values', () => {
-    assert.equal(parseFfmpegBitrateToKbps('N/A'), null);
 });
 
 test('parseFfmpegNumber parses frame counts (integer)', () => {

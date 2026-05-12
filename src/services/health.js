@@ -356,6 +356,9 @@ function createHealthMonitorService({
             if (pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
                 db.markPipelineInputSeenLive(pipeline.id);
             }
+            if (pathAvailable) {
+                scheduleFfprobe(pipeline.id, pipeline.streamKey);
+            }
         }
         log('info', 'Pipeline input state bootstrap complete', {
             pipelineCount: pipelines.length,
