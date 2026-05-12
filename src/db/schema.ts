@@ -1,7 +1,8 @@
-function setupDatabaseSchema(db) {
+import type Database from 'better-sqlite3';
+
+export function setupDatabaseSchema(db: Database.Database): void {
     db.pragma('foreign_keys = ON');
 
-    /* pipelines table */
     db.prepare(
         `
   CREATE TABLE IF NOT EXISTS pipelines (
@@ -14,9 +15,8 @@ function setupDatabaseSchema(db) {
 `,
     ).run();
 
-    /* outputs table */
-    // desired_state stores operator intent (“should be running”) separately from jobs.status
-    // (“what happened last”), which lets recovery logic act on transient exits without losing intent.
+    // desired_state stores operator intent ("should be running") separately from jobs.status
+    // ("what happened last"), which lets recovery logic act on transient exits without losing intent.
     db.prepare(
         `
   CREATE TABLE IF NOT EXISTS outputs (
@@ -33,7 +33,6 @@ function setupDatabaseSchema(db) {
 
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_outputs_pipeline ON outputs(pipeline_id)`).run();
 
-    /* jobs table */
     db.prepare(
         `
   CREATE TABLE IF NOT EXISTS jobs (
@@ -60,7 +59,6 @@ function setupDatabaseSchema(db) {
 `,
     ).run();
 
-    /* job_logs table */
     db.prepare(
         `
     CREATE TABLE IF NOT EXISTS job_logs (
@@ -76,14 +74,12 @@ function setupDatabaseSchema(db) {
 `,
     ).run();
 
-    // Create index for fast lookups of logs by output
     db.prepare(
         `
     CREATE INDEX IF NOT EXISTS idx_job_logs_output ON job_logs(pipeline_id, output_id, ts)
 `,
     ).run();
 
-    /* meta table */
     db.prepare(
         `
   CREATE TABLE IF NOT EXISTS meta (
@@ -93,5 +89,3 @@ function setupDatabaseSchema(db) {
 `,
     ).run();
 }
-
-module.exports = { setupDatabaseSchema };

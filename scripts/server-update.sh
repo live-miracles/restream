@@ -20,7 +20,7 @@ sudo -u restream git pull
 echo
 echo "=== Rebuild ==="
 sudo -u restream npm ci
-sudo -u restream npm run ts-build
+sudo -u restream npm run build
 sudo -u restream npm prune --omit=dev
 
 echo

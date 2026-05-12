@@ -1,12 +1,15 @@
-const { errMsg, validateName } = require('../utils/app');
-const {
+import type { Express } from 'express';
+import { errMsg, validateName } from '../utils/app';
+import {
     normalizeOutputEncoding,
     validateOutputUrl,
     INVALID_OUTPUT_URL_ERROR,
     SYSTEM_ENCODING_KEYS,
-} = require('../utils/ffmpeg');
+} from '../utils/ffmpeg';
+import type { Db, Output } from '../types';
+import type { OutputLifecycle } from '../services/outputs';
 
-const HISTORY_MESSAGE_PREFIXES = {
+const HISTORY_MESSAGE_PREFIXES: Record<string, string> = {
     lifecycle: '[lifecycle]',
     stderr: '[stderr]',
     exit: '[exit]',
@@ -22,28 +25,28 @@ const INVALID_OUTPUT_ENCODING_ERROR = 'Encoding must be a valid encoding key';
 const OUTPUT_MUTATION_WHILE_RUNNING_ERROR =
     'Cannot change output URL or encoding while output is running. Stop output first.';
 
-function parseHistoryTimestamp(value) {
+function parseHistoryTimestamp(value: unknown): string | null | undefined {
     if (value === undefined || value === null || value === '') return null;
     const parsed = new Date(String(value));
     if (Number.isNaN(parsed.getTime())) return undefined;
     return parsed.toISOString();
 }
 
-function parseHistoryOrder(value, defaultValue = 'desc') {
+function parseHistoryOrder(value: unknown, defaultValue = 'desc'): string | null {
     if (value === undefined || value === null || value === '') return defaultValue;
     const normalized = String(value).trim().toLowerCase();
     if (normalized === 'asc' || normalized === 'desc') return normalized;
     return null;
 }
 
-function parseHistoryLimit(value, defaultValue = 200) {
+function parseHistoryLimit(value: unknown, defaultValue: number | null = 200): number | null {
     if (value === undefined || value === null || value === '') return defaultValue;
     const parsed = Number.parseInt(String(value), 10);
     if (!Number.isFinite(parsed)) return null;
     return Math.max(1, Math.min(parsed, HISTORY_MAX_LIMIT));
 }
 
-function parseHistoryPrefixes(value) {
+function parseHistoryPrefixes(value: unknown): string[] | null {
     if (value === undefined || value === null || value === '') return [];
 
     const rawValues = Array.isArray(value) ? value : [value];
@@ -52,7 +55,7 @@ function parseHistoryPrefixes(value) {
         .map((entry) => entry.trim().toLowerCase())
         .filter(Boolean);
 
-    const prefixes = [];
+    const prefixes: string[] = [];
     for (const token of tokens) {
         const mappedPrefix = HISTORY_MESSAGE_PREFIXES[token];
         if (!mappedPrefix) return null;
@@ -62,7 +65,7 @@ function parseHistoryPrefixes(value) {
     return prefixes;
 }
 
-function registerOutputApi({
+export function registerOutputApi({
     app,
     db,
     recomputeConfigEtag,
@@ -74,20 +77,33 @@ function registerOutputApi({
     setOutputDesiredState,
     stopRunningJobAndWait,
     stopRunningJob,
-}) {
-    function logOutputConfigChanges(pipelineId, outputId, previousOutput, nextOutput) {
+}: {
+    app: Express;
+    db: Db;
+    recomputeConfigEtag: () => string | null;
+    recomputeEtag: () => string | null;
+    clearOutputRestartState: OutputLifecycle['clearOutputRestartState'];
+    getOutputDesiredState: OutputLifecycle['getOutputDesiredState'];
+    reconcileOutput: OutputLifecycle['reconcileOutput'];
+    resetOutputFailureCount: OutputLifecycle['resetOutputFailureCount'];
+    setOutputDesiredState: OutputLifecycle['setOutputDesiredState'];
+    stopRunningJobAndWait: OutputLifecycle['stopRunningJobAndWait'];
+    stopRunningJob: OutputLifecycle['stopRunningJob'];
+}): void {
+    function logOutputConfigChanges(
+        pipelineId: string,
+        outputId: string,
+        previousOutput: Output,
+        nextOutput: Output,
+    ) {
         if (!pipelineId || !outputId || !previousOutput || !nextOutput) return;
 
-        const changes = [];
+        const changes: { field: string; from: string | null; to: string | null }[] = [];
         if (previousOutput.name !== nextOutput.name) {
             changes.push({ field: 'name', from: previousOutput.name, to: nextOutput.name });
         }
         if (previousOutput.url !== nextOutput.url) {
-            changes.push({
-                field: 'url',
-                from: previousOutput.url,
-                to: nextOutput.url,
-            });
+            changes.push({ field: 'url', from: previousOutput.url, to: nextOutput.url });
         }
         if (previousOutput.encoding !== nextOutput.encoding) {
             changes.push({
@@ -99,12 +115,9 @@ function registerOutputApi({
 
         if (changes.length === 0) return;
 
-        const summaryParts = changes.map((change) => {
-            const fromValue = change.from ?? 'null';
-            const toValue = change.to ?? 'null';
-            return `${change.field}=${fromValue} -> ${toValue}`;
-        });
-        const summary = summaryParts.join(' | ');
+        const summary = changes
+            .map((c) => `${c.field}=${c.from ?? 'null'} -> ${c.to ?? 'null'}`)
+            .join(' | ');
 
         db.appendJobLog(
             null,
@@ -116,9 +129,17 @@ function registerOutputApi({
         );
     }
 
-    async function applyOutputStateChange(pid, oid, options) {
-        // Start/stop routes differ in response payload, but both share the same state-change,
-        // recovery-reset, and reconcile sequence.
+    async function applyOutputStateChange(
+        pid: string,
+        oid: string,
+        options: {
+            desiredState: string;
+            stateReason: string;
+            resetReason: string;
+            trigger: string;
+            reconcileReason: string;
+        },
+    ) {
         const { desiredState, stateReason, resetReason, trigger, reconcileReason } = options;
 
         const desiredStateChange = setOutputDesiredState(pid, oid, desiredState, {
@@ -127,7 +148,7 @@ function registerOutputApi({
         });
         recomputeConfigEtag();
 
-        resetOutputFailureCount(pid, oid, resetReason);
+        resetOutputFailureCount(pid, oid);
 
         const reconciliation = await reconcileOutput(pid, oid, {
             trigger,
@@ -139,7 +160,10 @@ function registerOutputApi({
         return { desiredStateChange, reconciliation };
     }
 
-    function normalizeOutputPayload(body, existing = null) {
+    function normalizeOutputPayload(
+        body: Record<string, unknown> | null | undefined,
+        existing: Output | null = null,
+    ) {
         const existingEncoding = existing
             ? normalizeOutputEncoding(existing.encoding) || 'source'
             : null;
@@ -152,9 +176,9 @@ function registerOutputApi({
             : normalizeOutputEncoding(body?.encoding ?? 'source');
 
         return {
-            name,
-            url,
-            encoding,
+            name: name as string | undefined,
+            url: url as string | undefined,
+            encoding: encoding as string,
             existingEncoding,
             urlChanged: existing ? url !== existing.url : false,
             encodingChanged: existing ? encoding !== existingEncoding : false,
@@ -168,11 +192,16 @@ function registerOutputApi({
         running = null,
         urlChanged = false,
         encodingChanged = false,
-    }) {
+    }: {
+        name: unknown;
+        url: unknown;
+        encoding: string;
+        running?: unknown;
+        urlChanged?: boolean;
+        encodingChanged?: boolean;
+    }): { status: number; error: string } | null {
         const nameError = validateName(name, 'Output name');
-        if (nameError) {
-            return { status: 400, error: nameError };
-        }
+        if (nameError) return { status: 400, error: nameError };
 
         if (!encoding || !SYSTEM_ENCODING_KEYS.has(encoding)) {
             return { status: 400, error: INVALID_OUTPUT_ENCODING_ERROR };
@@ -195,13 +224,20 @@ function registerOutputApi({
             const pipeline = db.getPipeline(pid);
             if (!pipeline) return res.status(404).json({ error: 'Pipeline not found' });
 
-            const { name, url, encoding } = normalizeOutputPayload(req.body);
+            const { name, url, encoding } = normalizeOutputPayload(
+                req.body as Record<string, unknown>,
+            );
             const validationError = getOutputValidationError({ name, url, encoding });
             if (validationError) {
                 return res.status(validationError.status).json({ error: validationError.error });
             }
 
-            const output = db.createOutput({ pipelineId: pid, name, url, encoding });
+            const output = db.createOutput({
+                pipelineId: pid,
+                name: name!,
+                url: url!,
+                encoding,
+            });
 
             db.appendJobLog(
                 null,
@@ -209,18 +245,14 @@ function registerOutputApi({
                 pid,
                 output.id,
                 'lifecycle.config_created',
-                {
-                    name: output.name,
-                    url: output.url,
-                    encoding: output.encoding || null,
-                },
+                { name: output.name, url: output.url, encoding: output.encoding || null },
             );
 
             recomputeConfigEtag();
             recomputeEtag();
             return res.status(201).json({ message: 'Output created', output });
         } catch (err) {
-            return res.status(400).json({ error: err.message || errMsg(err) });
+            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
         }
     });
 
@@ -236,7 +268,7 @@ function registerOutputApi({
 
             const running = db.getRunningJobFor(pid, oid);
             const { name, url, encoding, urlChanged, encodingChanged } = normalizeOutputPayload(
-                req.body,
+                req.body as Record<string, unknown>,
                 existing,
             );
             const validationError = getOutputValidationError({
@@ -251,7 +283,7 @@ function registerOutputApi({
                 return res.status(validationError.status).json({ error: validationError.error });
             }
 
-            const updated = db.updateOutput(pid, oid, { name, url, encoding });
+            const updated = db.updateOutput(pid, oid, { name: name!, url: url!, encoding });
             if (!updated) return res.status(500).json({ error: 'Failed to update output' });
 
             logOutputConfigChanges(pid, oid, existing, updated);
@@ -260,7 +292,7 @@ function registerOutputApi({
             recomputeEtag();
             return res.json({ message: 'Output updated', output: updated });
         } catch (err) {
-            return res.status(400).json({ error: err.message || errMsg(err) });
+            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
         }
     });
 
@@ -280,7 +312,6 @@ function registerOutputApi({
                 if (!stopResult.stopped || !stopResult.completed) {
                     return res.status(409).json({
                         error: 'Failed to stop output before delete',
-                        detail: stopResult.waitReason || stopResult.reason,
                         result: stopResult,
                     });
                 }
@@ -338,7 +369,6 @@ function registerOutputApi({
                     error: 'Pipeline input is not available yet',
                     message: 'Output desired state set to running; waiting for input',
                     desiredState: 'running',
-                    detail: reconciliation.detail,
                 });
             }
 
@@ -350,11 +380,10 @@ function registerOutputApi({
                 .status(200)
                 .json({ message: 'Output desired state set to running', desiredState: 'running' });
         } catch (err) {
-            const status = Number(err?.status || 500);
-            const payload = { error: err?.publicError || errMsg(err) };
-            if (err?.detail) payload.detail = err.detail;
-            if (err?.job) payload.job = err.job;
-            if (err?.logs) payload.logs = err.logs;
+            const e = err as { status?: number; publicError?: string; detail?: string };
+            const status = Number(e?.status || 500);
+            const payload: Record<string, unknown> = { error: e?.publicError || errMsg(err) };
+            if (e?.detail) payload.detail = e.detail;
             return res.status(status).json(payload);
         }
     });
@@ -384,7 +413,6 @@ function registerOutputApi({
                     desiredState: 'stopped',
                     previousState: desiredStateChange?.previousState || 'running',
                     jobId: reconciliation.job?.id || null,
-                    result: reconciliation.result,
                 });
             }
 
@@ -463,8 +491,8 @@ function registerOutputApi({
                 logs = db.listJobLogsByOutputFiltered(pid, oid, {
                     since,
                     until,
-                    limit: requestedLimit,
-                    order,
+                    limit: requestedLimit ?? null,
+                    order: order as 'asc' | 'desc',
                     prefixes,
                 });
             } else {
@@ -478,16 +506,12 @@ function registerOutputApi({
                     since,
                     until,
                     limit,
-                    order,
+                    order: order as 'asc' | 'desc',
                     prefixes,
                 });
             }
 
-            return res.json({
-                pipelineId: pid,
-                outputId: oid,
-                logs,
-            });
+            return res.json({ pipelineId: pid, outputId: oid, logs });
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
         }
@@ -511,7 +535,3 @@ function registerOutputApi({
         }
     });
 }
-
-module.exports = {
-    registerOutputApi,
-};

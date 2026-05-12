@@ -1,26 +1,20 @@
-'use strict';
-
-// FFmpeg-specific utilities: command-line building, credential redaction, output stream
-// parsing, and encoding normalization. Services and API routes can require these directly
-// instead of receiving them via the DI parameter list in index.js.
-
 // ── Shell / command helpers ───────────────────────────
 
-function shellQuote(arg) {
+export function shellQuote(arg: unknown): string {
     const s = String(arg ?? '');
     if (/^[A-Za-z0-9_./:-]+$/.test(s)) return s;
     return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildCommandPreview(cmd, args) {
+export function buildCommandPreview(cmd: string, args: string[]): string {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
-function isHlsPlaylistReference(value) {
+function isHlsPlaylistReference(value: unknown): boolean {
     return /\.m3u8$/i.test(String(value || '').trim());
 }
 
-function isHlsOutputUrl(parsedUrl) {
+function isHlsOutputUrl(parsedUrl: URL | null): boolean {
     if (!(parsedUrl instanceof URL)) return false;
 
     const protocol = String(parsedUrl.protocol || '').toLowerCase();
@@ -41,11 +35,11 @@ function isHlsOutputUrl(parsedUrl) {
     return false;
 }
 
-function shouldPersistFfmpegStderrLine(line, outputUrl) {
+export function shouldPersistFfmpegStderrLine(line: unknown, outputUrl: unknown): boolean {
     const text = String(line || '').trim();
     if (!text) return false;
 
-    let parsedOutputUrl = null;
+    let parsedOutputUrl: URL | null = null;
     try {
         parsedOutputUrl = new URL(String(outputUrl || ''));
     } catch {
@@ -56,9 +50,8 @@ function shouldPersistFfmpegStderrLine(line, outputUrl) {
         return true;
     }
 
-    // HLS emits an "Opening '... for writing'" line for every playlist or segment PUT.
-    // Example: playlist.m3u8 plus seg-001.ts can spam stderr every couple of seconds, so drop
-    // only this pattern for HLS while still keeping actual HTTP errors and all non-HLS stderr.
+    // HLS emits an "Opening '...' for writing" line for every playlist or segment PUT.
+    // Drop only this pattern for HLS while keeping actual HTTP errors and all non-HLS stderr.
     return !/^\[[^\]]+\]\s+Opening 'https?:\/\/[^']+' for writing$/i.test(text);
 }
 
@@ -67,16 +60,16 @@ function shouldPersistFfmpegStderrLine(line, outputUrl) {
 const MASK_VISIBLE_PREFIX_CHARS = 20;
 const MASK_VISIBLE_SUFFIX_CHARS = 5;
 
-function redactSensitiveUrl(rawUrl) {
+export function redactSensitiveUrl(rawUrl: unknown): unknown {
     if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
     if (rawUrl.length <= MASK_VISIBLE_PREFIX_CHARS + MASK_VISIBLE_SUFFIX_CHARS) return rawUrl;
     return `${rawUrl.slice(0, MASK_VISIBLE_PREFIX_CHARS)}***${rawUrl.slice(-MASK_VISIBLE_SUFFIX_CHARS)}`;
 }
 
-function redactFfmpegArgs(args) {
+export function redactFfmpegArgs(args: string[]): string[] {
     return (args || []).map((arg) => {
         const s = String(arg ?? '');
-        return s.includes('://') ? redactSensitiveUrl(s) : s;
+        return s.includes('://') ? String(redactSensitiveUrl(s)) : s;
     });
 }
 
@@ -86,7 +79,7 @@ const VIDEO_BASE =
     '-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -profile:v high -level:v 4.1 -g 60 -keyint_min 60 -sc_threshold 0';
 const AUDIO_BASE = '-c:a aac -b:a 128k -ar 48000 -ac 2';
 
-const SYSTEM_ENCODING_ARGS = {
+export const SYSTEM_ENCODING_ARGS: Record<string, string | null> = {
     source: null,
     'vertical-crop': `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
     'vertical-rotate': `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
@@ -95,12 +88,12 @@ const SYSTEM_ENCODING_ARGS = {
     custom: null,
 };
 
-const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
+export const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
-const INVALID_OUTPUT_URL_ERROR =
+export const INVALID_OUTPUT_URL_ERROR =
     'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL ending in .m3u8';
 
-function normalizeOutputEncoding(value) {
+export function normalizeOutputEncoding(value: unknown): string {
     const normalized = String(value ?? 'source')
         .trim()
         .toLowerCase();
@@ -111,9 +104,9 @@ function normalizeOutputEncoding(value) {
 
 // ── Output URL validation ─────────────────────────────
 
-function validateOutputUrl(url) {
+export function validateOutputUrl(url: unknown): boolean {
     if (!url || typeof url !== 'string') return false;
-    let parsed;
+    let parsed: URL;
     try {
         parsed = new URL(url);
     } catch {
@@ -128,10 +121,20 @@ function validateOutputUrl(url) {
 
 // ── FFmpeg argument builder ───────────────────────────
 
-function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', customArgs = null }) {
+export function buildFfmpegOutputArgs({
+    inputUrl,
+    outputUrl,
+    encoding = 'source',
+    customArgs = null,
+}: {
+    inputUrl: string;
+    outputUrl: string;
+    encoding?: string;
+    customArgs?: string | null;
+}): string[] {
     const normalizedEncoding = normalizeOutputEncoding(encoding) || 'source';
     let outputProtocol = '';
-    let parsedOutputUrl = null;
+    let parsedOutputUrl: URL | null = null;
     try {
         parsedOutputUrl = new URL(outputUrl);
         outputProtocol = parsedOutputUrl.protocol;
@@ -153,7 +156,6 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', custo
         inputUrl,
     ];
 
-    // customArgs (from a DB encoding) takes priority; then system encoding args; null = source copy.
     const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
 
     if (!resolvedArgStr) {
@@ -196,17 +198,3 @@ function buildFfmpegOutputArgs({ inputUrl, outputUrl, encoding = 'source', custo
     args.push('-flvflags', 'no_duration_filesize', '-rtmp_live', 'live', '-f', 'flv', outputUrl);
     return args;
 }
-
-module.exports = {
-    shellQuote,
-    buildCommandPreview,
-    shouldPersistFfmpegStderrLine,
-    redactSensitiveUrl,
-    redactFfmpegArgs,
-    normalizeOutputEncoding,
-    SYSTEM_ENCODING_ARGS,
-    SYSTEM_ENCODING_KEYS,
-    INVALID_OUTPUT_URL_ERROR,
-    validateOutputUrl,
-    buildFfmpegOutputArgs,
-};

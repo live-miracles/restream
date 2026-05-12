@@ -1,8 +1,8 @@
-'use strict';
+import type { Express } from 'express';
+import { errMsg } from '../utils/app';
+import type { Db } from '../types';
 
-const { errMsg } = require('../utils/app');
-
-function registerEncodingsApi({ app, db }) {
+export function registerEncodingsApi({ app, db }: { app: Express; db: Db }): void {
     app.get('/encodings/custom', (req, res) => {
         try {
             return res.json({ ffmpegArgs: db.getCustomEncoding() });
@@ -13,7 +13,7 @@ function registerEncodingsApi({ app, db }) {
 
     app.put('/encodings/custom', (req, res) => {
         try {
-            const { ffmpegArgs } = req.body || {};
+            const { ffmpegArgs } = (req.body as { ffmpegArgs?: unknown }) || {};
             if (typeof ffmpegArgs !== 'string') {
                 return res.status(400).json({ error: 'ffmpegArgs must be a string' });
             }
@@ -24,5 +24,3 @@ function registerEncodingsApi({ app, db }) {
         }
     });
 }
-
-module.exports = { registerEncodingsApi };

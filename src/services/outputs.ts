@@ -1,8 +1,8 @@
-'use strict';
-
-const { errMsg, log, createHttpError } = require('../utils/app');
-const { buildPullInputUrl } = require('../utils/mediamtx');
-const {
+import { spawn as nodeSpawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { errMsg, log, createHttpError } from '../utils/app';
+import { buildPullInputUrl } from '../utils/mediamtx';
+import {
     buildCommandPreview,
     buildFfmpegOutputArgs,
     INVALID_OUTPUT_URL_ERROR,
@@ -11,15 +11,53 @@ const {
     redactSensitiveUrl,
     shouldPersistFfmpegStderrLine,
     validateOutputUrl,
-} = require('../utils/ffmpeg');
+} from '../utils/ffmpeg';
+import type { Db, Job } from '../types';
 
-// Exponential backoff delays: 1s, 2s, 4s, 8s, 16s — then stays at 16s forever.
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
 const MAX_RETRIES = 100;
 const SIGKILL_ESCALATION_MS = 5000;
 const SIGKILL_WAIT_TIMEOUT_MS = SIGKILL_ESCALATION_MS + 1500;
 
-function resolvePullProtocol(outputUrl) {
+export interface OutputLifecycle {
+    clearOutputRestartState(pipelineId: string, outputId: string): void;
+    getOutputDesiredState(output: { desiredState?: string } | undefined | null): string;
+    reconcileOutput(
+        pipelineId: string,
+        outputId: string,
+        options?: { trigger?: string; reason?: string; source?: string },
+    ): Promise<{ action: string; desiredState?: string; job?: Job | null | undefined }>;
+    resetOutputFailureCount(pipelineId: string, outputId: string): void;
+    restartPipelineOutputsOnInputRecovery(pipelineId: string): void;
+    setOutputDesiredState(
+        pipelineId: string,
+        outputId: string,
+        desiredState: string,
+        options?: { source?: string; reason?: string },
+    ): {
+        output: { desiredState?: string } | null;
+        changed: boolean;
+        previousState: string;
+        desiredState: string;
+    } | null;
+    stopRunningJobAndWait(
+        job: Job | null | undefined,
+        signal?: string,
+    ): Promise<{
+        stopped: boolean;
+        reason: string;
+        completed: boolean;
+        jobId: string | null;
+        exitCode?: number | null;
+        exitSignal?: string | null;
+    }>;
+    stopRunningJob(
+        job: Job | null | undefined,
+        signal?: string,
+    ): { stopped: boolean; reason: string };
+}
+
+function resolvePullProtocol(outputUrl: string): string {
     try {
         const parsed = new URL(outputUrl);
         if (parsed.protocol === 'srt:') return 'srt';
@@ -30,58 +68,65 @@ function resolvePullProtocol(outputUrl) {
     return 'rtmp';
 }
 
-function createOutputLifecycleService({
+export function createOutputLifecycleService({
     db,
     spawn,
     processes,
     ffmpegProgressByJobId,
     recomputeEtag,
     isInputOn,
-}) {
+}: {
+    db: Db;
+    spawn: typeof nodeSpawn;
+    processes: Map<string, ChildProcess>;
+    ffmpegProgressByJobId: Map<string, Record<string, string>>;
+    recomputeEtag: () => string | null;
+    isInputOn: (pipelineId: string) => boolean;
+}): OutputLifecycle {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
-    const stopRequestedJobIds = new Set();
-    const startLocks = new Set();
-    const retryStateByKey = new Map(); // key -> { failures, timer }
+    const stopRequestedJobIds = new Set<string>();
+    const startLocks = new Set<string>();
+    const retryStateByKey = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>();
 
-    function outputKey(pipelineId, outputId) {
+    function outputKey(pipelineId: string, outputId: string): string {
         return `${pipelineId}:${outputId}`;
     }
 
-    function getRetryState(pipelineId, outputId) {
+    function getRetryState(pipelineId: string, outputId: string) {
         const key = outputKey(pipelineId, outputId);
         if (!retryStateByKey.has(key)) retryStateByKey.set(key, { failures: 0, timer: null });
-        return retryStateByKey.get(key);
+        return retryStateByKey.get(key)!;
     }
 
-    function clearRetryTimer(state) {
+    function clearRetryTimer(state: { timer: NodeJS.Timeout | null }) {
         if (state.timer) {
             clearTimeout(state.timer);
             state.timer = null;
         }
     }
 
-    function clearOutputRestartState(pipelineId, outputId) {
+    function clearOutputRestartState(pipelineId: string, outputId: string) {
         const key = outputKey(pipelineId, outputId);
         const state = retryStateByKey.get(key);
         if (state) clearRetryTimer(state);
         retryStateByKey.delete(key);
     }
 
-    function resetOutputFailureCount(pipelineId, outputId) {
+    function resetOutputFailureCount(pipelineId: string, outputId: string) {
         const state = getRetryState(pipelineId, outputId);
         clearRetryTimer(state);
         state.failures = 0;
     }
 
-    function getOutputDesiredState(output) {
+    function getOutputDesiredState(output: { desiredState?: string } | undefined | null): string {
         return output?.desiredState === 'running' ? 'running' : 'stopped';
     }
 
     function setOutputDesiredState(
-        pipelineId,
-        outputId,
-        desiredState,
-        { source = 'api', reason = 'unspecified' } = {},
+        pipelineId: string,
+        outputId: string,
+        desiredState: string,
+        { source = 'api', reason = 'unspecified' }: { source?: string; reason?: string } = {},
     ) {
         const output = db.getOutput(pipelineId, outputId);
         if (!output) return null;
@@ -119,7 +164,7 @@ function createOutputLifecycleService({
         };
     }
 
-    function giveUpOutput(pipelineId, outputId, reason) {
+    function giveUpOutput(pipelineId: string, outputId: string, reason: string) {
         log('warn', 'Output giving up', { pipelineId, outputId, reason });
         setOutputDesiredState(pipelineId, outputId, 'stopped', { source: 'system', reason });
         clearOutputRestartState(pipelineId, outputId);
@@ -134,7 +179,7 @@ function createOutputLifecycleService({
         );
     }
 
-    function scheduleRetry(pipelineId, outputId) {
+    function scheduleRetry(pipelineId: string, outputId: string) {
         const state = getRetryState(pipelineId, outputId);
         if (state.failures >= MAX_RETRIES) {
             giveUpOutput(pipelineId, outputId, 'retry_limit_exhausted');
@@ -155,7 +200,7 @@ function createOutputLifecycleService({
         });
     }
 
-    async function attemptAutoStart(pipelineId, outputId) {
+    async function attemptAutoStart(pipelineId: string, outputId: string) {
         const key = outputKey(pipelineId, outputId);
         if (startLocks.has(key)) return;
         startLocks.add(key);
@@ -171,17 +216,17 @@ function createOutputLifecycleService({
         }
     }
 
-    function isProcessAlive(proc) {
+    function isProcessAlive(proc: ChildProcess): boolean {
         if (!proc || !Number.isFinite(proc.pid)) return false;
         try {
-            process.kill(proc.pid, 0);
+            process.kill(proc.pid!, 0);
             return true;
         } catch {
             return false;
         }
     }
 
-    function armKillEscalation(proc) {
+    function armKillEscalation(proc: ChildProcess) {
         if (!proc) return;
         const t = setTimeout(() => {
             try {
@@ -193,14 +238,17 @@ function createOutputLifecycleService({
         proc.once('exit', () => clearTimeout(t));
     }
 
-    function stopRunningJob(job, signal = 'SIGTERM') {
+    function stopRunningJob(
+        job: Job | null | undefined,
+        signal = 'SIGTERM',
+    ): { stopped: boolean; reason: string } {
         if (!job) return { stopped: false, reason: 'missing-job' };
         const proc = processes.get(job.id);
         if (proc && isProcessAlive(proc)) {
             if (stopRequestedJobIds.has(job.id))
                 return { stopped: true, reason: 'signal-already-sent' };
             try {
-                proc.kill(signal);
+                proc.kill(signal as NodeJS.Signals);
                 armKillEscalation(proc);
                 stopRequestedJobIds.add(job.id);
                 db.appendJobLog(
@@ -232,7 +280,6 @@ function createOutputLifecycleService({
                 return { stopped: false, reason: 'signal-failed' };
             }
         }
-        // Process already gone — clean up the DB record
         processes.delete(job.id);
         db.updateJob(job.id, {
             status: 'stopped',
@@ -260,23 +307,41 @@ function createOutputLifecycleService({
         return { stopped: true, reason: 'marked-stopped' };
     }
 
-    async function stopRunningJobAndWait(job, signal = 'SIGTERM') {
+    async function stopRunningJobAndWait(
+        job: Job | null | undefined,
+        signal = 'SIGTERM',
+    ): Promise<{
+        stopped: boolean;
+        reason: string;
+        completed: boolean;
+        jobId: string | null;
+        exitCode?: number | null;
+        exitSignal?: string | null;
+    }> {
         if (!job) return { stopped: false, reason: 'missing-job', completed: false, jobId: null };
         const result = stopRunningJob(job, signal);
         if (!result.stopped) return { ...result, completed: false, jobId: job.id };
         const proc = processes.get(job.id);
         if (!proc || result.reason === 'marked-stopped')
             return { ...result, completed: true, jobId: job.id };
-        const waitResult = await new Promise((resolve) => {
+        const waitResult = await new Promise<{
+            completed: boolean;
+            exitCode: number | null;
+            exitSignal: string | null;
+        }>((resolve) => {
             let done = false;
-            const finish = (r) => {
+            const finish = (r: {
+                completed: boolean;
+                exitCode: number | null;
+                exitSignal: string | null;
+            }) => {
                 if (done) return;
                 done = true;
                 clearTimeout(timeoutHandle);
                 proc.removeListener('exit', onExit);
                 resolve(r);
             };
-            const onExit = (code, sig) =>
+            const onExit = (code: number | null, sig: NodeJS.Signals | null) =>
                 finish({ completed: true, exitCode: code ?? null, exitSignal: sig || null });
             proc.once('exit', onExit);
             const timeoutHandle = setTimeout(
@@ -290,11 +355,11 @@ function createOutputLifecycleService({
     }
 
     async function startOutputJob(
-        pipelineId,
-        outputId,
+        pipelineId: string,
+        outputId: string,
         trigger = 'manual',
         reason = 'manual_request',
-    ) {
+    ): Promise<{ job: Job }> {
         const pipeline = db.getPipeline(pipelineId);
         if (!pipeline) throw createHttpError(404, 'Pipeline not found');
         const output = db.getOutput(pipelineId, outputId);
@@ -313,7 +378,7 @@ function createOutputLifecycleService({
         const pullProtocol = resolvePullProtocol(outputUrl);
         const inputUrl = buildPullInputUrl(pipeline.streamKey, pullProtocol);
         const encoding = normalizeOutputEncoding(output.encoding) || 'source';
-        let customArgs = null;
+        let customArgs: string | null = null;
         if (encoding === 'custom') {
             customArgs = db.getCustomEncoding() || null;
         }
@@ -329,7 +394,7 @@ function createOutputLifecycleService({
             ffmpegCommandPreview: buildCommandPreview(ffmpegCmd, redactFfmpegArgs(ffArgs)),
         });
 
-        let child;
+        let child: ChildProcess;
         try {
             child = spawn(ffmpegCmd, ffArgs, {
                 stdio: ['ignore', 'ignore', 'pipe', 'pipe'],
@@ -358,7 +423,7 @@ function createOutputLifecycleService({
         processes.set(job.id, child);
         ffmpegProgressByJobId.set(job.id, {});
 
-        const pushLog = (msg, type = 'output.log', data = null) =>
+        const pushLog = (msg: string, type = 'output.log', data: unknown = null) =>
             db.appendJobLog(job.id, msg, pipelineId, outputId, type, data);
 
         child.on('error', (err) => {
@@ -378,10 +443,11 @@ function createOutputLifecycleService({
             ffmpegProgressByJobId.delete(job.id);
         });
 
-        // fd3 progress pipe — track total_size and bitrate for output metrics
+        // fd3 progress pipe
         let progressBuf = '';
         let loggedConnected = false;
-        child.stdio[3]?.on('data', (d) => {
+        const stdio3 = (child.stdio as (NodeJS.ReadableStream | null)[])[3];
+        stdio3?.on('data', (d: Buffer) => {
             progressBuf += d.toString();
             const lines = progressBuf.split('\n');
             progressBuf = lines.pop() || '';
@@ -412,7 +478,6 @@ function createOutputLifecycleService({
             ffmpegProgressByJobId.set(job.id, latest);
         });
 
-        // stderr — log to history, suppress repetitive HLS noise
         let stderrLogBuf = '';
         let hlsNoiseSuppressed = false;
 
@@ -436,7 +501,7 @@ function createOutputLifecycleService({
             }
         };
 
-        child.stderr?.on('data', (d) => flushStderr(d.toString()));
+        child.stderr?.on('data', (d: Buffer) => flushStderr(d.toString()));
 
         child.on('exit', (code, signal) => {
             flushStderr('', true);
@@ -501,10 +566,10 @@ function createOutputLifecycleService({
     }
 
     async function reconcileOutput(
-        pipelineId,
-        outputId,
-        { trigger = 'reconcile', reason = 'desired_state_change', source = 'system' } = {},
-    ) {
+        pipelineId: string,
+        outputId: string,
+        { trigger = 'reconcile', reason = 'desired_state_change' } = {},
+    ): Promise<{ action: string; desiredState?: string; job?: Job | null | undefined }> {
         const output = db.getOutput(pipelineId, outputId);
         if (!output) {
             clearOutputRestartState(pipelineId, outputId);
@@ -529,7 +594,8 @@ function createOutputLifecycleService({
             const { job } = await startOutputJob(pipelineId, outputId, trigger, reason);
             return { action: 'started', desiredState, job };
         } catch (err) {
-            if (err?.status === 409 && String(err?.publicError || '').includes('running job')) {
+            const e = err as { status?: number; publicError?: string };
+            if (e?.status === 409 && String(e?.publicError || '').includes('running job')) {
                 return {
                     action: 'already_running',
                     desiredState,
@@ -542,7 +608,7 @@ function createOutputLifecycleService({
         }
     }
 
-    function restartPipelineOutputsOnInputRecovery(pipelineId) {
+    function restartPipelineOutputsOnInputRecovery(pipelineId: string) {
         const outputs = db.listOutputsForPipeline(pipelineId);
         let scheduled = 0;
         outputs.forEach((output, i) => {
@@ -551,7 +617,6 @@ function createOutputLifecycleService({
             const state = getRetryState(pipelineId, output.id);
             clearRetryTimer(state);
             state.failures = 0;
-            // small built-in stagger to avoid thundering herd on large deployments
             state.timer = setTimeout(() => {
                 state.timer = null;
                 void attemptAutoStart(pipelineId, output.id);
@@ -578,5 +643,3 @@ function createOutputLifecycleService({
         stopRunningJob,
     };
 }
-
-module.exports = { createOutputLifecycleService };

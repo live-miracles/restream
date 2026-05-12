@@ -90,11 +90,22 @@ See [health-mapping.md](./health-mapping.md) for the detailed status rules.
 
 Unexpected output exits can be retried according to the output recovery config. Manual stops set desired state to `stopped` and suppress retries. When an input disappears and later returns, recovery can restart outputs that were likely stopped by input loss.
 
+## Backend Shape
+
+The backend is TypeScript under `src/`, compiled to `dist/` by `npm run build:backend`.
+
+- `src/index.ts`: app composition and route wiring
+- `src/types.ts`: shared interfaces (Pipeline, Output, Job, Db, etc.)
+- `src/api/`: REST route handlers
+- `src/services/`: health monitor, output lifecycle, and startup bootstrap
+- `src/db/`: SQLite schema setup and typed query helpers
+- `src/utils/`: FFmpeg command building, MediaMTX client, validation, and logging
+
 ## Frontend Shape
 
 The dashboard is a TypeScript/ES-module frontend under `public/`.
 
-- `public/ts/`: TypeScript source (compiled to `public/js/` by `npm run ts-build`)
+- `public/ts/`: TypeScript source (compiled to `public/js/` by `npm run build:frontend`)
 - `public/ts/core/`: API client, shared state, view-model helpers, utilities
 - `public/ts/features/`: dashboard rendering and interaction flows
 - `public/ts/history/`: output and pipeline history modals

@@ -1,13 +1,4 @@
-'use strict';
-
-// MediaMTX client utilities: base URLs, JSON fetcher, and pull-URL builders.
-// All constants are derived from the fixed localhost binding that MediaMTX uses in this
-// deployment. Any module that talks to MediaMTX can require this directly instead of
-// receiving these helpers through the DI parameter list in index.js.
-
-const { errMsg } = require('./app');
-
-const fetch = global.fetch || require('node-fetch');
+import { errMsg } from './app';
 
 // MediaMTX API, RTMP, SRT, and HLS are always on localhost with hardcoded ports.
 const MEDIAMTX_API_BASE = 'http://localhost:9997';
@@ -16,41 +7,59 @@ const MEDIAMTX_SRT_BASE = 'srt://localhost:8890';
 const MEDIAMTX_HLS_BASE = 'http://localhost:8888';
 const MEDIAMTX_RTSP_BASE = 'rtsp://localhost:8554';
 const LIVE_PATH_PREFIX = 'live/';
-const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
+export const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
 const MEDIAMTX_INGEST_PORTS_CACHE_MS = 5000;
 
-let cachedIngestPorts = null;
-let cachedIngestPortsAtMs = 0;
-let permanentStreamKeys = null;
+interface IngestPorts {
+    rtmp: string | null;
+    srt: string | null;
+}
 
-function getMediamtxApiBaseUrl() {
+interface StreamKeyItem {
+    key: string;
+    label: string;
+}
+
+interface PathConfigItem {
+    name?: string;
+    path?: string;
+    confName?: string;
+    key?: string;
+}
+
+let cachedIngestPorts: IngestPorts | null = null;
+let cachedIngestPortsAtMs = 0;
+let permanentStreamKeys: StreamKeyItem[] | null = null;
+
+export function getMediamtxApiBaseUrl(): string {
     return MEDIAMTX_API_BASE;
 }
 
-function getMediamtxHlsBaseUrl() {
+export function getMediamtxHlsBaseUrl(): string {
     return MEDIAMTX_HLS_BASE;
 }
 
-function buildMediamtxPath(streamKey) {
+export function buildMediamtxPath(streamKey: string): string {
     return `${LIVE_PATH_PREFIX}${streamKey}`;
 }
 
-function getStreamKeyLabelFromPath(pathName) {
+function getStreamKeyLabelFromPath(pathName: string): string {
     const normalized = String(pathName || '').trim();
     if (!normalized) return '';
     return normalized.split('_')[0] || normalized;
 }
 
-function normalizePathConfigItem(item) {
+function normalizePathConfigItem(item: unknown): { name: string } | null {
     if (typeof item === 'string') return { name: item };
     if (!item || typeof item !== 'object') return null;
 
-    const name = item.name || item.path || item.confName || item.key;
+    const obj = item as PathConfigItem;
+    const name = obj.name || obj.path || obj.confName || obj.key;
     if (!name || typeof name !== 'string') return null;
     return { name };
 }
 
-function pathConfigToStreamKey(item) {
+function pathConfigToStreamKey(item: unknown): StreamKeyItem | null {
     const pathConfig = normalizePathConfigItem(item);
     const pathName = pathConfig?.name?.trim();
     if (
@@ -71,26 +80,27 @@ function pathConfigToStreamKey(item) {
     };
 }
 
-function normalizePathConfigList(data) {
-    const rawItems = Array.isArray(data?.items)
-        ? data.items
-        : data?.items && typeof data.items === 'object'
-          ? Object.keys(data.items)
-          : Array.isArray(data)
-            ? data
-            : data?.paths && typeof data.paths === 'object' && !Array.isArray(data.paths)
-              ? Object.keys(data.paths)
-              : Array.isArray(data?.paths)
-                ? data.paths
+function normalizePathConfigList(data: unknown): StreamKeyItem[] {
+    const d = data as Record<string, unknown> | null;
+    const rawItems = Array.isArray(d?.items)
+        ? d!.items
+        : d?.items && typeof d.items === 'object'
+          ? Object.keys(d.items as object)
+          : Array.isArray(d)
+            ? (d as unknown[])
+            : d?.paths && typeof d.paths === 'object' && !Array.isArray(d.paths)
+              ? Object.keys(d.paths as object)
+              : Array.isArray(d?.paths)
+                ? (d!.paths as unknown[])
                 : [];
 
-    return rawItems
+    return (rawItems as unknown[])
         .map(pathConfigToStreamKey)
-        .filter(Boolean)
+        .filter((x): x is StreamKeyItem => x !== null)
         .sort((a, b) => (a.label || a.key).localeCompare(b.label || b.key));
 }
 
-async function loadPermanentStreamKeys({ force = false } = {}) {
+async function loadPermanentStreamKeys({ force = false } = {}): Promise<StreamKeyItem[]> {
     if (permanentStreamKeys && !force) return permanentStreamKeys;
 
     const pathConfigs = await fetchMediamtxJson('/v3/config/paths/list');
@@ -98,20 +108,20 @@ async function loadPermanentStreamKeys({ force = false } = {}) {
     return permanentStreamKeys;
 }
 
-function getCachedPermanentStreamKeys() {
+export function getCachedPermanentStreamKeys(): StreamKeyItem[] | null {
     return permanentStreamKeys ? [...permanentStreamKeys] : null;
 }
 
-async function getPermanentStreamKeys() {
+export async function getPermanentStreamKeys(): Promise<StreamKeyItem[]> {
     return loadPermanentStreamKeys();
 }
 
-async function isPermanentStreamKey(streamKey) {
+export async function isPermanentStreamKey(streamKey: string): Promise<boolean> {
     const keys = await getPermanentStreamKeys();
     return keys.some((item) => item.key === streamKey);
 }
 
-function parsePortFromAddress(address) {
+function parsePortFromAddress(address: unknown): string | null {
     if (typeof address !== 'string' || !address.trim()) return null;
     const match = address.trim().match(/:(\d{1,5})$/);
     if (!match) return null;
@@ -120,7 +130,7 @@ function parsePortFromAddress(address) {
     return String(Math.floor(port));
 }
 
-async function getMediamtxIngestPorts() {
+export async function getMediamtxIngestPorts(): Promise<IngestPorts> {
     const nowMs = Date.now();
     if (cachedIngestPorts && nowMs - cachedIngestPortsAtMs < MEDIAMTX_INGEST_PORTS_CACHE_MS) {
         return cachedIngestPorts;
@@ -128,22 +138,22 @@ async function getMediamtxIngestPorts() {
 
     try {
         const globalConfig = await fetchMediamtxJson('/v3/config/global/get');
+        const cfg = globalConfig as Record<string, unknown>;
         cachedIngestPorts = {
-            rtmp: parsePortFromAddress(globalConfig?.rtmpAddress),
-            srt: parsePortFromAddress(globalConfig?.srtAddress),
+            rtmp: parsePortFromAddress(cfg?.rtmpAddress),
+            srt: parsePortFromAddress(cfg?.srtAddress),
         };
     } catch {
-        cachedIngestPorts = {
-            rtmp: null,
-            srt: null,
-        };
+        cachedIngestPorts = { rtmp: null, srt: null };
     }
 
     cachedIngestPortsAtMs = nowMs;
     return cachedIngestPorts;
 }
 
-async function buildIngestUrls(streamKey) {
+export async function buildIngestUrls(
+    streamKey: string,
+): Promise<{ rtmp: string | null; srt: string | null }> {
     const ingestHost = 'localhost';
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
@@ -156,12 +166,12 @@ async function buildIngestUrls(streamKey) {
     };
 }
 
-async function fetchMediamtxJson(endpoint) {
+export async function fetchMediamtxJson(endpoint: string): Promise<unknown> {
     const url = `${MEDIAMTX_API_BASE}${endpoint}`;
     const resp = await fetch(url, {
         signal: AbortSignal.timeout(MEDIAMTX_FETCH_TIMEOUT_MS),
     });
-    let data = null;
+    let data: unknown = null;
     try {
         data = await resp.json();
     } catch (err) {
@@ -177,7 +187,7 @@ async function fetchMediamtxJson(endpoint) {
 // FFmpeg output jobs pull the stream from MediaMTX using a protocol that matches the
 // output destination: RTMP outputs pull via RTMP, SRT and HLS outputs pull via SRT.
 
-function buildPullInputUrl(streamKey, pullProtocol) {
+export function buildPullInputUrl(streamKey: string, pullProtocol: string): string {
     const effectivePath = buildMediamtxPath(streamKey);
     if (pullProtocol === 'srt') {
         return `${MEDIAMTX_SRT_BASE}?streamid=read:${effectivePath}`;
@@ -185,29 +195,13 @@ function buildPullInputUrl(streamKey, pullProtocol) {
     return `${MEDIAMTX_RTMP_BASE}/${effectivePath}`;
 }
 
-function generateProbeReaderTag(streamKey) {
+export function generateProbeReaderTag(streamKey: string): string {
     const suffix = String(streamKey).replace(/[^a-zA-Z0-9_-]/g, '_');
     return `probe_${suffix}`;
 }
 
-function buildRtspInputUrl(streamKey) {
+export function buildRtspInputUrl(streamKey: string): string {
     return `${MEDIAMTX_RTSP_BASE}/${buildMediamtxPath(streamKey)}`;
 }
 
-module.exports = {
-    MEDIAMTX_FETCH_TIMEOUT_MS,
-    MEDIAMTX_RTMP_BASE,
-    MEDIAMTX_SRT_BASE,
-    getMediamtxApiBaseUrl,
-    getMediamtxHlsBaseUrl,
-    buildMediamtxPath,
-    getStreamKeyLabelFromPath,
-    getCachedPermanentStreamKeys,
-    getPermanentStreamKeys,
-    isPermanentStreamKey,
-    buildIngestUrls,
-    fetchMediamtxJson,
-    buildPullInputUrl,
-    buildRtspInputUrl,
-    generateProbeReaderTag,
-};
+export { MEDIAMTX_RTMP_BASE, MEDIAMTX_SRT_BASE };
