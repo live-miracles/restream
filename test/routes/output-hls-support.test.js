@@ -57,13 +57,13 @@ test('buildFfmpegOutputArgs uses the shared HLS muxer for HLS output URLs', () =
         '-method',
         'PUT',
         '-http_persistent',
-        '1',
+        '0',
         '-hls_time',
         '2',
         '-hls_list_size',
         '5',
         '-hls_flags',
-        'delete_segments',
+        'delete_segments+append_list',
         outputUrl,
     ]);
 });
@@ -71,6 +71,8 @@ test('buildFfmpegOutputArgs uses the shared HLS muxer for HLS output URLs', () =
 test('buildFfmpegOutputArgs uses the same HLS muxer for YouTube upload URLs', () => {
     const outputUrl =
         'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=out.m3u8';
+    const segmentUrl =
+        'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=segment_%05d.ts';
     const args = buildFfmpegOutputArgs({
         inputUrl: 'rtsp://localhost:8554/live/test',
         outputUrl,
@@ -84,19 +86,21 @@ test('buildFfmpegOutputArgs uses the same HLS muxer for YouTube upload URLs', ()
     assert.equal(args[args.indexOf('-c:a') + 1], 'copy');
     assert.ok(args.includes('-http_persistent'));
 
-    assert.deepEqual(args.slice(-13), [
+    assert.deepEqual(args.slice(-15), [
         '-f',
         'hls',
         '-method',
         'PUT',
         '-http_persistent',
-        '1',
+        '0',
         '-hls_time',
         '2',
         '-hls_list_size',
         '5',
         '-hls_flags',
-        'delete_segments',
+        'delete_segments+append_list',
+        '-hls_segment_filename',
+        segmentUrl,
         outputUrl,
     ]);
 });
@@ -134,6 +138,8 @@ test('buildFfmpegOutputArgs keeps existing transcode settings for HLS outputs', 
 test('buildFfmpegOutputArgs uses the shared HLS muxer for transcodes on YouTube URLs', () => {
     const outputUrl =
         'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=out.m3u8';
+    const segmentUrl =
+        'https://a.upload.youtube.com/http_upload_hls?cid=test-stream-key&copy=0&file=segment_%05d.ts';
     const args = buildFfmpegOutputArgs({
         inputUrl: 'rtsp://localhost:8554/live/test',
         outputUrl,
@@ -148,19 +154,21 @@ test('buildFfmpegOutputArgs uses the shared HLS muxer for transcodes on YouTube 
     assert.ok(args.includes('-ar'));
     assert.equal(args[args.indexOf('-ar') + 1], '48000');
 
-    assert.deepEqual(args.slice(-13), [
+    assert.deepEqual(args.slice(-15), [
         '-f',
         'hls',
         '-method',
         'PUT',
         '-http_persistent',
-        '1',
+        '0',
         '-hls_time',
         '2',
         '-hls_list_size',
         '5',
         '-hls_flags',
-        'delete_segments',
+        'delete_segments+append_list',
+        '-hls_segment_filename',
+        segmentUrl,
         outputUrl,
     ]);
 });

@@ -16,10 +16,29 @@ function buildCommandPreview(cmd, args) {
     return [cmd, ...(args || []).map(shellQuote)].join(' ');
 }
 
+function isHlsPlaylistReference(value) {
+    return /\.m3u8$/i.test(String(value || '').trim());
+}
+
 function isHlsOutputUrl(parsedUrl) {
     if (!(parsedUrl instanceof URL)) return false;
-    const protocol = parsedUrl.protocol;
-    return protocol === 'http:' || protocol === 'https:';
+
+    const protocol = String(parsedUrl.protocol || '').toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+        return false;
+    }
+
+    if (isHlsPlaylistReference(parsedUrl.pathname)) {
+        return true;
+    }
+
+    for (const value of parsedUrl.searchParams.values()) {
+        if (isHlsPlaylistReference(value)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function shouldPersistFfmpegStderrLine(line, outputUrl) {
@@ -79,7 +98,7 @@ const SYSTEM_ENCODING_ARGS = {
 const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
 const INVALID_OUTPUT_URL_ERROR =
-    'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// URL';
+    'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL ending in .m3u8';
 
 function normalizeOutputEncoding(value) {
     const normalized = String(value ?? 'source')
