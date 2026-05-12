@@ -2,18 +2,14 @@
     "name": "restream",
     "version": "1.0.0",
     "description": "A streaming server which takes inputs and replicates them to multiple outputs.",
-    "main": "src/index.js",
     "scripts": {
-        "start": "node src/index.js",
-        "dev": "npx nodemon --ignore 'test/artifacts/**' --ignore 'public/ts/**' src/index.js",
+        "vendor-hls": "mkdir -p public/vendor && cp node_modules/hls.js/dist/hls.min.js public/vendor/hls.min.js",
         "ts-build": "npx tsc",
         "ts-watch": "npx tsc --watch",
         "css": "npx tailwindcss -i public/input.css -o public/output.css",
         "css-watch": "npx tailwindcss -i public/input.css -o public/output.css --watch",
         "format": "npx prettier --write .",
         "format:check": "npx prettier --check .",
-        "test": "echo \"Error: no test specified\" && exit 1",
-        "test:routes": "node --test test/routes/*.test.js",
         "test:normalization": "node --test test/artifacts/run-2x3-normalization.test.mjs",
         "test:integration": "node test/artifacts/run-2x3.mjs"
     },
@@ -26,18 +22,13 @@
         "npm": ">=10"
     },
     "dependencies": {
-        "better-sqlite3": "12.6.0",
-        "compression": "^1.8.1",
-        "express": "5.1.0",
         "hls.js": "^1.5.20"
     },
     "devDependencies": {
         "@tailwindcss/cli": "4.1.18",
         "daisyui": "5.5.14",
-        "nodemon": "3.1.11",
         "prettier": "3.7.4",
         "prettier-plugin-tailwindcss": "0.7.2",
-        "supertest": "^7.2.2",
         "tailwindcss": "4.1.18",
         "typescript": "^5.9.3"
     }

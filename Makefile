@@ -1,35 +1,35 @@
-.PHONY: check check-dev-deps check-host-deps deps run-host run-docker down format css security security-strict start-input start-inputs probe-output run-2x3
+.PHONY: build build-backend clean deps format css security security-strict start-input start-inputs probe-output run-2x3
 
-DEPS_STAMP := .deps-stamp
-NEEDS_NODE := security security-strict
-NEEDS_DEV_DEPS := format css
-
-$(NEEDS_NODE): check
-$(NEEDS_DEV_DEPS): check-dev-deps
+BINARY      := dist/restream
 
 INGEST_ARGS ?= -f flv # -f rtsp -rtsp_transport tcp # -f mpegts
-INGEST_URL ?= rtmp://localhost:1935/mystream
-OUTPUT_URL ?= rtmp://localhost:1936/live/test
+INGEST_URL  ?= rtmp://localhost:1935/mystream
+OUTPUT_URL  ?= rtmp://localhost:1936/live/test
 
-NPM_FLAGS := $(if $(DEV),,--omit=dev)
-DEPS_MODE := $(if $(DEV),dev,prod)
+# ── Go build ──────────────────────────────────────────────────────────────────
 
-check:
-	@test -d node_modules || (echo "Run 'make deps' first. 'DEV=1 make deps' for dev dependencies."; exit 1)
-	@test -f $(DEPS_STAMP) || (echo "Dependency metadata missing. Run 'make deps' again."; exit 1)
-	@test ! package.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
-	@test ! package-lock.json -nt $(DEPS_STAMP) || (echo "Dependencies are stale. Run 'make deps' again."; exit 1)
+# Full build for the current platform.
+build: frontend
+	mkdir -p dist
+	go build -o $(BINARY) ./cmd/server
 
-check-dev-deps: check
-	@test "$$(cat $(DEPS_STAMP) 2>/dev/null)" = "dev" || (echo "Dev dependencies are required. Run 'DEV=1 make deps'."; exit 1)
+# Cross-compile for Linux amd64 (for deploying to a Linux server from macOS/Windows).
+build-linux: frontend
+	mkdir -p dist
+	GOOS=linux GOARCH=amd64 go build -o dist/restream-linux-amd64 ./cmd/server
 
-check-host-deps: check
-	@test ! scripts/check-debian-binaries.sh -nt $(DEPS_STAMP) || (echo "Host dependency checks changed. Run 'make deps' again."; exit 1)
+# Frontend-only: compile TypeScript + CSS and copy vendored hls.js.
+# Must run before go build — outputs are embedded into the binary via embed.go.
+frontend:
+	@test -d node_modules || (echo "Run 'npm ci' first." && exit 1)
+	npm run ts-build
+	npm run css
+	npm run vendor-hls
 
-deps:
-	scripts/check-debian-binaries.sh --install
-	npm ci $(NPM_FLAGS)
-	@printf '%s\n' "$(DEPS_MODE)" > $(DEPS_STAMP)
+clean:
+	rm -rf dist public/js public/vendor public/output.css
+
+# ── Node / frontend tooling ───────────────────────────────────────────────────
 
 format:
 	npm run format
@@ -45,6 +45,8 @@ security:
 
 security-strict:
 	npm audit --audit-level=low
+
+# ── Dev helpers ───────────────────────────────────────────────────────────────
 
 start-input:
 	ffmpeg -re -stream_loop -1 \

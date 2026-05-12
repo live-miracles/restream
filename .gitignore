@@ -23,12 +23,17 @@ log/
 .env
 .env.*
 
-# Generated TypeScript output
+# Generated/vendored frontend assets (built by make frontend before go build)
 public/js/
+public/vendor/
+public/output.css
 
 # Generated test artifacts
 test/artifacts/logs/
 test/artifacts/runs/
+
+# Go build output
+dist/
 
 # Keep data directory, ignore its runtime content
 data.db
