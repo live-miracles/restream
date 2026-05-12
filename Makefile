@@ -1,4 +1,4 @@
-.PHONY: check check-dev-deps check-host-deps deps run-host run-docker down format css security security-strict start-input probe-output run-2x3
+.PHONY: check check-dev-deps check-host-deps deps run-host run-docker down format css security security-strict start-input start-inputs probe-output run-2x3
 
 DEPS_STAMP := .deps-stamp
 NEEDS_NODE := security security-strict
@@ -52,6 +52,19 @@ start-input:
 		-c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency \
 		-c:a aac -b:a 128k -ac 2 \
 		$(INGEST_ARGS) "$(INGEST_URL)"
+
+start-inputs:
+	ffmpeg -re -stream_loop -1 \
+		-i test/colorbar-timer.mp4 \
+		-c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency \
+		-c:a aac -b:a 128k -ac 2 \
+		-f flv "rtmp://localhost:1935/live/key01_6c71124cde80358ca7c13081" & \
+	ffmpeg -re -stream_loop -1 \
+		-i test/colorbar-timer.mp4 \
+		-c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency \
+		-c:a aac -b:a 128k -ac 2 \
+		-f mpegts "srt://localhost:8890?streamid=publish:live/key02_fff2adcf55a26d31ae93464b" & \
+	wait
 
 probe-output:
 	ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height -of json \

@@ -7,15 +7,14 @@ function normalizeEtag(value) {
     return value.replace(/^"(.*)"$/, '$1');
 }
 
-function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
+function registerConfigApi({ app, db }) {
     function buildConfigSnapshot() {
+        const serverName = db.getServerName();
         const pipelines = db.listPipelines().map((p) => ({
             id: p.id,
             name: p.name,
             streamKey: p.streamKey,
             encoding: p.encoding,
-            createdAt: p.createdAt,
-            updatedAt: p.updatedAt,
         }));
 
         const outputsByPipeline = db.listOutputs().reduce((acc, output) => {
@@ -32,7 +31,6 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
                 url: output.url,
                 desiredState: output.desiredState,
                 encoding: output.encoding,
-                createdAt: output.createdAt,
             }));
             outs.sort((a, b) => a.id.localeCompare(b.id));
             pipeline.outputs = outs;
@@ -40,7 +38,7 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
 
         pipelines.sort((a, b) => (a.id || '').localeCompare(b.id || ''));
 
-        return { pipelines };
+        return { serverName, pipelines };
     }
 
     function buildJobsSnapshot() {
@@ -104,65 +102,46 @@ function registerConfigApi({ app, db, getConfig, toPublicConfig }) {
             const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
                 res.set('ETag', `"${etag}"`);
-                if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-                if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
                 return res.status(304).end();
             }
 
             const pipelines = await Promise.all(
                 db.listPipelines().map(async (pipeline) => ({
                     ...pipeline,
-                    ingestUrls: await buildIngestUrls(pipeline.streamKey, getConfig),
+                    ingestUrls: await buildIngestUrls(pipeline.streamKey),
                 })),
             );
             const outputs = db.listOutputs();
             const jobs = db.listJobs();
-            const publicConfig = toPublicConfig(getConfig());
 
             const snapshot = {
-                ...publicConfig,
+                serverName: db.getServerName(),
                 pipelines,
                 outputs,
                 jobs,
             };
 
             if (etag) res.set('ETag', `"${etag}"`);
-            if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-            if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
             return res.json(snapshot);
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
         }
     });
 
-    app.head('/config/version', async (req, res) => {
+    app.patch('/config', (req, res) => {
         try {
-            let configEtag = db.getConfigEtag();
-            if (!configEtag) configEtag = recomputeConfigEtag();
-
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-            if (ifNoneMatch && configEtag && ifNoneMatch === configEtag) {
-                res.set('ETag', `"${configEtag}"`);
-                return res.status(304).end();
+            const { serverName } = req.body || {};
+            if (serverName !== undefined) {
+                if (typeof serverName !== 'string' || !serverName.trim()) {
+                    return res.status(400).json({ error: 'serverName must be a non-empty string' });
+                }
+                db.setServerName(serverName);
             }
-
-            if (configEtag) res.set('ETag', `"${configEtag}"`);
-            return res.status(200).end();
+            recomputeConfigEtag();
+            recomputeEtag();
+            return res.json({ serverName: db.getServerName() });
         } catch (err) {
-            return res.status(500).end();
-        }
-    });
-
-    app.head('/config', (req, res) => {
-        try {
-            const etag = db.getEtag();
-            const configEtag = db.getConfigEtag();
-            if (etag) res.set('ETag', `"${etag}"`);
-            if (configEtag) res.set('X-Config-ETag', `"${configEtag}"`);
-            if (etag) res.set('X-Snapshot-Version', `"${etag}"`);
-            return res.status(200).end();
-        } catch (err) {
-            return res.status(500).end();
+            return res.status(500).json({ error: errMsg(err) });
         }
     });
 

@@ -18,16 +18,16 @@ function normalizeOutputEncodingValue(encoding) {
 
 /* Pipeline statements */
 const insertPipeline = db.prepare(
-    'INSERT INTO pipelines (id, name, stream_key, encoding, input_ever_seen_live, created_at, updated_at) VALUES (@id, @name, @stream_key, @encoding, @input_ever_seen_live, @created_at, @updated_at)',
+    'INSERT INTO pipelines (id, name, stream_key, encoding, input_ever_seen_live) VALUES (@id, @name, @stream_key, @encoding, @input_ever_seen_live)',
 );
 const getPipelineStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive, created_at AS createdAt, updated_at AS updatedAt FROM pipelines WHERE id = ?',
+    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive FROM pipelines WHERE id = ?',
 );
 const listPipelinesStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive, created_at AS createdAt, updated_at AS updatedAt FROM pipelines',
+    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive FROM pipelines',
 );
 const updatePipelineStmt = db.prepare(
-    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding, input_ever_seen_live = @input_ever_seen_live, updated_at = @updated_at WHERE id = @id',
+    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding, input_ever_seen_live = @input_ever_seen_live WHERE id = @id',
 );
 const markPipelineInputSeenLiveStmt = db.prepare(
     'UPDATE pipelines SET input_ever_seen_live = 1 WHERE id = @id',
@@ -36,16 +36,16 @@ const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
 /* Output statements */
 const insertOutput = db.prepare(
-    'INSERT INTO outputs (id, pipeline_id, name, url, desired_state, encoding, created_at) VALUES (@id, @pipeline_id, @name, @url, @desired_state, @encoding, @created_at)',
+    'INSERT INTO outputs (id, pipeline_id, name, url, desired_state, encoding) VALUES (@id, @pipeline_id, @name, @url, @desired_state, @encoding)',
 );
 const getOutputStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs WHERE id = ? AND pipeline_id = ?',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding FROM outputs WHERE id = ? AND pipeline_id = ?',
 );
 const listOutputsStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding FROM outputs',
 );
 const listOutputsForPipelineStmt = db.prepare(
-    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding, created_at AS createdAt FROM outputs WHERE pipeline_id = ? ORDER BY created_at ASC, id ASC',
+    'SELECT id, pipeline_id AS pipelineId, name, url, desired_state AS desiredState, encoding FROM outputs WHERE pipeline_id = ? ORDER BY rowid ASC',
 );
 const updateOutputStmt = db.prepare(
     'UPDATE outputs SET name = @name, url = @url, encoding = @encoding WHERE id = @id AND pipeline_id = @pipeline_id',
@@ -201,21 +201,18 @@ function parseLogRows(rows) {
 
 module.exports = {
     /* pipeline helpers */
-    createPipeline({ id, name, streamKey, encoding = null, createdAt }) {
+    createPipeline({ id, name, streamKey, encoding = null }) {
         if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
         if (!streamKey || typeof streamKey !== 'string') {
             throw new Error('Pipeline.streamKey is required');
         }
         const pid = id || crypto.randomBytes(8).toString('hex');
-        const now = createdAt || new Date().toISOString();
         insertPipeline.run({
             id: pid,
             name,
             stream_key: streamKey,
-            encoding: encoding,
+            encoding,
             input_ever_seen_live: 0,
-            created_at: now,
-            updated_at: null,
         });
         return getPipelineStmt.get(pid);
     },
@@ -225,15 +222,13 @@ module.exports = {
     listPipelines() {
         return listPipelinesStmt.all();
     },
-    updatePipeline(id, { name, streamKey, encoding = null, inputEverSeenLive = 0, updatedAt }) {
-        const now = updatedAt || new Date().toISOString();
+    updatePipeline(id, { name, streamKey, encoding = null, inputEverSeenLive = 0 }) {
         const info = updatePipelineStmt.run({
             id,
             name,
             stream_key: streamKey,
             encoding,
             input_ever_seen_live: inputEverSeenLive,
-            updated_at: now,
         });
         return info.changes > 0 ? getPipelineStmt.get(id) : null;
     },
@@ -247,19 +242,10 @@ module.exports = {
     },
 
     /* output helpers */
-    createOutput({
-        id,
-        pipelineId,
-        name,
-        url,
-        desiredState = 'stopped',
-        encoding = 'source',
-        createdAt,
-    }) {
+    createOutput({ id, pipelineId, name, url, desiredState = 'stopped', encoding = 'source' }) {
         if (!pipelineId) throw new Error('pipelineId is required');
         if (!name || !url) throw new Error('Output.name and Output.url are required');
         const oid = id || crypto.randomBytes(8).toString('hex');
-        const now = createdAt || new Date().toISOString();
         insertOutput.run({
             id: oid,
             pipeline_id: pipelineId,
@@ -267,7 +253,6 @@ module.exports = {
             url,
             desired_state: desiredState === 'running' ? 'running' : 'stopped',
             encoding: normalizeOutputEncodingValue(encoding),
-            created_at: now,
         });
         return getOutputStmt.get(oid, pipelineId);
     },
@@ -435,5 +420,22 @@ module.exports = {
 
     setConfigEtag(v) {
         return module.exports.setMeta('config_etag', v);
+    },
+
+    /* custom encoding helpers */
+    getCustomEncoding() {
+        return module.exports.getMeta('custom_encoding') || null;
+    },
+    setCustomEncoding(ffmpegArgs) {
+        return module.exports.setMeta('custom_encoding', ffmpegArgs || '');
+    },
+
+    getServerName() {
+        return module.exports.getMeta('server_name') || 'Name';
+    },
+
+    setServerName(name) {
+        const trimmed = typeof name === 'string' ? name.trim() : '';
+        return module.exports.setMeta('server_name', trimmed || 'Name');
     },
 };

@@ -27,15 +27,14 @@ async function startServer({
     db,
     log,
     appPort,
-    appHost,
     initializeConfigSnapshotVersions,
 }) {
     const { runJobCleanup, runJobLogCleanup } = createCleanupRunners({ db, log });
     initializeConfigSnapshotVersions?.();
     await healthMonitor.start();
 
-    app.listen(appPort, appHost, () => {
-        console.log(`Controller running on ${appHost}:${appPort}`);
+    app.listen(appPort, () => {
+        console.log(`Controller running on port ${appPort}`);
 
         runJobCleanup('Job cleanup');
 

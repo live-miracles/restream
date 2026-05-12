@@ -502,56 +502,34 @@ export function renderOutputHistory(
 
     if (mode === 'raw') {
         const rawLogs = getFilteredRawOutputLogs(state);
-        empty.textContent = 'No history available yet.';
-        const hasQuery = hasSearchQuery;
+        const query = getRawHistorySearchValue(state);
         let matchCounter = 0;
-        for (let i = 0; i < rawLogs.length; i += 1) {
-            const log = rawLogs[i];
-            const haystack = `${log?.ts || ''}\n${log?.message || ''}`.toLowerCase();
-            const isMatch = hasQuery && haystack.includes(getRawHistorySearchValue(state));
-            const matchIndex = isMatch ? matchCounter++ : -1;
-            const row = document.createElement('div');
-            row.className = 'rounded border border-transparent bg-base-100 p-2';
-            if (isMatch) {
-                row.dataset.rawMatchIndex = String(matchIndex);
-                if (matchIndex === state.rawMatchIndex) {
-                    row.classList.remove('border-transparent');
-                    row.classList.add('border-success');
-                }
-            }
-
-            const header = document.createElement('div');
-            header.className = 'flex items-center justify-between gap-2';
-
-            const label = document.createElement('span');
-            label.className = 'badge badge-sm badge-ghost';
-            label.textContent = 'Log';
-
-            const ts = document.createElement('span');
-            ts.className = 'text-xs opacity-70';
-            ts.textContent = formatHistoryTime(log.ts);
-
-            header.appendChild(label);
-            header.appendChild(ts);
-
-            const msg = document.createElement('pre');
-            msg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-            const safeMessage = sanitizeLogMessage(log.message || '', state.redacted);
+        list.innerHTML = rawLogs
+            .map((log) => {
+                const haystack = `${log?.ts || ''}\n${log?.message || ''}`.toLowerCase();
+                const isMatch = hasSearchQuery && haystack.includes(query);
+                const matchIndex = isMatch ? matchCounter++ : -1;
+                const focused = isMatch && matchIndex === state.rawMatchIndex;
+                return `<div class="rounded border ${focused ? 'border-success' : 'border-transparent'} bg-base-100 p-2"
+                              ${isMatch ? `data-raw-match-index="${matchIndex}"` : ''}>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="badge badge-sm badge-ghost">Log</span>
+                        <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
+                    </div>
+                    <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-raw-msg"></pre>
+                </div>`;
+            })
+            .join('');
+        list.querySelectorAll<HTMLPreElement>('.js-raw-msg').forEach((pre, i) => {
             renderHighlightedLogMessage(
-                msg,
-                safeMessage,
-                hasQuery ? getRawHistorySearchValue(state) : '',
+                pre,
+                sanitizeLogMessage(rawLogs[i].message || '', false),
+                hasSearchQuery ? query : '',
             );
-
-            row.appendChild(header);
-            row.appendChild(msg);
-            list.appendChild(row);
-        }
+        });
         if (scrollToTop) list.scrollTop = 0;
         return;
     }
-
-    empty.textContent = 'No history available yet.';
 
     const timelineLogs = getOrderedOutputLogs(state.lifecycleLogs, state.order);
     timelineLogs.forEach((log, index) => {
@@ -560,96 +538,66 @@ export function renderOutputHistory(
         const contextKey = getOutputHistoryContextKey(log);
         const expanded = state.expandedContextKeys.has(contextKey);
         const contextLoading = state.contextLoadingKeys.has(contextKey);
+        const orderedContextLogs =
+            expanded && !contextLoading && contextLogs.length > 0
+                ? getOrderedOutputLogs(contextLogs, state.order)
+                : [];
+
+        let contextBoxHtml = '';
+        if (expanded) {
+            let contextBodyHtml: string;
+            if (contextLoading) {
+                contextBodyHtml = '<div class="text-xs opacity-70">Loading context...</div>';
+            } else if (contextLogs.length === 0) {
+                contextBodyHtml =
+                    '<div class="text-xs opacity-70">No stderr, exit, or control logs in the bounded window before this event.</div>';
+            } else {
+                contextBodyHtml = orderedContextLogs
+                    .map(
+                        (cl, i) => `<div class="mb-2 last:mb-0">
+                        <div class="text-[11px] opacity-60">${formatHistoryTime(cl.ts)}</div>
+                        <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-ctx-msg" data-ctx-i="${i}"></pre>
+                    </div>`,
+                    )
+                    .join('');
+            }
+            contextBoxHtml = `<div class="mt-2 rounded border border-base-300 bg-base-200 p-2">
+                <div class="mb-2 text-xs font-medium opacity-70">stderr / exit / control before event (${contextLoading ? '…' : contextLogs.length})</div>
+                ${contextBodyHtml}
+            </div>`;
+        }
 
         const row = document.createElement('div');
         row.className = 'rounded bg-base-100 p-2';
         if (contextKey) row.dataset.contextKey = contextKey;
-
-        const header = document.createElement('div');
-        header.className = 'flex items-center justify-between gap-2';
-
-        const left = document.createElement('div');
-        left.className = 'flex items-center gap-2';
-
-        const badge = document.createElement('span');
-        badge.className = `badge badge-sm ${event.badgeClass}`;
-        badge.textContent = event.label;
-
-        const toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'btn btn-ghost btn-xs btn-square text-lg leading-none';
-        if (contextLoading) {
-            toggle.textContent = '…';
-            toggle.disabled = true;
-        } else {
-            toggle.textContent = expanded ? '▾' : '▸';
-        }
-        toggle.title = expanded ? 'Hide context' : 'Show context';
-        toggle.setAttribute('aria-label', expanded ? 'Hide context' : 'Show context');
-        toggle.onclick = () => historyRenderCallbacks.toggleOutputHistoryContext?.(log);
-        left.appendChild(toggle);
-        left.appendChild(badge);
-
-        const ts = document.createElement('span');
-        ts.className = 'text-xs opacity-70';
-        ts.textContent = formatHistoryTime(log.ts);
-
-        header.appendChild(left);
-        header.appendChild(ts);
-
-        const details = document.createElement('pre');
-        details.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-        details.textContent = sanitizeLogMessage(log.message || '', state.redacted);
-
-        row.appendChild(header);
-        row.appendChild(details);
-
-        if (expanded) {
-            const contextBox = document.createElement('div');
-            contextBox.className = 'mt-2 rounded border border-base-300 bg-base-200 p-2';
-
-            const contextTitle = document.createElement('div');
-            contextTitle.className = 'mb-2 text-xs font-medium opacity-70';
-            contextTitle.textContent = `stderr / exit / control before event (${contextLogs.length})`;
-            contextBox.appendChild(contextTitle);
-
-            if (contextLoading) {
-                const loadingRow = document.createElement('div');
-                loadingRow.className = 'text-xs opacity-70';
-                loadingRow.textContent = 'Loading context...';
-                contextBox.appendChild(loadingRow);
-            } else if (contextLogs.length === 0) {
-                const emptyRow = document.createElement('div');
-                emptyRow.className = 'text-xs opacity-70';
-                emptyRow.textContent =
-                    'No stderr, exit, or control logs in the bounded window before this event.';
-                contextBox.appendChild(emptyRow);
-            } else {
-                const orderedContextLogs = getOrderedOutputLogs(contextLogs, state.order);
-                for (const contextLog of orderedContextLogs) {
-                    const contextRow = document.createElement('div');
-                    contextRow.className = 'mb-2 last:mb-0';
-
-                    const contextTs = document.createElement('div');
-                    contextTs.className = 'text-[11px] opacity-60';
-                    contextTs.textContent = formatHistoryTime(contextLog.ts);
-
-                    const contextMsg = document.createElement('pre');
-                    contextMsg.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-                    contextMsg.textContent = sanitizeLogMessage(
-                        contextLog.message || '',
-                        state.redacted,
-                    );
-
-                    contextRow.appendChild(contextTs);
-                    contextRow.appendChild(contextMsg);
-                    contextBox.appendChild(contextRow);
-                }
-            }
-
-            row.appendChild(contextBox);
-        }
-
+        row.innerHTML = `
+            <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-ghost btn-xs btn-square text-lg leading-none js-toggle"
+                            title="${expanded ? 'Hide context' : 'Show context'}"
+                            aria-label="${expanded ? 'Hide context' : 'Show context'}"
+                            ${contextLoading ? 'disabled' : ''}>
+                        ${contextLoading ? '…' : expanded ? '▾' : '▸'}
+                    </button>
+                    <span class="badge badge-sm ${event.badgeClass}">${event.label}</span>
+                </div>
+                <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
+            </div>
+            <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-log-msg"></pre>
+            ${contextBoxHtml}
+        `;
+        (row.querySelector('.js-log-msg') as HTMLPreElement).textContent = sanitizeLogMessage(
+            log.message || '',
+            false,
+        );
+        (row.querySelector('.js-toggle') as HTMLButtonElement).onclick = () =>
+            historyRenderCallbacks.toggleOutputHistoryContext?.(log);
+        row.querySelectorAll<HTMLPreElement>('.js-ctx-msg').forEach((pre) => {
+            pre.textContent = sanitizeLogMessage(
+                orderedContextLogs[Number(pre.dataset.ctxI)]?.message || '',
+                false,
+            );
+        });
         list.appendChild(row);
     });
 
@@ -680,34 +628,21 @@ export function renderPipelineHistory(
     empty.classList.add('hidden');
 
     const logs = getPipelineTimelineLogs(state.logs);
-    for (const log of logs) {
-        const event = classifyPipelineHistoryEvent(log);
-
-        const row = document.createElement('div');
-        row.className = 'rounded bg-base-100 p-2';
-
-        const header = document.createElement('div');
-        header.className = 'flex items-center justify-between gap-2';
-
-        const badge = document.createElement('span');
-        badge.className = `badge badge-sm ${event.badgeClass}`;
-        badge.textContent = event.label;
-
-        const ts = document.createElement('span');
-        ts.className = 'text-xs opacity-70';
-        ts.textContent = formatHistoryTime(log.ts);
-
-        header.appendChild(badge);
-        header.appendChild(ts);
-
-        const details = document.createElement('pre');
-        details.className = 'mt-1 text-xs whitespace-pre-wrap break-words';
-        details.textContent = String(log.message || '');
-
-        row.appendChild(header);
-        row.appendChild(details);
-        list.appendChild(row);
-    }
+    list.innerHTML = logs
+        .map((log) => {
+            const event = classifyPipelineHistoryEvent(log);
+            return `<div class="rounded bg-base-100 p-2">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="badge badge-sm ${event.badgeClass}">${event.label}</span>
+                        <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
+                    </div>
+                    <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-msg"></pre>
+                </div>`;
+        })
+        .join('');
+    list.querySelectorAll<HTMLPreElement>('.js-msg').forEach((pre, i) => {
+        pre.textContent = String(logs[i].message || '');
+    });
 
     if (scrollToTop) list.scrollTop = 0;
 }

@@ -14,6 +14,7 @@ const MEDIAMTX_API_BASE = 'http://localhost:9997';
 const MEDIAMTX_RTMP_BASE = 'rtmp://localhost:1935';
 const MEDIAMTX_SRT_BASE = 'srt://localhost:8890';
 const MEDIAMTX_HLS_BASE = 'http://localhost:8888';
+const MEDIAMTX_RTSP_BASE = 'rtsp://localhost:8554';
 const LIVE_PATH_PREFIX = 'live/';
 const MEDIAMTX_FETCH_TIMEOUT_MS = 5000;
 const MEDIAMTX_INGEST_PORTS_CACHE_MS = 5000;
@@ -67,7 +68,6 @@ function pathConfigToStreamKey(item) {
     return {
         key,
         label: getStreamKeyLabelFromPath(key),
-        createdAt: null,
     };
 }
 
@@ -143,10 +143,8 @@ async function getMediamtxIngestPorts() {
     return cachedIngestPorts;
 }
 
-async function buildIngestUrls(streamKey, getConfig) {
-    const config = typeof getConfig === 'function' ? getConfig() : null;
-    const ingestConfig = config?.mediamtx?.ingest || {};
-    const ingestHost = ingestConfig.host || 'localhost';
+async function buildIngestUrls(streamKey) {
+    const ingestHost = 'localhost';
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
 
@@ -192,6 +190,10 @@ function generateProbeReaderTag(streamKey) {
     return `probe_${suffix}`;
 }
 
+function buildRtspInputUrl(streamKey) {
+    return `${MEDIAMTX_RTSP_BASE}/${buildMediamtxPath(streamKey)}`;
+}
+
 module.exports = {
     MEDIAMTX_FETCH_TIMEOUT_MS,
     MEDIAMTX_RTMP_BASE,
@@ -206,5 +208,6 @@ module.exports = {
     buildIngestUrls,
     fetchMediamtxJson,
     buildPullInputUrl,
+    buildRtspInputUrl,
     generateProbeReaderTag,
 };

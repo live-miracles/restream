@@ -1,6 +1,7 @@
 import {
     copyText,
     formatCodecName,
+    formatMaskedStreamKey,
     msToHHMMSS,
     sanitizeLogMessage,
     showCopiedNotification,
@@ -56,18 +57,6 @@ function formatProgressFps(value: number | null | undefined): string | null {
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
     Object.assign(pipelineViewDependencies, dependencies || {});
-}
-
-function formatMaskedStreamKey(streamKey: string | null | undefined): string {
-    const normalized = String(streamKey || '');
-    const underscoreIdx = normalized.indexOf('_');
-    if (underscoreIdx < 0) return normalized;
-
-    const name = normalized.slice(0, underscoreIdx);
-    const secret = normalized.slice(underscoreIdx + 1);
-    if (secret.length <= 4) return `${name}_${secret}`;
-
-    return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
 export function renderPipelineInfoColumn(selectedPipe: string | null): void {
@@ -304,48 +293,33 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         publisherMeta.className = 'mt-1 mb-4 flex flex-wrap items-center gap-2';
         inputStatsElem?.parentNode?.insertBefore(publisherMeta, inputStatsElem);
     }
-    publisherMeta.replaceChildren();
-
-    if (pipe.input.time !== null) {
-        const uptimeBadge = document.createElement('span');
-        uptimeBadge.className = 'badge text-sm px-3';
-        uptimeBadge.textContent = msToHHMMSS(pipe.input.time);
-        publisherMeta.appendChild(uptimeBadge);
-    }
 
     const publisher = pipe.input.publisher;
-    if (publisher) {
-        const protoBadge = document.createElement('span');
-        protoBadge.className = 'badge badge-info text-sm px-3';
-        protoBadge.textContent = normalizePublisherProtocolLabel(publisher.protocol);
-        publisherMeta.appendChild(protoBadge);
-
-        if (publisher.remoteAddr) {
-            const addrBadge = document.createElement('span');
-            addrBadge.className = 'badge badge-outline font-mono text-sm px-3';
-            addrBadge.textContent = publisher.remoteAddr;
-            publisherMeta.appendChild(addrBadge);
-        }
-
-        const qualityAlerts = getPublisherQualityAlerts(publisher);
-        const isHealthy = qualityAlerts.length === 0;
-        const qualityBtn = document.createElement('button');
-        qualityBtn.type = 'button';
-        qualityBtn.className = `badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'}`;
-        qualityBtn.textContent = isHealthy ? 'Healthy' : 'Unhealthy';
-        qualityBtn.addEventListener('click', () => {
-            pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
-        });
-        publisherMeta.appendChild(qualityBtn);
-    }
-
+    const qualityAlerts = publisher ? getPublisherQualityAlerts(publisher) : [];
+    const isHealthy = qualityAlerts.length === 0;
     const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
-    if (unexpectedCount > 0) {
-        const urBadge = document.createElement('span');
-        urBadge.className = 'badge badge-sm badge-error';
-        urBadge.textContent = `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}`;
-        publisherMeta.appendChild(urBadge);
-    }
+
+    publisherMeta.innerHTML = [
+        pipe.input.time !== null
+            ? `<span class="badge text-sm px-3">${msToHHMMSS(pipe.input.time)}</span>`
+            : '',
+        publisher
+            ? `<span class="badge badge-info text-sm px-3">${normalizePublisherProtocolLabel(publisher.protocol)}</span>`
+            : '',
+        publisher?.remoteAddr
+            ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
+            : '',
+        publisher
+            ? `<button type="button" class="badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'} js-quality-btn">${isHealthy ? 'Healthy' : 'Unhealthy'}</button>`
+            : '',
+        unexpectedCount > 0
+            ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}</span>`
+            : '',
+    ].join('');
+
+    publisherMeta.querySelector('.js-quality-btn')?.addEventListener('click', () => {
+        pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
+    });
 }
 
 export function renderOutsColumn(selectedPipe: string | null): void {
@@ -379,83 +353,63 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                         ? 'status-error'
                         : 'status-neutral';
 
-            const isRunning = o.status === 'on' || o.status === 'warning';
+            const isStopped = o.desiredState === 'stopped';
+            const isActive = o.status === 'on' || o.status === 'warning';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
-            const metadata: string[] = [];
+            const badges: string[] = [];
 
-            if (o.time !== null) {
-                metadata.push(
+            badges.push(metricBadge(o.encoding, 'Selected encoding'));
+
+            if (isActive && o.time !== null) {
+                badges.push(
                     metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
                 );
             }
 
-            const outputProgressFrame = Number(o.progressFrame);
-            if (Number.isFinite(outputProgressFrame) && outputProgressFrame > 0) {
-                metadata.push(
-                    metricBadge(
-                        `Frame ${Math.trunc(outputProgressFrame)}`,
-                        'Output frame count from FFmpeg progress',
-                    ),
-                );
-            }
-
-            const outputProgressFps = Number(o.progressFps);
-            const outputFpsText = formatProgressFps(outputProgressFps);
-            if (outputFpsText) {
-                metadata.push(metricBadge(outputFpsText, 'Output FPS from FFmpeg progress'));
-            }
-
-            if (isRunning) {
-                const outputBitrateKbps = Number(o.bitrateKbps);
-                if (Number.isFinite(outputBitrateKbps) && outputBitrateKbps > 0) {
-                    metadata.push(
+            if (isActive) {
+                const outputTotalSizeBytes = Number(o.totalSize);
+                if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+                    badges.push(
                         metricBadge(
-                            '',
-                            'Output bitrate from FFmpeg progress',
-                            `data-output-bitrate="${outputBitrateKbps}"`,
+                            `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+                            'Output total size from FFmpeg progress',
                         ),
                     );
                 }
-            }
 
-            const outputTotalSizeBytes = Number(o.totalSize);
-            if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-                metadata.push(
-                    metricBadge(
-                        `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
-                        'Output total size from FFmpeg progress',
-                    ),
-                );
+                if (o.bitrateKbps !== null && o.bitrateKbps >= 0) {
+                    const kbps = o.bitrateKbps;
+                    const bitrateText =
+                        kbps >= 1000
+                            ? `${(kbps / 1000).toFixed(1)} Mb/s`
+                            : `${kbps.toFixed(1)} Kb/s`;
+                    badges.push(metricBadge(bitrateText, 'Output bitrate from FFmpeg progress'));
+                }
             }
 
             return `
-            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full"
-                style="display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: center; column-gap: 0.5rem; row-gap: 0.25rem;">
-                <div class="min-w-0">
-                    <div class="font-semibold flex items-center gap-2 min-w-0">
+            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full flex gap-2 items-start">
+                <div class="min-w-0 flex-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <div class="flex items-center gap-2 shrink-0 font-semibold">
                         <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                        <button class="btn btn-xs ${isRunning ? 'btn-accent btn-outline' : 'btn-accent'} ${toggleBusy ? 'btn-disabled' : ''}"
+                        <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
                             data-action="toggle-output"
                             data-output-index="${outputIndex}"
                             ${toggleBusy ? 'disabled' : ''}>
-                            ${isRunning ? 'Stop' : 'Start'}
+                            ${isStopped ? 'Start' : 'Stop'}
                         </button>
-                        <span class="shrink-0 truncate">${o.name}</span>
-                        <code class="text-sm font-normal opacity-70 truncate" data-output-url="${outputIndex}">
-                            ${sanitizeLogMessage(o.url, true)}
-                        </code>
+                        <span>${o.name}</span>
                     </div>
+                    <code class="text-sm font-normal opacity-70 truncate shrink min-w-0" style="max-width:min(28rem,40%)" data-output-url="${outputIndex}">
+                        ${sanitizeLogMessage(o.url, true)}
+                    </code>
+                    ${badges.join('')}
                 </div>
-                <div class="flex items-center gap-2 self-start">
+                <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
-                    <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
-                    <button class="btn btn-xs btn-error btn-outline ${isRunning ? 'btn-disabled' : ''}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
+                    <button class="btn btn-xs btn-accent btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
+                    <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
-                ${
-                    metadata.length
-                        ? `<div class="flex items-center gap-2 overflow-x-auto whitespace-nowrap" style="grid-column: 1 / -1;">${metadata.join('')}</div>`
-                        : ''
-                }
             </div>`;
         })
         .join('');
@@ -484,8 +438,8 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             button.disabled = true;
             button.classList.add('btn-disabled');
             try {
-                const running = out.status === 'on' || out.status === 'warning';
-                if (running) {
+                const shouldStop = out.desiredState !== 'stopped';
+                if (shouldStop) {
                     await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, button);
                 } else {
                     await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, button);
@@ -504,6 +458,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         }
 
         if (button.dataset.action === 'edit-output') {
+            if (button.classList.contains('btn-disabled')) return;
             pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);
         }
 

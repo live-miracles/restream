@@ -9,6 +9,7 @@ import type {
 
 const throughputState = {
     inputBytes: new Map<string, { ts: number; bytes: number }>(),
+    outputBytes: new Map<string, { ts: number; bytes: number }>(),
 };
 
 function computeKbps(
@@ -32,16 +33,11 @@ function computeKbps(
 
 function resolveIngestUrls(
     pipeline: { ingestUrls?: IngestUrls },
-    config: Partial<ConfigData>,
+    _config: Partial<ConfigData>,
 ): IngestUrls {
     const ingestUrls = pipeline?.ingestUrls;
     if (!ingestUrls) {
         return { rtmp: null, srt: null };
-    }
-
-    const ingestHost = config?.ingestHost;
-    if (ingestHost && ingestHost !== 'localhost') {
-        return ingestUrls;
     }
 
     const currentHost =
@@ -181,14 +177,16 @@ function parsePipelinesInfo(
         }
 
         const outputTotalSize = outHealth?.totalSize ?? null;
-        const outputBitrateKbps = outHealth?.bitrateKbps ?? null;
-        const outputProgressFrame = outHealth?.progressFrame ?? null;
-        const outputProgressFps = outHealth?.progressFps ?? null;
-
-        const encoding = out.encoding || 'source';
-        const outVideo = outHealth?.media?.video ?? null;
-        const outAudio = outHealth?.media?.audio ?? null;
-        const mediaSource = outHealth?.mediaSource || 'unknown';
+        // Prefer the direct bitrate reading from ffmpeg progress (reliable for all protocols
+        // including HLS where total_size may report N/A). Fall back to computing from byte delta.
+        const outBitrateKbps =
+            outHealth?.bitrateKbps ??
+            computeKbps(
+                throughputState.outputBytes,
+                `${out.pipelineId}:${out.id}`,
+                outputTotalSize ?? 0,
+                nowMs,
+            );
 
         let outTime: number | null = null;
         if (status === 'on' && latestJob?.startedAt) {
@@ -200,30 +198,27 @@ function parsePipelinesInfo(
             pipe: pipe.name,
             name: out.name,
             desiredState: out.desiredState || 'stopped',
-            encoding,
+            encoding: out.encoding || 'source',
             url: out.url,
             status,
             time: outTime,
-            video: outVideo ?? null,
-            audio: outAudio ?? null,
-            mediaSource,
             job: latestJob || null,
             totalSize: outputTotalSize,
-            bitrateKbps: outputBitrateKbps,
-            progressFrame: outputProgressFrame,
-            progressFps: outputProgressFps,
+            bitrateKbps: outBitrateKbps,
         });
     });
 
     newPipelines.forEach((pipe) => {
         const outputCount = pipe.outs.length;
         const readerCount = pipe.input.readers || 0;
-        const activeOutputBitratesKbps = pipe.outs
-            .map((out) => out.bitrateKbps)
-            .filter((value): value is number => Number.isFinite(value as number));
+
+        const activeOutputKbps = pipe.outs
+            .filter((o) => o.status === 'on' || o.status === 'warning')
+            .map((o) => o.bitrateKbps)
+            .filter((k): k is number => k !== null && k >= 0);
         const outputBitrateKbps =
-            activeOutputBitratesKbps.length > 0
-                ? Number(activeOutputBitratesKbps.reduce((sum, value) => sum + value, 0).toFixed(1))
+            activeOutputKbps.length > 0
+                ? Number(activeOutputKbps.reduce((a, b) => a + b, 0).toFixed(1))
                 : null;
 
         pipe.stats = {

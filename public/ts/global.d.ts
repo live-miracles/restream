@@ -37,12 +37,13 @@ declare global {
         editPipeBtn: () => Promise<void>;
         deletePipeBtn: () => Promise<void>;
         toggleHistoryPlayPause: () => void;
-        toggleHistoryRedaction: () => void;
         setOutputHistoryMode: (mode: string) => void;
         setOutputHistoryOrder: (order: string) => void;
         setOutputHistorySearch: (query: string) => void;
         onOutputHistorySearchKeydown: (event: KeyboardEvent) => void;
         navigateOutputHistorySearch: (direction: number) => void;
         togglePipelineHistoryPlayPause: () => void;
+        saveServerName: () => Promise<void>;
+        saveCustomEncoding: () => Promise<void>;
     }
 }

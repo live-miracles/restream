@@ -113,7 +113,7 @@ Node app :3030
 SQLite   ./data.db
 ```
 
-Start MediaMTX from the project root with `./mediamtx` or `mediamtx.exe`, then start the app separately with `npm start`. Long-lived Linux deployment is covered in [deployment-host.md](./deployment-host.md).
+Start MediaMTX from the project root with `./mediamtx` or `mediamtx.exe`, then start the app separately with `npm start`. Long-lived Linux deployment is covered in the [Linux VM Deployment](../README.md#linux-vm-deployment-gcp) section in the README.
 
 ## Known Constraints
 

@@ -66,10 +66,15 @@ export interface Job {
     endedAt?: string;
 }
 
+export interface Encoding {
+    id: string | null;
+    key: string;
+    ffmpegArgs: string | null;
+    isSystem: boolean;
+}
+
 export interface ConfigData {
     serverName?: string;
-    ingestHost?: string;
-    outLimit?: number;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];
     jobs: Job[];
@@ -89,12 +94,8 @@ export interface InputHealth {
 
 export interface OutputHealth {
     status?: string;
-    bitrateKbps?: number | null;
     totalSize?: number | null;
-    progressFrame?: number | null;
-    progressFps?: number | null;
-    media?: { video?: VideoTrack; audio?: AudioTrack };
-    mediaSource?: string;
+    bitrateKbps?: number | null;
 }
 
 export interface PipelineHealth {
@@ -137,14 +138,9 @@ export interface OutputView {
     url: string;
     status: string;
     time: number | null;
-    video: VideoTrack | null;
-    audio: AudioTrack | null;
-    mediaSource: string;
     job: Job | null;
     totalSize: number | null;
     bitrateKbps: number | null;
-    progressFrame: number | null;
-    progressFps: number | null;
 }
 
 export interface PipelineStats {
@@ -173,31 +169,14 @@ export interface HistoryLog {
     eventData?: Record<string, unknown>;
 }
 
-export type GetConfigResult =
-    | {
-          notModified: true;
-          etag: string | null;
-          snapshotVersion: string | null;
-          data: null;
-          configEtag?: undefined;
-      }
-    | {
-          notModified: false;
-          etag: string | null;
-          configEtag: string | null;
-          snapshotVersion: string | null;
-          data: ConfigData;
-      };
+export interface GetConfigResult {
+    notModified: boolean;
+    etag: string | null;
+    data: ConfigData | null;
+}
 
-export type GetHealthResult =
-    | { notModified: true; etag: string | null; snapshotVersion: string | null; data: null }
-    | {
-          notModified: false;
-          etag: string | null;
-          snapshotVersion: string | null;
-          data: HealthData;
-      };
-
-export type GetConfigVersionResult =
-    | { notModified: true; etag: string | null }
-    | { notModified: false; etag: string | null };
+export interface GetHealthResult {
+    notModified: boolean;
+    etag: string | null;
+    data: HealthData | null;
+}
