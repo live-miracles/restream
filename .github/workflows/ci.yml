@@ -43,8 +43,35 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Install ffmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y -q ffmpeg
+      - name: Cache FFmpeg binary
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: bin/ffmpeg
+          key: ffmpeg-7.1-${{ runner.arch }}
+
+      - name: Download FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          FFMPEG_VERSION="7.1"
+          case "$(uname -m)" in
+            x86_64)  BTBN_ARCH=linux64 ;;
+            aarch64) BTBN_ARCH=linuxarm64 ;;
+            *) echo "Unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          FILE="ffmpeg-n${FFMPEG_VERSION}-latest-${BTBN_ARCH}-gpl-${FFMPEG_VERSION}.tar.xz"
+          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FILE}"
+          echo "Downloading $FILE..."
+          TMP=$(mktemp -d)
+          curl -fsSL "$URL" | tar -xJ -C "$TMP"
+          mkdir -p bin/ffmpeg
+          cp "$TMP"/ffmpeg-*/bin/ffmpeg "$TMP"/ffmpeg-*/bin/ffprobe bin/ffmpeg/
+          rm -rf "$TMP"
+
+      - name: Add FFmpeg to PATH
+        run: |
+          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
+          echo "$GITHUB_WORKSPACE/bin/ffmpeg" >> "$GITHUB_PATH"
 
       - name: Cache MediaMTX binary
         id: cache-mediamtx
