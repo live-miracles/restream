@@ -71,6 +71,7 @@ jobs:
         run: chmod +x bin/mediamtx/mediamtx
 
       - run: npm ci
+      - run: npm run build:backend
 
       - name: Start MediaMTX
         run: bin/mediamtx/mediamtx &
