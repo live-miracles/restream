@@ -4,7 +4,7 @@ import {
     normalizeOutputEncoding,
     validateOutputUrl,
     INVALID_OUTPUT_URL_ERROR,
-    SYSTEM_ENCODING_KEYS,
+    isValidOutputEncoding,
 } from '../utils/ffmpeg';
 import type { Db, Output } from '../types';
 import type { OutputLifecycle } from '../services/outputs';
@@ -197,7 +197,7 @@ export function registerOutputApi({
         const nameError = validateName(name, 'Output name');
         if (nameError) return { status: 400, error: nameError };
 
-        if (!encoding || !SYSTEM_ENCODING_KEYS.has(encoding)) {
+        if (!encoding || !isValidOutputEncoding(encoding)) {
             return { status: 400, error: INVALID_OUTPUT_ENCODING_ERROR };
         }
 

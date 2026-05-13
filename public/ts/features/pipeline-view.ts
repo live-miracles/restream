@@ -407,7 +407,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
-                    <button class="btn btn-xs btn-accent btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
+                    <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
                     <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
             </div>`;
@@ -458,7 +458,6 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         }
 
         if (button.dataset.action === 'edit-output') {
-            if (button.classList.contains('btn-disabled')) return;
             pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);
         }
 

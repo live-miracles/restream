@@ -90,6 +90,13 @@ export const SYSTEM_ENCODING_ARGS: Record<string, string | null> = {
 
 export const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
+const REMAP_ENCODING_RE = /^remap:(\d+):(\d+)$/;
+
+export function isValidOutputEncoding(encoding: string): boolean {
+    if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
+    return REMAP_ENCODING_RE.test(encoding);
+}
+
 export const INVALID_OUTPUT_URL_ERROR =
     'Output URL must be a valid rtmp://, rtmps://, srt://, http://, or https:// HLS playlist URL ending in .m3u8';
 
@@ -158,7 +165,29 @@ export function buildFfmpegOutputArgs({
 
     const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
 
-    if (!resolvedArgStr) {
+    const remapMatch = REMAP_ENCODING_RE.exec(normalizedEncoding);
+    if (remapMatch) {
+        const left = parseInt(remapMatch[1], 10);
+        const right = parseInt(remapMatch[2], 10);
+        args.push(
+            '-filter_complex',
+            `[0:a]pan=stereo|c0=c${left}|c1=c${right}[a]`,
+            '-map',
+            '0:v',
+            '-map',
+            '[a]',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '128k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+        );
+    } else if (!resolvedArgStr) {
         args.push('-c:v', 'copy', '-c:a', 'copy');
     } else {
         args.push(...resolvedArgStr.trim().split(/\s+/).filter(Boolean));
