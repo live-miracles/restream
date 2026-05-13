@@ -538,7 +538,7 @@ export function createHealthMonitorService({
         };
     }
 
-    function buildOutputHealthSnapshot(latestJob: Job | null): OutputHealth {
+    function buildOutputHealthSnapshot(latestJob: Job | null, desiredState: string): OutputHealth {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -547,7 +547,7 @@ export function createHealthMonitorService({
         const totalSize = totalSizeRaw === null ? null : Math.trunc(totalSizeRaw);
         const bitrateKbps = parseFfmpegBitrateKbps(ffmpegProgress?.bitrate);
 
-        if (latestJob?.status === 'failed') status = 'error';
+        if (latestJob?.status === 'failed' && desiredState === 'running') status = 'error';
         if (latestJob?.status === 'running') {
             const hasData = (totalSize !== null && totalSize > 0) || bitrateKbps !== null;
             status = hasData ? 'on' : 'warning';
@@ -609,6 +609,7 @@ export function createHealthMonitorService({
         for (const output of pipelineOutputs) {
             outputsHealth[output.id] = buildOutputHealthSnapshot(
                 jobByOutputId.get(output.id) || null,
+                output.desiredState,
             );
         }
 
