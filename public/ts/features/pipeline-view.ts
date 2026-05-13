@@ -15,6 +15,7 @@ import {
     renderProtocolDetails,
 } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
+import { startRecording, stopRecording } from '../core/api.js';
 import type { PipelineView, OutputView } from '../types.js';
 
 interface PipelineViewDependencies {
@@ -30,6 +31,7 @@ interface PipelineViewDependencies {
     openOutputHistoryModal: ((pipeId: string, outId: string, outName: string) => void) | null;
     editOutBtn: ((pipeId: string, outId: string) => void) | null;
     deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
+    refreshDashboard: (() => Promise<void>) | null;
 }
 
 const pipelineViewDependencies: PipelineViewDependencies = {
@@ -41,6 +43,7 @@ const pipelineViewDependencies: PipelineViewDependencies = {
     openOutputHistoryModal: null,
     editOutBtn: null,
     deleteOutBtn: null,
+    refreshDashboard: null,
 };
 
 const ingestUiState = {
@@ -87,6 +90,36 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         historyBtn.onclick = () => {
             pipelineViewDependencies.openPipelineHistoryModal?.(pipe.id, pipe.name);
         };
+    }
+
+    const recordBtn = document.getElementById('record-pipe-btn') as HTMLButtonElement | null;
+    if (recordBtn) {
+        const isRecordingEnabled = pipe.recording.enabled;
+        const inputOn = pipe.input.status === 'on';
+        const canStart = inputOn || isRecordingEnabled;
+        recordBtn.textContent = isRecordingEnabled ? '⏹ Stop Rec' : '⏺ Record';
+        recordBtn.classList.toggle('btn-error', isRecordingEnabled);
+        recordBtn.classList.toggle('btn-accent', !isRecordingEnabled);
+        recordBtn.classList.toggle('btn-outline', !isRecordingEnabled);
+        recordBtn.disabled = !canStart;
+        recordBtn.classList.toggle('btn-disabled', !canStart);
+        recordBtn.title = !canStart ? 'Input must be on to start recording' : '';
+        recordBtn.onclick = async () => {
+            if (isRecordingEnabled) {
+                await stopRecording(pipe.id);
+            } else {
+                await startRecording(pipe.id);
+            }
+            await pipelineViewDependencies.refreshDashboard?.();
+        };
+    }
+
+    const editPipeBtn = document.getElementById('edit-pipe-btn') as HTMLButtonElement | null;
+    if (editPipeBtn) {
+        const isRecordingActive = pipe.recording.active;
+        editPipeBtn.disabled = isRecordingActive;
+        editPipeBtn.classList.toggle('btn-disabled', isRecordingActive);
+        editPipeBtn.title = isRecordingActive ? 'Stop recording before editing' : '';
     }
     const inputTimeElem = document.getElementById('input-time');
     if (inputTimeElem) {

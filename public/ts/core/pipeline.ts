@@ -135,6 +135,7 @@ function parsePipelinesInfo(
                 readerMismatch: false,
                 unexpectedReadersCount,
             },
+            recording: healthByPipeline[p.id]?.recording ?? { enabled: false, active: false },
         });
     });
 
@@ -172,6 +173,7 @@ function parsePipelinesInfo(
                     readerMismatch: false,
                     unexpectedReadersCount: 0,
                 },
+                recording: { enabled: false, active: false },
             };
             newPipelines.push(pipe);
         }

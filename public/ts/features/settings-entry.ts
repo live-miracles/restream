@@ -1,6 +1,7 @@
-import { loadSettings, saveServerName, saveCustomEncoding } from './settings.js';
+import { loadSettings, saveServerName, saveCustomEncoding, loadMediaFiles } from './settings.js';
 
 void loadSettings();
+void loadMediaFiles();
 
 window.saveServerName = saveServerName;
 window.saveCustomEncoding = saveCustomEncoding;

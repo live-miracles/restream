@@ -4,13 +4,16 @@ import path from 'path';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import * as db from './db';
+import { mkdirSync } from 'fs';
 import { registerConfigApi } from './api/config';
 import { registerPreviewProxyRoutes } from './api/preview';
 import { registerOutputApi } from './api/outputs';
 import { registerEncodingsApi } from './api/encodings';
 import { registerPipelineApi } from './api/pipelines';
+import { registerRecordingApi } from './api/recording';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
+import { createRecordingService } from './services/recording';
 import { startServer } from './services/bootstrap';
 import { registerSystemMetricsApi } from './api/metrics';
 import { log } from './utils/app';
@@ -35,6 +38,8 @@ app.use(
 );
 
 const appPort = Number(process.env.PORT || 3030);
+const mediaDir = path.join(__dirname, '..', 'media');
+mkdirSync(mediaDir, { recursive: true });
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
 const ffmpegProgressByJobId = new Map<string, Record<string, string>>();
@@ -61,8 +66,22 @@ const outputLifecycle = createOutputLifecycleService({
     isInputOn: healthMonitor.isInputOn,
 });
 
+// ── Recording service ─────────────────────────────────
+const recordingService = createRecordingService({
+    db,
+    mediaDir,
+    isInputOn: healthMonitor.isInputOn,
+});
+
 // Resolve circular dependency: register the output recovery callback now that both services exist.
-healthMonitor.registerInputRecoveryHandler(outputLifecycle.restartPipelineOutputsOnInputRecovery);
+healthMonitor.registerInputRecoveryHandler((pipelineId) => {
+    outputLifecycle.restartPipelineOutputsOnInputRecovery(pipelineId);
+    recordingService.onInputRecovered(pipelineId);
+});
+healthMonitor.registerInputLostHandler((pipelineId) => {
+    recordingService.onInputLost(pipelineId);
+});
+healthMonitor.registerRecordingStateProvider((pipelineId) => recordingService.getState(pipelineId));
 
 const {
     clearOutputRestartState,
@@ -100,6 +119,7 @@ registerOutputApi({
 healthMonitor.registerRoutes(app);
 registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
+registerRecordingApi({ app, db, recording: recordingService, mediaDir });
 registerPreviewProxyRoutes({
     app,
     fetch,
@@ -107,6 +127,9 @@ registerPreviewProxyRoutes({
     getMediamtxHlsBaseUrl,
     buildMediamtxPath,
 });
+
+// ── Static media files ────────────────────────────────
+app.use('/media', express.static(mediaDir, { maxAge: 0, etag: true }));
 
 // ── Static UI ─────────────────────────────────────────
 const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
@@ -155,6 +178,7 @@ startServer({
     db,
     log,
     appPort,
+    afterHealthStart: () => recordingService.init(),
 }).catch((err) => {
     console.error('Fatal startup error:', err);
     process.exit(1);

@@ -11,6 +11,7 @@ interface BootstrapOptions {
     db: Db;
     log: (level: string, message: string, fields?: Record<string, unknown>) => void;
     appPort: number;
+    afterHealthStart?: () => void;
 }
 
 function createCleanupRunners({ db, log }: Pick<BootstrapOptions, 'db' | 'log'>) {
@@ -42,10 +43,12 @@ export async function startServer({
     db,
     log,
     appPort,
+    afterHealthStart,
 }: BootstrapOptions): Promise<void> {
     const { runJobCleanup, runJobLogCleanup } = createCleanupRunners({ db, log });
 
     await healthMonitor.start();
+    afterHealthStart?.();
 
     app.listen(appPort, () => {
         console.log(`Controller running on port ${appPort}`);

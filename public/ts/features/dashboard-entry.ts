@@ -1,4 +1,4 @@
-import { setDashboardHooks } from './dashboard.js';
+import { setDashboardHooks, refreshDashboard } from './dashboard.js';
 import {
     deleteOutBtn,
     editOutBtn,
@@ -24,4 +24,5 @@ setPipelineViewDependencies({
     openOutputHistoryModal,
     editOutBtn,
     deleteOutBtn,
+    refreshDashboard,
 });

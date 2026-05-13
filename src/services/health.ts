@@ -85,6 +85,7 @@ interface InputHealth {
 interface PipelineHealth {
     input: InputHealth;
     outputs: Record<string, OutputHealth>;
+    recording: { enabled: boolean; active: boolean };
 }
 
 interface HealthSnapshot {
@@ -98,6 +99,10 @@ export interface HealthMonitor {
     clearPipelineRuntimeState(pipelineId: string): void;
     isInputOn(pipelineId: string): boolean;
     registerInputRecoveryHandler(fn: (pipelineId: string) => void): void;
+    registerInputLostHandler(fn: (pipelineId: string) => void): void;
+    registerRecordingStateProvider(
+        fn: (pipelineId: string) => { enabled: boolean; active: boolean },
+    ): void;
     registerRoutes(app: Express): void;
     resolveRuntimeInputState(
         streamKey: string,
@@ -258,6 +263,10 @@ export function createHealthMonitorService({
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
 }): HealthMonitor {
     let inputRecoveryHandler: ((pipelineId: string) => void) | null = null;
+    let inputLostHandler: ((pipelineId: string) => void) | null = null;
+    let recordingStateProvider:
+        | ((pipelineId: string) => { enabled: boolean; active: boolean })
+        | null = null;
 
     const ffprobeResultByPipelineId = new Map<string, StreamInfo>();
     const ffprobeRetryByPipelineId = new Map<
@@ -605,6 +614,13 @@ export function createHealthMonitorService({
         ) {
             inputRecoveryHandler?.(pipeline.id);
         }
+        if (
+            inputTransition.changed &&
+            inputTransition.previous === 'on' &&
+            inputTransition.current !== 'on'
+        ) {
+            inputLostHandler?.(pipeline.id);
+        }
         if (inputTransition.changed) {
             if (inputTransition.current === 'on') {
                 clearFfprobeState(pipeline.id);
@@ -629,7 +645,11 @@ export function createHealthMonitorService({
             );
         }
 
-        return { input: inputHealth, outputs: outputsHealth };
+        return {
+            input: inputHealth,
+            outputs: outputsHealth,
+            recording: recordingStateProvider?.(pipeline.id) ?? { enabled: false, active: false },
+        };
     }
 
     async function buildHealthSnapshot(): Promise<HealthSnapshot> {
@@ -768,6 +788,14 @@ export function createHealthMonitorService({
         isInputOn,
         registerInputRecoveryHandler(fn: (pipelineId: string) => void) {
             inputRecoveryHandler = fn;
+        },
+        registerInputLostHandler(fn: (pipelineId: string) => void) {
+            inputLostHandler = fn;
+        },
+        registerRecordingStateProvider(
+            fn: (pipelineId: string) => { enabled: boolean; active: boolean },
+        ) {
+            recordingStateProvider = fn;
         },
         registerRoutes,
         resolveRuntimeInputState,

@@ -276,6 +276,40 @@ async function updateCustomEncoding(ffmpegArgs: string): Promise<{ ffmpegArgs: s
     });
 }
 
+async function startRecording(
+    pipeId: string,
+): Promise<{ enabled: boolean; active: boolean } | null> {
+    return apiRequest<{ enabled: boolean; active: boolean }>(
+        `/pipelines/${encodeURIComponent(pipeId)}/recording/start`,
+        { method: 'POST' },
+    );
+}
+
+async function stopRecording(
+    pipeId: string,
+): Promise<{ enabled: boolean; active: boolean } | null> {
+    return apiRequest<{ enabled: boolean; active: boolean }>(
+        `/pipelines/${encodeURIComponent(pipeId)}/recording/stop`,
+        { method: 'POST' },
+    );
+}
+
+export interface MediaFile {
+    name: string;
+    size: number;
+    modifiedAt: string;
+}
+
+async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
+    return apiRequest<{ files: MediaFile[] }>('/api/media');
+}
+
+async function deleteMediaFile(filename: string): Promise<{ deleted: boolean } | null> {
+    return apiRequest<{ deleted: boolean }>(`/api/media/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+    });
+}
+
 export {
     apiRequest,
     getConfig,
@@ -295,4 +329,8 @@ export {
     patchConfig,
     getCustomEncoding,
     updateCustomEncoding,
+    startRecording,
+    stopRecording,
+    listMediaFiles,
+    deleteMediaFile,
 };

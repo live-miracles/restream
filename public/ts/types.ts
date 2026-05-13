@@ -101,6 +101,7 @@ export interface OutputHealth {
 export interface PipelineHealth {
     input?: InputHealth;
     outputs?: Record<string, OutputHealth>;
+    recording?: { enabled: boolean; active: boolean };
 }
 
 export interface HealthData {
@@ -159,6 +160,7 @@ export interface PipelineView {
     input: InputView;
     outs: OutputView[];
     stats: PipelineStats;
+    recording: { enabled: boolean; active: boolean };
 }
 
 export interface HistoryLog {

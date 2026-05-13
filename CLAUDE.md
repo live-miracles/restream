@@ -76,7 +76,7 @@ npm run build:frontend      # frontend TS + Tailwind CSS
 
 npm run dev                 # backend with live reload (tsx watch, no compile step)
 npm run watch:frontend      # frontend TS in watch mode
-npm run css-watch           # Tailwind CSS in watch mode
+npm run watch:css           # Tailwind CSS in watch mode
 
 npm run format              # run Prettier
 npm run format:check        # check formatting (used in CI)
