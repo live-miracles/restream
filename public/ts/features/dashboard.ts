@@ -22,6 +22,7 @@ export function setDashboardHooks(hooks: Partial<DashboardHooks>): void {
 }
 
 export async function refreshDashboard(): Promise<void> {
+    fetchConfigNextTick = true;
     await requestDashboardRefresh();
 }
 
@@ -82,26 +83,23 @@ function reconcileSelectedPipeline(previousPipelines: PipelineView[] = []): void
     replaceUrlParam('p', replacement?.id ?? null);
 }
 
+let fetchConfigNextTick = true;
+
 async function fetchAndRerender(): Promise<void> {
+    const fetchConf = fetchConfigNextTick;
+    fetchConfigNextTick = !fetchConfigNextTick;
+
     const [configResult, healthResult, metricsResult] = await Promise.all([
-        getConfig(configEtag),
-        getHealth(healthEtag),
+        fetchConf ? getConfig() : Promise.resolve(null),
+        getHealth(),
         getSystemMetrics(),
     ]);
 
     if (configResult) {
-        if (configResult.etag) configEtag = configResult.etag;
-        if (!configResult.notModified && configResult.data) {
-            state.config = configResult.data;
-            setServerConfig(state.config?.serverName);
-        }
+        state.config = configResult;
+        setServerConfig(state.config?.serverName);
     }
-    if (healthResult) {
-        if (healthResult.etag) healthEtag = healthResult.etag;
-        if (!healthResult.notModified && healthResult.data) {
-            state.health = healthResult.data;
-        }
-    }
+    if (healthResult) state.health = healthResult;
     if (metricsResult !== null) state.metrics = metricsResult as typeof state.metrics;
 
     const previousPipelines = state.pipelines;
@@ -111,9 +109,6 @@ async function fetchAndRerender(): Promise<void> {
     renderMetrics();
     dashboardHooks.afterRender?.();
 }
-
-let configEtag: string | null = null;
-let healthEtag: string | null = null;
 
 const DASHBOARD_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
@@ -133,6 +128,7 @@ async function onVisibilityChange(): Promise<void> {
         await syncHistoryPollingWithVisibility();
         return;
     }
+    fetchConfigNextTick = true;
     startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
     await syncHistoryPollingWithVisibility();
     await requestDashboardRefresh();

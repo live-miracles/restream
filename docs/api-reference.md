@@ -464,23 +464,7 @@ Guardrails:
 
 ### `GET /config`
 
-Returns the full state snapshot used by the dashboard. Supports conditional GET via `If-None-Match` / ETag.
-
-Response headers include a shared `X-Snapshot-Version` token that identifies the config/jobs
-state version represented by this snapshot. The dashboard compares that token with the health
-response before committing a render.
-
-**Request headers (optional):**
-```
-If-None-Match: "abc123..."
-```
-
-**Response headers:**
-```
-ETag: "..."                 // config + jobs snapshot hash
-X-Config-ETag: "..."        // config-only snapshot hash
-X-Snapshot-Version: "..."   // shared config/jobs state version used to align /config and /health
-```
+Returns the full state snapshot used by the dashboard. Reads directly from SQLite on every request.
 
 **Response 200:**
 ```json
@@ -506,10 +490,6 @@ Each output includes `desiredState`, the persistent operator intent (`running` o
 
 `ingestUrls` hostnames are set to `localhost` by the backend; the dashboard frontend rewrites them to the browser's current hostname before displaying them to users.
 
-**Response 304:** ETag matches — no body, no change.
-
-> The ETag is a SHA-256 hash of a deterministic state snapshot, persisted in the `meta` table.
-
 ---
 
 ### `PATCH /config`
@@ -530,14 +510,6 @@ Updates server settings.
 
 ---
 
-### `HEAD /config`
-
-Returns the current ETag without a response body. Used to poll for changes without downloading the full config.
-
-**Response 200** (no body) + `ETag` and `X-Config-ETag` headers.
-
----
-
 ## 6. Health and Metrics
 
 ### `GET /health`
@@ -545,11 +517,6 @@ Returns the current ETag without a response body. Used to poll for changes witho
 Returns the latest server-side health snapshot. A periodic collector refreshes this snapshot in the background by calling MediaMTX endpoints in parallel: `/v3/paths/list`, `/v3/rtmpconns/list`, and `/v3/srtconns/list`, then merging that runtime state with DB job state, FFmpeg progress data, and input lifecycle bookkeeping. The collector interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
 
 `GET /health` itself does not call MediaMTX. It returns the most recent cached snapshot immediately.
-
-Headers:
-
-- `ETag` for the current snapshot content
-- Supports `If-None-Match` and returns `304 Not Modified` when unchanged
 
 **Response 200:**
 ```json
@@ -704,7 +671,7 @@ Readiness endpoint used by launch scripts and infra probes.
 
 ### `GET /metrics/system`
 
-Returns host system metrics from a fixed background sampler. Throughput and CPU values are computed against the previous timer sample, not against the previous HTTP request, so concurrent clients see the same rates for the same sample window.
+Returns host system metrics from a fixed background sampler. Throughput and CPU values are computed against the previous timer sample, not against the previous HTTP request, so concurrent clients see the same rates for the same sample window. The sampler interval defaults to 5000 ms and can be overridden with `SYSTEM_METRICS_SAMPLE_INTERVAL_MS`.
 
 **Response 200:**
 ```json
@@ -832,19 +799,3 @@ All errors return:
 | `409`  | Conflict — already running, duplicate key, input not ready |
 | `500`  | Internal server error or MediaMTX communication failure |
 
----
-
-## 9. Response ETag Lifecycle
-
-```
-POST /pipelines            → recomputeEtag()
-POST /pipelines/:id        → recomputeEtag()
-DELETE /pipelines/:id      → recomputeEtag()
-POST /pipelines/.../outputs         → recomputeEtag()
-POST /pipelines/.../outputs/:id     → recomputeEtag()
-DELETE /pipelines/.../outputs/:id   → recomputeEtag()
-POST .../start             → recomputeEtag() (on create + on every exit transition)
-POST .../stop              → recomputeEtag()
-```
-
-Clients should save the ETag from `GET /config` and pass it as `If-None-Match` on subsequent calls to avoid unnecessary payload transfers.

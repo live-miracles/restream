@@ -68,8 +68,6 @@ function parseHistoryPrefixes(value: unknown): string[] | null {
 export function registerOutputApi({
     app,
     db,
-    recomputeConfigEtag,
-    recomputeEtag,
     clearOutputRestartState,
     getOutputDesiredState,
     reconcileOutput,
@@ -80,8 +78,6 @@ export function registerOutputApi({
 }: {
     app: Express;
     db: Db;
-    recomputeConfigEtag: () => string | null;
-    recomputeEtag: () => string | null;
     clearOutputRestartState: OutputLifecycle['clearOutputRestartState'];
     getOutputDesiredState: OutputLifecycle['getOutputDesiredState'];
     reconcileOutput: OutputLifecycle['reconcileOutput'];
@@ -146,7 +142,6 @@ export function registerOutputApi({
             source: 'api',
             reason: stateReason,
         });
-        recomputeConfigEtag();
 
         resetOutputFailureCount(pid, oid);
 
@@ -155,7 +150,6 @@ export function registerOutputApi({
             reason: reconcileReason,
             source: 'api',
         });
-        recomputeEtag();
 
         return { desiredStateChange, reconciliation };
     }
@@ -248,11 +242,9 @@ export function registerOutputApi({
                 { name: output.name, url: output.url, encoding: output.encoding || null },
             );
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.status(201).json({ message: 'Output created', output });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -288,11 +280,9 @@ export function registerOutputApi({
 
             logOutputConfigChanges(pid, oid, existing, updated);
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: 'Output updated', output: updated });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -321,8 +311,6 @@ export function registerOutputApi({
             if (!ok) return res.status(500).json({ error: 'Failed to delete output' });
 
             clearOutputRestartState(pid, oid);
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: `Output ${oid} from pipeline ${pid} deleted` });
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });
@@ -382,9 +370,10 @@ export function registerOutputApi({
         } catch (err) {
             const e = err as { status?: number; publicError?: string; detail?: string };
             const status = Number(e?.status || 500);
-            const payload: Record<string, unknown> = { error: e?.publicError || errMsg(err) };
-            if (e?.detail) payload.detail = e.detail;
-            return res.status(status).json(payload);
+            return res.status(status).json({
+                error: e?.publicError || errMsg(err),
+                ...(e?.detail && { detail: e.detail }),
+            });
         }
     });
 

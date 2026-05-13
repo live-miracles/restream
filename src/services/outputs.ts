@@ -73,14 +73,12 @@ export function createOutputLifecycleService({
     spawn,
     processes,
     ffmpegProgressByJobId,
-    recomputeEtag,
     isInputOn,
 }: {
     db: Db;
     spawn: typeof nodeSpawn;
     processes: Map<string, ChildProcess>;
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
-    recomputeEtag: () => string | null;
     isInputOn: (pipelineId: string) => boolean;
 }): OutputLifecycle {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -303,7 +301,6 @@ export function createOutputLifecycleService({
             'lifecycle.marked_stopped_no_process',
             { status: 'stopped' },
         );
-        recomputeEtag();
         return { stopped: true, reason: 'marked-stopped' };
     }
 
@@ -419,7 +416,6 @@ export function createOutputLifecycleService({
             status: 'running',
             startedAt: new Date().toISOString(),
         });
-        recomputeEtag();
         processes.set(job.id, child);
         ffmpegProgressByJobId.set(job.id, {});
 
@@ -437,7 +433,6 @@ export function createOutputLifecycleService({
             pushLog('[lifecycle] failed_on_error', 'lifecycle.failed_on_error', {
                 status: 'failed',
             });
-            recomputeEtag();
             stopRequestedJobIds.delete(job.id);
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
@@ -538,7 +533,6 @@ export function createOutputLifecycleService({
                 code: code ?? null,
                 signal: signal ?? null,
             });
-            recomputeEtag();
             processes.delete(job.id);
             ffmpegProgressByJobId.delete(job.id);
 

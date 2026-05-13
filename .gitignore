@@ -7,6 +7,7 @@ mediamtx.exe
 .DS_Store
 .idea/
 .vscode/
+.claude
 
 # Downloaded binaries
 bin/
@@ -26,6 +27,9 @@ log/
 # Generated TypeScript output
 public/js/
 dist/
+
+# Generated CSS output
+public/output.css
 
 # Generated test artifacts
 test/artifacts/logs/

@@ -4,7 +4,7 @@ import type { Express } from 'express';
 import { errMsg } from '../utils/app';
 
 const SYSTEM_METRICS_SAMPLE_INTERVAL_MS = Number(
-    process.env.SYSTEM_METRICS_SAMPLE_INTERVAL_MS || 1000,
+    process.env.SYSTEM_METRICS_SAMPLE_INTERVAL_MS || 5000,
 );
 
 interface CpuTotals {

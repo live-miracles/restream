@@ -178,11 +178,6 @@ function writeSelectedPipelineHint(pipe: { id?: string; name?: string } | null):
     }
 }
 
-function normalizeEtag(s: string | null | undefined): string | null {
-    if (!s) return null;
-    return s.replace(/^"(.*)"$/, '$1');
-}
-
 function setServerConfig(serverName: string | undefined): void {
     const name = serverName || 'Restream';
     const titleEl = document.querySelector('title');
@@ -209,11 +204,13 @@ function showErrorAlert(error: unknown): void {
 }
 
 function showLoading(): void {
+    document.getElementById('saving-badge')?.classList.add('flex');
     document.getElementById('saving-badge')?.classList.remove('hidden');
 }
 
 function hideLoading(): void {
     document.getElementById('saving-badge')?.classList.add('hidden');
+    document.getElementById('saving-badge')?.classList.remove('flex');
 }
 
 let copyCount = 0;
@@ -447,7 +444,6 @@ export {
     setUrlParam,
     getUrlParam,
     readSelectedPipelineHint,
-    normalizeEtag,
     setServerConfig,
     showErrorAlert,
     showLoading,

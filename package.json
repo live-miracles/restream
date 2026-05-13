@@ -8,7 +8,7 @@
         "dev": "npx tsx watch --ignore 'test/artifacts/**' --ignore 'public/**' src/index.ts",
         "build": "npm run build:backend && npm run build:frontend",
         "build:backend": "npx tsc -p tsconfig.backend.json",
-        "build:frontend": "npx tsc -p tsconfig.json",
+        "build:frontend": "npx tsc -p tsconfig.json && npx tailwindcss -i public/input.css -o public/output.css",
         "watch:backend": "npx tsc -p tsconfig.backend.json --watch",
         "watch:frontend": "npx tsc -p tsconfig.json --watch",
         "ts-build": "npm run build:frontend",

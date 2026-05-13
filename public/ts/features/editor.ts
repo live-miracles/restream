@@ -732,3 +732,5 @@ window.addOutBtn = addOutBtn;
 window.addPipeBtn = addPipeBtn;
 window.editPipeBtn = editPipeBtn;
 window.deletePipeBtn = deletePipeBtn;
+
+void loadStreamKeysOnce();

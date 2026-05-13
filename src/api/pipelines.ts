@@ -45,10 +45,8 @@ function logPipelineConfigChanges(
 }
 
 function normalizePipelineStreamKey(value: unknown): string | null {
-    if (value === null || value === undefined) return null;
-    if (typeof value !== 'string') return value as string;
-    const normalized = value.trim();
-    return normalized || null;
+    if (typeof value !== 'string') return null;
+    return value.trim() || null;
 }
 
 function chooseAutomaticStreamKey(
@@ -111,8 +109,6 @@ export function registerPipelineApi({
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
-    recomputeConfigEtag,
-    recomputeEtag,
 }: {
     app: Express;
     db: Db;
@@ -121,8 +117,6 @@ export function registerPipelineApi({
     clearOutputRestartState: OutputLifecycle['clearOutputRestartState'];
     stopRunningJobAndWait: OutputLifecycle['stopRunningJobAndWait'];
     stopRunningJob: OutputLifecycle['stopRunningJob'];
-    recomputeConfigEtag: () => string | null;
-    recomputeEtag: () => string | null;
 }): void {
     app.get('/stream-keys', async (req, res) => {
         try {
@@ -181,13 +175,11 @@ export function registerPipelineApi({
                 { state: runtimeState.status },
             );
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res
                 .status(201)
                 .json({ message: 'Pipeline created', pipeline: pipelineWithState });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -264,11 +256,9 @@ export function registerPipelineApi({
             }
 
             logPipelineConfigChanges(db, id, existing, updated);
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -308,8 +298,6 @@ export function registerPipelineApi({
                 clearOutputRestartState(id, output.id);
             }
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: `Pipeline ${id} deleted` });
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });

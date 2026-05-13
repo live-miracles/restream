@@ -105,7 +105,6 @@ export interface PipelineHealth {
 
 export interface HealthData {
     status?: string;
-    snapshotVersion?: string;
     pipelines?: Record<string, PipelineHealth>;
 }
 
@@ -167,16 +166,4 @@ export interface HistoryLog {
     message?: string;
     eventType?: string;
     eventData?: Record<string, unknown>;
-}
-
-export interface GetConfigResult {
-    notModified: boolean;
-    etag: string | null;
-    data: ConfigData | null;
-}
-
-export interface GetHealthResult {
-    notModified: boolean;
-    etag: string | null;
-    data: HealthData | null;
 }

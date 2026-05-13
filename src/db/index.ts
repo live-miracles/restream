@@ -500,22 +500,6 @@ export function setMeta(key: string, value: string): string {
     return value;
 }
 
-export function getEtag(): string | null {
-    return getMeta('etag');
-}
-
-export function setEtag(v: string): string {
-    return setMeta('etag', v);
-}
-
-export function getConfigEtag(): string | null {
-    return getMeta('config_etag');
-}
-
-export function setConfigEtag(v: string): string {
-    return setMeta('config_etag', v);
-}
-
 export function getCustomEncoding(): string | null {
     return getMeta('custom_encoding') || null;
 }

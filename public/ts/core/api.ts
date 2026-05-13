@@ -1,12 +1,5 @@
-import { showLoading, hideLoading, showErrorAlert, normalizeEtag } from './utils.js';
-import type {
-    ConfigData,
-    HealthData,
-    SystemMetrics,
-    StreamKey,
-    GetConfigResult,
-    GetHealthResult,
-} from '../types.js';
+import { showLoading, hideLoading, showErrorAlert } from './utils.js';
+import type { ConfigData, HealthData, SystemMetrics, StreamKey } from '../types.js';
 
 let activeMutationRequestCount = 0;
 
@@ -33,32 +26,6 @@ function endMutationRequest(): void {
     activeMutationRequestCount -= 1;
     if (activeMutationRequestCount === 0) {
         hideLoading();
-    }
-}
-
-interface FetchWithEtagOptions {
-    etag?: string | null;
-    method?: string;
-    networkErrorMessage?: string | null;
-}
-
-async function fetchWithEtag(
-    url: string,
-    { etag = null, method = 'GET', networkErrorMessage = null }: FetchWithEtagOptions = {},
-): Promise<Response | null> {
-    const headers: Record<string, string> = {};
-    if (etag) headers['If-None-Match'] = `"${etag}"`;
-    const options: RequestInit = { method, headers, cache: 'no-store' };
-
-    if (!networkErrorMessage) {
-        return fetch(url, options);
-    }
-
-    try {
-        return await fetch(url, options);
-    } catch (e) {
-        showErrorAlert(networkErrorMessage + e);
-        return null;
     }
 }
 
@@ -116,53 +83,12 @@ async function apiRequest<T = unknown>(
     return data;
 }
 
-async function getConfig(etag: string | null = null): Promise<GetConfigResult | null> {
-    const response = await fetchWithEtag('/config', { etag });
-    if (!response) return null;
-
-    if (response.status === 304) {
-        return { notModified: true, etag, data: null };
-    }
-
-    const data = await parseJsonResponse<ConfigData & { error?: string }>(response);
-    if (data === null) return null;
-
-    if (!response.ok) {
-        showErrorAlert(data?.error || `Request failed with ${response.status}`);
-        return null;
-    }
-
-    return {
-        notModified: false,
-        etag: normalizeEtag(response.headers.get('ETag')),
-        data: data as ConfigData,
-    };
+async function getConfig(): Promise<ConfigData | null> {
+    return apiRequest<ConfigData>('/config');
 }
 
-async function getHealth(etag: string | null = null): Promise<GetHealthResult | null> {
-    const response = await fetchWithEtag('/health', {
-        etag,
-        networkErrorMessage: 'Network request failed: ',
-    });
-    if (!response) return null;
-
-    if (response.status === 304) {
-        return { notModified: true, etag, data: null };
-    }
-
-    const data = await parseJsonResponse<HealthData & { error?: string }>(response);
-    if (data === null) return null;
-
-    if (!response.ok) {
-        showErrorAlert(data?.error || `Request failed with ${response.status}`);
-        return null;
-    }
-
-    return {
-        notModified: false,
-        etag: normalizeEtag(response.headers.get('ETag')),
-        data: data as HealthData,
-    };
+async function getHealth(): Promise<HealthData | null> {
+    return apiRequest<HealthData>('/health');
 }
 
 async function getSystemMetrics(): Promise<SystemMetrics | null> {
