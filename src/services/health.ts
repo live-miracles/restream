@@ -52,6 +52,49 @@ interface PathInfo {
     bytesSent?: number;
 }
 
+interface MediamtxStats {
+    pathCount: number;
+    rtmpConnCount: number;
+    srtConnCount: number;
+    ready: boolean;
+}
+
+interface OutputHealth {
+    status: string;
+    jobId: string | null;
+    totalSize: number | null;
+    bitrateKbps: number | null;
+}
+
+interface InputHealth {
+    status: string;
+    publishStartedAt: string | null;
+    streamKey: string;
+    publisher: Publisher | null;
+    readers: number;
+    bytesReceived: number;
+    bytesSent: number;
+    video: StreamInfo['video'];
+    audio: StreamInfo['audio'];
+    unexpectedReaders: {
+        count: number;
+        readers: { id: string | null; type: string; reason: string }[];
+    };
+}
+
+interface PipelineHealth {
+    input: InputHealth;
+    outputs: Record<string, OutputHealth>;
+}
+
+interface HealthSnapshot {
+    generatedAt: string;
+    snapshotVersion: string | null;
+    status: string;
+    mediamtx: MediamtxStats;
+    pipelines: Record<string, PipelineHealth>;
+}
+
 export interface HealthMonitor {
     clearPipelineRuntimeState(pipelineId: string): void;
     isInputOn(pipelineId: string): boolean;
@@ -198,7 +241,7 @@ function buildDefaultHealthSnapshot(
     status = 'initializing',
     mediamtxReady = false,
     snapshotVersion: string | null = null,
-): Record<string, unknown> {
+): HealthSnapshot {
     return {
         generatedAt: new Date().toISOString(),
         snapshotVersion,
@@ -208,24 +251,16 @@ function buildDefaultHealthSnapshot(
     };
 }
 
-function getHealthSnapshotHashSource(snapshot: Record<string, unknown>): Record<string, unknown> {
+function getHealthSnapshotHashSource(snapshot: HealthSnapshot): object {
     return {
-        snapshotVersion: snapshot?.snapshotVersion || null,
-        status: snapshot?.status || 'initializing',
-        mediamtx: snapshot?.mediamtx || {
-            pathCount: 0,
-            rtmpConnCount: 0,
-            srtConnCount: 0,
-            ready: false,
-        },
-        pipelines: snapshot?.pipelines || {},
+        snapshotVersion: snapshot.snapshotVersion,
+        status: snapshot.status,
+        mediamtx: snapshot.mediamtx,
+        pipelines: snapshot.pipelines,
     };
 }
 
-function hashSnapshot(
-    snapshot: Record<string, unknown>,
-    createHash: typeof import('crypto').createHash,
-): string {
+function hashSnapshot(snapshot: object, createHash: typeof import('crypto').createHash): string {
     return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
@@ -340,9 +375,9 @@ export function createHealthMonitorService({
     const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
 
     const pipelineInputStatusHistory = new Map<string, string>();
-    let latestHealthSnapshot: Record<string, unknown> | null = null;
+    let latestHealthSnapshot: HealthSnapshot | null = null;
     let latestHealthSnapshotEtag: string | null = null;
-    let healthCollectorInFlight: Promise<Record<string, unknown>> | null = null;
+    let healthCollectorInFlight: Promise<HealthSnapshot> | null = null;
     let healthCollectorTimer: NodeJS.Timeout | null = null;
     const mediamtxReadiness: {
         ready: boolean;
@@ -461,7 +496,7 @@ export function createHealthMonitorService({
         });
     }
 
-    function setLatestHealthSnapshot(snapshot: Record<string, unknown>): Record<string, unknown> {
+    function setLatestHealthSnapshot(snapshot: HealthSnapshot): HealthSnapshot {
         latestHealthSnapshot = snapshot;
         latestHealthSnapshotEtag = hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
         return latestHealthSnapshot;
@@ -471,10 +506,10 @@ export function createHealthMonitorService({
         return db.getEtag() || null;
     }
 
-    function isHealthSnapshotStaleForCurrentState(snapshot: Record<string, unknown>): boolean {
+    function isHealthSnapshotStaleForCurrentState(snapshot: HealthSnapshot): boolean {
         const currentStateVersion = getCurrentStateVersion();
         if (!currentStateVersion) return false;
-        return snapshot?.snapshotVersion !== currentStateVersion;
+        return snapshot.snapshotVersion !== currentStateVersion;
     }
 
     function updatePipelineInputStatusHistory(
@@ -539,7 +574,7 @@ export function createHealthMonitorService({
         inputStatus: string;
         publisher: Publisher | null;
         ffprobeResult: StreamInfo | null;
-    }): Record<string, unknown> {
+    }): InputHealth {
         return {
             status: inputStatus,
             publishStartedAt: pathInfo?.availableTime || pathInfo?.readyTime || null,
@@ -550,10 +585,11 @@ export function createHealthMonitorService({
             bytesSent: pathInfo?.bytesSent || 0,
             video: ffprobeResult?.video || null,
             audio: ffprobeResult?.audio || null,
+            unexpectedReaders: buildUnexpectedReaders(pathInfo),
         };
     }
 
-    function buildOutputHealthSnapshot(latestJob: Job | null): Record<string, unknown> {
+    function buildOutputHealthSnapshot(latestJob: Job | null): OutputHealth {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -577,7 +613,7 @@ export function createHealthMonitorService({
         pipelineOutputs: Output[],
         jobByOutputId: Map<string, Job>,
         publisherByPath: Map<string, Publisher>,
-    ): Record<string, unknown> {
+    ): PipelineHealth {
         const streamKey = pipeline.streamKey;
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
@@ -617,10 +653,8 @@ export function createHealthMonitorService({
             publisher,
             ffprobeResult: ffprobeResultByPipelineId.get(pipeline.id) || null,
         });
-        (inputHealth as Record<string, unknown>).unexpectedReaders =
-            buildUnexpectedReaders(pathInfo);
 
-        const outputsHealth: Record<string, unknown> = {};
+        const outputsHealth: Record<string, OutputHealth> = {};
         for (const output of pipelineOutputs) {
             outputsHealth[output.id] = buildOutputHealthSnapshot(
                 jobByOutputId.get(output.id) || null,
@@ -630,7 +664,7 @@ export function createHealthMonitorService({
         return { input: inputHealth, outputs: outputsHealth };
     }
 
-    async function buildHealthSnapshot(): Promise<Record<string, unknown>> {
+    async function buildHealthSnapshot(): Promise<HealthSnapshot> {
         if (!mediamtxReadiness.ready) {
             return buildDefaultHealthSnapshot(
                 'initializing',
@@ -666,7 +700,7 @@ export function createHealthMonitorService({
             const outputsByPipeline = groupOutputsByPipeline(db.listOutputs());
             const jobByOutputId = new Map<string, Job>(db.listJobs().map((j) => [j.outputId, j]));
 
-            const health: { pipelines: Record<string, unknown> } = { pipelines: {} };
+            const health: { pipelines: Record<string, PipelineHealth> } = { pipelines: {} };
             for (const pipeline of pipelines) {
                 const effectivePath = buildMediamtxPath(pipeline.streamKey);
                 health.pipelines[pipeline.id] = buildPipelineHealthSnapshot(
@@ -697,22 +731,17 @@ export function createHealthMonitorService({
                 snapshotVersion: getCurrentStateVersion(),
                 status: 'degraded',
                 mediamtx: {
-                    pathCount:
-                        (latestHealthSnapshot?.mediamtx as Record<string, unknown>)?.pathCount || 0,
-                    rtmpConnCount:
-                        (latestHealthSnapshot?.mediamtx as Record<string, unknown>)
-                            ?.rtmpConnCount || 0,
-                    srtConnCount:
-                        (latestHealthSnapshot?.mediamtx as Record<string, unknown>)?.srtConnCount ||
-                        0,
+                    pathCount: latestHealthSnapshot?.mediamtx.pathCount ?? 0,
+                    rtmpConnCount: latestHealthSnapshot?.mediamtx.rtmpConnCount ?? 0,
+                    srtConnCount: latestHealthSnapshot?.mediamtx.srtConnCount ?? 0,
                     ready: mediamtxReadiness.ready,
                 },
-                pipelines: latestHealthSnapshot?.pipelines || {},
+                pipelines: latestHealthSnapshot?.pipelines ?? {},
             };
         }
     }
 
-    async function collectHealthSnapshot(): Promise<Record<string, unknown>> {
+    async function collectHealthSnapshot(): Promise<HealthSnapshot> {
         if (healthCollectorInFlight) return healthCollectorInFlight;
         healthCollectorInFlight = (async () => {
             const snapshot = await buildHealthSnapshot();
@@ -753,18 +782,18 @@ export function createHealthMonitorService({
 
             if (ifNoneMatch && etag && ifNoneMatch === etag) {
                 res.set('ETag', `"${etag}"`);
-                if (snapshot?.snapshotVersion) {
-                    res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion as string}"`);
+                if (snapshot.snapshotVersion) {
+                    res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
                 }
                 return res.status(304).end();
             }
 
             if (etag) res.set('ETag', `"${etag}"`);
-            if (snapshot?.snapshotVersion) {
-                res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion as string}"`);
+            if (snapshot.snapshotVersion) {
+                res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
             }
 
-            const generatedAtMs = Date.parse(snapshot.generatedAt as string);
+            const generatedAtMs = Date.parse(snapshot.generatedAt);
             const ageMs = Number.isFinite(generatedAtMs)
                 ? Math.max(0, Date.now() - generatedAtMs)
                 : null;

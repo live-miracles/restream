@@ -252,7 +252,7 @@ export function registerOutputApi({
             recomputeEtag();
             return res.status(201).json({ message: 'Output created', output });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -292,7 +292,7 @@ export function registerOutputApi({
             recomputeEtag();
             return res.json({ message: 'Output updated', output: updated });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message || errMsg(err) });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -382,9 +382,10 @@ export function registerOutputApi({
         } catch (err) {
             const e = err as { status?: number; publicError?: string; detail?: string };
             const status = Number(e?.status || 500);
-            const payload: Record<string, unknown> = { error: e?.publicError || errMsg(err) };
-            if (e?.detail) payload.detail = e.detail;
-            return res.status(status).json(payload);
+            return res.status(status).json({
+                error: e?.publicError || errMsg(err),
+                ...(e?.detail && { detail: e.detail }),
+            });
         }
     });
 

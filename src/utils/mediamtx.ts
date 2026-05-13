@@ -81,20 +81,19 @@ function pathConfigToStreamKey(item: unknown): StreamKeyItem | null {
 }
 
 function normalizePathConfigList(data: unknown): StreamKeyItem[] {
-    const d = data as Record<string, unknown> | null;
-    const rawItems = Array.isArray(d?.items)
-        ? d!.items
-        : d?.items && typeof d.items === 'object'
-          ? Object.keys(d.items as object)
-          : Array.isArray(d)
-            ? (d as unknown[])
-            : d?.paths && typeof d.paths === 'object' && !Array.isArray(d.paths)
-              ? Object.keys(d.paths as object)
-              : Array.isArray(d?.paths)
-                ? (d!.paths as unknown[])
-                : [];
+    let rawItems: unknown[] = [];
 
-    return (rawItems as unknown[])
+    if (Array.isArray(data)) {
+        rawItems = data;
+    } else if (data && typeof data === 'object') {
+        const d = data as Record<string, unknown>;
+        if (Array.isArray(d.items)) rawItems = d.items;
+        else if (d.items && typeof d.items === 'object') rawItems = Object.keys(d.items as object);
+        else if (Array.isArray(d.paths)) rawItems = d.paths;
+        else if (d.paths && typeof d.paths === 'object') rawItems = Object.keys(d.paths as object);
+    }
+
+    return rawItems
         .map(pathConfigToStreamKey)
         .filter((x): x is StreamKeyItem => x !== null)
         .sort((a, b) => (a.label || a.key).localeCompare(b.label || b.key));

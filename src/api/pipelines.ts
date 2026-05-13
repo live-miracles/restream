@@ -45,10 +45,8 @@ function logPipelineConfigChanges(
 }
 
 function normalizePipelineStreamKey(value: unknown): string | null {
-    if (value === null || value === undefined) return null;
-    if (typeof value !== 'string') return value as string;
-    const normalized = value.trim();
-    return normalized || null;
+    if (typeof value !== 'string') return null;
+    return value.trim() || null;
 }
 
 function chooseAutomaticStreamKey(
@@ -187,7 +185,7 @@ export function registerPipelineApi({
                 .status(201)
                 .json({ message: 'Pipeline created', pipeline: pipelineWithState });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 
@@ -268,7 +266,7 @@ export function registerPipelineApi({
             recomputeEtag();
             return res.json({ message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
-            return res.status(400).json({ error: (err as Error).message });
+            return res.status(400).json({ error: errMsg(err) });
         }
     });
 

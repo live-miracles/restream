@@ -27,6 +27,9 @@ log/
 public/js/
 dist/
 
+# Generated CSS output
+public/output.css
+
 # Generated test artifacts
 test/artifacts/logs/
 test/artifacts/runs/
