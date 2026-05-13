@@ -270,6 +270,44 @@ function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): v
 }
 
 let publisherQualityModalPipeId: string | null = null;
+let currentModalChannelCount: number = 2;
+
+function populateRemapChannelOptions(
+    channelCount: number,
+    selectedLeft: number,
+    selectedRight: number,
+): void {
+    const leftSelect = document.getElementById('out-remap-left-input') as HTMLSelectElement | null;
+    const rightSelect = document.getElementById(
+        'out-remap-right-input',
+    ) as HTMLSelectElement | null;
+    if (!leftSelect || !rightSelect) return;
+
+    const options = Array.from(
+        { length: channelCount },
+        (_, i) => `<option value="${i}">${i + 1}</option>`,
+    ).join('');
+
+    leftSelect.innerHTML = options;
+    rightSelect.innerHTML = options;
+    leftSelect.value = String(Math.min(selectedLeft, channelCount - 1));
+    rightSelect.value = String(Math.min(selectedRight, channelCount - 1));
+}
+
+function applyEncodingUi(encoding: string): void {
+    const remapFields = document.getElementById('out-remap-fields');
+    if (remapFields) {
+        remapFields.classList.toggle('hidden', encoding !== 'remap');
+        remapFields.classList.toggle('inline-block', encoding === 'remap');
+    }
+}
+
+export function onOutEncodingChange(encoding: string): void {
+    applyEncodingUi(encoding);
+    if (encoding === 'remap') {
+        populateRemapChannelOptions(currentModalChannelCount, 0, 1);
+    }
+}
 
 export function renderPublisherQualityModal(): void {
     const modal = document.getElementById('publisher-quality-modal') as HTMLDialogElement | null;
@@ -445,7 +483,7 @@ async function openOutModal(
                 ? `Edit Output "${output?.name || pipe.name}"`
                 : `Add Output for "${pipe.name}"`;
     }
-    const outSubmitBtn = document.getElementById('out-submit-btn');
+    const outSubmitBtn = document.getElementById('out-submit-btn') as HTMLButtonElement | null;
     if (outSubmitBtn) outSubmitBtn.innerText = mode === 'edit' ? 'Update' : 'Create';
     (document.getElementById('out-name-input') as HTMLInputElement).value =
         output?.name || `Out_${pipe.outs.length + 1}`;
@@ -453,14 +491,21 @@ async function openOutModal(
     const encodingSelect = document.getElementById(
         'out-encoding-input',
     ) as HTMLSelectElement | null;
-    if (encodingSelect) {
-        const rawEncoding = String(output?.encoding || 'source')
-            .trim()
-            .toLowerCase();
-        encodingSelect.value = rawEncoding || 'source';
-    }
+    const rawEncoding = String(output?.encoding || 'source')
+        .trim()
+        .toLowerCase();
+    const isRemapEncoding = /^remap:(\d+):(\d+)$/.test(rawEncoding);
+    const remapParts = isRemapEncoding ? rawEncoding.split(':') : null;
+    const remapLeft = remapParts ? parseInt(remapParts[1], 10) : 0;
+    const remapRight = remapParts ? parseInt(remapParts[2], 10) : 1;
+    currentModalChannelCount = pipe.input.audio?.channels || 2;
 
-    const isRunningEdit =
+    if (encodingSelect) {
+        encodingSelect.value = isRemapEncoding ? 'remap' : rawEncoding || 'source';
+    }
+    populateRemapChannelOptions(currentModalChannelCount, remapLeft, remapRight);
+
+    const isRunning =
         mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
 
     const baseRtmpUrl = `rtmp://${document.location.hostname}:1935/live/`;
@@ -503,41 +548,13 @@ async function openOutModal(
     document.getElementById('out-rtmp-key-input')?.classList.remove('input-error');
     document.getElementById('out-srt-host-input')?.classList.remove('input-error');
     document.getElementById('out-rtmp-error')?.classList.add('hidden');
-    document.getElementById('out-running-edit-hint')?.classList.toggle('hidden', !isRunningEdit);
     document.getElementById('out-name-input')?.classList.remove('input-error');
 
-    if (encodingSelect) {
-        encodingSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        encodingSelect.style.opacity = isRunningEdit ? '0.75' : '';
-    }
-    if (serverSelect) {
-        serverSelect.style.pointerEvents = isRunningEdit ? 'none' : '';
-        serverSelect.style.opacity = isRunningEdit ? '0.75' : '';
-    }
-    if (outUrlInput) {
-        outUrlInput.readOnly = isRunningEdit;
-        outUrlInput.classList.toggle('opacity-70', isRunningEdit);
-    }
-    if (protocolSelect) {
-        protocolSelect.disabled = isRunningEdit;
-        protocolSelect.style.opacity = isRunningEdit ? '0.75' : '';
-    }
-    const srtInputIds = [
-        'out-srt-host-input',
-        'out-srt-port-input',
-        'out-srt-streamid-input',
-        'out-srt-extra-query-input',
-    ];
-    srtInputIds.forEach((id) => {
-        const field = document.getElementById(id) as HTMLInputElement | null;
-        if (!field) return;
-        field.readOnly = isRunningEdit;
-        field.classList.toggle('opacity-70', isRunningEdit);
-    });
+    applyEncodingUi(isRemapEncoding ? 'remap' : rawEncoding || 'source');
 
-    const editOutModal = document.getElementById('edit-out-modal');
-    if (editOutModal) {
-        editOutModal.dataset.runningEdit = isRunningEdit ? '1' : '';
+    if (outSubmitBtn) {
+        outSubmitBtn.disabled = isRunning;
+        outSubmitBtn.classList.toggle('btn-disabled', isRunning);
     }
 
     setupOutputModalProtocolHandlers();
@@ -565,8 +582,6 @@ export async function editOutFormBtn(event: Event): Promise<void> {
 
     const mode =
         (document.getElementById('out-mode-input') as HTMLInputElement | null)?.value || 'edit';
-    const modal = document.getElementById('edit-out-modal') as HTMLDialogElement | null;
-    const isRunningEdit = modal?.dataset.runningEdit === '1';
     const pipeId =
         (document.getElementById('out-pipe-id-input') as HTMLInputElement | null)?.value || '';
     const serverUrl =
@@ -575,13 +590,24 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         (document.getElementById('out-rtmp-key-input') as HTMLInputElement | null)?.value.trim() ||
         '';
     const outId = (document.getElementById('out-id-input') as HTMLInputElement | null)?.value || '';
+    const selectedEncoding =
+        (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
+        'source';
+    let resolvedEncoding = selectedEncoding;
+    if (selectedEncoding === 'remap') {
+        const left =
+            (document.getElementById('out-remap-left-input') as HTMLSelectElement | null)?.value ||
+            '0';
+        const right =
+            (document.getElementById('out-remap-right-input') as HTMLSelectElement | null)?.value ||
+            '1';
+        resolvedEncoding = `remap:${left}:${right}`;
+    }
     const data: { name: string; encoding: string; url: string } = {
         name:
             (document.getElementById('out-name-input') as HTMLInputElement | null)?.value.trim() ||
             '',
-        encoding:
-            (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
-            'source',
+        encoding: resolvedEncoding,
         url: getEffectiveOutputUrlFromModal(),
     };
 
@@ -590,7 +616,7 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         data.url = data.url.replaceAll('${s_prp}', params.get('s_prp') || '');
     }
 
-    const isOutputUrlValid = isRunningEdit ? true : isValidOutput(data.url);
+    const isOutputUrlValid = isValidOutput(data.url);
     const outputErrorField =
         (document.getElementById('out-protocol-input') as HTMLSelectElement | null)?.value === 'srt'
             ? document.getElementById('out-srt-host-input')
@@ -610,7 +636,7 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         document.getElementById('out-name-input')?.classList.add('input-error');
     }
 
-    if ((!isOutputUrlValid && !isRunningEdit) || !isOutNameValid) {
+    if (!isOutputUrlValid || !isOutNameValid) {
         return;
     }
 
@@ -732,5 +758,6 @@ window.addOutBtn = addOutBtn;
 window.addPipeBtn = addPipeBtn;
 window.editPipeBtn = editPipeBtn;
 window.deletePipeBtn = deletePipeBtn;
+window.onOutEncodingChange = onOutEncodingChange;
 
 void loadStreamKeysOnce();

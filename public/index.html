@@ -102,12 +102,12 @@
     </dialog>
 
     <dialog id="edit-out-modal" class="modal">
-      <div class="modal-box max-w-200">
+      <div class="modal-box max-w-230">
         <input type="text" id="out-mode-input" class="hidden" />
         <input type="text" id="out-pipe-id-input" class="hidden" />
         <input type="text" id="out-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 w-full max-w-200 space-y-3 px-4">
+        <div class="focus mx-auto mt-2 space-y-3 px-4">
           <h2 class="text-xl font-bold" id="out-modal-title">Edit Output</h2>
 
           <fieldset class="fieldset inline-block w-48">
@@ -126,15 +126,27 @@
 
           <fieldset class="fieldset ml-2 inline-block w-40">
             <legend class="fieldset-legend">Encoding</legend>
-            <select class="select" id="out-encoding-input">
+            <select class="select" id="out-encoding-input" onchange="onOutEncodingChange(this.value)">
               <option value="source">source</option>
               <option value="vertical-crop">vertical-crop</option>
               <option value="vertical-rotate">vertical-rotate</option>
               <option value="720p">720p</option>
               <option value="1080p">1080p</option>
               <option value="custom">custom</option>
+              <option value="remap">remap</option>
             </select>
           </fieldset>
+
+          <div class="hidden" id="out-remap-fields">
+            <fieldset class="fieldset ml-2 inline-block w-16">
+              <legend class="fieldset-legend">Left Ch</legend>
+              <select class="select" id="out-remap-left-input"></select>
+            </fieldset>
+            <fieldset class="fieldset ml-2 inline-block w-16">
+              <legend class="fieldset-legend">Right Ch</legend>
+              <select class="select" id="out-remap-right-input"></select>
+            </fieldset>
+          </div>
 
           <fieldset class="fieldset ml-2 inline-block w-44" id="out-server-url-field">
             <legend class="fieldset-legend">Server URL</legend>
@@ -147,7 +159,6 @@
             <legend class="fieldset-legend" id="out-url-input-label">Stream Key</legend>
             <input type="text" id="out-rtmp-key-input" class="input w-full" placeholder="Type here" />
             <p id="out-rtmp-error" class="text-error hidden text-sm">Enter a valid RTMP, SRT, or HLS playlist URL.</p>
-            <p id="out-running-edit-hint" class="text-warning hidden text-sm">Output is running. Only name can be edited.</p>
           </fieldset>
 
           <div class="hidden" id="out-srt-fields">
