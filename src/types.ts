@@ -140,10 +140,6 @@ export interface Db {
 
     getMeta(key: string): string | null;
     setMeta(key: string, value: string): string;
-    getEtag(): string | null;
-    setEtag(v: string): string;
-    getConfigEtag(): string | null;
-    setConfigEtag(v: string): string;
     getCustomEncoding(): string | null;
     setCustomEncoding(ffmpegArgs: string): string;
     getServerName(): string;

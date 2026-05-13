@@ -109,8 +109,6 @@ export function registerPipelineApi({
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
-    recomputeConfigEtag,
-    recomputeEtag,
 }: {
     app: Express;
     db: Db;
@@ -119,8 +117,6 @@ export function registerPipelineApi({
     clearOutputRestartState: OutputLifecycle['clearOutputRestartState'];
     stopRunningJobAndWait: OutputLifecycle['stopRunningJobAndWait'];
     stopRunningJob: OutputLifecycle['stopRunningJob'];
-    recomputeConfigEtag: () => string | null;
-    recomputeEtag: () => string | null;
 }): void {
     app.get('/stream-keys', async (req, res) => {
         try {
@@ -179,8 +175,6 @@ export function registerPipelineApi({
                 { state: runtimeState.status },
             );
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res
                 .status(201)
                 .json({ message: 'Pipeline created', pipeline: pipelineWithState });
@@ -262,8 +256,6 @@ export function registerPipelineApi({
             }
 
             logPipelineConfigChanges(db, id, existing, updated);
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: 'Pipeline updated', pipeline: updated });
         } catch (err) {
             return res.status(400).json({ error: errMsg(err) });
@@ -306,8 +298,6 @@ export function registerPipelineApi({
                 clearOutputRestartState(id, output.id);
             }
 
-            recomputeConfigEtag();
-            recomputeEtag();
             return res.json({ message: `Pipeline ${id} deleted` });
         } catch (err) {
             return res.status(500).json({ error: errMsg(err) });

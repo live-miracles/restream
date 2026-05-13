@@ -89,7 +89,6 @@ interface PipelineHealth {
 
 interface HealthSnapshot {
     generatedAt: string;
-    snapshotVersion: string | null;
     status: string;
     mediamtx: MediamtxStats;
     pipelines: Record<string, PipelineHealth>;
@@ -240,41 +239,22 @@ function groupOutputsByPipeline(outputs: Output[]): Map<string, Output[]> {
 function buildDefaultHealthSnapshot(
     status = 'initializing',
     mediamtxReady = false,
-    snapshotVersion: string | null = null,
 ): HealthSnapshot {
     return {
         generatedAt: new Date().toISOString(),
-        snapshotVersion,
         status,
         mediamtx: { pathCount: 0, rtmpConnCount: 0, srtConnCount: 0, ready: mediamtxReady },
         pipelines: {},
     };
 }
 
-function getHealthSnapshotHashSource(snapshot: HealthSnapshot): object {
-    return {
-        snapshotVersion: snapshot.snapshotVersion,
-        status: snapshot.status,
-        mediamtx: snapshot.mediamtx,
-        pipelines: snapshot.pipelines,
-    };
-}
-
-function hashSnapshot(snapshot: object, createHash: typeof import('crypto').createHash): string {
-    return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-}
-
 export function createHealthMonitorService({
     db,
     fetch: fetchImpl = globalThis.fetch,
-    createHash,
-    normalizeEtag,
     ffmpegProgressByJobId,
 }: {
     db: Db;
     fetch?: typeof globalThis.fetch;
-    createHash: typeof import('crypto').createHash;
-    normalizeEtag: (value: string | null | undefined) => string | null;
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
 }): HealthMonitor {
     let inputRecoveryHandler: ((pipelineId: string) => void) | null = null;
@@ -376,7 +356,6 @@ export function createHealthMonitorService({
 
     const pipelineInputStatusHistory = new Map<string, string>();
     let latestHealthSnapshot: HealthSnapshot | null = null;
-    let latestHealthSnapshotEtag: string | null = null;
     let healthCollectorInFlight: Promise<HealthSnapshot> | null = null;
     let healthCollectorTimer: NodeJS.Timeout | null = null;
     const mediamtxReadiness: {
@@ -498,18 +477,7 @@ export function createHealthMonitorService({
 
     function setLatestHealthSnapshot(snapshot: HealthSnapshot): HealthSnapshot {
         latestHealthSnapshot = snapshot;
-        latestHealthSnapshotEtag = hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
         return latestHealthSnapshot;
-    }
-
-    function getCurrentStateVersion(): string | null {
-        return db.getEtag() || null;
-    }
-
-    function isHealthSnapshotStaleForCurrentState(snapshot: HealthSnapshot): boolean {
-        const currentStateVersion = getCurrentStateVersion();
-        if (!currentStateVersion) return false;
-        return snapshot.snapshotVersion !== currentStateVersion;
     }
 
     function updatePipelineInputStatusHistory(
@@ -666,11 +634,7 @@ export function createHealthMonitorService({
 
     async function buildHealthSnapshot(): Promise<HealthSnapshot> {
         if (!mediamtxReadiness.ready) {
-            return buildDefaultHealthSnapshot(
-                'initializing',
-                mediamtxReadiness.ready,
-                getCurrentStateVersion(),
-            );
+            return buildDefaultHealthSnapshot('initializing', mediamtxReadiness.ready);
         }
 
         try {
@@ -695,7 +659,6 @@ export function createHealthMonitorService({
                 r as { items?: unknown[] },
                 s as { items?: unknown[] },
             );
-            const snapshotVersion = getCurrentStateVersion();
             const pipelines = db.listPipelines();
             const outputsByPipeline = groupOutputsByPipeline(db.listOutputs());
             const jobByOutputId = new Map<string, Job>(db.listJobs().map((j) => [j.outputId, j]));
@@ -714,7 +677,6 @@ export function createHealthMonitorService({
 
             return {
                 generatedAt: new Date().toISOString(),
-                snapshotVersion,
                 status: 'ready',
                 mediamtx: {
                     pathCount: p.itemCount || 0,
@@ -728,7 +690,6 @@ export function createHealthMonitorService({
             log('error', 'Failed to build health response', { error: errMsg(err) });
             return {
                 generatedAt: new Date().toISOString(),
-                snapshotVersion: getCurrentStateVersion(),
                 status: 'degraded',
                 mediamtx: {
                     pathCount: latestHealthSnapshot?.mediamtx.pathCount ?? 0,
@@ -770,34 +731,11 @@ export function createHealthMonitorService({
 
     function registerRoutes(app: Express) {
         app.get('/health', async (req, res) => {
-            let snapshot = latestHealthSnapshot;
-            if (!snapshot || isHealthSnapshotStaleForCurrentState(snapshot)) {
-                snapshot = await collectHealthSnapshot();
-            }
-
-            const etag =
-                latestHealthSnapshotEtag ||
-                hashSnapshot(getHealthSnapshotHashSource(snapshot), createHash);
-            const ifNoneMatch = normalizeEtag(req.get('If-None-Match'));
-
-            if (ifNoneMatch && etag && ifNoneMatch === etag) {
-                res.set('ETag', `"${etag}"`);
-                if (snapshot.snapshotVersion) {
-                    res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
-                }
-                return res.status(304).end();
-            }
-
-            if (etag) res.set('ETag', `"${etag}"`);
-            if (snapshot.snapshotVersion) {
-                res.set('X-Snapshot-Version', `"${snapshot.snapshotVersion}"`);
-            }
-
+            const snapshot = latestHealthSnapshot || (await collectHealthSnapshot());
             const generatedAtMs = Date.parse(snapshot.generatedAt);
             const ageMs = Number.isFinite(generatedAtMs)
                 ? Math.max(0, Date.now() - generatedAtMs)
                 : null;
-
             return res.json({ ...snapshot, ageMs });
         });
 

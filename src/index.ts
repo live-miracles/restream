@@ -1,7 +1,6 @@
 import express from 'express';
 import compression from 'compression';
 import path from 'path';
-import crypto from 'crypto';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import * as db from './db';
@@ -43,16 +42,13 @@ const ffmpegProgressByJobId = new Map<string, Record<string, string>>();
 // ── Shared child-process handle registry ─────────────
 const processes = new Map<string, ChildProcess>();
 
-// ── Config API (provides normalizeEtag + recomputeEtag) ──────────
-const { normalizeEtag, initializeConfigSnapshotVersions, recomputeConfigEtag, recomputeEtag } =
-    registerConfigApi({ app, db });
+// ── Config API ────────────────────────────────────────
+registerConfigApi({ app, db });
 
 // ── Health monitor ────────────────────────────────────
 const healthMonitor = createHealthMonitorService({
     db,
     fetch,
-    createHash: crypto.createHash.bind(crypto),
-    normalizeEtag,
     ffmpegProgressByJobId,
 });
 
@@ -62,7 +58,6 @@ const outputLifecycle = createOutputLifecycleService({
     spawn,
     processes,
     ffmpegProgressByJobId,
-    recomputeEtag,
     isInputOn: healthMonitor.isInputOn,
 });
 
@@ -88,15 +83,11 @@ registerPipelineApi({
     clearOutputRestartState,
     stopRunningJobAndWait,
     stopRunningJob,
-    recomputeConfigEtag,
-    recomputeEtag,
 });
 
 registerOutputApi({
     app,
     db,
-    recomputeConfigEtag,
-    recomputeEtag,
     clearOutputRestartState,
     getOutputDesiredState,
     reconcileOutput,
@@ -164,7 +155,6 @@ startServer({
     db,
     log,
     appPort,
-    initializeConfigSnapshotVersions,
 }).catch((err) => {
     console.error('Fatal startup error:', err);
     process.exit(1);

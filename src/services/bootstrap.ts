@@ -11,7 +11,6 @@ interface BootstrapOptions {
     db: Db;
     log: (level: string, message: string, fields?: Record<string, unknown>) => void;
     appPort: number;
-    initializeConfigSnapshotVersions?: () => void;
 }
 
 function createCleanupRunners({ db, log }: Pick<BootstrapOptions, 'db' | 'log'>) {
@@ -43,10 +42,9 @@ export async function startServer({
     db,
     log,
     appPort,
-    initializeConfigSnapshotVersions,
 }: BootstrapOptions): Promise<void> {
     const { runJobCleanup, runJobLogCleanup } = createCleanupRunners({ db, log });
-    initializeConfigSnapshotVersions?.();
+
     await healthMonitor.start();
 
     app.listen(appPort, () => {

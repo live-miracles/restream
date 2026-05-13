@@ -7,6 +7,7 @@ mediamtx.exe
 .DS_Store
 .idea/
 .vscode/
+.claude
 
 # Downloaded binaries
 bin/
