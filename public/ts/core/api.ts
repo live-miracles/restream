@@ -298,6 +298,16 @@ export interface MediaFile {
     name: string;
     size: number;
     modifiedAt: string;
+    ingestCount?: number;
+}
+
+export interface IngestConfig {
+    id: string;
+    filename: string;
+    streamKey: string;
+    loop: boolean;
+    startTime: string;
+    running: boolean;
 }
 
 async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
@@ -307,6 +317,47 @@ async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
 async function deleteMediaFile(filename: string): Promise<{ deleted: boolean } | null> {
     return apiRequest<{ deleted: boolean }>(`/api/media/${encodeURIComponent(filename)}`, {
         method: 'DELETE',
+    });
+}
+
+async function listIngests(): Promise<IngestConfig[] | null> {
+    return apiRequest<IngestConfig[]>('/api/ingests');
+}
+
+async function createIngest(data: {
+    filename: string;
+    streamKey: string;
+    loop: boolean;
+    startTime: string;
+}): Promise<IngestConfig | null> {
+    return apiRequest<IngestConfig>('/api/ingests', { method: 'POST', body: data });
+}
+
+async function updateIngest(
+    id: string,
+    data: { filename: string; streamKey: string; loop: boolean; startTime: string },
+): Promise<IngestConfig | null> {
+    return apiRequest<IngestConfig>(`/api/ingests/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: data,
+    });
+}
+
+async function deleteIngest(id: string): Promise<{ deleted: boolean } | null> {
+    return apiRequest<{ deleted: boolean }>(`/api/ingests/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+    });
+}
+
+async function startIngest(id: string): Promise<IngestConfig | null> {
+    return apiRequest<IngestConfig>(`/api/ingests/${encodeURIComponent(id)}/start`, {
+        method: 'POST',
+    });
+}
+
+async function stopIngest(id: string): Promise<IngestConfig | null> {
+    return apiRequest<IngestConfig>(`/api/ingests/${encodeURIComponent(id)}/stop`, {
+        method: 'POST',
     });
 }
 
@@ -333,4 +384,10 @@ export {
     stopRecording,
     listMediaFiles,
     deleteMediaFile,
+    listIngests,
+    createIngest,
+    updateIngest,
+    deleteIngest,
+    startIngest,
+    stopIngest,
 };

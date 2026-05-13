@@ -208,7 +208,14 @@ function indexPublishersByPath(
     return publisherByPath;
 }
 
-const MANAGED_READER_TYPES = new Set(['rtmpconn', 'srtconn', 'hlsmuxer']);
+const MANAGED_READER_TYPES = new Set([
+    'rtmpconn',
+    'srtconn',
+    'hlsmuxer',
+    'hlssession',
+    'rtspsession',
+    'hlsreader',
+]);
 
 function buildUnexpectedReaders(pathInfo: PathInfo | null): {
     count: number;

@@ -1,3 +1,11 @@
+export interface Ingest {
+    id: string;
+    filename: string;
+    streamKey: string;
+    loop: boolean;
+    startTime: string;
+}
+
 export interface Pipeline {
     id: string;
     name: string;
@@ -130,6 +138,22 @@ export interface Db {
     listJobLogsByPipeline(pipelineId: string): JobLog[];
     deleteJobLogsOlderThan(days?: number): void;
     cleanupOldJobs(): { deletedJobs: number; deletedLogs: number };
+
+    createIngest(params: {
+        id?: string;
+        filename: string;
+        streamKey: string;
+        loop: boolean;
+        startTime: string;
+    }): Ingest;
+    getIngest(id: string): Ingest | undefined;
+    listIngests(): Ingest[];
+    listIngestsForFilename(filename: string): Ingest[];
+    updateIngest(
+        id: string,
+        params: { filename: string; streamKey: string; loop: boolean; startTime: string },
+    ): Ingest | undefined;
+    deleteIngest(id: string): boolean;
 
     getMeta(key: string): string | null;
     setMeta(key: string, value: string): string;

@@ -2,7 +2,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { setupDatabaseSchema } from './schema';
-import type { Pipeline, Output, Job, JobLog, HistoryFilters } from '../types';
+import type { Pipeline, Output, Job, JobLog, HistoryFilters, Ingest } from '../types';
 
 const projectRoot = path.join(__dirname, '..', '..');
 const dbPath = path.join(projectRoot, 'data.db');
@@ -117,6 +117,24 @@ const deleteOldJobs = db.prepare(`
     WHERE (status IN ('stopped','failed') AND ended_at IS NOT NULL AND datetime(ended_at) < datetime('now', '-7 days'))
        OR datetime(COALESCE(ended_at, started_at)) < datetime('now', '-30 days')
 `);
+
+/* Ingest statements */
+const insertIngest = db.prepare(
+    'INSERT INTO ingests (id, filename, stream_key, loop, start_time) VALUES (@id, @filename, @stream_key, @loop, @start_time)',
+);
+const getIngestStmt = db.prepare(
+    'SELECT id, filename, stream_key AS streamKey, loop, start_time AS startTime FROM ingests WHERE id = ?',
+);
+const listIngestsStmt = db.prepare(
+    'SELECT id, filename, stream_key AS streamKey, loop, start_time AS startTime FROM ingests ORDER BY rowid ASC',
+);
+const listIngestsForFilenameStmt = db.prepare(
+    'SELECT id, filename, stream_key AS streamKey, loop, start_time AS startTime FROM ingests WHERE filename = ?',
+);
+const updateIngestStmt = db.prepare(
+    'UPDATE ingests SET filename = @filename, stream_key = @stream_key, loop = @loop, start_time = @start_time WHERE id = @id',
+);
+const deleteIngestStmt = db.prepare('DELETE FROM ingests WHERE id = ?');
 
 /* Meta statements */
 const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
@@ -473,6 +491,79 @@ export function cleanupOldJobs(): { deletedJobs: number; deletedLogs: number } {
         return { deletedJobs: jobResult.changes, deletedLogs: 0 };
     });
     return tx();
+}
+
+function rowToIngest(row: unknown): Ingest {
+    const r = row as {
+        id: string;
+        filename: string;
+        streamKey: string;
+        loop: number;
+        startTime: string;
+    };
+    return { ...r, loop: r.loop === 1 };
+}
+
+export function createIngest({
+    id,
+    filename,
+    streamKey,
+    loop,
+    startTime,
+}: {
+    id?: string;
+    filename: string;
+    streamKey: string;
+    loop: boolean;
+    startTime: string;
+}): Ingest {
+    const iid = id || crypto.randomBytes(8).toString('hex');
+    insertIngest.run({
+        id: iid,
+        filename,
+        stream_key: streamKey,
+        loop: loop ? 1 : 0,
+        start_time: startTime,
+    });
+    return rowToIngest(getIngestStmt.get(iid));
+}
+
+export function getIngest(id: string): Ingest | undefined {
+    const row = getIngestStmt.get(id);
+    return row ? rowToIngest(row) : undefined;
+}
+
+export function listIngests(): Ingest[] {
+    return (listIngestsStmt.all() as unknown[]).map(rowToIngest);
+}
+
+export function listIngestsForFilename(filename: string): Ingest[] {
+    return (listIngestsForFilenameStmt.all(filename) as unknown[]).map(rowToIngest);
+}
+
+export function updateIngest(
+    id: string,
+    {
+        filename,
+        streamKey,
+        loop,
+        startTime,
+    }: { filename: string; streamKey: string; loop: boolean; startTime: string },
+): Ingest | undefined {
+    const info = updateIngestStmt.run({
+        id,
+        filename,
+        stream_key: streamKey,
+        loop: loop ? 1 : 0,
+        start_time: startTime,
+    });
+    if (info.changes === 0) return undefined;
+    return rowToIngest(getIngestStmt.get(id));
+}
+
+export function deleteIngest(id: string): boolean {
+    const info = deleteIngestStmt.run(id);
+    return info.changes > 0;
 }
 
 export function getMeta(key: string): string | null {

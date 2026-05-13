@@ -46,5 +46,8 @@ declare global {
         togglePipelineHistoryPlayPause: () => void;
         saveServerName: () => Promise<void>;
         saveCustomEncoding: () => Promise<void>;
+        openAddIngestForm: () => void;
+        closeAddIngestForm: () => void;
+        saveIngest: () => Promise<void>;
     }
 }

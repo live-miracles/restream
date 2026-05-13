@@ -51,10 +51,55 @@
           </div>
         </section>
 
-        <!-- Recordings -->
+        <!-- Videos -->
         <section class="bg-base-200 rounded-xl p-5 shadow">
-          <h2 class="mb-4 text-lg font-semibold">Recordings</h2>
+          <h2 class="mb-4 text-lg font-semibold">Videos</h2>
           <div id="media-list" class="space-y-0">
+            <p class="text-sm opacity-70">Loading...</p>
+          </div>
+        </section>
+
+        <!-- Video Ingest -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Video Ingest</h2>
+            <button class="btn btn-accent btn-sm" onclick="openAddIngestForm()">Add</button>
+          </div>
+
+          <!-- Add form -->
+          <div id="ingest-add-form" class="bg-base-300 mb-4 hidden space-y-3 rounded-lg p-4">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Video File</legend>
+                <select id="ingest-file" class="select w-full">
+                  <option value="">Loading...</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Stream Key</legend>
+                <select id="ingest-stream-key" class="select w-full">
+                  <option value="">Loading...</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Start Time</legend>
+                <input type="text" id="ingest-start-time" class="input w-full" placeholder="e.g. 00:01:30" />
+              </fieldset>
+              <fieldset class="fieldset flex flex-col justify-end pb-2">
+                <label class="label cursor-pointer gap-2">
+                  <input type="checkbox" id="ingest-loop" class="checkbox checkbox-sm" />
+                  <span class="label-text">Loop</span>
+                </label>
+              </fieldset>
+            </div>
+            <div class="flex gap-2">
+              <button id="ingest-save-btn" class="btn btn-accent btn-sm" onclick="saveIngest()">Save</button>
+              <button class="btn btn-ghost btn-sm" onclick="closeAddIngestForm()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Ingest list -->
+          <div id="ingest-list">
             <p class="text-sm opacity-70">Loading...</p>
           </div>
         </section>

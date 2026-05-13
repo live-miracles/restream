@@ -11,6 +11,8 @@ import { registerOutputApi } from './api/outputs';
 import { registerEncodingsApi } from './api/encodings';
 import { registerPipelineApi } from './api/pipelines';
 import { registerRecordingApi } from './api/recording';
+import { registerIngestApi } from './api/ingest';
+import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
 import { createRecordingService } from './services/recording';
@@ -66,6 +68,9 @@ const outputLifecycle = createOutputLifecycleService({
     isInputOn: healthMonitor.isInputOn,
 });
 
+// ── Ingest service ────────────────────────────────────
+const ingestService = createIngestService({ db, mediaDir });
+
 // ── Recording service ─────────────────────────────────
 const recordingService = createRecordingService({
     db,
@@ -120,6 +125,7 @@ healthMonitor.registerRoutes(app);
 registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
 registerRecordingApi({ app, db, recording: recordingService, mediaDir });
+registerIngestApi({ app, db, ingestService });
 registerPreviewProxyRoutes({
     app,
     fetch,

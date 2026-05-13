@@ -39,26 +39,38 @@ export function registerRecordingApi({
         const files = (
             await Promise.all(
                 entries
-                    .filter((f) => f.endsWith('.mkv'))
+                    .filter((f) => f.endsWith('.mkv') || f.endsWith('.mp4') || f.endsWith('.mov'))
                     .map(async (name) => {
                         try {
                             const s = await stat(path.join(mediaDir, name));
-                            return { name, size: s.size, modifiedAt: s.mtime.toISOString() };
+                            const ingestCount = db.listIngestsForFilename(name).length;
+                            return {
+                                name,
+                                size: s.size,
+                                modifiedAt: s.mtime.toISOString(),
+                                ingestCount,
+                            };
                         } catch {
                             return null;
                         }
                     }),
             )
         )
-            .filter((f): f is { name: string; size: number; modifiedAt: string } => f !== null)
+            .filter(
+                (f): f is { name: string; size: number; modifiedAt: string; ingestCount: number } =>
+                    f !== null,
+            )
             .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
         return res.json({ files });
     });
 
     app.delete('/api/media/:filename', async (req, res) => {
         const filename = req.params.filename;
-        if (path.basename(filename) !== filename || !filename.endsWith('.mkv')) {
+        if (path.basename(filename) !== filename || !/\.(mkv|mp4|mov)$/i.test(filename)) {
             return res.status(400).json({ error: 'Invalid filename' });
+        }
+        if (db.listIngestsForFilename(filename).length > 0) {
+            return res.status(409).json({ error: 'Cannot delete: file has configured ingests' });
         }
         try {
             await unlink(path.join(mediaDir, filename));
