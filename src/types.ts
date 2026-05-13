@@ -3,7 +3,6 @@ export interface Pipeline {
     name: string;
     streamKey: string;
     encoding: string | null;
-    inputEverSeenLive: number;
 }
 
 export interface Output {
@@ -60,14 +59,8 @@ export interface Db {
     listPipelines(): Pipeline[];
     updatePipeline(
         id: string,
-        params: {
-            name: string;
-            streamKey: string;
-            encoding?: string | null;
-            inputEverSeenLive?: number;
-        },
+        params: { name: string; streamKey: string; encoding?: string | null },
     ): Pipeline | null;
-    markPipelineInputSeenLive(id: string): Pipeline | undefined;
     deletePipeline(id: string): boolean;
 
     createOutput(params: {

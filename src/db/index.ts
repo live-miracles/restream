@@ -20,19 +20,16 @@ function normalizeOutputEncodingValue(encoding: unknown): string {
 
 /* Pipeline statements */
 const insertPipeline = db.prepare(
-    'INSERT INTO pipelines (id, name, stream_key, encoding, input_ever_seen_live) VALUES (@id, @name, @stream_key, @encoding, @input_ever_seen_live)',
+    'INSERT INTO pipelines (id, name, stream_key, encoding) VALUES (@id, @name, @stream_key, @encoding)',
 );
 const getPipelineStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive FROM pipelines WHERE id = ?',
+    'SELECT id, name, stream_key AS streamKey, encoding FROM pipelines WHERE id = ?',
 );
 const listPipelinesStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding, input_ever_seen_live AS inputEverSeenLive FROM pipelines',
+    'SELECT id, name, stream_key AS streamKey, encoding FROM pipelines',
 );
 const updatePipelineStmt = db.prepare(
-    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding, input_ever_seen_live = @input_ever_seen_live WHERE id = @id',
-);
-const markPipelineInputSeenLiveStmt = db.prepare(
-    'UPDATE pipelines SET input_ever_seen_live = 1 WHERE id = @id',
+    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding WHERE id = @id',
 );
 const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
@@ -230,7 +227,7 @@ export function createPipeline({
         throw new Error('Pipeline.streamKey is required');
     }
     const pid = id || crypto.randomBytes(8).toString('hex');
-    insertPipeline.run({ id: pid, name, stream_key: streamKey, encoding, input_ever_seen_live: 0 });
+    insertPipeline.run({ id: pid, name, stream_key: streamKey, encoding });
     return getPipelineStmt.get(pid) as Pipeline;
 }
 
@@ -248,22 +245,10 @@ export function updatePipeline(
         name,
         streamKey,
         encoding = null,
-        inputEverSeenLive = 0,
-    }: { name: string; streamKey: string; encoding?: string | null; inputEverSeenLive?: number },
+    }: { name: string; streamKey: string; encoding?: string | null },
 ): Pipeline | null {
-    const info = updatePipelineStmt.run({
-        id,
-        name,
-        stream_key: streamKey,
-        encoding,
-        input_ever_seen_live: inputEverSeenLive,
-    });
+    const info = updatePipelineStmt.run({ id, name, stream_key: streamKey, encoding });
     return (info.changes > 0 ? getPipelineStmt.get(id) : null) as Pipeline | null;
-}
-
-export function markPipelineInputSeenLive(id: string): Pipeline | undefined {
-    markPipelineInputSeenLiveStmt.run({ id });
-    return getPipelineStmt.get(id) as Pipeline | undefined;
 }
 
 export function deletePipeline(id: string): boolean {

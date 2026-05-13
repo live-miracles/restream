@@ -104,10 +104,7 @@ export interface HealthMonitor {
         fn: (pipelineId: string) => { enabled: boolean; active: boolean },
     ): void;
     registerRoutes(app: Express): void;
-    resolveRuntimeInputState(
-        streamKey: string,
-        existingEverSeenLive?: number,
-    ): Promise<{ status: string; inputEverSeenLive: number }>;
+    resolveRuntimeInputState(streamKey: string): Promise<{ status: string }>;
     seedPipelineRuntimeState(pipelineId: string, status: string): void;
     start(): Promise<void>;
 }
@@ -128,15 +125,12 @@ const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 function computeInputStatus({
     pathAvailable,
     pathOnline,
-    hasEverSeenLive,
 }: {
     pathAvailable: boolean;
     pathOnline: boolean;
-    hasEverSeenLive: boolean;
 }): string {
     if (pathAvailable) return 'on';
     if (pathOnline) return 'warning';
-    if (hasEverSeenLive) return 'error';
     return 'off';
 }
 
@@ -375,10 +369,7 @@ export function createHealthMonitorService({
     } = { ready: false, checkedAt: null, readyAt: null, error: null };
     let mediamtxReadinessTimer: NodeJS.Timeout | null = null;
 
-    async function resolveRuntimeInputState(
-        streamKey: string,
-        existingEverSeenLive = 0,
-    ): Promise<{ status: string; inputEverSeenLive: number }> {
+    async function resolveRuntimeInputState(streamKey: string): Promise<{ status: string }> {
         let pathInfo: PathInfo | null = null;
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
@@ -386,26 +377,11 @@ export function createHealthMonitorService({
             const items = (paths as { items?: PathInfo[] })?.items || [];
             pathInfo = items.find((pathItem) => pathItem?.name === effectivePath) || null;
         } catch {
-            return {
-                status: computeInputStatus({
-                    pathAvailable: false,
-                    pathOnline: false,
-                    hasEverSeenLive: Number(existingEverSeenLive || 0) === 1,
-                }),
-                inputEverSeenLive: Number(existingEverSeenLive || 0),
-            };
+            return { status: computeInputStatus({ pathAvailable: false, pathOnline: false }) };
         }
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
-        const nextEverSeenLive = pathAvailable ? 1 : Number(existingEverSeenLive || 0);
-        return {
-            status: computeInputStatus({
-                pathAvailable,
-                pathOnline,
-                hasEverSeenLive: nextEverSeenLive === 1,
-            }),
-            inputEverSeenLive: nextEverSeenLive,
-        };
+        return { status: computeInputStatus({ pathAvailable, pathOnline }) };
     }
 
     async function checkMediamtxReadiness() {
@@ -466,14 +442,10 @@ export function createHealthMonitorService({
             const pathInfo = pathByName.get(effectivePath) || null;
             const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
             const pathOnline = !!pathInfo?.online;
-            const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1 || pathAvailable;
             pipelineInputStatusHistory.set(
                 pipeline.id,
-                computeInputStatus({ pathAvailable, pathOnline, hasEverSeenLive }),
+                computeInputStatus({ pathAvailable, pathOnline }),
             );
-            if (pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
-                db.markPipelineInputSeenLive(pipeline.id);
-            }
             if (pathAvailable) {
                 scheduleFfprobe(pipeline.id, pipeline.streamKey);
             }
@@ -594,12 +566,7 @@ export function createHealthMonitorService({
         const streamKey = pipeline.streamKey;
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
-        const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1;
-        const inputStatus = computeInputStatus({ pathAvailable, pathOnline, hasEverSeenLive });
-
-        if (pathAvailable && !hasEverSeenLive) {
-            db.markPipelineInputSeenLive(pipeline.id);
-        }
+        const inputStatus = computeInputStatus({ pathAvailable, pathOnline });
 
         const effectivePath = buildMediamtxPath(streamKey);
         const publisher = publisherByPath.get(effectivePath) || null;
