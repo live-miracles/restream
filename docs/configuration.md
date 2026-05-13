@@ -1,8 +1,8 @@
 # Configuration Reference
 
-Restream is configured through environment variables. There is no JSON config file.
+Restream uses environment variables for process-level settings and the Settings page for runtime app settings. There is no JSON config file.
 
-Server name and custom encodings are managed at runtime via the Settings page (`/settings.html`) and stored in SQLite.
+Server name, ingest security, and custom encodings are managed at runtime via the Settings page (`/settings.html`) and stored in SQLite.
 
 ## 1. Environment Variables
 
@@ -75,14 +75,46 @@ Publisher-facing ingest URLs shown in the dashboard are rewritten by the fronten
 
 ## 2. Runtime Settings (UI)
 
-Server name and custom encodings are stored in the SQLite `meta` and `encodings` tables and managed through the Settings page at `/settings.html`.
+Server name, ingest security, and custom encodings are stored in SQLite and managed through the Settings page at `/settings.html`.
 
 | Setting | Default | Description |
 |---|---|---|
 | Server name | `Restream` | Display name shown in the dashboard navbar |
+| Ingest security failure limit | `10` | Failed publish attempts from one IP before a temporary ban |
+| Ingest security failure window | `60000` ms | Rolling window for failed publish attempts |
+| Ingest security ban duration | `600000` ms | Temporary ban duration after the failure limit is reached |
+| Ingest security tracked IP limit | `10000` | Maximum number of IP records kept in memory for ingest security |
 | Encodings | — | Custom FFmpeg encoding presets; see [API Reference](./api-reference.md) for the `/encodings` endpoints |
 
-## 3. MediaMTX Ports
+MediaMTX delegates publish/read/playback authorization to the local Restream endpoint
+`/internal/mediamtx/auth`. Publish attempts must target a configured `live/<streamKey>` path.
+Repeated unknown-key attempts from the same publisher IP are temporarily banned.
+
+## 3. Local Host Run
+
+For long-lived systemd deployment on a Linux host, see the [Linux VM Deployment](../README.md#linux-vm-deployment-gcp) section in the README.
+
+MediaMTX and the Node.js app run as host processes.
+
+```sh
+npm ci
+./mediamtx     # or mediamtx.exe on Windows
+npm start      # run in a second terminal
+```
+
+For development mode, run each in its own terminal:
+
+```sh
+npm run dev             # backend with live reload via tsx watch
+npm run watch:frontend  # frontend TypeScript in watch mode
+npm run css-watch       # Tailwind CSS in watch mode
+```
+
+`npm run dev` runs the backend TypeScript source directly via `tsx` — no compile step needed.
+
+If you encounter port conflicts, check for running MediaMTX or Node processes and stop them manually.
+
+## 4. MediaMTX Ports
 
 | Port | Protocol | Purpose |
 |---|---|---|
@@ -91,7 +123,11 @@ Server name and custom encodings are stored in the SQLite `meta` and `encodings`
 | `9997` | HTTP | MediaMTX API |
 | `8888` | HTTP | HLS preview interface (localhost-only) |
 
-## 4. Input Preview Proxy
+MediaMTX publish/read/playback authorization calls the Node app on
+`http://127.0.0.1:3030/internal/mediamtx/auth`. Do not expose `/internal/*` through a public
+reverse proxy. Keep MediaMTX API, HLS, and the auth callback on localhost-only bindings.
+
+## 5. Input Preview Proxy
 
 Dashboard input preview uses an app-level HLS proxy endpoint instead of sending browser traffic directly
 to MediaMTX.

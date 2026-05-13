@@ -75,9 +75,17 @@ export interface Encoding {
 
 export interface ConfigData {
     serverName?: string;
+    ingestSecurity?: IngestSecurityConfig;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];
     jobs: Job[];
+}
+
+export interface IngestSecurityConfig {
+    failureLimit: number;
+    failureWindowMs: number;
+    banMs: number;
+    trackedIpLimit: number;
 }
 
 export interface InputHealth {

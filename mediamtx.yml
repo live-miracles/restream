@@ -31,11 +31,20 @@ api: yes
 apiAddress: 127.0.0.1:9997   # used by restream for /v3/paths and /v3/*conns
 
 # ── Access control ──────────────────────────────────────────────────────────
-# Allow any client to publish without authentication.
-# Restrict read, playback, and API access to localhost unless you replace 'any'
-# with named users for authenticated external readers or API clients.
+# Delegate publish/read/playback decisions to the local Restream auth endpoint.
+# The endpoint validates live/<streamKey> publishes and temporarily bans IPs that
+# repeatedly try unknown stream keys.
+authMethod: http
+authHTTPAddress: http://127.0.0.1:3030/internal/mediamtx/auth
+authHTTPExclude:
+    - action: api
+    - action: metrics
+    - action: pprof
+
+# API/metrics/pprof stay on internal auth so localhost tooling can keep using
+# the MediaMTX control plane even while publish/read/playback auth is delegated.
 authInternalUsers:
-    # 1. Localhost: Allowed to read, publish, and access the API
+    # 1. Localhost: Allowed to read, publish, and access internal control endpoints
     - user: any
       pass:
       ips: ['127.0.0.1', '::1']
@@ -44,6 +53,8 @@ authInternalUsers:
           - action: read
           - action: playback
           - action: api
+          - action: metrics
+          - action: pprof
 
     # 2. Outsiders (Any IP): Allowed ONLY to publish
     - user: any

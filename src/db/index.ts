@@ -2,13 +2,22 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { setupDatabaseSchema } from './schema';
-import type { Pipeline, Output, Job, JobLog, HistoryFilters, Ingest } from '../types';
+import type {
+    Pipeline,
+    Output,
+    Job,
+    JobLog,
+    HistoryFilters,
+    Ingest,
+    IngestSecurityConfig,
+} from '../types';
 
 const projectRoot = path.join(__dirname, '..', '..');
 const dbPath = path.join(projectRoot, 'data.db');
 
 const db = new Database(dbPath);
 setupDatabaseSchema(db);
+const INGEST_SECURITY_CONFIG_META_KEY = 'ingest_security_config';
 
 function normalizeOutputEncodingValue(encoding: unknown): string {
     const normalized = String(encoding ?? 'source')
@@ -591,4 +600,21 @@ export function getServerName(): string {
 export function setServerName(name: string): string {
     const trimmed = typeof name === 'string' ? name.trim() : '';
     return setMeta('server_name', trimmed || 'Name');
+}
+
+export function getIngestSecurityConfig(): Partial<IngestSecurityConfig> {
+    const raw = getMeta(INGEST_SECURITY_CONFIG_META_KEY);
+    if (!raw) return {};
+
+    try {
+        const parsed = JSON.parse(raw) as Partial<IngestSecurityConfig>;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        return parsed;
+    } catch {
+        return {};
+    }
+}
+
+export function setIngestSecurityConfig(config: IngestSecurityConfig): string {
+    return setMeta(INGEST_SECURITY_CONFIG_META_KEY, JSON.stringify(config));
 }
