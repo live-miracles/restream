@@ -207,6 +207,12 @@ journalctl -u restream.service -f
 journalctl -u mediamtx.service -f
 ```
 
+Stop services (without disabling boot start):
+
+```sh
+sudo bash /opt/restream/scripts/server-down.sh
+```
+
 Restart services:
 
 ```sh
