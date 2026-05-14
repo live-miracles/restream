@@ -147,15 +147,9 @@ export function registerPipelineApi({
             }
             const streamKey = resolvedStreamKey.streamKey!;
 
-            const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
+            const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey);
             const pipeline = db.createPipeline({ name: name as string, streamKey, encoding });
-            const pipelineWithState =
-                db.updatePipeline(pipeline.id, {
-                    name: pipeline.name,
-                    streamKey: pipeline.streamKey,
-                    encoding: pipeline.encoding,
-                    inputEverSeenLive: runtimeState.inputEverSeenLive,
-                }) || pipeline;
+            const pipelineWithState = pipeline;
 
             db.appendPipelineEvent(
                 pipelineWithState.id,
@@ -222,16 +216,14 @@ export function registerPipelineApi({
                 }
             }
 
-            let inputEverSeenLive = Number(existing.inputEverSeenLive || 0);
             let initialInputStatus: string | null = null;
 
             if (streamKeyChanging) {
-                const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey, 0);
-                inputEverSeenLive = runtimeState.inputEverSeenLive;
+                const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey);
                 initialInputStatus = runtimeState.status;
             }
 
-            const updated = db.updatePipeline(id, { name, streamKey, encoding, inputEverSeenLive });
+            const updated = db.updatePipeline(id, { name, streamKey, encoding });
             if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
 
             if (streamKeyChanging) {

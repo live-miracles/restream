@@ -15,7 +15,7 @@ const defaults = {
     logDir: 'test/artifacts/logs',
     appLogPath: 'test/artifacts/logs/app-under-test.log',
     verifyAppRetries: 30,
-    inputFile: 'test/colorbar-timer.mp4',
+    inputFile: 'media/colorbar-timer.mp4',
     rtmpOutputBase: '',
     inputProtocols: 'rtmp,srt',
     maxRetries: 30,

@@ -85,6 +85,7 @@ interface InputHealth {
 interface PipelineHealth {
     input: InputHealth;
     outputs: Record<string, OutputHealth>;
+    recording: { enabled: boolean; active: boolean };
 }
 
 interface HealthSnapshot {
@@ -98,11 +99,12 @@ export interface HealthMonitor {
     clearPipelineRuntimeState(pipelineId: string): void;
     isInputOn(pipelineId: string): boolean;
     registerInputRecoveryHandler(fn: (pipelineId: string) => void): void;
+    registerInputLostHandler(fn: (pipelineId: string) => void): void;
+    registerRecordingStateProvider(
+        fn: (pipelineId: string) => { enabled: boolean; active: boolean },
+    ): void;
     registerRoutes(app: Express): void;
-    resolveRuntimeInputState(
-        streamKey: string,
-        existingEverSeenLive?: number,
-    ): Promise<{ status: string; inputEverSeenLive: number }>;
+    resolveRuntimeInputState(streamKey: string): Promise<{ status: string }>;
     seedPipelineRuntimeState(pipelineId: string, status: string): void;
     start(): Promise<void>;
 }
@@ -123,15 +125,12 @@ const MEDIAMTX_CHECK_INTERVAL_MS = 5000;
 function computeInputStatus({
     pathAvailable,
     pathOnline,
-    hasEverSeenLive,
 }: {
     pathAvailable: boolean;
     pathOnline: boolean;
-    hasEverSeenLive: boolean;
 }): string {
     if (pathAvailable) return 'on';
     if (pathOnline) return 'warning';
-    if (hasEverSeenLive) return 'error';
     return 'off';
 }
 
@@ -209,7 +208,14 @@ function indexPublishersByPath(
     return publisherByPath;
 }
 
-const MANAGED_READER_TYPES = new Set(['rtmpconn', 'srtconn', 'hlsmuxer']);
+const MANAGED_READER_TYPES = new Set([
+    'rtmpconn',
+    'srtconn',
+    'hlsmuxer',
+    'hlssession',
+    'rtspsession',
+    'hlsreader',
+]);
 
 function buildUnexpectedReaders(pathInfo: PathInfo | null): {
     count: number;
@@ -258,6 +264,10 @@ export function createHealthMonitorService({
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
 }): HealthMonitor {
     let inputRecoveryHandler: ((pipelineId: string) => void) | null = null;
+    let inputLostHandler: ((pipelineId: string) => void) | null = null;
+    let recordingStateProvider:
+        | ((pipelineId: string) => { enabled: boolean; active: boolean })
+        | null = null;
 
     const ffprobeResultByPipelineId = new Map<string, StreamInfo>();
     const ffprobeRetryByPipelineId = new Map<
@@ -366,10 +376,7 @@ export function createHealthMonitorService({
     } = { ready: false, checkedAt: null, readyAt: null, error: null };
     let mediamtxReadinessTimer: NodeJS.Timeout | null = null;
 
-    async function resolveRuntimeInputState(
-        streamKey: string,
-        existingEverSeenLive = 0,
-    ): Promise<{ status: string; inputEverSeenLive: number }> {
+    async function resolveRuntimeInputState(streamKey: string): Promise<{ status: string }> {
         let pathInfo: PathInfo | null = null;
         try {
             const paths = await fetchMediamtxJson('/v3/paths/list');
@@ -377,26 +384,11 @@ export function createHealthMonitorService({
             const items = (paths as { items?: PathInfo[] })?.items || [];
             pathInfo = items.find((pathItem) => pathItem?.name === effectivePath) || null;
         } catch {
-            return {
-                status: computeInputStatus({
-                    pathAvailable: false,
-                    pathOnline: false,
-                    hasEverSeenLive: Number(existingEverSeenLive || 0) === 1,
-                }),
-                inputEverSeenLive: Number(existingEverSeenLive || 0),
-            };
+            return { status: computeInputStatus({ pathAvailable: false, pathOnline: false }) };
         }
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
-        const nextEverSeenLive = pathAvailable ? 1 : Number(existingEverSeenLive || 0);
-        return {
-            status: computeInputStatus({
-                pathAvailable,
-                pathOnline,
-                hasEverSeenLive: nextEverSeenLive === 1,
-            }),
-            inputEverSeenLive: nextEverSeenLive,
-        };
+        return { status: computeInputStatus({ pathAvailable, pathOnline }) };
     }
 
     async function checkMediamtxReadiness() {
@@ -457,14 +449,10 @@ export function createHealthMonitorService({
             const pathInfo = pathByName.get(effectivePath) || null;
             const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
             const pathOnline = !!pathInfo?.online;
-            const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1 || pathAvailable;
             pipelineInputStatusHistory.set(
                 pipeline.id,
-                computeInputStatus({ pathAvailable, pathOnline, hasEverSeenLive }),
+                computeInputStatus({ pathAvailable, pathOnline }),
             );
-            if (pathAvailable && Number(pipeline.inputEverSeenLive || 0) !== 1) {
-                db.markPipelineInputSeenLive(pipeline.id);
-            }
             if (pathAvailable) {
                 scheduleFfprobe(pipeline.id, pipeline.streamKey);
             }
@@ -557,7 +545,7 @@ export function createHealthMonitorService({
         };
     }
 
-    function buildOutputHealthSnapshot(latestJob: Job | null): OutputHealth {
+    function buildOutputHealthSnapshot(latestJob: Job | null, desiredState: string): OutputHealth {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -566,7 +554,7 @@ export function createHealthMonitorService({
         const totalSize = totalSizeRaw === null ? null : Math.trunc(totalSizeRaw);
         const bitrateKbps = parseFfmpegBitrateKbps(ffmpegProgress?.bitrate);
 
-        if (latestJob?.status === 'failed') status = 'error';
+        if (latestJob?.status === 'failed' && desiredState === 'running') status = 'error';
         if (latestJob?.status === 'running') {
             const hasData = (totalSize !== null && totalSize > 0) || bitrateKbps !== null;
             status = hasData ? 'on' : 'warning';
@@ -585,12 +573,7 @@ export function createHealthMonitorService({
         const streamKey = pipeline.streamKey;
         const pathAvailable = !!(pathInfo?.available || pathInfo?.ready);
         const pathOnline = !!pathInfo?.online;
-        const hasEverSeenLive = Number(pipeline.inputEverSeenLive || 0) === 1;
-        const inputStatus = computeInputStatus({ pathAvailable, pathOnline, hasEverSeenLive });
-
-        if (pathAvailable && !hasEverSeenLive) {
-            db.markPipelineInputSeenLive(pipeline.id);
-        }
+        const inputStatus = computeInputStatus({ pathAvailable, pathOnline });
 
         const effectivePath = buildMediamtxPath(streamKey);
         const publisher = publisherByPath.get(effectivePath) || null;
@@ -604,6 +587,13 @@ export function createHealthMonitorService({
             inputTransition.current === 'on'
         ) {
             inputRecoveryHandler?.(pipeline.id);
+        }
+        if (
+            inputTransition.changed &&
+            inputTransition.previous === 'on' &&
+            inputTransition.current !== 'on'
+        ) {
+            inputLostHandler?.(pipeline.id);
         }
         if (inputTransition.changed) {
             if (inputTransition.current === 'on') {
@@ -626,10 +616,15 @@ export function createHealthMonitorService({
         for (const output of pipelineOutputs) {
             outputsHealth[output.id] = buildOutputHealthSnapshot(
                 jobByOutputId.get(output.id) || null,
+                output.desiredState,
             );
         }
 
-        return { input: inputHealth, outputs: outputsHealth };
+        return {
+            input: inputHealth,
+            outputs: outputsHealth,
+            recording: recordingStateProvider?.(pipeline.id) ?? { enabled: false, active: false },
+        };
     }
 
     async function buildHealthSnapshot(): Promise<HealthSnapshot> {
@@ -768,6 +763,14 @@ export function createHealthMonitorService({
         isInputOn,
         registerInputRecoveryHandler(fn: (pipelineId: string) => void) {
             inputRecoveryHandler = fn;
+        },
+        registerInputLostHandler(fn: (pipelineId: string) => void) {
+            inputLostHandler = fn;
+        },
+        registerRecordingStateProvider(
+            fn: (pipelineId: string) => { enabled: boolean; active: boolean },
+        ) {
+            recordingStateProvider = fn;
         },
         registerRoutes,
         resolveRuntimeInputState,

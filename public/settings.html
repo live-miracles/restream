@@ -2,15 +2,15 @@
 <html lang="en" data-theme="dim">
   <head>
     <meta charset="UTF-8" />
-    <title>Settings</title>
+    <title data-name="Settings">Settings</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
     <script type="module" src="js/features/settings-entry.js"></script>
   </head>
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
     <div class="navbar bg-base-100 shrink-0">
-      <div class="flex-1">
-        <span class="px-2 text-xl font-semibold">Restream</span>
+      <div class="flex flex-1 items-center gap-3">
+        <button class="btn btn-ghost text-xl" id="server-name" onclick="location.href = '/'">Restream</button>
       </div>
       <div class="flex flex-1 justify-end">
         <ul class="menu menu-horizontal px-1">
@@ -48,6 +48,59 @@
             <input type="text" id="settings-server-name" class="input w-64" placeholder="Name" />
             <button class="btn btn-accent btn-sm" onclick="saveServerName()">Save</button>
             <span id="server-name-saved" class="text-success hidden text-sm">Saved</span>
+          </div>
+        </section>
+
+        <!-- Videos -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <h2 class="mb-4 text-lg font-semibold">Videos</h2>
+          <div id="media-list" class="space-y-0">
+            <p class="text-sm opacity-70">Loading...</p>
+          </div>
+        </section>
+
+        <!-- Video Ingest -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Video Ingest</h2>
+            <button class="btn btn-accent btn-sm" onclick="openAddIngestForm()">Add</button>
+          </div>
+
+          <!-- Add form -->
+          <div id="ingest-add-form" class="bg-base-300 mb-4 hidden space-y-3 rounded-lg p-4">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Video File</legend>
+                <select id="ingest-file" class="select w-full">
+                  <option value="">Loading...</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Stream Key</legend>
+                <select id="ingest-stream-key" class="select w-full">
+                  <option value="">Loading...</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Start Time</legend>
+                <input type="text" id="ingest-start-time" class="input w-full" placeholder="e.g. 00:01:30" />
+              </fieldset>
+              <fieldset class="fieldset flex flex-col justify-end pb-2">
+                <label class="label cursor-pointer gap-2">
+                  <input type="checkbox" id="ingest-loop" class="checkbox checkbox-sm" />
+                  <span class="label-text">Loop</span>
+                </label>
+              </fieldset>
+            </div>
+            <div class="flex gap-2">
+              <button id="ingest-save-btn" class="btn btn-accent btn-sm" onclick="saveIngest()">Save</button>
+              <button class="btn btn-ghost btn-sm" onclick="closeAddIngestForm()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Ingest list -->
+          <div id="ingest-list">
+            <p class="text-sm opacity-70">Loading...</p>
           </div>
         </section>
 

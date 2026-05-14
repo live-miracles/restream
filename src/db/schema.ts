@@ -82,6 +82,18 @@ export function setupDatabaseSchema(db: Database.Database): void {
 
     db.prepare(
         `
+  CREATE TABLE IF NOT EXISTS ingests (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    stream_key TEXT NOT NULL,
+    loop INTEGER NOT NULL DEFAULT 0,
+    start_time TEXT NOT NULL DEFAULT ''
+  )
+`,
+    ).run();
+
+    db.prepare(
+        `
   CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
