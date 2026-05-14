@@ -82,31 +82,7 @@ Server name and custom encodings are stored in the SQLite `meta` and `encodings`
 | Server name | `Restream` | Display name shown in the dashboard navbar |
 | Encodings | — | Custom FFmpeg encoding presets; see [API Reference](./api-reference.md) for the `/encodings` endpoints |
 
-## 3. Local Host Run
-
-For long-lived systemd deployment on a Linux host, see the [Linux VM Deployment](../README.md#linux-vm-deployment-gcp) section in the README.
-
-MediaMTX and the Node.js app run as host processes.
-
-```sh
-npm ci
-./mediamtx     # or mediamtx.exe on Windows
-npm start      # run in a second terminal
-```
-
-For development mode, run each in its own terminal:
-
-```sh
-npm run dev             # backend with live reload via tsx watch
-npm run watch:frontend  # frontend TypeScript in watch mode
-npm run css-watch       # Tailwind CSS in watch mode
-```
-
-`npm run dev` runs the backend TypeScript source directly via `tsx` — no compile step needed.
-
-If you encounter port conflicts, check for running MediaMTX or Node processes and stop them manually.
-
-## 4. MediaMTX Ports
+## 3. MediaMTX Ports
 
 | Port | Protocol | Purpose |
 |---|---|---|
@@ -115,7 +91,7 @@ If you encounter port conflicts, check for running MediaMTX or Node processes an
 | `9997` | HTTP | MediaMTX API |
 | `8888` | HTTP | HLS preview interface (localhost-only) |
 
-## 5. Input Preview Proxy
+## 4. Input Preview Proxy
 
 Dashboard input preview uses an app-level HLS proxy endpoint instead of sending browser traffic directly
 to MediaMTX.

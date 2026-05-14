@@ -5,18 +5,19 @@ This is the short map of how Restream fits together. The code is the source of t
 ## System Shape
 
 ```text
-Publisher
-  -> MediaMTX ingest (RTMP or SRT)
-  -> FFmpeg output jobs (pull from MediaMTX via RTMP or SRT)
-  -> External streaming destinations
-
-Browser dashboard
-  -> Restream Node API
-  -> SQLite data.db
-  -> MediaMTX control/health API
+Publisher (RTMP/SRT)  ─┐
+Video file (/media/)  ─┤─> MediaMTX ingest -> FFmpeg output jobs -> External destinations
+                        │
+Browser dashboard ──────┤-> Restream Node API -> SQLite data.db
+                             └-> MediaMTX control/health API
 ```
 
 MediaMTX handles media transport. Restream handles control-plane state, dashboard APIs, FFmpeg job orchestration, health aggregation, and recovery decisions.
+
+Input sources:
+- **Live ingest** — publisher sends RTMP or SRT to MediaMTX
+- **Video ingest** — a pre-recorded video from the `/media` folder is streamed into a pipeline via MediaMTX (loop and start-time configurable)
+- **Recording** — any live pipeline can be recorded to an MP4 file in `/media`
 
 ## Runtime Components
 
@@ -38,6 +39,9 @@ MediaMTX handles media transport. Restream handles control-plane state, dashboar
 | `jobs` | Current output process state; one row per output |
 | `job_logs` | Lifecycle, stderr, control, and history rows |
 | `meta` | Small persisted metadata (server name, custom encodings) |
+| `ingests` | Video ingest configurations (file, stream key, loop, start time) |
+
+Media files (recordings and video ingest sources) live in the `media/` directory on disk and are not tracked in SQLite beyond ingest configuration rows.
 
 The app also keeps short-lived in-memory state for live child process handles, FFmpeg progress, output media details, stop requests, probe cache, health snapshots, and recovery timers. SQLite is the durable state; process maps are rebuilt naturally as jobs start and stop.
 
@@ -124,18 +128,6 @@ The frontend talks only to Restream APIs. It does not call MediaMTX directly.
 | History logs | on demand | Fetched only when the user opens a history tab |
 
 When the tab is hidden the poll interval drops to 30 s for all endpoints.
-
-## Host Runtime
-
-The current expected runtime is host processes:
-
-```text
-MediaMTX :1935 :8890 :8888 :9997
-Node app :3030
-SQLite   ./data.db
-```
-
-Start MediaMTX from the project root with `./mediamtx` or `mediamtx.exe`, then start the app separately with `npm start`. Long-lived Linux deployment is covered in the [Linux VM Deployment](../README.md#linux-vm-deployment-gcp) section in the README.
 
 ## Known Constraints
 
