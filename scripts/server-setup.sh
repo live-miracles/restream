@@ -113,15 +113,14 @@ chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR
 
 step "6/8 Application"
 if [[ ! -d "$APP_DIR/.git" ]]; then
-    sudo -u "$SERVICE_USER" git clone "$REPO_URL" "$APP_DIR"
+    git clone "$REPO_URL" "$APP_DIR"
 else
     echo "Repository already present at $APP_DIR, skipping clone."
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 fi
 cd "$APP_DIR"
-sudo -u "$SERVICE_USER" npm ci
-sudo -u "$SERVICE_USER" npm run build
-sudo -u "$SERVICE_USER" npm prune --omit=dev
+npm ci
+npm run build
+npm prune --omit=dev
 echo "Build complete."
 
 # ── 7. Config and data ───────────────────────────────────────────────────────
@@ -131,11 +130,18 @@ cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml"
 echo "Config written to $CONF_DIR/"
 
-# data.db lives in DATA_DIR so it survives a full re-clone of the app.
-# A symlink in the app root keeps the app's default path working without config changes.
-sudo -u "$SERVICE_USER" touch "$DATA_DIR/data.db"
+# data.db and media/ live in DATA_DIR so they survive a full re-clone of the app.
+# Symlinks in the app root keep the app's default paths working without config changes.
+touch "$DATA_DIR/data.db"
+chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR/data.db"
 if [[ ! -L "$APP_DIR/data.db" ]]; then
-    sudo -u "$SERVICE_USER" ln -sfn "$DATA_DIR/data.db" "$APP_DIR/data.db"
+    ln -sfn "$DATA_DIR/data.db" "$APP_DIR/data.db"
+fi
+
+mkdir -p "$DATA_DIR/media"
+chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR/media"
+if [[ ! -L "$APP_DIR/media" ]]; then
+    ln -sfn "$DATA_DIR/media" "$APP_DIR/media"
 fi
 
 # ── 8. Systemd units ─────────────────────────────────────────────────────────
@@ -186,7 +192,7 @@ RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/var/lib/restream /opt/restream
+ReadWritePaths=/var/lib/restream
 
 [Install]
 WantedBy=multi-user.target

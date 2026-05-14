@@ -15,13 +15,13 @@ CONF_DIR=/etc/restream
 
 echo "=== Pull latest code ==="
 cd "$APP_DIR"
-sudo -u restream git pull
+git pull
 
 echo
 echo "=== Rebuild ==="
-sudo -u restream npm ci
-sudo -u restream npm run build
-sudo -u restream npm prune --omit=dev
+npm ci
+npm run build
+npm prune --omit=dev
 
 echo
 echo "=== Deploy configs ==="

@@ -4,34 +4,38 @@ Restream is a host-run streaming control plane built on [MediaMTX](https://githu
 
 ## How It Works
 
-1. A publisher sends RTMP or SRT ingest to MediaMTX.
+1. A publisher sends RTMP or SRT ingest to MediaMTX, or a pre-recorded video in `/media` is used as the input source.
 2. Restream stores stream keys, pipelines, outputs, job state, and logs in local SQLite (`data.db`).
 3. When an output starts, Restream probes the MediaMTX path, spawns FFmpeg pulling from MediaMTX, and tracks the process.
 4. The dashboard reads `/config` and `/health` to show pipeline state, output state, system metrics, and logs.
 
 MediaMTX owns media routing. Restream owns orchestration and state.
 
-## Local Host Run
+## Features
 
-Install Node dependencies:
+- **Pipeline management** — create pipelines tied to stream keys; start/stop outputs per pipeline
+- **Output encoding** — source copy, 720p, 1080p, vertical-crop, vertical-rotate, and custom FFmpeg presets
+- **Pipeline recording** — record any live pipeline to an MP4 file in the `/media` folder
+- **Video ingest** — use pre-recorded videos from `/media` as input sources for pipelines (loops and start-time supported)
+- **Auto-recovery** — configurable retry and backoff when outputs fail or the input drops
+- **System metrics** — CPU, RAM, disk, and network throughput in the navbar
+- **HLS preview** — in-dashboard live preview proxied through the app
+
+## Local Development
+
+Install dependencies and build:
 
 ```sh
 npm ci
-```
-
-Build the TypeScript (backend + frontend):
-
-```sh
 npm run build
 ```
 
 Start MediaMTX with the checked-in config:
 
 ```sh
-./mediamtx
+./mediamtx        # Linux/macOS
+mediamtx.exe      # Windows
 ```
-
-On Windows, run `mediamtx.exe` from the project root instead.
 
 In another terminal, start the app:
 
@@ -39,70 +43,55 @@ In another terminal, start the app:
 npm start
 ```
 
-For development mode, run each in its own terminal:
-
-```sh
-npm run dev             # backend server with live reload via tsx watch
-npm run watch:frontend  # frontend TypeScript in watch mode
-npm run css-watch       # Tailwind CSS in watch mode
-```
-
-The `dev` script runs the backend TypeScript source directly via `tsx` — no compile step needed. Any change to `src/**/*.ts` is picked up immediately.
-
-To build once for production:
-
-```sh
-npm run build           # compiles both backend (src/ → dist/) and frontend (public/ts/ → public/js/)
-npm run build:backend   # backend only
-npm run build:frontend  # frontend only
-```
-
-Useful commands:
-
-```sh
-npm run css              # rebuild public/output.css from public/input.css
-npm run format           # run prettier
-npm run format:check     # check formatting without writing
-npm run test:routes      # unit tests for REST routes
-npm run test:normalization  # unit tests for URL normalization helpers
-npm run test:integration # 2x3 end-to-end test (requires app + MediaMTX running)
-```
-
 The dashboard runs on `http://localhost:3030/` by default.
+
+### Development Mode
+
+Run each in its own terminal for live reload:
+
+```sh
+npm run dev             # backend with live reload via tsx watch
+npm run watch:frontend  # frontend TypeScript in watch mode
+npm run watch:css       # Tailwind CSS in watch mode
+```
+
+`npm run dev` runs the backend source directly via `tsx` — no compile step needed.
+
+### Build Commands
+
+```sh
+npm run build           # backend (src/ → dist/) + frontend (public/ts/ → public/js/) + CSS
+npm run build:backend   # backend only
+npm run build:frontend  # frontend TS + CSS
+```
+
+**Always edit `public/ts/` not `public/js/`** — `public/js/` is generated.
+
+### Other Commands
+
+```sh
+npm run format           # run Prettier
+npm run format:check     # check formatting (used in CI)
+npm run test:routes      # unit tests for REST routes (no external services needed)
+npm run test:normalization  # unit tests for URL normalization helpers
+npm run test:integration # 2x3 end-to-end test (requires running app + MediaMTX)
+```
 
 ## Runtime Files
 
-- `data.db`: local SQLite database
-- `public/output.css`: generated CSS
-- `public/js/`: compiled frontend JavaScript (generated from `public/ts/`, do not edit directly)
-- `dist/`: compiled backend JavaScript (generated from `src/`, do not edit directly)
-
-These are runtime or generated artifacts and should not be edited directly unless noted.
-
-## Code Map
-
-- `src/index.ts`: Express app composition and route wiring
-- `src/types.ts`: shared backend TypeScript interfaces (Pipeline, Output, Job, Db, etc.)
-- `src/api/`: REST route modules
-- `src/services/`: health collection, output lifecycle, recovery, and startup timers
-- `src/db/`: SQLite schema and query helpers
-- `src/utils/`: shared backend helpers for FFmpeg, MediaMTX, retries, validation, and health shaping
-- `dist/`: compiled backend output (generated from `src/` by `npm run build:backend`)
-- `public/ts/`: TypeScript source for the dashboard frontend
-  - `public/ts/types.ts`: shared type definitions for all API shapes and view models
-  - `public/ts/global.d.ts`: `Window` augmentation and HLS.js interface declarations
-  - `public/ts/core/`: state, API client, pipeline data transformation, and utilities
-  - `public/ts/features/`: dashboard rendering, editor modals, input preview, and metric display
-  - `public/ts/history/`: output and pipeline log/history subsystem
-- `public/js/`: compiled output from `public/ts/` (generated by `npm run ts-build`)
-- `public/`: dashboard HTML, compiled CSS
-- `test/`: route and behavior tests
+| Path | Description |
+|---|---|
+| `data.db` | SQLite database — symlink to `/var/lib/restream/data.db` on VM deployments |
+| `media/` | Recordings and video ingest sources — symlink to `/var/lib/restream/media/` on VM deployments |
+| `public/output.css` | Generated CSS — do not edit |
+| `public/js/` | Compiled frontend JS — do not edit |
+| `dist/` | Compiled backend JS — do not edit |
 
 ## Testing
 
 ### Unit Tests
 
-These run without any external services:
+Run without any external services:
 
 ```sh
 npm run test:routes        # REST route tests
@@ -111,24 +100,11 @@ npm run test:normalization # URL normalization helpers
 
 ### Integration Test (2x3)
 
-The 2x3 test starts RTMP and SRT input publishers for two pipelines, starts all six outputs, waits for everything to reach `on` status, then stops the outputs. It requires a running app stack and MediaMTX.
-
-Start the stack first:
+Starts RTMP and SRT publishers for two pipelines, starts all six outputs, waits for `on` status, then stops everything. Requires a running app and MediaMTX.
 
 ```sh
-make run-host   # or make run-docker
+npm run test:integration
 ```
-
-Then run the test:
-
-```sh
-make run-2x3
-# or: npm run test:integration
-```
-
-The test reads from `test/colorbar-timer.mp4`, uses the manifest at `test/artifacts/session-2x3-manifest.json`, and writes logs to `test/artifacts/logs/`.
-
-The manifest is not rewritten by the test runner. Pipelines and outputs created during the run are deleted on shutdown unless `KEEP_RUNNING=1` is set.
 
 Environment overrides:
 
@@ -138,15 +114,15 @@ Environment overrides:
 | `MANIFEST_PATH` | `test/artifacts/session-2x3-manifest.json` | Path to manifest |
 | `INPUT_PROTOCOLS` | `rtmp,srt` | Comma-separated ingest protocols |
 | `TIMEOUT_SEC` | `120` | Seconds to wait for all streams to go green |
-| `KEEP_RUNNING` | `0` | Set to `1` to leave publishers and test resources in place after the run |
+| `KEEP_RUNNING` | `0` | Set to `1` to leave resources in place after the run |
 
 ### CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs three jobs on every push and pull request:
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
 
-- **format** — Prettier check (`npm run format:check`)
+- **format** — Prettier check
 - **unit** — route and normalization tests
-- **integration** — 2x3 end-to-end test; only runs after unit passes; installs ffmpeg via apt, downloads MediaMTX, starts both services, then runs the test; uploads `test/artifacts/logs/` as an artifact on failure
+- **integration** — 2x3 end-to-end test; installs FFmpeg, downloads MediaMTX, starts both services, runs the test; uploads logs as an artifact on failure
 
 ## Linux VM Deployment (GCP)
 
@@ -165,7 +141,7 @@ sudo git clone https://github.com/live-miracles/restream /opt/restream
 sudo bash /opt/restream/scripts/server-setup.sh
 ```
 
-The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, compiles the TypeScript source (`npm run build`), and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
+The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
 
 ### GCP Firewall Rules
 
@@ -173,7 +149,7 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `3030` | TCP | Dashboard (or put a reverse proxy on 80/443 instead) |
+| `3030` | TCP | Dashboard |
 | `1935` | TCP | RTMP ingest |
 | `8890` | UDP/TCP | SRT ingest |
 
@@ -181,7 +157,7 @@ MediaMTX API (`9997`) and HLS preview (`8888`) stay localhost-only.
 
 ### Settings
 
-To change the server name or manage custom encodings, open the Settings page: `http://<VM-external-IP>:3030/settings.html`.
+Open `http://<VM-external-IP>:3030/settings.html` to change the server name, manage custom encodings, and configure video ingests.
 
 To edit MediaMTX config and apply it:
 
@@ -227,10 +203,11 @@ curl -fsS http://127.0.0.1:3030/healthz
 curl -fsS http://127.0.0.1:3030/health
 ```
 
-Backup SQLite:
+Backup data:
 
 ```sh
 cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
+# media files live in /var/lib/restream/media/
 ```
 
 ### Reverse Proxy and TLS
@@ -247,7 +224,7 @@ Put a reverse proxy (nginx, Caddy) in front of port `3030` and terminate TLS at 
 
 ## Docs
 
-- [Architecture](docs/architecture.md): short system map and core behavior
-- [Configuration](docs/configuration.md): environment variables and app config
+- [Architecture](docs/architecture.md): system map, data model, and core flows
+- [Configuration](docs/configuration.md): environment variables and runtime settings
 - [API Reference](docs/api-reference.md): REST endpoints
-- [Health Mapping](docs/health-mapping.md): how statuses are derived
+- [Health Mapping](docs/health-mapping.md): how input and output statuses are derived
