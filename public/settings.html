@@ -2,15 +2,15 @@
 <html lang="en" data-theme="dim">
   <head>
     <meta charset="UTF-8" />
-    <title>Settings</title>
+    <title data-name="Settings">Settings</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
     <script type="module" src="js/features/settings-entry.js"></script>
   </head>
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
     <div class="navbar bg-base-100 shrink-0">
-      <div class="flex-1">
-        <span class="px-2 text-xl font-semibold">Restream</span>
+      <div class="flex flex-1 items-center gap-3">
+        <button class="btn btn-ghost text-xl" id="server-name" onclick="location.href = '/'">Restream</button>
       </div>
       <div class="flex flex-1 justify-end">
         <ul class="menu menu-horizontal px-1">
