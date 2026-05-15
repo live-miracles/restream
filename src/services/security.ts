@@ -343,7 +343,11 @@ export function createIngestSecurityService({
         }
 
         if (!isKnownStreamKey(streamKey)) {
-            refreshStreamKeysInBackground({ protocol, path, streamKeyMasked: maskToken(streamKey) });
+            refreshStreamKeysInBackground({
+                protocol,
+                path,
+                streamKeyMasked: maskToken(streamKey),
+            });
             return recordFailure(ip, 'unknown_stream_key', {
                 protocol,
                 path,
