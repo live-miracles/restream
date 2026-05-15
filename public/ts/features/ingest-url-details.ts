@@ -1,4 +1,4 @@
-import { copyData } from '../core/utils.js';
+import { copyData, formatMaskedStreamKey } from '../core/utils.js';
 
 export const PROTOCOL_LABELS: Record<string, string> = {
     rtmp: 'RTMP',
@@ -182,7 +182,6 @@ function buildProtocolDetailModel(
                         value: formatPortDisplay(parsedDetails),
                         copyValue: parsedDetails.port,
                     },
-                    { label: 'App Name', value: parsedDetails.application },
                 ] as DetailRow[]
             ).filter((row) => row.value),
         };
@@ -199,7 +198,21 @@ function buildProtocolDetailModel(
                     value: formatPortDisplay(parsedDetails),
                     copyValue: parsedDetails.port,
                 },
-                { label: 'Stream ID', value: parsedDetails.streamId, wide: true },
+                {
+                    label: 'Stream ID',
+                    value: parsedDetails.streamKey
+                        ? parsedDetails.streamId.replace(
+                              parsedDetails.streamKey,
+                              formatMaskedStreamKey(parsedDetails.streamKey),
+                          )
+                        : parsedDetails.streamId,
+                    copyValue: parsedDetails.streamId,
+                },
+                {
+                    label: 'Mode',
+                    value: parsedDetails.mode || 'caller (default)',
+                    copyValue: parsedDetails.mode || 'caller',
+                },
                 parsedDetails.latency
                     ? {
                           label: 'Latency',
@@ -207,11 +220,6 @@ function buildProtocolDetailModel(
                           copyValue: parsedDetails.latency,
                       }
                     : null,
-                {
-                    label: 'Mode',
-                    value: parsedDetails.mode || 'caller (default)',
-                    copyValue: parsedDetails.mode || 'caller',
-                },
                 parsedDetails.passphrase
                     ? { label: 'Passphrase', value: parsedDetails.passphrase }
                     : null,

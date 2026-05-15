@@ -183,8 +183,7 @@ export async function fetchMediamtxJson(endpoint: string): Promise<unknown> {
 }
 
 // ── Pull URL builders ─────────────────────────────────
-// FFmpeg output jobs pull the stream from MediaMTX using a protocol that matches the
-// output destination: RTMP outputs pull via RTMP, SRT and HLS outputs pull via SRT.
+// FFmpeg output jobs always pull from MediaMTX via RTMP regardless of output destination.
 
 export function buildPullInputUrl(streamKey: string, pullProtocol: string): string {
     const effectivePath = buildMediamtxPath(streamKey);

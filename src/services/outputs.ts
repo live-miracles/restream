@@ -57,17 +57,6 @@ export interface OutputLifecycle {
     ): { stopped: boolean; reason: string };
 }
 
-function resolvePullProtocol(outputUrl: string): string {
-    try {
-        const parsed = new URL(outputUrl);
-        if (parsed.protocol === 'srt:') return 'srt';
-        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return 'srt';
-    } catch {
-        // fall through
-    }
-    return 'rtmp';
-}
-
 export function createOutputLifecycleService({
     db,
     spawn,
@@ -372,8 +361,7 @@ export function createOutputLifecycleService({
         if (!outputUrl) throw createHttpError(400, 'Output URL is empty');
         if (!validateOutputUrl(outputUrl)) throw createHttpError(400, INVALID_OUTPUT_URL_ERROR);
 
-        const pullProtocol = resolvePullProtocol(outputUrl);
-        const inputUrl = buildPullInputUrl(pipeline.streamKey, pullProtocol);
+        const inputUrl = buildPullInputUrl(pipeline.streamKey, 'rtmp');
         const encoding = normalizeOutputEncoding(output.encoding) || 'source';
         let customArgs: string | null = null;
         if (encoding === 'custom') {

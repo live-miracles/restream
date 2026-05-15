@@ -9,11 +9,7 @@ import {
 import { setBadgeBitrateWithSubtleUnit, setBitrateWithSubtleUnit } from './metric-format.js';
 import { state } from '../core/state.js';
 import { getPublisherQualityAlerts, normalizePublisherProtocolLabel } from './publisher-quality.js';
-import {
-    PROTOCOL_LABELS,
-    parseProtocolAwareIngestUrl,
-    renderProtocolDetails,
-} from './ingest-url-details.js';
+import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { PipelineView, OutputView } from '../types.js';
@@ -48,10 +44,7 @@ const pipelineViewDependencies: PipelineViewDependencies = {
 
 const ingestUiState = {
     selectedProtocol: 'rtmp',
-    urlVisible: false,
 };
-
-let ingestVisibilityPipeId: string | null = null;
 
 function formatProgressFps(value: number | null | undefined): string | null {
     if (!Number.isFinite(value) || (value as number) <= 0) return null;
@@ -64,14 +57,8 @@ export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDe
 
 export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     if (!selectedPipe) {
-        ingestVisibilityPipeId = null;
         document.getElementById('pipe-info-col')?.classList.add('hidden');
         return;
-    }
-
-    if (selectedPipe !== ingestVisibilityPipeId) {
-        ingestVisibilityPipeId = selectedPipe;
-        ingestUiState.urlVisible = false;
     }
 
     document.getElementById('pipe-info-col')?.classList.remove('hidden');
@@ -209,34 +196,18 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         ingestUrlSection.classList.toggle('hidden', availableProtocols.length === 0);
     }
 
-    const ingestUrlTitle = document.getElementById('ingest-url-title');
-    if (ingestUrlTitle) {
-        const protocolLabel = PROTOCOL_LABELS[selectedProtocol] || 'Publish';
-        ingestUrlTitle.textContent = `${protocolLabel} Publish URL`;
-    }
+    const maskedUrl = streamKey
+        ? selectedUrl.replace(streamKey, formatMaskedStreamKey(streamKey))
+        : selectedUrl;
 
     const ingestUrlValue = document.getElementById('ingest-url');
     const ingestUrlSurface = document.getElementById('ingest-url-surface');
     if (ingestUrlValue) {
-        ingestUrlValue.dataset.copy = '';
-        ingestUrlValue.textContent = ingestUiState.urlVisible ? selectedUrl || '--' : '';
+        ingestUrlValue.dataset.copy = selectedUrl;
+        ingestUrlValue.textContent = maskedUrl || '--';
     }
     if (ingestUrlSurface) {
-        ingestUrlSurface.classList.toggle('hidden', !ingestUiState.urlVisible || !selectedUrl);
-    }
-
-    const ingestUrlVisibilityBtn = document.getElementById(
-        'ingest-url-visibility-btn',
-    ) as HTMLButtonElement | null;
-    if (ingestUrlVisibilityBtn) {
-        ingestUrlVisibilityBtn.disabled = !selectedUrl;
-        ingestUrlVisibilityBtn.classList.toggle('btn-disabled', !selectedUrl);
-        ingestUrlVisibilityBtn.textContent = ingestUiState.urlVisible ? 'Hide URL' : 'View URL';
-        ingestUrlVisibilityBtn.onclick = () => {
-            if (!selectedUrl) return;
-            ingestUiState.urlVisible = !ingestUiState.urlVisible;
-            renderPipelineInfoColumn(selectedPipe);
-        };
+        ingestUrlSurface.classList.toggle('hidden', !selectedUrl);
     }
 
     const ingestUrlCopyBtn = document.getElementById(
@@ -255,10 +226,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     const ingestDetailsGrid = document.getElementById('ingest-details-grid') as HTMLElement | null;
     const parsedIngestDetails = parseProtocolAwareIngestUrl(selectedProtocol, selectedUrl);
     if (ingestUrlDetails) {
-        ingestUrlDetails.classList.toggle(
-            'hidden',
-            !ingestUiState.urlVisible || !selectedUrl || !parsedIngestDetails,
-        );
+        ingestUrlDetails.classList.toggle('hidden', !selectedUrl || !parsedIngestDetails);
     }
     renderProtocolDetails(ingestDetailsGrid, selectedProtocol, parsedIngestDetails);
 

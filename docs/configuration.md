@@ -120,7 +120,7 @@ If you encounter port conflicts, check for running MediaMTX or Node processes an
 | Port | Protocol | Purpose |
 |---|---|---|
 | `1935` | RTMP | RTMP ingest and internal FFmpeg pull |
-| `8890` | SRT | SRT ingest and internal FFmpeg pull/probe |
+| `8890` | SRT | SRT ingest and internal FFmpeg probe |
 | `9997` | HTTP | MediaMTX API |
 | `8888` | HTTP | HLS preview interface (localhost-only) |
 
