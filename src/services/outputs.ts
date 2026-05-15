@@ -525,9 +525,16 @@ export function createOutputLifecycleService({
             ffmpegProgressByJobId.delete(job.id);
 
             if (!wasStopRequested) {
+                const inputOn = isInputOn(pipelineId);
+                pushLog(
+                    `[lifecycle] unexpected_exit input_on=${inputOn} code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+                    'lifecycle.unexpected_exit',
+                    { inputOn, exitCode: code ?? null, exitSignal: signal ?? null },
+                );
                 const currentOutput = db.getOutput(pipelineId, outputId);
                 if (getOutputDesiredState(currentOutput) === 'running') {
                     const state = getRetryState(pipelineId, outputId);
+                    if (code === 0) state.failures = 0; // clean stream end — don't accumulate backoff
                     state.failures++;
                     if (isInputOn(pipelineId)) {
                         scheduleRetry(pipelineId, outputId);

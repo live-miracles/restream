@@ -23,6 +23,8 @@ MediaMTX owns media routing. Restream owns orchestration and state.
 
 ## Local Development
 
+**Requires Linux.** On Windows, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run all commands inside the WSL environment.
+
 Install dependencies and build:
 
 ```sh
@@ -30,11 +32,10 @@ npm ci
 npm run build
 ```
 
-Download the MediaMTX binary for your platform from the [official GitHub releases](https://github.com/bluenviron/mediamtx/releases) and place the executable (`mediamtx` or `mediamtx.exe`) in the repo root. Then start it with the checked-in config:
+Download the MediaMTX Linux binary from the [official GitHub releases](https://github.com/bluenviron/mediamtx/releases) and place the executable (`mediamtx`) in the repo root. Then start it with the checked-in config:
 
 ```sh
-./mediamtx        # Linux/macOS
-mediamtx.exe      # Windows
+./mediamtx
 ```
 
 In another terminal, start the app:
