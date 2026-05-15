@@ -7,7 +7,7 @@ export const PROTOCOL_LABELS: Record<string, string> = {
 
 const PROTOCOL_DEFAULT_PORTS: Record<string, string> = {
     rtmp: '1935',
-    srt: '8890',
+    srt: '10080',
 };
 
 function safeDecodeUrlComponent(value: string | null | undefined): string {

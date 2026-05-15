@@ -2,7 +2,7 @@
 #
 # Ingestion:  RTMP  rtmp://<host>:1935/<streamPath>
 #             RTSP  rtsp://<host>:8554/<streamPath>
-#             SRT   srt://<host>:8890?streamid=publish:<streamPath>
+#             SRT   srt://<host>:10080?streamid=publish:<streamPath>
 #
 # Viewing:    RTSP    rtsp://localhost:8554/<streamPath>  (localhost only)
 #
@@ -11,7 +11,8 @@
 # ── Ingest protocols ────────────────────────────────────────────────────────
 rtmp: yes          # port 1935
 rtsp: yes          # port 8554
-srt: yes           # port 8890
+srt: yes
+srtAddress: :10080
 
 # ── Browser playback ────────────────────────────────────────────────────────
 hls: yes           # HTTP HLS on port 8888

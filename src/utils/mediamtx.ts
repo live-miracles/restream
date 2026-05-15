@@ -3,7 +3,7 @@ import { errMsg } from './app';
 // MediaMTX API, RTMP, SRT, and HLS are always on localhost with hardcoded ports.
 const MEDIAMTX_API_BASE = 'http://localhost:9997';
 const MEDIAMTX_RTMP_BASE = 'rtmp://localhost:1935';
-const MEDIAMTX_SRT_BASE = 'srt://localhost:8890';
+const MEDIAMTX_SRT_BASE = 'srt://localhost:10080';
 const MEDIAMTX_HLS_BASE = 'http://localhost:8888';
 const MEDIAMTX_RTSP_BASE = 'rtsp://localhost:8554';
 const LIVE_PATH_PREFIX = 'live/';
