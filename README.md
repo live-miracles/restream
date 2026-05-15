@@ -30,7 +30,7 @@ npm ci
 npm run build
 ```
 
-Start MediaMTX with the checked-in config:
+Download the MediaMTX binary for your platform from the [official GitHub releases](https://github.com/bluenviron/mediamtx/releases) and place the executable (`mediamtx` or `mediamtx.exe`) in the repo root. Then start it with the checked-in config:
 
 ```sh
 ./mediamtx        # Linux/macOS

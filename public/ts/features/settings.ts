@@ -186,7 +186,7 @@ function resetIngestForm(): void {
     if (fileSelect) fileSelect.selectedIndex = 0;
     if (keySelect) keySelect.selectedIndex = 0;
     if (loopCheck) loopCheck.checked = false;
-    if (startInput) startInput.value = '';
+    if (startInput) startInput.value = '00:00:00';
 }
 
 async function populateIngestFormDropdowns(prefill: IngestConfig | null): Promise<void> {
@@ -206,7 +206,7 @@ async function populateIngestFormDropdowns(prefill: IngestConfig | null): Promis
         pipelines
             .map(
                 (p) =>
-                    `<option value="${p.streamKey}">${p.name} (${formatMaskedStreamKey(p.streamKey)})</option>`,
+                    `<option value="${p.streamKey}">${formatMaskedStreamKey(p.streamKey)}</option>`,
             )
             .join('');
 
