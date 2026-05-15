@@ -1,5 +1,11 @@
 import { showLoading, hideLoading, showErrorAlert } from './utils.js';
-import type { ConfigData, HealthData, SystemMetrics, StreamKey } from '../types.js';
+import type {
+    ConfigData,
+    HealthData,
+    IngestSecurityConfig,
+    SystemMetrics,
+    StreamKey,
+} from '../types.js';
 
 let activeMutationRequestCount = 0;
 
@@ -261,8 +267,14 @@ async function getPipelineHistory(
     );
 }
 
-async function patchConfig(body: { serverName?: string }): Promise<{ serverName: string } | null> {
-    return apiRequest<{ serverName: string }>('/config', { method: 'PATCH', body });
+async function patchConfig(body: {
+    serverName?: string;
+    ingestSecurity?: Partial<IngestSecurityConfig>;
+}): Promise<{ serverName: string; ingestSecurity: IngestSecurityConfig } | null> {
+    return apiRequest<{ serverName: string; ingestSecurity: IngestSecurityConfig }>('/config', {
+        method: 'PATCH',
+        body,
+    });
 }
 
 async function getCustomEncoding(): Promise<{ ffmpegArgs: string | null } | null> {

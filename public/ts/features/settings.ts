@@ -20,6 +20,7 @@ import { state } from '../core/state.js';
 export async function loadSettings(): Promise<void> {
     const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
     if (nameInput) nameInput.value = state.config?.serverName || '';
+    populateIngestSecuritySettings();
 
     const enc = await getCustomEncoding();
     if (enc) {
@@ -41,6 +42,51 @@ export async function saveServerName(): Promise<void> {
     if (result) {
         state.config = { ...state.config, serverName: result.serverName };
         showSavedFeedback('server-name-saved');
+    }
+}
+
+// ── Ingest Security ───────────────────────────────────
+
+function getNumberInputValue(id: string): number | null {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    const value = Number(input?.value);
+    if (!Number.isFinite(value) || value < 1) return null;
+    return Math.floor(value);
+}
+
+function setNumberInputValue(id: string, value: number | undefined): void {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    if (!input || value === undefined) return;
+    input.value = String(value);
+}
+
+function populateIngestSecuritySettings(): void {
+    const cfg = state.config?.ingestSecurity;
+    if (!cfg) return;
+    setNumberInputValue('ingest-security-failure-limit', cfg.failureLimit);
+    setNumberInputValue('ingest-security-failure-window-ms', cfg.failureWindowMs);
+    setNumberInputValue('ingest-security-ban-ms', cfg.banMs);
+    setNumberInputValue('ingest-security-tracked-ip-limit', cfg.trackedIpLimit);
+}
+
+export async function saveIngestSecurity(): Promise<void> {
+    const failureLimit = getNumberInputValue('ingest-security-failure-limit');
+    const failureWindowMs = getNumberInputValue('ingest-security-failure-window-ms');
+    const banMs = getNumberInputValue('ingest-security-ban-ms');
+    const trackedIpLimit = getNumberInputValue('ingest-security-tracked-ip-limit');
+
+    if (!failureLimit || !failureWindowMs || !banMs || !trackedIpLimit) {
+        showErrorAlert('Ingest security values must be positive numbers');
+        return;
+    }
+
+    const result = await patchConfig({
+        ingestSecurity: { failureLimit, failureWindowMs, banMs, trackedIpLimit },
+    });
+    if (result) {
+        state.config = { ...state.config, ingestSecurity: result.ingestSecurity };
+        populateIngestSecuritySettings();
+        showSavedFeedback('ingest-security-saved');
     }
 }
 

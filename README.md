@@ -219,6 +219,11 @@ Put a reverse proxy (nginx, Caddy) in front of port `3030` and terminate TLS at 
 - Both services run as non-root (`restream` user).
 - Keep `9997` and `8888` local-only.
 - Use firewall rules to restrict ingest and UI ports.
+- MediaMTX publish/read/playback authorization is delegated to the local Restream auth endpoint,
+  which rejects unknown stream keys and temporarily bans IPs after repeated failures.
+- For dashboard/API traffic, put HTTPS and request rate limiting at the reverse proxy or Google
+  Cloud Armor layer. RTMP/SRT stream-key abuse is handled in the MediaMTX auth callback because
+  those protocols are not HTTP requests.
 - Rotate stream keys periodically.
 - Apply OS and package updates on a maintenance schedule.
 

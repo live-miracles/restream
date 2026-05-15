@@ -47,6 +47,14 @@ The app also keeps short-lived in-memory state for live child process handles, F
 
 ## Main Flows
 
+### Ingest Authorization
+
+MediaMTX calls Restream's local `/internal/mediamtx/auth` endpoint for publish/read/playback
+authorization. Publish attempts are allowed only when the path is a configured
+`live/<streamKey>`. Unknown-key attempts are counted per publisher IP in a rolling window; once the
+limit is reached, that IP is temporarily banned from ingest attempts. Internal read/playback calls
+from FFmpeg, ffprobe, and the HLS preview proxy remain localhost-only.
+
 ### Stream Key Management
 
 Creating or deleting a stream key updates both SQLite and MediaMTX path configuration. If one side fails, the API avoids leaving the two stores intentionally inconsistent.

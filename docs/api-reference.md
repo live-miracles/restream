@@ -470,6 +470,12 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
 ```json
 {
   "serverName": "My Server",
+  "ingestSecurity": {
+    "failureLimit": 10,
+    "failureWindowMs": 60000,
+    "banMs": 600000,
+    "trackedIpLimit": 10000
+  },
   "pipelines": [
     {
       "id": "a1b2c3d4e5f6a7b8",
@@ -498,15 +504,33 @@ Updates server settings.
 
 **Request body:**
 ```json
-{ "serverName": "My Server" }
+{
+  "serverName": "My Server",
+  "ingestSecurity": {
+    "failureLimit": 10,
+    "failureWindowMs": 60000,
+    "banMs": 600000,
+    "trackedIpLimit": 10000
+  }
+}
 ```
 
 **Response 200:**
 ```json
-{ "serverName": "My Server" }
+{
+  "serverName": "My Server",
+  "ingestSecurity": {
+    "failureLimit": 10,
+    "failureWindowMs": 60000,
+    "banMs": 600000,
+    "trackedIpLimit": 10000
+  }
+}
 ```
 
-**Errors:** `400` serverName is empty or invalid.
+All `ingestSecurity` fields are positive integer values stored in SQLite `meta`.
+
+**Errors:** `400` serverName is empty or invalid; ingestSecurity is invalid.
 
 ---
 
@@ -798,4 +822,3 @@ All errors return:
 | `404`  | Resource not found                                |
 | `409`  | Conflict — already running, duplicate key, input not ready |
 | `500`  | Internal server error or MediaMTX communication failure |
-

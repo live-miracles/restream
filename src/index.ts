@@ -12,13 +12,15 @@ import { registerEncodingsApi } from './api/encodings';
 import { registerPipelineApi } from './api/pipelines';
 import { registerRecordingApi } from './api/recording';
 import { registerIngestApi } from './api/ingest';
+import { registerSecurityApi } from './api/security';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
 import { createRecordingService } from './services/recording';
+import { createIngestSecurityService } from './services/security';
 import { startServer } from './services/bootstrap';
 import { registerSystemMetricsApi } from './api/metrics';
-import { log } from './utils/app';
+import { errMsg, log } from './utils/app';
 import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
 
 const app = express();
@@ -39,7 +41,7 @@ app.use(
     }),
 );
 
-const appPort = Number(process.env.PORT || 3030);
+const appPort = 3030;
 const mediaDir = path.join(__dirname, '..', 'media');
 mkdirSync(mediaDir, { recursive: true });
 
@@ -126,6 +128,15 @@ registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
 registerRecordingApi({ app, db, recording: recordingService, mediaDir });
 registerIngestApi({ app, db, ingestService });
+const ingestSecurityService = createIngestSecurityService({
+    getConfig: db.getIngestSecurityConfig,
+    log,
+});
+registerSecurityApi({
+    app,
+    ingestSecurity: ingestSecurityService,
+    log,
+});
 registerPreviewProxyRoutes({
     app,
     fetch,
@@ -178,14 +189,24 @@ app.use(
     }),
 );
 
-startServer({
-    app,
-    healthMonitor,
-    db,
-    log,
-    appPort,
-    afterHealthStart: () => recordingService.init(),
-}).catch((err) => {
+async function main(): Promise<void> {
+    try {
+        await ingestSecurityService.refreshStreamKeys();
+    } catch (err) {
+        log('error', 'ingest_security_stream_key_prewarm_failed', { error: errMsg(err) });
+    }
+
+    await startServer({
+        app,
+        healthMonitor,
+        db,
+        log,
+        appPort,
+        afterHealthStart: () => recordingService.init(),
+    });
+}
+
+main().catch((err) => {
     console.error('Fatal startup error:', err);
     process.exit(1);
 });

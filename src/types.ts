@@ -6,6 +6,13 @@ export interface Ingest {
     startTime: string;
 }
 
+export interface IngestSecurityConfig {
+    failureLimit: number;
+    failureWindowMs: number;
+    banMs: number;
+    trackedIpLimit: number;
+}
+
 export interface Pipeline {
     id: string;
     name: string;
@@ -161,4 +168,6 @@ export interface Db {
     setCustomEncoding(ffmpegArgs: string): string;
     getServerName(): string;
     setServerName(name: string): string;
+    getIngestSecurityConfig(): Partial<IngestSecurityConfig>;
+    setIngestSecurityConfig(config: IngestSecurityConfig): string;
 }
