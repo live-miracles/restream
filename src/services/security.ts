@@ -48,12 +48,14 @@ export interface IngestSecurityDecision {
 interface IngestSecurityOptions {
     config?: SecurityConfigInput;
     getConfig?: () => SecurityConfigInput;
+    initialStreamKeys?: StreamKeyItem[];
     listStreamKeys?: () => Promise<StreamKeyItem[]>;
     log?: (level: string, message: string, fields?: Record<string, unknown>) => void;
     nowMs?: () => number;
 }
 
 export interface IngestSecurityService {
+    refreshStreamKeys(): Promise<void>;
     authorizeMediaMtxRequest(payload?: AuthorizePayload): Promise<IngestSecurityDecision>;
     getBan(ip: unknown): { bannedUntilMs: number; retryAfterMs: number } | null;
     recordFailure(
@@ -143,6 +145,14 @@ function normalizeAuthString(value: unknown): string {
         .toLowerCase();
 }
 
+function streamKeyItemsToSet(items: StreamKeyItem[] = []): Set<string> {
+    const streamKeys = new Set<string>();
+    for (const item of items || []) {
+        if (item?.key) streamKeys.add(item.key);
+    }
+    return streamKeys;
+}
+
 export function extractStreamKeyFromPath(path: unknown): { streamKey?: string; error?: string } {
     const normalized = String(path || '').trim();
     if (!normalized.startsWith('live/')) return { error: 'publish path must start with live/' };
@@ -161,12 +171,15 @@ export function extractStreamKeyFromPath(path: unknown): { streamKey?: string; e
 export function createIngestSecurityService({
     config = {},
     getConfig,
+    initialStreamKeys = [],
     listStreamKeys = getPermanentStreamKeys,
     log = defaultLog,
     nowMs = () => Date.now(),
 }: IngestSecurityOptions = {}): IngestSecurityService {
     const initialConfig = getSecurityConfig(config);
     const failuresByIp = new Map<string, FailureRecord>();
+    let knownStreamKeys = streamKeyItemsToSet(initialStreamKeys);
+    let refreshStreamKeysPromise: Promise<void> | null = null;
 
     function resolveSecurityConfig(): IngestSecurityConfig {
         if (!getConfig) return initialConfig;
@@ -183,6 +196,9 @@ export function createIngestSecurityService({
         let record = failuresByIp.get(normalizedIp);
         if (!record) {
             record = { failures: [], bannedUntilMs: 0, updatedAtMs: nowMs() };
+            failuresByIp.set(normalizedIp, record);
+        } else {
+            failuresByIp.delete(normalizedIp);
             failuresByIp.set(normalizedIp, record);
         }
         return { ip: normalizedIp, record };
@@ -208,11 +224,7 @@ export function createIngestSecurityService({
 
     function enforceTrackedIpLimit(): void {
         const securityConfig = resolveSecurityConfig();
-        if (failuresByIp.size <= securityConfig.trackedIpLimit) return;
-
-        const removable = [...failuresByIp.entries()]
-            .filter(([, record]) => !record.bannedUntilMs)
-            .sort((a, b) => a[1].updatedAtMs - b[1].updatedAtMs);
+        const removable = failuresByIp.entries();
 
         for (const [ip] of removable) {
             if (failuresByIp.size <= securityConfig.trackedIpLimit) break;
@@ -286,9 +298,32 @@ export function createIngestSecurityService({
         if (normalizedIp) failuresByIp.delete(normalizedIp);
     }
 
-    async function isKnownStreamKey(streamKey: string): Promise<boolean> {
-        const keys = await listStreamKeys();
-        return (keys || []).some((item) => item?.key === streamKey);
+    async function refreshStreamKeys(): Promise<void> {
+        if (refreshStreamKeysPromise) return refreshStreamKeysPromise;
+        refreshStreamKeysPromise = (async () => {
+            const keys = await listStreamKeys();
+            knownStreamKeys = streamKeyItemsToSet(keys || []);
+        })();
+
+        try {
+            await refreshStreamKeysPromise;
+        } finally {
+            refreshStreamKeysPromise = null;
+        }
+    }
+
+    function refreshStreamKeysInBackground(fields: Record<string, unknown> = {}): void {
+        if (refreshStreamKeysPromise) return;
+        refreshStreamKeys().catch((err) => {
+            log('error', 'ingest_auth_stream_key_refresh_failed', {
+                error: errMsg(err),
+                ...fields,
+            });
+        });
+    }
+
+    function isKnownStreamKey(streamKey: string): boolean {
+        return knownStreamKeys.has(streamKey);
     }
 
     async function authorizePublish(
@@ -307,20 +342,8 @@ export function createIngestSecurityService({
             return recordFailure(ip, 'invalid_publish_path', { protocol, path });
         }
 
-        let known = false;
-        try {
-            known = await isKnownStreamKey(streamKey);
-        } catch (err) {
-            log('error', 'ingest_auth_stream_key_lookup_failed', {
-                ip,
-                protocol,
-                path,
-                error: errMsg(err),
-            });
-            return { allowed: false, status: 503, reason: 'stream_key_lookup_failed' };
-        }
-
-        if (!known) {
+        if (!isKnownStreamKey(streamKey)) {
+            refreshStreamKeysInBackground({ protocol, path, streamKeyMasked: maskToken(streamKey) });
             return recordFailure(ip, 'unknown_stream_key', {
                 protocol,
                 path,
@@ -364,6 +387,7 @@ export function createIngestSecurityService({
     }
 
     return {
+        refreshStreamKeys,
         authorizeMediaMtxRequest,
         getBan,
         recordFailure,

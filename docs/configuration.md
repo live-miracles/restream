@@ -10,8 +10,9 @@ Server name, ingest security, and custom encodings are managed at runtime via th
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `3030` | Express listen port |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
+
+The Express app always listens on port `3030` so MediaMTX can use the fixed local auth callback at `http://127.0.0.1:3030/internal/mediamtx/auth`.
 
 ### MediaMTX Backend (hardcoded localhost)
 

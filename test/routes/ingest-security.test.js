@@ -22,6 +22,7 @@ function createServiceHarness({ keys = ['good-key'], config = {}, now = 0 } = {}
             banMs: 5000,
             ...config,
         },
+        initialStreamKeys: keys.map((key) => ({ key })),
         listStreamKeys: async () => keys.map((key) => ({ key })),
         log: (level, message, fields = {}) => logs.push({ level, message, fields }),
         nowMs: () => currentNow,
@@ -46,6 +47,7 @@ function createDynamicConfigHarness({ keys = ['good-key'], now = 0 } = {}) {
     };
     const service = createIngestSecurityService({
         getConfig: () => currentConfig,
+        initialStreamKeys: keys.map((key) => ({ key })),
         listStreamKeys: async () => keys.map((key) => ({ key })),
         log: () => {},
         nowMs: () => currentNow,
@@ -133,6 +135,48 @@ test('authorizeMediaMtxRequest allows known RTMP and SRT publish paths', async (
     );
 });
 
+test('authorizeMediaMtxRequest uses preloaded stream keys without blocking on MediaMTX lookups', async () => {
+    let lookupCount = 0;
+    const service = createIngestSecurityService({
+        initialStreamKeys: [{ key: 'good-key' }],
+        listStreamKeys: async () => {
+            lookupCount += 1;
+            throw new Error('should not run on hot auth path');
+        },
+        log: () => {},
+    });
+
+    assert.deepEqual(
+        await service.authorizeMediaMtxRequest({
+            ip: '203.0.113.11',
+            action: 'publish',
+            protocol: 'rtmp',
+            path: 'live/good-key',
+        }),
+        { allowed: true, reason: 'publish_allowed' },
+    );
+    assert.equal(lookupCount, 0);
+});
+
+test('refreshStreamKeys hydrates the in-memory auth key cache', async () => {
+    const service = createIngestSecurityService({
+        listStreamKeys: async () => [{ key: 'late-key' }],
+        log: () => {},
+    });
+
+    await service.refreshStreamKeys();
+
+    assert.deepEqual(
+        await service.authorizeMediaMtxRequest({
+            ip: '203.0.113.12',
+            action: 'publish',
+            protocol: 'srt',
+            path: 'live/late-key',
+        }),
+        { allowed: true, reason: 'publish_allowed' },
+    );
+});
+
 test('authorizeMediaMtxRequest bans an IP after repeated unknown stream keys', async () => {
     const { service, advance } = createServiceHarness();
     const payload = {
@@ -188,6 +232,21 @@ test('authorizeMediaMtxRequest uses the latest configured failure limit', async 
     assert.equal(second.allowed, false);
     assert.equal(second.status, 403);
     assert.equal(second.banned, true);
+});
+
+test('recordFailure prunes oldest tracked IPs without sorting the whole set', () => {
+    const { service } = createServiceHarness({
+        config: { trackedIpLimit: 2, failureLimit: 10 },
+    });
+
+    service.recordFailure('203.0.113.1', 'unknown_stream_key');
+    service.recordFailure('203.0.113.2', 'unknown_stream_key');
+    service.recordFailure('203.0.113.3', 'unknown_stream_key');
+
+    assert.equal(service._state.size, 2);
+    assert.equal(service._state.has('203.0.113.1'), false);
+    assert.equal(service._state.has('203.0.113.2'), true);
+    assert.equal(service._state.has('203.0.113.3'), true);
 });
 
 test('authorizeMediaMtxRequest keeps read and playback local-only', async () => {
