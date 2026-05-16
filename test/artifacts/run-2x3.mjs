@@ -42,6 +42,7 @@ const config = {
 
 const outputEncodingDefaults = ['source', 'vertical-crop', 'vertical-rotate', '720p', '1080p'];
 const supportedOutputEncodings = new Set(outputEncodingDefaults);
+const supportedRemapEncodingRe = /^remap:track:\d+:\d+:\d+$/;
 const nonSourceOutputEncodings = outputEncodingDefaults.filter((e) => e !== 'source');
 const outputEncodingUsage = new Map(outputEncodingDefaults.map((e) => [e, 0]));
 
@@ -402,10 +403,15 @@ async function cleanupTestResources(targets) {
 function resolveOutputEncoding(encodingValue) {
     const normalized = normalizeOutputEncodingValue(encodingValue);
     if (normalized) {
-        if (!supportedOutputEncodings.has(normalized)) {
+        if (
+            !supportedOutputEncodings.has(normalized) &&
+            !supportedRemapEncodingRe.test(normalized)
+        ) {
             throw new Error(`Unsupported output encoding in manifest: ${encodingValue}`);
         }
-        outputEncodingUsage.set(normalized, (outputEncodingUsage.get(normalized) || 0) + 1);
+        if (supportedOutputEncodings.has(normalized)) {
+            outputEncodingUsage.set(normalized, (outputEncodingUsage.get(normalized) || 0) + 1);
+        }
         return normalized;
     }
 
@@ -499,20 +505,31 @@ function selectIngestUrl(streamKeyRecord, protocol) {
 }
 
 function buildFfmpegArgs(protocol, targetUrl) {
-    const baseArgs = [
+    const inputArgs = [
         '-nostdin',
         '-re',
         '-stream_loop',
         '-1',
         '-i',
         relativePath(config.inputFile),
-        '-map',
-        '0',
-        '-c',
-        'copy',
     ];
-    if (protocol === 'rtmp') return [...baseArgs, '-f', 'flv', targetUrl];
-    if (protocol === 'srt') return [...baseArgs, '-f', 'mpegts', targetUrl];
+    if (protocol === 'rtmp') {
+        return [
+            ...inputArgs,
+            '-map',
+            '0:v:0',
+            '-map',
+            '0:a:0?',
+            '-c',
+            'copy',
+            '-f',
+            'flv',
+            targetUrl,
+        ];
+    }
+
+    const multiTrackArgs = [...inputArgs, '-map', '0', '-c', 'copy'];
+    if (protocol === 'srt') return [...multiTrackArgs, '-f', 'mpegts', targetUrl];
     throw new Error(`Unsupported input protocol: ${protocol}`);
 }
 

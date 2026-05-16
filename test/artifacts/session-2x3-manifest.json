@@ -39,7 +39,7 @@
                 {
                     "name": "Output 2-3",
                     "url": "rtmp://localhost:1935/live/key10_5d0f9109044f0cfb15d73ff8",
-                    "encoding": "source"
+                    "encoding": "remap:track:1:0:1"
                 }
             ]
         }

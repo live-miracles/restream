@@ -16,6 +16,16 @@ import type { Db, Pipeline, Output, Job } from '../types';
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
 const FFPROBE_DELAYS_MS = [3000, 10000, 20000, 40000];
 
+interface AudioStreamInfo {
+    index: number | null;
+    codec: string | null;
+    channels: number | null;
+    sample_rate: number | null;
+    profile: string | null;
+    language: string | null;
+    title: string | null;
+}
+
 interface StreamInfo {
     video: {
         codec: string | null;
@@ -25,12 +35,8 @@ interface StreamInfo {
         profile: string | null;
         level: string | null;
     } | null;
-    audio: {
-        codec: string | null;
-        channels: number | null;
-        sample_rate: number | null;
-        profile: string | null;
-    } | null;
+    audio: AudioStreamInfo | null;
+    audioTracks: AudioStreamInfo[];
 }
 
 interface Publisher {
@@ -79,6 +85,7 @@ interface InputHealth {
     bytesSent: number;
     video: StreamInfo['video'];
     audio: StreamInfo['audio'];
+    audioTracks: StreamInfo['audioTracks'];
     unexpectedReaders: {
         count: number;
         readers: { id: string | null; type: string; reason: string }[];
@@ -308,7 +315,23 @@ export function createHealthMonitorService({
                         const data = JSON.parse(stdout);
                         const streams: Record<string, unknown>[] = data.streams || [];
                         const vs = streams.find((s) => s.codec_type === 'video') || null;
-                        const as_ = streams.find((s) => s.codec_type === 'audio') || null;
+                        const audioTracks = streams
+                            .filter((s) => s.codec_type === 'audio')
+                            .map((s) => {
+                                const tags = (s.tags || {}) as Record<string, unknown>;
+                                return {
+                                    index:
+                                        s.index != null && Number.isFinite(Number(s.index))
+                                            ? Number(s.index)
+                                            : null,
+                                    codec: (s.codec_name as string) || null,
+                                    channels: (s.channels as number) || null,
+                                    sample_rate: s.sample_rate ? Number(s.sample_rate) : null,
+                                    profile: (s.profile as string) || null,
+                                    language: (tags.language as string) || null,
+                                    title: (tags.title as string) || null,
+                                };
+                            });
                         resolve({
                             video: vs
                                 ? {
@@ -321,14 +344,8 @@ export function createHealthMonitorService({
                                           vs.level != null ? String(Number(vs.level) / 10) : null,
                                   }
                                 : null,
-                            audio: as_
-                                ? {
-                                      codec: (as_.codec_name as string) || null,
-                                      channels: (as_.channels as number) || null,
-                                      sample_rate: as_.sample_rate ? Number(as_.sample_rate) : null,
-                                      profile: (as_.profile as string) || null,
-                                  }
-                                : null,
+                            audio: audioTracks[0] || null,
+                            audioTracks,
                         });
                     } catch {
                         resolve(null);
@@ -560,6 +577,7 @@ export function createHealthMonitorService({
             bytesSent: pathInfo?.bytesSent || 0,
             video: ffprobeResult?.video || null,
             audio: ffprobeResult?.audio || null,
+            audioTracks: ffprobeResult?.audioTracks || [],
             unexpectedReaders: buildUnexpectedReaders(pathInfo),
         };
     }

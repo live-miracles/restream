@@ -14,10 +14,13 @@ export interface VideoTrack {
 }
 
 export interface AudioTrack {
+    index?: number | null;
     codec?: string;
     channels?: number;
     sample_rate?: number;
     profile?: string;
+    language?: string | null;
+    title?: string | null;
 }
 
 export interface IngestUrls {
@@ -101,6 +104,7 @@ export interface InputHealth {
     publishStartedAt?: string;
     video?: VideoTrack;
     audio?: AudioTrack;
+    audioTracks?: AudioTrack[];
     publisher?: Publisher;
     unexpectedReaders?: { count: number };
 }
@@ -134,6 +138,7 @@ export interface InputView {
     time: number | null;
     video: VideoTrack | null;
     audio: AudioTrack | null;
+    audioTracks: AudioTrack[];
     bytesReceived: number;
     bytesSent: number;
     readers: number;

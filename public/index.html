@@ -143,6 +143,10 @@
           </fieldset>
 
           <div class="hidden" id="out-remap-fields">
+            <fieldset class="fieldset ml-2 inline-block w-20">
+              <legend class="fieldset-legend">Track</legend>
+              <select class="select" id="out-remap-track-input" onchange="onOutRemapTrackChange(this.value)"></select>
+            </fieldset>
             <fieldset class="fieldset ml-2 inline-block w-16">
               <legend class="fieldset-legend">Left Ch</legend>
               <select class="select" id="out-remap-left-input"></select>

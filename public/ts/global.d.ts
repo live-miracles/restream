@@ -37,6 +37,7 @@ declare global {
         editPipeBtn: () => Promise<void>;
         deletePipeBtn: () => Promise<void>;
         onOutEncodingChange: (encoding: string) => void;
+        onOutRemapTrackChange: (trackValue: string) => void;
         toggleHistoryPlayPause: () => void;
         setOutputHistoryMode: (mode: string) => void;
         setOutputHistoryOrder: (order: string) => void;

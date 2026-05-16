@@ -102,6 +102,7 @@ npm run test:normalization # URL normalization helpers
 ### Integration Test (2x3)
 
 Starts RTMP and SRT publishers for two pipelines, starts all six outputs, waits for `on` status, then stops everything. Requires a running app and MediaMTX.
+The default colorbar fixture contains two stereo audio tracks; the SRT publisher preserves both tracks, and one manifest output remaps the second track while the other outputs use the first audio track by default.
 
 ```sh
 npm run test:integration

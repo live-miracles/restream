@@ -59,6 +59,7 @@ flowchart TD
 - `publishStartedAt` — `pathInfo.availableTime` (fallback `readyTime`) ISO timestamp when input became available, across publisher protocols (RTMP, SRT)
 - `video` — from `pathInfo.tracks2` (first H264 track) + `ffprobe` cache for FPS only
 - `audio` — from `pathInfo.tracks2` (first non-video codec) + `ffprobe` cache for codec/profile, with fallback for channels/sample rate
+- `audioTracks` — full audio stream list from the SRT `ffprobe` cache, used by output remap UI for explicit track selection
 - `readers` — `pathInfo.readers.length`
 - `bytesReceived` / `bytesSent` — from `pathInfo`
 
