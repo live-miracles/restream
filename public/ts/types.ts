@@ -35,6 +35,10 @@ export interface PublisherQuality {
     packetsReceivedDrop?: number;
     packetsReceivedRetrans?: number;
     packetsReceivedUndecrypt?: number;
+    msReceiveTsbPdDelay?: number | null;
+    msReceiveBuf?: number | null;
+    mbpsLinkCapacity?: number | null;
+    packetsSentNAK?: number | null;
 }
 
 export interface Publisher {

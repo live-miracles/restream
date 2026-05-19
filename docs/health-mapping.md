@@ -72,7 +72,7 @@ Probe connections are tracked by the health collector using the SRT `streamid` p
 
 The input health payload also includes:
 
-- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT)
+- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT), including SRT RTT, receive rate, packet loss/drop/retransmit counters, latency buffers, estimated link capacity, and NAK count when MediaMTX exposes them.
 - `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
 
 `input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes managed output types (`rtmpconn`, `srtconn`, `hlsMuxer`) and internal probe readers.
