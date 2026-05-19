@@ -201,6 +201,10 @@ function indexPublishersByPath(
                 packetsReceivedUndecrypt: c?.packetsReceivedUndecrypt || 0,
                 packetsReceivedDrop: c?.packetsReceivedDrop || 0,
                 mbpsReceiveRate: c?.mbpsReceiveRate ?? null,
+                msReceiveTsbPdDelay: c?.msReceiveTsbPdDelay ?? null,
+                msReceiveBuf: c?.msReceiveBuf ?? null,
+                mbpsLinkCapacity: c?.mbpsLinkCapacity ?? null,
+                packetsSentNAK: c?.packetsSentNAK ?? null,
             },
         });
     }

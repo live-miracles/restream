@@ -78,6 +78,31 @@ function getPublisherQualityMetrics(publisher: Publisher | null): QualityMetric[
         formatter: (v) => v.toFixed(2),
     });
     addNumericMetric({
+        code: 'srt_negotiated_latency_buffer',
+        label: 'Negotiated Latency Buffer (ms)',
+        rawValue: q.msReceiveTsbPdDelay,
+        alertCheck: () => false,
+    });
+    addNumericMetric({
+        code: 'srt_current_latency_buffer',
+        label: 'Current Latency Buffer (ms)',
+        rawValue: q.msReceiveBuf,
+        alertCheck: () => false,
+    });
+    addNumericMetric({
+        code: 'srt_link_capacity',
+        label: 'Estimated Network Capacity (Mbps)',
+        rawValue: q.mbpsLinkCapacity,
+        alertCheck: () => false,
+        formatter: (v) => v.toFixed(2),
+    });
+    addNumericMetric({
+        code: 'srt_naks_sent',
+        label: 'NAKs Sent',
+        rawValue: q.packetsSentNAK,
+        alertCheck: () => false,
+    });
+    addNumericMetric({
         code: 'srt_loss',
         label: 'Packets lost (SRT received)',
         rawValue: q.packetsReceivedLoss,
