@@ -21,6 +21,7 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 - RTMP: `rtmp://localhost:1935`
 - SRT: `srt://localhost:10080`
 - HLS: `http://localhost:8888`
+- Metrics: `http://localhost:9998`
 
 These are hardcoded and cannot be overridden via environment variables.
 
@@ -122,13 +123,25 @@ If you encounter port conflicts, check for running MediaMTX or Node processes an
 | `1935` | RTMP | RTMP ingest and internal FFmpeg pull |
 | `10080` | SRT | SRT ingest and internal FFmpeg probe |
 | `9997` | HTTP | MediaMTX API |
+| `9998` | HTTP | MediaMTX Prometheus metrics |
 | `8888` | HTTP | HLS preview interface (localhost-only) |
 
 MediaMTX publish/read/playback authorization calls the Node app on
 `http://127.0.0.1:3030/internal/mediamtx/auth`. Do not expose `/internal/*` through a public
-reverse proxy. Keep MediaMTX API, HLS, and the auth callback on localhost-only bindings.
+reverse proxy. Keep MediaMTX API, metrics, HLS, and the auth callback on localhost-only bindings.
 
-## 5. Input Preview Proxy
+## 5. Observability
+
+MediaMTX Prometheus-compatible metrics are enabled on `127.0.0.1:9998`.
+
+```sh
+curl -fsS http://127.0.0.1:9998/metrics | head
+```
+
+Use `monitoring/prometheus.yml` as a starter Prometheus scrape config, and see
+[Observability](./observability.md) for the Prometheus/Grafana setup.
+
+## 6. Input Preview Proxy
 
 Dashboard input preview uses an app-level HLS proxy endpoint instead of sending browser traffic directly
 to MediaMTX.

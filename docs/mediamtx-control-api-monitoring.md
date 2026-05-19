@@ -33,6 +33,7 @@ Restream should keep MediaMTX monitoring split into three layers:
 | Health summary | Fast dashboard polling | Compact `/health` payload with pipeline status, output status, publisher protocol, quality flags, and aggregate counts |
 | Drilldown | Operator investigation | Focused endpoints for one path/session/connection using MediaMTX `get/{id}` or `get/{name}` APIs |
 | Admin actions | Explicit remediation | Optional guarded actions such as kicking a stuck session |
+| Time series | Trend dashboards and alerts | Prometheus scraping MediaMTX `http://127.0.0.1:9998/metrics`, visualized in Grafana |
 
 The key design point: do not put every MediaMTX field into `/health`. Keep `/health` small and add drilldown views when the UI needs detail.
 
@@ -81,7 +82,7 @@ MediaMTX exposes kick endpoints for protocol sessions and connections. These are
 
 The Control API is good for object state: paths, sessions, connections, muxers, config, and recordings.
 
-For time-series observability, use MediaMTX metrics instead. MediaMTX exposes Prometheus-compatible metrics when enabled in config; those are a better fit for dashboards and alerts over time.
+For time-series observability, use MediaMTX metrics instead. MediaMTX exposes Prometheus-compatible metrics when enabled in config; those are a better fit for dashboards and alerts over time. Restream enables this in `mediamtx.yml` on `127.0.0.1:9998`.
 
 For CPU, memory, and goroutine investigation, use MediaMTX pprof when enabled. That belongs in an operator/debug workflow, not in Restream's normal polling loop.
 
