@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Restream
+    orgId: 1
+    folder: Restream
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

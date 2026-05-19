@@ -19,6 +19,7 @@ MediaMTX owns media routing. Restream owns orchestration and state.
 - **Video ingest** — use pre-recorded videos from `/media` as input sources for pipelines (loops and start-time supported)
 - **Auto-recovery** — configurable retry and backoff when outputs fail or the input drops
 - **System metrics** — CPU, RAM, disk, and network throughput in the navbar
+- **Prometheus-ready MediaMTX metrics** — optional Prometheus/Grafana starter config under `monitoring/`
 - **HLS preview** — in-dashboard live preview proxied through the app
 
 ## Local Development
@@ -154,7 +155,7 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 | `1935` | TCP | RTMP ingest |
 | `10080` | UDP/TCP | SRT ingest |
 
-MediaMTX API (`9997`) and HLS preview (`8888`) stay localhost-only.
+MediaMTX API (`9997`), metrics (`9998`), and HLS preview (`8888`) stay localhost-only.
 
 ### Settings
 
@@ -202,6 +203,7 @@ Check health:
 ```sh
 curl -fsS http://127.0.0.1:3030/healthz
 curl -fsS http://127.0.0.1:3030/health
+curl -fsS http://127.0.0.1:9998/metrics | head
 ```
 
 Backup data:
@@ -306,3 +308,4 @@ Browsers will show a warning when visiting the VM directly because the certifica
 - [Configuration](docs/configuration.md): environment variables and runtime settings
 - [API Reference](docs/api-reference.md): REST endpoints
 - [Health Mapping](docs/health-mapping.md): how input and output statuses are derived
+- [Observability](docs/observability.md): MediaMTX metrics, Prometheus, and Grafana

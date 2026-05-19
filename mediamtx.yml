@@ -31,6 +31,12 @@ api: yes
 # restream backend without being exposed on external interfaces by default.
 apiAddress: 127.0.0.1:9997   # used by restream for /v3/paths and /v3/*conns
 
+# ── Observability ───────────────────────────────────────────────────────────
+# Prometheus-compatible metrics for MediaMTX. Keep this local-only and let
+# Prometheus scrape it from the same host or a trusted host-network container.
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+
 # ── Access control ──────────────────────────────────────────────────────────
 # Delegate publish/read/playback decisions to the local Restream auth endpoint.
 # The endpoint validates live/<streamKey> publishes and temporarily bans IPs that
