@@ -23,7 +23,7 @@ Returns all stream keys ordered by creation date descending.
     "createdAt": "2026-04-10T10:59:00.000Z",
     "ingestUrls": {
       "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
-      "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
+      "srt": "srt://stream.example.com:10080?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
     }
   }
 ]
@@ -65,7 +65,7 @@ When provided, `streamKey` must match these rules:
     "createdAt": "2026-04-10T10:59:00.000Z",
     "ingestUrls": {
       "rtmp": "rtmp://stream.example.com:1935/live/mystream",
-      "srt": "srt://stream.example.com:8890?streamid=publish:live/mystream"
+      "srt": "srt://stream.example.com:10080?streamid=publish:live/mystream"
     }
   }
 }
@@ -482,7 +482,7 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
       "streamKey": "c1518f5ef0d917ef1b6547d7",
       "ingestUrls": {
         "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
-        "srt": "srt://stream.example.com:8890?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
+        "srt": "srt://stream.example.com:10080?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
       }
     }
   ],

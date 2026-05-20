@@ -151,7 +151,7 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 |---|---|---|
 | `3030` | TCP | Dashboard |
 | `1935` | TCP | RTMP ingest |
-| `8890` | UDP/TCP | SRT ingest |
+| `10080` | UDP/TCP | SRT ingest |
 
 MediaMTX API (`9997`) and HLS preview (`8888`) stay localhost-only.
 
