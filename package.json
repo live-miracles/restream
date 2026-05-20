@@ -22,7 +22,7 @@
         "test:network-profiles": "node test/network-profiles.js",
         "test:input": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f flv rtmp://localhost:1935/mystream",
         "test:input:rtmp": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f flv rtmp://localhost:1935/live/key01_6c71124cde80358ca7c13081",
-        "test:input:srt": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f mpegts srt://localhost:10080?streamid=publish:live/key02_fff2adcf55a26d31ae93464b",
+        "test:input:srt": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f mpegts srt://localhost:8890?streamid=publish:live/key02_fff2adcf55a26d31ae93464b",
         "test:inputs": "concurrently \"npm run test:input:rtmp\" \"npm run test:input:srt\"",
         "test:probe": "ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height -of json -probesize 10M -analyzeduration 10M rtmp://localhost:1936/live/test",
         "audit": "npm audit || true && npm outdated || true",

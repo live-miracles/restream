@@ -64,7 +64,7 @@ flowchart TD
 
 **ffprobe caching:**
 
-When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe` refreshes using stale-while-revalidate semantics. The probe connects via SRT (`srt://localhost:10080?streamid=read:live/<streamKey>`) and reads codec and format details. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
+When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe` refreshes using stale-while-revalidate semantics. The probe connects via SRT (`srt://localhost:8890?streamid=read:live/<streamKey>`) and reads codec and format details. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
 
 Probe connections are tracked by the health collector using the SRT `streamid` pattern so they can be excluded from unexpected-reader counts.
 

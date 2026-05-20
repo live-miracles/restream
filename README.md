@@ -153,7 +153,7 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 | `3030` | TCP | Direct dashboard access before nginx is configured; close or restrict after HTTPS is live |
 | `443` | TCP | HTTPS dashboard when using a reverse proxy |
 | `1935` | TCP | RTMP ingest |
-| `10080` | UDP/TCP | SRT ingest |
+| `8890` | UDP/TCP | SRT ingest |
 
 MediaMTX API (`9997`), metrics (`9998`), and HLS preview (`8888`) stay localhost-only.
 

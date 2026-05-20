@@ -19,7 +19,7 @@ The Express app always listens on port `3030` so MediaMTX can use the fixed loca
 The backend assumes MediaMTX is always available on `localhost` with default ports:
 - API: `http://localhost:9997`
 - RTMP: `rtmp://localhost:1935`
-- SRT: `srt://localhost:10080`
+- SRT: `srt://localhost:8890`
 - HLS: `http://localhost:8888`
 - Metrics: `http://localhost:9998`
 
@@ -121,7 +121,7 @@ If you encounter port conflicts, check for running MediaMTX or Node processes an
 | Port | Protocol | Purpose |
 |---|---|---|
 | `1935` | RTMP | RTMP ingest and internal FFmpeg pull |
-| `10080` | SRT | SRT ingest and internal FFmpeg probe |
+| `8890` | SRT | SRT ingest and internal FFmpeg probe |
 | `9997` | HTTP | MediaMTX API |
 | `9998` | HTTP | MediaMTX Prometheus metrics |
 | `8888` | HTTP | HLS preview interface (localhost-only) |
