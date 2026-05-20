@@ -54,6 +54,7 @@ The `monitoring/grafana/` directory contains provisioning files for:
 
 - a Prometheus datasource at `http://127.0.0.1:9090`
 - a starter `MediaMTX Overview` dashboard
+- a starter `SRT Connection Health` dashboard
 
 ## Docker Option
 
@@ -96,3 +97,34 @@ These cover scrape health, active paths, reader count, path states, throughput, 
 errors. The byte queries include both newer and older MediaMTX metric names so local development
 and the pinned Linux VM version can use the same starter dashboard. Protocol-specific panels can be
 added once the live traffic shape is clear.
+
+## SRT Connection Health Dashboard
+
+The `SRT Connection Health` dashboard is based on the SRT metrics listed in the
+[MediaMTX metrics documentation](https://mediamtx.org/docs/features/metrics). It focuses on:
+
+- active SRT connection count
+- RTT
+- send and receive rate
+- link capacity
+- send and receive loss rate
+- retransmit, drop, and undecrypt counters
+- send and receive buffer pressure
+- flight size, flow window, and NAK counters
+
+Useful SRT queries:
+
+```promql
+sum(srt_conns{job="mediamtx"})
+avg(srt_conns_ms_rtt{job="mediamtx"})
+sum(srt_conns_mbps_send_rate{job="mediamtx"})
+sum(srt_conns_mbps_receive_rate{job="mediamtx"})
+sum(srt_conns_mbps_link_capacity{job="mediamtx"})
+avg(srt_conns_packets_send_loss_rate{job="mediamtx"})
+avg(srt_conns_packets_received_loss_rate{job="mediamtx"})
+sum(srt_conns_packets_retrans{job="mediamtx"})
+sum(srt_conns_packets_received_retrans{job="mediamtx"})
+sum(srt_conns_packets_send_drop{job="mediamtx"})
+sum(srt_conns_packets_received_drop{job="mediamtx"})
+sum(srt_conns_packets_received_undecrypt{job="mediamtx"})
+```
