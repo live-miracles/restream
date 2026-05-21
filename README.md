@@ -155,7 +155,8 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 | `1935` | TCP | RTMP ingest |
 | `8890` | UDP/TCP | SRT ingest |
 
-MediaMTX API (`9997`), metrics (`9998`), and HLS preview (`8888`) stay localhost-only.
+MediaMTX API (`9997`), metrics (`9998`), HLS preview (`8888`), Prometheus (`9090`), and Grafana
+(`3000`) stay localhost-only. Grafana is reached through the dashboard origin at `/grafana/`.
 
 ### Settings
 
@@ -292,7 +293,7 @@ Browsers will show a warning when visiting the VM directly because the certifica
 ### Security Baseline
 
 - Both services run as non-root (`restream` user).
-- Keep `9997` and `8888` local-only.
+- Keep `9997`, `9998`, `8888`, `9090`, and `3000` local-only.
 - Use firewall rules to restrict ingest and UI ports.
 - MediaMTX publish/read/playback authorization is delegated to the local Restream auth endpoint,
   which rejects unknown stream keys and temporarily bans IPs after repeated failures.

@@ -27,6 +27,18 @@ These are hardcoded and cannot be overridden via environment variables.
 
 Publisher-facing ingest URLs shown in the dashboard are rewritten by the frontend to use the browser's current hostname, so they automatically reflect the correct public address without any configuration.
 
+### Grafana Proxy
+
+| Variable | Default | Description |
+|---|---|---|
+| `GRAFANA_PROXY_PATH` | `/grafana` | Dashboard path that proxies browser requests to Grafana |
+| `GRAFANA_PROXY_TARGET` | `http://127.0.0.1:3000` | Local Grafana upstream for the Node proxy |
+| `GRAFANA_PROXY_TOKEN` | empty | Optional shared token. When set, requests need `Authorization: Bearer <token>` or a one-time `?grafana_token=<token>` cookie bootstrap. |
+| `GRAFANA_PROXY_TIMEOUT_MS` | `30000` | Timeout for upstream Grafana proxy requests |
+
+Grafana itself should stay bound to localhost. Public users should reach it through the Restream
+dashboard origin at `/grafana/`.
+
 ### FFmpeg and ffprobe
 
 | Variable | Default | Description |
@@ -140,6 +152,9 @@ curl -fsS http://127.0.0.1:9998/metrics | head
 
 Use `monitoring/prometheus.yml` as a starter Prometheus scrape config, and see
 [Observability](./observability.md) for the Prometheus/Grafana setup.
+
+Grafana can be reached through the Node proxy at `/grafana/` when a local Grafana instance is
+running. Keep Grafana's own `3000` listener localhost-only.
 
 ## 6. Input Preview Proxy
 

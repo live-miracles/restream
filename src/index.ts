@@ -6,6 +6,7 @@ import type { ChildProcess } from 'child_process';
 import * as db from './db';
 import { mkdirSync } from 'fs';
 import { registerConfigApi } from './api/config';
+import { registerGrafanaProxyRoutes } from './api/grafana';
 import { registerPreviewProxyRoutes } from './api/preview';
 import { registerOutputApi } from './api/outputs';
 import { registerEncodingsApi } from './api/encodings';
@@ -25,6 +26,10 @@ import { errMsg, log } from './utils/app';
 import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
 
 const app = express();
+
+// Register before body parsers so Grafana API requests can stream through unchanged.
+registerGrafanaProxyRoutes({ app, log });
+
 const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 app.use(express.json());
 app.use(
