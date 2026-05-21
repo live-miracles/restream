@@ -4,6 +4,7 @@ import { unlink, mkdir } from 'fs/promises';
 import path from 'path';
 import { errMsg, log } from '../utils/app';
 import { buildPullInputUrl } from '../utils/mediamtx';
+import type { PullProtocol } from '../utils/mediamtx';
 import type { Db } from '../types';
 
 export interface RecordingService {
@@ -34,10 +35,12 @@ export function createRecordingService({
     db,
     mediaDir,
     isInputOn,
+    getInputPullProtocol = () => 'rtmp',
 }: {
     db: Db;
     mediaDir: string;
     isInputOn: (pipelineId: string) => boolean;
+    getInputPullProtocol?: (pipelineId: string) => PullProtocol;
 }): RecordingService {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const processes = new Map<string, ChildProcess>();
@@ -60,7 +63,8 @@ export function createRecordingService({
 
         const filename = buildFilename(pipeline.name);
         const filePath = path.join(mediaDir, filename);
-        const inputUrl = buildPullInputUrl(pipeline.streamKey, 'rtmp');
+        const inputPullProtocol = getInputPullProtocol(pipelineId);
+        const inputUrl = buildPullInputUrl(pipeline.streamKey, inputPullProtocol);
 
         const args = [
             '-nostdin',
@@ -93,7 +97,12 @@ export function createRecordingService({
         processes.set(pipelineId, child);
         startedAt.set(pipelineId, Date.now());
         filePaths.set(pipelineId, filePath);
-        log('info', 'Recording started', { pipelineId, filename, pid: child.pid ?? null });
+        log('info', 'Recording started', {
+            pipelineId,
+            filename,
+            pid: child.pid ?? null,
+            inputPullProtocol,
+        });
 
         child.on('error', (err) => {
             log('error', 'Recording ffmpeg error', { pipelineId, error: errMsg(err) });

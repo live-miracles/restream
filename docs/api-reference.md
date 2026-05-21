@@ -306,7 +306,7 @@ Sets this output's desired state to `running` and reconciles runtime toward that
 3. Validate pipeline + output exist.
 4. Check for an existing running job.
 5. Confirm the MediaMTX path for `pipeline.streamKey` is available via `/v3/paths/list`.
-6. Build pull URL: `rtmp://localhost:1935/live/<streamKey>`.
+6. Build pull URL from the active ingest protocol: RTMP ingest uses `rtmp://localhost:1935/live/<streamKey>`; SRT ingest uses `srt://localhost:10080?streamid=read:live/<streamKey>`.
 8. Spawn FFmpeg with `-progress pipe:3` for the selected output encoding:
   - `source`: codec copy (`-c:v copy -c:a copy`)
   - `vertical-crop`: `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode

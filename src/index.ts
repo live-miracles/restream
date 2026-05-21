@@ -68,6 +68,7 @@ const outputLifecycle = createOutputLifecycleService({
     processes,
     ffmpegProgressByJobId,
     isInputOn: healthMonitor.isInputOn,
+    getInputPullProtocol: healthMonitor.getInputPullProtocol,
 });
 
 // ── Ingest service ────────────────────────────────────
@@ -78,6 +79,7 @@ const recordingService = createRecordingService({
     db,
     mediaDir,
     isInputOn: healthMonitor.isInputOn,
+    getInputPullProtocol: healthMonitor.getInputPullProtocol,
 });
 
 // Resolve circular dependency: register the output recovery callback now that both services exist.

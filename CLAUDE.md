@@ -122,4 +122,4 @@ The frontend is a plain TypeScript/ES-module SPA with no framework. There is no 
 - **No DB migrations**: `CREATE TABLE IF NOT EXISTS` is run at startup. Changing schema requires manual handling.
 - **MediaMTX ports are hardcoded**: API=9997, RTMP=1935, SRT=10080, HLS=8888 — all localhost. No env override.
 - **Ingest URLs shown in dashboard** use the browser's current hostname (not localhost), resolved in the frontend.
-- **FFmpeg pull protocol** is selected by output destination: RTMP destinations pull via RTMP; SRT and HLS destinations pull via SRT.
+- **FFmpeg pull protocol** follows the active ingest protocol when health state identifies it: RTMP ingest pulls via RTMP; SRT ingest pulls via SRT. Unknown protocol falls back to RTMP.
