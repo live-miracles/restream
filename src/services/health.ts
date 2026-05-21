@@ -7,7 +7,9 @@ import {
     getMediamtxApiBaseUrl,
     buildMediamtxPath,
     buildRtspInputUrl,
+    normalizePullProtocol,
 } from '../utils/mediamtx';
+import type { PullProtocol } from '../utils/mediamtx';
 import type { Db, Pipeline, Output, Job } from '../types';
 
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
@@ -97,6 +99,7 @@ interface HealthSnapshot {
 
 export interface HealthMonitor {
     clearPipelineRuntimeState(pipelineId: string): void;
+    getInputPullProtocol(pipelineId: string): PullProtocol;
     isInputOn(pipelineId: string): boolean;
     registerInputRecoveryHandler(fn: (pipelineId: string) => void): void;
     registerInputLostHandler(fn: (pipelineId: string) => void): void;
@@ -369,6 +372,7 @@ export function createHealthMonitorService({
     const healthSnapshotIntervalMs = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 2000);
 
     const pipelineInputStatusHistory = new Map<string, string>();
+    const pipelineInputPullProtocolById = new Map<string, PullProtocol>();
     let latestHealthSnapshot: HealthSnapshot | null = null;
     let healthCollectorInFlight: Promise<HealthSnapshot> | null = null;
     let healthCollectorTimer: NodeJS.Timeout | null = null;
@@ -581,6 +585,14 @@ export function createHealthMonitorService({
 
         const effectivePath = buildMediamtxPath(streamKey);
         const publisher = publisherByPath.get(effectivePath) || null;
+        if (inputStatus === 'on') {
+            pipelineInputPullProtocolById.set(
+                pipeline.id,
+                normalizePullProtocol(publisher?.protocol),
+            );
+        } else {
+            pipelineInputPullProtocolById.delete(pipeline.id);
+        }
         const inputTransition = updatePipelineInputStatusHistory(pipeline.id, inputStatus, {
             publisher,
         });
@@ -750,6 +762,7 @@ export function createHealthMonitorService({
 
     function clearPipelineRuntimeState(pipelineId: string) {
         pipelineInputStatusHistory.delete(pipelineId);
+        pipelineInputPullProtocolById.delete(pipelineId);
     }
 
     async function start() {
@@ -762,8 +775,18 @@ export function createHealthMonitorService({
         return pipelineInputStatusHistory.get(pipelineId) === 'on';
     }
 
+    function getInputPullProtocol(pipelineId: string): PullProtocol {
+        return (
+            pipelineInputPullProtocolById.get(pipelineId) ||
+            normalizePullProtocol(
+                latestHealthSnapshot?.pipelines?.[pipelineId]?.input?.publisher?.protocol,
+            )
+        );
+    }
+
     return {
         clearPipelineRuntimeState,
+        getInputPullProtocol,
         isInputOn,
         registerInputRecoveryHandler(fn: (pipelineId: string) => void) {
             inputRecoveryHandler = fn;

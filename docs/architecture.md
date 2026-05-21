@@ -71,8 +71,8 @@ Starting an output:
 
 1. Checks that the pipeline and output exist.
 2. Rejects duplicate starts for the same output.
-3. Probes the MediaMTX path via SRT to confirm the input is available and read codec/format details.
-4. Spawns FFmpeg pulling from `rtmp://localhost:1935/live/<key>` and pushing to the output URL.
+3. Uses the latest MediaMTX publisher protocol from health state to choose the local pull URL.
+4. Spawns FFmpeg pulling via RTMP for RTMP ingest or SRT for SRT ingest, then pushes to the output URL.
 6. Records the job and lifecycle logs in SQLite.
 7. Tracks FFmpeg progress (via fd3) and exit state in the background.
 

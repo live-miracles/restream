@@ -27,6 +27,8 @@ interface PathConfigItem {
     key?: string;
 }
 
+export type PullProtocol = 'rtmp' | 'srt';
+
 let cachedIngestPorts: IngestPorts | null = null;
 let cachedIngestPortsAtMs = 0;
 let permanentStreamKeys: StreamKeyItem[] | null = null;
@@ -183,11 +185,19 @@ export async function fetchMediamtxJson(endpoint: string): Promise<unknown> {
 }
 
 // ── Pull URL builders ─────────────────────────────────
-// FFmpeg output jobs always pull from MediaMTX via RTMP regardless of output destination.
+// FFmpeg jobs pull from MediaMTX using the active ingest protocol when it is known.
+
+export function normalizePullProtocol(protocol: unknown): PullProtocol {
+    return String(protocol || '')
+        .trim()
+        .toLowerCase() === 'srt'
+        ? 'srt'
+        : 'rtmp';
+}
 
 export function buildPullInputUrl(streamKey: string, pullProtocol: string): string {
     const effectivePath = buildMediamtxPath(streamKey);
-    if (pullProtocol === 'srt') {
+    if (normalizePullProtocol(pullProtocol) === 'srt') {
         return `${MEDIAMTX_SRT_BASE}?streamid=read:${effectivePath}`;
     }
     return `${MEDIAMTX_RTMP_BASE}/${effectivePath}`;

@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { errMsg, log, createHttpError } from '../utils/app';
 import { buildPullInputUrl } from '../utils/mediamtx';
+import type { PullProtocol } from '../utils/mediamtx';
 import {
     buildCommandPreview,
     buildFfmpegOutputArgs,
@@ -63,12 +64,14 @@ export function createOutputLifecycleService({
     processes,
     ffmpegProgressByJobId,
     isInputOn,
+    getInputPullProtocol = () => 'rtmp',
 }: {
     db: Db;
     spawn: typeof nodeSpawn;
     processes: Map<string, ChildProcess>;
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
     isInputOn: (pipelineId: string) => boolean;
+    getInputPullProtocol?: (pipelineId: string) => PullProtocol;
 }): OutputLifecycle {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const stopRequestedJobIds = new Set<string>();
@@ -361,7 +364,8 @@ export function createOutputLifecycleService({
         if (!outputUrl) throw createHttpError(400, 'Output URL is empty');
         if (!validateOutputUrl(outputUrl)) throw createHttpError(400, INVALID_OUTPUT_URL_ERROR);
 
-        const inputUrl = buildPullInputUrl(pipeline.streamKey, 'rtmp');
+        const inputPullProtocol = getInputPullProtocol(pipelineId);
+        const inputUrl = buildPullInputUrl(pipeline.streamKey, inputPullProtocol);
         const encoding = normalizeOutputEncoding(output.encoding) || 'source';
         let customArgs: string | null = null;
         if (encoding === 'custom') {
@@ -374,6 +378,7 @@ export function createOutputLifecycleService({
             outputId,
             trigger,
             reason,
+            inputPullProtocol,
             inputUrl: redactSensitiveUrl(inputUrl),
             outputUrl: redactSensitiveUrl(outputUrl),
             ffmpegCommandPreview: buildCommandPreview(ffmpegCmd, redactFfmpegArgs(ffArgs)),
