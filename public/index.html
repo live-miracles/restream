@@ -78,7 +78,7 @@
       <div class="modal-box w-fit">
         <input type="text" id="pipe-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 w-full max-w-120 space-y-3 px-4">
+        <div class="focus mx-auto mt-2 w-full max-w-150 space-y-3 px-4">
           <h2 class="text-xl font-bold">Edit Pipeline</h2>
           <fieldset class="fieldset inline-block w-56">
             <legend class="fieldset-legend">Pipeline Name</legend>
@@ -89,6 +89,11 @@
             <legend class="fieldset-legend">Stream Key</legend>
             <select class="select w-full" id="pipe-stream-key-input"></select>
             <p id="pipe-stream-key-locked-hint" class="text-warning hidden text-sm">Stop all outputs before changing the stream key.</p>
+          </fieldset>
+
+          <fieldset class="fieldset block w-full">
+            <legend class="fieldset-legend">Source URL</legend>
+            <input type="text" id="pipe-input-source-input" class="input w-full" placeholder="Leave empty for publisher ingest" />
           </fieldset>
         </div>
 

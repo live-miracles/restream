@@ -20,6 +20,12 @@ interface StreamKeyItem {
     label: string;
 }
 
+interface PipelineSourceConfig {
+    id?: string;
+    streamKey: string;
+    inputSource?: string | null;
+}
+
 interface PathConfigItem {
     name?: string;
     path?: string;
@@ -28,6 +34,25 @@ interface PathConfigItem {
 }
 
 export type PullProtocol = 'rtmp' | 'srt';
+const MEDIAMTX_PUBLISHER_SOURCE = 'publisher';
+const SUPPORTED_PATH_SOURCE_PROTOCOLS = new Set([
+    'rtsp:',
+    'rtsps:',
+    'rtsp+http:',
+    'rtsps+http:',
+    'rtsp+ws:',
+    'rtsps+ws:',
+    'rtmp:',
+    'rtmps:',
+    'http:',
+    'https:',
+    'udp+mpegts:',
+    'unix+mpegts:',
+    'udp+rtp:',
+    'srt:',
+    'whep:',
+    'wheps:',
+]);
 
 let cachedIngestPorts: IngestPorts | null = null;
 let cachedIngestPortsAtMs = 0;
@@ -167,9 +192,21 @@ export async function buildIngestUrls(
     };
 }
 
-export async function fetchMediamtxJson(endpoint: string): Promise<unknown> {
+export async function fetchMediamtxJson(
+    endpoint: string,
+    {
+        method = 'GET',
+        body,
+    }: {
+        method?: string;
+        body?: unknown;
+    } = {},
+): Promise<unknown> {
     const url = `${MEDIAMTX_API_BASE}${endpoint}`;
     const resp = await fetch(url, {
+        method,
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(MEDIAMTX_FETCH_TIMEOUT_MS),
     });
     let data: unknown = null;
@@ -182,6 +219,76 @@ export async function fetchMediamtxJson(endpoint: string): Promise<unknown> {
         throw new Error(`MediaMTX ${endpoint} failed with status ${resp.status}`);
     }
     return data;
+}
+
+export function normalizePipelineInputSource(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim();
+    if (!normalized || normalized.toLowerCase() === MEDIAMTX_PUBLISHER_SOURCE) return null;
+    return normalized;
+}
+
+export function validatePipelineInputSource(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string') return 'Input source must be a URL string';
+
+    const source = normalizePipelineInputSource(value);
+    if (!source) return null;
+
+    let parsed: URL;
+    try {
+        parsed = new URL(source);
+    } catch {
+        return 'Input source must be a valid MediaMTX source URL';
+    }
+
+    if (!SUPPORTED_PATH_SOURCE_PROTOCOLS.has(parsed.protocol)) {
+        return 'Input source protocol is not supported by MediaMTX';
+    }
+
+    return null;
+}
+
+export function toMediamtxPathSource(inputSource: unknown): string {
+    return normalizePipelineInputSource(inputSource) || MEDIAMTX_PUBLISHER_SOURCE;
+}
+
+export function resolvePathSourceForStreamKey(
+    pipelines: PipelineSourceConfig[],
+    streamKey: string,
+    excludedPipelineId: string | null = null,
+): string {
+    const configuredPipeline = (pipelines || []).find(
+        (pipeline) =>
+            pipeline?.streamKey === streamKey &&
+            pipeline?.id !== excludedPipelineId &&
+            !!normalizePipelineInputSource(pipeline?.inputSource),
+    );
+    return toMediamtxPathSource(configuredPipeline?.inputSource);
+}
+
+export async function patchMediamtxPathSource(
+    streamKey: string,
+    inputSource: string | null,
+): Promise<void> {
+    const effectivePath = buildMediamtxPath(streamKey);
+    await fetchMediamtxJson(`/v3/config/paths/patch/${encodeURIComponent(effectivePath)}`, {
+        method: 'PATCH',
+        body: { source: toMediamtxPathSource(inputSource) },
+    });
+}
+
+export async function syncMediamtxPathSources(pipelines: PipelineSourceConfig[]): Promise<void> {
+    const streamKeys = [...new Set((pipelines || []).map((pipeline) => pipeline.streamKey))].filter(
+        Boolean,
+    );
+
+    for (const streamKey of streamKeys) {
+        await patchMediamtxPathSource(
+            streamKey,
+            resolvePathSourceForStreamKey(pipelines, streamKey),
+        );
+    }
 }
 
 // ── Pull URL builders ─────────────────────────────────

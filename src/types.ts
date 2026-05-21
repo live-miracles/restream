@@ -17,6 +17,7 @@ export interface Pipeline {
     id: string;
     name: string;
     streamKey: string;
+    inputSource: string | null;
     encoding: string | null;
 }
 
@@ -68,13 +69,19 @@ export interface Db {
         id?: string;
         name: string;
         streamKey: string;
+        inputSource?: string | null;
         encoding?: string | null;
     }): Pipeline;
     getPipeline(id: string): Pipeline | undefined;
     listPipelines(): Pipeline[];
     updatePipeline(
         id: string,
-        params: { name: string; streamKey: string; encoding?: string | null },
+        params: {
+            name: string;
+            streamKey: string;
+            inputSource?: string | null;
+            encoding?: string | null;
+        },
     ): Pipeline | null;
     deletePipeline(id: string): boolean;
 

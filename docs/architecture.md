@@ -16,6 +16,7 @@ MediaMTX handles media transport. Restream handles control-plane state, dashboar
 
 Input sources:
 - **Live ingest** — publisher sends RTMP or SRT to MediaMTX
+- **Pulled source** — MediaMTX actively pulls a pipeline input from a configured source URL
 - **Video ingest** — a pre-recorded video from the `/media` folder is streamed into a pipeline via MediaMTX (loop and start-time configurable)
 - **Recording** — any live pipeline can be recorded to an MP4 file in `/media`
 
@@ -55,9 +56,11 @@ authorization. Publish attempts are allowed only when the path is a configured
 limit is reached, that IP is temporarily banned from ingest attempts. Internal read/playback calls
 from FFmpeg, ffprobe, and the HLS preview proxy remain localhost-only.
 
-### Stream Key Management
+### Pipeline Input Source
 
-Creating or deleting a stream key updates both SQLite and MediaMTX path configuration. If one side fails, the API avoids leaving the two stores intentionally inconsistent.
+Pipeline inputs default to passive publisher ingest through the permanent `live/<streamKey>` MediaMTX
+paths. A pipeline can also set an `inputSource` URL. In that mode Restream stores the source in
+SQLite and patches the matching MediaMTX path `source` option so MediaMTX actively pulls the stream.
 
 Effective MediaMTX paths use:
 

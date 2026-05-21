@@ -138,12 +138,16 @@ Returns all pipelines.
 Creates a pipeline.
 
 If `streamKey` is provided, it follows the same validation rules as `POST /stream-keys`.
+If `inputSource` is omitted or empty, the MediaMTX path uses the default `publisher` source and
+waits for RTMP/SRT ingest. If `inputSource` is a supported MediaMTX source URL, Restream patches
+that path's `source` so MediaMTX actively pulls the input.
 
 **Request body:**
 ```json
 {
   "name": "Pipeline 1",
   "streamKey": "c1518f5ef0d917ef1b6547d7",  // optional
+  "inputSource": "rtsp://camera.example/live", // optional; empty means publisher ingest
   "encoding": null                            // reserved, not used at runtime
 }
 ```
@@ -162,6 +166,7 @@ If `streamKey` is provided, it follows the same validation rules as `POST /strea
 Updates pipeline fields.
 
 If `streamKey` is provided in the request body, it follows the same validation rules as `POST /stream-keys`.
+If `inputSource` is provided, it must be empty or a supported MediaMTX source URL.
 
 **Request body:** same shape as create (all fields optional).
 
@@ -480,6 +485,7 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
       "id": "a1b2c3d4e5f6a7b8",
       "name": "Pipeline 1",
       "streamKey": "c1518f5ef0d917ef1b6547d7",
+      "inputSource": null,
       "ingestUrls": {
         "rtmp": "rtmp://stream.example.com:1935/live/c1518f5ef0d917ef1b6547d7",
         "srt": "srt://stream.example.com:10080?streamid=publish:live/c1518f5ef0d917ef1b6547d7"
