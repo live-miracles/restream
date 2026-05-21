@@ -15,6 +15,13 @@ export function setupDatabaseSchema(db: Database.Database): void {
 `,
     ).run();
 
+    const pipelineColumns = db.prepare(`PRAGMA table_info(pipelines)`).all() as {
+        name: string;
+    }[];
+    if (!pipelineColumns.some((column) => column.name === 'input_source')) {
+        db.prepare(`ALTER TABLE pipelines ADD COLUMN input_source TEXT`).run();
+    }
+
     // desired_state stores operator intent ("should be running") separately from jobs.status
     // ("what happened last"), which lets recovery logic act on transient exits without losing intent.
     db.prepare(

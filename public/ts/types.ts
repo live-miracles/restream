@@ -47,6 +47,7 @@ export interface ConfigPipeline {
     id: string;
     name: string;
     streamKey: string;
+    inputSource?: string | null;
     ingestUrls?: IngestUrls;
 }
 
@@ -164,6 +165,7 @@ export interface PipelineView {
     id: string;
     name: string;
     key: string | null;
+    inputSource: string | null;
     ingestUrls: IngestUrls;
     input: InputView;
     outs: OutputView[];

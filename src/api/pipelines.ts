@@ -1,6 +1,13 @@
 import type { Express } from 'express';
 import { errMsg, maskToken, validateName, validateStreamKey } from '../utils/app';
-import { buildIngestUrls, getPermanentStreamKeys } from '../utils/mediamtx';
+import {
+    buildIngestUrls,
+    getPermanentStreamKeys,
+    normalizePipelineInputSource,
+    patchMediamtxPathSource,
+    resolvePathSourceForStreamKey,
+    validatePipelineInputSource,
+} from '../utils/mediamtx';
 import type { Db, Pipeline } from '../types';
 import type { HealthMonitor } from '../services/health';
 import type { OutputLifecycle } from '../services/outputs';
@@ -42,6 +49,18 @@ function logPipelineConfigChanges(
             },
         );
     }
+
+    if (previousPipeline.inputSource !== nextPipeline.inputSource) {
+        db.appendPipelineEvent(
+            pipelineId,
+            `[config] input_source changed from ${maskToken(previousPipeline.inputSource || 'publisher')} to ${maskToken(nextPipeline.inputSource || 'publisher')}`,
+            'pipeline.config.input_source_changed',
+            {
+                fromMasked: maskToken(previousPipeline.inputSource || 'publisher'),
+                toMasked: maskToken(nextPipeline.inputSource || 'publisher'),
+            },
+        );
+    }
 }
 
 function normalizePipelineStreamKey(value: unknown): string | null {
@@ -65,6 +84,14 @@ function chooseAutomaticStreamKey(
     );
 
     return availableKeys.find((key) => !usedKeys.has(key)) || availableKeys[0];
+}
+
+function resolvePathSourceAfterPipelineChange(db: Db, pendingPipeline: Pipeline): string {
+    const pipelines = db
+        .listPipelines()
+        .filter((pipeline) => pipeline.id !== pendingPipeline.id)
+        .concat(pendingPipeline);
+    return resolvePathSourceForStreamKey(pipelines, pendingPipeline.streamKey);
 }
 
 async function resolvePipelineStreamKey({
@@ -137,27 +164,46 @@ export function registerPipelineApi({
             const body = (req.body || {}) as Record<string, unknown>;
             const name = body?.name;
             const requestedStreamKey = normalizePipelineStreamKey(body?.streamKey);
+            const inputSourceError = validatePipelineInputSource(body?.inputSource);
             const encoding = (body?.encoding as string | null | undefined) ?? null;
             const nameError = validateName(name, 'Pipeline name');
             if (nameError) return res.status(400).json({ error: nameError });
+            if (inputSourceError) return res.status(400).json({ error: inputSourceError });
 
             const resolvedStreamKey = await resolvePipelineStreamKey({ requestedStreamKey, db });
             if (resolvedStreamKey.error) {
                 return res.status(400).json({ error: resolvedStreamKey.error });
             }
             const streamKey = resolvedStreamKey.streamKey!;
+            const inputSource = normalizePipelineInputSource(body?.inputSource);
 
+            await patchMediamtxPathSource(
+                streamKey,
+                resolvePathSourceAfterPipelineChange(db, {
+                    id: '',
+                    name: name as string,
+                    streamKey,
+                    inputSource,
+                    encoding,
+                }),
+            );
             const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey);
-            const pipeline = db.createPipeline({ name: name as string, streamKey, encoding });
+            const pipeline = db.createPipeline({
+                name: name as string,
+                streamKey,
+                inputSource,
+                encoding,
+            });
             const pipelineWithState = pipeline;
 
             db.appendPipelineEvent(
                 pipelineWithState.id,
-                `[config] created name="${pipelineWithState.name}" stream_key=${maskToken(pipelineWithState.streamKey)} encoding=${pipelineWithState.encoding || 'null'}`,
+                `[config] created name="${pipelineWithState.name}" stream_key=${maskToken(pipelineWithState.streamKey)} input_source=${maskToken(pipelineWithState.inputSource || 'publisher')} encoding=${pipelineWithState.encoding || 'null'}`,
                 'pipeline.config.created',
                 {
                     name: pipelineWithState.name,
                     streamKeyMasked: maskToken(pipelineWithState.streamKey),
+                    inputSourceMasked: maskToken(pipelineWithState.inputSource || 'publisher'),
                     encoding: pipelineWithState.encoding || null,
                 },
             );
@@ -189,9 +235,17 @@ export function registerPipelineApi({
             const requestedStreamKey = hasStreamKeyUpdate
                 ? normalizePipelineStreamKey(body?.streamKey)
                 : existing.streamKey;
+            const hasInputSourceUpdate = Object.prototype.hasOwnProperty.call(body, 'inputSource');
+            const inputSourceError = hasInputSourceUpdate
+                ? validatePipelineInputSource(body?.inputSource)
+                : null;
+            const inputSource = hasInputSourceUpdate
+                ? normalizePipelineInputSource(body?.inputSource)
+                : existing.inputSource;
             const encoding = (body?.encoding ?? existing.encoding) as string | null;
             const nameError = validateName(name, 'Pipeline name');
             if (nameError) return res.status(400).json({ error: nameError });
+            if (inputSourceError) return res.status(400).json({ error: inputSourceError });
 
             const resolvedStreamKey = await resolvePipelineStreamKey({
                 requestedStreamKey,
@@ -217,22 +271,40 @@ export function registerPipelineApi({
             }
 
             let initialInputStatus: string | null = null;
+            const inputSourceChanging = inputSource !== existing.inputSource;
 
-            if (streamKeyChanging) {
+            if (streamKeyChanging || inputSourceChanging) {
+                await patchMediamtxPathSource(
+                    streamKey,
+                    resolvePathSourceAfterPipelineChange(db, {
+                        ...existing,
+                        name,
+                        streamKey,
+                        inputSource,
+                        encoding,
+                    }),
+                );
                 const runtimeState = await healthMonitor.resolveRuntimeInputState(streamKey);
                 initialInputStatus = runtimeState.status;
             }
 
-            const updated = db.updatePipeline(id, { name, streamKey, encoding });
+            const updated = db.updatePipeline(id, { name, streamKey, inputSource, encoding });
             if (!updated) return res.status(500).json({ error: 'Failed to update pipeline' });
 
             if (streamKeyChanging) {
+                await patchMediamtxPathSource(
+                    existing.streamKey,
+                    resolvePathSourceForStreamKey(db.listPipelines(), existing.streamKey),
+                );
+            }
+
+            if (streamKeyChanging || inputSourceChanging) {
                 healthMonitor.seedPipelineRuntimeState(id, initialInputStatus || 'off');
                 db.appendPipelineEvent(
                     id,
-                    '[input_state] reset reason=stream_key_change',
+                    `[input_state] reset reason=${streamKeyChanging ? 'stream_key_change' : 'input_source_change'}`,
                     'pipeline.input_state.reset',
-                    { reason: 'stream_key_change' },
+                    { reason: streamKeyChanging ? 'stream_key_change' : 'input_source_change' },
                 );
                 db.appendPipelineEvent(
                     id,
@@ -284,6 +356,11 @@ export function registerPipelineApi({
 
             const ok = db.deletePipeline(id);
             if (!ok) return res.status(500).json({ error: 'Failed to delete pipeline' });
+
+            await patchMediamtxPathSource(
+                existing.streamKey,
+                resolvePathSourceForStreamKey(db.listPipelines(), existing.streamKey),
+            );
 
             healthMonitor.clearPipelineRuntimeState(id);
             for (const output of outputs) {

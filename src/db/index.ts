@@ -29,16 +29,16 @@ function normalizeOutputEncodingValue(encoding: unknown): string {
 
 /* Pipeline statements */
 const insertPipeline = db.prepare(
-    'INSERT INTO pipelines (id, name, stream_key, encoding) VALUES (@id, @name, @stream_key, @encoding)',
+    'INSERT INTO pipelines (id, name, stream_key, input_source, encoding) VALUES (@id, @name, @stream_key, @input_source, @encoding)',
 );
 const getPipelineStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding FROM pipelines WHERE id = ?',
+    'SELECT id, name, stream_key AS streamKey, input_source AS inputSource, encoding FROM pipelines WHERE id = ?',
 );
 const listPipelinesStmt = db.prepare(
-    'SELECT id, name, stream_key AS streamKey, encoding FROM pipelines',
+    'SELECT id, name, stream_key AS streamKey, input_source AS inputSource, encoding FROM pipelines',
 );
 const updatePipelineStmt = db.prepare(
-    'UPDATE pipelines SET name = @name, stream_key = @stream_key, encoding = @encoding WHERE id = @id',
+    'UPDATE pipelines SET name = @name, stream_key = @stream_key, input_source = @input_source, encoding = @encoding WHERE id = @id',
 );
 const deletePipelineStmt = db.prepare('DELETE FROM pipelines WHERE id = ?');
 
@@ -242,11 +242,13 @@ export function createPipeline({
     id,
     name,
     streamKey,
+    inputSource = null,
     encoding = null,
 }: {
     id?: string;
     name: string;
     streamKey: string;
+    inputSource?: string | null;
     encoding?: string | null;
 }): Pipeline {
     if (!name || typeof name !== 'string') throw new Error('Pipeline.name is required');
@@ -254,7 +256,13 @@ export function createPipeline({
         throw new Error('Pipeline.streamKey is required');
     }
     const pid = id || crypto.randomBytes(8).toString('hex');
-    insertPipeline.run({ id: pid, name, stream_key: streamKey, encoding });
+    insertPipeline.run({
+        id: pid,
+        name,
+        stream_key: streamKey,
+        input_source: inputSource,
+        encoding,
+    });
     return getPipelineStmt.get(pid) as Pipeline;
 }
 
@@ -271,10 +279,17 @@ export function updatePipeline(
     {
         name,
         streamKey,
+        inputSource = null,
         encoding = null,
-    }: { name: string; streamKey: string; encoding?: string | null },
+    }: { name: string; streamKey: string; inputSource?: string | null; encoding?: string | null },
 ): Pipeline | null {
-    const info = updatePipelineStmt.run({ id, name, stream_key: streamKey, encoding });
+    const info = updatePipelineStmt.run({
+        id,
+        name,
+        stream_key: streamKey,
+        input_source: inputSource,
+        encoding,
+    });
     return (info.changes > 0 ? getPipelineStmt.get(id) : null) as Pipeline | null;
 }
 

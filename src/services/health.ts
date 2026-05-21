@@ -8,6 +8,7 @@ import {
     buildMediamtxPath,
     buildRtspInputUrl,
     normalizePullProtocol,
+    syncMediamtxPathSources,
 } from '../utils/mediamtx';
 import type { PullProtocol } from '../utils/mediamtx';
 import type { Db, Pipeline, Output, Job } from '../types';
@@ -413,6 +414,16 @@ export function createHealthMonitorService({
                     checkedAt,
                     readyAt: mediamtxReadiness.readyAt,
                 });
+                try {
+                    await syncMediamtxPathSources(db.listPipelines());
+                    log('info', 'MediaMTX path sources synced', {
+                        pipelineCount: db.listPipelines().length,
+                    });
+                } catch (syncErr) {
+                    log('warn', 'Failed to sync MediaMTX path sources', {
+                        error: errMsg(syncErr),
+                    });
+                }
             }
         } catch (err) {
             const errorMessage = errMsg(err);

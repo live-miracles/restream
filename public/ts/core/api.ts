@@ -108,6 +108,7 @@ async function getStreamKeys(): Promise<StreamKey[] | null> {
 interface CreatePipelineArgs {
     name: string;
     streamKey: string;
+    inputSource?: string | null;
     encoding?: string | null;
 }
 

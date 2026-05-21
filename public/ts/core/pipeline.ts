@@ -113,6 +113,7 @@ function parsePipelinesInfo(
             id: p.id,
             name: p.name,
             key: p.streamKey,
+            inputSource: p.inputSource || null,
             ingestUrls: resolveIngestUrls(p, config),
             input: {
                 status: inputStatus,
@@ -151,6 +152,7 @@ function parsePipelinesInfo(
                 id: out.pipelineId,
                 name: 'Undefined',
                 key: null,
+                inputSource: null,
                 input: {
                     status: 'off',
                     time: null,

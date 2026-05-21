@@ -427,6 +427,8 @@ async function loadStreamKeysOnce(): Promise<StreamKey[]> {
 async function openPipeModal(pipe: PipelineView): Promise<void> {
     (document.getElementById('pipe-id-input') as HTMLInputElement).value = pipe.id;
     (document.getElementById('pipe-name-input') as HTMLInputElement).value = pipe?.name;
+    (document.getElementById('pipe-input-source-input') as HTMLInputElement).value =
+        pipe.inputSource || '';
 
     await populatePipelineKeySelect(pipe.key ?? '');
     const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
@@ -452,6 +454,10 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     const pipeId = (document.getElementById('pipe-id-input') as HTMLInputElement).value;
     const nameInput = document.getElementById('pipe-name-input') as HTMLInputElement | null;
     const name = nameInput?.value.trim() || '';
+    const inputSource =
+        (
+            document.getElementById('pipe-input-source-input') as HTMLInputElement | null
+        )?.value.trim() || null;
 
     if (!name) {
         nameInput?.classList.add('input-error');
@@ -461,7 +467,7 @@ export async function pipeFormBtn(event: Event): Promise<void> {
 
     const streamKey =
         (document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null)?.value || '';
-    const response = await updatePipeline(pipeId, { name, streamKey });
+    const response = await updatePipeline(pipeId, { name, streamKey, inputSource });
     if (response === null) return;
 
     modal?.close();
