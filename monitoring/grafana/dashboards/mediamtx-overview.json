@@ -129,7 +129,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(paths{job=\"mediamtx\"})",
+                    "expr": "sum(paths{job=\"mediamtx\",name=~\"$path\"})",
                     "legendFormat": "paths",
                     "refId": "A"
                 }
@@ -184,7 +184,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(paths_readers{job=\"mediamtx\"})",
+                    "expr": "sum(paths_readers{job=\"mediamtx\",name=~\"$path\"})",
                     "legendFormat": "readers",
                     "refId": "A"
                 }
@@ -238,7 +238,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "(sum(rate(paths_inbound_bytes{job=\"mediamtx\"}[1m])) or sum(rate(paths_bytes_received{job=\"mediamtx\"}[1m]))) * 8",
+                    "expr": "(sum(rate(paths_inbound_bytes{job=\"mediamtx\",name=~\"$path\"}[1m])) or sum(rate(paths_bytes_received{job=\"mediamtx\",name=~\"$path\"}[1m]))) * 8",
                     "legendFormat": "Inbound",
                     "refId": "A"
                 },
@@ -247,7 +247,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "(sum(rate(paths_outbound_bytes{job=\"mediamtx\"}[1m])) or sum(rate(paths_bytes_sent{job=\"mediamtx\"}[1m]))) * 8",
+                    "expr": "(sum(rate(paths_outbound_bytes{job=\"mediamtx\",name=~\"$path\"}[1m])) or sum(rate(paths_bytes_sent{job=\"mediamtx\",name=~\"$path\"}[1m]))) * 8",
                     "legendFormat": "Outbound",
                     "refId": "B"
                 }
@@ -300,7 +300,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (state) (paths{job=\"mediamtx\"})",
+                    "expr": "sum by (state) (paths{job=\"mediamtx\",name=~\"$path\"})",
                     "legendFormat": "{{state}}",
                     "refId": "A"
                 }
@@ -353,7 +353,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(rate(paths_inbound_frames_in_error{job=\"mediamtx\"}[5m])) or vector(0)",
+                    "expr": "sum(rate(paths_inbound_frames_in_error{job=\"mediamtx\",name=~\"$path\"}[5m])) or vector(0)",
                     "legendFormat": "inbound frame errors/s",
                     "refId": "A"
                 }
@@ -407,7 +407,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (name) (paths_inbound_bytes{job=\"mediamtx\"}) or sum by (name) (paths_bytes_received{job=\"mediamtx\"})",
+                    "expr": "sum by (name) (paths_inbound_bytes{job=\"mediamtx\",name=~\"$path\"}) or sum by (name) (paths_bytes_received{job=\"mediamtx\",name=~\"$path\"})",
                     "legendFormat": "{{name}} inbound",
                     "refId": "A"
                 },
@@ -416,7 +416,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (name) (paths_outbound_bytes{job=\"mediamtx\"}) or sum by (name) (paths_bytes_sent{job=\"mediamtx\"})",
+                    "expr": "sum by (name) (paths_outbound_bytes{job=\"mediamtx\",name=~\"$path\"}) or sum by (name) (paths_bytes_sent{job=\"mediamtx\",name=~\"$path\"})",
                     "legendFormat": "{{name}} outbound",
                     "refId": "B"
                 }
@@ -430,7 +430,45 @@
     "style": "dark",
     "tags": ["restream", "mediamtx"],
     "templating": {
-        "list": []
+        "list": [
+            {
+                "allValue": ".*",
+                "current": {
+                    "selected": true,
+                    "text": "All",
+                    "value": "$__all"
+                },
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "Prometheus"
+                },
+                "definition": "label_values(paths{job=\"mediamtx\"}, name)",
+                "hide": 0,
+                "includeAll": true,
+                "label": "MediaMTX path",
+                "multi": false,
+                "name": "path",
+                "options": [],
+                "query": "label_values(paths{job=\"mediamtx\"}, name)",
+                "refresh": 1,
+                "regex": "",
+                "sort": 1,
+                "type": "query"
+            },
+            {
+                "current": {
+                    "selected": false,
+                    "text": "all",
+                    "value": "all"
+                },
+                "hide": 0,
+                "label": "Restream output",
+                "name": "output",
+                "options": [],
+                "query": "all",
+                "type": "textbox"
+            }
+        ]
     },
     "time": {
         "from": "now-30m",

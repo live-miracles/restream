@@ -11,6 +11,7 @@ import { state } from '../core/state.js';
 import { getPublisherQualityAlerts, normalizePublisherProtocolLabel } from './publisher-quality.js';
 import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
+import { openGrafanaDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { PipelineView, OutputView } from '../types.js';
 
@@ -78,6 +79,19 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     if (historyBtn) {
         historyBtn.onclick = () => {
             pipelineViewDependencies.openPipelineHistoryModal?.(pipe.id, pipe.name);
+        };
+    }
+
+    const grafanaBtn = document.getElementById('pipe-grafana-btn') as HTMLButtonElement | null;
+    if (grafanaBtn) {
+        grafanaBtn.disabled = !pipe.key;
+        grafanaBtn.classList.toggle('btn-disabled', !pipe.key);
+        grafanaBtn.title = pipe.key
+            ? 'Open Grafana dashboard for this pipeline'
+            : 'Pipeline has no stream key';
+        grafanaBtn.onclick = () => {
+            if (!pipe.key) return;
+            openGrafanaDashboard(pipe);
         };
     }
 
@@ -421,6 +435,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
+                    <button class="btn btn-xs btn-accent btn-outline" data-action="grafana-output" data-output-index="${outputIndex}" title="Open Grafana dashboard for this output">Grafana</button>
                     <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
                     <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
@@ -469,6 +484,10 @@ export function renderOutsColumn(selectedPipe: string | null): void {
 
         if (button.dataset.action === 'history-output') {
             pipelineViewDependencies.openOutputHistoryModal?.(pipe.id, out.id, out.name);
+        }
+
+        if (button.dataset.action === 'grafana-output') {
+            openGrafanaDashboard(pipe, out);
         }
 
         if (button.dataset.action === 'edit-output') {

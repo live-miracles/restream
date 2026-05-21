@@ -75,7 +75,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(srt_conns{job=\"mediamtx\"})",
+                    "expr": "sum(srt_conns{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "connections",
                     "refId": "A"
                 }
@@ -139,7 +139,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "avg(srt_conns_ms_rtt{job=\"mediamtx\"})",
+                    "expr": "avg(srt_conns_ms_rtt{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "avg rtt",
                     "refId": "A"
                 }
@@ -203,7 +203,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "avg(srt_conns_packets_received_loss_rate{job=\"mediamtx\"})",
+                    "expr": "avg(srt_conns_packets_received_loss_rate{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "receive loss rate",
                     "refId": "A"
                 }
@@ -265,7 +265,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(srt_conns_mbps_send_rate{job=\"mediamtx\"})",
+                    "expr": "sum(srt_conns_mbps_send_rate{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "send rate",
                     "refId": "A"
                 },
@@ -274,7 +274,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(srt_conns_mbps_receive_rate{job=\"mediamtx\"})",
+                    "expr": "sum(srt_conns_mbps_receive_rate{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "receive rate",
                     "refId": "B"
                 },
@@ -283,7 +283,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum(srt_conns_mbps_link_capacity{job=\"mediamtx\"})",
+                    "expr": "sum(srt_conns_mbps_link_capacity{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "link capacity",
                     "refId": "C"
                 }
@@ -345,7 +345,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "avg by (path, remoteAddr, state) (srt_conns_ms_rtt{job=\"mediamtx\"})",
+                    "expr": "avg by (path, remoteAddr, state) (srt_conns_ms_rtt{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} {{remoteAddr}} {{state}}",
                     "refId": "A"
                 }
@@ -416,7 +416,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "avg by (path, state) (srt_conns_packets_send_loss_rate{job=\"mediamtx\"})",
+                    "expr": "avg by (path, state) (srt_conns_packets_send_loss_rate{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} send loss",
                     "refId": "A"
                 },
@@ -425,7 +425,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "avg by (path, state) (srt_conns_packets_received_loss_rate{job=\"mediamtx\"})",
+                    "expr": "avg by (path, state) (srt_conns_packets_received_loss_rate{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} receive loss",
                     "refId": "B"
                 }
@@ -486,7 +486,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_retrans{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_retrans{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} retrans",
                     "refId": "A"
                 },
@@ -495,7 +495,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_received_retrans{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_received_retrans{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} received retrans",
                     "refId": "B"
                 },
@@ -504,7 +504,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_send_drop{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_send_drop{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} send drop",
                     "refId": "C"
                 },
@@ -513,7 +513,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_received_drop{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_received_drop{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} receive drop",
                     "refId": "D"
                 },
@@ -522,7 +522,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_received_undecrypt{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_received_undecrypt{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} undecrypt",
                     "refId": "E"
                 }
@@ -584,7 +584,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_bytes_send_buf{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_bytes_send_buf{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} send buffer",
                     "refId": "A"
                 },
@@ -593,7 +593,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_bytes_receive_buf{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_bytes_receive_buf{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} receive buffer",
                     "refId": "B"
                 },
@@ -602,7 +602,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_bytes_avail_send_buf{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_bytes_avail_send_buf{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} available send buffer",
                     "refId": "C"
                 },
@@ -611,7 +611,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_bytes_avail_receive_buf{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_bytes_avail_receive_buf{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} available receive buffer",
                     "refId": "D"
                 }
@@ -672,7 +672,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_flight_size{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_flight_size{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} flight size",
                     "refId": "A"
                 },
@@ -681,7 +681,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_flow_window{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_flow_window{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} flow window",
                     "refId": "B"
                 },
@@ -690,7 +690,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_sent_nak{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_sent_nak{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} sent NAK",
                     "refId": "C"
                 },
@@ -699,7 +699,7 @@
                         "type": "prometheus",
                         "uid": "Prometheus"
                     },
-                    "expr": "sum by (path) (srt_conns_packets_received_nak{job=\"mediamtx\"})",
+                    "expr": "sum by (path) (srt_conns_packets_received_nak{job=\"mediamtx\",path=~\"$path\"})",
                     "legendFormat": "{{path}} received NAK",
                     "refId": "D"
                 }
@@ -713,7 +713,45 @@
     "style": "dark",
     "tags": ["restream", "mediamtx", "srt"],
     "templating": {
-        "list": []
+        "list": [
+            {
+                "allValue": ".*",
+                "current": {
+                    "selected": true,
+                    "text": "All",
+                    "value": "$__all"
+                },
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "Prometheus"
+                },
+                "definition": "label_values(srt_conns{job=\"mediamtx\"}, path)",
+                "hide": 0,
+                "includeAll": true,
+                "label": "MediaMTX path",
+                "multi": false,
+                "name": "path",
+                "options": [],
+                "query": "label_values(srt_conns{job=\"mediamtx\"}, path)",
+                "refresh": 1,
+                "regex": "",
+                "sort": 1,
+                "type": "query"
+            },
+            {
+                "current": {
+                    "selected": false,
+                    "text": "all",
+                    "value": "all"
+                },
+                "hide": 0,
+                "label": "Restream output",
+                "name": "output",
+                "options": [],
+                "query": "all",
+                "type": "textbox"
+            }
+        ]
     },
     "time": {
         "from": "now-30m",
