@@ -80,20 +80,31 @@ function sendResult(
 
 // ── Runners ─────────────────────────────────────────
 
-function runExec(program: string, args: string[], timeoutMs: number): Promise<StepResult> {
+function runExec(
+    program: string,
+    args: string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+): Promise<StepResult> {
     const cmd = [program, ...args].map((a) => (a.includes(' ') ? `'${a}'` : a)).join(' ');
     const start = Date.now();
     return new Promise((resolve) => {
         execFile(
             program,
             args,
-            { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES * 2 },
+            { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES * 2, signal },
             (err, stdout, stderr) => {
                 const durationMs = Date.now() - start;
-                if (err && 'killed' in err && err.killed) {
+                if (
+                    err &&
+                    (('killed' in err && err.killed) ||
+                        err.name === 'AbortError' ||
+                        err.code === 'ABORT_ERR')
+                ) {
+                    const isAbort = err.name === 'AbortError' || err.code === 'ABORT_ERR';
                     resolve({
                         stdout: truncate(stdout || ''),
-                        stderr: 'Command timed out',
+                        stderr: isAbort ? 'Command aborted by client' : 'Command timed out',
                         exitCode: null,
                         durationMs,
                         command: cmd,
@@ -530,10 +541,14 @@ function analyzeClockDrift(frames: ProbeFrame[]) {
 //
 // Skips the initial warmup period where only audio packets arrive (B-frame
 // decode delay means video frames don't appear until the first GOP is complete).
-function analyzeInterleaving(packets: ProbePacket[]) {
+function analyzeInterleaving(
+    packets: ProbePacket[],
+    videoStreamIndex: number,
+    audioStreamIndex: number,
+) {
     const issues: string[] = [];
-    const videoPackets = packets.filter((p) => p.stream_index === 0);
-    const audioPackets = packets.filter((p) => p.stream_index === 1);
+    const videoPackets = packets.filter((p) => p.stream_index === videoStreamIndex);
+    const audioPackets = packets.filter((p) => p.stream_index === audioStreamIndex);
 
     if (videoPackets.length === 0) {
         issues.push('No video packets captured. The encoder is not sending a video track.');
@@ -543,7 +558,7 @@ function analyzeInterleaving(packets: ProbePacket[]) {
     }
 
     // Find the index of the first video packet — everything before is warmup
-    const firstVideoIdx = packets.findIndex((p) => p.stream_index === 0);
+    const firstVideoIdx = packets.findIndex((p) => p.stream_index === videoStreamIndex);
     // If no video packets at all, we can't measure interleaving
     if (firstVideoIdx < 0) {
         return {
@@ -571,15 +586,15 @@ function analyzeInterleaving(packets: ProbePacket[]) {
         if (pkt.stream_index === lastSi) {
             run++;
         } else {
-            if (lastSi === 0) maxConsecVideo = Math.max(maxConsecVideo, run);
-            else if (lastSi === 1) maxConsecAudio = Math.max(maxConsecAudio, run);
+            if (lastSi === videoStreamIndex) maxConsecVideo = Math.max(maxConsecVideo, run);
+            else if (lastSi === audioStreamIndex) maxConsecAudio = Math.max(maxConsecAudio, run);
             lastSi = pkt.stream_index;
             run = 1;
         }
     }
     // Flush final run
-    if (lastSi === 0) maxConsecVideo = Math.max(maxConsecVideo, run);
-    else if (lastSi === 1) maxConsecAudio = Math.max(maxConsecAudio, run);
+    if (lastSi === videoStreamIndex) maxConsecVideo = Math.max(maxConsecVideo, run);
+    else if (lastSi === audioStreamIndex) maxConsecAudio = Math.max(maxConsecAudio, run);
 
     // Track the maximum PTS gap between the two streams — large gaps mean
     // one stream is starving while the other is buffered ahead
@@ -589,10 +604,10 @@ function analyzeInterleaving(packets: ProbePacket[]) {
     for (const pkt of steady) {
         const pts = pkt.pts_time ? parseFloat(pkt.pts_time) : NaN;
         if (isNaN(pts)) continue;
-        if (pkt.stream_index === 0) {
+        if (pkt.stream_index === videoStreamIndex) {
             lastVPts = pts;
             if (lastAPts >= 0) maxGap = Math.max(maxGap, Math.abs(pts - lastAPts));
-        } else if (pkt.stream_index === 1) {
+        } else if (pkt.stream_index === audioStreamIndex) {
             lastAPts = pts;
             if (lastVPts >= 0) maxGap = Math.max(maxGap, Math.abs(pts - lastVPts));
         }
@@ -1474,9 +1489,11 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
             'X-Accel-Buffering': 'no',
         });
 
+        const abortController = new AbortController();
         let aborted = false;
         req.on('close', () => {
             aborted = true;
+            abortController.abort();
         });
 
         const totalStart = Date.now();
@@ -1737,7 +1754,12 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
 
         probeArgs.push(probeUrl);
 
-        const probeResult = await runExec(ffprobeCmd, probeArgs, PROBE_TIMEOUT_MS);
+        const probeResult = await runExec(
+            ffprobeCmd,
+            probeArgs,
+            PROBE_TIMEOUT_MS,
+            abortController.signal,
+        );
         if (aborted) return res.end();
 
         // ── Dispatch probe results (indices 3–7) ────
@@ -1786,13 +1808,23 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
             { issues: formatIssues },
         );
 
+        // Locate video and audio stream indexes dynamically from metadata.
+        const videoStream = parsed.streams.find((s) => s.codec_type === 'video');
+        const audioStream = parsed.streams.find((s) => s.codec_type === 'audio');
+        const videoStreamIndex = videoStream !== undefined ? videoStream.index : 0;
+        const audioStreamIndex = audioStream !== undefined ? audioStream.index : 1;
+
         // 5: Packet Timing & Interleaving — analysis in stdout, raw packets for download
-        const interleaving = analyzeInterleaving(parsed.packets);
+        const interleaving = analyzeInterleaving(
+            parsed.packets,
+            videoStreamIndex,
+            audioStreamIndex,
+        );
         const startupGap = analyzeStartupGap(parsed.streams);
         const packetCounts = {
             totalPackets: parsed.packets.length,
-            videoPackets: parsed.packets.filter((p) => p.stream_index === 0).length,
-            audioPackets: parsed.packets.filter((p) => p.stream_index === 1).length,
+            videoPackets: parsed.packets.filter((p) => p.stream_index === videoStreamIndex).length,
+            audioPackets: parsed.packets.filter((p) => p.stream_index === audioStreamIndex).length,
         };
         sendResult(
             res,
