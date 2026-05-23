@@ -19,6 +19,7 @@
         "test:routes": "node --require tsx/cjs --test test/routes/*.test.js",
         "test:normalization": "node --test test/artifacts/run-2x3-normalization.test.mjs",
         "test:integration": "node test/artifacts/run-2x3.mjs",
+        "test:network-profiles": "node test/network-profiles.js",
         "test:input": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f flv rtmp://localhost:1935/mystream",
         "test:input:rtmp": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f flv rtmp://localhost:1935/live/key01_6c71124cde80358ca7c13081",
         "test:input:srt": "ffmpeg -re -stream_loop -1 -i media/colorbar-timer.mp4 -c:v libx264 -preset veryfast -b:v 2500k -bf 0 -g 50 -pix_fmt yuv420p -tune zerolatency -c:a aac -b:a 128k -ac 2 -f mpegts srt://localhost:8890?streamid=publish:live/key02_fff2adcf55a26d31ae93464b",
