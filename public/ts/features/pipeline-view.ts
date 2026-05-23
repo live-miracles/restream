@@ -28,6 +28,7 @@ interface PipelineViewDependencies {
     editOutBtn: ((pipeId: string, outId: string) => void) | null;
     deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
     refreshDashboard: (() => Promise<void>) | null;
+    openDiagnosticsModal: ((pipeId: string) => void) | null;
 }
 
 const pipelineViewDependencies: PipelineViewDependencies = {
@@ -40,6 +41,7 @@ const pipelineViewDependencies: PipelineViewDependencies = {
     editOutBtn: null,
     deleteOutBtn: null,
     refreshDashboard: null,
+    openDiagnosticsModal: null,
 };
 
 const ingestUiState = {
@@ -98,6 +100,17 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
                 await startRecording(pipe.id);
             }
             await pipelineViewDependencies.refreshDashboard?.();
+        };
+    }
+
+    const diagnoseBtn = document.getElementById('diagnose-pipe-btn') as HTMLButtonElement | null;
+    if (diagnoseBtn) {
+        const inputOn = pipe.input.status === 'on';
+        diagnoseBtn.disabled = !inputOn;
+        diagnoseBtn.classList.toggle('btn-disabled', !inputOn);
+        diagnoseBtn.title = inputOn ? '' : 'Input must be online to run diagnostics';
+        diagnoseBtn.onclick = () => {
+            pipelineViewDependencies.openDiagnosticsModal?.(pipe.id);
         };
     }
 
