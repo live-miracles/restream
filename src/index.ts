@@ -13,6 +13,7 @@ import { registerPipelineApi } from './api/pipelines';
 import { registerRecordingApi } from './api/recording';
 import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
+import { registerDiagnosticsApi } from './api/diagnostics';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
@@ -128,6 +129,7 @@ registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
 registerRecordingApi({ app, db, recording: recordingService, mediaDir });
 registerIngestApi({ app, db, ingestService });
+registerDiagnosticsApi({ app, db });
 const ingestSecurityService = createIngestSecurityService({
     getConfig: db.getIngestSecurityConfig,
     log,
