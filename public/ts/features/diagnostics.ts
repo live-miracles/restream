@@ -80,6 +80,7 @@ function resetState(): void {
     for (const id of [
         'diagnostics-copy-all-btn',
         'diagnostics-download-btn',
+        'diagnostics-ask-ai-btn',
     ]) {
         const btn = document.getElementById(id) as HTMLButtonElement | null;
         if (btn) {
@@ -119,6 +120,7 @@ function cleanup(): void {
         eventSource.close();
         eventSource = null;
     }
+    document.getElementById('ai-toast')?.remove();
 }
 
 function getPublishStartedAt(): string | null {
@@ -182,6 +184,7 @@ function runDiagnostics(): void {
         const actions: [string, (() => void) | (() => Promise<void>)][] = [
             ['diagnostics-copy-all-btn', copyAll],
             ['diagnostics-download-btn', downloadLog],
+            ['diagnostics-ask-ai-btn', askAi],
         ];
         for (const [id, handler] of actions) {
             const btn = document.getElementById(id) as HTMLButtonElement | null;
@@ -477,3 +480,61 @@ function downloadLog(): void {
     URL.revokeObjectURL(url);
 }
 
+const AI_SYSTEM_PROMPT = `You are an expert live-streaming and broadcast engineer. I have uploaded a diagnostic report from my RTMP/SRT streaming pipeline (MediaMTX media server → FFmpeg restreaming outputs).
+
+The report includes MediaMTX server connection stats, server logs, and — most importantly — the full raw ffprobe output: every packet (with DTS/PTS/size/flags), every decoded frame, stream metadata, and format info.
+
+Perform your own independent analysis directly from the raw data. Specifically:
+- Walk the raw packet sequence: compute interleaving quality, find runs of consecutive same-type packets, measure gaps between audio and video DTS.
+- Compute GOP structure from keyframe flags: measure each keyframe interval, find inconsistencies, count B-frames between references.
+- Check A/V clock drift: compare audio and video DTS progression over the capture window.
+- Measure startup sync: how far apart are the first audio and first video packets/frames.
+- Note any DTS violations (non-monotonic timestamps), discontinuities, or ffprobe warnings from stderr.
+- Review the MediaMTX server logs for connection errors, resets, or protocol warnings.
+- Check publisher transport stats for stalls (flat byte counters) or SRT packet drops.
+
+Output:
+1. Stream health verdict: healthy / minor issues / degraded / broken.
+2. For each issue found, cite the exact raw data (packet numbers, timestamps, counter values) and explain the viewer impact.
+3. Concrete, copy-pasteable encoder fixes (OBS, vMix, FFmpeg CLI, hardware encoders like AJA Bridge Live and TVU) with specific settings.
+4. If healthy, confirm and suggest any minor optimizations.`;
+
+async function askAi(): Promise<void> {
+    downloadLog();
+
+    const success = await copyText(AI_SYSTEM_PROMPT);
+    if (success) {
+        showAiToast();
+        setTimeout(() => {
+            window.open('https://chatgpt.com/', '_blank');
+        }, 3000);
+    }
+}
+
+function showAiToast(): void {
+    const existing = document.getElementById('ai-toast');
+    if (existing) existing.remove();
+
+    const modal = getModal();
+    const container = modal?.querySelector('.modal-box');
+    const list = document.getElementById('diagnostics-list');
+    if (!container || !list) return;
+
+    const toast = document.createElement('div');
+    toast.id = 'ai-toast';
+    toast.className =
+        'alert alert-success shadow-lg text-xs mb-2 shrink-0 transition-opacity duration-300';
+    toast.innerHTML = `
+        <div>
+            <div class="font-bold text-sm">✨ Prompt Copied &amp; Log Downloaded!</div>
+            <div>Opening ChatGPT. Upload the log file and paste (Ctrl+V) the prompt.</div>
+        </div>
+    `;
+
+    container.insertBefore(toast, list);
+
+    setTimeout(() => {
+        toast.classList.add('opacity-0');
+        setTimeout(() => toast.remove(), 300);
+    }, 10000);
+}
