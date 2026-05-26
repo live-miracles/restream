@@ -6,20 +6,8 @@ import { syncHistoryPollingWithVisibility } from '../history/controller.js';
 import { state } from '../core/state.js';
 import type { PipelineView } from '../types.js';
 
-interface DashboardHooks {
-    afterRender: (() => void) | null;
-}
-
-const dashboardHooks: DashboardHooks = {
-    afterRender: null,
-};
-
 let dashboardRefreshInFlight: Promise<void> | null = null;
 let dashboardRefreshQueued = false;
-
-export function setDashboardHooks(hooks: Partial<DashboardHooks>): void {
-    Object.assign(dashboardHooks, hooks || {});
-}
 
 export async function refreshDashboard(): Promise<void> {
     fetchConfigNextTick = true;
@@ -107,7 +95,6 @@ async function fetchAndRerender(): Promise<void> {
     reconcileSelectedPipeline(previousPipelines);
     renderPipelines();
     renderMetrics();
-    dashboardHooks.afterRender?.();
 }
 
 const DASHBOARD_POLL_INTERVAL_MS = 5000;

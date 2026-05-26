@@ -11,13 +11,12 @@ import { state } from '../core/state.js';
 import { getPublisherQualityAlerts, normalizePublisherProtocolLabel } from './publisher-quality.js';
 import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
-import { openGrafanaDashboard } from './grafana.js';
+import { openGrafanaDashboard, openSrtConnectionHealthDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { PipelineView, OutputView } from '../types.js';
 
 interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
-    openPublisherQualityModal: ((pipeId: string) => void) | null;
     isOutputToggleBusy: ((pipeId: string, outId: string) => boolean) | null;
     startOutBtn:
         | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
@@ -34,7 +33,6 @@ interface PipelineViewDependencies {
 
 const pipelineViewDependencies: PipelineViewDependencies = {
     openPipelineHistoryModal: null,
-    openPublisherQualityModal: null,
     isOutputToggleBusy: null,
     startOutBtn: null,
     stopOutBtn: null,
@@ -326,6 +324,17 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     const qualityAlerts = publisher ? getPublisherQualityAlerts(publisher) : [];
     const isHealthy = qualityAlerts.length === 0;
     const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
+    const isSrtPublisher = publisher?.protocol === 'srt' && !!pipe.key;
+    const healthBadgeClasses = `badge text-sm px-3 ${isHealthy ? 'badge-success' : 'badge-warning'}`;
+    const healthBadgeLabel = isHealthy ? 'Healthy' : 'Unhealthy';
+    const healthBadgeTitle = isSrtPublisher
+        ? 'Open SRT connection health dashboard'
+        : qualityAlerts.map((alert) => alert.label).join('\n');
+    const healthBadge = publisher
+        ? isSrtPublisher
+            ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-srt-health-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
+            : `<span class="${healthBadgeClasses}" title="${healthBadgeTitle}">${healthBadgeLabel}</span>`
+        : '';
 
     publisherMeta.innerHTML = [
         pipe.input.time !== null
@@ -337,16 +346,14 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         publisher?.remoteAddr
             ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
             : '',
-        publisher
-            ? `<button type="button" class="badge text-sm px-3 cursor-pointer ${isHealthy ? 'badge-success' : 'badge-warning'} js-quality-btn">${isHealthy ? 'Healthy' : 'Unhealthy'}</button>`
-            : '',
+        healthBadge,
         unexpectedCount > 0
             ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? '' : 's'}</span>`
             : '',
     ].join('');
 
-    publisherMeta.querySelector('.js-quality-btn')?.addEventListener('click', () => {
-        pipelineViewDependencies.openPublisherQualityModal?.(pipe.id);
+    publisherMeta.querySelector('.js-srt-health-btn')?.addEventListener('click', () => {
+        openSrtConnectionHealthDashboard(pipe);
     });
 }
 

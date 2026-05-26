@@ -28,10 +28,6 @@ import {
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
-import {
-    getPublisherQualityMetrics,
-    normalizePublisherProtocolLabel,
-} from './publisher-quality.js';
 import type { PipelineView, OutputView, StreamKey } from '../types.js';
 
 function getDefaultOutputHost(): string {
@@ -269,7 +265,6 @@ function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): v
     else pendingOutputToggles.delete(key);
 }
 
-let publisherQualityModalPipeId: string | null = null;
 let currentModalChannelCount: number = 2;
 
 function populateRemapChannelOptions(
@@ -307,52 +302,6 @@ export function onOutEncodingChange(encoding: string): void {
     if (encoding === 'remap') {
         populateRemapChannelOptions(currentModalChannelCount, 0, 1);
     }
-}
-
-export function renderPublisherQualityModal(): void {
-    const modal = document.getElementById('publisher-quality-modal') as HTMLDialogElement | null;
-    if (!modal || !modal.open) return;
-
-    const pipe = (state.pipelines || []).find((p) => p.id === publisherQualityModalPipeId);
-    const publisher = pipe?.input?.publisher || null;
-
-    const subtitle = document.getElementById('publisher-quality-subtitle');
-    const tbody = document.getElementById('publisher-quality-rows');
-    if (!subtitle || !tbody) return;
-
-    if (!publisher) {
-        subtitle.textContent = 'No active publisher.';
-        tbody.replaceChildren();
-        return;
-    }
-
-    const proto = normalizePublisherProtocolLabel(publisher.protocol);
-    subtitle.textContent = `${proto} · ${publisher.remoteAddr || 'unknown'}`;
-
-    const rows = getPublisherQualityMetrics(publisher);
-
-    tbody.innerHTML = rows.length
-        ? rows
-              .map(
-                  (row) => `<tr>
-                <td>${row.label}</td>
-                <td class="text-right font-mono">${row.displayValue}</td>
-                <td class="text-right"><span class="badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}">${row.isAlert ? 'Alert' : 'OK'}</span></td>
-            </tr>`,
-              )
-              .join('')
-        : '<tr><td colspan="3" class="text-center opacity-50 text-sm py-4">No quality metrics available for this protocol.</td></tr>';
-}
-
-export function openPublisherQualityModal(pipeId: string): void {
-    const modal = document.getElementById('publisher-quality-modal') as HTMLDialogElement | null;
-    if (!modal) return;
-    publisherQualityModalPipeId = pipeId;
-    const pipe = (state.pipelines || []).find((p: PipelineView) => p.id === pipeId);
-    const title = document.getElementById('publisher-quality-title');
-    if (title) title.textContent = `Publisher Quality — ${pipe?.name || pipeId}`;
-    modal.showModal();
-    renderPublisherQualityModal();
 }
 
 export async function startOutBtn(

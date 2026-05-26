@@ -144,5 +144,4 @@ function getPublisherQualityAlerts(publisher: Publisher | null): QualityAlert[] 
         }));
 }
 
-export { normalizePublisherProtocolLabel, getPublisherQualityMetrics, getPublisherQualityAlerts };
-export type { QualityMetric, QualityAlert };
+export { normalizePublisherProtocolLabel, getPublisherQualityAlerts };
