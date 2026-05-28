@@ -24,6 +24,16 @@ log/
 .env
 .env.*
 
+# Local TLS material
+*.crt
+*.pem
+*.key
+*.csr
+*.p12
+*.pfx
+*tls*.tgz
+*cert*.tgz
+
 # Generated TypeScript output
 public/js/
 dist/

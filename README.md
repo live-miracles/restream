@@ -149,7 +149,8 @@ Open these ports in your VPC firewall (VPC Network → Firewall):
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `3030` | TCP | Dashboard |
+| `3030` | TCP | Direct dashboard access before nginx is configured; close or restrict after HTTPS is live |
+| `443` | TCP | HTTPS dashboard when using a reverse proxy |
 | `1935` | TCP | RTMP ingest |
 | `10080` | UDP/TCP | SRT ingest |
 
@@ -212,7 +213,79 @@ cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
 
 ### Reverse Proxy and TLS
 
-Put a reverse proxy (nginx, Caddy) in front of port `3030` and terminate TLS at `443`. Keep MediaMTX API (`9997`) bound to localhost. Restrict direct access to port `3030` via firewall once the proxy is in place.
+Put nginx in front of port `3030` and terminate TLS at `443`. Keep MediaMTX API (`9997`) bound to localhost. Restrict direct access to port `3030` via firewall once nginx is in place.
+
+The deployment uses a stable self-signed origin certificate for nginx. The public certificate may be shared with the upstream/Cloudflare owner so they can trust the origin. Do not generate a new certificate when the public IP is moved to a different VM; copy the existing certificate and private key to the new VM instead. Regenerating it changes the certificate fingerprint and requires upstream/Cloudflare reconfiguration.
+
+Only share the public certificate (`/etc/ssl/certs/nginx-selfsigned.crt`) outside the VM. The private key (`/etc/ssl/private/nginx-selfsigned.key`) is required only on origin VMs that will terminate HTTPS.
+
+Generate the origin certificate only once on the first origin VM:
+
+```sh
+sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/nginx-selfsigned.key \
+  -out /etc/ssl/certs/nginx-selfsigned.crt \
+  -subj "/CN=mtx-india-test-v1"
+```
+
+When moving the public IP to another VM, copy the same files from the old VM to the same paths on the new VM:
+
+```sh
+/etc/ssl/private/nginx-selfsigned.key
+/etc/ssl/certs/nginx-selfsigned.crt
+```
+
+Then set ownership and permissions on the destination VM:
+
+```sh
+sudo chown root:root /etc/ssl/private/nginx-selfsigned.key /etc/ssl/certs/nginx-selfsigned.crt
+sudo chmod 600 /etc/ssl/private/nginx-selfsigned.key
+sudo chmod 644 /etc/ssl/certs/nginx-selfsigned.crt
+```
+
+Do not commit exported certificates or any private key material to the repo.
+
+The nginx site config is checked in at `deploy/nginx/restream.conf`. Install it as the active site config:
+
+```sh
+sudo cp /opt/restream/deploy/nginx/restream.conf /etc/nginx/sites-available/restream
+sudo ln -sf /etc/nginx/sites-available/restream /etc/nginx/sites-enabled/restream
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+Make sure the VM has the GCP network tags required by the existing firewall rules:
+
+```sh
+gcloud compute instances add-tags <instance-name> \
+  --zone=<instance-zone> \
+  --tags=http-server,https-server
+```
+
+Test from inside the VM:
+
+```sh
+curl -fsSI http://127.0.0.1/
+curl -k -fsSI https://127.0.0.1/
+curl -k -fsS https://127.0.0.1/healthz
+```
+
+From outside after the public IP and firewall are in place:
+
+```sh
+curl -fsSI http://<VM-external-IP>/
+curl -k -fsSI https://<VM-external-IP>/
+curl -k -fsS https://<VM-external-IP>/healthz
+```
+
+Expected results:
+
+- `http://<VM-external-IP>/` returns `301` and redirects to HTTPS.
+- `https://<VM-external-IP>/` returns `200`.
+- `https://<VM-external-IP>/healthz` returns `{"status":"ok"}`.
+
+Browsers will show a warning when visiting the VM directly because the certificate is self-signed. Cloudflare/upstream should trust the stable origin certificate separately.
 
 ### Security Baseline
 
