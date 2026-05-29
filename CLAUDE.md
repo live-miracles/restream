@@ -102,7 +102,7 @@ MediaMTX owns media transport. Restream owns orchestration, state, and UI.
 - **`src/index.ts`** — app composition: wires Express, `healthMonitor`, and `outputLifecycle`, and registers all route modules. The circular dependency between the two services (health needs lifecycle for recovery callbacks, lifecycle needs health for input state) is resolved explicitly here.
 - **`src/services/outputs.ts`** — `createOutputLifecycleService`: all FFmpeg process management. Spawns FFmpeg via `spawn`, tracks child processes in a shared `Map<string, ChildProcess>`, reads progress from fd3 (`-progress pipe:3`), and drives the retry/recovery state machine. Desired state (`running` | `stopped`) is persisted in SQLite; in-memory state (failure counts, retry timers, stop promise maps) is rebuilt naturally.
 - **`src/services/health.ts`** — polls MediaMTX API + SQLite + in-memory FFmpeg progress on a 5 s cycle; exposes `/health` and SSE `/health/stream`. Drives input-recovery restarts by calling back into `outputLifecycle`.
-- **`src/utils/ffmpeg.ts`** — `buildFfmpegOutputArgs`: the single function that constructs the full FFmpeg argv. Encoding types: `source` (copy), named presets (`720p`, `1080p`, `vertical-crop`, `vertical-rotate`), `custom` (raw args from DB), and `remap:L:R` (pan filter for channel remapping). Validation via `isValidOutputEncoding`.
+- **`src/utils/ffmpeg.ts`** — `buildFfmpegOutputArgs`: the single function that constructs the full FFmpeg argv. Encoding types: `source` (copy), named presets (`720p`, `1080p`, `vertical-crop`, `vertical-rotate`), `custom` (raw args from DB), and `remap:track:T:L:R` (pan filter on explicit audio track `T`). Validation via `isValidOutputEncoding`.
 - **`src/api/outputs.ts`** — output CRUD + start/stop + history. Encoding and URL changes are blocked while an output is running (409); the `desiredState` and reconciliation are driven through `outputLifecycle`.
 - **`src/db/`** — `setupDatabaseSchema` creates tables on startup; all queries are raw `better-sqlite3` prepared statements typed against the `Db` interface in `src/types.ts`.
 
@@ -113,12 +113,12 @@ The frontend is a plain TypeScript/ES-module SPA with no framework. There is no 
 - **`public/ts/core/state.ts`** — single shared `state` object holding all pipeline/output view models. All rendering reads from this.
 - **`public/ts/core/api.ts`** — typed fetch wrappers for all REST calls. Mutations show a saving badge and trigger a dashboard refresh.
 - **`public/ts/features/dashboard.ts`** — poll loop: `/health` + `/metrics/system` every 5 s; `/config` every other tick (~10 s) or immediately after mutation/tab focus. Drops to 30 s when tab is hidden.
-- **`public/ts/features/editor.ts`** — all output/pipeline modal logic: `openOutModal`, `editOutFormBtn`, `addOutBtn`. Output encoding `remap:L:R` is stored as a string in the DB; the modal parses it to show separate Left/Right channel dropdowns populated from `pipe.input.audio?.channels`.
+- **`public/ts/features/editor.ts`** — all output/pipeline modal logic: `openOutModal`, `editOutFormBtn`, `addOutBtn`. Output encoding `remap:track:T:L:R` is stored as a string in the DB; the modal parses it to show Track, Left channel, and Right channel dropdowns populated from `pipe.input.audioTracks`.
 - **`public/ts/features/pipeline-view.ts`** — renders the output list. Functions exposed to `window` (e.g., `editOutBtn`, `addOutBtn`, `pipeFormBtn`) are declared in `public/ts/global.d.ts`.
 
 ### Key design constraints
 
-- **Encoding stored as string**: `remap:0:1` means left=c0, right=c1 (0-indexed). Other encodings are plain keys (`source`, `720p`, etc.) or `custom`.
+- **Encoding stored as string**: `remap:track:0:0:1` means first audio track, left=c0, right=c1 (0-indexed). `remap:track:1:0:1` means second audio track, left=c0, right=c1. Other encodings are plain keys (`source`, `720p`, etc.) or `custom`.
 - **No DB migrations**: `CREATE TABLE IF NOT EXISTS` is run at startup. Changing schema requires manual handling.
 - **MediaMTX ports are hardcoded**: API=9997, RTMP=1935, SRT=10080, HLS=8888 — all localhost. No env override.
 - **Ingest URLs shown in dashboard** use the browser's current hostname (not localhost), resolved in the frontend.

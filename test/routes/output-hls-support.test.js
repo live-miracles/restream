@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const {
     INVALID_OUTPUT_URL_ERROR,
     buildFfmpegOutputArgs,
+    isValidOutputEncoding,
     redactSensitiveUrl,
+    requiresSrtPullForOutputEncoding,
     shouldPersistFfmpegStderrLine,
     validateOutputUrl,
 } = require('../../src/utils/ffmpeg');
@@ -117,6 +119,26 @@ test('buildFfmpegOutputArgs keeps source audio copy for non-HLS outputs', () => 
     assert.ok(!args.includes('-af'));
     assert.ok(args.includes('-c:a'));
     assert.equal(args[args.indexOf('-c:a') + 1], 'copy');
+});
+
+test('remap encoding can target an explicit audio track', () => {
+    assert.equal(isValidOutputEncoding('remap:0:1'), false);
+    assert.equal(isValidOutputEncoding('remap:track:0:0:1'), true);
+    assert.equal(isValidOutputEncoding('remap:track:1:0:1'), true);
+    assert.equal(requiresSrtPullForOutputEncoding('remap:track:0:0:1'), false);
+    assert.equal(requiresSrtPullForOutputEncoding('remap:track:1:0:1'), true);
+
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'srt://localhost:8890?streamid=read:live/test',
+        outputUrl: 'rtmp://localhost:1935/live/test',
+        encoding: 'remap:track:1:0:1',
+    });
+
+    assert.equal(args[args.indexOf('-filter_complex') + 1], '[0:a:1]pan=stereo|c0=c0|c1=c1[a]');
+    assert.equal(args[args.indexOf('-map') + 1], '0:v:0');
+    assert.equal(args[args.lastIndexOf('-map') + 1], '[a]');
+    assert.equal(args[args.indexOf('-c:v') + 1], 'copy');
+    assert.equal(args[args.indexOf('-c:a') + 1], 'aac');
 });
 
 test('buildFfmpegOutputArgs keeps existing transcode settings for HLS outputs', () => {

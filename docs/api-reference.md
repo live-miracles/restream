@@ -583,7 +583,18 @@ Returns the latest server-side health snapshot. A periodic collector refreshes t
           "sample_rate": 48000,
           "profile": "LC",
           "bw": null
-        }
+        },
+        "audioTracks": [
+          {
+            "index": 1,
+            "codec": "aac",
+            "channels": 2,
+            "sample_rate": 48000,
+            "profile": "LC",
+            "language": "und",
+            "title": null
+          }
+        ]
       },
       "outputs": {
         "<outputId>": {

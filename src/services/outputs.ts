@@ -10,6 +10,7 @@ import {
     normalizeOutputEncoding,
     redactFfmpegArgs,
     redactSensitiveUrl,
+    requiresSrtPullForOutputEncoding,
     shouldPersistFfmpegStderrLine,
     validateOutputUrl,
 } from '../utils/ffmpeg';
@@ -56,6 +57,11 @@ export interface OutputLifecycle {
         job: Job | null | undefined,
         signal?: string,
     ): { stopped: boolean; reason: string };
+}
+
+function resolveInputPullProtocol(encoding: string, fallbackProtocol: PullProtocol): PullProtocol {
+    if (requiresSrtPullForOutputEncoding(encoding)) return 'srt';
+    return fallbackProtocol;
 }
 
 export function createOutputLifecycleService({
@@ -364,9 +370,12 @@ export function createOutputLifecycleService({
         if (!outputUrl) throw createHttpError(400, 'Output URL is empty');
         if (!validateOutputUrl(outputUrl)) throw createHttpError(400, INVALID_OUTPUT_URL_ERROR);
 
-        const inputPullProtocol = getInputPullProtocol(pipelineId);
-        const inputUrl = buildPullInputUrl(pipeline.streamKey, inputPullProtocol);
         const encoding = normalizeOutputEncoding(output.encoding) || 'source';
+        const inputPullProtocol = resolveInputPullProtocol(
+            encoding,
+            getInputPullProtocol(pipelineId),
+        );
+        const inputUrl = buildPullInputUrl(pipeline.streamKey, inputPullProtocol);
         let customArgs: string | null = null;
         if (encoding === 'custom') {
             customArgs = db.getCustomEncoding() || null;

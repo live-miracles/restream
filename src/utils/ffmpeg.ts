@@ -90,11 +90,36 @@ export const SYSTEM_ENCODING_ARGS: Record<string, string | null> = {
 
 export const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
-const REMAP_ENCODING_RE = /^remap:(\d+):(\d+)$/;
+const TRACK_REMAP_ENCODING_RE = /^remap:track:(\d+):(\d+):(\d+)$/;
+
+interface RemapEncoding {
+    audioTrack: number;
+    left: number;
+    right: number;
+}
+
+export function parseRemapEncoding(encoding: string): RemapEncoding | null {
+    const normalizedEncoding = normalizeOutputEncoding(encoding);
+    const trackMatch = TRACK_REMAP_ENCODING_RE.exec(normalizedEncoding);
+    if (trackMatch) {
+        return {
+            audioTrack: parseInt(trackMatch[1], 10),
+            left: parseInt(trackMatch[2], 10),
+            right: parseInt(trackMatch[3], 10),
+        };
+    }
+
+    return null;
+}
 
 export function isValidOutputEncoding(encoding: string): boolean {
     if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
-    return REMAP_ENCODING_RE.test(encoding);
+    return parseRemapEncoding(encoding) !== null;
+}
+
+export function requiresSrtPullForOutputEncoding(encoding: string): boolean {
+    const remap = parseRemapEncoding(encoding);
+    return !!remap && remap.audioTrack > 0;
 }
 
 export const INVALID_OUTPUT_URL_ERROR =
@@ -165,15 +190,13 @@ export function buildFfmpegOutputArgs({
 
     const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
 
-    const remapMatch = REMAP_ENCODING_RE.exec(normalizedEncoding);
-    if (remapMatch) {
-        const left = parseInt(remapMatch[1], 10);
-        const right = parseInt(remapMatch[2], 10);
+    const remap = parseRemapEncoding(normalizedEncoding);
+    if (remap) {
         args.push(
             '-filter_complex',
-            `[0:a]pan=stereo|c0=c${left}|c1=c${right}[a]`,
+            `[0:a:${remap.audioTrack}]pan=stereo|c0=c${remap.left}|c1=c${remap.right}[a]`,
             '-map',
-            '0:v',
+            '0:v:0',
             '-map',
             '[a]',
             '-c:v',
