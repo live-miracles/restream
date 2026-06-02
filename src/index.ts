@@ -15,6 +15,7 @@ import { registerRecordingApi } from './api/recording';
 import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
 import { registerDiagnosticsApi } from './api/diagnostics';
+import { registerPublicIngestApi } from './api/public-ingest';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
@@ -141,6 +142,7 @@ registerSystemMetricsApi({ app });
 registerRecordingApi({ app, db, recording: recordingService, mediaDir });
 registerIngestApi({ app, db, ingestService });
 registerDiagnosticsApi({ app, db });
+registerPublicIngestApi({ app });
 const ingestSecurityService = createIngestSecurityService({
     getConfig: db.getIngestSecurityConfig,
     log,

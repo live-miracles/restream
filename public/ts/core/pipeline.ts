@@ -4,6 +4,7 @@ import type {
     IngestUrls,
     Job,
     PipelineView,
+    PublicIngestAddress,
     VideoTrack,
 } from '../types.js';
 
@@ -34,17 +35,21 @@ function computeKbps(
 function resolveIngestUrls(
     pipeline: { ingestUrls?: IngestUrls },
     _config: Partial<ConfigData>,
+    publicIngest: PublicIngestAddress | null,
 ): IngestUrls {
     const ingestUrls = pipeline?.ingestUrls;
     if (!ingestUrls) {
         return { rtmp: null, srt: null };
     }
 
+    const publicIngestHost = publicIngest?.host?.trim() || null;
     const currentHost =
         typeof window !== 'undefined' && window.location?.hostname
             ? window.location.hostname
             : null;
-    if (!currentHost || currentHost === 'localhost') {
+    const replacementHost =
+        publicIngestHost || (currentHost && currentHost !== 'localhost' ? currentHost : null);
+    if (!replacementHost) {
         return ingestUrls;
     }
 
@@ -53,7 +58,7 @@ function resolveIngestUrls(
         try {
             const parsed = new URL(url);
             if (parsed.hostname !== 'localhost') return url;
-            parsed.hostname = currentHost;
+            parsed.hostname = replacementHost;
             return parsed.toString();
         } catch {
             return url;
@@ -69,6 +74,7 @@ function resolveIngestUrls(
 function parsePipelinesInfo(
     config: Partial<ConfigData>,
     health: Partial<HealthData>,
+    publicIngest: PublicIngestAddress | null = null,
 ): PipelineView[] {
     const newPipelines: PipelineView[] = [];
     const latestJobsByOutput = new Map<string, Job>();
@@ -114,7 +120,7 @@ function parsePipelinesInfo(
             name: p.name,
             key: p.streamKey,
             inputSource: p.inputSource || null,
-            ingestUrls: resolveIngestUrls(p, config),
+            ingestUrls: resolveIngestUrls(p, config, publicIngest),
             input: {
                 status: inputStatus,
                 time: inputTime,

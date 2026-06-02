@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+    normalizePublicIngestHost,
     patchMediamtxPathSource,
     resolvePathSourceForStreamKey,
     toMediamtxPathSource,
@@ -28,6 +29,19 @@ test('toMediamtxPathSource maps empty input source to publisher', () => {
     assert.equal(toMediamtxPathSource(null), 'publisher');
     assert.equal(toMediamtxPathSource(''), 'publisher');
     assert.equal(toMediamtxPathSource('rtmp://origin/live/cam1'), 'rtmp://origin/live/cam1');
+});
+
+test('normalizePublicIngestHost accepts bare hosts and strips URL wrappers', () => {
+    assert.equal(normalizePublicIngestHost('34.47.252.97'), '34.47.252.97');
+    assert.equal(
+        normalizePublicIngestHost('https://livestream-media-mtx-test.example.com/healthz'),
+        'livestream-media-mtx-test.example.com',
+    );
+    assert.equal(
+        normalizePublicIngestHost('rtmp://ingest.example.com:1935/live/key'),
+        'ingest.example.com',
+    );
+    assert.equal(normalizePublicIngestHost(''), null);
 });
 
 test('resolvePathSourceForStreamKey chooses a configured source for a stream key', () => {

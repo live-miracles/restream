@@ -70,6 +70,25 @@ export function buildMediamtxPath(streamKey: string): string {
     return `${LIVE_PATH_PREFIX}${streamKey}`;
 }
 
+export function normalizePublicIngestHost(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    try {
+        const parsed = new URL(trimmed.includes('://') ? trimmed : `rtmp://${trimmed}`);
+        return parsed.hostname || null;
+    } catch {
+        const withoutPath = trimmed.split(/[/?#]/)[0];
+        if (!withoutPath) return null;
+        return withoutPath;
+    }
+}
+
+function getPublicIngestHost(): string {
+    return normalizePublicIngestHost(process.env.PUBLIC_INGEST_HOST) || 'localhost';
+}
+
 function getStreamKeyLabelFromPath(pathName: string): string {
     const normalized = String(pathName || '').trim();
     if (!normalized) return '';
@@ -180,7 +199,7 @@ export async function getMediamtxIngestPorts(): Promise<IngestPorts> {
 export async function buildIngestUrls(
     streamKey: string,
 ): Promise<{ rtmp: string | null; srt: string | null }> {
-    const ingestHost = 'localhost';
+    const ingestHost = getPublicIngestHost();
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
 
