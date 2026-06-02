@@ -1,7 +1,5 @@
-import type { Express } from 'express';
 import os from 'os';
-import { errMsg } from '../utils/app';
-import { normalizePublicIngestHost } from '../utils/mediamtx';
+import { errMsg } from './app';
 
 const GCE_EXTERNAL_IP_METADATA_URL =
     'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip';
@@ -18,17 +16,66 @@ export interface PublicIngestAddress {
     error?: string;
 }
 
+let cachedAddress: { value: PublicIngestAddress; resolvedAtMs: number } | null = null;
+
+export function normalizePublicIngestHost(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    try {
+        const parsed = new URL(trimmed.includes('://') ? trimmed : `rtmp://${trimmed}`);
+        return parsed.hostname || null;
+    } catch {
+        const withoutPath = trimmed.split(/[/?#]/)[0];
+        if (!withoutPath) return null;
+        return withoutPath;
+    }
+}
+
 export async function resolvePublicIngestAddress({
     fetchImpl = fetch,
     envHost = process.env.PUBLIC_INGEST_HOST || '',
     getLocalAddress = getLocalNetworkAddress,
     metadataTimeoutMs = PUBLIC_INGEST_METADATA_TIMEOUT_MS,
+    useCache = true,
 }: {
     fetchImpl?: typeof fetch;
     envHost?: string;
     getLocalAddress?: () => string | null;
     metadataTimeoutMs?: number;
+    useCache?: boolean;
 } = {}): Promise<PublicIngestAddress> {
+    const nowMs = Date.now();
+    if (
+        useCache &&
+        cachedAddress &&
+        nowMs - cachedAddress.resolvedAtMs < PUBLIC_INGEST_CACHE_TTL_MS
+    ) {
+        return cachedAddress.value;
+    }
+
+    const value = await resolvePublicIngestAddressUncached({
+        fetchImpl,
+        envHost,
+        getLocalAddress,
+        metadataTimeoutMs,
+    });
+    if (useCache) cachedAddress = { value, resolvedAtMs: nowMs };
+    return value;
+}
+
+async function resolvePublicIngestAddressUncached({
+    fetchImpl,
+    envHost,
+    getLocalAddress,
+    metadataTimeoutMs,
+}: {
+    fetchImpl: typeof fetch;
+    envHost: string;
+    getLocalAddress: () => string | null;
+    metadataTimeoutMs: number;
+}): Promise<PublicIngestAddress> {
     const configuredHost = normalizePublicIngestHost(envHost);
     if (configuredHost) {
         return { host: configuredHost, source: 'env' };
@@ -85,27 +132,4 @@ function resolveLocalFallback(
         source: 'unavailable',
         error: metadataError,
     };
-}
-
-export function registerPublicIngestApi({
-    app,
-    fetchImpl = fetch,
-    getLocalAddress = getLocalNetworkAddress,
-}: {
-    app: Express;
-    fetchImpl?: typeof fetch;
-    getLocalAddress?: () => string | null;
-}): void {
-    let cachedAddress: { value: PublicIngestAddress; resolvedAtMs: number } | null = null;
-
-    app.get('/api/public-ingest', async (_req, res) => {
-        const nowMs = Date.now();
-        if (cachedAddress && nowMs - cachedAddress.resolvedAtMs < PUBLIC_INGEST_CACHE_TTL_MS) {
-            return res.json(cachedAddress.value);
-        }
-
-        const value = await resolvePublicIngestAddress({ fetchImpl, getLocalAddress });
-        cachedAddress = { value, resolvedAtMs: nowMs };
-        return res.json(value);
-    });
 }

@@ -1,4 +1,5 @@
 import { errMsg } from './app';
+import { normalizePublicIngestHost, resolvePublicIngestAddress } from './public-ingest';
 
 // MediaMTX API, RTMP, SRT, and HLS are always on localhost with hardcoded ports.
 const MEDIAMTX_API_BASE = 'http://localhost:9997';
@@ -70,23 +71,11 @@ export function buildMediamtxPath(streamKey: string): string {
     return `${LIVE_PATH_PREFIX}${streamKey}`;
 }
 
-export function normalizePublicIngestHost(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    if (!trimmed) return null;
+export { normalizePublicIngestHost };
 
-    try {
-        const parsed = new URL(trimmed.includes('://') ? trimmed : `rtmp://${trimmed}`);
-        return parsed.hostname || null;
-    } catch {
-        const withoutPath = trimmed.split(/[/?#]/)[0];
-        if (!withoutPath) return null;
-        return withoutPath;
-    }
-}
-
-function getPublicIngestHost(): string {
-    return normalizePublicIngestHost(process.env.PUBLIC_INGEST_HOST) || 'localhost';
+async function getPublicIngestHost(): Promise<string> {
+    const address = await resolvePublicIngestAddress();
+    return normalizePublicIngestHost(address.host) || 'localhost';
 }
 
 function getStreamKeyLabelFromPath(pathName: string): string {
@@ -199,7 +188,7 @@ export async function getMediamtxIngestPorts(): Promise<IngestPorts> {
 export async function buildIngestUrls(
     streamKey: string,
 ): Promise<{ rtmp: string | null; srt: string | null }> {
-    const ingestHost = getPublicIngestHost();
+    const ingestHost = await getPublicIngestHost();
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
 

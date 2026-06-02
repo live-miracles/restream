@@ -1,4 +1,4 @@
-import { getConfig, getHealth, getPublicIngestAddress, getSystemMetrics } from '../core/api.js';
+import { getConfig, getHealth, getSystemMetrics } from '../core/api.js';
 import { parsePipelinesInfo } from '../core/pipeline.js';
 import { getUrlParam, readSelectedPipelineHint, setServerConfig } from '../core/utils.js';
 import { renderPipelines, renderMetrics } from './render.js';
@@ -77,11 +77,10 @@ async function fetchAndRerender(): Promise<void> {
     const fetchConf = fetchConfigNextTick;
     fetchConfigNextTick = !fetchConfigNextTick;
 
-    const [configResult, healthResult, metricsResult, publicIngestResult] = await Promise.all([
+    const [configResult, healthResult, metricsResult] = await Promise.all([
         fetchConf ? getConfig() : Promise.resolve(null),
         getHealth(),
         getSystemMetrics(),
-        fetchConf ? getPublicIngestAddress() : Promise.resolve(null),
     ]);
 
     if (configResult) {
@@ -90,10 +89,9 @@ async function fetchAndRerender(): Promise<void> {
     }
     if (healthResult) state.health = healthResult;
     if (metricsResult !== null) state.metrics = metricsResult as typeof state.metrics;
-    if (publicIngestResult) state.publicIngest = publicIngestResult;
 
     const previousPipelines = state.pipelines;
-    state.pipelines = parsePipelinesInfo(state.config, state.health, state.publicIngest);
+    state.pipelines = parsePipelinesInfo(state.config, state.health);
     reconcileSelectedPipeline(previousPipelines);
     renderPipelines();
     renderMetrics();
