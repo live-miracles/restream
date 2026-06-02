@@ -27,12 +27,10 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 
 These are hardcoded and cannot be overridden via environment variables.
 
-Publisher-facing ingest URLs are based on the MediaMTX RTMP/SRT ports. The backend returns
-`PUBLIC_INGEST_HOST` when it is set; otherwise it returns `localhost`. The dashboard also calls
-`/api/public-ingest`, which resolves the public ingest host from `PUBLIC_INGEST_HOST` or, on GCP,
-from the VM metadata server's external IP endpoint. Outside GCP, it falls back to the first
-non-loopback local IPv4 address. When a host is available, the dashboard uses it to display RTMP/SRT
-URLs.
+Publisher-facing ingest URLs are based on the MediaMTX RTMP/SRT ports. The backend resolves the
+hostname before returning `/config` and `/stream-keys`: `PUBLIC_INGEST_HOST` when set, otherwise
+the GCP VM metadata external IP, otherwise the first non-loopback local IPv4 address, and finally
+`localhost` if no address is available.
 
 For Cloudflare Tunnel deployments, leave `PUBLIC_INGEST_HOST` empty on GCP unless a custom ingest
 DNS name is needed. The tunnel only carries the HTTPS dashboard/API traffic; RTMP and SRT

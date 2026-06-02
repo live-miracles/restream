@@ -1,17 +1,10 @@
-import type {
-    PipelineView,
-    ConfigData,
-    HealthData,
-    SystemMetrics,
-    PublicIngestAddress,
-} from '../types.js';
+import type { PipelineView, ConfigData, HealthData, SystemMetrics } from '../types.js';
 
 export interface AppState {
     config: Partial<ConfigData>;
     health: Partial<HealthData>;
     pipelines: PipelineView[];
     metrics: Partial<SystemMetrics>;
-    publicIngest: PublicIngestAddress | null;
 }
 
 export const state: AppState = {
@@ -19,5 +12,4 @@ export const state: AppState = {
     health: {},
     pipelines: [],
     metrics: {},
-    publicIngest: null,
 };

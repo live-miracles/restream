@@ -12,7 +12,7 @@ All request/response bodies are JSON. All timestamps are ISO 8601 UTC strings.
 
 Returns all stream keys ordered by creation date descending.
 
-`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`. The backend hostname comes from `PUBLIC_INGEST_HOST` when configured; otherwise the backend returns `localhost`. The dashboard can rewrite that host with `/api/public-ingest`.
+`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`. The backend resolves the hostname from `PUBLIC_INGEST_HOST`, GCE metadata external IP, local network address, or `localhost`.
 
 **Response 200:**
 ```json
@@ -499,9 +499,7 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
 
 Each output includes `desiredState`, the persistent operator intent (`running` or `stopped`).
 
-`ingestUrls` hostnames come from `PUBLIC_INGEST_HOST` when configured. If it is empty, the
-backend returns `localhost`. The dashboard calls `/api/public-ingest` and uses that response to
-rewrite `localhost` ingest URLs before displaying them.
+`ingestUrls` hostnames are resolved by the backend before the response is returned.
 
 ---
 
@@ -697,29 +695,6 @@ Readiness endpoint used by launch scripts and infra probes.
 
 - `200` with `{ "status": "ok" }` when MediaMTX is reachable.
 - `503` with `{ "status": "not_ready" }` when MediaMTX is not ready.
-
----
-
-### `GET /api/public-ingest`
-
-Returns the public host that the dashboard should use when displaying RTMP/SRT ingest URLs.
-
-Resolution order:
-
-- `PUBLIC_INGEST_HOST` when configured
-- GCE metadata server external IP on GCP
-- first non-loopback local IPv4 address outside GCP
-- `null` when no public ingest host can be resolved
-
-**Response 200:**
-```json
-{
-  "host": "203.0.113.10",
-  "source": "gce-metadata"
-}
-```
-
-`source` is `env`, `gce-metadata`, `local-network`, or `unavailable`.
 
 ---
 
