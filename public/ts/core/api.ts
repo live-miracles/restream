@@ -1,4 +1,5 @@
 import { showLoading, hideLoading, showErrorAlert } from './utils.js';
+import { withBasePath } from './base-path.js';
 import type {
     ConfigData,
     HealthData,
@@ -60,7 +61,7 @@ async function apiRequest<T = unknown>(
     let response: Response | null = null;
     if (showMutationLoading) beginMutationRequest();
     try {
-        response = await fetch(url, options);
+        response = await fetch(withBasePath(url), options);
     } catch (e) {
         showErrorAlert('Network request failed: ' + e);
         return null;

@@ -1,4 +1,5 @@
 import type { OutputView, PipelineView } from '../types.js';
+import { withBasePath } from '../core/base-path.js';
 
 const GRAFANA_OVERVIEW_DASHBOARD_PATH = '/grafana/d/restream-mediamtx-overview/mediamtx-overview';
 const GRAFANA_SRT_CONNECTION_HEALTH_DASHBOARD_PATH =
@@ -14,7 +15,7 @@ function setCommonDashboardParams(url: URL, pipe: PipelineView): void {
 }
 
 function buildGrafanaDashboardUrl(pipe: PipelineView, output?: OutputView | null): string {
-    const url = new URL(GRAFANA_OVERVIEW_DASHBOARD_PATH, window.location.origin);
+    const url = new URL(withBasePath(GRAFANA_OVERVIEW_DASHBOARD_PATH), window.location.origin);
 
     setCommonDashboardParams(url, pipe);
     if (output?.id) url.searchParams.set('var-output', `${output.name || output.id}`);
@@ -23,7 +24,10 @@ function buildGrafanaDashboardUrl(pipe: PipelineView, output?: OutputView | null
 }
 
 function buildSrtConnectionHealthDashboardUrl(pipe: PipelineView): string {
-    const url = new URL(GRAFANA_SRT_CONNECTION_HEALTH_DASHBOARD_PATH, window.location.origin);
+    const url = new URL(
+        withBasePath(GRAFANA_SRT_CONNECTION_HEALTH_DASHBOARD_PATH),
+        window.location.origin,
+    );
 
     setCommonDashboardParams(url, pipe);
 

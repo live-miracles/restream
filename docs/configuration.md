@@ -11,8 +11,20 @@ Server name, ingest security, and custom encodings are managed at runtime via th
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
+| `BASE_PATH` | empty | Optional URL path prefix for serving the dashboard/API behind a path-based proxy, for example `/media-mtx-test`. |
 
 The Express app always listens on port `3030` so MediaMTX can use the fixed local auth callback at `http://127.0.0.1:3030/internal/mediamtx/auth`.
+
+When `BASE_PATH` is set, the app accepts dashboard and API requests under that prefix while
+keeping the internal route definitions unchanged. For example:
+
+| Instance | `BASE_PATH` | Cloudflare public URL |
+|---|---|---|
+| `media-mtx-test` | `/media-mtx-test` | `https://livestream.example.com/media-mtx-test/` |
+| `media-mtx-test-v1` | `/media-mtx-test-v1` | `https://livestream.example.com/media-mtx-test-v1/` |
+
+Cloudflare should route each path prefix to the matching VM tunnel. The prefix is for HTTPS
+dashboard/API traffic only; publishers still use the VM's RTMP/SRT ingest ports directly.
 
 ### MediaMTX Backend (hardcoded localhost)
 
