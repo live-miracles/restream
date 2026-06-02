@@ -11,6 +11,8 @@ Server name, ingest security, and custom encodings are managed at runtime via th
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
+| `PUBLIC_INGEST_HOST` | empty | Optional public hostname or IP override for RTMP/SRT ingest URLs. Leave empty on GCP when the VM external IP should be discovered from metadata. |
+| `PUBLIC_INGEST_METADATA_TIMEOUT_MS` | `1000` | Timeout for reading the VM external IP from the GCE metadata server. |
 
 The Express app always listens on port `3030` so MediaMTX can use the fixed local auth callback at `http://127.0.0.1:3030/internal/mediamtx/auth`.
 
@@ -25,7 +27,15 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 
 These are hardcoded and cannot be overridden via environment variables.
 
-Publisher-facing ingest URLs shown in the dashboard are rewritten by the frontend to use the browser's current hostname, so they automatically reflect the correct public address without any configuration.
+Publisher-facing ingest URLs are based on the MediaMTX RTMP/SRT ports. The backend returns
+`PUBLIC_INGEST_HOST` when it is set; otherwise it returns `localhost`. The dashboard also calls
+`/api/public-ingest`, which resolves the public ingest host from `PUBLIC_INGEST_HOST` or, on GCP,
+from the VM metadata server's external IP endpoint. When a host is available, the dashboard uses it
+to display RTMP/SRT URLs.
+
+For Cloudflare Tunnel deployments, leave `PUBLIC_INGEST_HOST` empty on GCP unless a custom ingest
+DNS name is needed. The tunnel only carries the HTTPS dashboard/API traffic; RTMP and SRT
+publishers still connect directly to MediaMTX on the VM's ingest ports.
 
 ### Grafana Proxy
 

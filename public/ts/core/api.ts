@@ -3,6 +3,7 @@ import type {
     ConfigData,
     HealthData,
     IngestSecurityConfig,
+    PublicIngestAddress,
     SystemMetrics,
     StreamKey,
 } from '../types.js';
@@ -99,6 +100,10 @@ async function getHealth(): Promise<HealthData | null> {
 
 async function getSystemMetrics(): Promise<SystemMetrics | null> {
     return apiRequest<SystemMetrics>('/metrics/system');
+}
+
+async function getPublicIngestAddress(): Promise<PublicIngestAddress | null> {
+    return apiRequest<PublicIngestAddress>('/api/public-ingest');
 }
 
 async function getStreamKeys(): Promise<StreamKey[] | null> {
@@ -378,6 +383,7 @@ export {
     apiRequest,
     getConfig,
     getHealth,
+    getPublicIngestAddress,
     getSystemMetrics,
     getStreamKeys,
     createPipeline,

@@ -25,6 +25,12 @@ export interface IngestUrls {
     srt: string | null;
 }
 
+export interface PublicIngestAddress {
+    host: string | null;
+    source: 'env' | 'gce-metadata' | 'unavailable';
+    error?: string;
+}
+
 export interface PublisherQuality {
     inboundRTPPacketsLost?: number;
     inboundRTPPacketsInError?: number;
