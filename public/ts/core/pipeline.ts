@@ -31,39 +31,8 @@ function computeKbps(
     return Number(((deltaBytes * 8) / (dtMs / 1000) / 1000).toFixed(1));
 }
 
-function resolveIngestUrls(
-    pipeline: { ingestUrls?: IngestUrls },
-    _config: Partial<ConfigData>,
-): IngestUrls {
-    const ingestUrls = pipeline?.ingestUrls;
-    if (!ingestUrls) {
-        return { rtmp: null, srt: null };
-    }
-
-    const currentHost =
-        typeof window !== 'undefined' && window.location?.hostname
-            ? window.location.hostname
-            : null;
-    if (!currentHost || currentHost === 'localhost') {
-        return ingestUrls;
-    }
-
-    const rewriteHost = (url: string | null): string | null => {
-        if (!url) return null;
-        try {
-            const parsed = new URL(url);
-            if (parsed.hostname !== 'localhost') return url;
-            parsed.hostname = currentHost;
-            return parsed.toString();
-        } catch {
-            return url;
-        }
-    };
-
-    return {
-        rtmp: rewriteHost(ingestUrls.rtmp),
-        srt: rewriteHost(ingestUrls.srt),
-    };
+function resolveIngestUrls(pipeline: { ingestUrls?: IngestUrls }): IngestUrls {
+    return pipeline?.ingestUrls || { rtmp: null, srt: null };
 }
 
 function parsePipelinesInfo(
@@ -114,7 +83,7 @@ function parsePipelinesInfo(
             name: p.name,
             key: p.streamKey,
             inputSource: p.inputSource || null,
-            ingestUrls: resolveIngestUrls(p, config),
+            ingestUrls: resolveIngestUrls(p),
             input: {
                 status: inputStatus,
                 time: inputTime,
