@@ -32,14 +32,14 @@ test('toMediamtxPathSource maps empty input source to publisher', () => {
 });
 
 test('normalizePublicIngestHost accepts bare hosts and strips URL wrappers', () => {
-    assert.equal(normalizePublicIngestHost('34.47.252.97'), '34.47.252.97');
+    assert.equal(normalizePublicIngestHost('203.0.113.10'), '203.0.113.10');
     assert.equal(
-        normalizePublicIngestHost('https://livestream-media-mtx-test.example.com/healthz'),
-        'livestream-media-mtx-test.example.com',
+        normalizePublicIngestHost('https://dashboard.example.test/healthz'),
+        'dashboard.example.test',
     );
     assert.equal(
-        normalizePublicIngestHost('rtmp://ingest.example.com:1935/live/key'),
-        'ingest.example.com',
+        normalizePublicIngestHost('rtmp://ingest.example.test:1935/live/key'),
+        'ingest.example.test',
     );
     assert.equal(normalizePublicIngestHost(''), null);
 });

@@ -708,17 +708,18 @@ Resolution order:
 
 - `PUBLIC_INGEST_HOST` when configured
 - GCE metadata server external IP on GCP
+- first non-loopback local IPv4 address outside GCP
 - `null` when no public ingest host can be resolved
 
 **Response 200:**
 ```json
 {
-  "host": "34.47.252.97",
+  "host": "203.0.113.10",
   "source": "gce-metadata"
 }
 ```
 
-`source` is `env`, `gce-metadata`, or `unavailable`.
+`source` is `env`, `gce-metadata`, `local-network`, or `unavailable`.
 
 ---
 

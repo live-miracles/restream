@@ -27,7 +27,7 @@ export interface IngestUrls {
 
 export interface PublicIngestAddress {
     host: string | null;
-    source: 'env' | 'gce-metadata' | 'unavailable';
+    source: 'env' | 'gce-metadata' | 'local-network' | 'unavailable';
     error?: string;
 }
 
