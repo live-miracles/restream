@@ -13,6 +13,8 @@ rtmp: yes          # port 1935
 rtsp: yes          # port 8554
 srt: yes
 srtAddress: :10080
+# Global SRT latency for latency testing; applies to receiver and peer latency.
+srtLatency: 120ms
 
 # ── Browser playback ────────────────────────────────────────────────────────
 hls: yes           # HTTP HLS on port 8888
@@ -23,7 +25,7 @@ webrtc: no
 # Keep HLS muxers on-demand to reduce steady CPU/RAM use when many inputs are idle.
 # Tradeoff: first preview request may take longer while MediaMTX starts a fresh HLS muxer.
 hlsAlwaysRemux: no
-hlsVariant: mpegts
+hlsVariant: lowLatency
 
 # ── Backend API ─────────────────────────────────────────────────────────────
 api: yes
@@ -77,10 +79,29 @@ authInternalUsers:
 #
 # Important: Change the secret keys before deploying the production version.
 paths:
-    live/key01_6c71124cde80358ca7c13081: {}
+#    live/key01_6c71124cde80358ca7c13081: {}
+#    live/key02_fff2adcf55a26d31ae93464b: {}
+#    live/key03_c8087d1adb6b3bdf8e806d8f: {}
+#    live/key04_4a1fe99ef35b0d0768076be7: {}
+
+    live/key01_6c71124cde80358ca7c13081:
+        runOnReady: >
+            ffmpeg
+            -hide_banner -loglevel info -nostdin
+            -i "srt://127.0.0.1:10080?streamid=read:live/key01_6c71124cde80358ca7c13081"
+            -map 0:v:0 -map 0:a:0 -c copy -f mpegts
+            "srt://127.0.0.1:10080?streamid=publish:live/key02_fff2adcf55a26d31ae93464b"
+            -map 0:v:0 -map 0:a:1 -c copy -f mpegts
+            "srt://127.0.0.1:10080?streamid=publish:live/key03_c8087d1adb6b3bdf8e806d8f"
+            -map 0:v:0 -map 0:a:2 -c copy -f mpegts
+            "srt://127.0.0.1:10080?streamid=publish:live/key04_4a1fe99ef35b0d0768076be7"
+        runOnReadyRestart: yes
+
     live/key02_fff2adcf55a26d31ae93464b: {}
     live/key03_c8087d1adb6b3bdf8e806d8f: {}
     live/key04_4a1fe99ef35b0d0768076be7: {}
+
+
     live/key05_ea839930dce5e021c629751d: {}
     live/key06_48355e726bdc24afb9d08214: {}
     live/key07_19eb3db7cb3d3f0831335701: {}

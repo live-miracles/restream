@@ -892,7 +892,7 @@ function analyzeWarnings(stderr: string) {
 function analyzeCodecAndFormat(streams: ProbeStream[], format: ProbeFormat) {
     const issues: string[] = [];
     const video = streams.find((s) => s.codec_type === 'video');
-    const audio = streams.find((s) => s.codec_type === 'audio');
+    const audioStreams = streams.filter((s) => s.codec_type === 'audio');
 
     // 1. Frame dropping
     if (video) {
@@ -938,27 +938,39 @@ function analyzeCodecAndFormat(streams: ProbeStream[], format: ProbeFormat) {
         }
     }
 
-    // 4. Audio sample rate check
-    if (audio && audio.sample_rate) {
-        const rate = parseInt(audio.sample_rate, 10);
-        if (!isNaN(rate) && rate !== 44100 && rate !== 48000) {
-            issues.push(
-                `Non-standard audio sample rate (${rate} Hz) detected. Web browsers and RTMP/HLS targets require 44100 Hz or 48000 Hz for stability.`,
-            );
-        }
+    // Multi-track audio summary
+    if (audioStreams.length > 1) {
+        const totalChannels = audioStreams.reduce((sum, a) => sum + (a.channels || 0), 0);
+        issues.push(
+            `Multi-track audio: ${audioStreams.length} audio tracks detected with ${totalChannels} total channels. Use the remap encoding to select specific track/channel pairs for each output.`,
+        );
     }
 
-    // 5. Audio channels check
-    if (audio && audio.channels !== undefined) {
-        const chans = audio.channels;
-        if (chans > 2) {
-            issues.push(
-                `Multi-channel audio (${chans} channels) detected. Standard web players and browser playback typically require stereo (2 channels).`,
-            );
-        } else if (chans === 0) {
-            issues.push(
-                `Audio stream reports 0 channels. This indicates invalid audio track configuration.`,
-            );
+    // 4. Audio sample rate and channels checks (all tracks)
+    for (let i = 0; i < audioStreams.length; i++) {
+        const audio = audioStreams[i];
+        const trackLabel = audioStreams.length > 1 ? ` (track ${i + 1})` : '';
+
+        if (audio.sample_rate) {
+            const rate = parseInt(audio.sample_rate, 10);
+            if (!isNaN(rate) && rate !== 44100 && rate !== 48000) {
+                issues.push(
+                    `Non-standard audio sample rate${trackLabel} (${rate} Hz) detected. Web browsers and RTMP/HLS targets require 44100 Hz or 48000 Hz for stability.`,
+                );
+            }
+        }
+
+        if (audio.channels !== undefined) {
+            const chans = audio.channels;
+            if (chans > 2) {
+                issues.push(
+                    `Multi-channel audio${trackLabel} (${chans} channels) detected. Standard web players and browser playback typically require stereo (2 channels).`,
+                );
+            } else if (chans === 0) {
+                issues.push(
+                    `Audio stream${trackLabel} reports 0 channels. This indicates invalid audio track configuration.`,
+                );
+            }
         }
     }
 
@@ -1696,7 +1708,7 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
         const probeSteps = [
             {
                 name: `Stream Codec Info (${protoLabel})`,
-                desc: 'Codec, resolution, FPS, sample rate, and channel layout',
+                desc: 'Codec, resolution, FPS, audio tracks, sample rate, and channel layout',
             },
             {
                 name: `Container/Format Info (${protoLabel})`,
@@ -1772,7 +1784,8 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
                 issue.includes('Pixel format') ||
                 issue.includes('Baseline profile') ||
                 issue.includes('sample rate') ||
-                issue.includes('channel'),
+                issue.includes('channel') ||
+                issue.includes('Multi-track audio'),
         );
         const formatIssues = codecAndFormat.issues.filter((issue) => !codecIssues.includes(issue));
 
@@ -1810,21 +1823,33 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
 
         // Locate video and audio stream indexes dynamically from metadata.
         const videoStream = parsed.streams.find((s) => s.codec_type === 'video');
-        const audioStream = parsed.streams.find((s) => s.codec_type === 'audio');
+        const audioStreams = parsed.streams.filter((s) => s.codec_type === 'audio');
         const videoStreamIndex = videoStream !== undefined ? videoStream.index : 0;
-        const audioStreamIndex = audioStream !== undefined ? audioStream.index : 1;
+        const audioStreamIndexes = audioStreams.map((s) => s.index);
+        const primaryAudioIndex = audioStreamIndexes.length > 0 ? audioStreamIndexes[0] : 1;
+        const allAudioIndexSet = new Set(audioStreamIndexes);
 
         // 5: Packet Timing & Interleaving — analysis in stdout, raw packets for download
         const interleaving = analyzeInterleaving(
             parsed.packets,
             videoStreamIndex,
-            audioStreamIndex,
+            primaryAudioIndex,
         );
         const startupGap = analyzeStartupGap(parsed.streams);
+        const audioPacketsByTrack: Record<string, number> = {};
+        for (const idx of audioStreamIndexes) {
+            audioPacketsByTrack[`track_${idx}`] = parsed.packets.filter(
+                (p) => p.stream_index === idx,
+            ).length;
+        }
+        const totalAudioPackets = parsed.packets.filter((p) =>
+            allAudioIndexSet.has(p.stream_index),
+        ).length;
         const packetCounts = {
             totalPackets: parsed.packets.length,
             videoPackets: parsed.packets.filter((p) => p.stream_index === videoStreamIndex).length,
-            audioPackets: parsed.packets.filter((p) => p.stream_index === audioStreamIndex).length,
+            audioPackets: totalAudioPackets,
+            ...(audioStreamIndexes.length > 1 ? { audioPacketsByTrack } : {}),
         };
         sendResult(
             res,
@@ -1844,10 +1869,20 @@ export function registerDiagnosticsApi({ app, db }: { app: Express; db: Db }): v
         // 6: GOP & Frame Analysis
         const gop = analyzeGOP(parsed.frames);
         const clockDrift = analyzeClockDrift(parsed.frames);
+        const totalAudioFrames = parsed.frames.filter((f) => f.media_type === 'audio').length;
+        const audioFramesByTrack: Record<string, number> = {};
+        if (audioStreamIndexes.length > 1) {
+            for (const idx of audioStreamIndexes) {
+                audioFramesByTrack[`track_${idx}`] = parsed.frames.filter(
+                    (f) => f.media_type === 'audio' && f.stream_index === idx,
+                ).length;
+            }
+        }
         const frameCounts = {
             totalFrames: parsed.frames.length,
             videoFrames: parsed.frames.filter((f) => f.media_type === 'video').length,
-            audioFrames: parsed.frames.filter((f) => f.media_type === 'audio').length,
+            audioFrames: totalAudioFrames,
+            ...(audioStreamIndexes.length > 1 ? { audioFramesByTrack } : {}),
         };
         sendResult(
             res,

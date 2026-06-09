@@ -10,7 +10,7 @@ import {
 import { renderPipelineInfoColumn, renderOutsColumn } from './pipeline-view.js';
 import { renderHealthBanner, renderServerMetrics } from './metrics.js';
 import { state } from '../core/state.js';
-import type { OutputView, PipelineView } from '../types.js';
+import type { AudioTrack, OutputView, PipelineView } from '../types.js';
 
 function isOutputIntentStopped(output: OutputView | null | undefined): boolean {
     return output?.desiredState === 'stopped';
@@ -119,34 +119,45 @@ function renderStatsColumn(selectedPipe: string | null): void {
     const statsTable = document.getElementById('stats-table');
     if (!statsTable) return;
 
-    const sectionHeader = (label: string, count: number) =>
-        `<tr class="bg-base-100"><th colspan="9">${label} <span class="badge mx-1">${count}</span></th></tr>`;
+    const colCount = 10;
 
-    const tableRow = (values: (string | number)[], warning = false, error = false) => {
-        const rowClass = error ? ' class="bg-error/10"' : warning ? ' class="bg-warning/10"' : '';
-        return `<tr${rowClass}>${values.map((v) => `<td>${v}</td>`).join('')}</tr>`;
-    };
+    const sectionHeader = (label: string, count: number) =>
+        `<tr class="bg-base-100"><th colspan="${colCount}">${label} <span class="badge mx-1">${count}</span></th></tr>`;
+
+    const audioCells = (track: AudioTrack, index: number) =>
+        `<td>${index + 1}</td>` +
+        `<td>${formatCodecName(track.codec) || '--'}</td>` +
+        `<td>${track.channels ? String(track.channels) : '--'}</td>` +
+        `<td>${track.sample_rate ? String(track.sample_rate) : '--'}</td>`;
+
+    const emptyAudioCells = '<td>--</td><td>--</td><td>--</td><td>--</td>';
 
     let html = sectionHeader('Inputs', activeInputs.length);
     activeInputs.forEach((p) => {
         const video = p.input.video || {};
-        const audio = p.input.audio || {};
+        const tracks = p.input.audioTracks || [];
         const bitrateMbps =
             p.input.bitrateKbps != null ? (p.input.bitrateKbps / 1000).toFixed(2) : '--';
-        html += tableRow(
-            [
-                p.input.time != null ? (msToHHMMSS(p.input.time) ?? '--') : '--',
-                p.name,
-                bitrateMbps,
-                formatCodecName(video.codec) || '--',
-                video.width && video.height ? `${video.width}x${video.height}` : '--',
-                video.fps != null ? String(video.fps) : '--',
-                formatCodecName(audio.codec) || '--',
-                audio.channels ? String(audio.channels) : '--',
-                audio.sample_rate ? String(audio.sample_rate) : '--',
-            ],
-            p.input.status === 'warning',
-        );
+        const rowCount = Math.max(tracks.length, 1);
+        const rowClass = p.input.status === 'warning' ? ' class="bg-warning/10"' : '';
+        const rs = rowCount > 1 ? ` rowspan="${rowCount}"` : '';
+
+        const sharedCells =
+            `<td${rs}>${p.input.time != null ? (msToHHMMSS(p.input.time) ?? '--') : '--'}</td>` +
+            `<td${rs}>${p.name}</td>` +
+            `<td${rs}>${bitrateMbps}</td>` +
+            `<td${rs}>${formatCodecName(video.codec) || '--'}</td>` +
+            `<td${rs}>${video.width && video.height ? `${video.width}x${video.height}` : '--'}</td>` +
+            `<td${rs}>${video.fps != null ? String(video.fps) : '--'}</td>`;
+
+        if (tracks.length === 0) {
+            html += `<tr${rowClass}>${sharedCells}${emptyAudioCells}</tr>`;
+        } else {
+            html += `<tr${rowClass}>${sharedCells}${audioCells(tracks[0], 0)}</tr>`;
+            for (let i = 1; i < tracks.length; i++) {
+                html += `<tr${rowClass}>${audioCells(tracks[i], i)}</tr>`;
+            }
+        }
     });
 
     html += sectionHeader('Outputs', activeOuts.length);
@@ -162,36 +173,40 @@ function renderStatsColumn(selectedPipe: string | null): void {
             let videoCodec = '--';
             let videoSize = '--';
             let videoFps = '--';
-            let audioCodec = '--';
-            let audioCh = '--';
-            let audioFreq = '--';
+            let outTracks: AudioTrack[] = [];
 
             if (isActive && o.encoding === 'source') {
                 const video = p.input.video || {};
-                const audio = p.input.audio || {};
                 videoCodec = formatCodecName(video.codec) || '--';
                 videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';
                 videoFps = video.fps != null ? String(video.fps) : '--';
-                audioCodec = formatCodecName(audio.codec) || '--';
-                audioCh = audio.channels ? String(audio.channels) : '--';
-                audioFreq = audio.sample_rate ? String(audio.sample_rate) : '--';
+                outTracks = p.input.audioTracks || [];
             }
 
-            html += tableRow(
-                [
-                    o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--',
-                    `${o.pipe}: ${o.name}`,
-                    bitrateMbps,
-                    videoCodec,
-                    videoSize,
-                    videoFps,
-                    audioCodec,
-                    audioCh,
-                    audioFreq,
-                ],
-                o.status === 'warning',
-                isUnexpectedlyDown,
-            );
+            const rowCount = Math.max(outTracks.length, 1);
+            const rowClass = isUnexpectedlyDown
+                ? ' class="bg-error/10"'
+                : o.status === 'warning'
+                  ? ' class="bg-warning/10"'
+                  : '';
+            const rs = rowCount > 1 ? ` rowspan="${rowCount}"` : '';
+
+            const sharedCells =
+                `<td${rs}>${o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--'}</td>` +
+                `<td${rs}>${o.pipe}: ${o.name}</td>` +
+                `<td${rs}>${bitrateMbps}</td>` +
+                `<td${rs}>${videoCodec}</td>` +
+                `<td${rs}>${videoSize}</td>` +
+                `<td${rs}>${videoFps}</td>`;
+
+            if (outTracks.length === 0) {
+                html += `<tr${rowClass}>${sharedCells}${emptyAudioCells}</tr>`;
+            } else {
+                html += `<tr${rowClass}>${sharedCells}${audioCells(outTracks[0], 0)}</tr>`;
+                for (let i = 1; i < outTracks.length; i++) {
+                    html += `<tr${rowClass}>${audioCells(outTracks[i], i)}</tr>`;
+                }
+            }
         });
     });
 

@@ -1,5 +1,6 @@
 import {
     copyText,
+    escapeHtml,
     formatCodecName,
     formatMaskedStreamKey,
     msToHHMMSS,
@@ -13,7 +14,7 @@ import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
 import { openGrafanaDashboard, openSrtConnectionHealthDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
-import type { PipelineView, OutputView } from '../types.js';
+import type { AudioTrack, PipelineView, OutputView } from '../types.js';
 
 interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
@@ -50,6 +51,32 @@ const ingestUiState = {
 function formatProgressFps(value: number | null | undefined): string | null {
     if (!Number.isFinite(value) || (value as number) <= 0) return null;
     return Number.isInteger(value) ? `${value} FPS` : `${(value as number).toFixed(1)} FPS`;
+}
+
+function renderAudioTracksTable(tracks: AudioTrack[]): void {
+    const audioTracksBody = document.getElementById('input-audio-tracks');
+    if (!audioTracksBody) return;
+
+    if (tracks.length === 0) {
+        audioTracksBody.innerHTML =
+            '<tr><td colspan="5" class="text-base-content/60">No audio tracks</td></tr>';
+        return;
+    }
+
+    const displayValue = (value: unknown): string => escapeHtml(value ?? '--');
+
+    audioTracksBody.innerHTML = tracks
+        .map((track, index) => {
+            const codec = formatCodecName(track.codec) || track.codec || '--';
+            return `<tr>
+                <td class="font-semibold text-sm">${index + 1}</td>
+                <td class="font-semibold text-sm">${displayValue(codec)}</td>
+                <td class="font-semibold text-sm">${displayValue(track.sample_rate)}</td>
+                <td class="font-semibold text-sm">${displayValue(track.channels)}</td>
+                <td class="font-semibold text-sm">${displayValue(track.profile)}</td>
+            </tr>`;
+        })
+        .join('');
 }
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
@@ -267,9 +294,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         renderInputPreview(playerElem, pipe);
 
         const video = pipe.input.video || {};
-        const audio = pipe.input.audio || {};
         const stats = pipe.stats || {};
-        const hasAudioTrack = !!audio.codec;
 
         const setTextContent = (id: string, value: unknown): void => {
             const el = document.getElementById(id);
@@ -288,13 +313,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         setTextContent('input-video-level', video.level || '--');
         setTextContent('input-video-profile', video.profile || '--');
 
-        setTextContent(
-            'input-audio-codec',
-            hasAudioTrack ? formatCodecName(audio.codec) || audio.codec : 'No audio track',
-        );
-        setTextContent('input-audio-channels', hasAudioTrack ? audio.channels || '--' : '--');
-        setTextContent('input-audio-sample-rate', hasAudioTrack ? audio.sample_rate || '--' : '--');
-        setTextContent('input-audio-profile', hasAudioTrack ? audio.profile || '--' : '--');
+        renderAudioTracksTable(pipe.input.audioTracks || []);
 
         setBitrateWithSubtleUnit('input-total-bw', stats.inputBitrateKbps);
         setBitrateWithSubtleUnit('output-total-bw', stats.outputBitrateKbps);
