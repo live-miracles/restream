@@ -7,6 +7,7 @@ import {
     getMediamtxApiBaseUrl,
     buildMediamtxPath,
     buildRtspInputUrl,
+    buildPullInputUrl,
     normalizePullProtocol,
     syncMediamtxPathSources,
 } from '../utils/mediamtx';
@@ -26,11 +27,19 @@ interface StreamInfo {
         level: string | null;
     } | null;
     audio: {
+        index: number | null;
         codec: string | null;
         channels: number | null;
         sample_rate: number | null;
         profile: string | null;
     } | null;
+    audioTracks: {
+        index: number | null;
+        codec: string | null;
+        channels: number | null;
+        sample_rate: number | null;
+        profile: string | null;
+    }[];
 }
 
 interface Publisher {
@@ -79,6 +88,7 @@ interface InputHealth {
     bytesSent: number;
     video: StreamInfo['video'];
     audio: StreamInfo['audio'];
+    audioTracks: StreamInfo['audioTracks'];
     unexpectedReaders: {
         count: number;
         readers: { id: string | null; type: string; reason: string }[];
@@ -283,58 +293,52 @@ export function createHealthMonitorService({
         { timer: NodeJS.Timeout | null; attempt: number }
     >();
 
-    function runFfprobe(streamKey: string): Promise<StreamInfo | null> {
-        const url = buildRtspInputUrl(streamKey);
+    function runFfprobe(streamKey: string, pullProtocol?: string): Promise<StreamInfo | null> {
+        const useSrt = normalizePullProtocol(pullProtocol) === 'srt';
+        const url = useSrt ? buildPullInputUrl(streamKey, 'srt') : buildRtspInputUrl(streamKey);
+        const args = ['-v', 'quiet', '-print_format', 'json', '-show_streams'];
+        if (!useSrt) args.push('-rtsp_transport', 'tcp');
+        args.push(url);
         return new Promise((resolve) => {
-            execFile(
-                ffprobeCmd,
-                [
-                    '-v',
-                    'quiet',
-                    '-print_format',
-                    'json',
-                    '-show_streams',
-                    '-rtsp_transport',
-                    'tcp',
-                    url,
-                ],
-                { timeout: 15000 },
-                (err, stdout) => {
-                    if (err) {
-                        resolve(null);
-                        return;
-                    }
-                    try {
-                        const data = JSON.parse(stdout);
-                        const streams: Record<string, unknown>[] = data.streams || [];
-                        const vs = streams.find((s) => s.codec_type === 'video') || null;
-                        const as_ = streams.find((s) => s.codec_type === 'audio') || null;
-                        resolve({
-                            video: vs
-                                ? {
-                                      codec: (vs.codec_name as string) || null,
-                                      width: (vs.width as number) || null,
-                                      height: (vs.height as number) || null,
-                                      fps: parseFrameRate(vs.r_frame_rate),
-                                      profile: (vs.profile as string) || null,
-                                      level:
-                                          vs.level != null ? String(Number(vs.level) / 10) : null,
-                                  }
-                                : null,
-                            audio: as_
-                                ? {
-                                      codec: (as_.codec_name as string) || null,
-                                      channels: (as_.channels as number) || null,
-                                      sample_rate: as_.sample_rate ? Number(as_.sample_rate) : null,
-                                      profile: (as_.profile as string) || null,
-                                  }
-                                : null,
+            execFile(ffprobeCmd, args, { timeout: 15000 }, (err, stdout) => {
+                if (err) {
+                    resolve(null);
+                    return;
+                }
+                try {
+                    const data = JSON.parse(stdout);
+                    const streams: Record<string, unknown>[] = data.streams || [];
+                    const vs = streams.find((s) => s.codec_type === 'video') || null;
+                    const audioTracks = streams
+                        .filter((s) => s.codec_type === 'audio')
+                        .map((stream) => {
+                            const streamIndex = Number(stream.index);
+                            return {
+                                index: Number.isFinite(streamIndex) ? streamIndex : null,
+                                codec: (stream.codec_name as string) || null,
+                                channels: (stream.channels as number) || null,
+                                sample_rate: stream.sample_rate ? Number(stream.sample_rate) : null,
+                                profile: (stream.profile as string) || null,
+                            };
                         });
-                    } catch {
-                        resolve(null);
-                    }
-                },
-            );
+                    resolve({
+                        video: vs
+                            ? {
+                                  codec: (vs.codec_name as string) || null,
+                                  width: (vs.width as number) || null,
+                                  height: (vs.height as number) || null,
+                                  fps: parseFrameRate(vs.r_frame_rate),
+                                  profile: (vs.profile as string) || null,
+                                  level: vs.level != null ? String(Number(vs.level) / 10) : null,
+                              }
+                            : null,
+                        audio: audioTracks[0] || null,
+                        audioTracks,
+                    });
+                } catch {
+                    resolve(null);
+                }
+            });
         });
     }
 
@@ -345,7 +349,12 @@ export function createHealthMonitorService({
         ffprobeResultByPipelineId.delete(pipelineId);
     }
 
-    function scheduleFfprobe(pipelineId: string, streamKey: string, attempt = 0) {
+    function scheduleFfprobe(
+        pipelineId: string,
+        streamKey: string,
+        pullProtocol?: string,
+        attempt = 0,
+    ) {
         if (attempt >= FFPROBE_DELAYS_MS.length) return;
         const entry: { timer: NodeJS.Timeout | null; attempt: number } = { timer: null, attempt };
         ffprobeRetryByPipelineId.set(pipelineId, entry);
@@ -353,7 +362,7 @@ export function createHealthMonitorService({
             entry.timer = null;
             if (!ffprobeRetryByPipelineId.has(pipelineId)) return;
             log('debug', 'Running ffprobe for input', { pipelineId, attempt });
-            const result = await runFfprobe(streamKey);
+            const result = await runFfprobe(streamKey, pullProtocol);
             if (!ffprobeRetryByPipelineId.has(pipelineId)) return;
             if (result) {
                 ffprobeResultByPipelineId.set(pipelineId, result);
@@ -361,7 +370,7 @@ export function createHealthMonitorService({
                 log('info', 'ffprobe captured input stream info', { pipelineId });
             } else if (attempt + 1 < FFPROBE_DELAYS_MS.length) {
                 log('debug', 'ffprobe failed, retrying', { pipelineId, nextAttempt: attempt + 1 });
-                scheduleFfprobe(pipelineId, streamKey, attempt + 1);
+                scheduleFfprobe(pipelineId, streamKey, pullProtocol, attempt + 1);
             } else {
                 ffprobeRetryByPipelineId.delete(pipelineId);
                 log('warn', 'ffprobe exhausted all attempts for input', { pipelineId });
@@ -560,6 +569,7 @@ export function createHealthMonitorService({
             bytesSent: pathInfo?.bytesSent || 0,
             video: ffprobeResult?.video || null,
             audio: ffprobeResult?.audio || null,
+            audioTracks: ffprobeResult?.audioTracks || [],
             unexpectedReaders: buildUnexpectedReaders(pathInfo),
         };
     }
@@ -625,7 +635,7 @@ export function createHealthMonitorService({
         if (inputTransition.changed) {
             if (inputTransition.current === 'on') {
                 clearFfprobeState(pipeline.id);
-                scheduleFfprobe(pipeline.id, streamKey);
+                scheduleFfprobe(pipeline.id, streamKey, publisher?.protocol);
             } else {
                 clearFfprobeState(pipeline.id);
             }

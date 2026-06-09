@@ -161,6 +161,8 @@ Wants=network-online.target
 Type=simple
 User=restream
 Group=restream
+Environment=MTX_LOGDESTINATIONS=stdout,file
+Environment=MTX_LOGFILE=/var/log/restream/mediamtx.log
 ExecStart=/usr/local/bin/mediamtx /etc/restream/mediamtx.yml
 Restart=always
 RestartSec=2
@@ -196,6 +198,18 @@ ReadWritePaths=/var/lib/restream
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+cat > /etc/logrotate.d/restream-mediamtx <<'EOF'
+/var/log/restream/mediamtx.log {
+    daily
+    copytruncate
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
 EOF
 
 systemctl daemon-reload

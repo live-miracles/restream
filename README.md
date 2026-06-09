@@ -184,7 +184,12 @@ Follow logs:
 ```sh
 journalctl -u restream.service -f
 journalctl -u mediamtx.service -f
+tail -f /var/log/restream/mediamtx.log
 ```
+
+MediaMTX writes to both journald and `/var/log/restream/mediamtx.log` in production. The file is
+rotated daily and retained for seven rotations so the dashboard diagnostics can read MediaMTX logs
+without granting the web application access to the full system journal.
 
 Stop services (without disabling boot start):
 

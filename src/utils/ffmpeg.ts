@@ -90,7 +90,20 @@ export const SYSTEM_ENCODING_ARGS: Record<string, string | null> = {
 
 export const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
-const REMAP_ENCODING_RE = /^remap:(\d+):(\d+)$/;
+const REMAP_ENCODING_RE = /^remap:(\d+):(\d+)(?::(\d+))?$/;
+
+export function parseRemapEncoding(encoding: string): {
+    track: number;
+    left: number;
+    right: number;
+} | null {
+    const m = REMAP_ENCODING_RE.exec(encoding);
+    if (!m) return null;
+    if (m[3] !== undefined) {
+        return { track: parseInt(m[1], 10), left: parseInt(m[2], 10), right: parseInt(m[3], 10) };
+    }
+    return { track: 0, left: parseInt(m[1], 10), right: parseInt(m[2], 10) };
+}
 
 export function isValidOutputEncoding(encoding: string): boolean {
     if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
@@ -165,13 +178,12 @@ export function buildFfmpegOutputArgs({
 
     const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
 
-    const remapMatch = REMAP_ENCODING_RE.exec(normalizedEncoding);
-    if (remapMatch) {
-        const left = parseInt(remapMatch[1], 10);
-        const right = parseInt(remapMatch[2], 10);
+    const remap = parseRemapEncoding(normalizedEncoding);
+    if (remap) {
+        const audioStreamRef = remap.track > 0 ? `0:a:${remap.track}` : '0:a';
         args.push(
             '-filter_complex',
-            `[0:a]pan=stereo|c0=c${left}|c1=c${right}[a]`,
+            `[${audioStreamRef}]pan=stereo|c0=c${remap.left}|c1=c${remap.right}[a]`,
             '-map',
             '0:v',
             '-map',

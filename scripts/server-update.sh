@@ -12,6 +12,7 @@ fi
 
 APP_DIR=/opt/restream
 CONF_DIR=/etc/restream
+LOG_DIR=/var/log/restream
 
 echo "=== Pull latest code ==="
 cd "$APP_DIR"
@@ -28,6 +29,28 @@ echo "=== Deploy configs ==="
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
 chown restream:restream "$CONF_DIR/mediamtx.yml"
 echo "Copied mediamtx.yml to $CONF_DIR/"
+
+echo
+echo "=== Configure MediaMTX diagnostics logging ==="
+mkdir -p "$LOG_DIR" /etc/systemd/system/mediamtx.service.d
+chown restream:restream "$LOG_DIR"
+cat > /etc/systemd/system/mediamtx.service.d/restream-logging.conf <<'EOF'
+[Service]
+Environment=MTX_LOGDESTINATIONS=stdout,file
+Environment=MTX_LOGFILE=/var/log/restream/mediamtx.log
+EOF
+cat > /etc/logrotate.d/restream-mediamtx <<'EOF'
+/var/log/restream/mediamtx.log {
+    daily
+    copytruncate
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+EOF
+systemctl daemon-reload
 
 echo
 echo "=== Restart services ==="
