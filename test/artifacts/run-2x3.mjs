@@ -506,13 +506,14 @@ function buildFfmpegArgs(protocol, targetUrl) {
         '-1',
         '-i',
         relativePath(config.inputFile),
-        '-map',
-        '0',
-        '-c',
-        'copy',
     ];
-    if (protocol === 'rtmp') return [...baseArgs, '-f', 'flv', targetUrl];
-    if (protocol === 'srt') return [...baseArgs, '-f', 'mpegts', targetUrl];
+    if (protocol === 'rtmp') {
+        // FLV/RTMP only supports a single audio track; map video + first audio only.
+        return [...baseArgs, '-map', '0:v', '-map', '0:a:0', '-c', 'copy', '-f', 'flv', targetUrl];
+    }
+    if (protocol === 'srt') {
+        return [...baseArgs, '-map', '0', '-c', 'copy', '-f', 'mpegts', targetUrl];
+    }
     throw new Error(`Unsupported input protocol: ${protocol}`);
 }
 
