@@ -285,7 +285,7 @@ function populateRemapTrackOptions(trackCount: number, selectedTrack: number): v
 
     trackSelect.innerHTML = Array.from({ length: trackCount }, (_, i) => {
         const ch = currentModalAudioTracks[i]?.channels;
-        const label = ch ? `${i + 1} (${ch}ch)` : `${i + 1}`;
+        const label = ch ? `${i} (${ch}ch)` : `${i}`;
         return `<option value="${i}">${label}</option>`;
     }).join('');
     trackSelect.value = String(Math.min(selectedTrack, trackCount - 1));
@@ -310,7 +310,7 @@ function populateRemapChannelOptions(
 
     const options = Array.from(
         { length: channelCount },
-        (_, i) => `<option value="${i}">${i + 1}</option>`,
+        (_, i) => `<option value="${i}">${i}</option>`,
     ).join('');
 
     leftSelect.innerHTML = options;

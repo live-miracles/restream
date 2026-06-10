@@ -53,28 +53,53 @@ function formatProgressFps(value: number | null | undefined): string | null {
     return Number.isInteger(value) ? `${value} FPS` : `${(value as number).toFixed(1)} FPS`;
 }
 
+function formatSampleRate(value: number | null | undefined): string {
+    if (!Number.isFinite(value) || (value as number) <= 0) return '--';
+    const khz = (value as number) / 1000;
+    return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
+}
+
 function renderAudioTracksTable(tracks: AudioTrack[]): void {
-    const audioTracksBody = document.getElementById('input-audio-tracks');
-    if (!audioTracksBody) return;
+    const audioTracksContainer = document.getElementById('input-audio-tracks');
+    if (!audioTracksContainer) return;
 
     if (tracks.length === 0) {
-        audioTracksBody.innerHTML =
-            '<tr><td colspan="5" class="text-base-content/60">No audio tracks</td></tr>';
+        audioTracksContainer.innerHTML =
+            '<div class="stats w-full shadow"><div class="stat p-3"><div class="stat-title">Audio</div><div class="stat-value text-sm">No tracks</div></div></div>';
         return;
     }
 
     const displayValue = (value: unknown): string => escapeHtml(value ?? '--');
 
-    audioTracksBody.innerHTML = tracks
+    audioTracksContainer.innerHTML = tracks
         .map((track, index) => {
             const codec = formatCodecName(track.codec) || track.codec || '--';
-            return `<tr>
-                <td class="font-semibold text-sm">${index + 1}</td>
-                <td class="font-semibold text-sm">${displayValue(codec)}</td>
-                <td class="font-semibold text-sm">${displayValue(track.sample_rate)}</td>
-                <td class="font-semibold text-sm">${displayValue(track.channels)}</td>
-                <td class="font-semibold text-sm">${displayValue(track.profile)}</td>
-            </tr>`;
+            const channelLabel =
+                track.channels !== null && track.channels !== undefined
+                    ? `${track.channels} ch`
+                    : '-- ch';
+            return `<div class="stats grid w-full grid-cols-[4.5rem_5rem_6.5rem_5rem_4rem] overflow-x-auto shadow">
+                <div class="stat min-w-0 p-2">
+                    <div class="stat-title">Track</div>
+                    <div class="stat-value text-sm">${index}</div>
+                </div>
+                <div class="stat min-w-0 p-2">
+                    <div class="stat-title">Codec</div>
+                    <div class="stat-value text-sm">${displayValue(codec)}</div>
+                </div>
+                <div class="stat min-w-0 p-2">
+                    <div class="stat-title">Freq</div>
+                    <div class="stat-value text-sm">${displayValue(formatSampleRate(track.sample_rate))}</div>
+                </div>
+                <div class="stat min-w-0 p-2">
+                    <div class="stat-title">Channels</div>
+                    <div class="stat-value text-sm">${displayValue(channelLabel)}</div>
+                </div>
+                <div class="stat min-w-0 p-2">
+                    <div class="stat-title">Profile</div>
+                    <div class="stat-value text-sm">${displayValue(track.profile)}</div>
+                </div>
+            </div>`;
         })
         .join('');
 }

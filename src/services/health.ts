@@ -59,6 +59,13 @@ interface PathInfo {
     online?: boolean;
     availableTime?: string;
     readyTime?: string;
+    tracks2?: {
+        codec?: string;
+        codecProps?: {
+            sampleRate?: number;
+            channelCount?: number;
+        };
+    }[];
     readers?: { id?: string | null; type?: string }[];
     bytesReceived?: number;
     bytesSent?: number;
@@ -250,6 +257,37 @@ function buildUnexpectedReaders(pathInfo: PathInfo | null): {
     return { count: unexpected.length, readers: unexpected };
 }
 
+function normalizeMediamtxAudioCodec(codec: string | null): string | null {
+    if (!codec) return null;
+    return codec.toLowerCase() === 'mpeg-4 audio' ? 'aac' : codec;
+}
+
+function mergePathAudioTracks(
+    ffprobeResult: StreamInfo | null,
+    pathInfo: PathInfo | null,
+): StreamInfo['audioTracks'] {
+    const ffprobeTracks = ffprobeResult?.audioTracks || [];
+    const pathAudioTracks = (pathInfo?.tracks2 || []).filter((track) =>
+        String(track?.codec || '')
+            .toLowerCase()
+            .includes('audio'),
+    );
+
+    if (pathAudioTracks.length === 0) return ffprobeTracks;
+
+    return pathAudioTracks.map((pathTrack, index) => {
+        const ffprobeTrack = ffprobeTracks[index] || null;
+        return {
+            index: ffprobeTrack?.index ?? index,
+            codec:
+                ffprobeTrack?.codec || normalizeMediamtxAudioCodec(pathTrack.codec || null) || null,
+            channels: pathTrack.codecProps?.channelCount ?? ffprobeTrack?.channels ?? null,
+            sample_rate: pathTrack.codecProps?.sampleRate ?? ffprobeTrack?.sample_rate ?? null,
+            profile: ffprobeTrack?.profile || null,
+        };
+    });
+}
+
 function groupOutputsByPipeline(outputs: Output[]): Map<string, Output[]> {
     const map = new Map<string, Output[]>();
     for (const output of outputs) {
@@ -311,10 +349,9 @@ export function createHealthMonitorService({
                     const vs = streams.find((s) => s.codec_type === 'video') || null;
                     const audioTracks = streams
                         .filter((s) => s.codec_type === 'audio')
-                        .map((stream) => {
-                            const streamIndex = Number(stream.index);
+                        .map((stream, index) => {
                             return {
-                                index: Number.isFinite(streamIndex) ? streamIndex : null,
+                                index,
                                 codec: (stream.codec_name as string) || null,
                                 channels: (stream.channels as number) || null,
                                 sample_rate: stream.sample_rate ? Number(stream.sample_rate) : null,
@@ -559,6 +596,7 @@ export function createHealthMonitorService({
         publisher: Publisher | null;
         ffprobeResult: StreamInfo | null;
     }): InputHealth {
+        const audioTracks = mergePathAudioTracks(ffprobeResult, pathInfo);
         return {
             status: inputStatus,
             publishStartedAt: pathInfo?.availableTime || pathInfo?.readyTime || null,
@@ -568,8 +606,8 @@ export function createHealthMonitorService({
             bytesReceived: pathInfo?.bytesReceived || 0,
             bytesSent: pathInfo?.bytesSent || 0,
             video: ffprobeResult?.video || null,
-            audio: ffprobeResult?.audio || null,
-            audioTracks: ffprobeResult?.audioTracks || [],
+            audio: audioTracks[0] || null,
+            audioTracks,
             unexpectedReaders: buildUnexpectedReaders(pathInfo),
         };
     }

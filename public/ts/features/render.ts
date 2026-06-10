@@ -124,11 +124,17 @@ function renderStatsColumn(selectedPipe: string | null): void {
     const sectionHeader = (label: string, count: number) =>
         `<tr class="bg-base-100"><th colspan="${colCount}">${label} <span class="badge mx-1">${count}</span></th></tr>`;
 
+    const formatSampleRate = (value: number | null | undefined) => {
+        if (!Number.isFinite(value) || (value as number) <= 0) return '--';
+        const khz = (value as number) / 1000;
+        return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
+    };
+
     const audioCells = (track: AudioTrack, index: number) =>
-        `<td>${index + 1}</td>` +
+        `<td>${index}</td>` +
         `<td>${formatCodecName(track.codec) || '--'}</td>` +
         `<td>${track.channels ? String(track.channels) : '--'}</td>` +
-        `<td>${track.sample_rate ? String(track.sample_rate) : '--'}</td>`;
+        `<td>${formatSampleRate(track.sample_rate)}</td>`;
 
     const emptyAudioCells = '<td>--</td><td>--</td><td>--</td><td>--</td>';
 
