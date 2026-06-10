@@ -13,8 +13,8 @@ rtmp: yes          # port 1935
 rtsp: yes          # port 8554
 srt: yes
 srtAddress: :10080
-# Global SRT latency for latency testing; applies to receiver and peer latency.
-srtLatency: 120ms
+# SRT latency is set per-connection via the URL parameter (e.g., latency=120)
+# rather than a global config field, since stock MediaMTX does not expose srtLatency.
 
 # ── Browser playback ────────────────────────────────────────────────────────
 hls: yes           # HTTP HLS on port 8888
