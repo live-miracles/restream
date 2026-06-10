@@ -1,4 +1,5 @@
 import type {
+    AudioTrack,
     ConfigData,
     HealthData,
     IngestUrls,
@@ -96,6 +97,14 @@ function parsePipelinesInfo(
         );
         const rawInputVideo = healthByPipeline[p.id]?.input?.video;
         const inputVideo: VideoTrack | null = rawInputVideo ? { ...rawInputVideo } : null;
+        const rawInputAudio = healthByPipeline[p.id]?.input?.audio || null;
+        const rawInputAudioTracks = healthByPipeline[p.id]?.input?.audioTracks || [];
+        const inputAudioTracks: AudioTrack[] =
+            rawInputAudioTracks.length > 0
+                ? rawInputAudioTracks.map((track) => ({ ...track }))
+                : rawInputAudio
+                  ? [{ ...rawInputAudio }]
+                  : [];
         const inputKbps = computeKbps(throughputState.inputBytes, p.id, inputBytesReceived, nowMs);
 
         if (inputVideo) inputVideo.bw = inputKbps;
@@ -119,7 +128,8 @@ function parsePipelinesInfo(
                 status: inputStatus,
                 time: inputTime,
                 video: inputVideo,
-                audio: healthByPipeline[p.id]?.input?.audio || null,
+                audio: inputAudioTracks[0] || null,
+                audioTracks: inputAudioTracks,
                 bytesReceived: inputBytesReceived,
                 bytesSent: healthByPipeline[p.id]?.input?.bytesSent || 0,
                 readers: healthByPipeline[p.id]?.input?.readers || 0,
@@ -158,6 +168,7 @@ function parsePipelinesInfo(
                     time: null,
                     video: null,
                     audio: null,
+                    audioTracks: [],
                     bitrateKbps: null,
                     bytesReceived: 0,
                     bytesSent: 0,

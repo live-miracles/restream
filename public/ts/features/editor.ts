@@ -28,7 +28,7 @@ import {
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
-import type { PipelineView, OutputView, StreamKey } from '../types.js';
+import type { AudioTrack, PipelineView, OutputView, StreamKey } from '../types.js';
 
 function getDefaultOutputHost(): string {
     return document.location.hostname || 'localhost';
@@ -265,7 +265,37 @@ function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): v
     else pendingOutputToggles.delete(key);
 }
 
-let currentModalChannelCount: number = 2;
+let currentModalAudioTracks: AudioTrack[] = [];
+
+function getTrackChannelCount(trackIndex: number): number {
+    const track = currentModalAudioTracks[trackIndex];
+    return track?.channels || 2;
+}
+
+function populateRemapTrackOptions(trackCount: number, selectedTrack: number): void {
+    const trackSelect = document.getElementById(
+        'out-remap-track-input',
+    ) as HTMLSelectElement | null;
+    const trackField = document.getElementById('out-remap-track-field');
+    if (!trackSelect || !trackField) return;
+
+    const showTrackSelector = trackCount > 1;
+    trackField.classList.toggle('hidden', !showTrackSelector);
+    trackField.classList.toggle('inline-block', showTrackSelector);
+
+    trackSelect.innerHTML = Array.from({ length: trackCount }, (_, i) => {
+        const ch = currentModalAudioTracks[i]?.channels;
+        const label = ch ? `${i + 1} (${ch}ch)` : `${i + 1}`;
+        return `<option value="${i}">${label}</option>`;
+    }).join('');
+    trackSelect.value = String(Math.min(selectedTrack, trackCount - 1));
+
+    trackSelect.onchange = () => {
+        const newTrack = parseInt(trackSelect.value, 10);
+        const channelCount = getTrackChannelCount(newTrack);
+        populateRemapChannelOptions(channelCount, 0, Math.min(1, channelCount - 1));
+    };
+}
 
 function populateRemapChannelOptions(
     channelCount: number,
@@ -300,7 +330,13 @@ function applyEncodingUi(encoding: string): void {
 export function onOutEncodingChange(encoding: string): void {
     applyEncodingUi(encoding);
     if (encoding === 'remap') {
-        populateRemapChannelOptions(currentModalChannelCount, 0, 1);
+        const trackCount = Math.max(1, currentModalAudioTracks.length);
+        populateRemapTrackOptions(trackCount, 0);
+        populateRemapChannelOptions(
+            getTrackChannelCount(0),
+            0,
+            Math.min(1, getTrackChannelCount(0) - 1),
+        );
     }
 }
 
@@ -449,16 +485,32 @@ async function openOutModal(
     const rawEncoding = String(output?.encoding || 'source')
         .trim()
         .toLowerCase();
-    const isRemapEncoding = /^remap:(\d+):(\d+)$/.test(rawEncoding);
+    const isRemapEncoding = /^remap:(\d+):(\d+)(?::(\d+))?$/.test(rawEncoding);
     const remapParts = isRemapEncoding ? rawEncoding.split(':') : null;
-    const remapLeft = remapParts ? parseInt(remapParts[1], 10) : 0;
-    const remapRight = remapParts ? parseInt(remapParts[2], 10) : 1;
-    currentModalChannelCount = pipe.input.audio?.channels || 2;
+    let remapTrack = 0;
+    let remapLeft = 0;
+    let remapRight = 1;
+    if (remapParts) {
+        if (remapParts.length === 4) {
+            remapTrack = parseInt(remapParts[1], 10);
+            remapLeft = parseInt(remapParts[2], 10);
+            remapRight = parseInt(remapParts[3], 10);
+        } else {
+            remapLeft = parseInt(remapParts[1], 10);
+            remapRight = parseInt(remapParts[2], 10);
+        }
+    }
+    currentModalAudioTracks = pipe.input.audioTracks || [];
+    if (currentModalAudioTracks.length === 0 && pipe.input.audio) {
+        currentModalAudioTracks = [pipe.input.audio];
+    }
 
     if (encodingSelect) {
         encodingSelect.value = isRemapEncoding ? 'remap' : rawEncoding || 'source';
     }
-    populateRemapChannelOptions(currentModalChannelCount, remapLeft, remapRight);
+    const trackCount = Math.max(1, currentModalAudioTracks.length);
+    populateRemapTrackOptions(trackCount, remapTrack);
+    populateRemapChannelOptions(getTrackChannelCount(remapTrack), remapLeft, remapRight);
 
     const isRunning =
         mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
@@ -550,13 +602,19 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         'source';
     let resolvedEncoding = selectedEncoding;
     if (selectedEncoding === 'remap') {
+        const track =
+            (document.getElementById('out-remap-track-input') as HTMLSelectElement | null)?.value ||
+            '0';
         const left =
             (document.getElementById('out-remap-left-input') as HTMLSelectElement | null)?.value ||
             '0';
         const right =
             (document.getElementById('out-remap-right-input') as HTMLSelectElement | null)?.value ||
             '1';
-        resolvedEncoding = `remap:${left}:${right}`;
+        resolvedEncoding =
+            currentModalAudioTracks.length > 1
+                ? `remap:${track}:${left}:${right}`
+                : `remap:${left}:${right}`;
     }
     const data: { name: string; encoding: string; url: string } = {
         name:
