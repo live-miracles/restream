@@ -47,7 +47,7 @@ app.use(
     }),
 );
 
-const appPort = 3030;
+const appPort = Number(process.env.PORT) || 3030;
 const mediaDir = path.join(__dirname, '..', 'media');
 mkdirSync(mediaDir, { recursive: true });
 

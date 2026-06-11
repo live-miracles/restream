@@ -105,8 +105,26 @@ export function parseRemapEncoding(encoding: string): {
     return { track: 0, left: parseInt(m[1], 10), right: parseInt(m[2], 10) };
 }
 
+const ATRACK_ENCODING_RE = /^atrack:(\d+(?:,\d+)*)$/;
+const DOWNMIX_ENCODING_RE = /^downmix:(\d+)$/;
+
+export function parseAtrackEncoding(encoding: string): number[] | null {
+    const m = ATRACK_ENCODING_RE.exec(encoding);
+    if (!m) return null;
+    const tracks = m[1].split(',').map((t) => parseInt(t, 10));
+    return [...new Set(tracks)];
+}
+
+export function parseDownmixEncoding(encoding: string): number | null {
+    const m = DOWNMIX_ENCODING_RE.exec(encoding);
+    if (!m) return null;
+    return parseInt(m[1], 10);
+}
+
 export function isValidOutputEncoding(encoding: string): boolean {
     if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
+    if (ATRACK_ENCODING_RE.test(encoding)) return true;
+    if (DOWNMIX_ENCODING_RE.test(encoding)) return true;
     return REMAP_ENCODING_RE.test(encoding);
 }
 
@@ -188,6 +206,31 @@ export function buildFfmpegOutputArgs({
             '0:v',
             '-map',
             '[a]',
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '128k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+        );
+    } else if (parseAtrackEncoding(normalizedEncoding)) {
+        const tracks = parseAtrackEncoding(normalizedEncoding)!;
+        args.push('-map', '0:v');
+        for (const track of tracks) {
+            args.push('-map', `0:a:${track}`);
+        }
+        args.push('-c:v', 'copy', '-c:a', 'copy');
+    } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
+        const track = parseDownmixEncoding(normalizedEncoding)!;
+        args.push(
+            '-map',
+            '0:v',
+            '-map',
+            `0:a:${track}`,
             '-c:v',
             'copy',
             '-c:a',
