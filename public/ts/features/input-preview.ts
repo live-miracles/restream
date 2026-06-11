@@ -1,4 +1,10 @@
-import type { HlsConstructor, HlsInstance, HlsErrorData, PreviewVideoElement } from '../global.js';
+import type {
+    HlsConstructor,
+    HlsInstance,
+    HlsAudioTrack,
+    HlsErrorData,
+    PreviewVideoElement,
+} from '../global.js';
 import type { PipelineView } from '../types.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
@@ -41,8 +47,12 @@ function loadHlsRuntime(): Promise<HlsConstructor> {
         }
 
         if (existingScript) {
-            existingScript.addEventListener('load', handleLoad, { once: true });
-            existingScript.addEventListener('error', handleError, { once: true });
+            if (window.Hls) {
+                handleLoad();
+            } else {
+                existingScript.addEventListener('load', handleLoad, { once: true });
+                existingScript.addEventListener('error', handleError, { once: true });
+            }
             return;
         }
 
@@ -139,6 +149,34 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     loadBtn.className = 'btn btn-sm btn-accent';
     loadBtn.textContent = 'Play preview';
 
+    const audioSelect = document.createElement('select');
+    audioSelect.className = 'select select-xs';
+    audioSelect.style.cssText =
+        'position:absolute;top:0.5rem;right:0.5rem;z-index:10;display:none;max-width:10rem;background:rgba(20,26,40,0.85);color:#fff;border-color:rgba(255,255,255,0.2)';
+
+    function updateAudioTrackSelector(hls: HlsInstance): void {
+        const tracks: HlsAudioTrack[] = hls.audioTracks || [];
+        if (tracks.length <= 1) {
+            audioSelect.style.display = 'none';
+            return;
+        }
+        audioSelect.innerHTML = '';
+        for (const track of tracks) {
+            const opt = document.createElement('option');
+            opt.value = String(track.id);
+            opt.textContent = `Audio ${track.id}` + (track.name ? ` (${track.name})` : '');
+            audioSelect.appendChild(opt);
+        }
+        audioSelect.value = String(hls.audioTrack);
+        audioSelect.style.display = '';
+    }
+
+    audioSelect.addEventListener('change', () => {
+        const hls = video._previewHls;
+        if (!hls) return;
+        hls.audioTrack = Number(audioSelect.value);
+    });
+
     const spinner = document.createElement('span');
     spinner.style.cssText =
         'display:none;width:2rem;height:2rem;border-radius:9999px;border:3px solid rgba(255,255,255,0.25);border-top-color:#fff;animation:spin 0.8s linear infinite';
@@ -197,6 +235,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         destroyPreviewController(video);
         video.removeAttribute('src');
         video.load();
+        audioSelect.style.display = 'none';
         setOverlayVisible(true);
         setOverlayButtonState({ buttonText: 'Play preview', buttonDisabled: false });
     };
@@ -236,12 +275,19 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             });
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                updateAudioTrackSelector(hls);
                 attemptPlayback();
             });
 
-            hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-                hls.loadSource(previewSrc);
+            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+                updateAudioTrackSelector(hls);
             });
+
+            hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, () => {
+                audioSelect.value = String(hls.audioTrack);
+            });
+
+            hls.loadSource(previewSrc);
             hls.attachMedia(video);
             return;
         }
@@ -294,6 +340,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     overlay.appendChild(spinner);
     overlay.appendChild(loadBtn);
     shell.appendChild(video);
+    shell.appendChild(audioSelect);
     shell.appendChild(overlay);
     playerElem.appendChild(shell);
     playerElem.dataset.previewSrc = previewSrc;

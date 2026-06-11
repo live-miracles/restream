@@ -79,6 +79,27 @@ function clearForwardedUpstreamHeaders(res: Response) {
     });
 }
 
+// Strip LL-HLS directives so HLS.js doesn't send blocking reload requests
+// that hang until the next segment arrives (causing playback timeouts).
+const LL_HLS_RE =
+    /^#EXT-X-(SERVER-CONTROL|PART-INF|PART|PRELOAD-HINT|RENDITION-REPORT|SKIP):.*\r?\n?/gm;
+
+function stripLowLatencyHls(manifest: Buffer): Buffer {
+    const text = manifest.toString('utf8');
+    if (!text.includes('#EXT-X-SERVER-CONTROL')) return manifest;
+    return Buffer.from(text.replace(LL_HLS_RE, ''));
+}
+
+function stripLowLatencyQuery(query: string): string {
+    if (!query || !query.includes('_HLS_')) return query;
+    const params = new URLSearchParams(query.slice(1));
+    params.delete('_HLS_msn');
+    params.delete('_HLS_part');
+    params.delete('_HLS_skip');
+    const stripped = params.toString();
+    return stripped ? `?${stripped}` : '';
+}
+
 function isManifestResponse(pathName: string, contentType: string): boolean {
     return (
         pathName.toLowerCase().endsWith('.m3u8') ||
@@ -262,7 +283,7 @@ async function streamUpstreamResponse({
                 res.status(502).json({ error: 'Preview manifest exceeds safe proxy size limit' });
                 return;
             }
-            res.send(buffer);
+            res.send(stripLowLatencyHls(buffer));
         } catch (err) {
             log?.('warn', 'HLS preview proxy manifest read failed', {
                 pathName,
@@ -333,9 +354,10 @@ export function registerPreviewProxyRoutes({
             return res.status(400).json({ error: 'Invalid HLS asset path' });
         }
 
-        const query = req.originalUrl.includes('?')
+        const rawQuery = req.originalUrl.includes('?')
             ? req.originalUrl.slice(req.originalUrl.indexOf('?'))
             : '';
+        const query = stripLowLatencyQuery(rawQuery);
         const upstreamResult = await fetchUpstreamAsset({
             req,
             res,
