@@ -437,6 +437,14 @@ function formatMaskedStreamKey(streamKey: string | null | undefined): string {
     return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
+function formatChannelCount(n: number): string {
+    if (n === 1) return '1ch Mono';
+    if (n === 2) return '2ch Stereo';
+    if (n === 6) return '6ch 5.1';
+    if (n === 8) return '8ch 7.1';
+    return `${n}ch`;
+}
+
 // HTML-bound handler — keep accessible as a global
 window.copyData = copyData;
 
@@ -472,4 +480,5 @@ export {
     parseSrtFields,
     buildDefaultCustomOutputUrl,
     formatMaskedStreamKey,
+    formatChannelCount,
 };
