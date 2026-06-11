@@ -438,11 +438,11 @@ function formatMaskedStreamKey(streamKey: string | null | undefined): string {
 }
 
 function formatChannelCount(n: number): string {
-    if (n === 1) return '1ch Mono';
-    if (n === 2) return '2ch Stereo';
-    if (n === 6) return '6ch 5.1';
-    if (n === 8) return '8ch 7.1';
-    return `${n}ch`;
+    if (n === 1) return 'Mono (1 ch)';
+    if (n === 2) return 'Stereo (2 ch)';
+    if (n === 6) return '5.1 (6 ch)';
+    if (n === 8) return '7.1 (8 ch)';
+    return `${n} ch`;
 }
 
 // HTML-bound handler — keep accessible as a global
