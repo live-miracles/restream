@@ -262,6 +262,8 @@ function normalizeMediamtxAudioCodec(codec: string | null): string | null {
     return codec.toLowerCase() === 'mpeg-4 audio' ? 'aac' : codec;
 }
 
+// MediaMTX's tracks2 channel/sample-rate data is authoritative for SRT ingests where
+// ffprobe can misread per-track channel layouts; ffprobe still provides codec/profile.
 function mergePathAudioTracks(
     ffprobeResult: StreamInfo | null,
     pathInfo: PathInfo | null,
@@ -349,9 +351,10 @@ export function createHealthMonitorService({
                     const vs = streams.find((s) => s.codec_type === 'video') || null;
                     const audioTracks = streams
                         .filter((s) => s.codec_type === 'audio')
-                        .map((stream, index) => {
+                        .map((stream) => {
+                            const streamIndex = Number(stream.index);
                             return {
-                                index,
+                                index: Number.isFinite(streamIndex) ? streamIndex : null,
                                 codec: (stream.codec_name as string) || null,
                                 channels: (stream.channels as number) || null,
                                 sample_rate: stream.sample_rate ? Number(stream.sample_rate) : null,
@@ -606,7 +609,7 @@ export function createHealthMonitorService({
             bytesReceived: pathInfo?.bytesReceived || 0,
             bytesSent: pathInfo?.bytesSent || 0,
             video: ffprobeResult?.video || null,
-            audio: audioTracks[0] || null,
+            audio: audioTracks[0] || ffprobeResult?.audio || null,
             audioTracks,
             unexpectedReaders: buildUnexpectedReaders(pathInfo),
         };
