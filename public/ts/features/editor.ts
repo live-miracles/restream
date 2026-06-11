@@ -27,13 +27,12 @@ import {
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
 import {
-    AUDIO_PLATFORM_CAPS,
-    AUDIO_PLATFORM_LABELS,
     detectAudioPlatform,
     detectAudioProtocol,
-    intersectAudioCaps,
+    getAudioCaps,
+    getAudioPlatformLabel,
 } from '../core/audio-caps.js';
-import type { AudioProtocol } from '../core/audio-caps.js';
+import type { AudioCaps, AudioProtocol } from '../core/audio-caps.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
 import type { AudioTrack, PipelineView, OutputView, StreamKey } from '../types.js';
@@ -363,7 +362,7 @@ function getModalAudioCapsContext() {
     )?.value || 'rtmp') as AudioProtocol;
     const platform = detectAudioPlatform(url);
     const protocol = detectAudioProtocol(url, selectProtocol);
-    return { platform, protocol, caps: intersectAudioCaps(platform, protocol) };
+    return { platform, protocol, caps: getAudioCaps(platform, protocol) };
 }
 
 function formatTrackPickLabel(trackIndex: number): string {
@@ -377,7 +376,7 @@ function formatTrackPickLabel(trackIndex: number): string {
 function renderAudioCapsBadges(
     platform: ReturnType<typeof detectAudioPlatform>,
     protocol: AudioProtocol,
-    caps: ReturnType<typeof intersectAudioCaps>,
+    caps: AudioCaps,
 ): void {
     const capsEl = document.getElementById('out-audio-caps');
     if (!capsEl) return;
@@ -390,7 +389,7 @@ function renderAudioCapsBadges(
               : `${caps.maxChannels} (stereo)`;
     const codecs = caps.codecs === 'any' ? 'any' : caps.codecs.join(', ').toUpperCase();
     capsEl.innerHTML = [
-        `${AUDIO_PLATFORM_LABELS[platform]} · ${protocol.toUpperCase()}`,
+        `${getAudioPlatformLabel(platform)} · ${protocol.toUpperCase()}`,
         `Tracks: ${maxTracks}`,
         `Channels: ${maxChannels}`,
         `Codecs: ${codecs}`,
@@ -402,13 +401,13 @@ function renderAudioCapsBadges(
 function renderAudioWarnings(
     platform: ReturnType<typeof detectAudioPlatform>,
     protocol: AudioProtocol,
-    caps: ReturnType<typeof intersectAudioCaps>,
+    caps: AudioCaps,
 ): void {
     const warningsEl = document.getElementById('out-audio-warnings');
     if (!warningsEl) return;
 
     const items: { cls: string; text: string }[] = [];
-    const platformLabel = AUDIO_PLATFORM_LABELS[platform];
+    const platformLabel = getAudioPlatformLabel(platform);
     const protoLabel = protocol.toUpperCase();
     const trackCount = Math.max(1, currentModalAudioTracks.length);
     const selected = modalAudioSelectedTracks;
@@ -441,7 +440,7 @@ function renderAudioWarnings(
     ) {
         items.push({
             cls: 'text-warning',
-            text: `5.1 on YouTube ${protoLabel}: ${AUDIO_PLATFORM_CAPS.youtube.note}`,
+            text: `5.1 on YouTube ${protoLabel}: RTMP/RTMPS is stereo only. Use HLS for 5.1 surround.`,
         });
     }
     if (
@@ -455,10 +454,16 @@ function renderAudioWarnings(
             text: '5.1 pass-through supported on YouTube HLS (AAC / AC3 / EAC3).',
         });
     }
-    if ((platform === 'facebook' || platform === 'vdocipher') && modalAudioMode !== 'auto') {
+    if (platform === 'facebook' && modalAudioMode !== 'auto') {
         items.push({
             cls: 'text-base-content/60',
-            text: AUDIO_PLATFORM_CAPS[platform].note || '',
+            text: 'AAC-LC stereo, 44.1/48 kHz, 128 kbps recommended (256 max).',
+        });
+    }
+    if (platform === 'vdocipher' && modalAudioMode !== 'auto') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: 'Multi-track or surround audio will be downmixed or fail.',
         });
     }
     if (

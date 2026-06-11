@@ -2,12 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-    AUDIO_PLATFORM_CAPS,
-    AUDIO_PROTOCOL_CAPS,
-    intersectAudioCaps,
+    AUDIO_CAPS,
+    getAudioCaps,
     detectAudioPlatform,
     detectAudioProtocol,
-} = require('../../public/ts/core/audio-caps');
+} = require('../../src/utils/audio-caps');
 const {
     buildFfmpegOutputArgs,
     isValidOutputEncoding,
@@ -15,54 +14,22 @@ const {
     parseDownmixEncoding,
 } = require('../../src/utils/ffmpeg');
 
-const PLATFORMS = Object.keys(AUDIO_PLATFORM_CAPS);
-const PROTOCOLS = Object.keys(AUDIO_PROTOCOL_CAPS);
+const PLATFORMS = ['youtube', 'facebook', 'vdocipher', 'generic'];
+const PROTOCOLS = ['rtmp', 'rtmps', 'hls', 'srt'];
 
-test('caps for every platform+protocol combo are the common lower bound', () => {
+test('every platform+protocol combo has an entry in AUDIO_CAPS', () => {
     for (const platform of PLATFORMS) {
         for (const protocol of PROTOCOLS) {
-            const caps = intersectAudioCaps(platform, protocol);
-            const p = AUDIO_PLATFORM_CAPS[platform];
-            const pr = AUDIO_PROTOCOL_CAPS[protocol];
-            const combo = `${platform}+${protocol}`;
-
-            assert.equal(caps.maxTracks, Math.min(p.maxTracks, pr.maxTracks), combo);
-            assert.equal(caps.maxChannels, Math.min(p.maxChannels, pr.maxChannels), combo);
-
-            // Result caps never exceed either side.
-            assert.ok(caps.maxTracks <= p.maxTracks && caps.maxTracks <= pr.maxTracks, combo);
-            assert.ok(
-                caps.maxChannels <= p.maxChannels && caps.maxChannels <= pr.maxChannels,
-                combo,
-            );
-
-            // Codec list is the intersection ('any' acts as identity).
-            if (p.codecs === 'any' && pr.codecs === 'any') {
-                assert.equal(caps.codecs, 'any', combo);
-            } else if (p.codecs === 'any') {
-                assert.deepEqual(caps.codecs, pr.codecs, combo);
-            } else if (pr.codecs === 'any') {
-                assert.deepEqual(caps.codecs, p.codecs, combo);
-            } else {
-                for (const codec of caps.codecs) {
-                    assert.ok(p.codecs.includes(codec) && pr.codecs.includes(codec), combo);
-                }
-                for (const codec of p.codecs) {
-                    assert.equal(
-                        caps.codecs.includes(codec),
-                        pr.codecs.includes(codec),
-                        `${combo}: ${codec}`,
-                    );
-                }
-            }
+            const key = `${platform}:${protocol}`;
+            assert.ok(AUDIO_CAPS[key], `missing entry for ${key}`);
         }
     }
 });
 
 test('caps match the destination capability matrix from the design spec', () => {
     const expectations = [
-        ['youtube', 'rtmp', 1, 6, ['aac', 'mp3']],
-        ['youtube', 'rtmps', 1, 6, ['aac', 'mp3']],
+        ['youtube', 'rtmp', 1, 2, ['aac', 'mp3']],
+        ['youtube', 'rtmps', 1, 2, ['aac', 'mp3']],
         ['youtube', 'hls', 1, 6, ['aac', 'ac3', 'eac3']],
         ['facebook', 'rtmps', 1, 2, ['aac']],
         ['vdocipher', 'rtmp', 1, 2, ['aac']],
@@ -72,13 +39,20 @@ test('caps match the destination capability matrix from the design spec', () => 
         ['generic', 'srt', Infinity, Infinity, 'any'],
     ];
     for (const [platform, protocol, maxTracks, maxChannels, codecs] of expectations) {
-        const caps = intersectAudioCaps(platform, protocol);
+        const caps = getAudioCaps(platform, protocol);
         const combo = `${platform}+${protocol}`;
         assert.equal(caps.maxTracks, maxTracks, combo);
         assert.equal(caps.maxChannels, maxChannels, combo);
         if (codecs === 'any') assert.equal(caps.codecs, 'any', combo);
         else assert.deepEqual(caps.codecs, codecs, combo);
     }
+});
+
+test('getAudioCaps returns generic fallback for unknown combos', () => {
+    const caps = getAudioCaps('unknown', 'unknown');
+    assert.equal(caps.maxTracks, Infinity);
+    assert.equal(caps.maxChannels, Infinity);
+    assert.equal(caps.codecs, 'any');
 });
 
 test('detectAudioPlatform maps known stream hosts', () => {
@@ -140,4 +114,20 @@ test('buildFfmpegOutputArgs downmixes the selected track to stereo', () => {
     assert.ok(joined.includes('-map 0:v -map 0:a:3'), joined);
     assert.ok(joined.includes('-c:v copy -c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
     assert.ok(joined.includes('-f flv'), joined);
+});
+
+test('multi-track atrack encoding is rejected for single-track destinations', () => {
+    const ytRtmpUrl = 'rtmp://a.rtmp.youtube.com/live2/key';
+    const caps = getAudioCaps(detectAudioPlatform(ytRtmpUrl), detectAudioProtocol(ytRtmpUrl));
+    assert.equal(caps.maxTracks, 1);
+    const tracks = parseAtrackEncoding('atrack:0,1,3');
+    assert.ok(tracks.length > caps.maxTracks, 'multi-track should exceed cap');
+
+    const single = parseAtrackEncoding('atrack:0');
+    assert.ok(single.length <= caps.maxTracks, 'single track should fit');
+
+    const srtUrl = 'srt://example.com:10080';
+    const srtCaps = getAudioCaps(detectAudioPlatform(srtUrl), detectAudioProtocol(srtUrl));
+    assert.equal(srtCaps.maxTracks, Infinity);
+    assert.ok(tracks.length <= srtCaps.maxTracks, 'multi-track should fit SRT generic');
 });

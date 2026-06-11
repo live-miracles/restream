@@ -1,66 +1,67 @@
-// Destination audio capability model for the output editor.
+// Frontend audio caps client.
 //
-// The effective caps for an output are the intersection ("common lower bound")
-// of what the transport protocol can carry and what the destination platform
-// accepts: min(maxTracks), min(maxChannels), and the codec set intersection.
+// The backend owns the caps table (src/utils/audio-caps.ts) and serves it via
+// GET /audio-caps. This module fetches it once on dashboard init and caches it
+// in memory. If the fetch fails, all lookups return unlimited (safe fallback —
+// the backend still enforces caps on create/update).
 
 export type AudioPlatform = 'youtube' | 'facebook' | 'vdocipher' | 'generic';
 export type AudioProtocol = 'rtmp' | 'rtmps' | 'hls' | 'srt';
 
 export interface AudioCaps {
-    maxTracks: number; // Infinity = no protocol/platform limit
-    maxChannels: number; // Infinity = no protocol/platform limit
+    maxTracks: number;
+    maxChannels: number;
     codecs: string[] | 'any';
 }
 
-export const AUDIO_PROTOCOL_CAPS: Record<AudioProtocol, AudioCaps> = {
-    // FLV carries a single audio stream; AAC payloads up to 5.1 are accepted in practice.
-    rtmp: { maxTracks: 1, maxChannels: 6, codecs: ['aac', 'mp3'] },
-    rtmps: { maxTracks: 1, maxChannels: 6, codecs: ['aac', 'mp3'] },
-    hls: { maxTracks: Infinity, maxChannels: Infinity, codecs: ['aac', 'ac3', 'eac3'] },
-    srt: { maxTracks: Infinity, maxChannels: Infinity, codecs: 'any' },
-};
+const GENERIC: AudioCaps = { maxTracks: Infinity, maxChannels: Infinity, codecs: 'any' };
 
-export const AUDIO_PLATFORM_CAPS: Record<AudioPlatform, AudioCaps & { note?: string }> = {
-    youtube: {
-        // RTMP accepts AAC or MP3 (MP3 stereo only); HLS accepts AAC/AC3/EAC3. 5.1 is AAC-only
-        // on RTMP. Live ingestion is single-track on both protocols.
-        maxTracks: 1,
-        maxChannels: 6,
-        codecs: ['aac', 'mp3', 'ac3', 'eac3'],
-        note: '5.1 requires 48 kHz / 384 kbps AAC and a stream key with manual settings unticked.',
-    },
-    facebook: {
-        maxTracks: 1,
-        maxChannels: 2,
-        codecs: ['aac'],
-        note: 'AAC-LC stereo, 44.1/48 kHz, 128 kbps recommended (256 max). 5.1 and multi-track audio are not supported.',
-    },
-    vdocipher: {
-        maxTracks: 1,
-        maxChannels: 2,
-        codecs: ['aac'],
-        note: 'Multi-track or surround audio will be downmixed or fail.',
-    },
-    generic: { maxTracks: Infinity, maxChannels: Infinity, codecs: 'any' },
+let capsTable: Record<string, AudioCaps> = {};
+let platformLabels: Record<AudioPlatform, string> = {
+    youtube: 'YouTube',
+    facebook: 'Facebook Live',
+    vdocipher: 'VdoCipher',
+    generic: 'Generic',
 };
+let loaded = false;
 
-function intersectCodecs(a: string[] | 'any', b: string[] | 'any'): string[] | 'any' {
-    if (a === 'any') return b;
-    if (b === 'any') return a;
-    return a.filter((codec) => b.includes(codec));
+// Fetch the caps table from the backend. Called once on dashboard startup.
+// JSON serializes Infinity as null, so we restore null → Infinity here.
+export async function loadAudioCaps(): Promise<void> {
+    try {
+        const res = await fetch('/audio-caps');
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = data.caps || {};
+        for (const [key, caps] of Object.entries(raw)) {
+            const c = caps as Record<string, unknown>;
+            raw[key] = {
+                maxTracks: c.maxTracks ?? Infinity,
+                maxChannels: c.maxChannels ?? Infinity,
+                codecs: c.codecs ?? 'any',
+            };
+        }
+        capsTable = raw;
+        if (data.platformLabels) platformLabels = data.platformLabels;
+        loaded = true;
+    } catch {
+        // Fall back to empty table — getAudioCaps returns GENERIC for unknown keys.
+    }
 }
 
-export function intersectAudioCaps(platform: AudioPlatform, protocol: AudioProtocol): AudioCaps {
-    const platformCaps = AUDIO_PLATFORM_CAPS[platform] || AUDIO_PLATFORM_CAPS.generic;
-    const protocolCaps = AUDIO_PROTOCOL_CAPS[protocol] || AUDIO_PROTOCOL_CAPS.rtmp;
-    return {
-        maxTracks: Math.min(platformCaps.maxTracks, protocolCaps.maxTracks),
-        maxChannels: Math.min(platformCaps.maxChannels, protocolCaps.maxChannels),
-        codecs: intersectCodecs(platformCaps.codecs, protocolCaps.codecs),
-    };
+export function isAudioCapsLoaded(): boolean {
+    return loaded;
 }
 
+export function getAudioCaps(platform: AudioPlatform, protocol: AudioProtocol): AudioCaps {
+    return capsTable[`${platform}:${protocol}`] || GENERIC;
+}
+
+export function getAudioPlatformLabel(platform: AudioPlatform): string {
+    return platformLabels[platform] || platform;
+}
+
+// Infer platform from the output URL hostname.
 export function detectAudioPlatform(url: string): AudioPlatform {
     let host = '';
     try {
@@ -74,6 +75,7 @@ export function detectAudioPlatform(url: string): AudioPlatform {
     return 'generic';
 }
 
+// Infer protocol from the output URL scheme. http/https → hls.
 export function detectAudioProtocol(url: string, fallback: AudioProtocol = 'rtmp'): AudioProtocol {
     let scheme = '';
     try {
@@ -87,10 +89,3 @@ export function detectAudioProtocol(url: string, fallback: AudioProtocol = 'rtmp
     if (scheme === 'rtmp') return 'rtmp';
     return fallback;
 }
-
-export const AUDIO_PLATFORM_LABELS: Record<AudioPlatform, string> = {
-    youtube: 'YouTube',
-    facebook: 'Facebook Live',
-    vdocipher: 'VdoCipher',
-    generic: 'Generic',
-};

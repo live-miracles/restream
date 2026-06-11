@@ -5,7 +5,9 @@ import {
     validateOutputUrl,
     INVALID_OUTPUT_URL_ERROR,
     isValidOutputEncoding,
+    parseAtrackEncoding,
 } from '../utils/ffmpeg';
+import { detectAudioPlatform, detectAudioProtocol, getAudioCaps } from '../utils/audio-caps';
 import type { Db, Output } from '../types';
 import type { OutputLifecycle } from '../services/outputs';
 
@@ -207,6 +209,24 @@ export function registerOutputApi({
 
         if (!validateOutputUrl(url)) {
             return { status: 400, error: INVALID_OUTPUT_URL_ERROR };
+        }
+
+        const capsError = validateEncodingAgainstCaps(encoding, String(url));
+        if (capsError) return { status: 400, error: capsError };
+
+        return null;
+    }
+
+    // Reject encodings that violate the destination's audio caps.
+    // e.g. atrack:0,1,3 (3 tracks) to YouTube RTMP (maxTracks=1) → 400.
+    function validateEncodingAgainstCaps(encoding: string, url: string): string | null {
+        const platform = detectAudioPlatform(url);
+        const protocol = detectAudioProtocol(url);
+        const caps = getAudioCaps(platform, protocol);
+
+        const atrackIndices = parseAtrackEncoding(encoding);
+        if (atrackIndices && atrackIndices.length > caps.maxTracks) {
+            return `Encoding selects ${atrackIndices.length} audio track(s) but ${platform}+${protocol} supports at most ${caps.maxTracks}`;
         }
 
         return null;

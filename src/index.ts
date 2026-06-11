@@ -15,6 +15,7 @@ import { registerRecordingApi } from './api/recording';
 import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
 import { registerDiagnosticsApi } from './api/diagnostics';
+import { AUDIO_CAPS, AUDIO_PLATFORM_LABELS } from './utils/audio-caps';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
@@ -129,6 +130,10 @@ registerOutputApi({
     setOutputDesiredState,
     stopRunningJobAndWait,
     stopRunningJob,
+});
+
+app.get('/audio-caps', (_req, res) => {
+    res.json({ caps: AUDIO_CAPS, platformLabels: AUDIO_PLATFORM_LABELS });
 });
 
 healthMonitor.registerRoutes(app);
