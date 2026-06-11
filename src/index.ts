@@ -24,8 +24,12 @@ import { startServer } from './services/bootstrap';
 import { registerSystemMetricsApi } from './api/metrics';
 import { errMsg, log } from './utils/app';
 import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
+import { normalizeBasePath, registerBasePathMiddleware } from './utils/base-path';
 
 const app = express();
+const basePath = normalizeBasePath(process.env.BASE_PATH || '');
+
+registerBasePathMiddleware(app, basePath);
 
 // Register before body parsers so Grafana API requests can stream through unchanged.
 registerGrafanaProxyRoutes({ app, log });
@@ -175,6 +179,13 @@ app.use(
 );
 
 const publicDir = path.join(__dirname, '..', 'public');
+app.get('/base-path.js', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('application/javascript').send(
+        `window.__RESTREAM_BASE_PATH__ = ${JSON.stringify(basePath)};\n`,
+    );
+});
+
 app.use(
     '/',
     express.static(publicDir, {

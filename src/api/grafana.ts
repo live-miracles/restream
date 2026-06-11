@@ -82,6 +82,26 @@ function stripTokenFromUrl(originalUrl: string): string {
     return `${parsed.pathname}${parsed.search}`;
 }
 
+function getRestreamOriginalUrl(req: Request, res: Response): string {
+    return typeof res.locals.restreamOriginalUrl === 'string'
+        ? res.locals.restreamOriginalUrl
+        : req.originalUrl;
+}
+
+function getPublicProxyPath(res: Response, proxyPath: string): string {
+    const basePath =
+        typeof res.locals.restreamBasePath === 'string' ? res.locals.restreamBasePath : '';
+    return `${basePath}${proxyPath}`;
+}
+
+function toPublicProxyUrl(path: string, proxyPath: string, publicProxyPath: string): string {
+    if (path.startsWith(publicProxyPath)) return path;
+    if (path.startsWith(proxyPath)) return `${publicProxyPath}${path.slice(proxyPath.length)}`;
+    if (path === '/') return `${publicProxyPath}/`;
+    if (path.startsWith('/')) return `${publicProxyPath}${path}`;
+    return path;
+}
+
 function authorizeGrafanaProxyRequest({
     req,
     res,
@@ -97,13 +117,21 @@ function authorizeGrafanaProxyRequest({
 
     const queryToken = getTokenFromQuery(req);
     if (queryToken && tokensEqual(queryToken, token)) {
+        const publicProxyPath = getPublicProxyPath(res, proxyPath);
         res.cookie(GRAFANA_PROXY_COOKIE_NAME, queryToken, {
             httpOnly: true,
             sameSite: 'lax',
             secure: isSecureRequest(req),
-            path: proxyPath,
+            path: publicProxyPath,
         });
-        res.redirect(302, stripTokenFromUrl(req.originalUrl));
+        res.redirect(
+            302,
+            toPublicProxyUrl(
+                stripTokenFromUrl(getRestreamOriginalUrl(req, res)),
+                proxyPath,
+                publicProxyPath,
+            ),
+        );
         return false;
     }
 
@@ -117,7 +145,11 @@ function authorizeGrafanaProxyRequest({
     return false;
 }
 
-function copyRequestHeaders(req: Request, target: URL, proxyPath: string): OutgoingHttpHeaders {
+function copyRequestHeaders(
+    req: Request,
+    target: URL,
+    publicProxyPath: string,
+): OutgoingHttpHeaders {
     const headers: OutgoingHttpHeaders = {};
     for (const [name, value] of Object.entries(req.headers)) {
         const lower = name.toLowerCase();
@@ -130,7 +162,7 @@ function copyRequestHeaders(req: Request, target: URL, proxyPath: string): Outgo
     headers['x-forwarded-host'] = getHeaderValue(req.headers, 'host') || target.host;
     headers['x-forwarded-proto'] =
         getHeaderValue(req.headers, 'x-forwarded-proto') || req.protocol || 'http';
-    headers['x-forwarded-prefix'] = proxyPath;
+    headers['x-forwarded-prefix'] = publicProxyPath;
     headers['x-forwarded-for'] = [
         getHeaderValue(req.headers, 'x-forwarded-for'),
         req.ip || req.socket.remoteAddress,
@@ -141,19 +173,33 @@ function copyRequestHeaders(req: Request, target: URL, proxyPath: string): Outgo
     return headers;
 }
 
-function rewriteLocationHeader(value: string, target: URL, proxyPath: string): string {
-    if (value.startsWith(target.origin)) return value.slice(target.origin.length) || proxyPath;
+function rewriteLocationHeader(
+    value: string,
+    target: URL,
+    proxyPath: string,
+    publicProxyPath: string,
+): string {
+    if (value.startsWith(target.origin)) {
+        return toPublicProxyUrl(
+            value.slice(target.origin.length) || proxyPath,
+            proxyPath,
+            publicProxyPath,
+        );
+    }
     try {
         const parsed = new URL(value);
         const localGrafanaHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-        if (localGrafanaHost && parsed.pathname.startsWith(proxyPath)) {
+        if (localGrafanaHost && parsed.pathname.startsWith(publicProxyPath)) {
             return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+        if (localGrafanaHost && parsed.pathname.startsWith(proxyPath)) {
+            return `${publicProxyPath}${parsed.pathname.slice(proxyPath.length)}${parsed.search}${parsed.hash}`;
         }
     } catch {
         // Relative locations are handled below.
     }
-    if (value === '/') return `${proxyPath}/`;
-    if (value.startsWith('/') && !value.startsWith(proxyPath)) return `${proxyPath}${value}`;
+    if (value === '/') return `${publicProxyPath}/`;
+    if (value.startsWith('/')) return toPublicProxyUrl(value, proxyPath, publicProxyPath);
     return value;
 }
 
@@ -162,18 +208,23 @@ function copyResponseHeaders({
     res,
     target,
     proxyPath,
+    publicProxyPath,
 }: {
     upstreamResponse: IncomingMessage;
     res: Response;
     target: URL;
     proxyPath: string;
+    publicProxyPath: string;
 }) {
     for (const [name, value] of Object.entries(upstreamResponse.headers)) {
         if (!value || HOP_BY_HOP_HEADERS.has(name.toLowerCase())) continue;
         if (name.toLowerCase() === 'location') {
             const rawLocation = Array.isArray(value) ? value[0] : value;
             if (rawLocation) {
-                res.setHeader('location', rewriteLocationHeader(rawLocation, target, proxyPath));
+                res.setHeader(
+                    'location',
+                    rewriteLocationHeader(rawLocation, target, proxyPath, publicProxyPath),
+                );
             }
             continue;
         }
@@ -194,18 +245,19 @@ function proxyGrafanaRequest({
     proxyPath: string;
     log: (level: string, message: string, fields?: Record<string, unknown>) => void;
 }) {
-    const upstreamUrl = new URL(req.originalUrl, target);
+    const upstreamUrl = new URL(getRestreamOriginalUrl(req, res), target);
+    const publicProxyPath = getPublicProxyPath(res, proxyPath);
     const client = upstreamUrl.protocol === 'https:' ? https : http;
     const upstreamRequest = client.request(
         upstreamUrl,
         {
             method: req.method,
-            headers: copyRequestHeaders(req, target, proxyPath),
+            headers: copyRequestHeaders(req, target, publicProxyPath),
             timeout: GRAFANA_PROXY_TIMEOUT_MS,
         },
         (upstreamResponse) => {
             res.status(upstreamResponse.statusCode || 502);
-            copyResponseHeaders({ upstreamResponse, res, target, proxyPath });
+            copyResponseHeaders({ upstreamResponse, res, target, proxyPath, publicProxyPath });
             upstreamResponse.pipe(res);
         },
     );

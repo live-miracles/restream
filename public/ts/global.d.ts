@@ -27,6 +27,7 @@ export interface PreviewVideoElement extends HTMLVideoElement {
 
 declare global {
     interface Window {
+        __RESTREAM_BASE_PATH__?: string;
         Hls?: HlsConstructor;
         copyData: (id: string) => void;
         selectPipeline: (id: string | null) => void;

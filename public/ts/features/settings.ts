@@ -14,6 +14,7 @@ import {
 } from '../core/api.js';
 import { showErrorAlert, formatMaskedStreamKey } from '../core/utils.js';
 import { state } from '../core/state.js';
+import { withBasePath } from '../core/base-path.js';
 
 // ── Load ──────────────────────────────────────────────
 
@@ -122,12 +123,13 @@ export async function loadMediaFiles(): Promise<void> {
             const deleteDisabled = hasIngests
                 ? 'disabled title="Remove configured ingests first"'
                 : '';
+            const mediaUrl = withBasePath(`/media/${encodeURIComponent(f.name)}`);
             return `
         <div class="flex flex-wrap items-center gap-2 py-2 border-b border-base-300 last:border-0" data-filename="${f.name}">
             <span class="flex-1 font-mono text-sm truncate min-w-0" title="${f.name}">${f.name}</span>
             <span class="text-sm opacity-60 shrink-0">${formatFileSize(f.size)}</span>
-            <a href="/media/${encodeURIComponent(f.name)}" target="_blank" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>
-            <a href="/media/${encodeURIComponent(f.name)}" download="${f.name}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
+            <a href="${mediaUrl}" target="_blank" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>
+            <a href="${mediaUrl}" download="${f.name}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
             <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${f.name}" ${deleteDisabled}>Delete</button>
         </div>`;
         })
