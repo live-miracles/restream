@@ -23,6 +23,7 @@ import {
     parseSrtFields,
     buildDefaultCustomOutputUrl,
     formatMaskedStreamKey,
+    formatChannelCount,
     OUTPUT_SERVER_PRESETS,
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
@@ -368,7 +369,7 @@ function getModalAudioCapsContext() {
 function formatTrackPickLabel(trackIndex: number): string {
     const track = currentModalAudioTracks[trackIndex];
     const codec = track?.codec || 'unknown';
-    const channels = track?.channels ? `${track.channels} ch` : '? ch';
+    const channels = track?.channels ? formatChannelCount(track.channels) : '?ch';
     const rate = track?.sample_rate ? ` · ${track.sample_rate / 1000} kHz` : '';
     return `Track ${trackIndex} · ${codec} · ${channels}${rate}`;
 }
@@ -380,18 +381,14 @@ function renderAudioCapsBadges(
 ): void {
     const capsEl = document.getElementById('out-audio-caps');
     if (!capsEl) return;
-    const maxTracks = caps.maxTracks === Infinity ? 'multiple' : String(caps.maxTracks);
+    const maxTracks = caps.maxTracks === Infinity ? 'unlimited' : `${caps.maxTracks} track`;
     const maxChannels =
-        caps.maxChannels === Infinity
-            ? 'unlimited'
-            : caps.maxChannels === 6
-              ? '6 (5.1)'
-              : `${caps.maxChannels} (stereo)`;
+        caps.maxChannels === Infinity ? 'unlimited' : formatChannelCount(caps.maxChannels);
     const codecs = caps.codecs === 'any' ? 'any' : caps.codecs.join(', ').toUpperCase();
     capsEl.innerHTML = [
         `${getAudioPlatformLabel(platform)} · ${protocol.toUpperCase()}`,
-        `Tracks: ${maxTracks}`,
-        `Channels: ${maxChannels}`,
+        maxTracks,
+        maxChannels,
         `Codecs: ${codecs}`,
     ]
         .map((text) => `<span class="badge badge-sm badge-ghost">${text}</span>`)
@@ -429,7 +426,7 @@ function renderAudioWarnings(
     if (modalAudioMode === 'downmix' && exceedsCap) {
         items.push({
             cls: 'text-warning',
-            text: `${platformLabel} supports max ${caps.maxChannels} channels on ${protoLabel} — the selected track is downmixed to stereo.`,
+            text: `${platformLabel} supports max ${formatChannelCount(caps.maxChannels)} on ${protoLabel} — the selected track is downmixed to stereo.`,
         });
     }
     if (
@@ -532,7 +529,10 @@ function refreshAudioRoutingUi(): void {
         ingestEl.textContent = currentModalIngestLive
             ? `Detected ingest: ${trackCount} audio track(s) — ` +
               currentModalAudioTracks
-                  .map((t, i) => `${i}: ${t.codec || '?'} ${t.channels || '?'}ch`)
+                  .map(
+                      (t, i) =>
+                          `${i}: ${t.codec || '?'} ${t.channels ? formatChannelCount(t.channels) : '?ch'}`,
+                  )
                   .join(', ')
             : 'No active ingest — track list unavailable; defaults to track 0.';
     }
