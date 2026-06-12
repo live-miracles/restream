@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" data-theme="dim">
+  <head>
+    <meta charset="UTF-8" />
+    <title data-name="Status">Status</title>
+    <link rel="icon" type="image/png" href="logo.png" />
+    <link rel="stylesheet" type="text/css" href="output.css" />
+    <script type="module" src="js/features/status-entry.js"></script>
+  </head>
+  <body class="bg-base-100 text-base-content flex h-screen flex-col">
+    <div class="navbar bg-base-100 shrink-0">
+      <div class="flex flex-1 items-center gap-3">
+        <button class="btn btn-ghost text-xl" id="server-name" onclick="location.href = '/'">Restream</button>
+      </div>
+      <div class="flex flex-1 justify-end">
+        <ul class="menu menu-horizontal px-1">
+          <li><a href="/">Dashboard</a></li>
+          <li><a href="/settings.html">Settings</a></li>
+          <li><a href="/status.html">Status</a></li>
+          <li><a href="https://github.com/live-miracles/restream">GitHub</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div
+      id="top-banner-stack"
+      class="fixed left-1/2 z-999 flex -translate-x-1/2 transform flex-col items-center gap-2"
+      style="top: 0.5rem; pointer-events: none">
+      <div role="alert" id="error-alert" class="alert alert-error hidden max-w-175 opacity-90" style="pointer-events: auto">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span id="error-msg"></span>
+      </div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto p-6">
+      <div class="mx-auto max-w-4xl space-y-8">
+        <h1 class="text-2xl font-bold">Status</h1>
+
+        <!-- Version Info -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <h2 class="mb-4 text-lg font-semibold">Version Info</h2>
+          <table class="text-sm">
+            <tbody id="status-versions">
+              <tr>
+                <td class="py-1.5 opacity-60" colspan="2">Loading...</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <!-- MediaMTX Config -->
+        <section class="bg-base-200 rounded-xl p-5 shadow">
+          <h2 class="mb-4 text-lg font-semibold">MediaMTX Configuration</h2>
+          <pre id="mediamtx-config" class="bg-base-300 max-h-[600px] overflow-auto rounded-lg p-4 font-mono text-sm whitespace-pre">Loading...</pre>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>
