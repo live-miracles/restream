@@ -5,7 +5,8 @@ import type {
     HlsErrorData,
     PreviewVideoElement,
 } from '../global.js';
-import type { PipelineView } from '../types.js';
+import { formatChannelCount, formatCodecName } from '../core/utils.js';
+import type { AudioTrack, PipelineView } from '../types.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
 const HLS_RUNTIME_URL = '/vendor/hls.min.js';
@@ -75,6 +76,43 @@ function buildInputPreviewUrl(streamKey: string): string {
     return `/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`;
 }
 
+function formatPreviewSampleRate(rate: number | null | undefined): string | null {
+    if (!Number.isFinite(rate) || !rate) return null;
+    const khz = rate / 1000;
+    return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
+}
+
+function getFriendlyAudioTrackName(name: string | null | undefined): string | null {
+    const trimmedName = (name || '').trim();
+    if (!trimmedName || /^audio\d+$/i.test(trimmedName)) return null;
+    return trimmedName;
+}
+
+function getPreviewAudioMetadata(pipe: PipelineView, position: number): AudioTrack | null {
+    const tracks = pipe.input.audioTracks || [];
+    return (
+        tracks.find((track) => track.index === position) ||
+        tracks.find((_, index) => index === position) ||
+        null
+    );
+}
+
+function buildPreviewAudioDetail(
+    pipe: PipelineView,
+    position: number,
+    hlsTrack: HlsAudioTrack,
+): string {
+    const metadata = getPreviewAudioMetadata(pipe, position);
+    const detailParts = [
+        formatCodecName(metadata?.codec),
+        metadata?.channels ? formatChannelCount(metadata.channels) : null,
+        formatPreviewSampleRate(metadata?.sample_rate),
+        getFriendlyAudioTrackName(hlsTrack.name),
+    ].filter(Boolean);
+
+    return detailParts.join(' / ') || 'Audio track';
+}
+
 export function clearInputPreview(playerElem: HTMLElement | null): void {
     if (!playerElem) return;
     const existingVideo = playerElem.querySelector<PreviewVideoElement>(
@@ -82,6 +120,7 @@ export function clearInputPreview(playerElem: HTMLElement | null): void {
     );
     if (existingVideo) {
         existingVideo.dataset.previewDisposed = 'true';
+        existingVideo._previewCleanup?.();
         destroyPreviewController(existingVideo);
         existingVideo.pause();
         existingVideo.removeAttribute('src');
@@ -149,33 +188,103 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     loadBtn.className = 'btn btn-sm btn-accent';
     loadBtn.textContent = 'Play preview';
 
-    const audioSelect = document.createElement('select');
-    audioSelect.className = 'select select-xs';
-    audioSelect.style.cssText =
-        'position:absolute;top:0.5rem;right:0.5rem;z-index:10;display:none;max-width:10rem;background:rgba(20,26,40,0.85);color:#fff;border-color:rgba(255,255,255,0.2)';
+    const audioPicker = document.createElement('div');
+    audioPicker.className = 'relative text-xs';
+    audioPicker.style.cssText = 'position:absolute;top:0.5rem;right:0.5rem;z-index:10;display:none';
 
-    function updateAudioTrackSelector(hls: HlsInstance): void {
-        const tracks: HlsAudioTrack[] = hls.audioTracks || [];
-        if (tracks.length <= 1) {
-            audioSelect.style.display = 'none';
-            return;
-        }
-        audioSelect.innerHTML = '';
-        for (const track of tracks) {
-            const opt = document.createElement('option');
-            opt.value = String(track.id);
-            opt.textContent = `Audio ${track.id}` + (track.name ? ` (${track.name})` : '');
-            audioSelect.appendChild(opt);
-        }
-        audioSelect.value = String(hls.audioTrack);
-        audioSelect.style.display = '';
+    const audioPickerButton = document.createElement('button');
+    audioPickerButton.type = 'button';
+    audioPickerButton.className = 'btn btn-xs btn-outline max-w-64 justify-start bg-base-100/95';
+    audioPickerButton.setAttribute('aria-haspopup', 'listbox');
+    audioPickerButton.setAttribute('aria-expanded', 'false');
+
+    const audioPickerMenu = document.createElement('div');
+    audioPickerMenu.className =
+        'absolute right-0 top-full mt-1 hidden max-h-72 w-72 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 shadow-xl';
+    audioPickerMenu.setAttribute('role', 'listbox');
+    audioPickerMenu.setAttribute('aria-label', 'Preview audio track');
+
+    audioPicker.append(audioPickerButton, audioPickerMenu);
+
+    function closeAudioTrackPicker(): void {
+        audioPickerMenu.classList.add('hidden');
+        audioPickerButton.setAttribute('aria-expanded', 'false');
     }
 
-    audioSelect.addEventListener('change', () => {
-        const hls = video._previewHls;
-        if (!hls) return;
-        hls.audioTrack = Number(audioSelect.value);
+    function updateAudioTrackPicker(hls: HlsInstance): void {
+        const tracks: HlsAudioTrack[] = hls.audioTracks || [];
+        if (tracks.length <= 1) {
+            audioPicker.style.display = 'none';
+            closeAudioTrackPicker();
+            return;
+        }
+
+        const selectedTrack = tracks.find((track) => track.id === hls.audioTrack) || tracks[0];
+        const selectedIndex = Math.max(0, tracks.indexOf(selectedTrack));
+        audioPickerButton.textContent = `Audio: Track ${selectedIndex + 1}`;
+        audioPickerMenu.replaceChildren();
+
+        tracks.forEach((track, index) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className =
+                'flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left hover:bg-base-200';
+            item.setAttribute('role', 'option');
+            item.setAttribute('aria-selected', track.id === hls.audioTrack ? 'true' : 'false');
+
+            const selectedMark = document.createElement('span');
+            selectedMark.className = 'w-4 shrink-0 text-center text-primary';
+            selectedMark.textContent = track.id === hls.audioTrack ? '>' : '';
+
+            const text = document.createElement('span');
+            text.className = 'min-w-0';
+
+            const title = document.createElement('span');
+            title.className = 'block font-semibold';
+            title.textContent = `Track ${index + 1}`;
+
+            const detail = document.createElement('span');
+            detail.className = 'block truncate opacity-70';
+            detail.textContent = buildPreviewAudioDetail(pipe, index, track);
+
+            text.append(title, detail);
+            item.append(selectedMark, text);
+            item.onclick = () => {
+                hls.audioTrack = track.id;
+                updateAudioTrackPicker(hls);
+                closeAudioTrackPicker();
+            };
+            audioPickerMenu.appendChild(item);
+        });
+
+        audioPicker.style.display = '';
+    }
+
+    audioPickerButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const shouldOpen = audioPickerMenu.classList.contains('hidden');
+        audioPickerMenu.classList.toggle('hidden', !shouldOpen);
+        audioPickerButton.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     });
+
+    audioPickerMenu.addEventListener('click', (event) => {
+        event.stopPropagation();
+    });
+
+    function handleAudioPickerDocumentClick(): void {
+        if (video.dataset.previewDisposed === 'true') {
+            video._previewCleanup?.();
+            return;
+        }
+        closeAudioTrackPicker();
+    }
+
+    document.addEventListener('click', handleAudioPickerDocumentClick);
+    video._previewCleanup = () => {
+        document.removeEventListener('click', handleAudioPickerDocumentClick);
+        closeAudioTrackPicker();
+        delete video._previewCleanup;
+    };
 
     const spinner = document.createElement('span');
     spinner.style.cssText =
@@ -235,7 +344,8 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         destroyPreviewController(video);
         video.removeAttribute('src');
         video.load();
-        audioSelect.style.display = 'none';
+        audioPicker.style.display = 'none';
+        closeAudioTrackPicker();
         setOverlayVisible(true);
         setOverlayButtonState({ buttonText: 'Play preview', buttonDisabled: false });
     };
@@ -275,16 +385,16 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             });
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                updateAudioTrackSelector(hls);
+                updateAudioTrackPicker(hls);
                 attemptPlayback();
             });
 
             hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-                updateAudioTrackSelector(hls);
+                updateAudioTrackPicker(hls);
             });
 
             hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, () => {
-                audioSelect.value = String(hls.audioTrack);
+                updateAudioTrackPicker(hls);
             });
 
             hls.loadSource(previewSrc);
@@ -340,7 +450,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     overlay.appendChild(spinner);
     overlay.appendChild(loadBtn);
     shell.appendChild(video);
-    shell.appendChild(audioSelect);
+    shell.appendChild(audioPicker);
     shell.appendChild(overlay);
     playerElem.appendChild(shell);
     playerElem.dataset.previewSrc = previewSrc;

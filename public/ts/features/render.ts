@@ -1,4 +1,5 @@
 import {
+    formatChannelCount,
     formatCodecName,
     getStatusColor,
     getUrlParam,
@@ -131,9 +132,9 @@ function renderStatsColumn(selectedPipe: string | null): void {
     };
 
     const audioCells = (track: AudioTrack, index: number) =>
-        `<td>${index}</td>` +
+        `<td>${index + 1}</td>` +
         `<td>${formatCodecName(track.codec) || '--'}</td>` +
-        `<td>${track.channels ? String(track.channels) : '--'}</td>` +
+        `<td>${track.channels ? formatChannelCount(track.channels) : '--'}</td>` +
         `<td>${formatSampleRate(track.sample_rate)}</td>`;
 
     const emptyAudioCells = '<td>--</td><td>--</td><td>--</td><td>--</td>';

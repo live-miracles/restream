@@ -82,7 +82,7 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
             return `<div class="stats grid w-full grid-cols-[3.5rem_5rem_5.5rem_7.5rem_1fr] overflow-x-auto shadow">
                 <div class="stat min-w-0 p-2">
                     <div class="stat-title">Track</div>
-                    <div class="stat-value text-sm">${index}</div>
+                    <div class="stat-value text-sm">${index + 1}</div>
                 </div>
                 <div class="stat min-w-0 p-2">
                     <div class="stat-title">Codec</div>
