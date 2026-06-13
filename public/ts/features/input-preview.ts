@@ -82,6 +82,7 @@ function formatPreviewSampleRate(rate: number | null | undefined): string | null
     return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
 }
 
+
 function getFriendlyAudioTrackName(name: string | null | undefined): string | null {
     const trimmedName = (name || '').trim();
     if (!trimmedName || /^audio\d+$/i.test(trimmedName)) return null;
@@ -265,6 +266,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         const shouldOpen = audioPickerMenu.classList.contains('hidden');
         audioPickerMenu.classList.toggle('hidden', !shouldOpen);
         audioPickerButton.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+
     });
 
     audioPickerMenu.addEventListener('click', (event) => {
