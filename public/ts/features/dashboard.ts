@@ -1,4 +1,5 @@
 import { getConfig, getHealth, getSystemMetrics } from '../core/api.js';
+import { loadAudioCaps } from '../core/audio-caps.js';
 import { parsePipelinesInfo } from '../core/pipeline.js';
 import { getUrlParam, readSelectedPipelineHint, setServerConfig } from '../core/utils.js';
 import { renderPipelines, renderMetrics } from './render.js';
@@ -122,6 +123,7 @@ async function onVisibilityChange(): Promise<void> {
 }
 
 void (async () => {
+    await loadAudioCaps();
     await requestDashboardRefresh();
     startDashboardPolling(
         document.hidden ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS : DASHBOARD_POLL_INTERVAL_MS,

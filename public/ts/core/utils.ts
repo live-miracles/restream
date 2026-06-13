@@ -256,7 +256,17 @@ export const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
         { label: 'Facebook', value: 'rtmps://live-api-s.facebook.com:443/rtmp/' },
         { label: 'VDO Cipher', value: 'rtmp://live-ingest-01.vd0.co:1935/livestream/' },
     ],
-    hls: [{ label: 'Custom', value: '' }],
+    hls: [
+        { label: 'Custom', value: '' },
+        {
+            label: 'YouTube',
+            value: 'https://a.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=0&file=out.m3u8',
+        },
+        {
+            label: 'YT Backup',
+            value: 'https://b.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=1&file=out.m3u8',
+        },
+    ],
     srt: [{ label: 'Custom', value: '' }],
 };
 
@@ -427,6 +437,14 @@ function formatMaskedStreamKey(streamKey: string | null | undefined): string {
     return `${name}_${secret.slice(0, 2)}***${secret.slice(-2)}`;
 }
 
+function formatChannelCount(n: number): string {
+    if (n === 1) return 'Mono (1 ch)';
+    if (n === 2) return 'Stereo (2 ch)';
+    if (n === 6) return '5.1 (6 ch)';
+    if (n === 8) return '7.1 (8 ch)';
+    return `${n} ch`;
+}
+
 // HTML-bound handler — keep accessible as a global
 window.copyData = copyData;
 
@@ -462,4 +480,5 @@ export {
     parseSrtFields,
     buildDefaultCustomOutputUrl,
     formatMaskedStreamKey,
+    formatChannelCount,
 };

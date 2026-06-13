@@ -23,9 +23,17 @@ import {
     parseSrtFields,
     buildDefaultCustomOutputUrl,
     formatMaskedStreamKey,
+    formatChannelCount,
     OUTPUT_SERVER_PRESETS,
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
+import {
+    detectAudioPlatform,
+    detectAudioProtocol,
+    getAudioCaps,
+    getAudioPlatformLabel,
+} from '../core/audio-caps.js';
+import type { AudioCaps, AudioProtocol } from '../core/audio-caps.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
 import type { AudioTrack, PipelineView, OutputView, StreamKey } from '../types.js';
@@ -216,6 +224,18 @@ function setupOutputModalProtocolHandlers(): void {
         }
     };
 
+    // Re-evaluate audio caps whenever the destination (platform/protocol) changes.
+    const chainAudioRefresh = (
+        el: HTMLElement & { onchange?: unknown; oninput?: unknown },
+        prop: 'onchange' | 'oninput',
+    ) => {
+        const prev = el[prop] as ((ev: Event) => void) | null;
+        (el as unknown as Record<string, unknown>)[prop] = (ev: Event) => {
+            prev?.(ev);
+            refreshAudioRoutingUi();
+        };
+    };
+
     rawInput.oninput = () => {
         const rawValue = rawInput.value.trim();
         const currentProtocol = protocolSelect.value || 'rtmp';
@@ -241,6 +261,16 @@ function setupOutputModalProtocolHandlers(): void {
             applyOutputProtocolUi(protocol);
         }
     };
+
+    chainAudioRefresh(protocolSelect, 'onchange');
+    chainAudioRefresh(serverSelect, 'onchange');
+    chainAudioRefresh(rawInput, 'oninput');
+
+    // SRT host/port changes can switch the effective destination.
+    for (const id of ['out-srt-host-input', 'out-srt-port-input']) {
+        const srtInput = document.getElementById(id) as HTMLInputElement | null;
+        if (srtInput) srtInput.oninput = () => refreshAudioRoutingUi();
+    }
 }
 
 function setOutputToggleBusy(button: HTMLButtonElement | null, busy: boolean): void {
@@ -266,6 +296,11 @@ function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): v
 }
 
 let currentModalAudioTracks: AudioTrack[] = [];
+let currentModalIngestLive = false;
+
+type ModalAudioMode = 'auto' | 'pass' | 'downmix' | 'remap';
+let modalAudioMode: ModalAudioMode = 'auto';
+let modalAudioSelectedTracks: number[] = [0];
 
 function getTrackChannelCount(trackIndex: number): number {
     const track = currentModalAudioTracks[trackIndex];
@@ -285,7 +320,7 @@ function populateRemapTrackOptions(trackCount: number, selectedTrack: number): v
 
     trackSelect.innerHTML = Array.from({ length: trackCount }, (_, i) => {
         const ch = currentModalAudioTracks[i]?.channels;
-        const label = ch ? `${i} (${ch}ch)` : `${i}`;
+        const label = ch ? `${i + 1} (${ch}ch)` : `${i + 1}`;
         return `<option value="${i}">${label}</option>`;
     }).join('');
     trackSelect.value = String(Math.min(selectedTrack, trackCount - 1));
@@ -319,25 +354,246 @@ function populateRemapChannelOptions(
     rightSelect.value = String(Math.min(selectedRight, channelCount - 1));
 }
 
-function applyEncodingUi(encoding: string): void {
-    const remapFields = document.getElementById('out-remap-fields');
-    if (remapFields) {
-        remapFields.classList.toggle('hidden', encoding !== 'remap');
-        remapFields.classList.toggle('inline-block', encoding === 'remap');
-    }
+// ── Adaptive audio routing section ─────────────────────
+
+function getModalAudioCapsContext() {
+    const url = getEffectiveOutputUrlFromModal();
+    const selectProtocol = ((
+        document.getElementById('out-protocol-input') as HTMLSelectElement | null
+    )?.value || 'rtmp') as AudioProtocol;
+    const platform = detectAudioPlatform(url);
+    const protocol = detectAudioProtocol(url, selectProtocol);
+    return { platform, protocol, caps: getAudioCaps(platform, protocol) };
 }
 
-export function onOutEncodingChange(encoding: string): void {
-    applyEncodingUi(encoding);
-    if (encoding === 'remap') {
-        const trackCount = Math.max(1, currentModalAudioTracks.length);
-        populateRemapTrackOptions(trackCount, 0);
-        populateRemapChannelOptions(
-            getTrackChannelCount(0),
-            0,
-            Math.min(1, getTrackChannelCount(0) - 1),
-        );
+function formatTrackPickLabel(trackIndex: number): string {
+    const track = currentModalAudioTracks[trackIndex];
+    const codec = track?.codec || 'unknown';
+    const channels = track?.channels ? formatChannelCount(track.channels) : '?ch';
+    const rate = track?.sample_rate ? ` · ${track.sample_rate / 1000} kHz` : '';
+    return `Track ${trackIndex} · ${codec} · ${channels}${rate}`;
+}
+
+function renderAudioCapsBadges(
+    platform: ReturnType<typeof detectAudioPlatform>,
+    protocol: AudioProtocol,
+    caps: AudioCaps,
+): void {
+    const capsEl = document.getElementById('out-audio-caps');
+    if (!capsEl) return;
+    const maxTracks = caps.maxTracks === Infinity ? 'unlimited' : `${caps.maxTracks} track`;
+    const maxChannels =
+        caps.maxChannels === Infinity ? 'unlimited' : formatChannelCount(caps.maxChannels);
+    const codecs = caps.codecs === 'any' ? 'any' : caps.codecs.join(', ').toUpperCase();
+    capsEl.innerHTML = [
+        `${getAudioPlatformLabel(platform)} · ${protocol.toUpperCase()}`,
+        maxTracks,
+        maxChannels,
+        `Codecs: ${codecs}`,
+    ]
+        .map((text) => `<span class="badge badge-sm badge-ghost">${text}</span>`)
+        .join('');
+}
+
+function renderAudioWarnings(
+    platform: ReturnType<typeof detectAudioPlatform>,
+    protocol: AudioProtocol,
+    caps: AudioCaps,
+): void {
+    const warningsEl = document.getElementById('out-audio-warnings');
+    if (!warningsEl) return;
+
+    const items: { cls: string; text: string }[] = [];
+    const platformLabel = getAudioPlatformLabel(platform);
+    const protoLabel = protocol.toUpperCase();
+    const trackCount = Math.max(1, currentModalAudioTracks.length);
+    const selected = modalAudioSelectedTracks;
+    const has51Selected = selected.some((t) => getTrackChannelCount(t) > 2);
+    const exceedsCap = selected.some((t) => getTrackChannelCount(t) > caps.maxChannels);
+
+    if (modalAudioMode === 'auto') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: 'FFmpeg default mapping — sends one audio track (highest channel count).',
+        });
     }
+    if (caps.maxTracks === 1 && trackCount > 1 && modalAudioMode !== 'remap') {
+        items.push({
+            cls: 'text-warning',
+            text: `${platformLabel} ${protoLabel} accepts 1 audio track — the other ${trackCount - 1} ingest track(s) are not sent.`,
+        });
+    }
+    if (modalAudioMode === 'downmix' && exceedsCap) {
+        items.push({
+            cls: 'text-warning',
+            text: `${platformLabel} supports max ${formatChannelCount(caps.maxChannels)} on ${protoLabel} — the selected track is downmixed to stereo.`,
+        });
+    }
+    if (
+        platform === 'youtube' &&
+        (protocol === 'rtmp' || protocol === 'rtmps') &&
+        modalAudioMode === 'pass' &&
+        has51Selected
+    ) {
+        items.push({
+            cls: 'text-warning',
+            text: `5.1 on YouTube ${protoLabel}: RTMP/RTMPS is stereo only. Use HLS for 5.1 surround.`,
+        });
+    }
+    if (
+        platform === 'youtube' &&
+        protocol === 'hls' &&
+        modalAudioMode === 'pass' &&
+        has51Selected
+    ) {
+        items.push({
+            cls: 'text-success',
+            text: '5.1 pass-through supported on YouTube HLS (AAC / AC3 / EAC3).',
+        });
+    }
+    if (platform === 'facebook' && modalAudioMode !== 'auto') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: 'AAC-LC stereo, 44.1/48 kHz, 128 kbps recommended (256 max).',
+        });
+    }
+    if (platform === 'vdocipher' && modalAudioMode !== 'auto') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: 'Multi-track or surround audio will be downmixed or fail.',
+        });
+    }
+    if (
+        platform === 'generic' &&
+        (protocol === 'srt' || protocol === 'hls') &&
+        modalAudioMode === 'pass' &&
+        selected.length > 1
+    ) {
+        items.push({
+            cls: 'text-success',
+            text: `${protoLabel} supports multi-track — all ${selected.length} selected tracks are sent.`,
+        });
+    }
+
+    warningsEl.innerHTML = items
+        .filter((item) => item.text)
+        .map((item) => `<p class="${item.cls} text-xs">${item.text}</p>`)
+        .join('');
+}
+
+function renderAudioTrackPicker(multiSelect: boolean): void {
+    const pickEl = document.getElementById('out-audio-track-pick');
+    if (!pickEl) return;
+
+    const trackCount = Math.max(1, currentModalAudioTracks.length);
+    pickEl.innerHTML = Array.from({ length: trackCount }, (_, i) => {
+        const checked = modalAudioSelectedTracks.includes(i) ? ' checked' : '';
+        const type = multiSelect ? 'checkbox' : 'radio';
+        const klass = multiSelect ? 'checkbox checkbox-sm' : 'radio radio-sm';
+        return `<label class="flex cursor-pointer items-center gap-2 text-sm">
+            <input type="${type}" name="out-audio-track" value="${i}" class="${klass}"${checked} />
+            <span>${formatTrackPickLabel(i)}</span>
+        </label>`;
+    }).join('');
+
+    pickEl.querySelectorAll('input[name="out-audio-track"]').forEach((input) => {
+        (input as HTMLInputElement).onchange = () => {
+            const checkedValues = Array.from(
+                pickEl.querySelectorAll('input[name="out-audio-track"]:checked'),
+            ).map((el) => parseInt((el as HTMLInputElement).value, 10));
+            if (checkedValues.length === 0) {
+                refreshAudioRoutingUi();
+                return;
+            }
+            modalAudioSelectedTracks = checkedValues.sort((a, b) => a - b);
+            refreshAudioRoutingUi();
+        };
+    });
+}
+
+function refreshAudioRoutingUi(): void {
+    const section = document.getElementById('out-audio-section');
+    if (!section) return;
+
+    const encoding =
+        (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
+        'source';
+    const routingEnabled = encoding === 'source';
+    const { platform, protocol, caps } = getModalAudioCapsContext();
+
+    renderAudioCapsBadges(platform, protocol, caps);
+
+    const ingestEl = document.getElementById('out-audio-ingest');
+    if (ingestEl) {
+        const trackCount = currentModalAudioTracks.length;
+        ingestEl.textContent = currentModalIngestLive
+            ? `Detected ingest: ${trackCount} audio track(s) — ` +
+              currentModalAudioTracks
+                  .map(
+                      (t, i) =>
+                          `${i}: ${t.codec || '?'} ${t.channels ? formatChannelCount(t.channels) : '?ch'}`,
+                  )
+                  .join(', ')
+            : 'No active ingest — track list unavailable; defaults to track 0.';
+    }
+
+    document.getElementById('out-audio-encoding-note')?.classList.toggle('hidden', routingEnabled);
+    document.getElementById('out-audio-controls')?.classList.toggle('hidden', !routingEnabled);
+
+    const warningsEl = document.getElementById('out-audio-warnings');
+    if (!routingEnabled) {
+        if (warningsEl) warningsEl.innerHTML = '';
+        return;
+    }
+
+    const trackCount = Math.max(1, currentModalAudioTracks.length);
+    modalAudioSelectedTracks = modalAudioSelectedTracks.filter((t) => t < trackCount);
+    if (modalAudioSelectedTracks.length === 0) modalAudioSelectedTracks = [0];
+
+    const multiAllowed = caps.maxTracks > 1;
+    if (!multiAllowed || modalAudioMode !== 'pass') {
+        modalAudioSelectedTracks = [modalAudioSelectedTracks[0]];
+    }
+
+    const passBlocked = modalAudioSelectedTracks.some(
+        (t) => getTrackChannelCount(t) > caps.maxChannels,
+    );
+    if (modalAudioMode === 'pass' && passBlocked) {
+        modalAudioMode = 'downmix';
+    }
+
+    document.querySelectorAll('#out-audio-mode [data-amode]').forEach((el) => {
+        const button = el as HTMLButtonElement;
+        const mode = button.dataset.amode as ModalAudioMode;
+        button.classList.toggle('btn-active', mode === modalAudioMode);
+        const disabled = mode === 'pass' && passBlocked;
+        button.disabled = disabled;
+        button.title = disabled
+            ? 'Selected track exceeds the destination channel limit — downmix required.'
+            : '';
+        button.onclick = () => {
+            modalAudioMode = mode;
+            refreshAudioRoutingUi();
+        };
+    });
+
+    const showPicker = modalAudioMode === 'pass' || modalAudioMode === 'downmix';
+    document.getElementById('out-audio-track-pick')?.classList.toggle('hidden', !showPicker);
+    if (showPicker) {
+        renderAudioTrackPicker(modalAudioMode === 'pass' && multiAllowed);
+    }
+
+    const remapFields = document.getElementById('out-remap-fields');
+    if (remapFields) {
+        remapFields.classList.toggle('hidden', modalAudioMode !== 'remap');
+        remapFields.classList.toggle('inline-block', modalAudioMode === 'remap');
+    }
+
+    renderAudioWarnings(platform, protocol, caps);
+}
+
+export function onOutEncodingChange(_encoding: string): void {
+    refreshAudioRoutingUi();
 }
 
 export async function startOutBtn(
@@ -504,9 +760,26 @@ async function openOutModal(
     if (currentModalAudioTracks.length === 0 && pipe.input.audio) {
         currentModalAudioTracks = [pipe.input.audio];
     }
+    currentModalIngestLive = pipe.input.status === 'on';
+
+    const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(rawEncoding);
+    const downmixMatch = /^downmix:(\d+)$/.exec(rawEncoding);
+    modalAudioMode = isRemapEncoding
+        ? 'remap'
+        : atrackMatch
+          ? 'pass'
+          : downmixMatch
+            ? 'downmix'
+            : 'auto';
+    modalAudioSelectedTracks = atrackMatch
+        ? atrackMatch[1].split(',').map((t) => parseInt(t, 10))
+        : downmixMatch
+          ? [parseInt(downmixMatch[1], 10)]
+          : [0];
+    const isAudioRoutingEncoding = isRemapEncoding || !!atrackMatch || !!downmixMatch;
 
     if (encodingSelect) {
-        encodingSelect.value = isRemapEncoding ? 'remap' : rawEncoding || 'source';
+        encodingSelect.value = isAudioRoutingEncoding ? 'source' : rawEncoding || 'source';
     }
     const trackCount = Math.max(1, currentModalAudioTracks.length);
     populateRemapTrackOptions(trackCount, remapTrack);
@@ -557,7 +830,7 @@ async function openOutModal(
     document.getElementById('out-rtmp-error')?.classList.add('hidden');
     document.getElementById('out-name-input')?.classList.remove('input-error');
 
-    applyEncodingUi(isRemapEncoding ? 'remap' : rawEncoding || 'source');
+    refreshAudioRoutingUi();
 
     if (outSubmitBtn) {
         outSubmitBtn.disabled = isRunning;
@@ -601,7 +874,11 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
         'source';
     let resolvedEncoding = selectedEncoding;
-    if (selectedEncoding === 'remap') {
+    if (selectedEncoding === 'source' && modalAudioMode === 'pass') {
+        resolvedEncoding = `atrack:${modalAudioSelectedTracks.join(',')}`;
+    } else if (selectedEncoding === 'source' && modalAudioMode === 'downmix') {
+        resolvedEncoding = `downmix:${modalAudioSelectedTracks[0] ?? 0}`;
+    } else if (selectedEncoding === 'source' && modalAudioMode === 'remap') {
         const track =
             (document.getElementById('out-remap-track-input') as HTMLSelectElement | null)?.value ||
             '0';

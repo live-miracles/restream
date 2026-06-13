@@ -15,6 +15,8 @@ import { registerRecordingApi } from './api/recording';
 import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
 import { registerDiagnosticsApi } from './api/diagnostics';
+import { registerStatusApi } from './api/status';
+import { AUDIO_CAPS, AUDIO_PLATFORM_LABELS } from './utils/audio-caps';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
@@ -47,7 +49,7 @@ app.use(
     }),
 );
 
-const appPort = 3030;
+const appPort = Number(process.env.PORT) || 3030;
 const mediaDir = path.join(__dirname, '..', 'media');
 mkdirSync(mediaDir, { recursive: true });
 
@@ -131,12 +133,17 @@ registerOutputApi({
     stopRunningJob,
 });
 
+app.get('/audio-caps', (_req, res) => {
+    res.json({ caps: AUDIO_CAPS, platformLabels: AUDIO_PLATFORM_LABELS });
+});
+
 healthMonitor.registerRoutes(app);
 registerEncodingsApi({ app, db });
 registerSystemMetricsApi({ app });
 registerRecordingApi({ app, db, recording: recordingService, mediaDir });
 registerIngestApi({ app, db, ingestService });
 registerDiagnosticsApi({ app, db });
+registerStatusApi({ app });
 const ingestSecurityService = createIngestSecurityService({
     getConfig: db.getIngestSecurityConfig,
     log,

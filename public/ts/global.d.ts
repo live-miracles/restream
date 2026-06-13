@@ -1,3 +1,10 @@
+export interface HlsAudioTrack {
+    id: number;
+    name: string;
+    lang?: string;
+    default?: boolean;
+}
+
 export interface HlsInstance {
     on(event: string, callback: (...args: unknown[]) => void): void;
     loadSource(url: string): void;
@@ -5,6 +12,8 @@ export interface HlsInstance {
     startLoad(): void;
     recoverMediaError(): void;
     destroy(): void;
+    audioTrack: number;
+    audioTracks: HlsAudioTrack[];
     Events: Record<string, string>;
     ErrorTypes: Record<string, string>;
 }

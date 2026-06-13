@@ -34,6 +34,7 @@
         <ul class="menu menu-horizontal px-1">
           <li><a href="/">Dashboard</a></li>
           <li><a href="/settings.html">Settings</a></li>
+          <li><a href="/status.html">Status</a></li>
           <li><a href="https://github.com/live-miracles/restream">GitHub</a></li>
         </ul>
       </div>
@@ -138,7 +139,6 @@
               <option value="720p">720p</option>
               <option value="1080p">1080p</option>
               <option value="custom">custom</option>
-              <option value="remap">remap</option>
             </select>
           </fieldset>
 
@@ -156,6 +156,7 @@
               <select class="select" id="out-remap-right-input"></select>
             </fieldset>
           </div>
+
 
           <fieldset class="fieldset ml-2 inline-block w-44" id="out-server-url-field">
             <legend class="fieldset-legend">Server URL</legend>
@@ -187,6 +188,45 @@
               <legend class="fieldset-legend">Extra Query</legend>
               <input type="text" id="out-srt-extra-query-input" class="input w-full" placeholder="latency=120&mode=caller" />
             </fieldset>
+          </div>
+
+          <div class="border-base-300 bg-base-200/40 rounded-box border p-3" id="out-audio-section">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-sm font-bold">Audio Routing</h3>
+              <div class="flex flex-wrap gap-1" id="out-audio-caps"></div>
+            </div>
+            <p class="text-base-content/60 mt-1 text-xs" id="out-audio-ingest"></p>
+            <p class="text-warning mt-1 hidden text-xs" id="out-audio-encoding-note">
+              Track selection requires the <span class="font-semibold">source</span> encoding — other encodings transcode audio to a single stereo
+              track.
+            </p>
+            <div id="out-audio-controls">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Track Mode</legend>
+                <div class="join" id="out-audio-mode">
+                  <button type="button" class="btn btn-sm join-item" data-amode="auto">Auto</button>
+                  <button type="button" class="btn btn-sm join-item" data-amode="pass">Passthrough</button>
+                  <button type="button" class="btn btn-sm join-item" data-amode="downmix">Downmix</button>
+                  <button type="button" class="btn btn-sm join-item" data-amode="remap">Remap</button>
+                </div>
+              </fieldset>
+              <div class="mt-2 hidden space-y-1" id="out-audio-track-pick"></div>
+              <div class="hidden" id="out-remap-fields">
+                <fieldset class="fieldset hidden inline-block w-24" id="out-remap-track-field">
+                  <legend class="fieldset-legend">Audio Track</legend>
+                  <select class="select" id="out-remap-track-input"></select>
+                </fieldset>
+                <fieldset class="fieldset ml-2 inline-block w-16">
+                  <legend class="fieldset-legend">Left Ch</legend>
+                  <select class="select" id="out-remap-left-input"></select>
+                </fieldset>
+                <fieldset class="fieldset ml-2 inline-block w-16">
+                  <legend class="fieldset-legend">Right Ch</legend>
+                  <select class="select" id="out-remap-right-input"></select>
+                </fieldset>
+              </div>
+            </div>
+            <div class="mt-2 space-y-1" id="out-audio-warnings"></div>
           </div>
         </div>
 
