@@ -5,6 +5,7 @@ import type {
     HlsErrorData,
     PreviewVideoElement,
 } from '../global.js';
+import { formatChannelCount, formatCodecName } from '../core/utils.js';
 import type { AudioTrack, PipelineView } from '../types.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
@@ -81,17 +82,6 @@ function formatPreviewSampleRate(rate: number | null | undefined): string | null
     return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)} kHz`;
 }
 
-function formatPreviewChannels(channels: number | null | undefined): string | null {
-    if (!Number.isFinite(channels) || !channels) return null;
-    if (channels === 1) return 'Mono';
-    if (channels === 2) return 'Stereo';
-    return `${channels} channels`;
-}
-
-function formatPreviewCodec(codec: string | null | undefined): string | null {
-    return codec ? codec.toUpperCase() : null;
-}
-
 function getFriendlyAudioTrackName(name: string | null | undefined): string | null {
     const trimmedName = (name || '').trim();
     if (!trimmedName || /^audio\d+$/i.test(trimmedName)) return null;
@@ -114,8 +104,8 @@ function buildPreviewAudioDetail(
 ): string {
     const metadata = getPreviewAudioMetadata(pipe, position);
     const detailParts = [
-        formatPreviewCodec(metadata?.codec),
-        formatPreviewChannels(metadata?.channels),
+        formatCodecName(metadata?.codec),
+        metadata?.channels ? formatChannelCount(metadata.channels) : null,
         formatPreviewSampleRate(metadata?.sample_rate),
         getFriendlyAudioTrackName(hlsTrack.name),
     ].filter(Boolean);
@@ -130,6 +120,7 @@ export function clearInputPreview(playerElem: HTMLElement | null): void {
     );
     if (existingVideo) {
         existingVideo.dataset.previewDisposed = 'true';
+        existingVideo._previewCleanup?.();
         destroyPreviewController(existingVideo);
         existingVideo.pause();
         existingVideo.removeAttribute('src');
@@ -280,10 +271,20 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         event.stopPropagation();
     });
 
-    document.addEventListener('click', () => {
-        if (video.dataset.previewDisposed === 'true') return;
+    function handleAudioPickerDocumentClick(): void {
+        if (video.dataset.previewDisposed === 'true') {
+            video._previewCleanup?.();
+            return;
+        }
         closeAudioTrackPicker();
-    });
+    }
+
+    document.addEventListener('click', handleAudioPickerDocumentClick);
+    video._previewCleanup = () => {
+        document.removeEventListener('click', handleAudioPickerDocumentClick);
+        closeAudioTrackPicker();
+        delete video._previewCleanup;
+    };
 
     const spinner = document.createElement('span');
     spinner.style.cssText =
