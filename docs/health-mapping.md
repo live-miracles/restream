@@ -13,6 +13,7 @@ The background health collector fetches multiple MediaMTX APIs in parallel on a 
 | `GET /v3/paths/list` | Per-path: online, available, availableTime (plus deprecated ready/readyTime), bytesReceived, bytesSent, tracks2, readers list |
 | `GET /v3/rtmpconns/list` | RTMP publisher sessions (state/path/remote and byte counters) |
 | `GET /v3/srtconns/list` | SRT publisher sessions and ingest quality counters (RTT/loss/retrans/drop/undecrypt/rate) |
+| Linux `ss -tin` from `iproute2` | RTMP TCP socket statistics (RTT, retransmissions, congestion window, unacked, pacing, delivery rate) when available |
 | DB: `listPipelines()` | Pipeline ↔ stream key mapping |
 | DB: `listOutputs()` | Output ↔ pipeline mapping |
 | DB: `listJobs()` | One current job row per output (upsert model) |
@@ -72,7 +73,7 @@ Probe connections are tracked by the health collector using the SRT `streamid` p
 
 The input health payload also includes:
 
-- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT), including SRT RTT, receive rate, packet loss/drop/retransmit counters, latency buffers, estimated link capacity, and NAK count when MediaMTX exposes them.
+- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT), including SRT RTT, receive rate, packet loss/drop/retransmit counters, latency buffers, estimated link capacity, and NAK count when MediaMTX exposes them, plus Linux RTMP TCP socket metrics from `ss -tin` when available. When Restream is not running on Linux or `ss` is missing, the publisher health modal shows a specific unavailable reason instead of an empty metrics table.
 - `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
 
 `input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes managed output types (`rtmpconn`, `srtconn`, `hlsMuxer`) and internal probe readers.
