@@ -130,7 +130,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
 ### Host Requirements
 
 - 2 vCPU, 4 GB RAM, 20 GB disk
-- Ubuntu 22.04 or 24.04 with systemd
+- Debian 12 or Ubuntu 24.04 with systemd
 - Node.js 22, FFmpeg 7.1+, MediaMTX, git — all installed by the setup script
 
 ### Initial Setup
@@ -142,7 +142,7 @@ sudo git clone https://github.com/live-miracles/restream /opt/restream
 sudo bash /opt/restream/scripts/server-setup.sh
 ```
 
-The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
+The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, Prometheus, and Grafana, creates a `restream` service user, builds the app, copies the checked-in monitoring manifests into the system package paths, and registers the services to start on every boot. Restream and MediaMTX run as the non-root `restream` user; Prometheus and Grafana run as their package-managed service users.
 
 ### GCP Firewall Rules
 
@@ -175,7 +175,7 @@ sudo bash /opt/restream/scripts/server-update.sh
 sudo bash /opt/restream/scripts/server-update.sh
 ```
 
-Pulls the latest code, rebuilds, copies config to `/etc/restream/`, and restarts both services.
+Pulls the latest code, rebuilds, recopies MediaMTX plus monitoring manifests, and restarts Prometheus, Grafana, MediaMTX, and Restream.
 
 ### Operations
 
@@ -184,6 +184,8 @@ Follow logs:
 ```sh
 journalctl -u restream.service -f
 journalctl -u mediamtx.service -f
+journalctl -u prometheus.service -f
+journalctl -u grafana-server.service -f
 tail -f /var/log/restream/mediamtx.log
 ```
 
@@ -202,6 +204,8 @@ Restart services:
 ```sh
 sudo systemctl restart mediamtx.service
 sudo systemctl restart restream.service
+sudo systemctl restart prometheus.service
+sudo systemctl restart grafana-server.service
 ```
 
 Check health:
@@ -210,6 +214,7 @@ Check health:
 curl -fsS http://127.0.0.1:3030/healthz
 curl -fsS http://127.0.0.1:3030/health
 curl -fsS http://127.0.0.1:9998/metrics | head
+curl -fsS http://127.0.0.1:9090/-/ready
 ```
 
 Backup data:

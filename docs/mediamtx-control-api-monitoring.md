@@ -20,7 +20,7 @@ Restream currently uses MediaMTX for three control-plane jobs:
 |---|---|---|
 | Readiness and ingest URL discovery | `GET /v3/config/global/get` | Confirms the API is reachable and reads active protocol ports |
 | Stream key provisioning | `POST /v3/config/paths/add/{name}`, `DELETE /v3/config/paths/delete/{name}` | Creates and removes `live/<streamKey>` path config |
-| Health snapshot | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list` | Builds input status, publisher identity, and protocol quality signals |
+| Health snapshot | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list`, Linux `ss -tin` from `iproute2` | Builds input status, publisher identity, and protocol quality signals |
 
 The health model is intentionally ingest-centric today. Details are in [health-mapping.md](./health-mapping.md).
 
@@ -68,7 +68,12 @@ These should normalize MediaMTX details into Restream terms such as pipeline, st
 
 ### SRT Quality
 
-SRT is one of the richest MediaMTX telemetry surfaces. If SRT ingest becomes important, expose more of its network-health counters in drilldown views: RTT, receive/send rate, loss, retransmits, drops, undecrypt failures, and buffer pressure.
+SRT is one of the richest MediaMTX telemetry surfaces. For RTMP, equivalent transport signals have
+to come from the kernel TCP socket layer instead of MediaMTX itself. Restream uses Linux `ss -tin`
+from the `iproute2` package to surface compact RTMP socket metrics such as RTT, retransmissions,
+congestion window, unacked segments, pacing rate, and delivery rate. VM setup and update scripts
+install `iproute2`; on non-Linux hosts or hosts without `ss`, the UI reports why RTMP socket
+metrics cannot be shown.
 
 ### HLS Playback Visibility
 

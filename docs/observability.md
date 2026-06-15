@@ -32,13 +32,7 @@ curl -fsS http://127.0.0.1:9998/metrics | head
 
 ## Prometheus
 
-A starter Prometheus config is checked in at `monitoring/prometheus.yml`.
-
-For a host-installed Prometheus:
-
-```sh
-prometheus --config.file=monitoring/prometheus.yml
-```
+A starter Prometheus config is checked in at `monitoring/prometheus.yml`. On the Linux VM deployment, `scripts/server-setup.sh` and `scripts/server-update.sh` copy it into `/etc/prometheus/prometheus.yml` for the package-managed Prometheus service.
 
 Then open:
 
@@ -72,18 +66,21 @@ For an extra gate in simple deployments, set `GRAFANA_PROXY_TOKEN`. The proxy th
 HTTP-only cookie scoped to the Grafana proxy path. In production, prefer putting the whole Restream
 origin behind normal HTTPS and authentication as well.
 
-The dashboard includes Grafana buttons for each pipeline and output. They open the MediaMTX Overview
-dashboard in a new tab with `var-path=live/<streamKey>`. Output buttons also pass `var-output` as
-operator context; MediaMTX metrics remain path-based until Restream exposes output-level Prometheus
-metrics.
+The dashboard includes Grafana buttons for each pipeline and output. The publisher health badge now
+opens a health modal first; that modal includes a Grafana drill-down button. Pipeline and output
+Grafana buttons still open the MediaMTX Overview dashboard in a new tab with `var-path=live/<streamKey>`.
+Output buttons also pass `var-output` as operator context; MediaMTX metrics remain path-based until
+Restream exposes output-level Prometheus metrics.
 
-## Docker Option
+## Package-Managed VM Setup
 
-For the Linux VM deployment shape, Prometheus and Grafana can be run with host networking:
+For the Linux VM deployment shape, Prometheus and Grafana are installed as services by the server
+scripts:
 
 ```sh
-cd monitoring
-docker compose up -d
+sudo bash /opt/restream/scripts/server-setup.sh
+# or later
+sudo bash /opt/restream/scripts/server-update.sh
 ```
 
 Ports:
@@ -93,13 +90,16 @@ Ports:
 | `9090` | Prometheus localhost listener |
 | `3000` | Grafana localhost listener |
 
-The starter Grafana login is `admin` / `admin`. Change it before any shared or production use.
+The package-managed Grafana instance is configured to bind to `127.0.0.1` and serve from the
+`/grafana/` subpath so the Restream proxy can expose it safely through the main dashboard origin.
+Prometheus is configured to bind to `127.0.0.1:9090` and scrape the checked-in MediaMTX target.
 
-This Docker Compose file is aimed at Linux hosts because it uses `network_mode: host`, allowing
-Prometheus to scrape `127.0.0.1:9998` without exposing MediaMTX metrics publicly. It binds
-Prometheus and Grafana to `127.0.0.1`, so no public firewall rule is needed for `9090` or `3000`.
-On macOS Docker Desktop, prefer running Prometheus directly on the host, or change the scrape target
-to `host.docker.internal:9998` for local experiments.
+Quick checks:
+
+```sh
+curl -fsS http://127.0.0.1:9090/-/ready
+curl -I http://127.0.0.1:3030/grafana/
+```
 
 ## What To Graph First
 
