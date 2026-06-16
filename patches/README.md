@@ -60,7 +60,7 @@ go build -o mediamtx .
 ./mediamtx mediamtx.yml
 
 # Check kernel socket buffer (expect rb52428800 — kernel doubles the request)
-ss -u -a -m | grep 8890
+ss -u -a -m | grep 10080
 ```
 
 ## Target Versions
