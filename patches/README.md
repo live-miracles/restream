@@ -30,6 +30,12 @@ The clean alternative to patchset 2. Adds a `ListenerControl` field to gosrt's `
 
 No reflection or unsafe pointers needed on the mediamtx side. Intended as an upstream PR to `datarhei/gosrt`. Until merged, patchset 2 is the working solution.
 
+### 4. Decode Timestamp (DTS) Preservation (mediamtx only)
+
+**File:** `mediamtx/mediamtx_dts_preservation_v1.17.1.patch`
+
+Preserves and propagates native Decode Timestamps (DTS) from container sources that natively carry them (such as MPEG-TS/SRT), instead of relying on MediaMTX to dynamically reconstruct them. Also introduces startup synchronization to ignore initial video packets until the first random-access keyframe is received.
+
 ## Prerequisites (patchsets 2 and 3)
 
 Linux caps `SO_RCVBUF` at `net.core.rmem_max` (default ~212 KB). To allow 25 MB:
