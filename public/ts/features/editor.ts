@@ -521,7 +521,9 @@ function refreshAudioRoutingUi(): void {
     const encoding =
         (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
         'source';
-    const routingEnabled = encoding === 'source';
+    // Audio routing is always enabled — any video encoding can be combined with
+    // audio routing via the compound format (e.g. "720p+atrack:0,1").
+    const routingEnabled = true;
     const { platform, protocol, caps } = getModalAudioCapsContext();
 
     renderAudioCapsBadges(platform, protocol, caps);
@@ -738,14 +740,25 @@ async function openOutModal(
     (document.getElementById('out-name-input') as HTMLInputElement).value =
         output?.name || `Out_${pipe.outs.length + 1}`;
 
+    // Parse compound encoding "videoEncoding+audioRouting" so both controls are
+    // populated independently. Pure audio-only or pure video-only are also handled.
     const encodingSelect = document.getElementById(
         'out-encoding-input',
     ) as HTMLSelectElement | null;
     const rawEncoding = String(output?.encoding || 'source')
         .trim()
         .toLowerCase();
-    const isRemapEncoding = /^remap:(\d+):(\d+)(?::(\d+))?$/.test(rawEncoding);
-    const remapParts = isRemapEncoding ? rawEncoding.split(':') : null;
+    const compoundMatch = /^([^+]+)\+(.+)$/.exec(rawEncoding);
+    let videoEncodingPart = rawEncoding;
+    let audioEncodingPart = '';
+    if (compoundMatch) {
+        videoEncodingPart = compoundMatch[1].trim();
+        audioEncodingPart = compoundMatch[2].trim();
+    }
+
+    const isRemapEncoding = /^remap:(\d+):(\d+)(?::(\d+))?$/.test(audioEncodingPart || rawEncoding);
+    const remapSource = audioEncodingPart || rawEncoding;
+    const remapParts = isRemapEncoding ? remapSource.split(':') : null;
     let remapTrack = 0;
     let remapLeft = 0;
     let remapRight = 1;
@@ -765,8 +778,9 @@ async function openOutModal(
     }
     currentModalIngestLive = pipe.input.status === 'on';
 
-    const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(rawEncoding);
-    const downmixMatch = /^downmix:(\d+)$/.exec(rawEncoding);
+    const audioSource = audioEncodingPart || rawEncoding;
+    const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(audioSource);
+    const downmixMatch = /^downmix:(\d+)$/.exec(audioSource);
     modalAudioMode = isRemapEncoding
         ? 'remap'
         : atrackMatch
@@ -781,8 +795,14 @@ async function openOutModal(
           : [0];
     const isAudioRoutingEncoding = isRemapEncoding || !!atrackMatch || !!downmixMatch;
 
+    // Set the video encoding dropdown: compound → video part; pure audio-only → 'source';
+    // pure video → the encoding itself.
     if (encodingSelect) {
-        encodingSelect.value = isAudioRoutingEncoding ? 'source' : rawEncoding || 'source';
+        if (compoundMatch) {
+            encodingSelect.value = videoEncodingPart;
+        } else {
+            encodingSelect.value = isAudioRoutingEncoding ? 'source' : rawEncoding || 'source';
+        }
     }
     const trackCount = Math.max(1, currentModalAudioTracks.length);
     populateRemapTrackOptions(trackCount, remapTrack);
@@ -876,12 +896,14 @@ export async function editOutFormBtn(event: Event): Promise<void> {
     const selectedEncoding =
         (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
         'source';
-    let resolvedEncoding = selectedEncoding;
-    if (selectedEncoding === 'source' && modalAudioMode === 'pass') {
-        resolvedEncoding = `atrack:${modalAudioSelectedTracks.join(',')}`;
-    } else if (selectedEncoding === 'source' && modalAudioMode === 'downmix') {
-        resolvedEncoding = `downmix:${modalAudioSelectedTracks[0] ?? 0}`;
-    } else if (selectedEncoding === 'source' && modalAudioMode === 'remap') {
+
+    // Build the audio routing suffix from the current modal audio state.
+    let audioSuffix = '';
+    if (modalAudioMode === 'pass') {
+        audioSuffix = `atrack:${modalAudioSelectedTracks.join(',')}`;
+    } else if (modalAudioMode === 'downmix') {
+        audioSuffix = `downmix:${modalAudioSelectedTracks[0] ?? 0}`;
+    } else if (modalAudioMode === 'remap') {
         const track =
             (document.getElementById('out-remap-track-input') as HTMLSelectElement | null)?.value ||
             '0';
@@ -891,10 +913,23 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         const right =
             (document.getElementById('out-remap-right-input') as HTMLSelectElement | null)?.value ||
             '1';
-        resolvedEncoding =
+        audioSuffix =
             currentModalAudioTracks.length > 1
                 ? `remap:${track}:${left}:${right}`
                 : `remap:${left}:${right}`;
+    }
+
+    // Compose the final encoding:
+    //   - If there is an audio routing suffix AND the video encoding is NOT 'source',
+    //     produce a compound "videoEncoding+audioRouting" string.
+    //   - If video is 'source' with audio routing, emit only the audio routing (backward compat).
+    //   - If no audio routing (auto mode), emit just the video encoding.
+    let resolvedEncoding: string;
+    if (audioSuffix) {
+        resolvedEncoding =
+            selectedEncoding === 'source' ? audioSuffix : `${selectedEncoding}+${audioSuffix}`;
+    } else {
+        resolvedEncoding = selectedEncoding;
     }
     const data: { name: string; encoding: string; url: string } = {
         name:
