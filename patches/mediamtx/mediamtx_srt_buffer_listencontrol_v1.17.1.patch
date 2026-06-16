@@ -1,0 +1,70 @@
+From: Live Miracles <noreply@livemiracles.com>
+Date: Mon, 16 Jun 2026 00:00:00 +0530
+Subject: [PATCH] feat(srt): set kernel UDP read buffer via gosrt ListenerControl callback
+
+DESCRIPTION:
+  This patch applies the global 'udpReadBufferSize' config to the SRT
+  listener's kernel UDP receive buffer (SO_RCVBUF) using gosrt's
+  ListenerControl callback instead of reflection/unsafe.
+
+  Requires the gosrt ListenerControl patch (gosrt_listen_control_rcvbuf_v0.10.0).
+  Replaces mediamtx_srt_buffer_v1.17.1.patch (the reflection-based version).
+
+SYSTEM-LEVEL PREREQUISITES:
+  Same as the reflection-based patch — net.core.rmem_max must be raised:
+  echo "net.core.rmem_max = 26214400" | sudo tee /etc/sysctl.d/99-mediamtx-srt.conf
+  sudo sysctl --system
+
+---
+diff --git a/internal/core/core.go b/internal/core/core.go
+index 5823464..fc21179 100644
+--- a/internal/core/core.go
++++ b/internal/core/core.go
+@@ -662,6 +662,7 @@ func (p *Core) createResources(initial bool) error {
+ 			ReadTimeout:         p.conf.ReadTimeout,
+ 			WriteTimeout:        p.conf.WriteTimeout,
+ 			UDPMaxPayloadSize:   p.conf.UDPMaxPayloadSize,
++			UDPReadBufferSize:   p.conf.UDPReadBufferSize,
+ 			RunOnConnect:        p.conf.RunOnConnect,
+ 			RunOnConnectRestart: p.conf.RunOnConnectRestart,
+ 			RunOnDisconnect:     p.conf.RunOnDisconnect,
+diff --git a/internal/servers/srt/server.go b/internal/servers/srt/server.go
+index f69a0ad..5d2c501 100644
+--- a/internal/servers/srt/server.go
++++ b/internal/servers/srt/server.go
+@@ -8,6 +8,7 @@ import (
+ 	"reflect"
+ 	"sort"
+ 	"sync"
++	"syscall"
+ 	"time"
+
+ 	srt "github.com/datarhei/gosrt"
+@@ -79,6 +80,7 @@ type Server struct {
+ 	ReadTimeout         conf.Duration
+ 	WriteTimeout        conf.Duration
+ 	UDPMaxPayloadSize   int
++	UDPReadBufferSize   uint
+ 	RunOnConnect        string
+ 	RunOnConnectRestart bool
+ 	RunOnDisconnect     string
+@@ -108,6 +110,19 @@ func (s *Server) Initialize() error {
+ 	conf.ConnectionTimeout = time.Duration(s.ReadTimeout)
+ 	conf.PeerIdleTimeout = time.Duration(s.ReadTimeout)
+ 	conf.PayloadSize = uint32(srtMaxPayloadSize(s.UDPMaxPayloadSize))
++	if s.UDPReadBufferSize > 0 {
++		bufSize := int(s.UDPReadBufferSize)
++		conf.ListenerControl = func(network, address string, c syscall.RawConn) error {
++			var opErr error
++			err := c.Control(func(fd uintptr) {
++				opErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, bufSize)
++			})
++			if err != nil {
++				return err
++			}
++			return opErr
++		}
++	}
+
+ 	var err error
+ 	s.ln, err = srt.Listen("srt", s.Address, conf)
