@@ -181,7 +181,6 @@ export function buildFfmpegOutputArgs({
     }
     const isHlsOutput = isHlsOutputUrl(parsedOutputUrl);
     const args = [
-        '-nostdin',
         '-hide_banner',
         '-loglevel',
         'info',

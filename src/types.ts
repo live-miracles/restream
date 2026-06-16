@@ -152,6 +152,7 @@ export interface Db {
     listJobLogsByPipeline(pipelineId: string): JobLog[];
     deleteJobLogsOlderThan(days?: number): void;
     cleanupOldJobs(): { deletedJobs: number; deletedLogs: number };
+    resetRunningJobs(): void;
 
     createIngest(params: {
         id?: string;

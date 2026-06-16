@@ -207,6 +207,12 @@ app.use(
 
 async function main(): Promise<void> {
     try {
+        db.resetRunningJobs();
+    } catch (err) {
+        log('error', 'failed_to_reset_running_jobs', { error: errMsg(err) });
+    }
+
+    try {
         await ingestSecurityService.refreshStreamKeys();
     } catch (err) {
         log('error', 'ingest_security_stream_key_prewarm_failed', { error: errMsg(err) });
@@ -221,6 +227,41 @@ async function main(): Promise<void> {
         afterHealthStart: () => recordingService.init(),
     });
 }
+
+let isShuttingDown = false;
+async function gracefulShutdown(signal: string) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    log('info', `Received ${signal}, starting graceful shutdown...`);
+
+    log('info', 'Stopping all ingest processes...');
+    try {
+        await ingestService.stopAll();
+    } catch (err) {
+        log('error', 'Error stopping ingest processes during shutdown', { error: errMsg(err) });
+    }
+
+    log('info', 'Stopping all recording processes...');
+    try {
+        await recordingService.stopAll();
+    } catch (err) {
+        log('error', 'Error stopping recording processes during shutdown', { error: errMsg(err) });
+    }
+
+    log('info', 'Stopping all output processes...');
+    try {
+        const runningJobs = db.listJobs().filter((j) => j.status === 'running');
+        await Promise.allSettled(runningJobs.map((job) => stopRunningJobAndWait(job)));
+    } catch (err) {
+        log('error', 'Error stopping output processes during shutdown', { error: errMsg(err) });
+    }
+
+    log('info', 'Graceful shutdown complete. Exiting.');
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+}
+
+process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 
 main().catch((err) => {
     console.error('Fatal startup error:', err);

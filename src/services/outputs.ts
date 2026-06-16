@@ -14,11 +14,13 @@ import {
     validateOutputUrl,
 } from '../utils/ffmpeg';
 import type { Db, Job } from '../types';
+import { gracefullyKillProcess } from '../utils/process';
 
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
 const MAX_RETRIES = 100;
-const SIGKILL_ESCALATION_MS = 5000;
-const SIGKILL_WAIT_TIMEOUT_MS = SIGKILL_ESCALATION_MS + 1500;
+const SIGTERM_ESCALATION_MS = 3000;
+const SIGKILL_ESCALATION_MS = 2000;
+const SIGKILL_WAIT_TIMEOUT_MS = SIGTERM_ESCALATION_MS + SIGKILL_ESCALATION_MS + 1500;
 
 export interface OutputLifecycle {
     clearOutputRestartState(pipelineId: string, outputId: string): void;
@@ -216,18 +218,6 @@ export function createOutputLifecycleService({
         }
     }
 
-    function armKillEscalation(proc: ChildProcess) {
-        if (!proc) return;
-        const t = setTimeout(() => {
-            try {
-                if (Number.isFinite(proc.pid)) proc.kill('SIGKILL');
-            } catch {
-                // already gone
-            }
-        }, SIGKILL_ESCALATION_MS);
-        proc.once('exit', () => clearTimeout(t));
-    }
-
     function stopRunningJob(
         job: Job | null | undefined,
         signal = 'SIGTERM',
@@ -238,8 +228,12 @@ export function createOutputLifecycleService({
             if (stopRequestedJobIds.has(job.id))
                 return { stopped: true, reason: 'signal-already-sent' };
             try {
-                proc.kill(signal as NodeJS.Signals);
-                armKillEscalation(proc);
+                gracefullyKillProcess(proc, {
+                    logTag: 'output',
+                    stdinTimeoutMs: SIGTERM_ESCALATION_MS,
+                    sigtermTimeoutMs: SIGKILL_ESCALATION_MS,
+                    forceSignal: signal !== 'SIGTERM' && signal !== 'SIGINT' ? signal : null,
+                });
                 stopRequestedJobIds.add(job.id);
                 db.appendJobLog(
                     job.id,
@@ -387,7 +381,7 @@ export function createOutputLifecycleService({
         let child: ChildProcess;
         try {
             child = spawn(ffmpegCmd, ffArgs, {
-                stdio: ['ignore', 'ignore', 'pipe', 'pipe'],
+                stdio: ['pipe', 'ignore', 'pipe', 'pipe'],
                 env: process.env,
             });
         } catch (err) {
