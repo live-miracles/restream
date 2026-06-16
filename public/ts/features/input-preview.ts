@@ -156,7 +156,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     const shell = document.createElement('div');
     shell.style.position = 'relative';
     shell.style.width = '100%';
-    shell.style.overflow = 'hidden';
+    shell.style.overflow = 'visible';
     shell.style.borderRadius = '0.75rem';
     shell.style.background = 'var(--fallback-b3, oklch(var(--b3)/1))';
     shell.style.aspectRatio = '16 / 9';
@@ -168,6 +168,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     video.style.display = 'block';
     video.style.objectFit = 'contain';
     video.style.background = 'var(--fallback-b3, oklch(var(--b3)/1))';
+    video.style.borderRadius = '0.75rem';
     video.controls = false;
     video.muted = true;
     video.playsInline = true;
@@ -182,6 +183,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     overlay.style.alignItems = 'center';
     overlay.style.justifyContent = 'center';
     overlay.style.background = 'rgba(20, 26, 40, 0.42)';
+    overlay.style.borderRadius = '0.75rem';
 
     const loadBtn = document.createElement('button');
     loadBtn.type = 'button';

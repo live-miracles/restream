@@ -279,11 +279,21 @@ function mergePathAudioTracks(
 
     return pathAudioTracks.map((pathTrack, index) => {
         const ffprobeTrack = ffprobeTracks[index] || null;
+        const codec =
+            ffprobeTrack?.codec || normalizeMediamtxAudioCodec(pathTrack.codec || null) || null;
+        let channels = pathTrack.codecProps?.channelCount ?? ffprobeTrack?.channels ?? null;
+
+        // MediaMTX has a known bug parsing AAC AudioSpecificConfig where it maps the
+        // channelConfiguration index 7 (predefined 7.1 surround layout, which is 8 channels)
+        // literally to 7 channels. ffprobe correctly parses and decodes the stream as 8 channels.
+        // If we detect 7 channels for an AAC track, we override it to 8.
+        if (channels === 7 && codec?.toLowerCase() === 'aac') {
+            channels = 8;
+        }
         return {
             index: ffprobeTrack?.index ?? index,
-            codec:
-                ffprobeTrack?.codec || normalizeMediamtxAudioCodec(pathTrack.codec || null) || null,
-            channels: pathTrack.codecProps?.channelCount ?? ffprobeTrack?.channels ?? null,
+            codec,
+            channels,
             sample_rate: pathTrack.codecProps?.sampleRate ?? ffprobeTrack?.sample_rate ?? null,
             profile: ffprobeTrack?.profile || null,
         };
