@@ -438,13 +438,13 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
             const badges: string[] = [];
 
-            badges.push(metricBadge(o.encoding, 'Selected encoding'));
-
             if (isActive && o.time !== null) {
                 badges.push(
                     metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
                 );
             }
+
+            badges.push(metricBadge(o.encoding, 'Selected encoding'));
 
             if (isActive) {
                 const outputTotalSizeBytes = Number(o.totalSize);
@@ -469,21 +469,25 @@ export function renderOutsColumn(selectedPipe: string | null): void {
 
             return `
             <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full flex gap-2 items-start">
-                <div class="min-w-0 flex-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <div class="flex items-center gap-2 shrink-0 font-semibold">
-                        <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                        <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
-                            data-action="toggle-output"
-                            data-output-index="${outputIndex}"
-                            ${toggleBusy ? 'disabled' : ''}>
-                            ${isStopped ? 'Start' : 'Stop'}
-                        </button>
-                        <span>${o.name}</span>
+                <div class="min-w-0 flex-1 flex flex-col gap-1">
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <div class="flex items-center gap-2 shrink-0 font-semibold">
+                            <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
+                            <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
+                                data-action="toggle-output"
+                                data-output-index="${outputIndex}"
+                                ${toggleBusy ? 'disabled' : ''}>
+                                ${isStopped ? 'Start' : 'Stop'}
+                            </button>
+                            <span>${o.name}</span>
+                        </div>
+                        <code class="text-sm font-normal opacity-70 truncate shrink min-w-0" style="max-width:min(28rem,40%)" data-output-url="${outputIndex}">
+                            ${sanitizeLogMessage(o.url, true)}
+                        </code>
                     </div>
-                    <code class="text-sm font-normal opacity-70 truncate shrink min-w-0" style="max-width:min(28rem,40%)" data-output-url="${outputIndex}">
-                        ${sanitizeLogMessage(o.url, true)}
-                    </code>
-                    ${badges.join('')}
+                    <div class="flex flex-wrap items-center gap-1 pl-1">
+                        ${badges.join('')}
+                    </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
