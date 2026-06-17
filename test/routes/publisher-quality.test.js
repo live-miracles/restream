@@ -40,7 +40,10 @@ test('publisher quality metrics keep non-alert TCP fields visible in the modal',
         metrics.map((metric) => metric.code),
         ['tcp_cwnd', 'tcp_pacing_rate', 'tcp_send_rate'],
     );
-    assert.equal(metrics.every((metric) => metric.isAlert === false), true);
+    assert.equal(
+        metrics.every((metric) => metric.isAlert === false),
+        true,
+    );
 });
 
 test('publisher quality empty message explains RTMP TCP stats availability', () => {

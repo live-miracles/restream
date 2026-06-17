@@ -9,10 +9,7 @@ const {
 test('normalizeSocketAddressKey handles IPv4, IPv6, and IPv4-mapped IPv6', () => {
     assert.equal(normalizeSocketAddressKey('127.0.0.1:55000'), '127.0.0.1:55000');
     assert.equal(normalizeSocketAddressKey('[::1]:1935'), '::1:1935');
-    assert.equal(
-        normalizeSocketAddressKey('[::ffff:127.0.0.1]:1935'),
-        '127.0.0.1:1935',
-    );
+    assert.equal(normalizeSocketAddressKey('[::ffff:127.0.0.1]:1935'), '127.0.0.1:1935');
 });
 
 test('parseSsTcpSocketEntries extracts compact TCP stats from ss output', () => {

@@ -99,13 +99,9 @@ function parseStatsLine(statsLine: string): TcpSocketStats {
     const retransMatch = statsLine.match(/\bretrans:(\d+)(?:\/(\d+))?/i);
 
     return {
-        tcpRttMs:
-            rttMatch && Number.isFinite(Number(rttMatch[1])) ? Number(rttMatch[1]) : null,
-        tcpRttVarMs:
-            rttMatch && Number.isFinite(Number(rttMatch[2])) ? Number(rttMatch[2]) : null,
-        tcpRetransmits: retransMatch
-            ? Number(retransMatch[2] || retransMatch[1] || '')
-            : null,
+        tcpRttMs: rttMatch && Number.isFinite(Number(rttMatch[1])) ? Number(rttMatch[1]) : null,
+        tcpRttVarMs: rttMatch && Number.isFinite(Number(rttMatch[2])) ? Number(rttMatch[2]) : null,
+        tcpRetransmits: retransMatch ? Number(retransMatch[2] || retransMatch[1] || '') : null,
         tcpCwnd: getNumber(/\bcwnd:(\d+)/i),
         tcpUnacked: getNumber(/\bunacked:(\d+)/i),
         tcpPacingRateMbps: getRate('pacing_rate'),

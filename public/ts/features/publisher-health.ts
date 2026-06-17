@@ -7,10 +7,7 @@ import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
 } from './publisher-quality.js';
-import {
-    buildGrafanaDashboardUrl,
-    buildSrtConnectionHealthDashboardUrl,
-} from './grafana.js';
+import { buildGrafanaDashboardUrl, buildSrtConnectionHealthDashboardUrl } from './grafana.js';
 
 let publisherHealthModalPipeId: string | null = null;
 let modalRefreshTimer: ReturnType<typeof setInterval> | null = null;

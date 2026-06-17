@@ -3,10 +3,7 @@ import { deleteOutBtn, editOutBtn, isOutputToggleBusy, startOutBtn, stopOutBtn }
 import { openOutputHistoryModal, openPipelineHistoryModal } from '../history/controller.js';
 import { setPipelineViewDependencies } from './pipeline-view.js';
 import { openDiagnosticsModal } from './diagnostics.js';
-import {
-    openPublisherHealthModal,
-    renderPublisherHealthModal,
-} from './publisher-health.js';
+import { openPublisherHealthModal, renderPublisherHealthModal } from './publisher-health.js';
 
 setDashboardHooks({
     afterRender: renderPublisherHealthModal,

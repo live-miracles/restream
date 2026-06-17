@@ -14,10 +14,7 @@ import {
 } from '../utils/mediamtx';
 import type { PullProtocol } from '../utils/mediamtx';
 import type { Db, Pipeline, Output, Job } from '../types';
-import {
-    normalizeSocketAddressKey,
-    parseSsTcpSocketEntries,
-} from '../utils/tcp-socket-stats';
+import { normalizeSocketAddressKey, parseSsTcpSocketEntries } from '../utils/tcp-socket-stats';
 
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
 const FFPROBE_DELAYS_MS = [3000, 10000, 20000, 40000];
@@ -278,7 +275,6 @@ function normalizeMediamtxAudioCodec(codec: string | null): string | null {
     return codec.toLowerCase() === 'mpeg-4 audio' ? 'aac' : codec;
 }
 
-
 // MediaMTX's tracks2 channel/sample-rate data is authoritative for SRT ingests where
 // ffprobe can misread per-track channel layouts; ffprobe still provides codec/profile.
 
@@ -453,9 +449,9 @@ export function createHealthMonitorService({
     let mediamtxReadinessTimer: NodeJS.Timeout | null = null;
     let lastSocketStatsError: string | null = null;
 
-    async function collectRtmpSocketStatsByRemoteAddr(
-        rtmpConns: { items?: unknown[] },
-    ): Promise<Map<string, Record<string, unknown>>> {
+    async function collectRtmpSocketStatsByRemoteAddr(rtmpConns: {
+        items?: unknown[];
+    }): Promise<Map<string, Record<string, unknown>>> {
         const publishers = (rtmpConns.items || []).filter((conn) => {
             const c = conn as Record<string, unknown>;
             return c?.state === 'publish' && normalizeSocketAddressKey(String(c?.remoteAddr || ''));
@@ -471,12 +467,7 @@ export function createHealthMonitorService({
                 .filter((value): value is string => !!value),
         );
         const unavailable = (reason: string) =>
-            new Map(
-                [...targets].map((target) => [
-                    target,
-                    { tcpStatsUnavailableReason: reason },
-                ]),
-            );
+            new Map([...targets].map((target) => [target, { tcpStatsUnavailableReason: reason }]));
 
         if (process.platform !== 'linux') {
             return unavailable(RTMP_TCP_STATS_UNAVAILABLE.notLinux);
