@@ -11,8 +11,22 @@ Server name, ingest security, and custom encodings are managed at runtime via th
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
+| `BASE_PATH` | empty | Optional URL path prefix for serving the dashboard/API behind a path-based proxy, for example `/media-mtx-test`. |
+| `PUBLIC_INGEST_HOST` | empty | Optional public hostname or IP override for RTMP/SRT ingest URLs. Leave empty on GCP when the VM external IP should be discovered from metadata. |
+| `PUBLIC_INGEST_METADATA_TIMEOUT_MS` | `1000` | Timeout for reading the VM external IP from the GCE metadata server. |
 
 The Express app always listens on port `3030` so MediaMTX can use the fixed local auth callback at `http://127.0.0.1:3030/internal/mediamtx/auth`.
+
+When `BASE_PATH` is set, the app accepts dashboard and API requests under that prefix while
+keeping the internal route definitions unchanged. For example:
+
+| Instance | `BASE_PATH` | Cloudflare public URL |
+|---|---|---|
+| `media-mtx-test` | `/media-mtx-test` | `https://livestream.example.com/media-mtx-test/` |
+| `media-mtx-test-v1` | `/media-mtx-test-v1` | `https://livestream.example.com/media-mtx-test-v1/` |
+
+Cloudflare should route each path prefix to the matching VM tunnel. The prefix is for HTTPS
+dashboard/API traffic only; publishers still use the VM's RTMP/SRT ingest ports directly.
 
 ### MediaMTX Backend (hardcoded localhost)
 
@@ -25,7 +39,14 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 
 These are hardcoded and cannot be overridden via environment variables.
 
-Publisher-facing ingest URLs shown in the dashboard are rewritten by the frontend to use the browser's current hostname, so they automatically reflect the correct public address without any configuration.
+Publisher-facing ingest URLs are based on the MediaMTX RTMP/SRT ports. The backend resolves the
+hostname before returning `/config` and `/stream-keys`: `PUBLIC_INGEST_HOST` when set, otherwise
+the GCP VM metadata external IP, otherwise the first non-loopback local IPv4 address, and finally
+`localhost` if no address is available.
+
+For Cloudflare Tunnel deployments, leave `PUBLIC_INGEST_HOST` empty on GCP unless a custom ingest
+DNS name is needed. The tunnel only carries the HTTPS dashboard/API traffic; RTMP and SRT
+publishers still connect directly to MediaMTX on the VM's ingest ports.
 
 ### Grafana Proxy
 

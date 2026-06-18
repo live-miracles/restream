@@ -5,6 +5,7 @@ const http = require('node:http');
 const request = require('supertest');
 
 const { registerGrafanaProxyRoutes } = require('../../src/api/grafana');
+const { registerBasePathMiddleware } = require('../../src/utils/base-path');
 
 function listen(server) {
     return new Promise((resolve) => {
@@ -86,6 +87,35 @@ test('rewrites upstream redirects back under the Grafana proxy path', async () =
 
         const absoluteRes = await request(app).get('/grafana/').expect(302);
         assert.equal(absoluteRes.headers.location, '/grafana/login');
+    } finally {
+        await close(upstream.server);
+    }
+});
+
+test('proxies Grafana correctly when Restream is served under a base path', async () => {
+    const upstream = await createUpstream((req, res) => {
+        res.writeHead(302, { location: '/login' });
+        res.end();
+    });
+
+    try {
+        const app = express();
+        registerBasePathMiddleware(app, '/media-mtx-test');
+        registerGrafanaProxyRoutes({
+            app,
+            log: () => {},
+            targetUrl: upstream.targetUrl,
+        });
+
+        const res = await request(app)
+            .get('/media-mtx-test/grafana/d/restream?var-path=live%2Ffoo')
+            .set('Host', 'livestream.example.test')
+            .expect(302);
+
+        assert.equal(upstream.calls.length, 1);
+        assert.equal(upstream.calls[0].url, '/grafana/d/restream?var-path=live%2Ffoo');
+        assert.equal(upstream.calls[0].headers['x-forwarded-prefix'], '/media-mtx-test/grafana');
+        assert.equal(res.headers.location, '/media-mtx-test/grafana/login');
     } finally {
         await close(upstream.server);
     }

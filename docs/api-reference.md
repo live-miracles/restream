@@ -12,7 +12,7 @@ All request/response bodies are JSON. All timestamps are ISO 8601 UTC strings.
 
 Returns all stream keys ordered by creation date descending.
 
-`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`.
+`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`. The backend resolves the hostname from `PUBLIC_INGEST_HOST`, GCE metadata external IP, local network address, or `localhost`.
 
 **Response 200:**
 ```json
@@ -499,7 +499,7 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
 
 Each output includes `desiredState`, the persistent operator intent (`running` or `stopped`).
 
-`ingestUrls` hostnames are set to `localhost` by the backend; the dashboard frontend rewrites them to the browser's current hostname before displaying them to users.
+`ingestUrls` hostnames are resolved by the backend before the response is returned.
 
 ---
 

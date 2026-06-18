@@ -7,9 +7,10 @@ import type {
 } from '../global.js';
 import { formatChannelCount, formatCodecName } from '../core/utils.js';
 import type { AudioTrack, PipelineView } from '../types.js';
+import { withBasePath } from '../core/base-path.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
-const HLS_RUNTIME_URL = '/vendor/hls.min.js';
+const HLS_RUNTIME_URL = withBasePath('/vendor/hls.min.js');
 
 let hlsRuntimePromise: Promise<HlsConstructor> | null = null;
 
@@ -73,7 +74,7 @@ function loadHlsRuntime(): Promise<HlsConstructor> {
 }
 
 function buildInputPreviewUrl(streamKey: string): string {
-    return `/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`;
+    return withBasePath(`/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`);
 }
 
 function formatPreviewSampleRate(rate: number | null | undefined): string | null {
