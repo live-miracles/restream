@@ -73,6 +73,11 @@ async function apiRequest<T = unknown>(
         return null;
     }
 
+    if (response.status === 401) {
+        window.location.href = '/login';
+        return null;
+    }
+
     let data: T | null = null;
     try {
         data = (await response.json()) as T;
@@ -375,6 +380,20 @@ async function stopIngest(id: string): Promise<IngestConfig | null> {
     });
 }
 
+async function logout(): Promise<{ ok: boolean } | null> {
+    return apiRequest<{ ok: boolean }>('/api/auth/logout', { method: 'POST' });
+}
+
+async function changePassword(
+    currentPassword: string,
+    newPassword: string,
+): Promise<{ ok: boolean } | null> {
+    return apiRequest<{ ok: boolean }>('/api/auth/change-password', {
+        method: 'POST',
+        body: { currentPassword, newPassword },
+    });
+}
+
 export {
     apiRequest,
     getConfig,
@@ -404,4 +423,6 @@ export {
     deleteIngest,
     startIngest,
     stopIngest,
+    logout,
+    changePassword,
 };

@@ -16,6 +16,7 @@ import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
 import { registerDiagnosticsApi } from './api/diagnostics';
 import { registerStatusApi } from './api/status';
+import { checkIsAuthenticated, initializeAuth, registerAuthApi, requireAuth } from './api/auth';
 import { AUDIO_CAPS, AUDIO_PLATFORM_LABELS } from './utils/audio-caps';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
@@ -33,11 +34,35 @@ const basePath = normalizeBasePath(process.env.BASE_PATH || '');
 
 registerBasePathMiddleware(app, basePath);
 
+const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
+const appPort = Number(process.env.PORT) || 3030;
+const mediaDir = path.join(__dirname, '..', 'media');
+const publicDir = path.join(__dirname, '..', 'public');
+const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
+
+initializeAuth(db);
+
+app.get('/login', (req, res) => {
+    if (checkIsAuthenticated(req)) {
+        res.redirect('/');
+        return;
+    }
+    res.sendFile(path.join(publicDir, 'login.html'));
+});
+app.get('/login.html', (_req, res) => res.redirect('/login'));
+app.get('/logo.png', (_req, res) => res.sendFile(path.join(publicDir, 'logo.png')));
+app.get('/output.css', (_req, res) => {
+    res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
+    res.sendFile(path.join(publicDir, 'output.css'));
+});
+
+app.use(requireAuth);
+
 // Register before body parsers so Grafana API requests can stream through unchanged.
 registerGrafanaProxyRoutes({ app, log });
 
-const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 app.use(express.json());
+registerAuthApi({ app, db });
 app.use(
     compression({
         threshold: 1024,
@@ -53,8 +78,6 @@ app.use(
     }),
 );
 
-const appPort = Number(process.env.PORT) || 3030;
-const mediaDir = path.join(__dirname, '..', 'media');
 mkdirSync(mediaDir, { recursive: true });
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
@@ -169,7 +192,6 @@ registerPreviewProxyRoutes({
 app.use('/media', express.static(mediaDir, { maxAge: 0, etag: true }));
 
 // ── Static UI ─────────────────────────────────────────
-const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
 app.use(
     '/vendor',
     express.static(hlsVendorDir, {
@@ -185,14 +207,12 @@ app.use(
     }),
 );
 
-const publicDir = path.join(__dirname, '..', 'public');
 app.get('/base-path.js', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.type('application/javascript').send(
         `window.__RESTREAM_BASE_PATH__ = ${JSON.stringify(basePath)};\n`,
     );
 });
-
 app.use(
     '/',
     express.static(publicDir, {

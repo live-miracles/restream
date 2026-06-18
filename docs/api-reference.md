@@ -466,6 +466,57 @@ Guardrails:
 
 ## 5. Config Snapshot
 
+Dashboard/API routes require a valid dashboard session cookie, except for `/api/auth/*`,
+`/login`, `/healthz`, and `/internal/mediamtx/auth`. Unauthenticated API requests return `401`.
+
+### `POST /api/auth/login`
+
+Logs in with the dashboard password and sets an HttpOnly session cookie.
+
+**Request body:**
+```json
+{ "password": "admin" }
+```
+
+**Response 200:**
+```json
+{ "ok": true }
+```
+
+**Errors:** `401` incorrect password.
+
+---
+
+### `POST /api/auth/logout`
+
+Clears the dashboard session cookie.
+
+**Response 200:**
+```json
+{ "ok": true }
+```
+
+---
+
+### `POST /api/auth/change-password`
+
+Changes the dashboard password for the authenticated session.
+
+**Request body:**
+```json
+{
+  "currentPassword": "admin",
+  "newPassword": "new-password"
+}
+```
+
+**Response 200:**
+```json
+{ "ok": true }
+```
+
+**Errors:** `400` empty new password; `401` unauthenticated; `403` current password is incorrect.
+
 ### `GET /config`
 
 Returns the full state snapshot used by the dashboard. Reads directly from SQLite on every request.

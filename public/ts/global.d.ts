@@ -61,5 +61,7 @@ declare global {
         openAddIngestForm: () => void;
         closeAddIngestForm: () => void;
         saveIngest: () => Promise<void>;
+        saveDashboardPassword: () => Promise<void>;
+        logoutUser: () => Promise<void>;
     }
 }

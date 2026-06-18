@@ -2,7 +2,8 @@
 
 Restream uses environment variables for process-level settings and the Settings page for runtime app settings. There is no JSON config file.
 
-Server name, ingest security, and custom encodings are managed at runtime via the Settings page (`/settings.html`) and stored in SQLite.
+Server name, dashboard password, ingest security, and custom encodings are managed at runtime via
+the Settings page (`/settings.html`) and stored in SQLite.
 
 ## 1. Environment Variables
 
@@ -110,11 +111,13 @@ dashboard origin at `/grafana/`.
 
 ## 2. Runtime Settings (UI)
 
-Server name, ingest security, and custom encodings are stored in SQLite and managed through the Settings page at `/settings.html`.
+Server name, dashboard password, ingest security, and custom encodings are stored in SQLite and
+managed through the Settings page at `/settings.html`.
 
 | Setting | Default | Description |
 |---|---|---|
 | Server name | `Restream` | Display name shown in the dashboard navbar |
+| Dashboard password | `admin` on first run | Password for the dashboard/API session cookie. Change it after first login. |
 | Ingest security failure limit | `10` | Failed publish attempts from one IP before a temporary ban |
 | Ingest security failure window | `60000` ms | Rolling window for failed publish attempts |
 | Ingest security ban duration | `600000` ms | Temporary ban duration after the failure limit is reached |
@@ -124,6 +127,15 @@ Server name, ingest security, and custom encodings are stored in SQLite and mana
 MediaMTX delegates publish/read/playback authorization to the local Restream endpoint
 `/internal/mediamtx/auth`. Publish attempts must target a configured `live/<streamKey>` path.
 Repeated unknown-key attempts from the same publisher IP are temporarily banned.
+
+The dashboard, API, Grafana proxy, preview, and media file routes require a valid dashboard session.
+`/login`, `/healthz`, and `/internal/mediamtx/auth` are intentionally left unauthenticated so users
+can sign in, health checks can run, and MediaMTX can call its local auth callback. To reset a
+forgotten dashboard password on the Linux VM, run:
+
+```sh
+sudo bash /opt/restream/scripts/server-reset-password.sh
+```
 
 ## 3. Local Host Run
 

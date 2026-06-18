@@ -262,8 +262,10 @@ function normalizeMediamtxAudioCodec(codec: string | null): string | null {
     return codec.toLowerCase() === 'mpeg-4 audio' ? 'aac' : codec;
 }
 
+
 // MediaMTX's tracks2 channel/sample-rate data is authoritative for SRT ingests where
 // ffprobe can misread per-track channel layouts; ffprobe still provides codec/profile.
+
 function mergePathAudioTracks(
     ffprobeResult: StreamInfo | null,
     pathInfo: PathInfo | null,

@@ -10,6 +10,8 @@ import {
     deleteIngest,
     startIngest,
     stopIngest,
+    logout,
+    changePassword,
     type IngestConfig,
 } from '../core/api.js';
 import { showErrorAlert, formatMaskedStreamKey } from '../core/utils.js';
@@ -44,6 +46,40 @@ export async function saveServerName(): Promise<void> {
         state.config = { ...state.config, serverName: result.serverName };
         showSavedFeedback('server-name-saved');
     }
+}
+
+// ── Dashboard Password ────────────────────────────────
+
+export async function saveDashboardPassword(): Promise<void> {
+    const currentInput = document.getElementById(
+        'current-password-input',
+    ) as HTMLInputElement | null;
+    const newInput = document.getElementById('new-password-input') as HTMLInputElement | null;
+    const confirmInput = document.getElementById(
+        'confirm-password-input',
+    ) as HTMLInputElement | null;
+
+    const currentPassword = currentInput?.value ?? '';
+    const newPassword = newInput?.value ?? '';
+    const confirmPassword = confirmInput?.value ?? '';
+
+    if (!currentPassword || !newPassword || newPassword !== confirmPassword) {
+        showErrorAlert('Enter the current password and matching new password');
+        return;
+    }
+
+    const result = await changePassword(currentPassword, newPassword);
+    if (!result) return;
+
+    if (currentInput) currentInput.value = '';
+    if (newInput) newInput.value = '';
+    if (confirmInput) confirmInput.value = '';
+    showSavedFeedback('dashboard-password-saved');
+}
+
+export async function logoutUser(): Promise<void> {
+    await logout();
+    window.location.href = '/login';
 }
 
 // ── Ingest Security ───────────────────────────────────

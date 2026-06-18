@@ -346,7 +346,7 @@ function populateRemapChannelOptions(
 
     const options = Array.from(
         { length: channelCount },
-        (_, i) => `<option value="${i}">${i + 1}</option>`,
+        (_, i) => `<option value="${i}">${i}</option>`,
     ).join('');
 
     leftSelect.innerHTML = options;

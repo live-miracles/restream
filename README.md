@@ -144,6 +144,9 @@ sudo bash /opt/restream/scripts/server-setup.sh
 
 The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, creates a `restream` service user, builds the app, and registers `mediamtx.service` and `restream.service` as systemd units that start on every boot. Both services run as the non-root `restream` user.
 
+The dashboard is password protected. The first-run default password is `admin`; change it from
+Settings after logging in.
+
 ### GCP Firewall Rules
 
 Open these ports in your VPC firewall (VPC Network → Firewall):
@@ -160,7 +163,14 @@ MediaMTX API (`9997`), metrics (`9998`), HLS preview (`8888`), Prometheus (`9090
 
 ### Settings
 
-Open `http://<VM-external-IP>:3030/settings.html` to change the server name, manage custom encodings, and configure video ingests.
+Open `http://<VM-external-IP>:3030/settings.html` to change the server name, dashboard password,
+ingest security, custom encodings, and video ingest settings. Logout is available from Settings.
+
+To reset a forgotten dashboard password back to `admin`:
+
+```sh
+sudo bash /opt/restream/scripts/server-reset-password.sh
+```
 
 To edit MediaMTX config and apply it:
 
@@ -298,13 +308,15 @@ Browsers will show a warning when visiting the VM directly because the certifica
 ### Security Baseline
 
 - Both services run as non-root (`restream` user).
+- Dashboard, API, Grafana proxy, preview, and media routes require the dashboard session cookie.
+  `/login`, `/healthz`, and the localhost-only `/internal/mediamtx/auth` callback remain public.
 - Keep `9997`, `9998`, `8888`, `9090`, and `3000` local-only.
 - Use firewall rules to restrict ingest and UI ports.
 - MediaMTX publish/read/playback authorization is delegated to the local Restream auth endpoint,
   which rejects unknown stream keys and temporarily bans IPs after repeated failures.
-- For dashboard/API traffic, put HTTPS and request rate limiting at the reverse proxy or Google
-  Cloud Armor layer. RTMP/SRT stream-key abuse is handled in the MediaMTX auth callback because
-  those protocols are not HTTP requests.
+- For dashboard/API traffic, also put HTTPS and request rate limiting at the reverse proxy or
+  Google Cloud Armor layer. RTMP/SRT stream-key abuse is handled in the MediaMTX auth callback
+  because those protocols are not HTTP requests.
 - Rotate stream keys periodically.
 - Apply OS and package updates on a maintenance schedule.
 

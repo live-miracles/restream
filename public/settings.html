@@ -111,6 +111,34 @@
 
           <div class="divider my-0"></div>
 
+          <!-- Dashboard Password -->
+          <div class="space-y-2">
+            <div class="text-sm font-medium">Dashboard Password</div>
+            <div class="flex flex-wrap items-end gap-3">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Current Password</legend>
+                <input type="password" id="current-password-input" class="input input-sm w-44" autocomplete="current-password" />
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">New Password</legend>
+                <input type="password" id="new-password-input" class="input input-sm w-44" autocomplete="new-password" />
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Confirm Password</legend>
+                <input type="password" id="confirm-password-input" class="input input-sm w-44" autocomplete="new-password" />
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend invisible">_</legend>
+                <div class="flex items-center gap-3">
+                  <button class="btn btn-accent btn-sm" onclick="saveDashboardPassword()">Save</button>
+                  <span id="dashboard-password-saved" class="text-success hidden text-sm">Saved</span>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="divider my-0"></div>
+
           <!-- Ingest Security -->
           <div class="space-y-2">
             <div class="text-sm font-medium">Ingest Security</div>
@@ -158,6 +186,12 @@
               <button class="btn btn-accent btn-sm" onclick="saveCustomEncoding()">Save</button>
               <span id="custom-enc-saved" class="text-success hidden text-sm">Saved</span>
             </div>
+          </div>
+
+          <div class="divider my-0"></div>
+
+          <div class="flex justify-end">
+            <button class="btn btn-error btn-outline btn-sm" onclick="logoutUser()">Logout</button>
           </div>
         </section>
       </div>

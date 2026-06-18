@@ -8,6 +8,8 @@ import {
     openAddIngestForm,
     closeAddIngestForm,
     saveIngest,
+    saveDashboardPassword,
+    logoutUser,
 } from './settings.js';
 import { getConfig } from '../core/api.js';
 import { state } from '../core/state.js';
@@ -30,3 +32,5 @@ window.saveCustomEncoding = saveCustomEncoding;
 window.openAddIngestForm = openAddIngestForm;
 window.closeAddIngestForm = closeAddIngestForm;
 window.saveIngest = saveIngest;
+window.saveDashboardPassword = saveDashboardPassword;
+window.logoutUser = logoutUser;
