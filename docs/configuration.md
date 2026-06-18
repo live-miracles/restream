@@ -183,10 +183,11 @@ MediaMTX Prometheus-compatible metrics are enabled on `127.0.0.1:9998`.
 curl -fsS http://127.0.0.1:9998/metrics | head
 ```
 
-Use `monitoring/prometheus.yml` as a starter Prometheus scrape config, and see
+Use `monitoring/prometheus.yml` as the tracked Prometheus scrape config copied by the server
+scripts, and see
 [Observability](./observability.md) for the Prometheus/Grafana setup.
 
-Grafana can be reached through the Node proxy at `/grafana/` when a local Grafana instance is
+Grafana can be reached through the Node proxy at `/grafana/` when the local Grafana service is
 running. Keep Grafana's own `3000` listener localhost-only.
 
 ## 6. Input Preview Proxy

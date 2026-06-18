@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot setup for a Restream GCP Linux VM.
-# Installs Node.js 22, FFmpeg 7.1, MediaMTX 1.17.1, builds the app,
-# and registers systemd services that start on boot.
+# Installs Node.js 22, FFmpeg 7.1, MediaMTX 1.17.1, Prometheus, and Grafana,
+# builds the app, and registers systemd services that start on boot.
 #
 # Usage (run as root on the VM):
 #   sudo git clone https://github.com/live-miracles/restream /opt/restream
@@ -25,6 +25,9 @@ DATA_DIR=/var/lib/restream
 LOG_DIR=/var/log/restream
 CONF_DIR=/etc/restream
 SERVICE_USER=restream
+PROMETHEUS_CONFIG_DIR=/etc/prometheus
+GRAFANA_PROVISIONING_DIR=/etc/grafana/provisioning
+GRAFANA_DASHBOARD_DIR=/var/lib/grafana/dashboards
 
 MEDIAMTX_VERSION=1.17.1
 FFMPEG_VERSION=7.1
@@ -36,13 +39,13 @@ step() { echo; echo "=== $* ==="; }
 
 # ── 1. System packages ──────────────────────────────────────────────────────
 
-step "1/8 System packages"
+step "1/10 System packages"
 apt-get update -q
-apt-get install -y -q curl tar xz-utils git ca-certificates
+apt-get install -y -q curl tar xz-utils git ca-certificates gnupg iproute2
 
 # ── 2. Node.js 22 ───────────────────────────────────────────────────────────
 
-step "2/8 Node.js 22"
+step "2/10 Node.js 22"
 if node --version 2>/dev/null | grep -q '^v22'; then
     echo "Node.js 22 already installed: $(node --version)"
 else
@@ -53,7 +56,7 @@ fi
 
 # ── 3. FFmpeg 7.1.4 (BtbN static build) ────────────────────────────────────
 
-step "3/8 FFmpeg $FFMPEG_VERSION"
+step "3/10 FFmpeg $FFMPEG_VERSION"
 # Ubuntu 24.04 ships FFmpeg 6.1.x in apt. On 6.1.x, transient loss of an HLS
 # upload sink can trigger a retry-path bug: source-copy outputs usually fail
 # cleanly, but transcoded HLS outputs can terminate with SIGSEGV before
@@ -75,7 +78,7 @@ fi
 
 # ── 4. MediaMTX ─────────────────────────────────────────────────────────────
 
-step "4/8 MediaMTX $MEDIAMTX_VERSION"
+step "4/10 MediaMTX $MEDIAMTX_VERSION"
 if /usr/local/bin/mediamtx --version 2>/dev/null | grep -q "$MEDIAMTX_VERSION"; then
     echo "MediaMTX $MEDIAMTX_VERSION already installed."
 else
@@ -95,9 +98,29 @@ else
     echo "Installed: $(/usr/local/bin/mediamtx --version 2>&1 | head -1)"
 fi
 
-# ── 5. Service user and directories ─────────────────────────────────────────
+# ── 5. Prometheus and Grafana packages ──────────────────────────────────────
 
-step "5/8 Service user and directories"
+step "5/10 Prometheus and Grafana"
+apt-get install -y -q prometheus
+
+if dpkg -s grafana >/dev/null 2>&1; then
+    echo "Grafana already installed."
+else
+    install -d -m 0755 /etc/apt/keyrings
+    if [[ ! -f /etc/apt/keyrings/grafana.gpg ]]; then
+        curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+        chmod a+r /etc/apt/keyrings/grafana.gpg
+    fi
+    cat > /etc/apt/sources.list.d/grafana.list <<'EOF'
+deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main
+EOF
+    apt-get update -q
+    apt-get install -y -q grafana
+fi
+
+# ── 6. Service user and directories ─────────────────────────────────────────
+
+step "6/10 Service user and directories"
 # restream is a no-login system user; the app and both services run as this
 # user so that neither has root privileges at runtime.
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -109,9 +132,9 @@ fi
 mkdir -p "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 
-# ── 6. Clone and build ───────────────────────────────────────────────────────
+# ── 7. Clone and build ───────────────────────────────────────────────────────
 
-step "6/8 Application"
+step "7/10 Application"
 if [[ ! -d "$APP_DIR/.git" ]]; then
     git clone "$REPO_URL" "$APP_DIR"
 else
@@ -123,9 +146,9 @@ npm run build
 npm prune --omit=dev
 echo "Build complete."
 
-# ── 7. Config and data ───────────────────────────────────────────────────────
+# ── 8. Config and data ───────────────────────────────────────────────────────
 
-step "7/8 Config and data"
+step "8/10 Config and data"
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
 chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml"
 echo "Config written to $CONF_DIR/"
@@ -144,9 +167,42 @@ if [[ ! -L "$APP_DIR/media" ]]; then
     ln -sfn "$DATA_DIR/media" "$APP_DIR/media"
 fi
 
-# ── 8. Systemd units ─────────────────────────────────────────────────────────
+# ── 9. Monitoring manifests ──────────────────────────────────────────────────
 
-step "8/8 Systemd"
+step "9/10 Monitoring manifests"
+install -d -m 0755 "$PROMETHEUS_CONFIG_DIR" \
+    "$GRAFANA_PROVISIONING_DIR/datasources" \
+    "$GRAFANA_PROVISIONING_DIR/dashboards" \
+    "$GRAFANA_DASHBOARD_DIR" \
+    /etc/systemd/system/grafana-server.service.d
+
+install -m 0644 "$APP_DIR/monitoring/prometheus.yml" \
+    "$PROMETHEUS_CONFIG_DIR/prometheus.yml"
+install -m 0644 "$APP_DIR/monitoring/grafana/provisioning/datasources/prometheus.yml" \
+    "$GRAFANA_PROVISIONING_DIR/datasources/prometheus.yml"
+install -m 0644 "$APP_DIR/monitoring/grafana/provisioning/dashboards/restream.yml" \
+    "$GRAFANA_PROVISIONING_DIR/dashboards/restream.yml"
+install -m 0644 "$APP_DIR/monitoring/grafana/dashboards/"*.json \
+    "$GRAFANA_DASHBOARD_DIR/"
+
+cat > /etc/default/prometheus <<'EOF'
+ARGS="--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus --web.console.libraries=/usr/share/prometheus/console_libraries --web.console.templates=/usr/share/prometheus/consoles --web.listen-address=127.0.0.1:9090"
+EOF
+
+cat > /etc/systemd/system/grafana-server.service.d/restream.conf <<'EOF'
+[Service]
+Environment=GF_USERS_ALLOW_SIGN_UP=false
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
+Environment=GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
+Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
+EOF
+
+chown prometheus:prometheus "$PROMETHEUS_CONFIG_DIR/prometheus.yml" || true
+chown -R grafana:grafana "$GRAFANA_PROVISIONING_DIR" "$GRAFANA_DASHBOARD_DIR" || true
+
+# ── 10. Systemd units ────────────────────────────────────────────────────────
+
+step "10/10 Systemd"
 # mediamtx.yml keeps apiAddress and hlsAddress bound to 127.0.0.1 so the
 # MediaMTX control API and HLS preview are never exposed directly to the network.
 # hlsAlwaysRemux is off: HLS muxers spin up on first viewer request, which
@@ -213,6 +269,8 @@ cat > /etc/logrotate.d/restream-mediamtx <<'EOF'
 EOF
 
 systemctl daemon-reload
+systemctl enable --now prometheus.service
+systemctl enable --now grafana-server.service
 systemctl enable --now mediamtx.service
 systemctl enable --now restream.service
 
@@ -226,12 +284,16 @@ echo "Login:     default password is 'admin' (change it in Settings)"
 echo "Data:      $DATA_DIR/data.db"
 echo ""
 echo "Check status:"
+echo "  systemctl status prometheus.service"
+echo "  systemctl status grafana-server.service"
 echo "  systemctl status mediamtx.service"
 echo "  systemctl status restream.service"
 echo "  curl -fsS http://127.0.0.1:3030/healthz"
+echo "  curl -fsS http://127.0.0.1:9090/-/ready"
 echo ""
 echo "Follow logs:"
 echo "  journalctl -u restream.service -f"
+echo "  journalctl -u grafana-server.service -f"
 echo ""
 echo "Update later:"
 echo "  sudo bash $APP_DIR/scripts/server-update.sh"

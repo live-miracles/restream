@@ -160,7 +160,6 @@ export function parseCompoundEncoding(encoding: string): { video: string; audio:
     }
     return { video: encoding, audio: null };
 }
-
 export function isValidOutputEncoding(encoding: string): boolean {
     // Pure audio routing (backward compat)
     if (ATRACK_ENCODING_RE.test(encoding)) return true;
