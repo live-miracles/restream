@@ -87,6 +87,7 @@ npm run test:integration    # 2x3 end-to-end test (requires running app + MediaM
 ```
 
 **Always edit `public/ts/` not `public/js/`** — `public/js/` is generated. Run `npm run build:frontend` after any frontend TS change.
+**Always run the formatter (`npm run format`) before pushing a branch or creating a PR.**
 
 ## Architecture
 
@@ -123,3 +124,110 @@ The frontend is a plain TypeScript/ES-module SPA with no framework. There is no 
 - **MediaMTX ports are hardcoded**: API=9997, RTMP=1935, SRT=10080, HLS=8888 — all localhost. No env override.
 - **Ingest URLs shown in dashboard** use the browser's current hostname (not localhost), resolved in the frontend.
 - **FFmpeg pull protocol** follows the active ingest protocol when health state identifies it: RTMP ingest pulls via RTMP; SRT ingest pulls via SRT. Unknown protocol falls back to RTMP.
+
+---
+
+## Parallel Agents
+
+Multiple Claude Code agents can work on this repo simultaneously using git worktrees for code isolation and containers for integration testing.
+
+### Worktrees for code isolation
+
+Each parallel agent MUST work in its own git worktree. Never have two agents editing files in the same working directory.
+
+```sh
+# Create a worktree for a feature branch
+git worktree add ../restream-<short-name> -b feat/<short-name>
+
+# When done, clean up
+git worktree remove ../restream-<short-name>
+```
+
+**Rules:**
+- Worktree directory goes in the parent of the repo (e.g., `../restream-add-srt-stats`).
+- Branch name must match the worktree purpose. Use `feat/`, `fix/`, or `refactor/` prefixes.
+- Each worktree has its own `node_modules/` — run `npm ci` after creating one.
+- Each worktree gets its own `data.db` (SQLite creates it on first run), so no DB locking conflicts.
+- `public/js/` is gitignored and generated — run `npm run build:frontend` in each worktree after `npm ci`.
+- Don't commit from a worktree to a branch another agent is using.
+
+### Test tiers
+
+Pick the lightest tier that covers your change.
+
+| Tier | Command | Needs | Safe in parallel? |
+|------|---------|-------|--------------------|
+| **Unit** | `npm run test:routes` | Node.js only | Yes — always |
+| **Unit** | `npm run test:normalization` | Node.js only | Yes — always |
+| **Build** | `npm run build` | Node.js + tsc | Yes — always |
+| **Format** | `npm run format:check` | Node.js + prettier | Yes — always |
+| **Integration** | `npm run test:integration` | App + MediaMTX + FFmpeg | No — use container |
+
+**Backend-only changes** (anything under `src/`): run unit tests + build. No container needed.
+
+**Frontend-only changes** (anything under `public/ts/`): run `npm run build:frontend`. No container needed.
+
+**Integration tests**: require a container because ports are hardcoded and cannot be shared.
+
+### Containers for integration testing
+
+The app hardcodes ports (3030, 9997, 1935, 10080, 8888) with no env-var overrides. Two instances cannot coexist on the same host. Each container gets its own network namespace, so hardcoded ports don't clash.
+
+```sh
+# From the worktree directory — npm ci must have been run on the host first.
+docker run --rm \
+  -v "$(pwd)":/app -w /app \
+  node:22 bash -c '
+    set -e
+    apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null 2>&1
+    ARCH=$(dpkg --print-architecture)
+    curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v1.17.1/mediamtx_v1.17.1_linux_${ARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin mediamtx
+    npm run build:backend
+    mediamtx mediamtx.yml &
+    node dist/index.js &
+    until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
+    npm run test:integration
+  '
+```
+
+**Port isolation**: each container has its own network namespace even with default bridge networking. Multiple containers can all bind to port 3030 simultaneously without conflict. No `--network=none` or port mapping needed.
+
+**Lighter alternative** (Linux only, no Docker needed):
+
+```sh
+unshare --net --map-root-user bash -c '
+  ip link set lo up
+  # start mediamtx, app, run tests — all on isolated localhost
+'
+```
+
+### Parallel work patterns
+
+**Safe to parallelize (no coordination needed):**
+- Agent A edits `src/api/outputs.ts`, Agent B edits `public/ts/features/editor.ts` — different layers, separate worktrees, unit tests only.
+- Agent A adds a new API route, Agent B fixes a CSS issue — no file overlap.
+- Multiple agents all running `npm run build` or unit tests in their own worktrees.
+
+**Requires coordination (talk to the orchestrator):**
+- Two agents both modifying `src/db/schema.ts` — schema changes affect everything.
+- Two agents both changing `src/types.ts` — shared type definitions will conflict.
+- Any agent changing `src/index.ts` — app composition wiring, high conflict risk.
+- Integration tests — only one can run on bare metal at a time; use containers for parallel runs.
+
+**Merge strategy:**
+- Each agent works on a feature branch in its own worktree.
+- Rebase onto `master` before merging: `git rebase master` from the worktree.
+- If two agents touched adjacent files, the second to merge resolves conflicts.
+- Run `npm run build && npm test` after rebase to verify nothing broke.
+
+### Checklist for spinning up a parallel agent
+
+1. Create a worktree: `git worktree add ../restream-<name> -b <branch>`
+2. `cd ../restream-<name> && npm ci`
+3. `npm run build` — verify clean build
+4. Make changes
+5. `npm run build && npm test` — verify in worktree
+6. If integration test needed: run in container (see above)
+7. Rebase onto master, resolve conflicts
+8. Clean up: `git worktree remove ../restream-<name>`
