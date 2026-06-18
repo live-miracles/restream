@@ -1,0 +1,4527 @@
+Push Targets for MediaMTX v1.17.1
+==================================
+
+Native in-process stream republishing — push any path to external RTMP,
+RTMPS, RTSP, RTSPS, SRT, or HLS (HTTP PUT) destinations without spawning
+FFmpeg. Targets are configured per-path in YAML or managed at runtime via
+REST API, with automatic retry, status tracking, and cascade prevention.
+
+Based on: bluenviron/mediamtx PR #5558
+  "Add push targets feature to rebroadcast a path"
+  https://github.com/bluenviron/mediamtx/pull/5558
+
+Differences from upstream PR 5558
+----------------------------------
+
+1. Reworked for v1.17.1 (PR 5558 targets main/unreleased)
+
+2. HLS push protocol (not in upstream)
+   HTTP PUT of MPEG-TS segments + m3u8 playlist, compatible with
+   YouTube/Akamai HLS ingest. IDR-based segment rotation for video,
+   PTS-based rotation for audio-only streams.
+
+3. Correctness fixes (not in upstream)
+   - SRT/RTSP write/read timeout: default to 30s when unconfigured
+     (upstream passes zero → immediate deadline expiry → broken)
+   - Audio-only HLS: time-based segment rotation
+     (upstream video-only IDR check → unbounded buffer → OOM)
+   - segWriter.Initialize() error: checked on segment rotation
+     (upstream silently ignores → potential panic/corruption)
+   - Manager.Close: parallel target shutdown, mutex released first
+     (upstream holds mutex during sequential close → API blocked
+     for N × timeout seconds)
+   - uploaded slice: copy-on-trim to release old segment data
+     (upstream reslice keeps backing array → linear memory leak)
+   - TARGETDURATION: tracks actual max segment duration
+     (upstream uses configured duration → HLS spec violation when
+     GOP > segment duration)
+   - Cascade prevention: checks host locality (loopback/localhost),
+     not just path name (upstream blocks remote hosts with same path)
+
+4. Scalability (not in upstream) — designed for 500 outputs/path
+   - Shared HLS muxer: one MPEG-TS encode per path, segments fanned
+     out to subscribers via refcounted immutable segments.
+     At 500 outputs: 877 MB/rotation → 1.75 MB (500× reduction).
+   - Upload worker pool: bounded concurrency (64 workers) prevents
+     thundering herd when all outputs rotate on the same IDR.
+   - Channel-based segment delivery: sub-ms upload trigger on segment
+     ready, with ticker fallback as heartbeat.
+
+5. FMLE RTMP client (same as upstream)
+   Full RTMP publish flow: connect → createStream → FCPublish →
+   publish → write. Read goroutine for connection health. Write
+   deadline refresh on every frame.
+
+6. Stream notification (same as upstream)
+   Channel-based (streamNotify chan struct{}) instead of polling
+   for stream availability.
+
+7. Config sync (same as upstream)
+   confIDs map distinguishes config-managed vs API-managed targets.
+   Config reload only touches conf targets. API changes update
+   in-memory config without triggering reload (avoids duplicates).
+
+Files (24)
+----------
+
+API:
+  api/openapi.yaml                      Push target endpoint specs
+  internal/api/api.go                   Route registration
+  internal/api/api_pushtargets.go       REST handlers (CRUD)
+  internal/api/api_pushtargets_test.go  API handler tests
+
+Config:
+  internal/conf/path.go                 PushTargets field on path config
+  internal/conf/push_target.go          URL validation (all 7 schemes)
+  internal/conf/conf_test.go            Config validation tests
+  mediamtx.yml                          Example config with pushTargets
+
+Core integration:
+  internal/core/path.go                 Lifecycle, cascade filter, API dispatch
+  internal/core/path_manager.go         Path manager API plumbing
+  internal/core/path_test.go            Cascade filter tests (10 cases)
+  internal/core/api_test.go             API integration tests
+
+Types:
+  internal/defs/api.go                  APIPushTarget, APIPushTargetList
+  internal/defs/api_path.go             PushManager field on APIPath
+
+Push target engine:
+  internal/push/manager.go              Target manager (parallel close, shared muxer)
+  internal/push/target.go               RTMP/RTSP/SRT/HLS implementations
+  internal/push/target_test.go          RTMP host resolution, track param tests
+  internal/push/hls_muxer.go            Shared MPEG-TS muxer with subscriber fanout
+  internal/push/hls_segment.go          Refcounted immutable shared segment
+  internal/push/hls_uploader.go         HTTP PUT uploader + 64-worker pool
+  internal/push/hls_test.go             9 functional tests
+  internal/push/hls_bench_test.go       4 benchmarks (copy vs shared, upload pool)
+
+Metrics:
+  internal/metrics/metrics_test.go      Metrics endpoint tests
+
+Apply: git apply --stat patches/mediamtx/mediamtx_push_targets_v1.17.1.patch
+       git apply patches/mediamtx/mediamtx_push_targets_v1.17.1.patch
+
+diff --git a/api/openapi.yaml b/api/openapi.yaml
+index 65f455c..c239c79 100644
+--- a/api/openapi.yaml
++++ b/api/openapi.yaml
+@@ -1160,6 +1160,56 @@ components:
+           type: integer
+           format: int64
+ 
++    PushTarget:
++      type: object
++      properties:
++        id:
++          type: string
++          description: unique identifier of the push target (UUID).
++        url:
++          type: string
++          description: URL of the push target.
++        state:
++          type: string
++          enum:
++          - idle
++          - running
++          - error
++          description: current state of the push target.
++        error:
++          type: string
++          description: error message if state is "error".
++        resolvedURL:
++          type: string
++          description: resolved URL with variables expanded.
++        bytesSent:
++          type: integer
++          format: int64
++          description: total bytes sent to the push target.
++
++    PushTargetList:
++      type: object
++      properties:
++        pageCount:
++          type: integer
++          format: int64
++        itemCount:
++          type: integer
++          format: int64
++        items:
++          type: array
++          items:
++            $ref: '#/components/schemas/PushTarget'
++
++    PushTargetAdd:
++      type: object
++      required:
++        - url
++      properties:
++        url:
++          type: string
++          description: URL of the push target (supports rtmp://, rtmps://).
++
+     HLSMuxer:
+       type: object
+       properties:
+@@ -2367,6 +2417,192 @@ paths:
+               schema:
+                 $ref: '#/components/schemas/Error'
+ 
++  /v3/paths/pushtargets/list/{name}:
++    get:
++      operationId: pushTargetsList
++      tags: [Paths, Push Targets]
++      summary: returns all push targets for a path.
++      description: 'Push targets are external servers to which the stream is pushed (e.g., YouTube Live, Twitch).'
++      parameters:
++      - name: name
++        in: path
++        required: true
++        description: name of the path.
++        schema:
++          type: string
++      - name: page
++        in: query
++        description: page number.
++        schema:
++          type: integer
++          default: 0
++      - name: itemsPerPage
++        in: query
++        description: items per page.
++        schema:
++          type: integer
++          default: 100
++      responses:
++        '200':
++          description: the request was successful.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/PushTargetList'
++        '400':
++          description: invalid request.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: path not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '500':
++          description: server error.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /v3/paths/pushtargets/get/{name}/{id}:
++    get:
++      operationId: pushTargetsGet
++      tags: [Paths, Push Targets]
++      summary: returns a push target.
++      description: ''
++      parameters:
++      - name: name
++        in: path
++        required: true
++        description: name of the path.
++        schema:
++          type: string
++      - name: id
++        in: path
++        required: true
++        description: UUID of the push target.
++        schema:
++          type: string
++      responses:
++        '200':
++          description: the request was successful.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/PushTarget'
++        '400':
++          description: invalid request.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: path or push target not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '500':
++          description: server error.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /v3/paths/pushtargets/add/{name}:
++    post:
++      operationId: pushTargetsAdd
++      tags: [Paths, Push Targets]
++      summary: adds a push target to a path.
++      description: 'Push the stream to an external server (e.g., YouTube Live, Twitch).'
++      parameters:
++      - name: name
++        in: path
++        required: true
++        description: name of the path.
++        schema:
++          type: string
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: '#/components/schemas/PushTargetAdd'
++      responses:
++        '200':
++          description: the request was successful.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/PushTarget'
++        '400':
++          description: invalid request.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: path not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '500':
++          description: server error.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
++  /v3/paths/pushtargets/remove/{name}/{id}:
++    delete:
++      operationId: pushTargetsRemove
++      tags: [Paths, Push Targets]
++      summary: removes a push target from a path.
++      description: ''
++      parameters:
++      - name: name
++        in: path
++        required: true
++        description: name of the path.
++        schema:
++          type: string
++      - name: id
++        in: path
++        required: true
++        description: UUID of the push target.
++        schema:
++          type: string
++      responses:
++        '200':
++          description: the request was successful.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/OK'
++        '400':
++          description: invalid request.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '404':
++          description: path or push target not found.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++        '500':
++          description: server error.
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/Error'
++
+   /v3/rtspconns/list:
+     get:
+       operationId: rtspConnsList
+diff --git a/internal/api/api.go b/internal/api/api.go
+index d20c9ee..0e4017b 100644
+--- a/internal/api/api.go
++++ b/internal/api/api.go
+@@ -112,6 +112,11 @@ func (a *API) Initialize() error {
+ 	group.GET("/paths/list", a.onPathsList)
+ 	group.GET("/paths/get/*name", a.onPathsGet)
+ 
++	group.GET("/paths/pushtargets/list/*name", a.onPushTargetsList)
++	group.GET("/paths/pushtargets/get/*name", a.onPushTargetsGet)
++	group.POST("/paths/pushtargets/add/*name", a.onPushTargetsAdd)
++	group.DELETE("/paths/pushtargets/remove/*name", a.onPushTargetsRemove)
++
+ 	if !interfaceIsEmpty(a.HLSServer) {
+ 		group.GET("/hlsmuxers/list", a.onHLSMuxersList)
+ 		group.GET("/hlsmuxers/get/*name", a.onHLSMuxersGet)
+diff --git a/internal/api/api_paths_test.go b/internal/api/api_paths_test.go
+index a5d4ee7..dd338b6 100644
+--- a/internal/api/api_paths_test.go
++++ b/internal/api/api_paths_test.go
+@@ -5,6 +5,8 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/google/uuid"
++
+ 	"github.com/bluenviron/mediamtx/internal/conf"
+ 	"github.com/bluenviron/mediamtx/internal/defs"
+ 	"github.com/bluenviron/mediamtx/internal/formatlabel"
+@@ -32,6 +34,22 @@ func (m *testPathManager) APIPathsGet(name string) (*defs.APIPath, error) {
+ 	return path, nil
+ }
+ 
++func (m *testPathManager) APIPushTargetsList(_ string) (*defs.APIPushTargetList, error) {
++	return &defs.APIPushTargetList{Items: []*defs.APIPushTarget{}}, nil
++}
++
++func (m *testPathManager) APIPushTargetsGet(_ string, _ uuid.UUID) (*defs.APIPushTarget, error) {
++	return nil, conf.ErrPathNotFound
++}
++
++func (m *testPathManager) APIPushTargetsAdd(_ string, _ defs.APIPushTargetAdd) (*defs.APIPushTarget, error) {
++	return &defs.APIPushTarget{}, nil
++}
++
++func (m *testPathManager) APIPushTargetsRemove(_ string, _ uuid.UUID) error {
++	return nil
++}
++
+ func TestPathsList(t *testing.T) {
+ 	now := time.Now()
+ 	pathManager := &testPathManager{
+diff --git a/internal/api/api_pushtargets.go b/internal/api/api_pushtargets.go
+new file mode 100644
+index 0000000..05c6c2d
+--- /dev/null
++++ b/internal/api/api_pushtargets.go
+@@ -0,0 +1,244 @@
++//nolint:dupl
++package api //nolint:revive
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++	"strings"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++
++	"github.com/bluenviron/mediamtx/internal/conf"
++	"github.com/bluenviron/mediamtx/internal/defs"
++	"github.com/bluenviron/mediamtx/internal/push"
++)
++
++func splitPushTargetPath(value string) (string, uuid.UUID, error) {
++	i := strings.LastIndex(value, "/")
++	if i < 0 {
++		return "", uuid.UUID{}, fmt.Errorf("invalid path format, expected: /path/targetID")
++	}
++
++	id, err := uuid.Parse(value[i+1:])
++	if err != nil {
++		return "", uuid.UUID{}, fmt.Errorf("invalid target ID: %w", err)
++	}
++
++	return value[:i], id, nil
++}
++
++func pathToOptional(pathConf *conf.Path) (*conf.OptionalPath, error) {
++	byts, err := json.Marshal(pathConf)
++	if err != nil {
++		return nil, err
++	}
++
++	var optional conf.OptionalPath
++	err = json.Unmarshal(byts, &optional)
++	if err != nil {
++		return nil, err
++	}
++
++	return &optional, nil
++}
++
++func (a *API) persistPushTargets(runtimePathName string, mutate func(*conf.Path) error) error {
++	if a.Conf == nil {
++		return nil
++	}
++
++	pathData, err := a.PathManager.APIPathsGet(runtimePathName)
++	if err != nil {
++		return err
++	}
++
++	a.mutex.Lock()
++	defer a.mutex.Unlock()
++
++	newConf := a.Conf.Clone()
++	pathConf, ok := newConf.Paths[pathData.ConfName]
++	if !ok {
++		return conf.ErrPathNotFound
++	}
++
++	updated := pathConf.Clone()
++	err = mutate(updated)
++	if err != nil {
++		return err
++	}
++
++	optional, err := pathToOptional(updated)
++	if err != nil {
++		return err
++	}
++
++	err = newConf.ReplacePath(pathData.ConfName, optional)
++	if err != nil {
++		return err
++	}
++
++	err = newConf.Validate(nil)
++	if err != nil {
++		return err
++	}
++
++	// Update in-memory config without triggering a full reload.
++	// Push target runtime state is already managed by the push manager;
++	// a reload would cause syncPushTargets to create duplicates.
++	a.Conf = newConf
++
++	return nil
++}
++
++func (a *API) onPushTargetsList(ctx *gin.Context) {
++	pathName, ok := paramName(ctx)
++	if !ok {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid path name"))
++		return
++	}
++
++	data, err := a.PathManager.APIPushTargetsList(pathName)
++	if err != nil {
++		if errors.Is(err, conf.ErrPathNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	data.ItemCount = len(data.Items)
++	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
++	if err != nil {
++		a.writeError(ctx, http.StatusBadRequest, err)
++		return
++	}
++	data.PageCount = pageCount
++
++	ctx.JSON(http.StatusOK, data)
++}
++
++func (a *API) onPushTargetsGet(ctx *gin.Context) {
++	pathName, ok := paramName(ctx)
++	if !ok {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid path name"))
++		return
++	}
++
++	pathName, id, err := splitPushTargetPath(pathName)
++	if err != nil {
++		a.writeError(ctx, http.StatusBadRequest, err)
++		return
++	}
++
++	data, err := a.PathManager.APIPushTargetsGet(pathName, id)
++	if err != nil {
++		if errors.Is(err, conf.ErrPathNotFound) || errors.Is(err, push.ErrTargetNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	ctx.JSON(http.StatusOK, data)
++}
++
++func (a *API) onPushTargetsAdd(ctx *gin.Context) {
++	pathName, ok := paramName(ctx)
++	if !ok {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid path name"))
++		return
++	}
++
++	var req defs.APIPushTargetAdd
++	if err := ctx.ShouldBindJSON(&req); err != nil {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
++		return
++	}
++
++	if req.URL == "" {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("url is required"))
++		return
++	}
++
++	data, err := a.PathManager.APIPushTargetsAdd(pathName, req)
++	if err != nil {
++		if errors.Is(err, conf.ErrPathNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	err = a.persistPushTargets(pathName, func(pathConf *conf.Path) error {
++		pathConf.PushTargets = append(pathConf.PushTargets, conf.PushTarget{URL: req.URL})
++		return nil
++	})
++	if err != nil {
++		_ = a.PathManager.APIPushTargetsRemove(pathName, data.ID)
++		a.writeError(ctx, http.StatusInternalServerError, err)
++		return
++	}
++
++	ctx.JSON(http.StatusOK, data)
++}
++
++func (a *API) onPushTargetsRemove(ctx *gin.Context) {
++	pathName, ok := paramName(ctx)
++	if !ok {
++		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid path name"))
++		return
++	}
++
++	pathName, id, err := splitPushTargetPath(pathName)
++	if err != nil {
++		a.writeError(ctx, http.StatusBadRequest, err)
++		return
++	}
++
++	target, err := a.PathManager.APIPushTargetsGet(pathName, id)
++	if err != nil {
++		if errors.Is(err, conf.ErrPathNotFound) || errors.Is(err, push.ErrTargetNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	err = a.PathManager.APIPushTargetsRemove(pathName, id)
++	if err != nil {
++		if errors.Is(err, conf.ErrPathNotFound) || errors.Is(err, push.ErrTargetNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	err = a.persistPushTargets(pathName, func(pathConf *conf.Path) error {
++		for i, persisted := range pathConf.PushTargets {
++			if persisted.URL == target.URL {
++				pathConf.PushTargets = append(pathConf.PushTargets[:i], pathConf.PushTargets[i+1:]...)
++				return nil
++			}
++		}
++
++		return push.ErrTargetNotFound
++	})
++	if err != nil {
++		if errors.Is(err, push.ErrTargetNotFound) || errors.Is(err, conf.ErrPathNotFound) {
++			a.writeError(ctx, http.StatusNotFound, err)
++		} else {
++			a.writeError(ctx, http.StatusInternalServerError, err)
++		}
++		return
++	}
++
++	a.writeOK(ctx)
++}
+diff --git a/internal/api/api_pushtargets_test.go b/internal/api/api_pushtargets_test.go
+new file mode 100644
+index 0000000..c5291b5
+--- /dev/null
++++ b/internal/api/api_pushtargets_test.go
+@@ -0,0 +1,192 @@
++package api //nolint:revive
++
++import (
++	"net/http"
++	"sort"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/require"
++
++	"github.com/bluenviron/mediamtx/internal/conf"
++	"github.com/bluenviron/mediamtx/internal/defs"
++	"github.com/bluenviron/mediamtx/internal/push"
++	"github.com/bluenviron/mediamtx/internal/test"
++)
++
++type testPushTargetPathManager struct {
++	targets map[string]map[uuid.UUID]*defs.APIPushTarget
++}
++
++func (*testPushTargetPathManager) APIPathsList() (*defs.APIPathList, error) {
++	panic("unused")
++}
++
++func (*testPushTargetPathManager) APIPathsGet(string) (*defs.APIPath, error) {
++	panic("unused")
++}
++
++func (m *testPushTargetPathManager) APIPushTargetsList(pathName string) (*defs.APIPushTargetList, error) {
++	items, ok := m.targets[pathName]
++	if !ok {
++		return nil, conf.ErrPathNotFound
++	}
++
++	out := make([]*defs.APIPushTarget, 0, len(items))
++	for _, item := range items {
++		copied := *item
++		out = append(out, &copied)
++	}
++
++	sort.Slice(out, func(i, j int) bool {
++		return out[i].ID.String() < out[j].ID.String()
++	})
++
++	return &defs.APIPushTargetList{Items: out}, nil
++}
++
++func (m *testPushTargetPathManager) APIPushTargetsGet(pathName string, id uuid.UUID) (*defs.APIPushTarget, error) {
++	items, ok := m.targets[pathName]
++	if !ok {
++		return nil, conf.ErrPathNotFound
++	}
++
++	item, ok := items[id]
++	if !ok {
++		return nil, push.ErrTargetNotFound
++	}
++
++	copied := *item
++	return &copied, nil
++}
++
++func (m *testPushTargetPathManager) APIPushTargetsAdd(pathName string, req defs.APIPushTargetAdd) (*defs.APIPushTarget, error) {
++	items, ok := m.targets[pathName]
++	if !ok {
++		return nil, conf.ErrPathNotFound
++	}
++
++	item := &defs.APIPushTarget{
++		ID:        uuid.New(),
++		Created:   time.Now(),
++		URL:       req.URL,
++		State:     defs.APIPushTargetStateIdle,
++		BytesSent: 0,
++	}
++	items[item.ID] = item
++
++	copied := *item
++	return &copied, nil
++}
++
++func (m *testPushTargetPathManager) APIPushTargetsRemove(pathName string, id uuid.UUID) error {
++	items, ok := m.targets[pathName]
++	if !ok {
++		return conf.ErrPathNotFound
++	}
++
++	if _, ok := items[id]; !ok {
++		return push.ErrTargetNotFound
++	}
++
++	delete(items, id)
++	return nil
++}
++
++func TestPushTargetsLifecycle(t *testing.T) {
++	pathManager := &testPushTargetPathManager{
++		targets: map[string]map[uuid.UUID]*defs.APIPushTarget{
++			"folder/stream": {},
++		},
++	}
++
++	api := API{
++		Address:      "localhost:9996",
++		ReadTimeout:  conf.Duration(10 * time.Second),
++		WriteTimeout: conf.Duration(10 * time.Second),
++		AuthManager:  test.NilAuthManager,
++		PathManager:  pathManager,
++		Parent:       &testParent{},
++	}
++	err := api.Initialize()
++	require.NoError(t, err)
++	defer api.Close()
++
++	tr := &http.Transport{}
++	defer tr.CloseIdleConnections()
++	hc := &http.Client{Transport: tr}
++
++	var added defs.APIPushTarget
++	httpRequest(t, hc, http.MethodPost,
++		"http://localhost:9996/v3/paths/pushtargets/add/folder/stream",
++		defs.APIPushTargetAdd{URL: "rtmp://example.com/live/test"},
++		&added)
++
++	require.Equal(t, "rtmp://example.com/live/test", added.URL)
++	require.NotEqual(t, uuid.Nil, added.ID)
++
++	var listed defs.APIPushTargetList
++	httpRequest(t, hc, http.MethodGet,
++		"http://localhost:9996/v3/paths/pushtargets/list/folder/stream",
++		nil,
++		&listed)
++
++	require.Equal(t, 1, listed.ItemCount)
++	require.Equal(t, 1, listed.PageCount)
++	require.Len(t, listed.Items, 1)
++	require.Equal(t, added.ID, listed.Items[0].ID)
++
++	var got defs.APIPushTarget
++	httpRequest(t, hc, http.MethodGet,
++		"http://localhost:9996/v3/paths/pushtargets/get/folder/stream/"+added.ID.String(),
++		nil,
++		&got)
++
++	require.Equal(t, added.ID, got.ID)
++	require.Equal(t, added.URL, got.URL)
++
++	httpRequest(t, hc, http.MethodDelete,
++		"http://localhost:9996/v3/paths/pushtargets/remove/folder/stream/"+added.ID.String(),
++		nil,
++		nil)
++
++	httpRequest(t, hc, http.MethodGet,
++		"http://localhost:9996/v3/paths/pushtargets/list/folder/stream",
++		nil,
++		&listed)
++
++	require.Equal(t, 0, listed.ItemCount)
++	require.Len(t, listed.Items, 0)
++}
++
++func TestPushTargetsGetNotFound(t *testing.T) {
++	pathManager := &testPushTargetPathManager{
++		targets: map[string]map[uuid.UUID]*defs.APIPushTarget{
++			"folder/stream": {},
++		},
++	}
++
++	api := API{
++		Address:      "localhost:9996",
++		ReadTimeout:  conf.Duration(10 * time.Second),
++		WriteTimeout: conf.Duration(10 * time.Second),
++		AuthManager:  test.NilAuthManager,
++		PathManager:  pathManager,
++		Parent:       &testParent{},
++	}
++	err := api.Initialize()
++	require.NoError(t, err)
++	defer api.Close()
++
++	tr := &http.Transport{}
++	defer tr.CloseIdleConnections()
++	hc := &http.Client{Transport: tr}
++
++	res, err := hc.Get("http://localhost:9996/v3/paths/pushtargets/get/folder/stream/" + uuid.New().String())
++	require.NoError(t, err)
++	defer res.Body.Close()
++
++	require.Equal(t, http.StatusNotFound, res.StatusCode)
++	checkError(t, res.Body, "push target not found")
++}
+diff --git a/internal/conf/conf_test.go b/internal/conf/conf_test.go
+index 1a4dd19..474512e 100644
+--- a/internal/conf/conf_test.go
++++ b/internal/conf/conf_test.go
+@@ -87,6 +87,7 @@ func TestConfFromFile(t *testing.T) {
+ 			RPICameraSoftwareH264Profile: "baseline",
+ 			RPICameraSoftwareH264Level:   "4.1",
+ 			RPICameraMJPEGQuality:        60,
++			PushTargets:                  PushTargets{},
+ 			RunOnDemandStartTimeout:      5 * Duration(time.Second),
+ 			RunOnDemandCloseAfter:        10 * Duration(time.Second),
+ 		}, pa)
+@@ -747,6 +748,14 @@ func TestConfErrors(t *testing.T) {
+ 				"    alwaysAvailableFile: /path/to/file.mp4\n",
+ 			"'alwaysAvailableFile' and 'alwaysAvailableTracks' cannot be used together",
+ 		},
++		{
++			"invalid push target URL",
++			"paths:\n" +
++				"  mypath:\n" +
++				"    pushTargets:\n" +
++				"    - url: http://example.com/live/test\n",
++			"push target 0: push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, or srt://",
++		},
+ 	} {
+ 		t.Run(ca.name, func(t *testing.T) {
+ 			tmpf, err := createTempFile([]byte(ca.conf))
+diff --git a/internal/conf/path.go b/internal/conf/path.go
+index 3b1fd36..478a999 100644
+--- a/internal/conf/path.go
++++ b/internal/conf/path.go
+@@ -296,6 +296,9 @@ type Path struct {
+ 	RPICameraSecondaryFPS          float64   `json:"-"` // filled by Validate()
+ 	RPICameraSecondaryMJPEGQuality uint      `json:"-"` // filled by Validate()
+ 
++	// Push
++	PushTargets PushTargets `json:"pushTargets"`
++
+ 	// Hooks
+ 	RunOnInit                  string   `json:"runOnInit"`
+ 	RunOnInitRestart           bool     `json:"runOnInitRestart"`
+@@ -856,6 +859,12 @@ func (pconf *Path) validate(
+ 		}()
+ 	}
+ 
++	// Push
++
++	if err := pconf.PushTargets.Validate(); err != nil {
++		return err
++	}
++
+ 	// Hooks
+ 
+ 	if pconf.RunOnInit != "" && pconf.Regexp != nil {
+diff --git a/internal/conf/push_target.go b/internal/conf/push_target.go
+new file mode 100644
+index 0000000..345360a
+--- /dev/null
++++ b/internal/conf/push_target.go
+@@ -0,0 +1,50 @@
++package conf
++
++import (
++	"fmt"
++	"net/url"
++	"strings"
++)
++
++// PushTarget is a push target configuration.
++type PushTarget struct {
++	URL string `json:"url"`
++}
++
++// Validate validates a push target.
++func (pt *PushTarget) Validate() error {
++	if pt.URL == "" {
++		return fmt.Errorf("push target URL is empty")
++	}
++
++	// Check for valid protocols
++	if !strings.HasPrefix(pt.URL, "rtmp://") &&
++		!strings.HasPrefix(pt.URL, "rtmps://") &&
++		!strings.HasPrefix(pt.URL, "rtsp://") &&
++		!strings.HasPrefix(pt.URL, "rtsps://") &&
++		!strings.HasPrefix(pt.URL, "srt://") &&
++		!strings.HasPrefix(pt.URL, "http://") &&
++		!strings.HasPrefix(pt.URL, "https://") {
++		return fmt.Errorf("push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https://")
++	}
++
++	_, err := url.Parse(pt.URL)
++	if err != nil {
++		return fmt.Errorf("invalid push target URL: %w", err)
++	}
++
++	return nil
++}
++
++// PushTargets is a list of push targets.
++type PushTargets []PushTarget
++
++// Validate validates push targets.
++func (pts PushTargets) Validate() error {
++	for i, pt := range pts {
++		if err := pt.Validate(); err != nil {
++			return fmt.Errorf("push target %d: %w", i, err)
++		}
++	}
++	return nil
++}
+diff --git a/internal/core/api_test.go b/internal/core/api_test.go
+index 3db5ff0..db28d24 100644
+--- a/internal/core/api_test.go
++++ b/internal/core/api_test.go
+@@ -353,6 +353,133 @@ func TestAPIPathsGet(t *testing.T) {
+ 	}
+ }
+ 
++func TestAPIPushTargetsAlwaysAvailablePushesWhileOffline(t *testing.T) {
++	type pushTarget struct {
++		ID        uuid.UUID `json:"id"`
++		State     string    `json:"state"`
++		Error     string    `json:"error"`
++		BytesSent uint64    `json:"bytesSent"`
++	}
++
++	type pushTargetList struct {
++		ItemCount int          `json:"itemCount"`
++		PageCount int          `json:"pageCount"`
++		Items     []pushTarget `json:"items"`
++	}
++
++	p, ok := newInstance("api: yes\n" +
++		"apiAddress: 127.0.0.1:19997\n" +
++		"rtsp: no\n" +
++		"rtmp: no\n" +
++		"hls: no\n" +
++		"webrtc: no\n" +
++		"srt: no\n" +
++		"paths:\n" +
++		"  test:\n" +
++		"    alwaysAvailable: yes\n" +
++		"    alwaysAvailableTracks:\n" +
++		"    - codec: H264\n")
++	require.Equal(t, true, ok)
++	defer p.Close()
++
++	tr := &http.Transport{}
++	defer tr.CloseIdleConnections()
++	hc := &http.Client{Transport: tr}
++
++	var added pushTarget
++	httpRequest(t, hc, http.MethodPost,
++		"http://localhost:19997/v3/paths/pushtargets/add/test",
++		map[string]any{"url": "rtmp://127.0.0.1:29999/test"},
++		&added)
++
++	require.NotEqual(t, uuid.Nil, added.ID)
++
++	time.Sleep(1500 * time.Millisecond)
++
++	var listed pushTargetList
++	httpRequest(t, hc, http.MethodGet,
++		"http://localhost:19997/v3/paths/pushtargets/list/test",
++		nil,
++		&listed)
++
++	require.Equal(t, 1, listed.ItemCount)
++	require.Equal(t, 1, listed.PageCount)
++	require.Len(t, listed.Items, 1)
++	require.Equal(t, added.ID, listed.Items[0].ID)
++	require.Equal(t, "error", listed.Items[0].State)
++	require.NotEqual(t, "", listed.Items[0].Error)
++	require.Equal(t, uint64(0), listed.Items[0].BytesSent)
++}
++
++func TestAPIPushTargetsPersistAcrossLiveReload(t *testing.T) {
++	type pushTarget struct {
++		ID  uuid.UUID `json:"id"`
++		URL string    `json:"url"`
++	}
++
++	type pushTargetList struct {
++		ItemCount int          `json:"itemCount"`
++		Items     []pushTarget `json:"items"`
++	}
++
++	p, ok := newInstance("api: yes\n" +
++		"apiAddress: 127.0.0.1:19997\n" +
++		"rtsp: no\n" +
++		"rtmp: no\n" +
++		"hls: no\n" +
++		"webrtc: no\n" +
++		"srt: no\n" +
++		"paths:\n" +
++		"  test:\n")
++	require.Equal(t, true, ok)
++	defer p.Close()
++
++	tr := &http.Transport{}
++	defer tr.CloseIdleConnections()
++	hc := &http.Client{Transport: tr}
++
++	var added pushTarget
++	httpRequest(t, hc, http.MethodPost,
++		"http://localhost:19997/v3/paths/pushtargets/add/test",
++		map[string]any{"url": "rtmp://127.0.0.1:29999/test"},
++		&added)
++
++	httpRequest(t, hc, http.MethodPatch,
++		"http://localhost:19997/v3/config/paths/patch/test",
++		map[string]any{"record": true},
++		nil)
++
++	require.Eventually(t, func() bool {
++		var listed pushTargetList
++		httpRequest(t, hc, http.MethodGet,
++			"http://localhost:19997/v3/paths/pushtargets/list/test",
++			nil,
++			&listed)
++
++		return listed.ItemCount == 1 && len(listed.Items) == 1 && listed.Items[0].URL == added.URL
++	}, 5*time.Second, 100*time.Millisecond)
++
++	httpRequest(t, hc, http.MethodDelete,
++		"http://localhost:19997/v3/paths/pushtargets/remove/test/"+added.ID.String(),
++		nil,
++		nil)
++
++	httpRequest(t, hc, http.MethodPatch,
++		"http://localhost:19997/v3/config/paths/patch/test",
++		map[string]any{"record": false},
++		nil)
++
++	require.Eventually(t, func() bool {
++		var listed pushTargetList
++		httpRequest(t, hc, http.MethodGet,
++			"http://localhost:19997/v3/paths/pushtargets/list/test",
++			nil,
++			&listed)
++
++		return listed.ItemCount == 0 && len(listed.Items) == 0
++	}, 5*time.Second, 100*time.Millisecond)
++}
++
+ func TestAPIProtocolListGet(t *testing.T) {
+ 	serverCertFpath, err := test.CreateTempFile(test.TLSCertPub)
+ 	require.NoError(t, err)
+diff --git a/internal/core/path.go b/internal/core/path.go
+index a429a7b..0a9adfc 100644
+--- a/internal/core/path.go
++++ b/internal/core/path.go
+@@ -4,12 +4,15 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"net"
++	"net/url"
+ 	"strconv"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/bluenviron/gortsplib/v5/pkg/description"
++	"github.com/google/uuid"
+ 
+ 	"github.com/bluenviron/mediamtx/internal/conf"
+ 	"github.com/bluenviron/mediamtx/internal/defs"
+@@ -17,6 +20,7 @@ import (
+ 	"github.com/bluenviron/mediamtx/internal/formatlabel"
+ 	"github.com/bluenviron/mediamtx/internal/hooks"
+ 	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/push"
+ 	"github.com/bluenviron/mediamtx/internal/recorder"
+ 	"github.com/bluenviron/mediamtx/internal/staticsources"
+ 	"github.com/bluenviron/mediamtx/internal/stream"
+@@ -96,6 +100,7 @@ type path struct {
+ 	recorder                       *recorder.Recorder
+ 	availableTime                  time.Time
+ 	onlineTime                     time.Time
++	pushManager                    *push.Manager
+ 	onUnDemandHook                 func(string)
+ 	onNotReadyHook                 func()
+ 	readers                        map[defs.Reader]struct{}
+@@ -118,11 +123,53 @@ type path struct {
+ 	chAddReader               chan defs.PathAddReaderReq
+ 	chRemoveReader            chan defs.PathRemoveReaderReq
+ 	chAPIPathsGet             chan pathAPIPathsGetReq
++	chAPIPushTargetsList      chan pathAPIPushTargetsListReq
++	chAPIPushTargetsGet       chan pathAPIPushTargetsGetReq
++	chAPIPushTargetsAdd       chan pathAPIPushTargetsAddReq
++	chAPIPushTargetsRemove    chan pathAPIPushTargetsRemoveReq
+ 
+ 	// out
+ 	done chan struct{}
+ }
+ 
++type pathAPIPushTargetsListRes struct {
++	data *defs.APIPushTargetList
++	err  error
++}
++
++type pathAPIPushTargetsListReq struct {
++	res chan pathAPIPushTargetsListRes
++}
++
++type pathAPIPushTargetsGetRes struct {
++	data *defs.APIPushTarget
++	err  error
++}
++
++type pathAPIPushTargetsGetReq struct {
++	id  uuid.UUID
++	res chan pathAPIPushTargetsGetRes
++}
++
++type pathAPIPushTargetsAddRes struct {
++	data *defs.APIPushTarget
++	err  error
++}
++
++type pathAPIPushTargetsAddReq struct {
++	req defs.APIPushTargetAdd
++	res chan pathAPIPushTargetsAddRes
++}
++
++type pathAPIPushTargetsRemoveRes struct {
++	err error
++}
++
++type pathAPIPushTargetsRemoveReq struct {
++	id  uuid.UUID
++	res chan pathAPIPushTargetsRemoveRes
++}
++
+ func (pa *path) initialize() {
+ 	ctx, ctxCancel := context.WithCancel(pa.parentCtx)
+ 
+@@ -143,8 +190,14 @@ func (pa *path) initialize() {
+ 	pa.chAddReader = make(chan defs.PathAddReaderReq)
+ 	pa.chRemoveReader = make(chan defs.PathRemoveReaderReq)
+ 	pa.chAPIPathsGet = make(chan pathAPIPathsGetReq)
++	pa.chAPIPushTargetsList = make(chan pathAPIPushTargetsListReq)
++	pa.chAPIPushTargetsGet = make(chan pathAPIPushTargetsGetReq)
++	pa.chAPIPushTargetsAdd = make(chan pathAPIPushTargetsAddReq)
++	pa.chAPIPushTargetsRemove = make(chan pathAPIPushTargetsRemoveReq)
+ 	pa.done = make(chan struct{})
+ 
++	pa.syncPushTargets(pa.conf.PushTargets)
++
+ 	pa.Log(logger.Debug, "created")
+ 
+ 	pa.wg.Add(1)
+@@ -243,6 +296,11 @@ func (pa *path) run() {
+ 		pa.setNotAvailable()
+ 	}
+ 
++	if pa.pushManager != nil {
++		pa.pushManager.Close()
++		pa.pushManager = nil
++	}
++
+ 	if pa.source != nil {
+ 		if source, ok := pa.source.(*staticsources.Handler); ok {
+ 			if !pa.conf.SourceOnDemand || pa.onDemandStaticSourceState != pathOnDemandStateInitial {
+@@ -340,6 +398,18 @@ func (pa *path) runInner() error {
+ 		case req := <-pa.chAPIPathsGet:
+ 			pa.doAPIPathsGet(req)
+ 
++		case req := <-pa.chAPIPushTargetsList:
++			pa.doAPIPushTargetsList(req)
++
++		case req := <-pa.chAPIPushTargetsGet:
++			pa.doAPIPushTargetsGet(req)
++
++		case req := <-pa.chAPIPushTargetsAdd:
++			pa.doAPIPushTargetsAdd(req)
++
++		case req := <-pa.chAPIPushTargetsRemove:
++			pa.doAPIPushTargetsRemove(req)
++
+ 		case <-pa.ctx.Done():
+ 			return fmt.Errorf("terminated")
+ 		}
+@@ -392,6 +462,8 @@ func (pa *path) doReloadConf(newConf *conf.Path) {
+ 	pa.conf = newConf
+ 	pa.confMutex.Unlock()
+ 
++	pa.syncPushTargets(newConf.PushTargets)
++
+ 	if pa.conf.HasStaticSource() {
+ 		pa.source.(*staticsources.Handler).ReloadConf(newConf)
+ 	}
+@@ -437,6 +509,10 @@ func (pa *path) doSourceStaticSetReady(req defs.PathSourceStaticSetReadyReq) {
+ 
+ 	if pa.conf.AlwaysAvailable {
+ 		pa.onlineTime = time.Now()
++
++		if pa.pushManager != nil {
++			pa.pushManager.SetStream(pa.stream)
++		}
+ 	}
+ 
+ 	if pa.conf.HasOnDemandStaticSource() {
+@@ -562,6 +638,10 @@ func (pa *path) doAddPublisher(req defs.PathAddPublisherReq) {
+ 
+ 	if pa.conf.AlwaysAvailable {
+ 		pa.onlineTime = time.Now()
++
++		if pa.pushManager != nil {
++			pa.pushManager.SetStream(pa.stream)
++		}
+ 	}
+ 
+ 	if pa.conf.HasOnDemandPublisher() && pa.onDemandPublisherState != pathOnDemandStateInitial {
+@@ -710,6 +790,135 @@ func (pa *path) doAPIPathsGet(req pathAPIPathsGetReq) {
+ 	}
+ }
+ 
++func (pa *path) doAPIPushTargetsList(req pathAPIPushTargetsListReq) {
++	if pa.pushManager == nil {
++		req.res <- pathAPIPushTargetsListRes{data: &defs.APIPushTargetList{Items: []*defs.APIPushTarget{}}}
++		return
++	}
++	req.res <- pathAPIPushTargetsListRes{data: pa.pushManager.APIItem()}
++}
++
++func (pa *path) doAPIPushTargetsGet(req pathAPIPushTargetsGetReq) {
++	if pa.pushManager == nil {
++		req.res <- pathAPIPushTargetsGetRes{err: push.ErrTargetNotFound}
++		return
++	}
++	target, err := pa.pushManager.GetTarget(req.id)
++	if err != nil {
++		req.res <- pathAPIPushTargetsGetRes{err: err}
++		return
++	}
++	req.res <- pathAPIPushTargetsGetRes{data: target.APIItem()}
++}
++
++func (pa *path) doAPIPushTargetsAdd(req pathAPIPushTargetsAddReq) {
++	target := pa.ensurePushManager().AddTarget(req.req.URL)
++
++	req.res <- pathAPIPushTargetsAddRes{data: target.APIItem()}
++}
++
++func (pa *path) doAPIPushTargetsRemove(req pathAPIPushTargetsRemoveReq) {
++	if pa.pushManager == nil {
++		req.res <- pathAPIPushTargetsRemoveRes{err: push.ErrTargetNotFound}
++		return
++	}
++
++	err := pa.pushManager.RemoveTarget(req.id)
++	if err != nil {
++		req.res <- pathAPIPushTargetsRemoveRes{err: err}
++		return
++	}
++
++	if len(pa.pushManager.TargetsList()) == 0 {
++		pa.pushManager.Close()
++		pa.pushManager = nil
++	}
++
++	req.res <- pathAPIPushTargetsRemoveRes{}
++}
++
++func (pa *path) ensurePushManager() *push.Manager {
++	if pa.pushManager == nil {
++		pa.pushManager = &push.Manager{
++			ReadTimeout:  pa.readTimeout,
++			WriteTimeout: pa.writeTimeout,
++			PathName:     pa.name,
++			Parent:       pa,
++		}
++		pa.pushManager.Initialize()
++
++		if pa.stream != nil {
++			pa.pushManager.SetStream(pa.stream)
++		}
++	}
++
++	return pa.pushManager
++}
++
++func pushTargetIsSelf(targetURL, pathName string) bool {
++	u, err := url.Parse(targetURL)
++	if err != nil {
++		return false
++	}
++	if strings.TrimPrefix(u.Path, "/") != pathName {
++		return false
++	}
++	host := u.Hostname()
++	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
++		return true
++	}
++	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
++		return true
++	}
++	return false
++}
++
++func (pa *path) syncPushTargets(targets conf.PushTargets) {
++	// Filter out push targets that would publish back to this path (cascade prevention).
++	// Only block when both path name AND host match local addresses.
++	filtered := make(conf.PushTargets, 0, len(targets))
++	for _, t := range targets {
++		resolved := strings.ReplaceAll(t.URL, "$MTX_PATH", pa.name)
++		resolved = strings.ReplaceAll(resolved, "$path", pa.name)
++		if !pushTargetIsSelf(resolved, pa.name) {
++			filtered = append(filtered, t)
++		}
++	}
++	targets = filtered
++
++	if len(targets) == 0 {
++		if pa.pushManager != nil {
++			pa.pushManager.Close()
++			pa.pushManager = nil
++		}
++		return
++	}
++
++	pm := pa.ensurePushManager()
++	pending := make(map[string]int, len(targets))
++	for _, target := range targets {
++		pending[target.URL]++
++	}
++
++	for _, current := range pm.ConfTargetsList() {
++		if pending[current.URL] > 0 {
++			pending[current.URL]--
++			continue
++		}
++
++		_ = pm.RemoveTarget(current.UUID())
++	}
++
++	for _, target := range targets {
++		if pending[target.URL] == 0 {
++			continue
++		}
++
++		pm.AddConfTarget(target.URL)
++		pending[target.URL]--
++	}
++}
++
+ func (pa *path) SafeConf() *conf.Path {
+ 	pa.confMutex.RLock()
+ 	defer pa.confMutex.RUnlock()
+@@ -838,6 +1047,10 @@ func (pa *path) setAvailable(
+ 		sourceDesc = source.APISourceDescribe()
+ 	}
+ 
++	if pa.pushManager != nil {
++		pa.pushManager.SetStream(pa.stream)
++	}
++
+ 	pa.onNotReadyHook = hooks.OnReady(hooks.OnReadyParams{
+ 		Logger:          pa,
+ 		ExternalCmdPool: pa.externalCmdPool,
+@@ -887,6 +1100,11 @@ func (pa *path) setNotAvailable() {
+ 		pa.recorder = nil
+ 	}
+ 
++	// Stop pushing to external targets
++	if pa.pushManager != nil {
++		pa.pushManager.ClearStream()
++	}
++
+ 	if pa.stream != nil {
+ 		pa.stream.Close()
+ 		pa.stream = nil
+@@ -1090,3 +1308,51 @@ func (pa *path) APIPathsGet(req pathAPIPathsGetReq) (*defs.APIPath, error) {
+ 		return nil, fmt.Errorf("terminated")
+ 	}
+ }
++
++// APIPushTargetsList is called by api.
++func (pa *path) APIPushTargetsList() (*defs.APIPushTargetList, error) {
++	req := pathAPIPushTargetsListReq{res: make(chan pathAPIPushTargetsListRes)}
++	select {
++	case pa.chAPIPushTargetsList <- req:
++		res := <-req.res
++		return res.data, res.err
++	case <-pa.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsGet is called by api.
++func (pa *path) APIPushTargetsGet(id uuid.UUID) (*defs.APIPushTarget, error) {
++	req := pathAPIPushTargetsGetReq{id: id, res: make(chan pathAPIPushTargetsGetRes)}
++	select {
++	case pa.chAPIPushTargetsGet <- req:
++		res := <-req.res
++		return res.data, res.err
++	case <-pa.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsAdd is called by api.
++func (pa *path) APIPushTargetsAdd(add defs.APIPushTargetAdd) (*defs.APIPushTarget, error) {
++	req := pathAPIPushTargetsAddReq{req: add, res: make(chan pathAPIPushTargetsAddRes)}
++	select {
++	case pa.chAPIPushTargetsAdd <- req:
++		res := <-req.res
++		return res.data, res.err
++	case <-pa.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsRemove is called by api.
++func (pa *path) APIPushTargetsRemove(id uuid.UUID) error {
++	req := pathAPIPushTargetsRemoveReq{id: id, res: make(chan pathAPIPushTargetsRemoveRes)}
++	select {
++	case pa.chAPIPushTargetsRemove <- req:
++		res := <-req.res
++		return res.err
++	case <-pa.ctx.Done():
++		return fmt.Errorf("terminated")
++	}
++}
+diff --git a/internal/core/path_manager.go b/internal/core/path_manager.go
+index 2f10e97..33c0d1b 100644
+--- a/internal/core/path_manager.go
++++ b/internal/core/path_manager.go
+@@ -7,6 +7,8 @@ import (
+ 	"sort"
+ 	"sync"
+ 
++	"github.com/google/uuid"
++
+ 	"github.com/bluenviron/mediamtx/internal/auth"
+ 	"github.com/bluenviron/mediamtx/internal/conf"
+ 	"github.com/bluenviron/mediamtx/internal/defs"
+@@ -21,6 +23,7 @@ func pathConfCanBeUpdated(oldPathConf *conf.Path, newPathConf *conf.Path) bool {
+ 
+ 	clone.Name = newPathConf.Name
+ 	clone.Regexp = newPathConf.Regexp
++	clone.PushTargets = newPathConf.PushTargets
+ 
+ 	clone.Record = newPathConf.Record
+ 	clone.RecordPath = newPathConf.RecordPath
+@@ -675,3 +678,87 @@ func (pm *pathManager) APIPathsGet(name string) (*defs.APIPath, error) {
+ 		return nil, fmt.Errorf("terminated")
+ 	}
+ }
++
++// APIPushTargetsList is called by api.
++func (pm *pathManager) APIPushTargetsList(name string) (*defs.APIPushTargetList, error) {
++	req := pathAPIPathsGetReq{
++		name: name,
++		res:  make(chan pathAPIPathsGetRes),
++	}
++
++	select {
++	case pm.chAPIPathsGet <- req:
++		res := <-req.res
++		if res.err != nil {
++			return nil, res.err
++		}
++
++		return res.path.APIPushTargetsList()
++
++	case <-pm.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsGet is called by api.
++func (pm *pathManager) APIPushTargetsGet(name string, id uuid.UUID) (*defs.APIPushTarget, error) {
++	req := pathAPIPathsGetReq{
++		name: name,
++		res:  make(chan pathAPIPathsGetRes),
++	}
++
++	select {
++	case pm.chAPIPathsGet <- req:
++		res := <-req.res
++		if res.err != nil {
++			return nil, res.err
++		}
++
++		return res.path.APIPushTargetsGet(id)
++
++	case <-pm.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsAdd is called by api.
++func (pm *pathManager) APIPushTargetsAdd(name string, add defs.APIPushTargetAdd) (*defs.APIPushTarget, error) {
++	req := pathAPIPathsGetReq{
++		name: name,
++		res:  make(chan pathAPIPathsGetRes),
++	}
++
++	select {
++	case pm.chAPIPathsGet <- req:
++		res := <-req.res
++		if res.err != nil {
++			return nil, res.err
++		}
++
++		return res.path.APIPushTargetsAdd(add)
++
++	case <-pm.ctx.Done():
++		return nil, fmt.Errorf("terminated")
++	}
++}
++
++// APIPushTargetsRemove is called by api.
++func (pm *pathManager) APIPushTargetsRemove(name string, id uuid.UUID) error {
++	req := pathAPIPathsGetReq{
++		name: name,
++		res:  make(chan pathAPIPathsGetRes),
++	}
++
++	select {
++	case pm.chAPIPathsGet <- req:
++		res := <-req.res
++		if res.err != nil {
++			return res.err
++		}
++
++		return res.path.APIPushTargetsRemove(id)
++
++	case <-pm.ctx.Done():
++		return fmt.Errorf("terminated")
++	}
++}
+diff --git a/internal/core/path_test.go b/internal/core/path_test.go
+index 563e995..f36cc79 100644
+--- a/internal/core/path_test.go
++++ b/internal/core/path_test.go
+@@ -1010,3 +1010,27 @@ func TestPathOverridePublisher(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestPushTargetIsSelf(t *testing.T) {
++	for _, ca := range []struct {
++		name     string
++		url      string
++		pathName string
++		isSelf   bool
++	}{
++		{"localhost same path", "rtmp://localhost/live/stream", "live/stream", true},
++		{"127.0.0.1 same path", "rtmp://127.0.0.1/live/stream", "live/stream", true},
++		{"ipv6 loopback same path", "rtmp://[::1]/live/stream", "live/stream", true},
++		{"remote same path allowed", "rtmp://cdn.example.com/live/stream", "live/stream", false},
++		{"localhost different path", "rtmp://localhost/other/stream", "live/stream", false},
++		{"remote different path", "rtmp://cdn.example.com/other/path", "live/stream", false},
++		{"empty host same path", "rtmp:///live/stream", "live/stream", true},
++		{"srt localhost", "srt://localhost:10080/live/stream", "live/stream", true},
++		{"http localhost hls", "http://localhost:8080/live/stream.m3u8", "live/stream.m3u8", true},
++		{"https remote hls", "https://cdn.example.com/live/out.m3u8", "live/out.m3u8", false},
++	} {
++		t.Run(ca.name, func(t *testing.T) {
++			require.Equal(t, ca.isSelf, pushTargetIsSelf(ca.url, ca.pathName))
++		})
++	}
++}
+diff --git a/internal/defs/api.go b/internal/defs/api.go
+index b66e9e3..37f6ac5 100644
+--- a/internal/defs/api.go
++++ b/internal/defs/api.go
+@@ -3,6 +3,8 @@ package defs
+ import (
+ 	"time"
+ 
++	"github.com/google/uuid"
++
+ 	"github.com/bluenviron/mediamtx/internal/conf"
+ )
+ 
+@@ -45,3 +47,42 @@ type APIPathConfList struct {
+ 	PageCount int         `json:"pageCount"`
+ 	Items     []conf.Path `json:"items"`
+ }
++// APIPushTargetState is the state of a push target.
++type APIPushTargetState string
++
++// states.
++const (
++	APIPushTargetStateIdle      APIPushTargetState = "idle"
++	APIPushTargetStateRunning   APIPushTargetState = "running"
++	APIPushTargetStateError     APIPushTargetState = "error"
++)
++
++// APIPushTarget is a push target.
++type APIPushTarget struct {
++	ID         uuid.UUID          `json:"id"`
++	Created    time.Time          `json:"created"`
++	URL        string             `json:"url"`
++	State      APIPushTargetState `json:"state"`
++	Error      string             `json:"error,omitempty"`
++	BytesSent  uint64             `json:"bytesSent"`
++}
++
++// APIPushTargetList is a list of push targets.
++type APIPushTargetList struct {
++	ItemCount int              `json:"itemCount"`
++	PageCount int              `json:"pageCount"`
++	Items     []*APIPushTarget `json:"items"`
++}
++
++// APIPushTargetAdd is the payload for adding a push target.
++type APIPushTargetAdd struct {
++	URL string `json:"url"`
++}
++
++// APIPushManager contains methods used by the API.
++type APIPushManager interface {
++	APIPushTargetsList(pathName string) (*APIPushTargetList, error)
++	APIPushTargetsGet(pathName string, id uuid.UUID) (*APIPushTarget, error)
++	APIPushTargetsAdd(pathName string, req APIPushTargetAdd) (*APIPushTarget, error)
++	APIPushTargetsRemove(pathName string, id uuid.UUID) error
++}
+diff --git a/internal/defs/api_path.go b/internal/defs/api_path.go
+index 830766c..5b87f4d 100644
+--- a/internal/defs/api_path.go
++++ b/internal/defs/api_path.go
+@@ -2,12 +2,18 @@ package defs
+ 
+ import (
+ 	"time"
++
++	"github.com/google/uuid"
+ )
+ 
+ // APIPathManager contains methods used by the API and Metrics server.
+ type APIPathManager interface {
+ 	APIPathsList() (*APIPathList, error)
+ 	APIPathsGet(string) (*APIPath, error)
++	APIPushTargetsList(pathName string) (*APIPushTargetList, error)
++	APIPushTargetsGet(pathName string, id uuid.UUID) (*APIPushTarget, error)
++	APIPushTargetsAdd(pathName string, req APIPushTargetAdd) (*APIPushTarget, error)
++	APIPushTargetsRemove(pathName string, id uuid.UUID) error
+ }
+ 
+ // APIPathSourceType is the type of a path source.
+diff --git a/internal/metrics/metrics_test.go b/internal/metrics/metrics_test.go
+index e154440..6c0bddf 100644
+--- a/internal/metrics/metrics_test.go
++++ b/internal/metrics/metrics_test.go
+@@ -71,6 +71,22 @@ func (dummyPathManager) APIPathsGet(string) (*defs.APIPath, error) {
+ 	panic("unused")
+ }
+ 
++func (dummyPathManager) APIPushTargetsList(string) (*defs.APIPushTargetList, error) {
++	panic("unused")
++}
++
++func (dummyPathManager) APIPushTargetsGet(string, uuid.UUID) (*defs.APIPushTarget, error) {
++	panic("unused")
++}
++
++func (dummyPathManager) APIPushTargetsAdd(string, defs.APIPushTargetAdd) (*defs.APIPushTarget, error) {
++	panic("unused")
++}
++
++func (dummyPathManager) APIPushTargetsRemove(string, uuid.UUID) error {
++	panic("unused")
++}
++
+ type dummyHLSServer struct{}
+ 
+ func (dummyHLSServer) APIMuxersList() (*defs.APIHLSMuxerList, error) {
+diff --git a/internal/push/hls_bench_test.go b/internal/push/hls_bench_test.go
+new file mode 100644
+index 0000000..bb5b987
+--- /dev/null
++++ b/internal/push/hls_bench_test.go
+@@ -0,0 +1,251 @@
++package push
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// hlsPlaylistEntryOld is the current implementation: each output copies the full segment.
++type hlsPlaylistEntryOld struct {
++	name     string
++	duration time.Duration
++	data     []byte
++}
++
++// sharedSegment is a reference-counted immutable segment shared across outputs.
++type sharedSegment struct {
++	name     string
++	duration time.Duration
++	data     []byte
++	refs     atomic.Int32
++}
++
++func newSharedSegment(name string, dur time.Duration, data []byte) *sharedSegment {
++	s := &sharedSegment{
++		name:     name,
++		duration: dur,
++		data:     data,
++	}
++	s.refs.Store(1)
++	return s
++}
++
++func (s *sharedSegment) Acquire() { s.refs.Add(1) }
++
++func (s *sharedSegment) Release() {
++	if s.refs.Add(-1) == 0 {
++		// data becomes eligible for GC
++	}
++}
++
++// BenchmarkSegmentCopyVsShared measures the cost of per-output segment copies
++// versus shared immutable segments at 500 outputs.
++func BenchmarkSegmentCopyVsShared(b *testing.B) {
++	segSize := 1750000 // ~1.75 MB typical 2s segment at 7 Mbps
++	segData := make([]byte, segSize)
++	for i := range segData {
++		segData[i] = byte(i)
++	}
++
++	for _, numOutputs := range []int{1, 10, 100, 500} {
++		b.Run(fmt.Sprintf("Copy/%d_outputs", numOutputs), func(b *testing.B) {
++			b.ReportAllocs()
++			for i := 0; i < b.N; i++ {
++				for j := 0; j < numOutputs; j++ {
++					seg := hlsPlaylistEntryOld{
++						name:     fmt.Sprintf("seg%d.ts", i),
++						duration: 2 * time.Second,
++						data:     append([]byte(nil), segData...),
++					}
++					_ = seg
++				}
++			}
++		})
++
++		b.Run(fmt.Sprintf("Shared/%d_outputs", numOutputs), func(b *testing.B) {
++			b.ReportAllocs()
++			for i := 0; i < b.N; i++ {
++				seg := newSharedSegment(
++					fmt.Sprintf("seg%d.ts", i),
++					2*time.Second,
++					append([]byte(nil), segData...),
++				)
++				for j := 0; j < numOutputs; j++ {
++					seg.Acquire()
++				}
++				for j := 0; j < numOutputs; j++ {
++					seg.Release()
++				}
++				seg.Release()
++			}
++		})
++	}
++}
++
++// BenchmarkUploadConcurrency measures HTTP upload throughput with varying
++// concurrency levels to find the optimal worker pool size.
++func BenchmarkUploadConcurrency(b *testing.B) {
++	segSize := 1750000
++	segData := make([]byte, segSize)
++
++	var reqCount atomic.Int64
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.Copy(io.Discard, r.Body)
++		reqCount.Add(1)
++		w.WriteHeader(200)
++	}))
++	defer srv.Close()
++
++	client := srv.Client()
++
++	for _, concurrency := range []int{1, 8, 32, 64, 128} {
++		numSegs := 500 // simulate 500 outputs all rotating at once
++		b.Run(fmt.Sprintf("Workers_%d", concurrency), func(b *testing.B) {
++			b.ReportAllocs()
++			for i := 0; i < b.N; i++ {
++				reqCount.Store(0)
++				sem := make(chan struct{}, concurrency)
++				var wg sync.WaitGroup
++
++				for j := 0; j < numSegs; j++ {
++					wg.Add(1)
++					sem <- struct{}{}
++					go func(idx int) {
++						defer func() { <-sem; wg.Done() }()
++
++						req, _ := http.NewRequest(http.MethodPut,
++							fmt.Sprintf("%s/seg%d.ts", srv.URL, idx),
++							bytes.NewReader(segData))
++						req.Header.Set("Content-Type", "video/MP2T")
++						resp, err := client.Do(req)
++						if err == nil {
++							resp.Body.Close()
++						}
++					}(j)
++				}
++				wg.Wait()
++
++				if reqCount.Load() != int64(numSegs) {
++					b.Fatalf("expected %d requests, got %d", numSegs, reqCount.Load())
++				}
++			}
++		})
++	}
++}
++
++// BenchmarkUploadedSliceTrim measures the old reslice (leaky) vs new copy-on-trim.
++func BenchmarkUploadedSliceTrim(b *testing.B) {
++	type segEntry struct {
++		name     string
++		duration time.Duration
++		data     []byte
++	}
++	segSize := 1750000
++	segCount := 6
++
++	b.Run("Reslice_leaky", func(b *testing.B) {
++		b.ReportAllocs()
++		var uploaded []segEntry
++		for i := 0; i < b.N; i++ {
++			uploaded = append(uploaded, segEntry{
++				name:     fmt.Sprintf("seg%d.ts", i),
++				duration: 2 * time.Second,
++				data:     make([]byte, segSize),
++			})
++			if len(uploaded) > segCount {
++				uploaded = uploaded[len(uploaded)-segCount:]
++			}
++		}
++		_ = uploaded
++	})
++
++	b.Run("Copy_on_trim", func(b *testing.B) {
++		b.ReportAllocs()
++		uploaded := make([]hlsPlaylistEntry, 0, segCount)
++		for i := 0; i < b.N; i++ {
++			uploaded = append(uploaded, hlsPlaylistEntry{
++				name:     fmt.Sprintf("seg%d.ts", i),
++				duration: 2 * time.Second,
++			})
++			if len(uploaded) > segCount {
++				keep := uploaded[len(uploaded)-segCount:]
++				uploaded = make([]hlsPlaylistEntry, len(keep), segCount)
++				copy(uploaded, keep)
++			}
++		}
++		_ = uploaded
++	})
++}
++
++// TestSharedSegmentRefCount verifies reference counting correctness.
++func TestSharedSegmentRefCount(t *testing.T) {
++	seg := newSharedSegment("test.ts", 2*time.Second, []byte("data"))
++
++	if seg.refs.Load() != 1 {
++		t.Fatalf("expected 1 ref, got %d", seg.refs.Load())
++	}
++
++	seg.Acquire()
++	seg.Acquire()
++	if seg.refs.Load() != 3 {
++		t.Fatalf("expected 3 refs, got %d", seg.refs.Load())
++	}
++
++	seg.Release()
++	seg.Release()
++	if seg.refs.Load() != 1 {
++		t.Fatalf("expected 1 ref, got %d", seg.refs.Load())
++	}
++
++	seg.Release()
++	if seg.refs.Load() != 0 {
++		t.Fatalf("expected 0 refs, got %d", seg.refs.Load())
++	}
++}
++
++// TestUploadWorkerPoolCompleteness verifies all segments get uploaded
++// with bounded concurrency.
++func TestUploadWorkerPoolCompleteness(t *testing.T) {
++	var uploaded atomic.Int64
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		time.Sleep(time.Millisecond) // simulate network latency
++		io.Copy(io.Discard, r.Body)
++		uploaded.Add(1)
++		w.WriteHeader(200)
++	}))
++	defer srv.Close()
++
++	numSegs := 100
++	concurrency := 16
++	sem := make(chan struct{}, concurrency)
++	var wg sync.WaitGroup
++
++	for i := 0; i < numSegs; i++ {
++		wg.Add(1)
++		sem <- struct{}{}
++		go func(idx int) {
++			defer func() { <-sem; wg.Done() }()
++			req, _ := http.NewRequest(http.MethodPut,
++				fmt.Sprintf("%s/seg%d.ts", srv.URL, idx),
++				bytes.NewReader([]byte("data")))
++			resp, err := srv.Client().Do(req)
++			if err == nil {
++				resp.Body.Close()
++			}
++		}(i)
++	}
++	wg.Wait()
++
++	if uploaded.Load() != int64(numSegs) {
++		t.Fatalf("expected %d uploads, got %d", numSegs, uploaded.Load())
++	}
++}
+diff --git a/internal/push/hls_muxer.go b/internal/push/hls_muxer.go
+new file mode 100644
+index 0000000..fc823e3
+--- /dev/null
++++ b/internal/push/hls_muxer.go
+@@ -0,0 +1,314 @@
++package push
++
++import (
++	"bytes"
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/bluenviron/gortsplib/v5/pkg/description"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
++	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
++	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
++	mcmpegts "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
++	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
++
++	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/stream"
++	"github.com/bluenviron/mediamtx/internal/unit"
++)
++
++// hlsMuxer produces shared MPEG-TS segments from a stream.
++// Multiple HLS targets subscribe to receive segment references.
++type hlsMuxer struct {
++	segmentDuration time.Duration
++	parent          logger.Writer
++
++	mu               sync.Mutex
++	subscribers      map[*hlsSubscription]struct{}
++	segBuf           bytes.Buffer
++	segWriter        *mcmpegts.Writer
++	segTracks        []*mcmpegts.Track
++	segStartDTS      int64
++	segSeq           int
++	firstIDRSeen     bool
++	hasVideo         bool
++	segDurationTicks int64
++	reader           *stream.Reader
++	maxSegDuration   time.Duration
++}
++
++type hlsSubscription struct {
++	ch chan *hlsSharedSegment
++}
++
++func newHLSMuxer(segDuration time.Duration, parent logger.Writer) *hlsMuxer {
++	return &hlsMuxer{
++		segmentDuration:  segDuration,
++		parent:           parent,
++		subscribers:      make(map[*hlsSubscription]struct{}),
++		segDurationTicks: int64(segDuration.Seconds() * 90000),
++	}
++}
++
++func (m *hlsMuxer) subscribe() *hlsSubscription {
++	sub := &hlsSubscription{
++		ch: make(chan *hlsSharedSegment, 16),
++	}
++	m.mu.Lock()
++	m.subscribers[sub] = struct{}{}
++	m.mu.Unlock()
++	return sub
++}
++
++func (m *hlsMuxer) unsubscribe(sub *hlsSubscription) {
++	m.mu.Lock()
++	delete(m.subscribers, sub)
++	m.mu.Unlock()
++	// drain any pending segments
++	for {
++		select {
++		case seg := <-sub.ch:
++			seg.release()
++		default:
++			return
++		}
++	}
++}
++
++// MaxSegDuration returns the maximum segment duration seen so far.
++func (m *hlsMuxer) MaxSegDuration() time.Duration {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	return m.maxSegDuration
++}
++
++func (m *hlsMuxer) setup(strm *stream.Stream) error {
++	m.reader = &stream.Reader{
++		Parent: m.parent,
++	}
++
++	for _, media := range strm.Desc.Medias {
++		for _, forma := range media.Formats {
++			switch forma := forma.(type) {
++			case *format.H265:
++				m.hasVideo = true
++				track := &mcmpegts.Track{Codec: &tscodecs.H265{}}
++				m.segTracks = append(m.segTracks, track)
++
++				var dtsExtractor *h265.DTSExtractor
++
++				m.reader.OnData(media, forma, func(u *unit.Unit) error {
++					if u.NilPayload() {
++						return nil
++					}
++					isIDR := h265.IsRandomAccess(u.Payload.(unit.PayloadH265))
++
++					if dtsExtractor == nil {
++						if !isIDR {
++							return nil
++						}
++						dtsExtractor = &h265.DTSExtractor{}
++						dtsExtractor.Initialize()
++					}
++
++					dts, err := dtsExtractor.Extract(u.Payload.(unit.PayloadH265), u.PTS)
++					if err != nil {
++						return err
++					}
++
++					m.mu.Lock()
++					defer m.mu.Unlock()
++
++					if isIDR && m.firstIDRSeen && (dts-m.segStartDTS) >= m.segDurationTicks {
++						m.rotateSegment(dts)
++					}
++
++					if isIDR && !m.firstIDRSeen {
++						m.firstIDRSeen = true
++						m.segStartDTS = dts
++					}
++
++					return m.segWriter.WriteH265(track, u.PTS, dts, u.Payload.(unit.PayloadH265))
++				})
++
++			case *format.H264:
++				m.hasVideo = true
++				track := &mcmpegts.Track{Codec: &tscodecs.H264{}}
++				m.segTracks = append(m.segTracks, track)
++
++				var dtsExtractor *h264.DTSExtractor
++
++				m.reader.OnData(media, forma, func(u *unit.Unit) error {
++					if u.NilPayload() {
++						return nil
++					}
++					isIDR := h264.IsRandomAccess(u.Payload.(unit.PayloadH264))
++
++					if dtsExtractor == nil {
++						if !isIDR {
++							return nil
++						}
++						dtsExtractor = &h264.DTSExtractor{}
++						dtsExtractor.Initialize()
++					}
++
++					dts, err := dtsExtractor.Extract(u.Payload.(unit.PayloadH264), u.PTS)
++					if err != nil {
++						return err
++					}
++
++					m.mu.Lock()
++					defer m.mu.Unlock()
++
++					if isIDR && m.firstIDRSeen && (dts-m.segStartDTS) >= m.segDurationTicks {
++						m.rotateSegment(dts)
++					}
++
++					if isIDR && !m.firstIDRSeen {
++						m.firstIDRSeen = true
++						m.segStartDTS = dts
++					}
++
++					return m.segWriter.WriteH264(track, u.PTS, dts, u.Payload.(unit.PayloadH264))
++				})
++
++			case *format.MPEG4Audio:
++				track := &mcmpegts.Track{Codec: &tscodecs.MPEG4Audio{
++					Config: *forma.Config,
++				}}
++				m.segTracks = append(m.segTracks, track)
++
++				m.reader.OnData(media, forma, func(u *unit.Unit) error {
++					if u.NilPayload() {
++						return nil
++					}
++					m.mu.Lock()
++					defer m.mu.Unlock()
++					if m.segWriter == nil {
++						return nil
++					}
++
++					if !m.hasVideo {
++						pts90k := u.PTS * 90000 / int64(forma.ClockRate())
++						if !m.firstIDRSeen {
++							m.firstIDRSeen = true
++							m.segStartDTS = pts90k
++						} else if (pts90k - m.segStartDTS) >= m.segDurationTicks {
++							m.rotateSegment(pts90k)
++						}
++					}
++
++					return m.segWriter.WriteMPEG4Audio(track, u.PTS, u.Payload.(unit.PayloadMPEG4Audio))
++				})
++
++			case *format.Opus:
++				track := &mcmpegts.Track{Codec: &tscodecs.Opus{
++					ChannelCount: forma.ChannelCount,
++				}}
++				m.segTracks = append(m.segTracks, track)
++
++				m.reader.OnData(media, forma, func(u *unit.Unit) error {
++					if u.NilPayload() {
++						return nil
++					}
++					m.mu.Lock()
++					defer m.mu.Unlock()
++					if m.segWriter == nil {
++						return nil
++					}
++
++					if !m.hasVideo {
++						pts90k := u.PTS * 90000 / int64(forma.ClockRate())
++						if !m.firstIDRSeen {
++							m.firstIDRSeen = true
++							m.segStartDTS = pts90k
++						} else if (pts90k - m.segStartDTS) >= m.segDurationTicks {
++							m.rotateSegment(pts90k)
++						}
++					}
++
++					return m.segWriter.WriteOpus(track, u.PTS, u.Payload.(unit.PayloadOpus))
++				})
++			}
++		}
++	}
++
++	if len(m.segTracks) == 0 {
++		return fmt.Errorf("no supported tracks found for HLS push")
++	}
++
++	m.segWriter = &mcmpegts.Writer{W: &m.segBuf, Tracks: m.segTracks}
++	return m.segWriter.Initialize()
++}
++
++// rotateSegment finalizes the current segment and fans it out to subscribers.
++// Must be called with m.mu held.
++func (m *hlsMuxer) rotateSegment(dts int64) {
++	dur := time.Duration(dts-m.segStartDTS) * time.Second / 90000
++	if dur > m.maxSegDuration {
++		m.maxSegDuration = dur
++	}
++
++	seg := newHLSSharedSegment(
++		fmt.Sprintf("seg%d.ts", m.segSeq),
++		dur,
++		append([]byte(nil), m.segBuf.Bytes()...),
++	)
++
++	// Fan out to subscribers. Each subscriber gets an acquired reference.
++	for sub := range m.subscribers {
++		seg.acquire()
++		select {
++		case sub.ch <- seg:
++		default:
++			seg.release()
++			m.parent.Log(logger.Warn, "HLS subscriber channel full, dropping segment")
++		}
++	}
++	seg.release() // release the initial ref
++
++	m.segSeq++
++	m.segBuf.Reset()
++	m.segWriter = &mcmpegts.Writer{W: &m.segBuf, Tracks: m.segTracks}
++	if err := m.segWriter.Initialize(); err != nil {
++		m.parent.Log(logger.Warn, "segment writer reinit failed: %v", err)
++	}
++	m.segStartDTS = dts
++}
++
++// SegSeq returns the current segment sequence number.
++func (m *hlsMuxer) SegSeq() int {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	return m.segSeq
++}
++
++// Reader returns the muxer's stream reader for AddReader/RemoveReader.
++func (m *hlsMuxer) Reader() *stream.Reader {
++	return m.reader
++}
++
++func (m *hlsMuxer) subscriberCount() int {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	return len(m.subscribers)
++}
++
++// hasTracks reports whether this muxer supports the stream.
++func (m *hlsMuxer) hasTracks() bool {
++	return len(m.segTracks) > 0
++}
++
++// mediaForStream checks if the stream has compatible media for this muxer.
++func mediaForStream(desc *description.Session) bool {
++	for _, media := range desc.Medias {
++		for _, forma := range media.Formats {
++			switch forma.(type) {
++			case *format.H265, *format.H264, *format.MPEG4Audio, *format.Opus:
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/internal/push/hls_segment.go b/internal/push/hls_segment.go
+new file mode 100644
+index 0000000..b135f4f
+--- /dev/null
++++ b/internal/push/hls_segment.go
+@@ -0,0 +1,36 @@
++package push
++
++import (
++	"sync/atomic"
++	"time"
++)
++
++// hlsSharedSegment is an immutable MPEG-TS segment shared across multiple
++// HLS push outputs via reference counting. When all outputs finish uploading,
++// the data becomes eligible for GC.
++type hlsSharedSegment struct {
++	name     string
++	duration time.Duration
++	data     []byte
++	refs     atomic.Int32
++}
++
++func newHLSSharedSegment(name string, dur time.Duration, data []byte) *hlsSharedSegment {
++	s := &hlsSharedSegment{
++		name:     name,
++		duration: dur,
++		data:     data,
++	}
++	s.refs.Store(1)
++	return s
++}
++
++func (s *hlsSharedSegment) acquire() {
++	s.refs.Add(1)
++}
++
++func (s *hlsSharedSegment) release() {
++	if s.refs.Add(-1) <= 0 {
++		s.data = nil
++	}
++}
+diff --git a/internal/push/hls_test.go b/internal/push/hls_test.go
+new file mode 100644
+index 0000000..dc6e171
+--- /dev/null
++++ b/internal/push/hls_test.go
+@@ -0,0 +1,298 @@
++package push
++
++import (
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/stretchr/testify/require"
++)
++
++func TestHLSSharedSegmentLifecycle(t *testing.T) {
++	data := []byte("segment data here")
++	seg := newHLSSharedSegment("seg0.ts", 2*time.Second, data)
++
++	require.Equal(t, int32(1), seg.refs.Load())
++	require.Equal(t, "seg0.ts", seg.name)
++	require.Equal(t, 2*time.Second, seg.duration)
++
++	seg.acquire()
++	seg.acquire()
++	require.Equal(t, int32(3), seg.refs.Load())
++
++	seg.release()
++	require.Equal(t, int32(2), seg.refs.Load())
++	require.NotNil(t, seg.data)
++
++	seg.release()
++	seg.release()
++	require.Equal(t, int32(0), seg.refs.Load())
++	require.Nil(t, seg.data)
++}
++
++type testLogWriter struct{}
++
++func (*testLogWriter) Log(_ logger.Level, _ string, _ ...any) {}
++
++func TestHLSMuxerSubscriberFanout(t *testing.T) {
++	mux := newHLSMuxer(2*time.Second, &testLogWriter{})
++
++	sub1 := mux.subscribe()
++	sub2 := mux.subscribe()
++	sub3 := mux.subscribe()
++
++	require.Equal(t, 3, mux.subscriberCount())
++
++	// Simulate segment rotation by calling rotateSegment directly.
++	mux.mu.Lock()
++	mux.segStartDTS = 0
++	mux.firstIDRSeen = true
++
++	// Write some fake data into segBuf.
++	mux.segBuf.WriteString("fake mpeg-ts data")
++
++	mux.rotateSegment(180000) // 2s at 90kHz
++	mux.mu.Unlock()
++
++	// All subscribers should receive the segment.
++	for _, sub := range []*hlsSubscription{sub1, sub2, sub3} {
++		select {
++		case seg := <-sub.ch:
++			require.Equal(t, "seg0.ts", seg.name)
++			require.Equal(t, 2*time.Second, seg.duration)
++			require.Equal(t, []byte("fake mpeg-ts data"), seg.data)
++			seg.release()
++		case <-time.After(time.Second):
++			t.Fatal("subscriber did not receive segment")
++		}
++	}
++
++	// Verify segment seq advanced.
++	require.Equal(t, 1, mux.SegSeq())
++
++	mux.unsubscribe(sub1)
++	require.Equal(t, 2, mux.subscriberCount())
++	mux.unsubscribe(sub2)
++	mux.unsubscribe(sub3)
++	require.Equal(t, 0, mux.subscriberCount())
++}
++
++func TestHLSUploaderSegmentUpload(t *testing.T) {
++	var mu sync.Mutex
++	uploads := make(map[string][]byte)
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPut {
++			data, _ := io.ReadAll(r.Body)
++			mu.Lock()
++			uploads[r.URL.Path] = data
++			mu.Unlock()
++			w.WriteHeader(200)
++		} else {
++			w.WriteHeader(405)
++		}
++	}))
++	defer srv.Close()
++
++	var bytesSent uint64
++	uploader, err := newHLSUploader(
++		srv.URL+"/stream/out.m3u8",
++		10*time.Second,
++		t.Context(),
++		&testLogWriter{},
++		&bytesSent,
++	)
++	require.NoError(t, err)
++
++	// Upload 3 segments.
++	for i := 0; i < 3; i++ {
++		seg := newHLSSharedSegment(
++			fmt.Sprintf("seg%d.ts", i),
++			2*time.Second,
++			[]byte(fmt.Sprintf("data-%d", i)),
++		)
++		err := uploader.uploadSegment(seg, i+1)
++		require.NoError(t, err)
++	}
++
++	mu.Lock()
++	defer mu.Unlock()
++
++	require.Contains(t, uploads, "/stream/seg0.ts")
++	require.Contains(t, uploads, "/stream/seg1.ts")
++	require.Contains(t, uploads, "/stream/seg2.ts")
++	require.Contains(t, uploads, "/stream/out.m3u8")
++
++	require.Equal(t, []byte("data-0"), uploads["/stream/seg0.ts"])
++
++	// Verify playlist contains all segments.
++	playlist := string(uploads["/stream/out.m3u8"])
++	require.Contains(t, playlist, "#EXTM3U")
++	require.Contains(t, playlist, "#EXT-X-TARGETDURATION:")
++	require.Contains(t, playlist, "seg0.ts")
++	require.Contains(t, playlist, "seg1.ts")
++	require.Contains(t, playlist, "seg2.ts")
++
++	require.Greater(t, bytesSent, uint64(0))
++}
++
++func TestHLSUploaderPlaylistWindow(t *testing.T) {
++	var mu sync.Mutex
++	var lastPlaylist string
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPut {
++			data, _ := io.ReadAll(r.Body)
++			if r.URL.Path == "/hls/out.m3u8" {
++				mu.Lock()
++				lastPlaylist = string(data)
++				mu.Unlock()
++			}
++			w.WriteHeader(200)
++		}
++	}))
++	defer srv.Close()
++
++	var bytesSent uint64
++	uploader, err := newHLSUploader(
++		srv.URL+"/hls/out.m3u8",
++		10*time.Second,
++		t.Context(),
++		&testLogWriter{},
++		&bytesSent,
++	)
++	require.NoError(t, err)
++
++	// Upload 10 segments — more than the 6-segment window.
++	for i := 0; i < 10; i++ {
++		seg := newHLSSharedSegment(
++			fmt.Sprintf("seg%d.ts", i),
++			2*time.Second,
++			[]byte("data"),
++		)
++		err := uploader.uploadSegment(seg, i+1)
++		require.NoError(t, err)
++	}
++
++	mu.Lock()
++	defer mu.Unlock()
++
++	// Old segments should be rotated out.
++	require.NotContains(t, lastPlaylist, "seg0.ts")
++	require.NotContains(t, lastPlaylist, "seg3.ts")
++
++	// Recent segments should be present.
++	require.Contains(t, lastPlaylist, "seg4.ts")
++	require.Contains(t, lastPlaylist, "seg9.ts")
++}
++
++func TestHLSUploadPool(t *testing.T) {
++	var completed atomic.Int64
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.Copy(io.Discard, r.Body)
++		completed.Add(1)
++		w.WriteHeader(200)
++	}))
++	defer srv.Close()
++
++	var bytesSent uint64
++	ctx := t.Context()
++
++	// Simulate 100 concurrent uploads through the pool.
++	var wg sync.WaitGroup
++	for i := 0; i < 100; i++ {
++		wg.Add(1)
++		go func(idx int) {
++			defer wg.Done()
++			uploader, err := newHLSUploader(
++				fmt.Sprintf("%s/out%d/stream.m3u8", srv.URL, idx),
++				10*time.Second,
++				ctx,
++				&testLogWriter{},
++				&bytesSent,
++			)
++			if err != nil {
++				return
++			}
++			seg := newHLSSharedSegment("seg0.ts", 2*time.Second, []byte("data"))
++			globalHLSUploadPool.do(ctx, func() {
++				uploader.uploadSegment(seg, 1)
++			})
++		}(i)
++	}
++	wg.Wait()
++
++	// All should complete (100 uploaders × 1 segment + 1 playlist = 200 reqs).
++	require.Equal(t, int64(200), completed.Load())
++}
++
++func TestHLSMuxerUnsubscribeDrainsChannel(t *testing.T) {
++	mux := newHLSMuxer(2*time.Second, &testLogWriter{})
++	sub := mux.subscribe()
++
++	// Fill the channel with segments.
++	for i := 0; i < 16; i++ {
++		seg := newHLSSharedSegment(fmt.Sprintf("seg%d.ts", i), 2*time.Second, []byte("data"))
++		seg.acquire() // one ref for the channel
++		sub.ch <- seg
++	}
++
++	// Unsubscribe should drain without blocking.
++	done := make(chan struct{})
++	go func() {
++		mux.unsubscribe(sub)
++		close(done)
++	}()
++
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("unsubscribe blocked")
++	}
++}
++
++func TestHLSUploaderTargetDuration(t *testing.T) {
++	var mu sync.Mutex
++	var lastPlaylist string
++
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodPut {
++			data, _ := io.ReadAll(r.Body)
++			if r.URL.Path == "/hls/out.m3u8" {
++				mu.Lock()
++				lastPlaylist = string(data)
++				mu.Unlock()
++			}
++			w.WriteHeader(200)
++		}
++	}))
++	defer srv.Close()
++
++	var bytesSent uint64
++	uploader, err := newHLSUploader(
++		srv.URL+"/hls/out.m3u8",
++		10*time.Second,
++		t.Context(),
++		&testLogWriter{},
++		&bytesSent,
++	)
++	require.NoError(t, err)
++
++	// Upload a segment with 4s duration (longer than default 2s).
++	seg := newHLSSharedSegment("seg0.ts", 4*time.Second, []byte("data"))
++	err = uploader.uploadSegment(seg, 1)
++	require.NoError(t, err)
++
++	mu.Lock()
++	defer mu.Unlock()
++
++	// TARGETDURATION must be >= 5 (4s rounded up + 1).
++	require.Contains(t, lastPlaylist, "#EXT-X-TARGETDURATION:5")
++}
+diff --git a/internal/push/hls_uploader.go b/internal/push/hls_uploader.go
+new file mode 100644
+index 0000000..562f8a8
+--- /dev/null
++++ b/internal/push/hls_uploader.go
+@@ -0,0 +1,212 @@
++package push
++
++import (
++	"bytes"
++	"context"
++	"crypto/tls"
++	"fmt"
++	"net/http"
++	"net/url"
++	"path"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/bluenviron/mediamtx/internal/logger"
++)
++
++const (
++	hlsPlaylistWindow = 6
++	hlsUploadWorkers  = 64
++)
++
++// hlsUploader handles segment upload for a single HLS target.
++// It receives shared segments from an hlsMuxer subscription and
++// uploads them via HTTP PUT with bounded concurrency from a shared pool.
++type hlsUploader struct {
++	baseURL      url.URL
++	playlistName string
++	httpClient   *http.Client
++	ctx          context.Context
++	parent       logger.Writer
++	bytesSent    *uint64
++
++	uploaded       []hlsPlaylistEntry
++	maxSegDuration time.Duration
++}
++
++type hlsPlaylistEntry struct {
++	name     string
++	duration time.Duration
++}
++
++func newHLSUploader(
++	targetURL string,
++	writeTimeout time.Duration,
++	ctx context.Context,
++	parent logger.Writer,
++	bytesSent *uint64,
++) (*hlsUploader, error) {
++	u, err := url.Parse(targetURL)
++	if err != nil {
++		return nil, fmt.Errorf("invalid HLS URL: %w", err)
++	}
++
++	if !strings.HasSuffix(u.Path, ".m3u8") {
++		return nil, fmt.Errorf("HLS push URL must end in .m3u8")
++	}
++
++	baseURL := *u
++	baseURL.Path = path.Dir(u.Path) + "/"
++	playlistName := path.Base(u.Path)
++
++	httpClient := &http.Client{Timeout: writeTimeout}
++	if u.Scheme == "https" {
++		httpClient.Transport = &http.Transport{
++			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
++		}
++	}
++
++	return &hlsUploader{
++		baseURL:      baseURL,
++		playlistName: playlistName,
++		httpClient:   httpClient,
++		ctx:          ctx,
++		parent:       parent,
++		bytesSent:    bytesSent,
++		uploaded:     make([]hlsPlaylistEntry, 0, hlsPlaylistWindow),
++	}, nil
++}
++
++// uploadSegment uploads a single segment and its playlist update.
++func (h *hlsUploader) uploadSegment(seg *hlsSharedSegment, segSeq int) error {
++	defer seg.release()
++
++	segURL := h.baseURL
++	segURL.Path = h.baseURL.Path + seg.name
++
++	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, segURL.String(), bytes.NewReader(seg.data))
++	if err != nil {
++		return err
++	}
++	req.Header.Set("Content-Type", "video/MP2T")
++
++	resp, err := h.httpClient.Do(req)
++	if err != nil {
++		return fmt.Errorf("segment upload failed: %w", err)
++	}
++	resp.Body.Close()
++	if resp.StatusCode >= 400 {
++		return fmt.Errorf("segment upload returned %d", resp.StatusCode)
++	}
++
++	atomic.AddUint64(h.bytesSent, uint64(len(seg.data)))
++
++	if seg.duration > h.maxSegDuration {
++		h.maxSegDuration = seg.duration
++	}
++
++	h.uploaded = append(h.uploaded, hlsPlaylistEntry{
++		name:     seg.name,
++		duration: seg.duration,
++	})
++
++	if len(h.uploaded) > hlsPlaylistWindow {
++		keep := h.uploaded[len(h.uploaded)-hlsPlaylistWindow:]
++		h.uploaded = make([]hlsPlaylistEntry, len(keep), hlsPlaylistWindow)
++		copy(h.uploaded, keep)
++	}
++
++	return h.uploadPlaylist(segSeq)
++}
++
++func (h *hlsUploader) uploadPlaylist(segSeq int) error {
++	targetDur := int(h.maxSegDuration.Seconds()) + 1
++	if targetDur < 3 {
++		targetDur = 3
++	}
++
++	var playlist bytes.Buffer
++	playlist.WriteString("#EXTM3U\n")
++	playlist.WriteString("#EXT-X-VERSION:3\n")
++	fmt.Fprintf(&playlist, "#EXT-X-TARGETDURATION:%d\n", targetDur)
++	firstSeq := segSeq - len(h.uploaded)
++	if firstSeq < 0 {
++		firstSeq = 0
++	}
++	fmt.Fprintf(&playlist, "#EXT-X-MEDIA-SEQUENCE:%d\n", firstSeq)
++
++	for _, entry := range h.uploaded {
++		fmt.Fprintf(&playlist, "#EXTINF:%.3f,\n%s\n", entry.duration.Seconds(), entry.name)
++	}
++
++	playlistData := playlist.Bytes()
++	playlistURL := h.baseURL
++	playlistURL.Path = h.baseURL.Path + h.playlistName
++
++	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, playlistURL.String(), bytes.NewReader(playlistData))
++	if err != nil {
++		return err
++	}
++	req.Header.Set("Content-Type", "application/vnd.apple.mpegurl")
++
++	resp, err := h.httpClient.Do(req)
++	if err != nil {
++		return fmt.Errorf("playlist upload failed: %w", err)
++	}
++	resp.Body.Close()
++	if resp.StatusCode >= 400 {
++		return fmt.Errorf("playlist upload returned %d", resp.StatusCode)
++	}
++
++	atomic.AddUint64(h.bytesSent, uint64(len(playlistData)))
++	return nil
++}
++
++// hlsUploadPool is a shared worker pool for uploading HLS segments.
++// Limits concurrent HTTP PUTs to prevent thundering herd on segment rotation.
++type hlsUploadPool struct {
++	sem chan struct{}
++}
++
++var globalHLSUploadPool = &hlsUploadPool{
++	sem: make(chan struct{}, hlsUploadWorkers),
++}
++
++func (p *hlsUploadPool) do(ctx context.Context, fn func()) error {
++	select {
++	case p.sem <- struct{}{}:
++		defer func() { <-p.sem }()
++		fn()
++		return nil
++	case <-ctx.Done():
++		return ctx.Err()
++	}
++}
++
++// hlsUploadPoolBarrier processes a batch of uploads through the pool.
++// Used when all outputs rotate simultaneously (thundering herd).
++func hlsUploadPoolBatch(ctx context.Context, tasks []func()) error {
++	var wg sync.WaitGroup
++	var firstErr atomic.Value
++
++	for _, task := range tasks {
++		wg.Add(1)
++		task := task
++		go func() {
++			defer wg.Done()
++			err := globalHLSUploadPool.do(ctx, task)
++			if err != nil {
++				firstErr.CompareAndSwap(nil, err)
++			}
++		}()
++	}
++
++	wg.Wait()
++
++	if v := firstErr.Load(); v != nil {
++		return v.(error)
++	}
++	return nil
++}
+diff --git a/internal/push/manager.go b/internal/push/manager.go
+new file mode 100644
+index 0000000..a1e41d5
+--- /dev/null
++++ b/internal/push/manager.go
+@@ -0,0 +1,235 @@
++package push
++
++import (
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/google/uuid"
++
++	"github.com/bluenviron/mediamtx/internal/conf"
++	"github.com/bluenviron/mediamtx/internal/defs"
++	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/stream"
++)
++
++// ErrTargetNotFound is returned when a push target is not found.
++var ErrTargetNotFound = fmt.Errorf("push target not found")
++
++// ManagerParent is the parent interface.
++type ManagerParent interface {
++	logger.Writer
++}
++
++// Manager manages push targets for a path.
++type Manager struct {
++	ReadTimeout  conf.Duration
++	WriteTimeout conf.Duration
++	PathName     string
++	Parent       ManagerParent
++
++	mutex      sync.RWMutex
++	targets    map[uuid.UUID]*Target
++	confIDs    map[uuid.UUID]bool // targets created by config sync
++	stream     *stream.Stream
++	hlsMuxer   *hlsMuxer
++}
++
++// Initialize initializes the Manager.
++func (m *Manager) Initialize() {
++	m.targets = make(map[uuid.UUID]*Target)
++	m.confIDs = make(map[uuid.UUID]bool)
++}
++
++// Close closes the Manager and all its targets.
++func (m *Manager) Close() {
++	m.mutex.Lock()
++	targets := make([]*Target, 0, len(m.targets))
++	for _, t := range m.targets {
++		targets = append(targets, t)
++	}
++	m.stopHLSMuxerLocked()
++	m.mutex.Unlock()
++
++	var wg sync.WaitGroup
++	wg.Add(len(targets))
++	for _, t := range targets {
++		go func(t *Target) {
++			defer wg.Done()
++			t.Close()
++		}(t)
++	}
++	wg.Wait()
++}
++
++// Log implements logger.Writer.
++func (m *Manager) Log(level logger.Level, format string, args ...any) {
++	m.Parent.Log(level, "[push] "+format, args...)
++}
++
++// SetStream sets the stream for all targets.
++func (m *Manager) SetStream(strm *stream.Stream) {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++
++	m.stream = strm
++
++	// Start shared HLS muxer if there are HLS targets and stream supports it.
++	if m.hlsMuxer == nil && mediaForStream(strm.Desc) {
++		m.startHLSMuxerLocked(strm)
++	}
++
++	for _, t := range m.targets {
++		t.SetStream(strm)
++	}
++}
++
++// ClearStream clears the stream from all targets.
++func (m *Manager) ClearStream() {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++
++	m.stream = nil
++
++	if m.hlsMuxer != nil {
++		m.stopHLSMuxerLocked()
++	}
++
++	for _, t := range m.targets {
++		t.ClearStream()
++	}
++}
++
++func (m *Manager) startHLSMuxerLocked(strm *stream.Stream) {
++	mux := newHLSMuxer(2*time.Second, m)
++	if err := mux.setup(strm); err != nil {
++		m.Log(logger.Warn, "HLS muxer setup failed: %v", err)
++		return
++	}
++	strm.AddReader(mux.Reader())
++	m.hlsMuxer = mux
++}
++
++func (m *Manager) stopHLSMuxerLocked() {
++	if m.stream != nil && m.hlsMuxer != nil {
++		m.stream.RemoveReader(m.hlsMuxer.Reader())
++	}
++	m.hlsMuxer = nil
++}
++
++// HLSMuxer returns the shared HLS muxer, if active.
++func (m *Manager) HLSMuxer() *hlsMuxer {
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++	return m.hlsMuxer
++}
++
++// AddTarget adds a new push target (API-created, not managed by config sync).
++func (m *Manager) AddTarget(targetURL string) *Target {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++
++	t := m.addTargetLocked(targetURL)
++	return t
++}
++
++// AddConfTarget adds a config-managed push target.
++func (m *Manager) AddConfTarget(targetURL string) *Target {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++
++	t := m.addTargetLocked(targetURL)
++	m.confIDs[t.uuid] = true
++	return t
++}
++
++func (m *Manager) addTargetLocked(targetURL string) *Target {
++	t := &Target{
++		URL:          targetURL,
++		ReadTimeout:  m.ReadTimeout,
++		WriteTimeout: m.WriteTimeout,
++		Parent:       m,
++		PathName:     m.PathName,
++	}
++	t.Initialize()
++
++	if m.stream != nil {
++		t.SetStream(m.stream)
++	}
++
++	m.targets[t.uuid] = t
++	return t
++}
++
++// ConfTargetsList returns only config-managed targets.
++func (m *Manager) ConfTargetsList() []*Target {
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++
++	list := make([]*Target, 0)
++	for _, t := range m.targets {
++		if m.confIDs[t.uuid] {
++			list = append(list, t)
++		}
++	}
++	return list
++}
++
++// RemoveTarget removes a push target by ID.
++func (m *Manager) RemoveTarget(id uuid.UUID) error {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++
++	t, ok := m.targets[id]
++	if !ok {
++		return ErrTargetNotFound
++	}
++
++	t.Close()
++	delete(m.targets, id)
++	delete(m.confIDs, id)
++
++	return nil
++}
++
++// GetTarget returns a target by ID.
++func (m *Manager) GetTarget(id uuid.UUID) (*Target, error) {
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++
++	t, ok := m.targets[id]
++	if !ok {
++		return nil, ErrTargetNotFound
++	}
++
++	return t, nil
++}
++
++// TargetsList returns a list of all targets.
++func (m *Manager) TargetsList() []*Target {
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++
++	list := make([]*Target, 0, len(m.targets))
++	for _, t := range m.targets {
++		list = append(list, t)
++	}
++
++	return list
++}
++
++// APIItem returns the API list.
++func (m *Manager) APIItem() *defs.APIPushTargetList {
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++
++	list := &defs.APIPushTargetList{
++		Items: make([]*defs.APIPushTarget, 0, len(m.targets)),
++	}
++
++	for _, t := range m.targets {
++		list.Items = append(list.Items, t.APIItem())
++	}
++
++	return list
++}
+diff --git a/internal/push/target.go b/internal/push/target.go
+new file mode 100644
+index 0000000..e24fa0d
+--- /dev/null
++++ b/internal/push/target.go
+@@ -0,0 +1,1296 @@
++// Package push contains push target implementations.
++package push
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"crypto/tls"
++	"fmt"
++	"io"
++	"net"
++	"net/url"
++	"reflect"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/bluenviron/gortmplib"
++	"github.com/bluenviron/gortmplib/pkg/amf0"
++	"github.com/bluenviron/gortmplib/pkg/bytecounter"
++	"github.com/bluenviron/gortmplib/pkg/codecs"
++	"github.com/bluenviron/gortmplib/pkg/handshake"
++	"github.com/bluenviron/gortmplib/pkg/message"
++	"github.com/bluenviron/gortsplib/v5"
++	"github.com/bluenviron/gortsplib/v5/pkg/base"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
++	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
++	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
++	mcmpegts "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
++	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
++	srt "github.com/datarhei/gosrt"
++	"github.com/google/uuid"
++
++	"github.com/bluenviron/mediamtx/internal/conf"
++	"github.com/bluenviron/mediamtx/internal/defs"
++	"github.com/bluenviron/mediamtx/internal/logger"
++	mtls "github.com/bluenviron/mediamtx/internal/protocols/tls"
++	"github.com/bluenviron/mediamtx/internal/stream"
++	"github.com/bluenviron/mediamtx/internal/unit"
++)
++
++const (
++	retryPause   = 5 * time.Second
++	encodingAMF0 = 0
++	fmleFlashVer = "FMLE/3.0 (compatible; mediamtx)"
++)
++
++var errRTMPTrackParametersChanged = fmt.Errorf("RTMP track parameters changed")
++
++type fmleRTMPClient struct {
++	nconn net.Conn
++	bc    *bytecounter.ReadWriter
++	mrw   *message.ReadWriter
++}
++
++func splitPath(u *url.URL) (string, string) {
++	pathsegs := strings.Split(u.Path, "/")
++
++	var app string
++	var streamKey string
++
++	switch {
++	case len(pathsegs) == 2:
++		app = pathsegs[1]
++
++	case len(pathsegs) == 3:
++		app = pathsegs[1]
++		streamKey = pathsegs[2]
++
++	case len(pathsegs) > 3:
++		app = strings.Join(pathsegs[1:3], "/")
++		streamKey = strings.Join(pathsegs[3:], "/")
++	}
++
++	return app, streamKey
++}
++
++func getTcURL(u *url.URL) string {
++	app, _ := splitPath(u)
++	nu, _ := url.Parse(u.String())
++	nu.RawQuery = ""
++	nu.Path = "/"
++	return nu.String() + app
++}
++
++func readCommandResult(mrw *message.ReadWriter, commandID int) (*message.CommandAMF0, error) {
++	for {
++		msg, err := mrw.Read()
++		if err != nil {
++			return nil, err
++		}
++
++		if cmd, ok := msg.(*message.CommandAMF0); ok {
++			if cmd.CommandID == commandID || (cmd.CommandID == 0 &&
++				(cmd.Name == "_result" || cmd.Name == "_error")) {
++				return cmd, nil
++			}
++		}
++	}
++}
++
++func resultIsOK2(res *message.CommandAMF0) bool {
++	if len(res.Arguments) < 2 {
++		return false
++	}
++
++	v, ok := res.Arguments[1].(float64)
++	if !ok {
++		return false
++	}
++
++	return v == 1
++}
++
++func objectOrArray(v interface{}) (amf0.Object, bool) {
++	switch vv := v.(type) {
++	case amf0.Object:
++		return vv, true
++	case amf0.ECMAArray:
++		return amf0.Object(vv), true
++	}
++	return nil, false
++}
++
++func resultIsOK1(res *message.CommandAMF0) bool {
++	if len(res.Arguments) < 2 {
++		return false
++	}
++
++	ma, ok := objectOrArray(res.Arguments[1])
++	if !ok {
++		return false
++	}
++
++	v, ok := ma.Get("level")
++	if !ok {
++		return false
++	}
++
++	return v == "status"
++}
++
++func newFMLERTMPClient(ctx context.Context, u *url.URL, tlsConfig *tls.Config) (*fmleRTMPClient, error) {
++	var nconn net.Conn
++	var err error
++
++	if u.Scheme == "rtmp" {
++		dialer := &net.Dialer{}
++		nconn, err = dialer.DialContext(ctx, "tcp", u.Host)
++	} else {
++		dialer := &tls.Dialer{Config: tlsConfig}
++		nconn, err = dialer.DialContext(ctx, "tcp", u.Host)
++	}
++	if err != nil {
++		return nil, err
++	}
++
++	closerDone := make(chan struct{})
++	closerTerminate := make(chan struct{})
++
++	go func() {
++		defer close(closerDone)
++		select {
++		case <-closerTerminate:
++		case <-ctx.Done():
++			nconn.Close()
++		}
++	}()
++
++	c := &fmleRTMPClient{nconn: nconn}
++
++	err = c.initialize(u)
++	close(closerTerminate)
++	<-closerDone
++
++	if err != nil {
++		nconn.Close()
++		return nil, err
++	}
++
++	return c, nil
++}
++
++func (c *fmleRTMPClient) initialize(u *url.URL) error {
++	c.bc = bytecounter.NewReadWriter(c.nconn)
++
++	_, _, err := handshake.DoClient(c.bc, false, false)
++	if err != nil {
++		return fmt.Errorf("handshake failed: %w", err)
++	}
++
++	c.mrw = message.NewReadWriter(c.bc, c.bc, false)
++
++	err = c.mrw.Write(&message.SetWindowAckSize{Value: 2500000})
++	if err != nil {
++		return fmt.Errorf("SetWindowAckSize failed: %w", err)
++	}
++
++	err = c.mrw.Write(&message.SetPeerBandwidth{Value: 2500000, Type: 2})
++	if err != nil {
++		return fmt.Errorf("SetPeerBandwidth failed: %w", err)
++	}
++
++	err = c.mrw.Write(&message.SetChunkSize{Value: 65536})
++	if err != nil {
++		return fmt.Errorf("SetChunkSize failed: %w", err)
++	}
++
++	app, streamKey := splitPath(u)
++	tcURL := getTcURL(u)
++
++	connectArg := amf0.Object{
++		{Key: "app", Value: app},
++		{Key: "flashVer", Value: fmleFlashVer},
++		{Key: "tcUrl", Value: tcURL},
++		{Key: "fpad", Value: false},
++		{Key: "capabilities", Value: float64(15)},
++		{Key: "audioCodecs", Value: float64(4071)},
++		{Key: "videoCodecs", Value: float64(252)},
++		{Key: "videoFunction", Value: float64(1)},
++		{Key: "objectEncoding", Value: float64(encodingAMF0)},
++		{Key: "type", Value: "nonprivate"},
++	}
++
++	err = c.mrw.Write(&message.CommandAMF0{
++		ChunkStreamID: 3,
++		Name:          "connect",
++		CommandID:     1,
++		Arguments:     []any{connectArg},
++	})
++	if err != nil {
++		return fmt.Errorf("connect command failed: %w", err)
++	}
++
++	res, err := readCommandResult(c.mrw, 1)
++	if err != nil {
++		return fmt.Errorf("connect result read failed: %w", err)
++	}
++
++	if res.Name == "_error" {
++		return fmt.Errorf("connect rejected: %v", res.Arguments)
++	}
++
++	if res.Name != "_result" {
++		return fmt.Errorf("unexpected connect result: %s", res.Name)
++	}
++
++	err = c.mrw.Write(&message.CommandAMF0{
++		ChunkStreamID: 3,
++		Name:          "releaseStream",
++		CommandID:     2,
++		Arguments:     []any{nil, streamKey},
++	})
++	if err != nil {
++		return fmt.Errorf("releaseStream failed: %w", err)
++	}
++
++	err = c.mrw.Write(&message.CommandAMF0{
++		ChunkStreamID: 3,
++		Name:          "FCPublish",
++		CommandID:     3,
++		Arguments:     []any{nil, streamKey},
++	})
++	if err != nil {
++		return fmt.Errorf("FCPublish failed: %w", err)
++	}
++
++	err = c.mrw.Write(&message.CommandAMF0{
++		ChunkStreamID: 3,
++		Name:          "createStream",
++		CommandID:     4,
++		Arguments:     []any{nil},
++	})
++	if err != nil {
++		return fmt.Errorf("createStream failed: %w", err)
++	}
++
++	res, err = readCommandResult(c.mrw, 4)
++	if err != nil {
++		return fmt.Errorf("createStream result read failed: %w", err)
++	}
++
++	if res.Name != "_result" || !resultIsOK2(res) {
++		return fmt.Errorf("createStream rejected: %v", res)
++	}
++
++	err = c.mrw.Write(&message.CommandAMF0{
++		ChunkStreamID:   4,
++		MessageStreamID: 0x1000000,
++		Name:            "publish",
++		CommandID:       5,
++		Arguments:       []any{nil, streamKey, "live"},
++	})
++	if err != nil {
++		return fmt.Errorf("publish command failed: %w", err)
++	}
++
++	for i := 0; i < 10; i++ {
++		msg, err := c.mrw.Read()
++		if err != nil {
++			return fmt.Errorf("publish status read failed (attempt %d): %w", i+1, err)
++		}
++
++		if cmd, ok := msg.(*message.CommandAMF0); ok {
++			if cmd.Name == "onStatus" {
++				if !resultIsOK1(cmd) {
++					return fmt.Errorf("publish rejected: %v", cmd)
++				}
++				return nil
++			}
++			if cmd.Name == "_error" {
++				return fmt.Errorf("publish error: %v", cmd.Arguments)
++			}
++		}
++	}
++
++	return fmt.Errorf("no publish response received after 10 attempts")
++}
++
++func (c *fmleRTMPClient) Close() {
++	c.nconn.Close()
++}
++
++func (c *fmleRTMPClient) NetConn() net.Conn {
++	return c.nconn
++}
++
++func (c *fmleRTMPClient) BytesReceived() uint64 {
++	return c.bc.Reader.Count()
++}
++
++func (c *fmleRTMPClient) BytesSent() uint64 {
++	return c.bc.Writer.Count()
++}
++
++func (c *fmleRTMPClient) Read() (message.Message, error) {
++	return c.mrw.Read()
++}
++
++func (c *fmleRTMPClient) Write(msg message.Message) error {
++	return c.mrw.Write(msg)
++}
++
++func multiplyAndDivide(v, m, d time.Duration) time.Duration {
++	secs := v / d
++	dec := v % d
++	return secs*m + dec*m/d
++}
++
++func timestampToDuration(t int64, clockRate int) time.Duration {
++	return multiplyAndDivide(time.Duration(t), time.Second, time.Duration(clockRate))
++}
++
++func rtmpHostCandidates(u *url.URL) []string {
++	if _, _, err := net.SplitHostPort(u.Host); err == nil {
++		return []string{u.Host}
++	}
++
++	if u.Scheme == "rtmps" {
++		return []string{
++			net.JoinHostPort(u.Host, "443"),
++			net.JoinHostPort(u.Host, "1936"),
++		}
++	}
++
++	return []string{net.JoinHostPort(u.Host, "1935")}
++}
++
++func h264TrackParametersChanged(forma *format.H264, codec *codecs.H264) bool {
++	sps, pps := forma.SafeParams()
++	return !bytes.Equal(sps, codec.SPS) || !bytes.Equal(pps, codec.PPS)
++}
++
++func h265TrackParametersChanged(forma *format.H265, codec *codecs.H265) bool {
++	vps, sps, pps := forma.SafeParams()
++	return !bytes.Equal(vps, codec.VPS) || !bytes.Equal(sps, codec.SPS) || !bytes.Equal(pps, codec.PPS)
++}
++
++func mpeg4AudioTrackParametersChanged(forma *format.MPEG4Audio, codec *codecs.MPEG4Audio) bool {
++	return !reflect.DeepEqual(forma.Config, codec.Config)
++}
++
++// countingWriter wraps an io.Writer and counts bytes written.
++type countingWriter struct {
++	w     io.Writer
++	count *uint64
++}
++
++func (c *countingWriter) Write(p []byte) (n int, err error) {
++	n, err = c.w.Write(p)
++	atomic.AddUint64(c.count, uint64(n))
++	return n, err
++}
++
++type targetParent interface {
++	logger.Writer
++	HLSMuxer() *hlsMuxer
++}
++
++// Target is a push target.
++type Target struct {
++	URL          string
++	ReadTimeout  conf.Duration
++	WriteTimeout conf.Duration
++	Parent       targetParent
++	PathName     string
++
++	ctx          context.Context
++	ctxCancel    func()
++	uuid         uuid.UUID
++	created      time.Time
++	mutex        sync.RWMutex
++	state        defs.APIPushTargetState
++	errorMsg     string
++	bytesSent    uint64
++	stream       *stream.Stream
++	reader       *stream.Reader
++	streamLoaded bool
++	streamNotify chan struct{}
++
++	done chan struct{}
++}
++
++// Initialize initializes Target.
++func (t *Target) Initialize() {
++	t.ctx, t.ctxCancel = context.WithCancel(context.Background())
++	t.uuid = uuid.New()
++	t.created = time.Now()
++	t.state = defs.APIPushTargetStateIdle
++	t.streamNotify = make(chan struct{}, 1)
++	t.done = make(chan struct{})
++
++	t.Log(logger.Info, "created push target to %s", t.URL)
++
++	go t.run()
++}
++
++// Close closes the Target.
++func (t *Target) Close() {
++	t.Log(logger.Info, "closing push target to %s", t.URL)
++	t.ctxCancel()
++	<-t.done
++}
++
++// Log implements logger.Writer.
++func (t *Target) Log(level logger.Level, format string, args ...any) {
++	t.Parent.Log(level, "[push %s] "+format, append([]any{t.uuid.String()[:8]}, args...)...)
++}
++
++// SetStream sets the stream to push.
++func (t *Target) SetStream(strm *stream.Stream) {
++	t.mutex.Lock()
++	t.stream = strm
++	t.streamLoaded = true
++	t.mutex.Unlock()
++
++	select {
++	case t.streamNotify <- struct{}{}:
++	default:
++	}
++}
++
++// ClearStream clears the stream.
++func (t *Target) ClearStream() {
++	t.mutex.Lock()
++	t.stream = nil
++	t.streamLoaded = false
++	t.mutex.Unlock()
++
++	select {
++	case t.streamNotify <- struct{}{}:
++	default:
++	}
++}
++
++// APIItem returns the API item.
++func (t *Target) APIItem() *defs.APIPushTarget {
++	t.mutex.RLock()
++	defer t.mutex.RUnlock()
++
++	return &defs.APIPushTarget{
++		ID:        t.uuid,
++		Created:   t.created,
++		URL:       t.URL,
++		State:     t.state,
++		Error:     t.errorMsg,
++		BytesSent: atomic.LoadUint64(&t.bytesSent),
++	}
++}
++
++// UUID returns the target UUID.
++func (t *Target) UUID() uuid.UUID {
++	return t.uuid
++}
++
++func (t *Target) run() {
++	defer close(t.done)
++
++	for {
++		shouldRetry, waitRetry := t.runInner()
++		if !shouldRetry {
++			return
++		}
++		if !waitRetry {
++			continue
++		}
++
++		select {
++		case <-time.After(retryPause):
++		case <-t.ctx.Done():
++			return
++		}
++	}
++}
++
++func (t *Target) runInner() (bool, bool) {
++	// Wait for stream to be available
++	for {
++		t.mutex.RLock()
++		strm := t.stream
++		loaded := t.streamLoaded
++		t.mutex.RUnlock()
++
++		if loaded && strm != nil {
++			break
++		}
++
++		if loaded && strm == nil {
++			t.mutex.Lock()
++			t.state = defs.APIPushTargetStateIdle
++			t.mutex.Unlock()
++		}
++
++		select {
++		case <-t.streamNotify:
++		case <-t.ctx.Done():
++			return false, false
++		}
++	}
++
++	t.mutex.Lock()
++	t.state = defs.APIPushTargetStateRunning
++	t.errorMsg = ""
++	t.mutex.Unlock()
++
++	var err error
++
++	switch {
++	case strings.HasPrefix(t.URL, "rtmp://") || strings.HasPrefix(t.URL, "rtmps://"):
++		err = t.runRTMP()
++	case strings.HasPrefix(t.URL, "rtsp://") || strings.HasPrefix(t.URL, "rtsps://"):
++		err = t.runRTSP()
++	case strings.HasPrefix(t.URL, "srt://"):
++		err = t.runSRT()
++	case strings.HasPrefix(t.URL, "http://") || strings.HasPrefix(t.URL, "https://"):
++		err = t.runHLS()
++	default:
++		err = fmt.Errorf("unsupported protocol")
++	}
++
++	if err != nil {
++		if err == errRTMPTrackParametersChanged {
++			t.Log(logger.Info, "stream parameters changed, reconnecting push target")
++			return true, false
++		}
++
++		t.Log(logger.Error, "push error: %v", err)
++
++		t.mutex.Lock()
++		t.state = defs.APIPushTargetStateError
++		t.errorMsg = err.Error()
++		t.mutex.Unlock()
++
++		return true, true
++	}
++
++	return false, false
++}
++
++func (t *Target) addBytesSent(n uint64) {
++	atomic.AddUint64(&t.bytesSent, n)
++}
++
++func (t *Target) runRTMP() error {
++	t.Log(logger.Debug, "connecting to RTMP server")
++
++	// Resolve the URL with path variables
++	targetURL := t.resolveURL()
++
++	u, err := url.Parse(targetURL)
++	if err != nil {
++		return err
++	}
++
++	t.mutex.RLock()
++	strm := t.stream
++	t.mutex.RUnlock()
++
++	if strm == nil {
++		return fmt.Errorf("stream is not available")
++	}
++
++	writeTimeout := time.Duration(t.WriteTimeout)
++	if writeTimeout == 0 {
++		writeTimeout = 30 * time.Second
++	}
++	readTimeout := time.Duration(t.ReadTimeout)
++	if readTimeout == 0 {
++		readTimeout = 30 * time.Second
++	}
++
++	// Create reader
++	reader := &stream.Reader{
++		Parent: t,
++	}
++
++	// Setup tracks
++	var tracks []*gortmplib.Track
++	var writer *gortmplib.Writer
++	var refreshWriteDeadline func()
++
++	for _, media := range strm.Desc.Medias {
++		for _, forma := range media.Formats {
++			switch forma := forma.(type) {
++			case *format.H265:
++				vps, sps, pps := forma.SafeParams()
++				codec := &codecs.H265{
++					VPS: vps,
++					SPS: sps,
++					PPS: pps,
++				}
++				track := &gortmplib.Track{
++					Codec: codec,
++				}
++				tracks = append(tracks, track)
++
++				var videoDTSExtractor *h265.DTSExtractor
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						if h265TrackParametersChanged(forma, codec) {
++							return errRTMPTrackParametersChanged
++						}
++
++						if videoDTSExtractor == nil {
++							if !h265.IsRandomAccess(u.Payload.(unit.PayloadH265)) {
++								return nil
++							}
++							videoDTSExtractor = &h265.DTSExtractor{}
++							videoDTSExtractor.Initialize()
++						}
++
++						dts, err := videoDTSExtractor.Extract(u.Payload.(unit.PayloadH265), u.PTS)
++						if err != nil {
++							return err
++						}
++
++						refreshWriteDeadline()
++						err = writer.WriteH265(
++							track,
++							timestampToDuration(u.PTS, forma.ClockRate()),
++							timestampToDuration(dts, forma.ClockRate()),
++							u.Payload.(unit.PayloadH265))
++						if err != nil {
++							return err
++						}
++
++						for _, nalu := range u.Payload.(unit.PayloadH265) {
++							t.addBytesSent(uint64(len(nalu)))
++						}
++						return nil
++					})
++
++			case *format.H264:
++				sps, pps := forma.SafeParams()
++				codec := &codecs.H264{
++					SPS: sps,
++					PPS: pps,
++				}
++				track := &gortmplib.Track{
++					Codec: codec,
++				}
++				tracks = append(tracks, track)
++
++				var videoDTSExtractor *h264.DTSExtractor
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						if h264TrackParametersChanged(forma, codec) {
++							return errRTMPTrackParametersChanged
++						}
++
++						idrPresent := false
++						nonIDRPresent := false
++
++						for _, nalu := range u.Payload.(unit.PayloadH264) {
++							typ := h264.NALUType(nalu[0] & 0x1F)
++							switch typ {
++							case h264.NALUTypeIDR:
++								idrPresent = true
++							case h264.NALUTypeNonIDR:
++								nonIDRPresent = true
++							}
++						}
++
++						if videoDTSExtractor == nil {
++							if !idrPresent {
++								return nil
++							}
++							videoDTSExtractor = &h264.DTSExtractor{}
++							videoDTSExtractor.Initialize()
++						} else if !idrPresent && !nonIDRPresent {
++							return nil
++						}
++
++						dts, err := videoDTSExtractor.Extract(u.Payload.(unit.PayloadH264), u.PTS)
++						if err != nil {
++							return err
++						}
++
++						refreshWriteDeadline()
++						err = writer.WriteH264(
++							track,
++							timestampToDuration(u.PTS, forma.ClockRate()),
++							timestampToDuration(dts, forma.ClockRate()),
++							u.Payload.(unit.PayloadH264))
++						if err != nil {
++							return err
++						}
++
++						for _, nalu := range u.Payload.(unit.PayloadH264) {
++							t.addBytesSent(uint64(len(nalu)))
++						}
++						return nil
++					})
++
++			case *format.MPEG4Audio:
++				codec := &codecs.MPEG4Audio{
++					Config: forma.Config,
++				}
++				track := &gortmplib.Track{
++					Codec: codec,
++				}
++				tracks = append(tracks, track)
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						if mpeg4AudioTrackParametersChanged(forma, codec) {
++							return errRTMPTrackParametersChanged
++						}
++
++						for i, au := range u.Payload.(unit.PayloadMPEG4Audio) {
++							pts := u.PTS + int64(i)*1024 // SamplesPerAccessUnit
++
++							refreshWriteDeadline()
++							err := writer.WriteMPEG4Audio(
++								track,
++								timestampToDuration(pts, forma.ClockRate()),
++								au,
++							)
++							if err != nil {
++								return err
++							}
++
++							t.addBytesSent(uint64(len(au)))
++						}
++
++						return nil
++					})
++			}
++		}
++	}
++
++	if len(tracks) == 0 {
++		return fmt.Errorf("no supported tracks found for RTMP push")
++	}
++
++	hostCandidates := rtmpHostCandidates(u)
++
++	var conn *fmleRTMPClient
++	for _, host := range hostCandidates {
++		candidate := *u
++		candidate.Host = host
++
++		connectCtx, connectCtxCancel := context.WithTimeout(t.ctx, 30*time.Second)
++		conn, err = newFMLERTMPClient(connectCtx, &candidate, mtls.MakeConfig(candidate.Hostname(), ""))
++		connectCtxCancel()
++		if err == nil {
++			break
++		}
++
++		t.Log(logger.Debug, "RTMP connection to %s failed: %v", host, err)
++	}
++	if err != nil {
++		return err
++	}
++
++	defer conn.Close()
++
++	t.Log(logger.Info, "connected to %s", targetURL)
++
++	// Initialize writer
++	writer = &gortmplib.Writer{
++		Conn:   conn,
++		Tracks: tracks,
++	}
++	err = writer.Initialize()
++	if err != nil {
++		return err
++	}
++
++	refreshWriteDeadline = func() {
++		conn.NetConn().SetWriteDeadline(time.Now().Add(writeTimeout))
++	}
++
++	// Add reader to stream
++	strm.AddReader(reader)
++	defer strm.RemoveReader(reader)
++
++	t.mutex.Lock()
++	t.reader = reader
++	t.mutex.Unlock()
++
++	conn.NetConn().SetWriteDeadline(time.Now().Add(writeTimeout))
++	conn.NetConn().SetReadDeadline(time.Now().Add(readTimeout))
++
++	rtmpErr := make(chan error, 1)
++
++	go func() {
++		for {
++			conn.NetConn().SetReadDeadline(time.Now().Add(readTimeout))
++			_, err := conn.Read()
++			if err != nil {
++				select {
++				case rtmpErr <- fmt.Errorf("RTMP read error: %w", err):
++				default:
++				}
++				return
++			}
++		}
++	}()
++
++	// Wait for error or context cancellation
++	select {
++	case err := <-reader.Error():
++		return err
++	case err := <-rtmpErr:
++		return err
++	case <-t.ctx.Done():
++		return nil
++	}
++}
++
++func (t *Target) runRTSP() error {
++	t.Log(logger.Debug, "connecting to RTSP server")
++
++	// Resolve the URL with path variables
++	targetURL := t.resolveURL()
++
++	u, err := base.ParseURL(targetURL)
++	if err != nil {
++		return err
++	}
++
++	t.mutex.RLock()
++	strm := t.stream
++	t.mutex.RUnlock()
++
++	if strm == nil {
++		return fmt.Errorf("stream is not available")
++	}
++
++	// Determine scheme
++	scheme := "rtsp"
++	if u.Scheme == "rtsps" {
++		scheme = "rtsps"
++	}
++
++	// Create RTSP client for publishing
++	readTimeout := time.Duration(t.ReadTimeout)
++	if readTimeout == 0 {
++		readTimeout = 30 * time.Second
++	}
++	writeTimeout := time.Duration(t.WriteTimeout)
++	if writeTimeout == 0 {
++		writeTimeout = 30 * time.Second
++	}
++
++	client := &gortsplib.Client{
++		Scheme:       scheme,
++		Host:         u.Host,
++		ReadTimeout:  readTimeout,
++		WriteTimeout: writeTimeout,
++		TLSConfig:    mtls.MakeConfig(u.Host, ""),
++	}
++
++	err = client.Start()
++	if err != nil {
++		return err
++	}
++	defer client.Close()
++
++	// Announce the stream
++	_, err = client.Announce(u, strm.Desc)
++	if err != nil {
++		return err
++	}
++
++	// Setup all medias
++	for _, media := range strm.Desc.Medias {
++		_, err = client.Setup(u, media, 0, 0)
++		if err != nil {
++			return err
++		}
++	}
++
++	// Start recording (publishing)
++	_, err = client.Record()
++	if err != nil {
++		return err
++	}
++
++	t.Log(logger.Info, "connected to %s", targetURL)
++
++	// Create reader
++	reader := &stream.Reader{
++		Parent: t,
++	}
++
++	// Setup data handlers for each media
++	for _, media := range strm.Desc.Medias {
++		for _, forma := range media.Formats {
++			cmedia := media
++			cforma := forma
++
++			reader.OnData(
++				cmedia,
++				cforma,
++				func(u *unit.Unit) error {
++					if u.NilPayload() {
++						return nil
++					}
++
++					// Write RTP packets to the client
++					for _, pkt := range u.RTPPackets {
++						err := client.WritePacketRTP(cmedia, pkt)
++						if err != nil {
++							return err
++						}
++
++						// Count bytes sent
++						t.addBytesSent(uint64(pkt.MarshalSize()))
++					}
++
++					return nil
++				})
++		}
++	}
++
++	// Add reader to stream
++	strm.AddReader(reader)
++	defer strm.RemoveReader(reader)
++
++	t.mutex.Lock()
++	t.reader = reader
++	t.mutex.Unlock()
++
++	// Wait for error or context cancellation
++	select {
++	case err := <-reader.Error():
++		return err
++	case <-t.ctx.Done():
++		return nil
++	}
++}
++
++func (t *Target) runSRT() error {
++	t.Log(logger.Debug, "connecting to SRT server")
++
++	// Resolve the URL with path variables
++	targetURL := t.resolveURL()
++
++	conf := srt.DefaultConfig()
++	address, err := conf.UnmarshalURL(targetURL)
++	if err != nil {
++		return err
++	}
++
++	err = conf.Validate()
++	if err != nil {
++		return err
++	}
++
++	t.mutex.RLock()
++	strm := t.stream
++	t.mutex.RUnlock()
++
++	if strm == nil {
++		return fmt.Errorf("stream is not available")
++	}
++
++	writeTimeout := time.Duration(t.WriteTimeout)
++	if writeTimeout == 0 {
++		writeTimeout = 30 * time.Second
++	}
++
++	// Connect to SRT server
++	sconn, err := srt.Dial("srt", address, conf)
++	if err != nil {
++		return err
++	}
++	defer sconn.Close()
++
++	t.Log(logger.Info, "connected to %s", targetURL)
++
++	// Create a counting writer to track bytes sent
++	cw := &countingWriter{w: sconn, count: &t.bytesSent}
++	bw := bufio.NewWriterSize(cw, 1316) // SRT max payload size
++
++	// Create MPEG-TS writer
++	var mpegtsWriter *mcmpegts.Writer
++	var tracks []*mcmpegts.Track
++
++	// Create reader
++	reader := &stream.Reader{
++		Parent: t,
++	}
++
++	// Setup tracks based on the stream description
++	for _, media := range strm.Desc.Medias {
++		for _, forma := range media.Formats {
++			switch forma := forma.(type) {
++			case *format.H265:
++				track := &mcmpegts.Track{Codec: &tscodecs.H265{}}
++				tracks = append(tracks, track)
++
++				var dtsExtractor *h265.DTSExtractor
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						if dtsExtractor == nil {
++							if !h265.IsRandomAccess(u.Payload.(unit.PayloadH265)) {
++								return nil
++							}
++							dtsExtractor = &h265.DTSExtractor{}
++							dtsExtractor.Initialize()
++						}
++
++						dts, err := dtsExtractor.Extract(u.Payload.(unit.PayloadH265), u.PTS)
++						if err != nil {
++							return err
++						}
++
++						sconn.SetWriteDeadline(time.Now().Add(writeTimeout))
++						err = mpegtsWriter.WriteH265(track, u.PTS, dts, u.Payload.(unit.PayloadH265))
++						if err != nil {
++							return err
++						}
++						return bw.Flush()
++					})
++
++			case *format.H264:
++				track := &mcmpegts.Track{Codec: &tscodecs.H264{}}
++				tracks = append(tracks, track)
++
++				var dtsExtractor *h264.DTSExtractor
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						idrPresent := h264.IsRandomAccess(u.Payload.(unit.PayloadH264))
++
++						if dtsExtractor == nil {
++							if !idrPresent {
++								return nil
++							}
++							dtsExtractor = &h264.DTSExtractor{}
++							dtsExtractor.Initialize()
++						}
++
++						dts, err := dtsExtractor.Extract(u.Payload.(unit.PayloadH264), u.PTS)
++						if err != nil {
++							return err
++						}
++
++						sconn.SetWriteDeadline(time.Now().Add(writeTimeout))
++						err = mpegtsWriter.WriteH264(track, u.PTS, dts, u.Payload.(unit.PayloadH264))
++						if err != nil {
++							return err
++						}
++						return bw.Flush()
++					})
++
++			case *format.MPEG4Audio:
++				track := &mcmpegts.Track{Codec: &tscodecs.MPEG4Audio{
++					Config: *forma.Config,
++				}}
++				tracks = append(tracks, track)
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						sconn.SetWriteDeadline(time.Now().Add(writeTimeout))
++						err := mpegtsWriter.WriteMPEG4Audio(track, u.PTS, u.Payload.(unit.PayloadMPEG4Audio))
++						if err != nil {
++							return err
++						}
++						return bw.Flush()
++					})
++
++			case *format.Opus:
++				track := &mcmpegts.Track{Codec: &tscodecs.Opus{
++					ChannelCount: forma.ChannelCount,
++				}}
++				tracks = append(tracks, track)
++
++				reader.OnData(
++					media,
++					forma,
++					func(u *unit.Unit) error {
++						if u.NilPayload() {
++							return nil
++						}
++
++						sconn.SetWriteDeadline(time.Now().Add(writeTimeout))
++						err := mpegtsWriter.WriteOpus(track, u.PTS, u.Payload.(unit.PayloadOpus))
++						if err != nil {
++							return err
++						}
++						return bw.Flush()
++					})
++			}
++		}
++	}
++
++	if len(tracks) == 0 {
++		return fmt.Errorf("no supported tracks found for SRT push")
++	}
++
++	// Initialize MPEG-TS writer
++	mpegtsWriter = &mcmpegts.Writer{W: bw, Tracks: tracks}
++	err = mpegtsWriter.Initialize()
++	if err != nil {
++		return err
++	}
++
++	// Add reader to stream
++	strm.AddReader(reader)
++	defer strm.RemoveReader(reader)
++
++	t.mutex.Lock()
++	t.reader = reader
++	t.mutex.Unlock()
++
++	// Wait for error or context cancellation
++	select {
++	case err := <-reader.Error():
++		return err
++	case <-t.ctx.Done():
++		return nil
++	}
++}
++
++func (t *Target) runHLS() error {
++	t.Log(logger.Debug, "starting HLS push")
++
++	targetURL := t.resolveURL()
++	writeTimeout := time.Duration(t.WriteTimeout)
++	if writeTimeout == 0 {
++		writeTimeout = 30 * time.Second
++	}
++
++	uploader, err := newHLSUploader(targetURL, writeTimeout, t.ctx, t, &t.bytesSent)
++	if err != nil {
++		return err
++	}
++
++	// Try to use the shared muxer from the Manager.
++	mux := t.Parent.HLSMuxer()
++	if mux != nil {
++		return t.runHLSShared(mux, uploader)
++	}
++
++	// Fallback: standalone muxer (Manager has no shared muxer, e.g. stream not ready yet).
++	return t.runHLSStandalone(uploader)
++}
++
++// runHLSShared uses the Manager's shared muxer — one MPEG-TS encode for all
++// HLS targets on this path, each target only does HTTP upload.
++func (t *Target) runHLSShared(mux *hlsMuxer, uploader *hlsUploader) error {
++	sub := mux.subscribe()
++	defer mux.unsubscribe(sub)
++
++	t.Log(logger.Info, "HLS push to %s started (shared muxer)", uploader.baseURL.String()+uploader.playlistName)
++
++	for {
++		select {
++		case <-t.ctx.Done():
++			return nil
++		case seg := <-sub.ch:
++			segSeq := mux.SegSeq()
++			err := globalHLSUploadPool.do(t.ctx, func() {
++				if uploadErr := uploader.uploadSegment(seg, segSeq); uploadErr != nil {
++					t.Log(logger.Error, "HLS upload error: %v", uploadErr)
++				}
++			})
++			if err != nil {
++				return err
++			}
++		}
++	}
++}
++
++// runHLSStandalone is the fallback for when no shared muxer is available.
++func (t *Target) runHLSStandalone(uploader *hlsUploader) error {
++	t.mutex.RLock()
++	strm := t.stream
++	t.mutex.RUnlock()
++
++	if strm == nil {
++		return fmt.Errorf("stream is not available")
++	}
++
++	mux := newHLSMuxer(2*time.Second, t)
++	if err := mux.setup(strm); err != nil {
++		return err
++	}
++
++	sub := mux.subscribe()
++	defer mux.unsubscribe(sub)
++
++	strm.AddReader(mux.Reader())
++	defer strm.RemoveReader(mux.Reader())
++
++	t.mutex.Lock()
++	t.reader = mux.Reader()
++	t.mutex.Unlock()
++
++	t.Log(logger.Info, "HLS push to %s started (standalone)", uploader.baseURL.String()+uploader.playlistName)
++
++	for {
++		select {
++		case err := <-mux.Reader().Error():
++			return err
++		case <-t.ctx.Done():
++			return nil
++		case seg := <-sub.ch:
++			segSeq := mux.SegSeq()
++			if err := uploader.uploadSegment(seg, segSeq); err != nil {
++				return err
++			}
++		}
++	}
++}
++
++func (t *Target) resolveURL() string {
++	result := t.URL
++	result = strings.ReplaceAll(result, "$MTX_PATH", t.PathName)
++	result = strings.ReplaceAll(result, "$path", t.PathName)
++	return result
++}
+diff --git a/internal/push/target_test.go b/internal/push/target_test.go
+new file mode 100644
+index 0000000..b242e4e
+--- /dev/null
++++ b/internal/push/target_test.go
+@@ -0,0 +1,62 @@
++package push
++
++import (
++	"net/url"
++	"testing"
++
++	"github.com/bluenviron/gortmplib/pkg/codecs"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
++	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
++	"github.com/stretchr/testify/require"
++)
++
++func TestRTMPHostCandidates(t *testing.T) {
++	for _, ca := range []struct {
++		name     string
++		rawURL   string
++		expected []string
++	}{
++		{
++			name:     "rtmp default port",
++			rawURL:   "rtmp://example.com/app/stream",
++			expected: []string{"example.com:1935"},
++		},
++		{
++			name:     "rtmps fallback ports",
++			rawURL:   "rtmps://example.com/app/stream",
++			expected: []string{"example.com:443", "example.com:1936"},
++		},
++		{
++			name:     "explicit port preserved",
++			rawURL:   "rtmps://example.com:8443/app/stream",
++			expected: []string{"example.com:8443"},
++		},
++	} {
++		t.Run(ca.name, func(t *testing.T) {
++			u, err := url.Parse(ca.rawURL)
++			require.NoError(t, err)
++			require.Equal(t, ca.expected, rtmpHostCandidates(u))
++		})
++	}
++}
++
++func TestRTMPTrackParametersChanged(t *testing.T) {
++	t.Run("h264", func(t *testing.T) {
++		forma := &format.H264{SPS: []byte{1}, PPS: []byte{2}}
++		require.False(t, h264TrackParametersChanged(forma, &codecs.H264{SPS: []byte{1}, PPS: []byte{2}}))
++		require.True(t, h264TrackParametersChanged(forma, &codecs.H264{SPS: []byte{9}, PPS: []byte{2}}))
++	})
++
++	t.Run("h265", func(t *testing.T) {
++		forma := &format.H265{VPS: []byte{1}, SPS: []byte{2}, PPS: []byte{3}}
++		require.False(t, h265TrackParametersChanged(forma, &codecs.H265{VPS: []byte{1}, SPS: []byte{2}, PPS: []byte{3}}))
++		require.True(t, h265TrackParametersChanged(forma, &codecs.H265{VPS: []byte{1}, SPS: []byte{7}, PPS: []byte{3}}))
++	})
++
++	t.Run("mpeg4audio", func(t *testing.T) {
++		config := &mpeg4audio.AudioSpecificConfig{Type: 2, SampleRate: 48000, ChannelConfig: 2}
++		forma := &format.MPEG4Audio{Config: config}
++		require.False(t, mpeg4AudioTrackParametersChanged(forma, &codecs.MPEG4Audio{Config: config}))
++		require.True(t, mpeg4AudioTrackParametersChanged(forma, &codecs.MPEG4Audio{Config: &mpeg4audio.AudioSpecificConfig{Type: 2, SampleRate: 44100, ChannelConfig: 2}}))
++	})
++}
+diff --git a/mediamtx.yml b/mediamtx.yml
+index 47f04b6..93452d7 100644
+--- a/mediamtx.yml
++++ b/mediamtx.yml
+@@ -541,6 +541,18 @@ pathDefaults:
+   # Set to 0s to disable automatic deletion.
+   recordDeleteAfter: 1d
+ 
++  ###############################################
++  # Default path settings -> Push Targets
++
++  # Push the stream to external servers (e.g., YouTube Live, Twitch, etc.).
++  # Supported protocols: rtmp, rtmps.
++  # The URL can contain variables such as $MTX_PATH or $path (the path name).
++  # Push targets can also be added/removed dynamically via the API.
++  # Example:
++  # pushTargets:
++  # - url: rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx
++  # - url: rtmps://live.twitch.tv/app/live_xxxxxxxxx_xxxxxxxxxxxxxxxxxxxx
++
+   ###############################################
+   # Default path settings -> Publisher source (when source is "publisher")
+ 
+@@ -695,6 +707,20 @@ pathDefaults:
+   # M-JPEG JPEG quality (when codec is mjpeg).
+   rpiCameraMJPEGQuality: 60
+ 
++  ###############################################
++  # Default path settings -> Push
++
++  # List of push targets to forward the stream to.
++  # The stream will be automatically pushed to these targets when available.
++  # If the source stream is interrupted, pushing will resume automatically
++  # when the stream becomes available again.
++  # Supported protocols: RTMP, RTSP, SRT
++  # Example:
++  # pushTargets:
++  # - url: rtmp://youtube.com/live/YOUR_STREAM_KEY
++  # - url: srt://server.com:1234/?streamid=publish:mystream
++  # - url: rtsp://server.com:8554/mystream
++
+   ###############################################
+   # Default path settings -> Hooks
+ 

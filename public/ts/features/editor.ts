@@ -24,6 +24,7 @@ import {
     buildDefaultCustomOutputUrl,
     formatMaskedStreamKey,
     formatChannelCount,
+    formatCodecName,
     OUTPUT_SERVER_PRESETS,
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
@@ -320,7 +321,7 @@ function populateRemapTrackOptions(trackCount: number, selectedTrack: number): v
 
     trackSelect.innerHTML = Array.from({ length: trackCount }, (_, i) => {
         const ch = currentModalAudioTracks[i]?.channels;
-        const label = ch ? `${i + 1} (${ch}ch)` : `${i + 1}`;
+        const label = ch ? `Track ${i + 1} (${formatChannelCount(ch)})` : `Track ${i + 1}`;
         return `<option value="${i}">${label}</option>`;
     }).join('');
     trackSelect.value = String(Math.min(selectedTrack, trackCount - 1));
@@ -368,10 +369,12 @@ function getModalAudioCapsContext() {
 
 function formatTrackPickLabel(trackIndex: number): string {
     const track = currentModalAudioTracks[trackIndex];
-    const codec = track?.codec || 'unknown';
+    const codec = formatCodecName(track?.codec) || track?.codec || 'unknown';
     const channels = track?.channels ? formatChannelCount(track.channels) : '?ch';
-    const rate = track?.sample_rate ? ` · ${track.sample_rate / 1000} kHz` : '';
-    return `Track ${trackIndex} · ${codec} · ${channels}${rate}`;
+    const rate = track?.sample_rate
+        ? ` · ${Number.isInteger(track.sample_rate / 1000) ? track.sample_rate / 1000 : (track.sample_rate / 1000).toFixed(1)} kHz`
+        : '';
+    return `Track ${trackIndex + 1} · ${codec} · ${channels}${rate}`;
 }
 
 function renderAudioCapsBadges(
@@ -531,10 +534,10 @@ function refreshAudioRoutingUi(): void {
               currentModalAudioTracks
                   .map(
                       (t, i) =>
-                          `${i}: ${t.codec || '?'} ${t.channels ? formatChannelCount(t.channels) : '?ch'}`,
+                          `Track ${i + 1}: ${formatCodecName(t.codec) || t.codec || '?'} ${t.channels ? formatChannelCount(t.channels) : '?ch'}`,
                   )
                   .join(', ')
-            : 'No active ingest — track list unavailable; defaults to track 0.';
+            : 'No active ingest — track list unavailable; defaults to Track 1.';
     }
 
     document.getElementById('out-audio-encoding-note')?.classList.toggle('hidden', routingEnabled);

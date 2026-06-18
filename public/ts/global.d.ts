@@ -32,6 +32,7 @@ export interface HlsConstructor {
 
 export interface PreviewVideoElement extends HTMLVideoElement {
     _previewHls?: HlsInstance;
+    _previewCleanup?: () => void;
 }
 
 declare global {

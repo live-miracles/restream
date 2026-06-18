@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
-mediamtx
-mediamtx.exe
+/mediamtx
+/mediamtx.exe
 
 # Local OS/editor files
 .DS_Store
