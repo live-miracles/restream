@@ -121,7 +121,6 @@ export function parseDownmixEncoding(encoding: string): number | null {
     return parseInt(m[1], 10);
 }
 
-
 export function isValidOutputEncoding(encoding: string): boolean {
     if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
     if (ATRACK_ENCODING_RE.test(encoding)) return true;
