@@ -87,6 +87,7 @@ npm run test:integration    # 2x3 end-to-end test (requires running app + MediaM
 ```
 
 **Always edit `public/ts/` not `public/js/`** — `public/js/` is generated. Run `npm run build:frontend` after any frontend TS change.
+**Always run the formatter (`npm run format`) before pushing a branch or creating a PR.**
 
 ## Architecture
 
