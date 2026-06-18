@@ -5,6 +5,7 @@ import {
     MEDIAMTX_FETCH_TIMEOUT_MS,
     fetchMediamtxJson,
     getMediamtxApiBaseUrl,
+    getMediamtxIngestPorts,
     buildMediamtxPath,
     buildRtspInputUrl,
     buildPullInputUrl,
@@ -13,9 +14,17 @@ import {
 } from '../utils/mediamtx';
 import type { PullProtocol } from '../utils/mediamtx';
 import type { Db, Pipeline, Output, Job } from '../types';
+import { normalizeSocketAddressKey, parseSsTcpSocketEntries } from '../utils/tcp-socket-stats';
 
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
 const FFPROBE_DELAYS_MS = [3000, 10000, 20000, 40000];
+const SS_CMD_TIMEOUT_MS = 2000;
+const RTMP_TCP_STATS_UNAVAILABLE = {
+    notLinux: 'not_linux',
+    ssMissing: 'ss_missing',
+    collectionFailed: 'collection_failed',
+    noMatchingSocket: 'no_matching_socket',
+} as const;
 
 interface StreamInfo {
     video: {
@@ -184,6 +193,7 @@ function getSessionBytesOut(record: Record<string, unknown>): number {
 function indexPublishersByPath(
     rtmpConns: { items?: unknown[] },
     srtConns: { items?: unknown[] },
+    rtmpSocketStatsByRemoteAddr: Map<string, Record<string, unknown>> = new Map(),
 ): Map<string, Publisher> {
     const publisherByPath = new Map<string, Publisher>();
     const setPublisher = (pathName: unknown, publisher: Publisher) => {
@@ -201,7 +211,10 @@ function indexPublishersByPath(
             remoteAddr: (c?.remoteAddr as string) || null,
             bytesReceived: getSessionBytesIn(c),
             bytesSent: getSessionBytesOut(c),
-            quality: {},
+            quality:
+                rtmpSocketStatsByRemoteAddr.get(
+                    normalizeSocketAddressKey((c?.remoteAddr as string) || '') || '',
+                ) || {},
         });
     }
 
@@ -264,6 +277,7 @@ function normalizeMediamtxAudioCodec(codec: string | null): string | null {
 
 // MediaMTX's tracks2 channel/sample-rate data is authoritative for SRT ingests where
 // ffprobe can misread per-track channel layouts; ffprobe still provides codec/profile.
+
 function mergePathAudioTracks(
     ffprobeResult: StreamInfo | null,
     pathInfo: PathInfo | null,
@@ -433,6 +447,78 @@ export function createHealthMonitorService({
         error: string | null;
     } = { ready: false, checkedAt: null, readyAt: null, error: null };
     let mediamtxReadinessTimer: NodeJS.Timeout | null = null;
+    let lastSocketStatsError: string | null = null;
+
+    async function collectRtmpSocketStatsByRemoteAddr(rtmpConns: {
+        items?: unknown[];
+    }): Promise<Map<string, Record<string, unknown>>> {
+        const publishers = (rtmpConns.items || []).filter((conn) => {
+            const c = conn as Record<string, unknown>;
+            return c?.state === 'publish' && normalizeSocketAddressKey(String(c?.remoteAddr || ''));
+        });
+        if (publishers.length === 0) return new Map();
+
+        const targets = new Set(
+            publishers
+                .map((conn) => {
+                    const c = conn as Record<string, unknown>;
+                    return normalizeSocketAddressKey(String(c?.remoteAddr || ''));
+                })
+                .filter((value): value is string => !!value),
+        );
+        const unavailable = (reason: string) =>
+            new Map([...targets].map((target) => [target, { tcpStatsUnavailableReason: reason }]));
+
+        if (process.platform !== 'linux') {
+            return unavailable(RTMP_TCP_STATS_UNAVAILABLE.notLinux);
+        }
+
+        try {
+            const ingestPorts = await getMediamtxIngestPorts();
+            if (!ingestPorts.rtmp) return new Map();
+            const localPort = ingestPorts.rtmp;
+
+            const stdout = await new Promise<string>((resolve, reject) => {
+                execFile('ss', ['-tinH'], { timeout: SS_CMD_TIMEOUT_MS }, (err, out) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(out || '');
+                });
+            });
+
+            lastSocketStatsError = null;
+
+            const socketEntries = parseSsTcpSocketEntries(stdout);
+            const statsByRemoteAddr = new Map<string, Record<string, unknown>>();
+            for (const entry of socketEntries) {
+                if (entry.state !== 'ESTAB') continue;
+                if (!entry.localKey.endsWith(`:${localPort}`)) continue;
+                if (!targets.has(entry.peerKey)) continue;
+                statsByRemoteAddr.set(entry.peerKey, { ...entry.stats });
+            }
+            for (const target of targets) {
+                if (!statsByRemoteAddr.has(target)) {
+                    statsByRemoteAddr.set(target, {
+                        tcpStatsUnavailableReason: RTMP_TCP_STATS_UNAVAILABLE.noMatchingSocket,
+                    });
+                }
+            }
+            return statsByRemoteAddr;
+        } catch (err) {
+            const errorMessage = errMsg(err);
+            if (lastSocketStatsError !== errorMessage) {
+                log('warn', 'Failed to collect RTMP TCP socket stats', { error: errorMessage });
+                lastSocketStatsError = errorMessage;
+            }
+            const reason =
+                (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+                    ? RTMP_TCP_STATS_UNAVAILABLE.ssMissing
+                    : RTMP_TCP_STATS_UNAVAILABLE.collectionFailed;
+            return unavailable(reason);
+        }
+    }
 
     async function resolveRuntimeInputState(streamKey: string): Promise<{ status: string }> {
         let pathInfo: PathInfo | null = null;
@@ -728,9 +814,13 @@ export function createHealthMonitorService({
             const pathByName = new Map<string, PathInfo>(
                 (p.items || []).map((item) => [item.name as string, item]),
             );
+            const rtmpSocketStatsByRemoteAddr = await collectRtmpSocketStatsByRemoteAddr(
+                r as { items?: unknown[] },
+            );
             const publisherByPath = indexPublishersByPath(
                 r as { items?: unknown[] },
                 s as { items?: unknown[] },
+                rtmpSocketStatsByRemoteAddr,
             );
             const pipelines = db.listPipelines();
             const outputsByPipeline = groupOutputsByPipeline(db.listOutputs());

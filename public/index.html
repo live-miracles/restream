@@ -142,6 +142,21 @@
             </select>
           </fieldset>
 
+          <div class="hidden" id="out-remap-fields">
+            <fieldset class="fieldset ml-2 hidden inline-block w-24" id="out-remap-track-field">
+              <legend class="fieldset-legend">Audio Track</legend>
+              <select class="select" id="out-remap-track-input"></select>
+            </fieldset>
+            <fieldset class="fieldset ml-2 inline-block w-16">
+              <legend class="fieldset-legend">Left Ch</legend>
+              <select class="select" id="out-remap-left-input"></select>
+            </fieldset>
+            <fieldset class="fieldset ml-2 inline-block w-16">
+              <legend class="fieldset-legend">Right Ch</legend>
+              <select class="select" id="out-remap-right-input"></select>
+            </fieldset>
+          </div>
+
           <fieldset class="fieldset ml-2 inline-block w-44" id="out-server-url-field">
             <legend class="fieldset-legend">Server URL</legend>
             <select class="select" id="out-server-url-input">
@@ -345,6 +360,37 @@
           </form>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="publisher-health-modal" class="modal">
+      <div class="modal-box max-w-xl">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-bold" id="publisher-health-title">Publisher Health</h3>
+            <p class="mt-1 text-sm opacity-60" id="publisher-health-subtitle"></p>
+          </div>
+          <button type="button" class="btn btn-xs btn-accent btn-outline" id="publisher-health-grafana-btn">Grafana</button>
+        </div>
+        <div class="mt-4 overflow-x-auto">
+          <table class="table-sm table w-full">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th class="text-right">Value</th>
+                <th class="text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody id="publisher-health-rows"></tbody>
+          </table>
+        </div>
+        <div id="publisher-health-empty" class="text-base-content/60 mt-4 hidden text-sm"></div>
+        <div class="modal-action">
+          <form method="dialog">
+            <button class="btn btn-sm">Close</button>
+          </form>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
     <dialog id="diagnostics-modal" class="modal">
