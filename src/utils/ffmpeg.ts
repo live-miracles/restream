@@ -79,14 +79,25 @@ const VIDEO_BASE =
     '-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -profile:v high -level:v 4.1 -g 60 -keyint_min 60 -sc_threshold 0';
 const AUDIO_BASE = '-c:a aac -b:a 128k -ar 48000 -ac 2';
 
+// Full encoding presets (video + default audio). Used when no audio routing is specified.
 export const SYSTEM_ENCODING_ARGS: Record<string, string | null> = {
     source: null,
     'vertical-crop': `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
     'vertical-rotate': `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280 ${VIDEO_BASE} -b:v 2500k -maxrate 2800k -bufsize 4200k ${AUDIO_BASE}`,
-    '720p': `-vf scale=-2:720  ${VIDEO_BASE} -b:v 3000k -maxrate 3500k -bufsize 5000k ${AUDIO_BASE}`,
+    '720p': `-vf scale=-2:720 ${VIDEO_BASE} -b:v 3000k -maxrate 3500k -bufsize 5000k ${AUDIO_BASE}`,
     '1080p': `-vf scale=-2:1080 ${VIDEO_BASE} -b:v 5000k -maxrate 5800k -bufsize 8000k ${AUDIO_BASE}`,
     custom: null,
 };
+
+// Video-only encoding args (no -c:a). Used when audio routing is specified separately in a
+// compound encoding (e.g. "720p+atrack:0,1"). Derived from SYSTEM_ENCODING_ARGS by stripping
+// the trailing AUDIO_BASE suffix so the two stay in sync automatically.
+const VIDEO_ONLY_ARGS: Record<string, string | null> = Object.fromEntries(
+    Object.entries(SYSTEM_ENCODING_ARGS).map(([key, val]) => [
+        key,
+        val ? val.replace(` ${AUDIO_BASE}`, '') : null,
+    ]),
+);
 
 export const SYSTEM_ENCODING_KEYS = new Set(Object.keys(SYSTEM_ENCODING_ARGS));
 
@@ -121,12 +132,55 @@ export function parseDownmixEncoding(encoding: string): number | null {
     return parseInt(m[1], 10);
 }
 
+// Parse a compound encoding string into its video and audio routing parts.
+//
+// Compound format:  "<videoEncoding>+<audioRouting>"
+//   e.g. "720p+atrack:0,1"  → { video: '720p',   audio: 'atrack:0,1' }
+//        "source+remap:1:0:1" → { video: 'source', audio: 'remap:1:0:1' }
+//
+// Pure audio-only (backward-compat, video defaults to 'source'):
+//   e.g. "atrack:0,1" → { video: 'source', audio: 'atrack:0,1' }
+//
+// Pure video-only (no audio routing):
+//   e.g. "720p" → { video: '720p', audio: null }
+export function parseCompoundEncoding(encoding: string): { video: string; audio: string | null } {
+    const plusIdx = encoding.indexOf('+');
+    if (plusIdx !== -1) {
+        const video = encoding.slice(0, plusIdx).trim() || 'source';
+        const audio = encoding.slice(plusIdx + 1).trim() || null;
+        return { video, audio };
+    }
+    // Pure audio routing — treat video as passthrough
+    if (
+        ATRACK_ENCODING_RE.test(encoding) ||
+        DOWNMIX_ENCODING_RE.test(encoding) ||
+        REMAP_ENCODING_RE.test(encoding)
+    ) {
+        return { video: 'source', audio: encoding };
+    }
+    return { video: encoding, audio: null };
+}
 
 export function isValidOutputEncoding(encoding: string): boolean {
-    if (SYSTEM_ENCODING_KEYS.has(encoding)) return true;
+    // Pure audio routing (backward compat)
     if (ATRACK_ENCODING_RE.test(encoding)) return true;
     if (DOWNMIX_ENCODING_RE.test(encoding)) return true;
-    return REMAP_ENCODING_RE.test(encoding);
+    if (REMAP_ENCODING_RE.test(encoding)) return true;
+
+    // Compound encoding: video+audio
+    if (encoding.includes('+')) {
+        const { video, audio } = parseCompoundEncoding(encoding);
+        if (!SYSTEM_ENCODING_KEYS.has(video)) return false;
+        if (!audio) return false; // malformed "720p+"
+        return (
+            ATRACK_ENCODING_RE.test(audio) ||
+            DOWNMIX_ENCODING_RE.test(audio) ||
+            REMAP_ENCODING_RE.test(audio)
+        );
+    }
+
+    // Pure video encoding
+    return SYSTEM_ENCODING_KEYS.has(encoding);
 }
 
 export const INVALID_OUTPUT_URL_ERROR =
@@ -137,6 +191,14 @@ export function normalizeOutputEncoding(value: unknown): string {
         .trim()
         .toLowerCase();
     if (!normalized) return 'source';
+    // Handle compound encoding normalization (e.g. "vertical+atrack:0" → "vertical-crop+atrack:0")
+    const plusIdx = normalized.indexOf('+');
+    if (plusIdx !== -1) {
+        const video = normalized.slice(0, plusIdx).trim() || 'source';
+        const audio = normalized.slice(plusIdx + 1).trim();
+        const normalizedVideo = video === 'vertical' ? 'vertical-crop' : video;
+        return audio ? `${normalizedVideo}+${audio}` : normalizedVideo;
+    }
     if (normalized === 'vertical') return 'vertical-crop';
     return normalized;
 }
@@ -195,58 +257,121 @@ export function buildFfmpegOutputArgs({
         inputUrl,
     ];
 
-    const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
+    const { video: videoEncoding, audio: audioRouting } = parseCompoundEncoding(normalizedEncoding);
 
-    const remap = parseRemapEncoding(normalizedEncoding);
-    if (remap) {
-        const audioStreamRef = remap.track > 0 ? `0:a:${remap.track}` : '0:a';
-        args.push(
-            '-filter_complex',
-            `[${audioStreamRef}]pan=stereo|c0=c${remap.left}|c1=c${remap.right}[a]`,
-            '-map',
-            '0:v',
-            '-map',
-            '[a]',
-            '-c:v',
-            'copy',
-            '-c:a',
-            'aac',
-            '-b:a',
-            '128k',
-            '-ar',
-            '48000',
-            '-ac',
-            '2',
-        );
-    } else if (parseAtrackEncoding(normalizedEncoding)) {
-        const tracks = parseAtrackEncoding(normalizedEncoding)!;
-        args.push('-map', '0:v');
-        for (const track of tracks) {
-            args.push('-map', `0:a:${track}`);
+    if (audioRouting) {
+        // ── Compound path: video encoding + audio routing are independent ──────────
+        // Strategy: emit all -map selectors first, then all codec/filter args.
+        // This matches FFmpeg's preferred argument order and keeps tests consistent.
+
+        const remap = parseRemapEncoding(audioRouting);
+        const atracks = parseAtrackEncoding(audioRouting);
+        const downmixTrack = parseDownmixEncoding(audioRouting);
+
+        // 1. All stream map selectors.
+        if (videoEncoding === 'custom' && !customArgs) {
+            args.push('-map', '0:v');
+        } else if (videoEncoding !== 'custom') {
+            args.push('-map', '0:v');
         }
-        args.push('-c:v', 'copy', '-c:a', 'copy');
-    } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
-        const track = parseDownmixEncoding(normalizedEncoding)!;
-        args.push(
-            '-map',
-            '0:v',
-            '-map',
-            `0:a:${track}`,
-            '-c:v',
-            'copy',
-            '-c:a',
-            'aac',
-            '-b:a',
-            '128k',
-            '-ar',
-            '48000',
-            '-ac',
-            '2',
-        );
-    } else if (!resolvedArgStr) {
-        args.push('-c:v', 'copy', '-c:a', 'copy');
+
+        if (remap) {
+            const audioStreamRef = remap.track > 0 ? `0:a:${remap.track}` : '0:a';
+            args.push(
+                '-filter_complex',
+                `[${audioStreamRef}]pan=stereo|c0=c${remap.left}|c1=c${remap.right}[a]`,
+                '-map',
+                '[a]',
+            );
+        } else if (atracks) {
+            for (const track of atracks) {
+                args.push('-map', `0:a:${track}`);
+            }
+        } else if (downmixTrack !== null) {
+            args.push('-map', `0:a:${downmixTrack}`);
+        }
+
+        // 2. Video codec args (after all maps).
+        if (videoEncoding === 'custom') {
+            if (customArgs) {
+                args.push('-map', '0:v');
+                args.push(...customArgs.trim().split(/\s+/).filter(Boolean));
+            } else {
+                args.push('-c:v', 'copy');
+            }
+        } else {
+            const videoArgStr = VIDEO_ONLY_ARGS[videoEncoding] ?? null;
+            if (videoArgStr) {
+                args.push(...videoArgStr.trim().split(/\s+/).filter(Boolean));
+            } else {
+                // 'source' or unknown → passthrough
+                args.push('-c:v', 'copy');
+            }
+        }
+
+        // 3. Audio codec args.
+        if (remap) {
+            args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
+        } else if (atracks) {
+            args.push('-c:a', 'copy');
+        } else if (downmixTrack !== null) {
+            args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
+        }
     } else {
-        args.push(...resolvedArgStr.trim().split(/\s+/).filter(Boolean));
+        // ── Legacy single-encoding path (backward compatible) ────────────────────
+        const resolvedArgStr = customArgs || SYSTEM_ENCODING_ARGS[normalizedEncoding] || null;
+
+        const remap = parseRemapEncoding(normalizedEncoding);
+        if (remap) {
+            const audioStreamRef = remap.track > 0 ? `0:a:${remap.track}` : '0:a';
+            args.push(
+                '-filter_complex',
+                `[${audioStreamRef}]pan=stereo|c0=c${remap.left}|c1=c${remap.right}[a]`,
+                '-map',
+                '0:v',
+                '-map',
+                '[a]',
+                '-c:v',
+                'copy',
+                '-c:a',
+                'aac',
+                '-b:a',
+                '128k',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+            );
+        } else if (parseAtrackEncoding(normalizedEncoding)) {
+            const tracks = parseAtrackEncoding(normalizedEncoding)!;
+            args.push('-map', '0:v');
+            for (const track of tracks) {
+                args.push('-map', `0:a:${track}`);
+            }
+            args.push('-c:v', 'copy', '-c:a', 'copy');
+        } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
+            const track = parseDownmixEncoding(normalizedEncoding)!;
+            args.push(
+                '-map',
+                '0:v',
+                '-map',
+                `0:a:${track}`,
+                '-c:v',
+                'copy',
+                '-c:a',
+                'aac',
+                '-b:a',
+                '128k',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+            );
+        } else if (!resolvedArgStr) {
+            args.push('-c:v', 'copy', '-c:a', 'copy');
+        } else {
+            args.push(...resolvedArgStr.trim().split(/\s+/).filter(Boolean));
+        }
     }
 
     if (outputProtocol === 'srt:') {
