@@ -5,6 +5,7 @@ import {
     getUrlParam,
     msToHHMMSS,
     setInnerText,
+    setServerConfig,
     setUrlParam,
     writeSelectedPipelineHint,
 } from '../core/utils.js';
@@ -257,6 +258,7 @@ function renderMetrics(): void {
 function selectPipeline(id: string | null): void {
     setUrlParam('p', id);
     renderPipelines();
+    setServerConfig(state.config?.serverName);
 }
 
 // HTML-bound handler — keep accessible as a global
