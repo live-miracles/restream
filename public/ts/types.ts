@@ -40,6 +40,20 @@ export interface PublisherQuality {
     msReceiveBuf?: number | null;
     mbpsLinkCapacity?: number | null;
     packetsSentNAK?: number | null;
+    tcpRttMs?: number | null;
+    tcpRttVarMs?: number | null;
+    tcpRetransmits?: number | null;
+    tcpCwnd?: number | null;
+    tcpUnacked?: number | null;
+    tcpPacingRateMbps?: number | null;
+    tcpDeliveryRateMbps?: number | null;
+    tcpSendRateMbps?: number | null;
+    tcpStatsUnavailableReason?:
+        | 'not_linux'
+        | 'ss_missing'
+        | 'collection_failed'
+        | 'no_matching_socket'
+        | string;
 }
 
 export interface Publisher {

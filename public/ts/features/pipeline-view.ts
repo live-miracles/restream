@@ -13,12 +13,13 @@ import { state } from '../core/state.js';
 import { getPublisherQualityAlerts, normalizePublisherProtocolLabel } from './publisher-quality.js';
 import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
-import { openGrafanaDashboard, openSrtConnectionHealthDashboard } from './grafana.js';
+import { openGrafanaDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { AudioTrack, PipelineView, OutputView } from '../types.js';
 
 interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
+    openPublisherHealthModal: ((pipeId: string) => void) | null;
     isOutputToggleBusy: ((pipeId: string, outId: string) => boolean) | null;
     startOutBtn:
         | ((pipeId: string, outId: string, button: HTMLButtonElement | null) => Promise<void>)
@@ -35,6 +36,7 @@ interface PipelineViewDependencies {
 
 const pipelineViewDependencies: PipelineViewDependencies = {
     openPipelineHistoryModal: null,
+    openPublisherHealthModal: null,
     isOutputToggleBusy: null,
     startOutBtn: null,
     stopOutBtn: null,
@@ -79,24 +81,24 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
                     : '--';
-            return `<div class="stats grid w-full grid-cols-[3.5rem_5rem_5.5rem_7.5rem_1fr] overflow-x-auto shadow">
-                <div class="stat min-w-0 p-2">
+            return `<div class="stats flex w-full flex-wrap overflow-hidden shadow">
+                <div class="stat min-w-[3.5rem] flex-1 basis-[3.5rem] p-2">
                     <div class="stat-title">Track</div>
                     <div class="stat-value text-sm">${index}</div>
                 </div>
-                <div class="stat min-w-0 p-2">
+                <div class="stat min-w-[4.25rem] flex-1 basis-[4.25rem] p-2">
                     <div class="stat-title">Codec</div>
                     <div class="stat-value text-sm">${displayValue(codec)}</div>
                 </div>
-                <div class="stat min-w-0 p-2">
+                <div class="stat min-w-[5.25rem] flex-1 basis-[5.25rem] p-2">
                     <div class="stat-title">Freq</div>
                     <div class="stat-value text-sm">${displayValue(formatSampleRate(track.sample_rate))}</div>
                 </div>
-                <div class="stat min-w-0 p-2">
+                <div class="stat min-w-[7rem] flex-[1.5] basis-[7rem] p-2">
                     <div class="stat-title">Channels</div>
-                    <div class="stat-value text-sm">${displayValue(channelLabel)}</div>
+                    <div class="stat-value break-words text-sm">${displayValue(channelLabel)}</div>
                 </div>
-                <div class="stat min-w-0 p-2">
+                <div class="stat min-w-[3.5rem] flex-1 basis-[3.5rem] p-2">
                     <div class="stat-title">Profile</div>
                     <div class="stat-value text-sm">${displayValue(track.profile)}</div>
                 </div>
@@ -369,16 +371,13 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     const qualityAlerts = publisher ? getPublisherQualityAlerts(publisher) : [];
     const isHealthy = qualityAlerts.length === 0;
     const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
-    const isSrtPublisher = publisher?.protocol === 'srt' && !!pipe.key;
     const healthBadgeClasses = `badge text-sm px-3 ${isHealthy ? 'badge-success' : 'badge-warning'}`;
     const healthBadgeLabel = isHealthy ? 'Healthy' : 'Unhealthy';
-    const healthBadgeTitle = isSrtPublisher
-        ? 'Open SRT connection health dashboard'
-        : qualityAlerts.map((alert) => alert.label).join('\n');
+    const healthBadgeTitle = qualityAlerts.length
+        ? qualityAlerts.map((alert) => alert.label).join('\n')
+        : 'Open publisher health details';
     const healthBadge = publisher
-        ? isSrtPublisher
-            ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-srt-health-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
-            : `<span class="${healthBadgeClasses}" title="${healthBadgeTitle}">${healthBadgeLabel}</span>`
+        ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-quality-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
         : '';
 
     publisherMeta.innerHTML = [
@@ -397,8 +396,8 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
             : '',
     ].join('');
 
-    publisherMeta.querySelector('.js-srt-health-btn')?.addEventListener('click', () => {
-        openSrtConnectionHealthDashboard(pipe);
+    publisherMeta.querySelector('.js-quality-btn')?.addEventListener('click', () => {
+        pipelineViewDependencies.openPublisherHealthModal?.(pipe.id);
     });
 }
 
