@@ -36,6 +36,12 @@ No reflection or unsafe pointers needed on the mediamtx side. Intended as an ups
 
 Preserves and propagates native Decode Timestamps (DTS) from container sources that natively carry them (such as MPEG-TS/SRT), instead of relying on MediaMTX to dynamically reconstruct them. Also introduces startup synchronization to ignore initial video packets until the first random-access keyframe is received.
 
+### 5. Push Targets (mediamtx only)
+
+**File:** `mediamtx/mediamtx_push_targets_v1.17.1.patch`
+
+Adds support for Push Targets to paths. This allows MediaMTX to republish/rebroadcast a path to external destinations (supporting RTMP, RTMPS, RTSP, RTSPS, SRT) dynamically via new API endpoints or statically via the `pushTargets` list configuration under paths in `mediamtx.yml`.
+
 ## Prerequisites (patchsets 2 and 3)
 
 Linux caps `SO_RCVBUF` at `net.core.rmem_max` (default ~212 KB). To allow 25 MB:
