@@ -7,6 +7,13 @@ export interface TcpSocketStats {
     tcpPacingRateMbps: number | null;
     tcpDeliveryRateMbps: number | null;
     tcpSendRateMbps: number | null;
+    tcpBytesReceived: number | null;
+    tcpLastRcvMs: number | null;
+    tcpRcvRttMs: number | null;
+    tcpRcvSpace: number | null;
+    tcpRcvOoopack: number | null;
+    tcpSkmemRmemAlloc: number | null;
+    tcpSkmemRmemMax: number | null;
 }
 
 export interface ParsedTcpSocketEntry {
@@ -82,6 +89,17 @@ function parseMbps(value: string | null | undefined): number | null {
     return Number((amount * multiplier).toFixed(3));
 }
 
+function parseSkmem(statsLine: string): { rmemAlloc: number | null; rmemMax: number | null } {
+    const match = statsLine.match(/\bskmem:\(r(\d+),rb(\d+)/);
+    if (!match) return { rmemAlloc: null, rmemMax: null };
+    const rmemAlloc = Number(match[1]);
+    const rmemMax = Number(match[2]);
+    return {
+        rmemAlloc: Number.isFinite(rmemAlloc) ? rmemAlloc : null,
+        rmemMax: Number.isFinite(rmemMax) ? rmemMax : null,
+    };
+}
+
 function parseStatsLine(statsLine: string): TcpSocketStats {
     const getNumber = (regex: RegExp): number | null => {
         const match = statsLine.match(regex);
@@ -97,6 +115,7 @@ function parseStatsLine(statsLine: string): TcpSocketStats {
 
     const rttMatch = statsLine.match(/\brtt:([\d.]+)\/([\d.]+)/i);
     const retransMatch = statsLine.match(/\bretrans:(\d+)(?:\/(\d+))?/i);
+    const skmem = parseSkmem(statsLine);
 
     return {
         tcpRttMs: rttMatch && Number.isFinite(Number(rttMatch[1])) ? Number(rttMatch[1]) : null,
@@ -107,6 +126,16 @@ function parseStatsLine(statsLine: string): TcpSocketStats {
         tcpPacingRateMbps: getRate('pacing_rate'),
         tcpDeliveryRateMbps: getRate('delivery_rate'),
         tcpSendRateMbps: getRate('send'),
+        tcpBytesReceived: getNumber(/\bbytes_received:(\d+)/i),
+        tcpLastRcvMs: getNumber(/\blastrcv:(\d+)/i),
+        tcpRcvRttMs: (() => {
+            const m = statsLine.match(/\brcv_rtt:([\d.]+)/i);
+            return m && Number.isFinite(Number(m[1])) ? Number(m[1]) : null;
+        })(),
+        tcpRcvSpace: getNumber(/\brcv_space:(\d+)/i),
+        tcpRcvOoopack: getNumber(/\brcv_ooopack:(\d+)/i),
+        tcpSkmemRmemAlloc: skmem.rmemAlloc,
+        tcpSkmemRmemMax: skmem.rmemMax,
     };
 }
 

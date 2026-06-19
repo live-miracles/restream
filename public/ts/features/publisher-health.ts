@@ -66,6 +66,9 @@ export function renderPublisherHealthModal(): void {
     const grafanaBtn = document.getElementById(
         'publisher-health-grafana-btn',
     ) as HTMLButtonElement | null;
+    const copyBtn = document.getElementById(
+        'publisher-health-copy-btn',
+    ) as HTMLButtonElement | null;
     if (!title || !subtitle || !tbody || !empty || !grafanaBtn) return;
 
     title.textContent = `Publisher Health${pipe?.name ? ` - ${pipe.name}` : ''}`;
@@ -88,7 +91,7 @@ export function renderPublisherHealthModal(): void {
     tbody.innerHTML = rows
         .map(
             (row) => `<tr>
-                <td>${row.label}</td>
+                <td title="${row.description}">${row.label} <span class="opacity-40 text-xs">&#9432;</span></td>
                 <td class="text-right font-mono">${row.displayValue}</td>
                 <td class="text-right"><span class="badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}">${row.isAlert ? 'Alert' : 'OK'}</span></td>
             </tr>`,
@@ -108,6 +111,22 @@ export function renderPublisherHealthModal(): void {
                 : buildGrafanaDashboardUrl(pipe);
         window.open(url, '_blank', 'noopener,noreferrer');
     };
+
+    if (copyBtn) {
+        copyBtn.onclick = () => {
+            const header = `${title.textContent}\n${subtitle.textContent}`;
+            const lines = rows.map(
+                (row) => `${row.label}: ${row.displayValue} [${row.isAlert ? 'Alert' : 'OK'}]`,
+            );
+            const text = [header, '', ...lines].join('\n');
+            navigator.clipboard.writeText(text).then(() => {
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = 'Copy';
+                }, 1500);
+            });
+        };
+    }
 }
 
 export function openPublisherHealthModal(pipeId: string): void {

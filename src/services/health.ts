@@ -190,10 +190,59 @@ function getSessionBytesOut(record: Record<string, unknown>): number {
     return Number(record?.outboundBytes || record?.bytesSent || 0);
 }
 
+interface SrtCounterSnapshot {
+    packetsReceivedLoss: number;
+    packetsReceivedDrop: number;
+    packetsReceivedRetrans: number;
+    packetsReceivedUndecrypt: number;
+    timestampMs: number;
+}
+
+function computeSrtRates(
+    current: SrtCounterSnapshot,
+    previous: SrtCounterSnapshot | null,
+): Record<string, number | null> {
+    if (!previous) {
+        return {
+            packetsReceivedLossPerSec: null,
+            packetsReceivedDropPerSec: null,
+            packetsReceivedRetransPerSec: null,
+            packetsReceivedUndecryptPerSec: null,
+        };
+    }
+    const elapsedSec = (current.timestampMs - previous.timestampMs) / 1000;
+    if (elapsedSec <= 0) {
+        return {
+            packetsReceivedLossPerSec: null,
+            packetsReceivedDropPerSec: null,
+            packetsReceivedRetransPerSec: null,
+            packetsReceivedUndecryptPerSec: null,
+        };
+    }
+    const rate = (cur: number, prev: number) => {
+        const delta = cur - prev;
+        return delta >= 0 ? Number((delta / elapsedSec).toFixed(1)) : null;
+    };
+    return {
+        packetsReceivedLossPerSec: rate(current.packetsReceivedLoss, previous.packetsReceivedLoss),
+        packetsReceivedDropPerSec: rate(current.packetsReceivedDrop, previous.packetsReceivedDrop),
+        packetsReceivedRetransPerSec: rate(
+            current.packetsReceivedRetrans,
+            previous.packetsReceivedRetrans,
+        ),
+        packetsReceivedUndecryptPerSec: rate(
+            current.packetsReceivedUndecrypt,
+            previous.packetsReceivedUndecrypt,
+        ),
+    };
+}
+
 function indexPublishersByPath(
     rtmpConns: { items?: unknown[] },
     srtConns: { items?: unknown[] },
     rtmpSocketStatsByRemoteAddr: Map<string, Record<string, unknown>> = new Map(),
+    previousSrtCounters: Map<string, SrtCounterSnapshot> = new Map(),
+    currentSrtCounters: Map<string, SrtCounterSnapshot> = new Map(),
 ): Map<string, Publisher> {
     const publisherByPath = new Map<string, Publisher>();
     const setPublisher = (pathName: unknown, publisher: Publisher) => {
@@ -221,7 +270,18 @@ function indexPublishersByPath(
     for (const conn of srtConns.items || []) {
         const c = conn as Record<string, unknown>;
         if (c?.state !== 'publish') continue;
-        setPublisher(c?.path, {
+        const pathName = c?.path as string;
+        const currentSnapshot: SrtCounterSnapshot = {
+            packetsReceivedLoss: Number(c?.packetsReceivedLoss || 0),
+            packetsReceivedDrop: Number(c?.packetsReceivedDrop || 0),
+            packetsReceivedRetrans: Number(c?.packetsReceivedRetrans || 0),
+            packetsReceivedUndecrypt: Number(c?.packetsReceivedUndecrypt || 0),
+            timestampMs: Date.now(),
+        };
+        if (pathName) currentSrtCounters.set(pathName, currentSnapshot);
+        const previousSnapshot = pathName ? previousSrtCounters.get(pathName) || null : null;
+        const rates = computeSrtRates(currentSnapshot, previousSnapshot);
+        setPublisher(pathName, {
             id: (c?.id as string) || null,
             protocol: 'srt',
             state: (c?.state as string) || null,
@@ -239,6 +299,7 @@ function indexPublishersByPath(
                 msReceiveBuf: c?.msReceiveBuf ?? null,
                 mbpsLinkCapacity: c?.mbpsLinkCapacity ?? null,
                 packetsSentNAK: c?.packetsSentNAK ?? null,
+                ...rates,
             },
         });
     }
@@ -437,6 +498,7 @@ export function createHealthMonitorService({
 
     const pipelineInputStatusHistory = new Map<string, string>();
     const pipelineInputPullProtocolById = new Map<string, PullProtocol>();
+    let srtCountersByPath = new Map<string, SrtCounterSnapshot>();
     let latestHealthSnapshot: HealthSnapshot | null = null;
     let healthCollectorInFlight: Promise<HealthSnapshot> | null = null;
     let healthCollectorTimer: NodeJS.Timeout | null = null;
@@ -448,6 +510,7 @@ export function createHealthMonitorService({
     } = { ready: false, checkedAt: null, readyAt: null, error: null };
     let mediamtxReadinessTimer: NodeJS.Timeout | null = null;
     let lastSocketStatsError: string | null = null;
+    const rtmpBytesReceivedByPeer = new Map<string, { bytes: number; timestampMs: number }>();
 
     async function collectRtmpSocketStatsByRemoteAddr(rtmpConns: {
         items?: unknown[];
@@ -479,7 +542,7 @@ export function createHealthMonitorService({
             const localPort = ingestPorts.rtmp;
 
             const stdout = await new Promise<string>((resolve, reject) => {
-                execFile('ss', ['-tinH'], { timeout: SS_CMD_TIMEOUT_MS }, (err, out) => {
+                execFile('ss', ['-tinmH'], { timeout: SS_CMD_TIMEOUT_MS }, (err, out) => {
                     if (err) {
                         reject(err);
                         return;
@@ -492,11 +555,32 @@ export function createHealthMonitorService({
 
             const socketEntries = parseSsTcpSocketEntries(stdout);
             const statsByRemoteAddr = new Map<string, Record<string, unknown>>();
+            const now = Date.now();
             for (const entry of socketEntries) {
                 if (entry.state !== 'ESTAB') continue;
                 if (!entry.localKey.endsWith(`:${localPort}`)) continue;
                 if (!targets.has(entry.peerKey)) continue;
-                statsByRemoteAddr.set(entry.peerKey, { ...entry.stats });
+                const stats: Record<string, unknown> = { ...entry.stats };
+                const currentBytes = entry.stats.tcpBytesReceived;
+                if (currentBytes != null) {
+                    const prev = rtmpBytesReceivedByPeer.get(entry.peerKey);
+                    if (prev) {
+                        const elapsedSec = (now - prev.timestampMs) / 1000;
+                        if (elapsedSec > 0) {
+                            const delta = currentBytes - prev.bytes;
+                            if (delta >= 0) {
+                                stats.tcpReceiveRateMbps = Number(
+                                    ((delta * 8) / (elapsedSec * 1_000_000)).toFixed(3),
+                                );
+                            }
+                        }
+                    }
+                    rtmpBytesReceivedByPeer.set(entry.peerKey, {
+                        bytes: currentBytes,
+                        timestampMs: now,
+                    });
+                }
+                statsByRemoteAddr.set(entry.peerKey, stats);
             }
             for (const target of targets) {
                 if (!statsByRemoteAddr.has(target)) {
@@ -817,11 +901,15 @@ export function createHealthMonitorService({
             const rtmpSocketStatsByRemoteAddr = await collectRtmpSocketStatsByRemoteAddr(
                 r as { items?: unknown[] },
             );
+            const newSrtCounters = new Map<string, SrtCounterSnapshot>();
             const publisherByPath = indexPublishersByPath(
                 r as { items?: unknown[] },
                 s as { items?: unknown[] },
                 rtmpSocketStatsByRemoteAddr,
+                srtCountersByPath,
+                newSrtCounters,
             );
+            srtCountersByPath = newSrtCounters;
             const pipelines = db.listPipelines();
             const outputsByPipeline = groupOutputsByPipeline(db.listOutputs());
             const jobByOutputId = new Map<string, Job>(db.listJobs().map((j) => [j.outputId, j]));
