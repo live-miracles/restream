@@ -17,6 +17,7 @@ const defaults = {
     verifyAppRetries: 30,
     inputFile: 'media/colorbar-timer.mp4',
     rtmpOutputBase: '',
+    dashboardPassword: 'admin',
     inputProtocols: 'rtmp,srt',
     maxRetries: 30,
     retryDelaySec: 1,
@@ -32,6 +33,10 @@ const config = {
     verifyAppRetries: Number(process.env.VERIFY_APP_RETRIES || defaults.verifyAppRetries),
     inputFile: resolvePath(process.env.INPUT_FILE || defaults.inputFile),
     rtmpOutputBase: process.env.RTMP_OUTPUT_BASE || defaults.rtmpOutputBase,
+    dashboardPassword:
+        process.env.TEST_DASHBOARD_PASSWORD ||
+        process.env.DASHBOARD_PASSWORD ||
+        defaults.dashboardPassword,
     inputProtocols: process.env.INPUT_PROTOCOLS || defaults.inputProtocols,
     maxRetries: Number(process.env.MAX_RETRIES || defaults.maxRetries),
     retryDelaySec: Number(process.env.RETRY_DELAY_SEC || defaults.retryDelaySec),
@@ -48,6 +53,7 @@ const outputEncodingUsage = new Map(outputEncodingDefaults.map((e) => [e, 0]));
 const ownedProcesses = [];
 let shutdownPromise = null;
 let cleanupTargets = createCleanupTargets();
+let authCookie = null;
 
 if (isDirectExecution()) {
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -81,6 +87,7 @@ async function main() {
 
     console.log('== Verify app is running (run "make run-host" or "make run-docker" first) ==');
     await ensureApiReachable();
+    await authenticateApi();
 
     console.log('== Step 1: Ensure 2x3 manifest resources ==');
     const resolved = await ensureResources(manifest, cleanupTargets);
@@ -144,7 +151,7 @@ function readBooleanEnv(name, defaultValue) {
 
 function printHelp() {
     console.log(
-        `Usage: node test/artifacts/run-2x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1    Leave input publishers and manifest-scoped test resources in place after the run\n  MANIFEST_PATH     Path to the tracked 2x3 manifest\n  API_URL           Backend base URL (default: ${defaults.apiUrl})\n  RTMP_OUTPUT_BASE  Base URL used to normalize RTMP output URLs (if set)\n  INPUT_PROTOCOLS   Comma-separated input protocols to use (default: ${defaults.inputProtocols})`,
+        `Usage: node test/artifacts/run-2x3.mjs\n\nEnvironment flags:\n  KEEP_RUNNING=1           Leave input publishers and manifest-scoped test resources in place after the run\n  MANIFEST_PATH            Path to the tracked 2x3 manifest\n  API_URL                  Backend base URL (default: ${defaults.apiUrl})\n  TEST_DASHBOARD_PASSWORD  Password used to authenticate with the dashboard (default: ${defaults.dashboardPassword})\n  RTMP_OUTPUT_BASE         Base URL used to normalize RTMP output URLs (if set)\n  INPUT_PROTOCOLS          Comma-separated input protocols to use (default: ${defaults.inputProtocols})`,
     );
 }
 
@@ -194,6 +201,19 @@ async function ensureApiReachable() {
         throw new Error(
             `API not reachable at ${config.apiUrl}/healthz. Start the app first (make run-host or make run-docker). ${String(error)}`,
         );
+    }
+}
+
+async function authenticateApi() {
+    const result = await requestJson('/api/auth/login', {
+        method: 'POST',
+        body: { password: config.dashboardPassword },
+        skipAuth: true,
+    });
+
+    authCookie = extractCookieHeader(result.response);
+    if (!authCookie) {
+        throw new Error('Login succeeded but did not return a session cookie');
     }
 }
 
@@ -786,6 +806,9 @@ async function requestJson(route, options = {}) {
         body = JSON.stringify(body);
         headers['Content-Type'] = 'application/json';
     }
+    if (authCookie && !options.skipAuth && !headers.Cookie) {
+        headers.Cookie = authCookie;
+    }
 
     const response = await fetch(url, {
         method,
@@ -810,7 +833,17 @@ async function requestJson(route, options = {}) {
         throw new Error(`${method} ${url} failed: ${details}`);
     }
 
-    return { status: response.status, text, json };
+    return { status: response.status, text, json, response };
+}
+
+function extractCookieHeader(response) {
+    const rawCookie = response.headers.get('set-cookie');
+    if (!rawCookie) return null;
+    return rawCookie
+        .split(/,(?=\s*[^;,]+=)/)
+        .map((cookie) => cookie.split(';')[0].trim())
+        .filter(Boolean)
+        .join('; ');
 }
 
 async function pollUntil(checkFn, timeoutMs, intervalMs, label) {

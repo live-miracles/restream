@@ -171,6 +171,10 @@ export interface Db {
 
     getMeta(key: string): string | null;
     setMeta(key: string, value: string): string;
+    createSession(token: string): void;
+    deleteSession(token: string): void;
+    listSessions(): string[];
+    pruneExpiredSessions(maxAgeMs: number): void;
     getCustomEncoding(): string | null;
     setCustomEncoding(ffmpegArgs: string): string;
     getServerName(): string;

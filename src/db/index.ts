@@ -152,6 +152,14 @@ const setMetaStmt = db.prepare(`
   ON CONFLICT(key) DO UPDATE SET value = excluded.value
 `);
 
+/* Session statements */
+const createSessionStmt = db.prepare(
+    'INSERT OR REPLACE INTO sessions (token, created_at) VALUES (?, ?)',
+);
+const deleteSessionStmt = db.prepare('DELETE FROM sessions WHERE token = ?');
+const listSessionsStmt = db.prepare('SELECT token FROM sessions');
+const pruneExpiredSessionsStmt = db.prepare('DELETE FROM sessions WHERE created_at < ?');
+
 /* Helpers */
 
 function serializeEventData(eventData: unknown): string | null {
@@ -598,6 +606,22 @@ export function getMeta(key: string): string | null {
 export function setMeta(key: string, value: string): string {
     setMetaStmt.run({ key, value });
     return value;
+}
+
+export function createSession(token: string): void {
+    createSessionStmt.run(token, Date.now());
+}
+
+export function deleteSession(token: string): void {
+    deleteSessionStmt.run(token);
+}
+
+export function listSessions(): string[] {
+    return (listSessionsStmt.all() as { token: string }[]).map((r) => r.token);
+}
+
+export function pruneExpiredSessions(maxAgeMs: number): void {
+    pruneExpiredSessionsStmt.run(Date.now() - maxAgeMs);
 }
 
 export function getCustomEncoding(): string | null {

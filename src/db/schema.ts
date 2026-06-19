@@ -107,4 +107,13 @@ export function setupDatabaseSchema(db: Database.Database): void {
   )
 `,
     ).run();
+
+    db.prepare(
+        `
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+  )
+`,
+    ).run();
 }
