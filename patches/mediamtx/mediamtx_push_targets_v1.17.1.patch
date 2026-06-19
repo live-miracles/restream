@@ -158,7 +158,7 @@ index 65f455c..c239c79 100644
 +      properties:
 +        url:
 +          type: string
-+          description: URL of the push target (supports rtmp://, rtmps://).
++          description: URL of the push target (rtmp://, rtmps://, rtsp://, rtsps://, srt://, or HLS via http(s):// ending in .m3u8).
 +
      HLSMuxer:
        type: object
@@ -868,17 +868,25 @@ index 1a4dd19..474512e 100644
  			RunOnDemandStartTimeout:      5 * Duration(time.Second),
  			RunOnDemandCloseAfter:        10 * Duration(time.Second),
  		}, pa)
-@@ -747,6 +748,14 @@ func TestConfErrors(t *testing.T) {
+@@ -747,6 +748,22 @@ func TestConfErrors(t *testing.T) {
  				"    alwaysAvailableFile: /path/to/file.mp4\n",
  			"'alwaysAvailableFile' and 'alwaysAvailableTracks' cannot be used together",
  		},
 +		{
-+			"invalid push target URL",
++			"invalid push target URL scheme",
 +			"paths:\n" +
 +				"  mypath:\n" +
 +				"    pushTargets:\n" +
-+				"    - url: http://example.com/live/test\n",
-+			"push target 0: push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, or srt://",
++				"    - url: ftp://example.com/live/test\n",
++			"push target 0: push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https://",
++		},
++		{
++			"HLS push target URL missing .m3u8",
++			"paths:\n" +
++				"  mypath:\n" +
++				"    pushTargets:\n" +
++				"    - url: https://a.upload.youtube.com/http_upload_hls?cid=xxxx&copy=0&file=out.ts\n",
++			"push target 0: HLS push URL must end in .m3u8 or have a file=*.m3u8 query parameter",
 +		},
  	} {
  		t.Run(ca.name, func(t *testing.T) {
@@ -915,7 +923,7 @@ new file mode 100644
 index 0000000..345360a
 --- /dev/null
 +++ b/internal/conf/push_target.go
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,56 @@
 +package conf
 +
 +import (
@@ -935,23 +943,29 @@ index 0000000..345360a
 +		return fmt.Errorf("push target URL is empty")
 +	}
 +
-+	// Check for valid protocols
-+	if !strings.HasPrefix(pt.URL, "rtmp://") &&
-+		!strings.HasPrefix(pt.URL, "rtmps://") &&
-+		!strings.HasPrefix(pt.URL, "rtsp://") &&
-+		!strings.HasPrefix(pt.URL, "rtsps://") &&
-+		!strings.HasPrefix(pt.URL, "srt://") &&
-+		!strings.HasPrefix(pt.URL, "http://") &&
-+		!strings.HasPrefix(pt.URL, "https://") {
-+		return fmt.Errorf("push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https://")
-+	}
-+
-+	_, err := url.Parse(pt.URL)
++	u, err := url.Parse(pt.URL)
 +	if err != nil {
 +		return fmt.Errorf("invalid push target URL: %w", err)
 +	}
 +
++	switch u.Scheme {
++	case "rtmp", "rtmps", "rtsp", "rtsps", "srt":
++	case "http", "https":
++		if !isHLSURL(u) {
++			return fmt.Errorf("HLS push URL must end in .m3u8 or have a file=*.m3u8 query parameter")
++		}
++	default:
++		return fmt.Errorf("push target URL must start with rtmp://, rtmps://, rtsp://, rtsps://, srt://, http://, or https://")
++	}
++
 +	return nil
++}
++
++func isHLSURL(u *url.URL) bool {
++	if strings.HasSuffix(u.Path, ".m3u8") {
++		return true
++	}
++	return strings.HasSuffix(u.Query().Get("file"), ".m3u8")
 +}
 +
 +// PushTargets is a list of push targets.
@@ -2657,7 +2671,7 @@ new file mode 100644
 index 0000000..562f8a8
 --- /dev/null
 +++ b/internal/push/hls_uploader.go
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,232 @@
 +package push
 +
 +import (
@@ -2684,9 +2698,14 @@ index 0000000..562f8a8
 +// hlsUploader handles segment upload for a single HLS target.
 +// It receives shared segments from an hlsMuxer subscription and
 +// uploads them via HTTP PUT with bounded concurrency from a shared pool.
++//
++// Two URL modes:
++//   - Path-based: https://host/path/stream.m3u8 → segments at /path/segN.ts
++//   - Query-based (YouTube): https://host/path?file=index.m3u8 → same path, file=segN.ts
 +type hlsUploader struct {
 +	baseURL      url.URL
 +	playlistName string
++	fileParam    string // non-empty for YouTube-style query-param URLs
 +	httpClient   *http.Client
 +	ctx          context.Context
 +	parent       logger.Writer
@@ -2713,14 +2732,6 @@ index 0000000..562f8a8
 +		return nil, fmt.Errorf("invalid HLS URL: %w", err)
 +	}
 +
-+	if !strings.HasSuffix(u.Path, ".m3u8") {
-+		return nil, fmt.Errorf("HLS push URL must end in .m3u8")
-+	}
-+
-+	baseURL := *u
-+	baseURL.Path = path.Dir(u.Path) + "/"
-+	playlistName := path.Base(u.Path)
-+
 +	httpClient := &http.Client{Timeout: writeTimeout}
 +	if u.Scheme == "https" {
 +		httpClient.Transport = &http.Transport{
@@ -2728,25 +2739,50 @@ index 0000000..562f8a8
 +		}
 +	}
 +
-+	return &hlsUploader{
-+		baseURL:      baseURL,
-+		playlistName: playlistName,
-+		httpClient:   httpClient,
-+		ctx:          ctx,
-+		parent:       parent,
-+		bytesSent:    bytesSent,
-+		uploaded:     make([]hlsPlaylistEntry, 0, hlsPlaylistWindow),
-+	}, nil
++	h := &hlsUploader{
++		httpClient: httpClient,
++		ctx:        ctx,
++		parent:     parent,
++		bytesSent:  bytesSent,
++		uploaded:   make([]hlsPlaylistEntry, 0, hlsPlaylistWindow),
++	}
++
++	// YouTube-style: file name in query param (e.g. ?file=index.m3u8)
++	if fileVal := u.Query().Get("file"); strings.HasSuffix(fileVal, ".m3u8") {
++		h.baseURL = *u
++		h.playlistName = fileVal
++		h.fileParam = "file"
++		return h, nil
++	}
++
++	// Path-based: playlist name is the last path component
++	if !strings.HasSuffix(u.Path, ".m3u8") {
++		return nil, fmt.Errorf("HLS push URL must end in .m3u8 or have a file=*.m3u8 query parameter")
++	}
++
++	h.baseURL = *u
++	h.baseURL.Path = path.Dir(u.Path) + "/"
++	h.playlistName = path.Base(u.Path)
++	return h, nil
++}
++
++func (h *hlsUploader) fileURL(name string) string {
++	u := h.baseURL
++	if h.fileParam != "" {
++		q := u.Query()
++		q.Set(h.fileParam, name)
++		u.RawQuery = q.Encode()
++		return u.String()
++	}
++	u.Path = h.baseURL.Path + name
++	return u.String()
 +}
 +
 +// uploadSegment uploads a single segment and its playlist update.
 +func (h *hlsUploader) uploadSegment(seg *hlsSharedSegment, segSeq int) error {
 +	defer seg.release()
 +
-+	segURL := h.baseURL
-+	segURL.Path = h.baseURL.Path + seg.name
-+
-+	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, segURL.String(), bytes.NewReader(seg.data))
++	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, h.fileURL(seg.name), bytes.NewReader(seg.data))
 +	if err != nil {
 +		return err
 +	}
@@ -2802,10 +2838,8 @@ index 0000000..562f8a8
 +	}
 +
 +	playlistData := playlist.Bytes()
-+	playlistURL := h.baseURL
-+	playlistURL.Path = h.baseURL.Path + h.playlistName
 +
-+	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, playlistURL.String(), bytes.NewReader(playlistData))
++	req, err := http.NewRequestWithContext(h.ctx, http.MethodPut, h.fileURL(h.playlistName), bytes.NewReader(playlistData))
 +	if err != nil {
 +		return err
 +	}
@@ -4485,7 +4519,7 @@ diff --git a/mediamtx.yml b/mediamtx.yml
 index 47f04b6..93452d7 100644
 --- a/mediamtx.yml
 +++ b/mediamtx.yml
-@@ -541,6 +541,18 @@ pathDefaults:
+@@ -541,6 +541,20 @@ pathDefaults:
    # Set to 0s to disable automatic deletion.
    recordDeleteAfter: 1d
  
@@ -4493,18 +4527,20 @@ index 47f04b6..93452d7 100644
 +  # Default path settings -> Push Targets
 +
 +  # Push the stream to external servers (e.g., YouTube Live, Twitch, etc.).
-+  # Supported protocols: rtmp, rtmps.
++  # Supported protocols: rtmp, rtmps, rtsp, rtsps, srt, http/https (HLS).
++  # HLS push URLs must end in .m3u8 — segments are uploaded via HTTP PUT.
 +  # The URL can contain variables such as $MTX_PATH or $path (the path name).
 +  # Push targets can also be added/removed dynamically via the API.
 +  # Example:
 +  # pushTargets:
 +  # - url: rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx
 +  # - url: rtmps://live.twitch.tv/app/live_xxxxxxxxx_xxxxxxxxxxxxxxxxxxxx
++  # - url: https://a.upload.youtube.com/http_upload_hls?cid=xxxx&copy=0&file=index.m3u8
 +
    ###############################################
    # Default path settings -> Publisher source (when source is "publisher")
  
-@@ -695,6 +707,20 @@ pathDefaults:
+@@ -695,6 +708,22 @@ pathDefaults:
    # M-JPEG JPEG quality (when codec is mjpeg).
    rpiCameraMJPEGQuality: 60
  
@@ -4515,12 +4551,14 @@ index 47f04b6..93452d7 100644
 +  # The stream will be automatically pushed to these targets when available.
 +  # If the source stream is interrupted, pushing will resume automatically
 +  # when the stream becomes available again.
-+  # Supported protocols: RTMP, RTSP, SRT
++  # Supported protocols: RTMP, RTMPS, RTSP, RTSPS, SRT, HTTP/HTTPS (HLS)
++  # HLS push uses HTTP PUT of MPEG-TS segments; the URL must end in .m3u8.
 +  # Example:
 +  # pushTargets:
 +  # - url: rtmp://youtube.com/live/YOUR_STREAM_KEY
 +  # - url: srt://server.com:1234/?streamid=publish:mystream
 +  # - url: rtsp://server.com:8554/mystream
++  # - url: https://a.upload.youtube.com/http_upload_hls?cid=xxxx&copy=0&file=index.m3u8
 +
    ###############################################
    # Default path settings -> Hooks
