@@ -7,10 +7,11 @@ import { getSecurityConfig, validateSecurityConfigPatch } from '../services/secu
 export function registerConfigApi({ app, db }: { app: Express; db: Db }): void {
     app.get('/config', async (req, res) => {
         try {
+            const ingestHost = db.getIngestHost() || 'localhost';
             const pipelines = await Promise.all(
                 db.listPipelines().map(async (pipeline) => ({
                     ...pipeline,
-                    ingestUrls: await buildIngestUrls(pipeline.streamKey),
+                    ingestUrls: await buildIngestUrls(pipeline.streamKey, ingestHost),
                 })),
             );
             const outputs = db.listOutputs();
@@ -18,6 +19,7 @@ export function registerConfigApi({ app, db }: { app: Express; db: Db }): void {
             const ingestSecurity = getSecurityConfig(db.getIngestSecurityConfig());
             return res.json({
                 serverName: db.getServerName(),
+                ingestHost: db.getIngestHost() || '',
                 ingestSecurity,
                 pipelines,
                 outputs,
@@ -30,13 +32,23 @@ export function registerConfigApi({ app, db }: { app: Express; db: Db }): void {
 
     app.patch('/config', (req, res) => {
         try {
-            const { serverName, ingestSecurity } =
-                (req.body as { serverName?: unknown; ingestSecurity?: unknown }) || {};
+            const { serverName, ingestHost, ingestSecurity } =
+                (req.body as {
+                    serverName?: unknown;
+                    ingestHost?: unknown;
+                    ingestSecurity?: unknown;
+                }) || {};
             if (serverName !== undefined) {
                 if (typeof serverName !== 'string' || !serverName.trim()) {
                     return res.status(400).json({ error: 'serverName must be a non-empty string' });
                 }
                 db.setServerName(serverName);
+            }
+            if (ingestHost !== undefined) {
+                if (typeof ingestHost !== 'string') {
+                    return res.status(400).json({ error: 'ingestHost must be a string' });
+                }
+                db.setIngestHost(ingestHost);
             }
             if (ingestSecurity !== undefined) {
                 const validation = validateSecurityConfigPatch(
@@ -51,6 +63,7 @@ export function registerConfigApi({ app, db }: { app: Express; db: Db }): void {
 
             return res.json({
                 serverName: db.getServerName(),
+                ingestHost: db.getIngestHost() || '',
                 ingestSecurity: getSecurityConfig(db.getIngestSecurityConfig()),
             });
         } catch (err) {

@@ -179,8 +179,8 @@ export async function getMediamtxIngestPorts(): Promise<IngestPorts> {
 
 export async function buildIngestUrls(
     streamKey: string,
+    ingestHost = 'localhost',
 ): Promise<{ rtmp: string | null; srt: string | null }> {
-    const ingestHost = 'localhost';
     const ingestPorts = await getMediamtxIngestPorts();
     const effectivePath = buildMediamtxPath(streamKey);
 
