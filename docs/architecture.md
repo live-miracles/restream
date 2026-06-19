@@ -1,147 +1,154 @@
 # Architecture
 
-This is the short map of how Restream fits together. The code is the source of truth for implementation details; this document is meant to stay high-level and durable.
+Single Rust binary replacing Node.js + MediaMTX + spawned FFmpeg processes. All media transport, orchestration, state, and UI are in-process.
 
 ## System Shape
 
 ```text
-Publisher (RTMP/SRT)  ─┐
-Video file (/media/)  ─┤─> MediaMTX ingest -> FFmpeg output jobs -> External destinations
-                        │
-Browser dashboard ──────┤-> Restream Node API -> SQLite data.db
-                             └-> MediaMTX control/health API
+Publisher (RTMP/SRT)
+  │
+  ▼
+┌──────────────────────────────────────────────────────────┐
+│                    restream binary                        │
+│                                                          │
+│  RTMP Server ─┐                                          │
+│  SRT Server  ─┤─► RingBuffer ─┬─► RTMP Egress ──► CDN   │
+│               │   (per pipe)  ├─► SRT Egress  ──► CDN    │
+│               │               ├─► HLS Muxer  ──► disk   │
+│               │               ├─► MKV Recorder ► disk   │
+│               │               └─► Transcoder ──► RingBuf │
+│                                                          │
+│  Axum Web Server ──► REST API ──► SQLite (data.db)       │
+│                  ──► Dashboard (embedded frontend)        │
+│                  ──► SSE /health + /diagnostics           │
+│                                                          │
+│  Reconciler (1s) ──► output lifecycle + recording mgmt   │
+└──────────────────────────────────────────────────────────┘
 ```
 
-MediaMTX handles media transport. Restream handles control-plane state, dashboard APIs, FFmpeg job orchestration, health aggregation, and recovery decisions.
-
-Input sources:
-- **Live ingest** — publisher sends RTMP or SRT to MediaMTX
-- **Pulled source** — MediaMTX actively pulls a pipeline input from a configured source URL
-- **Video ingest** — a pre-recorded video from the `/media` folder is streamed into a pipeline via MediaMTX (loop and start-time configurable)
-- **Recording** — any live pipeline can be recorded to an MP4 file in `/media`
-
-## Runtime Components
-
-| Component | Role |
-|---|---|
-| Node API | Serves the dashboard, exposes REST APIs, owns orchestration |
-| SQLite `data.db` | Stores stream keys, pipelines, outputs, jobs, logs, and metadata |
-| MediaMTX | Accepts ingest, exposes RTMP/SRT relay, serves preview HLS, exposes control APIs |
-| FFmpeg | One child process per running output |
-| Browser dashboard | Operator UI for pipeline and output control |
-
-## Core Data Model
-
-| Entity | Purpose |
-|---|---|
-| `stream_keys` | Publisher-facing ingest keys and labels |
-| `pipelines` | Logical input streams tied to stream keys |
-| `outputs` | Destinations attached to pipelines |
-| `jobs` | Current output process state; one row per output |
-| `job_logs` | Lifecycle, stderr, control, and history rows |
-| `meta` | Small persisted metadata (server name, custom encodings) |
-| `ingests` | Video ingest configurations (file, stream key, loop, start time) |
-
-Media files (recordings and video ingest sources) live in the `media/` directory on disk and are not tracked in SQLite beyond ingest configuration rows.
-
-The app also keeps short-lived in-memory state for live child process handles, FFmpeg progress, output media details, stop requests, probe cache, health snapshots, and recovery timers. SQLite is the durable state; process maps are rebuilt naturally as jobs start and stop.
-
-## Main Flows
-
-### Ingest Authorization
-
-MediaMTX calls Restream's local `/internal/mediamtx/auth` endpoint for publish/read/playback
-authorization. Publish attempts are allowed only when the path is a configured
-`live/<streamKey>`. Unknown-key attempts are counted per publisher IP in a rolling window; once the
-limit is reached, that IP is temporarily banned from ingest attempts. Internal read/playback calls
-from FFmpeg, ffprobe, and the HLS preview proxy remain localhost-only.
-
-### Pipeline Input Source
-
-Pipeline inputs default to passive publisher ingest through the permanent `live/<streamKey>` MediaMTX
-paths. A pipeline can also set an `inputSource` URL. In that mode Restream stores the source in
-SQLite and patches the matching MediaMTX path `source` option so MediaMTX actively pulls the stream.
-
-Effective MediaMTX paths use:
+## Threading Model
 
 ```text
-live/<streamKey>
+┌───────────────── tokio runtime (multi-threaded) ─────────────────┐
+│  Axum web server          HTTP handlers, SSE streams             │
+│  RTMP listener            per-connection async tasks             │
+│  SRT accept loop          per-connection async tasks             │
+│  Reconciler (1s tick)     output lifecycle + recording start/stop│
+│  Egress tasks             RingBuffer reader → network send       │
+└──────────────────────────────────────────────────────────────────┘
+
+┌───────────── std::thread (OS threads, catch_unwind) ─────────────┐
+│  FFmpeg demuxer           RTMP/SRT ingest → RingBuffer push      │
+│  FFmpeg HLS muxer         MemoryQueue → HLS segments on disk     │
+│  FFmpeg MKV muxer         MemoryQueue → .mkv recording file      │
+│  FFmpeg transcoder        MemoryQueue → encode → MemoryQueue     │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Output Start
+Tokio handles all network I/O and coordination. CPU-bound FFmpeg work runs on dedicated OS threads to avoid starving the async runtime. All `std::thread::spawn` calls are wrapped in `catch_unwind` so an FFmpeg panic logs an error instead of taking down the process.
 
-Starting an output:
+## Packet Walk (Ingest → Egress)
 
-1. Checks that the pipeline and output exist.
-2. Rejects duplicate starts for the same output.
-3. Uses the latest MediaMTX publisher protocol from health state to choose the local pull URL.
-4. Spawns FFmpeg pulling via RTMP for RTMP ingest or SRT for SRT ingest, then pushes to the output URL.
-6. Records the job and lifecycle logs in SQLite.
-7. Tracks FFmpeg progress (via fd3) and exit state in the background.
+```text
+1. Publisher sends RTMP/SRT stream
+2. Protocol handler (rtmp.rs/srt.rs) receives raw data
+3. For RTMP: rml_rtmp parses FLV, emits VideoDataReceived/AudioDataReceived
+   For SRT: raw MPEG-TS → MemoryQueue → FFmpeg demuxer (OS thread) → packets
+4. MediaPacket { media_type, track_index, pts, dts, is_keyframe, payload }
+5. RingBuffer.push() → ArcSwapOption.store() → Notify.notify_waiters()
+6. N readers wake → ArcSwapOption.load_full() → Arc<MediaPacket> (zero-copy)
+7. Each egress/muxer forwards the packet to its destination
+```
 
-### Output Stop and Delete
+## Ring Buffer Design
 
-Stopping sends a termination signal to the FFmpeg process and records the result. Deleting a pipeline or output first tears down any running output jobs so the database does not remove rows underneath live processes.
+```text
+Capacity: 4096 slots (at 30fps ≈ 136 seconds of buffering)
 
-### Health
+┌─────────────────────────────────────────────┐
+│ Slot 0 │ Slot 1 │ Slot 2 │ ... │ Slot 4095 │  ← 64-byte aligned (cache line)
+│ArcSwap │ArcSwap │ArcSwap │     │ ArcSwap   │
+└─────────────────────────────────────────────┘
+     ▲ write_idx (AtomicUsize, 64-byte aligned)
+     ▲ last_keyframe_idx (AtomicUsize, O(1) fast-forward)
+```
 
-The health service periodically reads MediaMTX runtime state, SQLite job/config state, and FFmpeg progress data. It merges those inputs into the `/health` response used by the dashboard.
+- **Single producer**: only the ingest thread calls `push()`, guaranteed by monotonic `write_idx`
+- **Multi consumer**: readers call `load_full()` (lock-free, wait-free via `arc-swap`)
+- **Overflow**: when a reader lags by ≥ capacity, it fast-forwards to `last_keyframe_idx` (O(1) atomic read)
+- **False sharing prevention**: each slot is `#[repr(align(64))]` so concurrent readers on adjacent slots never stall each other
 
-Output health status is derived from FFmpeg progress data:
+## In-Memory AVIO (MemoryQueue)
 
-- `on` — job is running and FFmpeg has emitted at least one progress report via fd3
-- `warning` — job is running but no progress data has been received yet
-- `off` — no running job
-- `error` — latest job status is `failed`
+Replaces TCP loopback sockets for FFmpeg I/O. Data flows through a `VecDeque<u8>` protected by `Mutex` + `Condvar`.
 
-See [health-mapping.md](./health-mapping.md) for the detailed status rules.
+- **Bulk reads**: `as_slices()` + `copy_from_slice` + `drain()` — single memcpy per read (was per-byte `pop_front()`)
+- **Buffer size**: 32 KB (FFmpeg default) — 8x fewer callback invocations than the 4 KB buffer
+- **Benchmark**: 173 µs for 1 MB transfer (2.3x faster than TCP loopback)
 
-### Config
+## Codec Support
 
-`/config` returns pipelines, outputs, jobs, ingest URLs, and app config. The response is read directly from SQLite on every request — no caching layer — which is fast enough given SQLite's in-process read cost and the low poll rate.
+| Codec | Ingest | Passthrough | Transcode |
+|-------|--------|-------------|-----------|
+| H.264 | RTMP, SRT | All egress | Yes |
+| H.265/HEVC | SRT, Enhanced RTMP | All egress | Yes |
+| AAC | RTMP, SRT | All egress | Yes |
+| Multi-track audio | SRT | All egress | — |
 
-### Recovery
+RTMP keyframe detection uses FLV FrameType (`data[0] >> 4 == 1`), which is codec-agnostic. SRT demuxer maps all video and audio streams (not just "best") with per-track `track_index` for multi-track support.
 
-Unexpected output exits can be retried according to the output recovery config. Manual stops set desired state to `stopped` and suppress retries. When an input disappears and later returns, recovery can restart outputs that were likely stopped by input loss.
+## SIMD Optimizations
 
-## Backend Shape
+Runtime-dispatched: AVX-512 → AVX2 → SSE2 → scalar fallback.
 
-The backend is TypeScript under `src/`, compiled to `dist/` by `npm run build:backend`.
+| Operation | Size | Scalar | SIMD | Speedup |
+|-----------|------|--------|------|---------|
+| Sync byte scan | 1 KB | 257 ns | 15 ns | 17x |
+| Sync byte scan | 64 KB | 16 µs | 894 ns | 18x |
 
-- `src/index.ts`: app composition and route wiring
-- `src/types.ts`: shared interfaces (Pipeline, Output, Job, Db, etc.)
-- `src/api/`: REST route handlers
-- `src/services/`: health monitor, output lifecycle, and startup bootstrap
-- `src/db/`: SQLite schema setup and typed query helpers
-- `src/utils/`: FFmpeg command building, MediaMTX client, validation, and logging
+## Scaling Target
 
-## Frontend Shape
+- 50 concurrent ingests, each with its own `RingBuffer`
+- Up to 500 egress readers on the hottest pipeline (Zipfian distribution)
+- ArcSwap lock-free reads handle 500 concurrent readers without contention
+- `mimalloc` allocator for reduced lock contention under multi-threaded load
+- File descriptor limit raised to 65536 at startup via `setrlimit`
 
-The dashboard is a TypeScript/ES-module frontend under `public/`.
+## Frontend Embedding
 
-- `public/ts/`: TypeScript source (compiled to `public/js/` by `npm run build:frontend`)
-- `public/ts/core/`: API client, shared state, view-model helpers, utilities
-- `public/ts/features/`: dashboard rendering and interaction flows
-- `public/ts/history/`: output and pipeline history modals
-- `public/input.css`: Tailwind/DaisyUI source
-- `public/output.css`: generated CSS (generated by `npm run build:frontend`)
+Static assets from `public/` are compiled into the binary via `rust-embed`. At runtime, the server tries disk first (for development hot-reload), then falls back to embedded assets (for production single-binary deployment). The SPA fallback serves `index.html` for all unmatched routes.
 
-The frontend talks only to Restream APIs. It does not call MediaMTX directly.
+## Key Files
 
-**Polling intervals:**
+| File | Purpose |
+|------|---------|
+| `src/lib.rs` | App composition, reconciliation loop |
+| `src/api.rs` | Axum router, REST handlers, embedded asset serving |
+| `src/db.rs` | SQLite schema and queries |
+| `src/diag.rs` | Streaming SSE diagnostics |
+| `src/types.rs` | Domain types (Pipeline, Output, Job) |
+| `src/media/engine.rs` | Central state: ingests, egresses, ring buffers |
+| `src/media/ring_buffer.rs` | Lock-free SPMC ring buffer with ArcSwap |
+| `src/media/avio.rs` | In-memory FFmpeg I/O (MemoryQueue + AVIO) |
+| `src/media/rtmp.rs` | RTMP ingest/egress via rml_rtmp |
+| `src/media/srt.rs` | SRT ingest/egress via libsrt FFI |
+| `src/media/hls.rs` | HLS segment muxer |
+| `src/media/recording.rs` | MKV recording muxer |
+| `src/media/transcoder.rs` | In-process transcoder (H.264/H.265) |
+| `src/media/simd.rs` | SIMD-accelerated memcpy and sync byte scan |
+| `src/media/security.rs` | Ingest rate limiter |
 
-| Data | Interval | Notes |
-|---|---|---|
-| `/health` + `/metrics/system` | 5 s | Every poll tick |
-| `/config` | ~10 s | Every other tick via toggle; reset to immediate after any mutation or tab focus |
-| `/stream-keys` | once on load | Prefetched at module init; cached for the session |
-| History logs | on demand | Fetched only when the user opens a history tab |
+## Dependencies
 
-When the tab is hidden the poll interval drops to 30 s for all endpoints.
-
-## Known Constraints
-
-- The app assumes MediaMTX is reachable on localhost with its configured ports.
-- `data.db` is local SQLite; there is no built-in replication or backup scheduler.
-- FFmpeg and ffprobe must be available to start and validate outputs.
-- Output health depends on FFmpeg emitting progress data via fd3; a running job with no progress yet shows as `warning` until the first progress report arrives.
+| Crate | Purpose |
+|-------|---------|
+| `tokio` | Async runtime |
+| `axum` | HTTP framework |
+| `sqlx` | SQLite driver |
+| `ffmpeg-next` | FFmpeg bindings (libavformat/libavcodec 6.x) |
+| `rml_rtmp` | RTMP protocol |
+| `arc-swap` | Lock-free atomic Arc for ring buffer slots |
+| `rust-embed` | Compile-time asset embedding |
+| `sysinfo` | CPU/memory/disk/network monitoring |
+| `mimalloc` | Performance allocator |
+| `nix` | Unix socket stats (TCP_INFO) |

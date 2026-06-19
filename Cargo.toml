@@ -1,0 +1,73 @@
+[package]
+name = "restream"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["fs", "cors", "compression-full"] }
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "macros"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.5"
+sysinfo = "0.30"
+bcrypt = "0.15"
+libc = "0.2"
+nix = { version = "0.27", features = ["socket", "sched", "fs", "feature"] }
+core_affinity = "0.8"
+mimalloc = { version = "0.1", default-features = false }
+futures-util = "0.3"
+home = "=0.5.9"
+scrypt = { version = "0.11", features = ["simple"] }
+rand = "0.8"
+ffmpeg-next = { version = "6.0", default-features = false, features = ["codec", "filter", "format", "software-resampling", "software-scaling"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+rml_rtmp = "0.8.0"
+arc-swap = "1"
+tokio-stream = "0.1"
+rust-embed = "8"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+criterion = "0.5"
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+hyper = "1.0"
+
+[[bench]]
+name = "ring_buffer"
+harness = false
+
+[[bench]]
+name = "packet_remux"
+harness = false
+
+[[bench]]
+name = "transcoder_throughput"
+harness = false
+
+[[bench]]
+name = "simd_memcpy"
+harness = false
+
+[[bench]]
+name = "simd_search"
+harness = false
+
+[[bench]]
+name = "avio_throughput"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+panic = "unwind"
+

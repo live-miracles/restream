@@ -2,6 +2,6 @@
 set -e
 
 echo "Checking code formatting..."
-npx prettier --check .
+cargo fmt --check
 
-echo "Formatting looks good 👍"
+echo "Formatting looks good"

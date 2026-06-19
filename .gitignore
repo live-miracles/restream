@@ -1,7 +1,8 @@
-# Dependencies
-node_modules/
-/mediamtx
-/mediamtx.exe
+# Rust build artifacts
+/target
+
+# Old Node.js/TypeScript codebase (archived)
+old/
 
 # Local OS/editor files
 .DS_Store
@@ -14,9 +15,6 @@ bin/
 
 # Log files
 log/
-
-# Local/runtime files
-.deps-stamp
 *.log
 *.pid
 
@@ -42,20 +40,11 @@ log/
 *tls*.tgz
 *cert*.tgz
 
-# Generated TypeScript output
+# Generated frontend output
 public/js/
-dist/
-
-# Generated CSS output
 public/output.css
 
-# Generated test artifacts
-test/artifacts/logs/
-test/artifacts/runs/
-
-# Keep data directory, ignore its runtime content
+# Runtime data
 data.db
 media/
-
-# Recorded videos (keep test assets, ignore recordings)
 media/*.mkv
