@@ -4,7 +4,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import * as db from './db';
-import { mkdirSync } from 'fs';
+import { mkdirSync, readFileSync, statSync } from 'fs';
 import { registerConfigApi } from './api/config';
 import { registerGrafanaProxyRoutes } from './api/grafana';
 import { registerPreviewProxyRoutes } from './api/preview';
@@ -16,6 +16,7 @@ import { registerIngestApi } from './api/ingest';
 import { registerSecurityApi } from './api/security';
 import { registerDiagnosticsApi } from './api/diagnostics';
 import { registerStatusApi } from './api/status';
+import { checkIsAuthenticated, initializeAuth, registerAuthApi, requireAuth } from './api/auth';
 import { AUDIO_CAPS, AUDIO_PLATFORM_LABELS } from './utils/audio-caps';
 import { createIngestService } from './services/ingest';
 import { createHealthMonitorService } from './services/health';
@@ -29,11 +30,101 @@ import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
 
 const app = express();
 
+const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
+const appPort = Number(process.env.PORT) || 3030;
+const mediaDir = path.join(__dirname, '..', 'media');
+const publicDir = path.join(__dirname, '..', 'public');
+const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.map': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+};
+
+function resolveStaticFile(rootDir: string, requestPath: string): string | null {
+    let decodedPath: string;
+    try {
+        decodedPath = decodeURIComponent(requestPath);
+    } catch {
+        return null;
+    }
+
+    const relativePath = decodedPath.replace(/^\/+/, '') || 'index.html';
+    const resolvedRoot = path.resolve(rootDir);
+    const resolvedFile = path.resolve(resolvedRoot, relativePath);
+    if (resolvedFile !== resolvedRoot && !resolvedFile.startsWith(`${resolvedRoot}${path.sep}`)) {
+        return null;
+    }
+
+    try {
+        return statSync(resolvedFile).isFile() ? resolvedFile : null;
+    } catch {
+        return null;
+    }
+}
+
+function setStaticCacheHeaders(res: express.Response, filePath: string): void {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.html') {
+        res.setHeader('Cache-Control', 'no-store');
+    } else if (ext === '.js' || ext === '.css') {
+        res.setHeader('Cache-Control', REVALIDATE_STATIC_CACHE_CONTROL);
+    } else {
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+}
+
+function sendStaticFile(req: express.Request, res: express.Response, filePath: string): void {
+    setStaticCacheHeaders(res, filePath);
+    res.type(
+        STATIC_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+    );
+    if (req.method === 'HEAD') {
+        res.end();
+        return;
+    }
+    res.send(readFileSync(filePath));
+}
+
+function staticFileMiddleware(rootDir: string): express.RequestHandler {
+    return (req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+            next();
+            return;
+        }
+        const filePath = resolveStaticFile(rootDir, req.path);
+        if (!filePath) {
+            next();
+            return;
+        }
+        sendStaticFile(req, res, filePath);
+    };
+}
+
+initializeAuth(db);
+
+app.get('/login', (req, res) => {
+    if (checkIsAuthenticated(req)) {
+        res.redirect('/');
+        return;
+    }
+    sendStaticFile(req, res, path.join(publicDir, 'login.html'));
+});
+app.get('/login.html', (_req, res) => res.redirect('/login'));
+app.get('/logo.png', (req, res) => sendStaticFile(req, res, path.join(publicDir, 'logo.png')));
+app.get('/output.css', (req, res) => sendStaticFile(req, res, path.join(publicDir, 'output.css')));
+
+app.use(requireAuth);
+
 // Register before body parsers so Grafana API requests can stream through unchanged.
 registerGrafanaProxyRoutes({ app, log });
 
-const REVALIDATE_STATIC_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 app.use(express.json());
+registerAuthApi({ app, db });
 app.use(
     compression({
         threshold: 1024,
@@ -49,8 +140,6 @@ app.use(
     }),
 );
 
-const appPort = Number(process.env.PORT) || 3030;
-const mediaDir = path.join(__dirname, '..', 'media');
 mkdirSync(mediaDir, { recursive: true });
 
 // Runtime-only progress state from ffmpeg "-progress pipe:3" (never persisted to DB).
@@ -165,9 +254,9 @@ registerPreviewProxyRoutes({
 app.use('/media', express.static(mediaDir, { maxAge: 0, etag: true }));
 
 // ── Static UI ─────────────────────────────────────────
-const hlsVendorDir = path.join(__dirname, '..', 'node_modules', 'hls.js', 'dist');
 app.use(
     '/vendor',
+    staticFileMiddleware(hlsVendorDir),
     express.static(hlsVendorDir, {
         maxAge: '1h',
         etag: true,
@@ -181,9 +270,9 @@ app.use(
     }),
 );
 
-const publicDir = path.join(__dirname, '..', 'public');
 app.use(
     '/',
+    staticFileMiddleware(publicDir),
     express.static(publicDir, {
         maxAge: '1h',
         etag: true,
