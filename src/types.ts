@@ -181,4 +181,6 @@ export interface Db {
     setServerName(name: string): string;
     getIngestSecurityConfig(): Partial<IngestSecurityConfig>;
     setIngestSecurityConfig(config: IngestSecurityConfig): string;
+    getIngestHost(): string | null;
+    setIngestHost(host: string): string;
 }

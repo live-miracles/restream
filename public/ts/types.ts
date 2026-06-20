@@ -95,6 +95,7 @@ export interface Encoding {
 
 export interface ConfigData {
     serverName?: string;
+    ingestHost?: string;
     ingestSecurity?: IngestSecurityConfig;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];

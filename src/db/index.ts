@@ -657,3 +657,11 @@ export function getIngestSecurityConfig(): Partial<IngestSecurityConfig> {
 export function setIngestSecurityConfig(config: IngestSecurityConfig): string {
     return setMeta(INGEST_SECURITY_CONFIG_META_KEY, JSON.stringify(config));
 }
+
+export function getIngestHost(): string | null {
+    return getMeta('ingest_host') || null;
+}
+
+export function setIngestHost(host: string): string {
+    return setMeta('ingest_host', host.trim());
+}
