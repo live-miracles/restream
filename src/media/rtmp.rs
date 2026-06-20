@@ -16,6 +16,7 @@ use rml_rtmp::sessions::{
 use rml_rtmp::time::RtmpTimestamp;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -25,6 +26,12 @@ use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
 use crate::media::tcp_stats::collect_rtmp_receiver_stats;
+
+struct RtmpIngestHandle {
+    pipeline_id: String,
+    ring: Arc<RingBuffer>,
+    bytes_received: Arc<AtomicU64>,
+}
 
 fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
     if data.len() < 2 {
@@ -512,7 +519,7 @@ async fn handle_rtmp_client(
         }
     }
 
-    let mut active_pipeline_id: Option<String> = None;
+    let mut active_ingest: Option<RtmpIngestHandle> = None;
     let mut probe = ProbeState {
         video_done: false,
         audio_done: false,
@@ -533,12 +540,12 @@ async fn handle_rtmp_client(
             &client_ip,
             &client_addr_text,
             &mut probe,
-            &mut active_pipeline_id,
+            &mut active_ingest,
         )
         .await
         {
-            if let Some(ref pipeline_id) = active_pipeline_id {
-                engine.unregister_ingest(pipeline_id).await;
+            if let Some(active) = &active_ingest {
+                engine.unregister_ingest(&active.pipeline_id).await;
             }
             return Err(error);
         }
@@ -569,7 +576,7 @@ async fn handle_rtmp_client(
                     &client_ip,
                     &client_addr_text,
                     &mut probe,
-                    &mut active_pipeline_id,
+                    &mut active_ingest,
                 )
                 .await
                 {
@@ -577,8 +584,11 @@ async fn handle_rtmp_client(
                     break;
                 }
             }
-            _ = tcp_stats_interval.tick(), if active_pipeline_id.is_some() => {
-                let pipeline_id = active_pipeline_id.as_deref().unwrap_or_default();
+            _ = tcp_stats_interval.tick(), if active_ingest.is_some() => {
+                let pipeline_id = active_ingest
+                    .as_ref()
+                    .map(|active| active.pipeline_id.as_str())
+                    .unwrap_or_default();
                 let now = Instant::now();
                 let quality = match collect_rtmp_receiver_stats(&socket) {
                     Ok(stats) => {
@@ -621,12 +631,12 @@ async fn handle_rtmp_client(
     }
 
     // Clean up active ingest on disconnect
-    if let Some(ref pipeline_id) = active_pipeline_id {
+    if let Some(active) = &active_ingest {
         println!(
             "[rtmp] Publisher disconnected for pipeline: {}",
-            pipeline_id
+            active.pipeline_id
         );
-        engine.unregister_ingest(pipeline_id).await;
+        engine.unregister_ingest(&active.pipeline_id).await;
     }
 
     Ok(())
@@ -647,7 +657,7 @@ async fn handle_session_results(
     client_ip: &str,
     client_addr: &str,
     probe: &mut ProbeState,
-    active_pipeline_id: &mut Option<String>,
+    active_ingest: &mut Option<RtmpIngestHandle>,
 ) -> Result<(), &'static str> {
     for res in results {
         match res {
@@ -721,7 +731,22 @@ async fn handle_session_results(
                             );
                             return Err("Pipeline already has an active publisher");
                         };
-                        *active_pipeline_id = Some(pipeline.id.clone());
+                        let ring = engine.get_or_create_pipeline(&pipeline.id).await;
+                        let bytes_received = {
+                            let ingests = engine.active_ingests.read().await;
+                            ingests
+                                .get(&pipeline.id)
+                                .map(|ingest| ingest.bytes_received.clone())
+                        };
+                        let Some(bytes_received) = bytes_received else {
+                            engine.unregister_ingest(&pipeline.id).await;
+                            return Err("Active ingest disappeared during registration");
+                        };
+                        *active_ingest = Some(RtmpIngestHandle {
+                            pipeline_id: pipeline.id.clone(),
+                            ring,
+                            bytes_received,
+                        });
 
                         // Success! Accept publish request
                         let resp = session
@@ -756,12 +781,11 @@ async fn handle_session_results(
                         data,
                         timestamp,
                     } => {
-                        if let Some(pipeline_id) = active_pipeline_id.as_ref() {
-                            let ring_buf = engine.get_or_create_pipeline(pipeline_id).await;
-
-                            engine
-                                .update_ingest_bytes(pipeline_id, data.len() as u64)
-                                .await;
+                        if let Some(active) = active_ingest.as_ref() {
+                            let pipeline_id = &active.pipeline_id;
+                            active
+                                .bytes_received
+                                .fetch_add(data.len() as u64, Ordering::Relaxed);
 
                             let is_keyframe = if data.is_empty() {
                                 false
@@ -810,7 +834,7 @@ async fn handle_session_results(
                                 is_keyframe,
                                 payload: data,
                             };
-                            ring_buf.push(packet);
+                            active.ring.push(packet);
                         }
                     }
                     ServerSessionEvent::AudioDataReceived {
@@ -819,12 +843,11 @@ async fn handle_session_results(
                         data,
                         timestamp,
                     } => {
-                        if let Some(pipeline_id) = active_pipeline_id.as_ref() {
-                            let ring_buf = engine.get_or_create_pipeline(pipeline_id).await;
-
-                            engine
-                                .update_ingest_bytes(pipeline_id, data.len() as u64)
-                                .await;
+                        if let Some(active) = active_ingest.as_ref() {
+                            let pipeline_id = &active.pipeline_id;
+                            active
+                                .bytes_received
+                                .fetch_add(data.len() as u64, Ordering::Relaxed);
 
                             // Cache audio sequence header for play subscribers
                             if data.len() >= 2 && (data[0] >> 4) == 10 && data[1] == 0 {
@@ -855,7 +878,7 @@ async fn handle_session_results(
                                 is_keyframe: false,
                                 payload: data,
                             };
-                            ring_buf.push(packet);
+                            active.ring.push(packet);
                         }
                     }
                     ServerSessionEvent::PlayStreamRequested {

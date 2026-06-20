@@ -249,6 +249,7 @@ evidence.
 | Group | Measures |
 |---|---|
 | `data_path/control_plane_lookup` | locked pipeline registry lookup versus cached direct handle |
+| `data_path/ingest_hot_handle` | packet-rate ring and byte-counter registry access versus cached handles |
 | `data_path/ring_producer` | current publication loop at application burst sizes |
 | `data_path/ring_consumer` | current pull loop at application burst sizes |
 | `data_path/fanout_delivery` | slot and reference-count cost for 1–500 readers |
@@ -266,6 +267,7 @@ Run one group:
 
 ```bash
 cargo bench --bench high_performance_data_path -- control_plane_lookup
+cargo bench --bench high_performance_data_path -- ingest_hot_handle
 cargo bench --bench high_performance_data_path -- ring_producer
 cargo bench --bench high_performance_data_path -- ring_consumer
 cargo bench --bench high_performance_data_path -- fanout_delivery
@@ -282,6 +284,8 @@ target deployment hardware before implementation work.
 |---|---|
 | locked pipeline `get_or_create` | approximately 69 ns |
 | cached ring-handle clone | approximately 12 ns |
+| RTMP registry ring + counter access | approximately 119 ns |
+| RTMP cached ring + counter access | approximately 7.3 ns, about 94% lower |
 | current producer loop, 32 packets | approximately 5.00 microseconds, 6.40 million packets/s |
 | current consumer loop, 32 packets | approximately 776 ns, 41.3 million deliveries/s |
 | current fan-out, 500 readers × 32 packets | approximately 374 microseconds, 42.8 million deliveries/s |

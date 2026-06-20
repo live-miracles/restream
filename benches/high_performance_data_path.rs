@@ -7,6 +7,7 @@ use restream::media::engine::MediaEngine;
 use restream::media::ring_buffer::{AlignedSlot, MediaPacket, MediaType, Reader, RingBuffer};
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const PACKET_BYTES: usize = 1316;
@@ -60,6 +61,44 @@ fn bench_control_plane_lookup(c: &mut Criterion) {
 
     group.bench_function("cached_hot_handle_clone", |b| {
         b.iter(|| black_box(cached.clone()));
+    });
+
+    group.finish();
+}
+
+fn bench_ingest_hot_handle(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let engine = Arc::new(MediaEngine::new());
+    runtime
+        .block_on(engine.try_register_ingest("hot-ingest-bench", "key", "rtmp"))
+        .expect("register benchmark ingest");
+    let cached_ring = runtime.block_on(engine.get_or_create_pipeline("hot-ingest-bench"));
+    let cached_counter = runtime.block_on(async {
+        engine.active_ingests.read().await["hot-ingest-bench"]
+            .bytes_received
+            .clone()
+    });
+    let mut group = c.benchmark_group("data_path/ingest_hot_handle");
+
+    group.bench_function("registry_ring_and_counter", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let ring = engine.get_or_create_pipeline("hot-ingest-bench").await;
+                    engine.update_ingest_bytes("hot-ingest-bench", 1316).await;
+                    black_box(ring);
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    group.bench_function("cached_ring_and_counter", |b| {
+        b.iter(|| {
+            cached_counter.fetch_add(1316, Ordering::Relaxed);
+            black_box(&cached_ring);
+        });
     });
 
     group.finish();
@@ -242,6 +281,7 @@ fn bench_memory_queue(c: &mut Criterion) {
 fn benches(c: &mut Criterion) {
     print_layout_baseline();
     bench_control_plane_lookup(c);
+    bench_ingest_hot_handle(c);
     bench_ring_producer(c);
     bench_ring_consumer(c);
     bench_fanout_delivery(c);
