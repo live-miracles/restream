@@ -210,14 +210,15 @@ async fn egress_correctness() -> Result<Value, String> {
 
     let engine = Arc::new(MediaEngine::new());
     let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
-    let rtmp_task = tokio::spawn(start_rtmp_server_on(
+    // Keep the server tasks alive until the deliberate `_exit` at the end.
+    let _rtmp_task = tokio::spawn(start_rtmp_server_on(
         pool.clone(),
         security,
         engine.clone(),
         RTMP_PORT,
     ));
     let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
-    let srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let fixture = artifact_path("correctness-h264.ts");
@@ -225,7 +226,8 @@ async fn egress_correctness() -> Result<Value, String> {
         generate_fixture(&fixture).await?;
     }
 
-    let mut publisher = spawn_publisher(
+    // Retain the publisher process handle so it remains alive for the probes.
+    let _publisher = spawn_publisher(
         &fixture,
         &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-src"),
         "flv",
