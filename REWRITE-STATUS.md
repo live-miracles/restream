@@ -314,7 +314,7 @@ All API tests use `tower::ServiceExt::oneshot()` — zero network overhead. Each
 **Live test results** (2026-06-20, `unshare --net` namespace):
 - RTMP ingest: h264 1920x1080 High 4.0, aac 48kHz 1ch mono — probe working, 256 kbps, GOP 5.36s avg
 - SRT ingest: h264 1920x1080 30fps High 4.0, aac 48kHz 1ch + 2ch (multi-track) — probe working, 404 kbps
-- RTMP egress to MediaMTX: connects and authenticates with `tcUrl`, but MediaMTX rejects (see known issues)
+- **RTMP egress to MediaMTX**: H.264 High 1920x1080 + AAC LC 48kHz — MediaMTX accepts, 2 tracks, readable by ffprobe/ffmpeg
 - **RTMP play** (`ffprobe rtmp://localhost:1935/live/<key>`): H.264 High 1920x1080 30fps + AAC LC 48kHz — working
 - **SRT read** (`ffprobe "srt://localhost:10080?streamid=read:<key>&mode=caller"`): H.264 High 1920x1080 + AAC LC 48kHz — working via MPEG-TS re-mux
 
@@ -436,6 +436,8 @@ Was already implemented before this work. `media_delete_handler` calls `db::list
 
 ### Known issues
 
-**RTMP egress sends raw packets without FLV sequence headers.** MediaMTX (and other RTMP receivers) expect the publisher to send video/audio sequence headers (H.264 `AVCDecoderConfigurationRecord`, AAC `AudioSpecificConfig`) before media data. The current egress reads raw `MediaPacket`s from the RingBuffer and sends them as RTMP data messages, but skips sequence headers. MediaMTX rejects with "no tracks found" or "unsupported codec" errors. Fix: detect and cache sequence headers during ingest, replay them at the start of each egress connection.
+No critical issues. RTMP egress sequence header caching is implemented and verified against MediaMTX v1.17.1.
+
+**SRT egress** now re-muxes ring buffer packets to MPEG-TS (same path as SRT read subscribers) instead of sending raw FLV payloads. Not yet tested end-to-end against an SRT sink.
 
 Total test count: 43 — 13 unit (7 transcoder + 6 RTMP probe) + 18 API + 12 DB.

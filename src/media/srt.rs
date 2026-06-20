@@ -1195,13 +1195,12 @@ fn run_ffmpeg_demuxer(
 // SRT Egress Client
 pub async fn start_srt_egress(
     output_id: String,
+    pipeline_id: String,
     target_url: String,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
-    // Parse target_url: e.g. "srt://host:port?streamid=..."
-    // Extract host and port
     let url_cleaned = target_url.replace("srt://", "");
     let parts: Vec<&str> = url_cleaned.split('?').collect();
     let host_port = parts[0];
@@ -1219,7 +1218,6 @@ pub async fn start_srt_egress(
     let addr = match host_port.parse::<SocketAddr>() {
         Ok(a) => a,
         Err(_) => {
-            // Try resolving host
             if let Ok(mut addrs) = tokio::net::lookup_host(host_port).await {
                 if let Some(a) = addrs.next() {
                     a
@@ -1243,7 +1241,6 @@ pub async fn start_srt_egress(
         return;
     }
 
-    // Set streamid if present
     if !streamid.is_empty() {
         let streamid_c = match std::ffi::CString::new(streamid) {
             Ok(c) => c,
@@ -1284,30 +1281,96 @@ pub async fn start_srt_egress(
 
     println!("[srt-egress] Connected to {}", target_url);
 
+    // Get ingest metadata and sequence headers for MPEG-TS muxer
+    let (video_meta, audio_tracks, flv_payloads) = {
+        let ingests = engine.active_ingests.read().await;
+        match ingests.get(&pipeline_id) {
+            Some(i) => {
+                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                if tracks.is_empty() {
+                    if let Some(audio) = i.audio.clone() {
+                        tracks.push(audio);
+                    }
+                }
+                (
+                    i.video.clone(),
+                    tracks,
+                    matches!(i.protocol.as_str(), "rtmp" | "file"),
+                )
+            }
+            None => (None, Vec::new(), true),
+        }
+    };
+    let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
+
+    // MPEG-TS muxer thread: receives MediaPackets, writes MPEG-TS to out_queue
+    let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+    let (pkt_tx, pkt_rx) = std::sync::mpsc::sync_channel::<Arc<MediaPacket>>(256);
+    let out_queue_mux = out_queue.clone();
+
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_play_muxer(
+                out_queue_mux,
+                pkt_rx,
+                video_meta,
+                audio_tracks,
+                flv_payloads,
+                video_sh,
+                audio_sh,
+            )
+        }));
+        match result {
+            Ok(Err(e)) => eprintln!("[srt-egress] Muxer failed: {}", e),
+            Err(_) => eprintln!("[srt-egress] Muxer panicked"),
+            _ => {}
+        }
+    });
+
+    // Sender thread: reads MPEG-TS from out_queue, sends via SRT
+    let out_queue_send = out_queue.clone();
+    let oid = output_id.clone();
+    let engine_send = engine.clone();
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 1316];
+        loop {
+            let n = out_queue_send.read(&mut buf);
+            if n == 0 {
+                break;
+            }
+            let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
+            if sent < 0 {
+                break;
+            }
+            // Fire-and-forget stats update from blocking thread
+            let oid2 = oid.clone();
+            let engine2 = engine_send.clone();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(engine2.update_egress_bytes(&oid2, sent as u64));
+            });
+        }
+        println!("[srt-egress] Sender thread finished for {}", oid);
+        unsafe {
+            srt_close(client_sock);
+        }
+    });
+
+    // Feed loop: read from RingBuffer, send to muxer
     let mut reader = Reader::new(ring_buffer);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                while let Ok(Some(packet)) = reader.pull() {
-                    // Send MPEG-TS wrapping of elementary packet
-                    // To do this simply, we write the payload of the packet over SRT.
-                    // Egress expects the ring buffer to contain format-ready payloads for target protocol,
-                    // or we transcode/remux them beforehand.
-                    let payload = &packet.payload;
-                    let send_res = unsafe { srt_send(client_sock, payload.as_ptr(), payload.len() as c_int) };
-                    if send_res < 0 {
-                        break;
+                while let Ok(Some(pkt)) = reader.pull() {
+                    if pkt_tx.send(pkt).is_err() {
+                        return;
                     }
-
-                    // Update stats
-                    engine.update_egress_bytes(&output_id, payload.len() as u64).await;
                 }
             }
         }
     }
 
-    unsafe {
-        srt_close(client_sock);
-    }
+    drop(pkt_tx);
+    out_queue.close();
 }

@@ -251,6 +251,7 @@ pub async fn run_app() {
                     if url_c.starts_with("rtmp://") {
                         crate::media::rtmp::start_rtmp_egress(
                             output_id_c.clone(),
+                            pipeline_id_c.clone(),
                             url_c.clone(),
                             ring_buf,
                             engine_c.clone(),
@@ -260,6 +261,7 @@ pub async fn run_app() {
                     } else if url_c.starts_with("srt://") {
                         crate::media::srt::start_srt_egress(
                             output_id_c.clone(),
+                            pipeline_id_c.clone(),
                             url_c.clone(),
                             ring_buf,
                             engine_c.clone(),

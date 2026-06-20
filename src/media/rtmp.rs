@@ -987,6 +987,7 @@ async fn handle_session_results(
 /// RTMP Egress Client
 pub async fn start_rtmp_egress(
     output_id: String,
+    pipeline_id: String,
     target_url: String,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
@@ -1141,8 +1142,24 @@ pub async fn start_rtmp_egress(
                                     if socket.write_all(&pub_pkt.bytes).await.is_err() { return; }
                                 }
                                 ClientSessionEvent::PublishRequestAccepted => {
-                                    is_publishing = true;
                                     println!("[rtmp-egress] Stream publishing accepted on target");
+                                    // Send cached sequence headers before media data
+                                    let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
+                                    if let Some(vsh) = video_sh {
+                                        if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                            session.publish_video_data(vsh, RtmpTimestamp::new(0), true)
+                                        {
+                                            if socket.write_all(&p.bytes).await.is_err() { return; }
+                                        }
+                                    }
+                                    if let Some(ash) = audio_sh {
+                                        if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                            session.publish_audio_data(ash, RtmpTimestamp::new(0), false)
+                                        {
+                                            if socket.write_all(&p.bytes).await.is_err() { return; }
+                                        }
+                                    }
+                                    is_publishing = true;
                                 }
                                 ClientSessionEvent::ConnectionRequestRejected { description } => {
                                     eprintln!("[rtmp-egress] Connection rejected: {}", description);

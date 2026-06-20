@@ -11,7 +11,7 @@ old/
 .claude
 
 # Downloaded binaries
-bin/
+/bin/
 
 # Log files
 log/
