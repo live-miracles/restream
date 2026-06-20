@@ -14,6 +14,20 @@ No change should be accepted because it merely resembles a fast networking
 framework. Every step must preserve protocol correctness and demonstrate an
 improvement in production-shaped measurements.
 
+## Progress Log
+
+| Step | Status | Result |
+|---|---|---|
+| Baseline suite and roadmap | Complete in `e266608` | Added lookup, ring, fan-out, queue, and layout measurements |
+| Clean benchmark builds | Complete in `205aae2` | Removed four test-harness warnings from benchmark compilation |
+| Direct RTMP ingest handles | Complete in `5299db4` | Ring and byte-counter access fell from ~119 ns to ~7.3 ns, about 94% lower |
+| Compact ring-slot experiment | Rejected | Reduced 4096-slot storage from 256 KiB to 32 KiB, but timing did not establish a reliable throughput improvement; aligned slots retained |
+| Burst ring primitives | Complete, commit pending | `push_batch()` improved 32-packet publication by ~15%; `pull_burst()` improved 8-packet consumption by ~17%. All 14 ring tests pass. Existing single-packet APIs remain the latency path |
+| Bounded chunk queues | Pending | Not started |
+| Shared package stages | Pending | Not started |
+| Worker sharding and local pools | Pending | Not started |
+| Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
+
 ## Current Baseline
 
 Existing strengths:
@@ -287,7 +301,9 @@ target deployment hardware before implementation work.
 | RTMP registry ring + counter access | approximately 119 ns |
 | RTMP cached ring + counter access | approximately 7.3 ns, about 94% lower |
 | current producer loop, 32 packets | approximately 5.00 microseconds, 6.40 million packets/s |
+| `push_batch()`, 32 packets | approximately 4.40 microseconds versus 5.17 microseconds for repeated `push()`, about 15% lower |
 | current consumer loop, 32 packets | approximately 776 ns, 41.3 million deliveries/s |
+| `pull_burst()`, 8 packets | approximately 191 ns versus 229 ns for repeated `pull()`, about 17% lower |
 | current fan-out, 500 readers × 32 packets | approximately 374 microseconds, 42.8 million deliveries/s |
 | byte queue round trip, 32 × 1316-byte packets | approximately 9.20 microseconds, 4.26 GiB/s |
 | `MediaPacket` layout | 56 bytes, 8-byte alignment |

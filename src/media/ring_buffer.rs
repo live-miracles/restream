@@ -119,6 +119,40 @@ impl RingBuffer {
         self.notify.notify_waiters();
     }
 
+    /// Publish a burst with one write-index release and one waiter notification.
+    ///
+    /// The ring is single-producer, so slots can be populated first and made
+    /// visible together by the final release store. Returns the number of
+    /// packets published.
+    pub fn push_batch<I>(&self, packets: I) -> usize
+    where
+        I: IntoIterator<Item = MediaPacket>,
+    {
+        let start_idx = self.write_idx.val.load(Ordering::Relaxed);
+        let mut count = 0usize;
+
+        for packet in packets {
+            let idx = start_idx + count;
+            let slot_idx = idx % self.capacity;
+            let is_keyframe = packet.media_type == MediaType::Video && packet.is_keyframe;
+
+            self.slots[slot_idx].data.store(Some(Arc::new(packet)));
+            if is_keyframe {
+                self.last_keyframe_idx.val.store(idx, Ordering::Release);
+            }
+            count += 1;
+        }
+
+        if count > 0 {
+            self.write_idx
+                .val
+                .store(start_idx + count, Ordering::Release);
+            self.notify.notify_waiters();
+        }
+
+        count
+    }
+
     pub fn read_at(&self, idx: usize) -> Option<Arc<MediaPacket>> {
         let slot_idx = idx % self.capacity;
         self.slots[slot_idx].data.load_full()
@@ -180,6 +214,41 @@ impl Reader {
             self.read_idx += 1;
         }
         Ok(packet)
+    }
+
+    /// Load up to `max_packets` using one write-index acquisition.
+    ///
+    /// Appends packets to `output` and returns the number appended. Overflow
+    /// behavior matches `pull()`.
+    pub fn pull_burst(
+        &mut self,
+        output: &mut Vec<Arc<MediaPacket>>,
+        max_packets: usize,
+    ) -> Result<usize, &'static str> {
+        if max_packets == 0 {
+            return Ok(0);
+        }
+
+        let write_idx = self.buffer.get_write_idx();
+        if write_idx > self.read_idx && write_idx - self.read_idx >= self.buffer.capacity {
+            self.read_idx = self.buffer.fast_forward(write_idx);
+            return Err("Overflow: reader lagged and was fast-forwarded");
+        }
+
+        let available = write_idx.saturating_sub(self.read_idx).min(max_packets);
+        output.reserve(available);
+        let start_len = output.len();
+
+        for idx in self.read_idx..self.read_idx + available {
+            let Some(packet) = self.buffer.read_at(idx) else {
+                break;
+            };
+            output.push(packet);
+        }
+
+        let loaded = output.len() - start_len;
+        self.read_idx += loaded;
+        Ok(loaded)
     }
 
     pub async fn wait_for_data(&self) {
@@ -277,6 +346,34 @@ mod tests {
 
             assert!(reader.pull().unwrap().is_none());
         });
+    }
+
+    #[test]
+    fn push_batch_then_pull_burst_returns_packets_in_order() {
+        let ring = Arc::new(RingBuffer::new(16));
+        let published = ring.push_batch([
+            video_packet(10, 10, true),
+            video_packet(20, 20, false),
+            video_packet(30, 30, false),
+        ]);
+        assert_eq!(published, 3);
+        assert_eq!(ring.get_write_idx(), 3);
+
+        let mut reader = Reader::new(ring);
+        let mut packets = Vec::new();
+        assert_eq!(reader.pull_burst(&mut packets, 2).unwrap(), 2);
+        assert_eq!(reader.pull_burst(&mut packets, 2).unwrap(), 1);
+        assert_eq!(
+            packets.iter().map(|packet| packet.pts).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+    }
+
+    #[test]
+    fn empty_batch_does_not_advance_ring() {
+        let ring = RingBuffer::new(16);
+        assert_eq!(ring.push_batch(std::iter::empty()), 0);
+        assert_eq!(ring.get_write_idx(), 0);
     }
 
     #[test]

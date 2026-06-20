@@ -124,6 +124,22 @@ fn bench_ring_producer(c: &mut Criterion) {
                 });
             },
         );
+
+        group.bench_with_input(
+            BenchmarkId::new("push_batch", burst),
+            &burst,
+            |b, &burst| {
+                let ring = RingBuffer::new(RING_CAPACITY);
+                let mut sequence = 0usize;
+                b.iter(|| {
+                    let start = sequence;
+                    sequence = sequence.wrapping_add(burst);
+                    black_box(ring.push_batch(
+                        (start..start + burst).map(|sequence| packet(sequence, &payload)),
+                    ));
+                });
+            },
+        );
     }
 
     group.finish();
@@ -170,6 +186,51 @@ fn bench_ring_consumer(c: &mut Criterion) {
                         }
                         elapsed += started.elapsed();
                         black_box((packets, bytes, checksum));
+                        remaining -= chunk as u64;
+                    }
+
+                    elapsed
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("pull_burst", burst),
+            &burst,
+            |b, &burst| {
+                b.iter_custom(|iterations| {
+                    let mut remaining = iterations;
+                    let mut elapsed = Duration::ZERO;
+                    let mut sequence = 0usize;
+
+                    while remaining > 0 {
+                        let chunk = remaining.min(64) as usize;
+                        let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
+                        let mut reader = Reader::new(ring.clone());
+                        ring.push_batch((0..chunk * burst).map(|_| {
+                            let value = packet(sequence, &payload);
+                            sequence = sequence.wrapping_add(1);
+                            value
+                        }));
+                        let mut packets = Vec::with_capacity(burst);
+
+                        let started = Instant::now();
+                        let mut received = 0usize;
+                        let mut bytes = 0usize;
+                        let mut checksum = 0i64;
+                        for _ in 0..chunk {
+                            packets.clear();
+                            let loaded = reader
+                                .pull_burst(&mut packets, burst)
+                                .expect("reader overflow");
+                            received += loaded;
+                            for packet in &packets {
+                                bytes += packet.payload.len();
+                                checksum = checksum.wrapping_add(packet.pts ^ packet.dts);
+                            }
+                        }
+                        elapsed += started.elapsed();
+                        black_box((received, bytes, checksum));
                         remaining -= chunk as u64;
                     }
 
