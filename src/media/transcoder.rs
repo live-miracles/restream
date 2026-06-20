@@ -109,13 +109,20 @@ pub async fn start_transcoder(
 
     // Forward source RingBuffer packets to input_queue
     let mut reader = Reader::new(input_buffer);
+    let mut packets = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                while let Ok(Some(packet)) = reader.pull() {
-                    let payload = &packet.payload;
-                    input_queue.write(payload);
+                loop {
+                    packets.clear();
+                    match reader.pull_burst(&mut packets, 32) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    for packet in &packets {
+                        input_queue.write(&packet.payload);
+                    }
                 }
             }
         }

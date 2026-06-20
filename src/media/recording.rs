@@ -57,12 +57,20 @@ pub async fn start_recording(
     });
 
     let mut reader = Reader::new(ring_buffer);
+    let mut packets = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                while let Ok(Some(packet)) = reader.pull() {
-                    queue.write(&packet.payload);
+                loop {
+                    packets.clear();
+                    match reader.pull_burst(&mut packets, 32) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    for packet in &packets {
+                        queue.write(&packet.payload);
+                    }
                 }
             }
         }

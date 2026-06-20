@@ -22,7 +22,8 @@ improvement in production-shaped measurements.
 | Clean benchmark builds | Complete in `205aae2` | Removed four test-harness warnings from benchmark compilation |
 | Direct RTMP ingest handles | Complete in `5299db4` | Ring and byte-counter access fell from ~119 ns to ~7.3 ns, about 94% lower |
 | Compact ring-slot experiment | Rejected | Reduced 4096-slot storage from 256 KiB to 32 KiB, but timing did not establish a reliable throughput improvement; aligned slots retained |
-| Burst ring primitives | Complete, commit pending | `push_batch()` improved 32-packet publication by ~15%; `pull_burst()` improved 8-packet consumption by ~17%. All 14 ring tests pass. Existing single-packet APIs remain the latency path |
+| Burst ring primitives | Complete in `e0f33ac` | `push_batch()` improved 32-packet publication by ~15%; `pull_burst()` improved 8-packet consumption by ~17%. All 14 ring tests pass. Existing single-packet APIs remain the latency path |
+| Burst adoption in internal stages | Complete, commit pending | HLS, recording, and transcoder feeders drain reusable 32-packet bursts. The primitive measured up to ~17% faster; module tests and all-target compilation pass |
 | Bounded chunk queues | Pending | Not started |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |

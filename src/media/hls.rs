@@ -152,20 +152,28 @@ pub async fn start_hls_segmenter(
 
     // Async: feed RingBuffer packets into input MemoryQueue, signal keyframes
     let mut reader = Reader::new(ring_buffer);
+    let mut packets = Vec::with_capacity(32);
     let mut got_first_keyframe = false;
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                while let Ok(Some(packet)) = reader.pull() {
-                    if packet.media_type == MediaType::Video && packet.is_keyframe {
-                        if got_first_keyframe {
-                            keyframe_signal.store(true, Ordering::Release);
-                        }
-                        got_first_keyframe = true;
+                loop {
+                    packets.clear();
+                    match reader.pull_burst(&mut packets, 32) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
                     }
-                    if got_first_keyframe {
-                        input_queue.write(&packet.payload);
+                    for packet in &packets {
+                        if packet.media_type == MediaType::Video && packet.is_keyframe {
+                            if got_first_keyframe {
+                                keyframe_signal.store(true, Ordering::Release);
+                            }
+                            got_first_keyframe = true;
+                        }
+                        if got_first_keyframe {
+                            input_queue.write(&packet.payload);
+                        }
                     }
                 }
             }
