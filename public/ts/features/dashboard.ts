@@ -98,7 +98,6 @@ async function fetchAndRerender(): Promise<void> {
 
     if (configResult) {
         state.config = configResult;
-        setServerConfig(state.config?.serverName);
     }
     if (healthResult) state.health = healthResult;
     if (metricsResult !== null) state.metrics = metricsResult as typeof state.metrics;
@@ -106,6 +105,7 @@ async function fetchAndRerender(): Promise<void> {
     const previousPipelines = state.pipelines;
     state.pipelines = parsePipelinesInfo(state.config, state.health);
     reconcileSelectedPipeline(previousPipelines);
+    setServerConfig(state.config?.serverName);
     renderPipelines();
     renderMetrics();
     dashboardHooks.afterRender?.();

@@ -1,3 +1,5 @@
+import { state } from './state.js';
+
 function msToHHMMSS(ms: number | null): string | null {
     if (ms === null) return null;
 
@@ -182,7 +184,14 @@ function setServerConfig(serverName: string | undefined): void {
     const name = serverName || 'Restream';
     const titleEl = document.querySelector('title');
     const viewName = titleEl?.getAttribute('data-name') || 'Dashboard';
-    if (titleEl) document.title = name + ': ' + viewName;
+
+    const selectedPipeId = viewName === 'Dashboard' ? getUrlParam('p') : null;
+    const selectedPipe = selectedPipeId
+        ? state.pipelines?.find((p) => p.id === selectedPipeId)
+        : null;
+    const suffix = selectedPipe ? ` - ${selectedPipe.name}` : '';
+
+    if (titleEl) document.title = name + ': ' + viewName + suffix;
     const serverNameEl = document.getElementById('server-name');
     if (serverNameEl) serverNameEl.textContent = 'Restream: ' + name;
 }
