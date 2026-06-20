@@ -6,6 +6,7 @@ import {
     INVALID_OUTPUT_URL_ERROR,
     isValidOutputEncoding,
     parseAtrackEncoding,
+    parseCompoundEncoding,
 } from '../utils/ffmpeg';
 import { detectAudioPlatform, detectAudioProtocol, getAudioCaps } from '../utils/audio-caps';
 import type { Db, Output } from '../types';
@@ -224,7 +225,8 @@ export function registerOutputApi({
         const protocol = detectAudioProtocol(url);
         const caps = getAudioCaps(platform, protocol);
 
-        const atrackIndices = parseAtrackEncoding(encoding);
+        const { audio } = parseCompoundEncoding(encoding);
+        const atrackIndices = audio ? parseAtrackEncoding(audio) : null;
         if (atrackIndices && atrackIndices.length > caps.maxTracks) {
             return `Encoding selects ${atrackIndices.length} audio track(s) but ${platform}+${protocol} supports at most ${caps.maxTracks}`;
         }
