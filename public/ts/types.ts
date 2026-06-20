@@ -1,6 +1,7 @@
 export interface StreamKey {
     key: string;
     label?: string;
+    ingestUrls?: IngestUrls;
 }
 
 export interface VideoTrack {
@@ -36,18 +37,24 @@ export interface PublisherQuality {
     packetsReceivedDrop?: number;
     packetsReceivedRetrans?: number;
     packetsReceivedUndecrypt?: number;
+    packetsReceivedLossPerSec?: number | null;
+    packetsReceivedDropPerSec?: number | null;
+    packetsReceivedRetransPerSec?: number | null;
+    packetsReceivedUndecryptPerSec?: number | null;
     msReceiveTsbPdDelay?: number | null;
     msReceiveBuf?: number | null;
     mbpsLinkCapacity?: number | null;
     packetsSentNAK?: number | null;
     tcpRttMs?: number | null;
     tcpRttVarMs?: number | null;
-    tcpRetransmits?: number | null;
-    tcpCwnd?: number | null;
-    tcpUnacked?: number | null;
-    tcpPacingRateMbps?: number | null;
-    tcpDeliveryRateMbps?: number | null;
-    tcpSendRateMbps?: number | null;
+    tcpBytesReceived?: number | null;
+    tcpLastRcvMs?: number | null;
+    tcpRcvRttMs?: number | null;
+    tcpRcvSpace?: number | null;
+    tcpRcvOoopack?: number | null;
+    tcpSkmemRmemAlloc?: number | null;
+    tcpSkmemRmemMax?: number | null;
+    tcpReceiveRateMbps?: number | null;
     tcpStatsUnavailableReason?:
         | 'not_linux'
         | 'ss_missing'
@@ -95,6 +102,7 @@ export interface Encoding {
 
 export interface ConfigData {
     serverName?: string;
+    ingestHost?: string;
     ingestSecurity?: IngestSecurityConfig;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];

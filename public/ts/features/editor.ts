@@ -40,7 +40,7 @@ import { refreshDashboard } from './dashboard.js';
 import type { AudioTrack, PipelineView, OutputView, StreamKey } from '../types.js';
 
 function getDefaultOutputHost(): string {
-    return document.location.hostname || 'localhost';
+    return state.config?.ingestHost || 'localhost';
 }
 
 function populateOutputServerOptions(protocol: string, selectedValue = ''): void {
@@ -811,7 +811,7 @@ async function openOutModal(
     const isRunning =
         mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
 
-    const baseRtmpUrl = `rtmp://${document.location.hostname}:1935/live/`;
+    const baseRtmpUrl = `rtmp://${getDefaultOutputHost()}:1935/live/`;
     const isCreateMode = mode !== 'edit' || !output;
     const currentUrl = isCreateMode ? `${baseRtmpUrl}test` : output?.url || `${baseRtmpUrl}test`;
     const detectedProtocol = detectOutputProtocol(currentUrl);

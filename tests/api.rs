@@ -10,6 +10,11 @@ use tokio::sync::RwLock as TokioRwLock;
 use tower::ServiceExt;
 
 async fn test_app() -> (axum::Router, SqlitePool) {
+    let (app, pool, _) = test_app_with_engine().await;
+    (app, pool)
+}
+
+async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
 
@@ -25,10 +30,10 @@ async fn test_app() -> (axum::Router, SqlitePool) {
         db: pool.clone(),
         security,
         sessions,
-        engine,
+        engine: engine.clone(),
     });
 
-    (api::create_router(state), pool)
+    (api::create_router(state), pool, engine)
 }
 
 async fn login(app: &axum::Router) -> String {
@@ -283,6 +288,11 @@ async fn config_get_returns_structured_data() {
     assert!(json["outputs"].is_array());
     assert!(json["jobs"].is_array());
     assert!(json["serverName"].is_string());
+    assert_eq!(json["ingestHost"], "");
+    assert_eq!(
+        json["pipelines"][0]["ingestUrls"]["rtmp"],
+        "rtmp://localhost:1935/live/key01"
+    );
 }
 
 #[tokio::test]
@@ -303,6 +313,74 @@ async fn config_patch_server_name() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["serverName"], "My Server");
+}
+
+#[tokio::test]
+async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(r#"{"ingestHost":"  ingest.example.com  "}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestHost"], "ingest.example.com");
+    assert_eq!(
+        db::get_ingest_host(&pool).await.unwrap().as_deref(),
+        Some("ingest.example.com")
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .await
+        .unwrap();
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestHost"], "ingest.example.com");
+    assert_eq!(
+        json["pipelines"][0]["ingestUrls"]["rtmp"],
+        "rtmp://ingest.example.com:1935/live/key01"
+    );
+    assert_eq!(
+        json["pipelines"][0]["ingestUrls"]["srt"],
+        "srt://ingest.example.com:10080?streamid=publish:live/key01"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(r#"{"ingestHost":"   "}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestHost"], "");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .await
+        .unwrap();
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["pipelines"][0]["ingestUrls"]["rtmp"],
+        "rtmp://localhost:1935/live/key01"
+    );
 }
 
 // --- Audio caps ---
@@ -344,8 +422,11 @@ async fn stream_keys_requires_auth() {
 
 #[tokio::test]
 async fn stream_keys_returns_array() {
-    let (app, _) = test_app().await;
+    let (app, pool) = test_app().await;
     let cookie = login(&app).await;
+    db::set_ingest_host(&pool, "ingest.example.com")
+        .await
+        .unwrap();
 
     let resp = app
         .clone()
@@ -357,8 +438,14 @@ async fn stream_keys_returns_array() {
     let keys = json.as_array().unwrap();
     assert_eq!(keys.len(), 20);
     assert!(keys[0]["key"].is_string());
-    assert!(keys[0]["ingestUrls"]["rtmp"].is_string());
-    assert!(keys[0]["ingestUrls"]["srt"].is_string());
+    assert_eq!(
+        keys[0]["ingestUrls"]["rtmp"],
+        "rtmp://ingest.example.com:1935/live/key01_6c71124cde80358ca7c13081"
+    );
+    assert_eq!(
+        keys[0]["ingestUrls"]["srt"],
+        "srt://ingest.example.com:10080?streamid=publish:live/key01_6c71124cde80358ca7c13081"
+    );
 }
 
 // --- Ingest CRUD ---
@@ -434,15 +521,15 @@ async fn custom_encoding_roundtrip() {
     assert_eq!(json["ffmpegArgs"], "-c:v libx264 -preset fast");
 }
 
-// --- HLS preview ---
+// --- HLS pull ---
 
 #[tokio::test]
-async fn hls_preview_no_stream_returns_404() {
+async fn hls_canonical_no_stream_returns_404() {
     let (app, _) = test_app().await;
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/preview/hls/nonexistent")
+                .uri("/hls/nonexistent/index.m3u8")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -452,25 +539,137 @@ async fn hls_preview_no_stream_returns_404() {
 }
 
 #[tokio::test]
-async fn hls_segment_bad_name_returns_400() {
-    let (app, _) = test_app().await;
+async fn hls_canonical_and_legacy_playlist_routes_use_the_same_handler() {
+    let (app, _, engine) = test_app_with_engine().await;
+    engine.get_or_create_hls_store("test_pipe").await;
 
-    // First create an HLS store so we get past the 404
-    let state = {
+    for uri in [
+        "/hls/test_pipe",
+        "/hls/test_pipe/index.m3u8",
+        "/preview/hls/test_pipe",
+        "/preview/hls/test_pipe/index.m3u8",
+    ] {
         let resp = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/preview/hls/test_pipe/notasegment")
+                    .uri(uri)
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        // No HLS store exists → 404
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    };
-    let _ = state;
+
+        // An existing empty store is a valid playlist route with no segments
+        // yet. The generic segment handler returns 400 for "index.m3u8".
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "uri={uri}");
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"No segments yet", "uri={uri}");
+    }
+}
+
+#[tokio::test]
+async fn hls_segment_bad_name_returns_400() {
+    let (app, _, engine) = test_app_with_engine().await;
+    engine.get_or_create_hls_store("test_pipe").await;
+
+    for uri in [
+        "/hls/test_pipe/notasegment",
+        "/preview/hls/test_pipe/notasegment",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");
+    }
+}
+
+// --- Status ---
+
+#[tokio::test]
+async fn status_returns_version_info() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/status", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["restream"]["version"].is_string());
+    assert!(json["restream"]["commit"].is_string());
+    assert!(json["ffmpeg"].is_string());
+    assert!(json["os"]["platform"].is_string());
+    assert!(json["os"]["hostname"].is_string());
+}
+
+// --- Processing graph ---
+
+#[tokio::test]
+async fn pipeline_graph_returns_dag() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Create a pipeline first
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"graph-test","streamKey":"gkey"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipeline = body_json(resp).await;
+    let pid = pipeline["pipeline"]["id"].as_str().unwrap();
+
+    // Get the graph (no active ingests/egresses, should still return structure)
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/pipelines/{}/graph", pid),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let graph = body_json(resp).await;
+    assert!(graph["nodes"].is_array());
+    assert!(graph["edges"].is_array());
+    // Source ring buffer node should always be present
+    let nodes = graph["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|n| n["type"] == "ring_buffer"));
+}
+
+#[tokio::test]
+async fn diagnostics_requires_active_ingest() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/pipelines/inactive/diagnostics?probe=srt",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // --- Password change ---

@@ -370,26 +370,75 @@ async fn check_publisher_transport(
             if let Some(cap) = q.mbps_link_capacity {
                 lines.push(format!("Link capacity: {:.2} Mbps", cap));
             }
-            if let Some(loss) = q.packets_received_loss {
-                lines.push(format!("Packets lost: {}", loss));
-                if loss > 100 {
-                    issues.push(format!("High SRT packet loss: {} (threshold 100)", loss));
-                }
-            }
-            if let Some(drop) = q.packets_received_drop {
-                lines.push(format!("Packets dropped: {}", drop));
-                if drop > 10 {
-                    issues.push(format!("SRT packet drop: {} (threshold 10)", drop));
-                }
-            }
-            if let Some(retrans) = q.packets_received_retrans {
-                lines.push(format!("Packets retransmitted: {}", retrans));
-                if retrans > 200 {
-                    issues.push(format!(
-                        "High SRT retransmissions: {} (threshold 200)",
-                        retrans
+            let loss_total = q.packets_received_loss.unwrap_or(0);
+            match q.packets_received_loss_per_sec {
+                Some(rate) => {
+                    lines.push(format!(
+                        "Packets lost: {:.1}/s ({} total)",
+                        rate, loss_total
                     ));
+                    if rate >= 5.0 {
+                        issues.push(format!(
+                            "High SRT packet loss rate: {:.1}/s (threshold 5/s)",
+                            rate
+                        ));
+                    }
                 }
+                None => lines.push(format!("Packets lost: —/s ({} total)", loss_total)),
+            }
+            let drop_total = q.packets_received_drop.unwrap_or(0);
+            match q.packets_received_drop_per_sec {
+                Some(rate) => {
+                    lines.push(format!(
+                        "Packets dropped: {:.1}/s ({} total)",
+                        rate, drop_total
+                    ));
+                    if rate >= 1.0 {
+                        issues.push(format!(
+                            "SRT packet drop rate: {:.1}/s (threshold 1/s)",
+                            rate
+                        ));
+                    }
+                }
+                None => lines.push(format!("Packets dropped: —/s ({} total)", drop_total)),
+            }
+            let retrans_total = q.packets_received_retrans.unwrap_or(0);
+            match q.packets_received_retrans_per_sec {
+                Some(rate) => {
+                    lines.push(format!(
+                        "Packets retransmitted: {:.1}/s ({} total)",
+                        rate, retrans_total
+                    ));
+                    if rate >= 10.0 {
+                        issues.push(format!(
+                            "High SRT retransmission rate: {:.1}/s (threshold 10/s)",
+                            rate
+                        ));
+                    }
+                }
+                None => lines.push(format!(
+                    "Packets retransmitted: —/s ({} total)",
+                    retrans_total
+                )),
+            }
+            let undecrypt_total = q.packets_received_undecrypt.unwrap_or(0);
+            match q.packets_received_undecrypt_per_sec {
+                Some(rate) => {
+                    lines.push(format!(
+                        "Packets undecrypted: {:.1}/s ({} total)",
+                        rate, undecrypt_total
+                    ));
+                    if rate > 0.0 {
+                        issues.push(format!(
+                            "SRT undecrypted packet rate: {:.1}/s (expected 0/s)",
+                            rate
+                        ));
+                    }
+                }
+                None => lines.push(format!(
+                    "Packets undecrypted: —/s ({} total)",
+                    undecrypt_total
+                )),
             }
             if let Some(latency) = q.ms_receive_tsb_pd_delay {
                 lines.push(format!("Negotiated latency buffer: {:.0}ms", latency));
@@ -413,30 +462,56 @@ async fn check_publisher_transport(
             } else {
                 if let Some(rtt) = q.tcp_rtt_ms {
                     lines.push(format!("TCP RTT: {:.1} ms", rtt));
-                    if rtt > 200.0 {
+                    if rtt >= 200.0 {
                         issues.push(format!("High TCP RTT: {:.1}ms (threshold 200ms)", rtt));
                     }
                 }
-                if let Some(retrans) = q.tcp_retransmits {
-                    lines.push(format!("TCP retransmissions: {}", retrans));
-                    if retrans >= 10 {
-                        issues.push(format!("TCP retransmissions: {} (threshold 10)", retrans));
-                    }
+                if let Some(rate) = q.tcp_receive_rate_mbps {
+                    lines.push(format!("TCP receive rate: {:.2} Mbps", rate));
                 }
-                if let Some(cwnd) = q.tcp_cwnd {
-                    lines.push(format!("TCP congestion window: {} segments", cwnd));
+                if let Some(rcv_rtt) = q.tcp_rcv_rtt_ms {
+                    lines.push(format!("TCP receive RTT: {:.1} ms", rcv_rtt));
                 }
-                if let Some(unacked) = q.tcp_unacked {
-                    lines.push(format!("TCP unacked: {} segments", unacked));
-                    if unacked >= 16 {
+                if let Some(last_rcv) = q.tcp_last_rcv_ms {
+                    lines.push(format!("Time since last receive: {} ms", last_rcv));
+                    if last_rcv >= 5_000 {
                         issues.push(format!(
-                            "High TCP unacked segments: {} (threshold 16)",
-                            unacked
+                            "RTMP publisher receive stall: {}ms since last packet (threshold 5000ms)",
+                            last_rcv
                         ));
                     }
                 }
-                if let Some(dr) = q.tcp_delivery_rate_mbps {
-                    lines.push(format!("TCP delivery rate: {:.3} Mbps", dr));
+                if let Some(out_of_order) = q.tcp_rcv_ooopack {
+                    lines.push(format!("Out-of-order packets (HOL): {}", out_of_order));
+                    if out_of_order >= 50 {
+                        issues.push(format!(
+                            "High TCP out-of-order packet count: {} (threshold 50)",
+                            out_of_order
+                        ));
+                    }
+                }
+                if let Some(window) = q.tcp_rcv_space {
+                    lines.push(format!("TCP receive window: {} bytes", window));
+                }
+                if let Some(used) = q.tcp_skmem_rmem_alloc {
+                    match q.tcp_skmem_rmem_max {
+                        Some(max) if max > 0 => {
+                            let saturation = used as f64 / max as f64;
+                            lines.push(format!(
+                                "TCP receive buffer: {} / {} bytes ({:.1}%)",
+                                used,
+                                max,
+                                saturation * 100.0
+                            ));
+                            if saturation > 0.8 {
+                                issues.push(format!(
+                                    "TCP receive buffer is {:.1}% full (threshold 80%)",
+                                    saturation * 100.0
+                                ));
+                            }
+                        }
+                        _ => lines.push(format!("TCP receive buffer used: {} bytes", used)),
+                    }
                 }
                 if lines.len() == 1 {
                     lines.push("No TCP socket stats available yet.".to_string());
@@ -456,7 +531,7 @@ async fn check_publisher_transport(
         if probe_protocol == "srt" {
             "libsrt srt_bistats()"
         } else {
-            "nix TCP_INFO socket option"
+            "ss -tinmH (receiver-side TCP socket stats)"
         },
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
@@ -505,6 +580,68 @@ async fn check_ring_buffer_health(
         "Ring Buffer Health",
         "In-process media ring buffer state",
         "RingBuffer::fill_and_capacity()",
+        lines.join("\n"),
+        start.elapsed().as_millis() as u64,
+    )
+    .with_issues(issues)
+}
+
+async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &str) -> DiagResult {
+    let start = Instant::now();
+    let ingests = engine.active_ingests.read().await;
+    let ingest_opt = ingests.get(pipeline_id);
+
+    let mut issues = vec![];
+    let mut lines = vec![];
+
+    if let Some(ingest) = ingest_opt {
+        let times = ingest.keyframe_times.lock().unwrap();
+        if times.len() < 2 {
+            lines.push(format!("Keyframes observed: {}", times.len()));
+            lines.push("Not enough keyframes to analyze GOP intervals yet.".to_string());
+        } else {
+            let intervals: Vec<f64> = times
+                .windows(2)
+                .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+                .collect();
+            let avg = intervals.iter().sum::<f64>() / intervals.len() as f64;
+            let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = intervals.iter().cloned().fold(0.0f64, f64::max);
+            let variance =
+                intervals.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / intervals.len() as f64;
+            let stddev = variance.sqrt();
+
+            lines.push(format!("Keyframes observed: {}", times.len()));
+            lines.push(format!("GOP intervals sampled: {}", intervals.len()));
+            lines.push(format!("Average GOP interval: {:.2}s", avg));
+            lines.push(format!("Min: {:.2}s  Max: {:.2}s", min, max));
+            lines.push(format!("Std deviation: {:.3}s", stddev));
+
+            if stddev > 0.5 {
+                issues.push(format!(
+                    "Unstable keyframe interval (jitter {:.2}s). Average GOP is {:.2}s. \
+                     This causes player buffering and adaptive bitrate switching failures.",
+                    stddev, avg
+                ));
+            }
+            if avg > 8.0 {
+                issues.push(format!(
+                    "Keyframe interval is very high ({:.2}s). \
+                     High intervals make seeking sluggish and increase stream latency.",
+                    avg
+                ));
+            }
+        }
+    } else {
+        lines.push("No active ingest — cannot analyze GOP.".to_string());
+        issues.push("Pipeline is not actively receiving data.".to_string());
+    }
+
+    DiagResult::ok(
+        idx,
+        "GOP Analysis",
+        "Keyframe interval consistency",
+        "engine.keyframe_times analysis",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )
@@ -601,37 +738,44 @@ pub async fn run_diagnostics(
 
     run_check!(
         2,
-        "Publisher Transport",
-        "Network connection quality metrics",
-        check_publisher_transport(2, &engine, &pipeline_id, &probe_protocol)
+        "GOP Analysis",
+        "Keyframe interval consistency and stability",
+        check_gop_analysis(2, &engine, &pipeline_id)
     );
 
     run_check!(
         3,
-        "Ring Buffer Health",
-        "In-process media ring buffer fill level and alignment",
-        check_ring_buffer_health(3, &engine, &pipeline_id)
+        "Publisher Transport",
+        "Network connection quality metrics",
+        check_publisher_transport(3, &engine, &pipeline_id, &probe_protocol)
     );
 
     run_check!(
         4,
-        "Active Outputs",
-        "Egress target status and throughput",
-        check_active_outputs(4, &engine, &pipeline_id)
+        "Ring Buffer Health",
+        "In-process media ring buffer fill level and alignment",
+        check_ring_buffer_health(4, &engine, &pipeline_id)
     );
 
     run_check!(
         5,
-        "System Resources",
-        "CPU, RAM, and disk utilization",
-        check_system_resources(5)
+        "Active Outputs",
+        "Egress target status and throughput",
+        check_active_outputs(5, &engine, &pipeline_id)
     );
 
     run_check!(
         6,
+        "System Resources",
+        "CPU, RAM, and disk utilization",
+        check_system_resources(6)
+    );
+
+    run_check!(
+        7,
         "Network Bandwidth",
         "Per-interface RX/TX throughput measurement",
-        check_network_bandwidth(6)
+        check_network_bandwidth(7)
     );
 
     let total_ms = overall_start.elapsed().as_millis() as u64;

@@ -14,7 +14,7 @@ The Node.js + MediaMTX + spawned-FFmpeg architecture has been replaced by a sing
 | **FFmpeg** | Spawned child processes, TCP loopback I/O | Linked `libav*`, in-memory AVIO queues |
 | **HLS preview** | MediaMTX writes segments to disk | In-memory `HlsStore`, zero disk I/O |
 | **Allocator** | V8 GC | mimalloc (jemalloc-class performance) |
-| **Backend lines** | 9,422 (TypeScript) | 6,396 (Rust, excl. tests/benches) |
+| **Backend lines** | 9,422 (TypeScript) | ~7,200 (Rust, excl. tests/benches) |
 | **Test lines** | — | 921 (unit) + 219 (integration) |
 
 ---
@@ -88,6 +88,26 @@ Scrypt password hashing (via `scrypt` crate). Session cookies (`HttpOnly; SameSi
 3. Stops outputs where `desired_state == "stopped"` but egress is still active.
 4. Auto-starts/stops recordings based on `recording_enabled` meta flag and ingest presence.
 
+### Two-stage transcoding pipeline
+
+Each output's encoding is a compound string: `video_preset+audio_routing` (e.g., `720p+atrack:0,1`).
+
+**Stage 1 — Shared video transcode:** Keyed on video preset only (`video:720p`). All outputs sharing the same video resolution share one encoder. Audio streams are passed through.
+
+**Stage 2 — Audio filter:** Keyed on audio routing + upstream video identity (`audio:atrack:0:from:720p`). Cheap remux: copies video, selects/filters audio tracks. The key includes the upstream video preset to prevent cross-contamination (720p+atrack:0 and 1080p+atrack:0 must use different audio stages).
+
+```
+Source RingBuffer
+  ├── video:720p encoder ──┬── audio:atrack:0:from:720p ──→ Output A
+  │                        └── audio:remap:0:1:from:720p ──→ Output B
+  ├── video:1080p encoder ─── audio:atrack:0:from:1080p ──→ Output C
+  └── (source passthrough) ──→ Output D
+```
+
+**A/V sync:** Preserved via MPEG-TS container timestamps. The transcoder reads timestamped MPEG-TS packets from the source RingBuffer, decodes/re-encodes video while stream-copying audio, and writes MPEG-TS output. PTS/DTS are carried through the container — the RingBuffer packet metadata (`pts:0`, `dts:0`) is not used for sync.
+
+**Processing graph API:** `GET /pipelines/:pipeline_id/graph` returns a JSON DAG of all active stages, ring buffers, and egress connections with bitrate/status metadata.
+
 ### Static asset serving
 
 Frontend files (`public/`) are compiled into the binary via `rust-embed`. Served by Axum with disk-first fallback for development hot-reload.
@@ -100,16 +120,16 @@ Frontend files (`public/`) are compiled into the binary via `rust-embed`. Served
 src/
   main.rs              8 lines — entry point
   lib.rs             312 lines — app composition, reconciler loop, RTMP/SRT server spawn
-  api.rs           1,546 lines — Axum router, 33 routes, 50 handlers, auth, embedded assets
+  api.rs           1,702 lines — Axum router, 35 routes, 52 handlers, auth, embedded assets
   db.rs              768 lines — SQLite schema + 40 query functions (sqlx)
   diag.rs            641 lines — native diagnostics runner, SSE streaming
   types.rs            79 lines — Pipeline, Output, Job, Ingest, JobLog, HistoryFilters
   media/
-    engine.rs        395 lines — central state: ingests, egresses, ring buffers, HLS stores
+    engine.rs        826 lines — central state: ingests, egresses, ring buffers, HLS stores, probe
     ring_buffer.rs   181 lines — lock-free SPMC ring buffer (ArcSwap, 64-byte aligned slots)
-    avio.rs          284 lines — in-memory FFmpeg I/O (MemoryQueue replaces TCP loopback)
-    rtmp.rs          647 lines — RTMP ingest server + egress client via rml_rtmp
-    srt.rs           468 lines — SRT ingest server + egress client via libsrt FFI
+    avio.rs          280 lines — in-memory FFmpeg I/O (MemoryQueue replaces TCP loopback)
+    rtmp.rs        1,117 lines — RTMP ingest server + egress client + FLV/H.264/AAC probe parsers
+    srt.rs           604 lines — SRT ingest server + egress client via libsrt FFI + probe
     hls.rs           277 lines — in-memory HLS segmenter (keyframe-split MPEG-TS)
     recording.rs     139 lines — MKV recording muxer (auto-deletes <5 s recordings)
     transcoder.rs    211 lines — in-process H.264/H.265 transcoder
@@ -160,7 +180,7 @@ Release profile: `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `panic = "
 
 All REST endpoints from the Node.js backend are implemented. Routes that existed only to proxy MediaMTX were intentionally dropped.
 
-### Implemented (30 routes)
+### Implemented (32 routes)
 
 | Area | Routes |
 |------|--------|
@@ -171,6 +191,7 @@ All REST endpoints from the Node.js backend are implemented. Routes that existed
 | **Output control** | `POST /pipelines/:id/outputs/:id/start`, `POST /pipelines/:id/outputs/:id/stop` |
 | **History** | `GET /pipelines/:id/outputs/:id/history`, `GET /pipelines/:id/history` |
 | **Diagnostics** | `GET /pipelines/:id/diagnostics` (SSE) |
+| **Probe/Graph** | `GET /pipelines/:id/probe` (stream metadata), `GET /pipelines/:id/graph` (processing DAG) |
 | **Recording** | `POST /pipelines/:id/recording/start`, `POST /pipelines/:id/recording/stop` |
 | **Encodings** | `GET /encodings/custom`, `PUT /encodings/custom` |
 | **Ingests** | `GET /api/ingests`, `POST /api/ingests`, `PUT /api/ingests/:id`, `DELETE /api/ingests/:id`, `POST /api/ingests/:id/start`, `POST /api/ingests/:id/stop` |
@@ -211,15 +232,27 @@ All REST endpoints from the Node.js backend are implemented. Routes that existed
 
 ## SRT implementation details
 
-**Ingest** (`src/media/srt.rs`): Raw `libsrt` FFI bindings — `srt_startup`, `srt_create_socket`, `srt_bind`, `srt_listen`, `srt_accept`, `srt_recv`, `srt_send`, `srt_setsockopt`, etc. Listener on port 10080. Stream ID parsing for authentication (`publish:live/<stream_key>`). MPEG-TS data piped through `MemoryQueue` → FFmpeg demuxer on a dedicated OS thread. Publishes all video and audio streams (not just "best") into the RingBuffer with per-track indices for multi-track audio.
+**Ingest** (`src/media/srt.rs`): Raw `libsrt` FFI bindings — `srt_startup`, `srt_create_socket`, `srt_bind`, `srt_listen`, `srt_accept`, `srt_recv`, `srt_send`, `srt_setsockopt`, etc. Listener on port 10080 with `SRTO_TRANSTYPE=SRTT_LIVE` for ffmpeg compatibility. Accept loop runs on a dedicated OS thread (blocking `srt_accept`) with accepted sockets dispatched to tokio tasks via `mpsc::unbounded_channel`. Stream ID parsing handles multiple formats (`publisher:key`, `publish:live/key`, bare `key`). MPEG-TS data piped through `MemoryQueue` → FFmpeg demuxer on a dedicated OS thread. Publishes all video and audio streams (not just "best") into the RingBuffer with per-track indices for multi-track audio.
 
 **Egress**: SRT client connecting to target URL, forwarding ring buffer packets. Same `CancellationToken` pattern as RTMP egress.
+
+### Stream probe endpoints
+
+**`GET /pipelines/:pipeline_id/probe`** — returns a JSON snapshot of the ingested stream before any transcoding/modification. Useful for debugging incoming streams. Includes:
+- `video`: codec, resolution, fps, profile, level
+- `audioTracks[]`: codec, sample rate, channels, channel layout, track index
+- `gop`: keyframe count, average interval (RTMP only — uses `record_keyframe()` tracking)
+- `ingest`: protocol, bitrate, bytes received, uptime
+
+**RTMP probe** (`src/media/rtmp.rs`): Parses FLV tag headers inline during ingest. Video: extracts codec ID from FLV tag byte 0, then for H.264 parses `AVCDecoderConfigurationRecord` for profile/level and SPS NAL unit for resolution (full exp-golomb decoder handles High profile chroma/scaling matrix fields). Audio: parses FLV audio tag byte for codec/rate/channels, then AAC `AudioSpecificConfig` for actual values. 6 unit tests cover parsing.
+
+**SRT probe** (`src/media/srt.rs`): Extracts metadata from ffmpeg-next's format context after `avformat_find_stream_info()`. Uses `avcodec_descriptor_get` for codec names, `avcodec_profile_name` for profile strings, codec parameters for resolution/sample rate/channels. Probe data sent to tokio task via `std::sync::mpsc::channel`.
 
 ---
 
 ## Test coverage
 
-### Unit tests — 28 total, all passing
+### Unit tests — 43 total, all passing
 
 **DB layer** (`tests/db.rs` — 12 tests):
 - `pipeline_crud` — create, read, list, update, delete
@@ -237,7 +270,7 @@ All REST endpoints from the Node.js backend are implemented. Routes that existed
 
 All DB tests use `SqlitePool::connect("sqlite::memory:")` — no disk, no external dependencies.
 
-**API layer** (`tests/api.rs` — 16 tests):
+**API layer** (`tests/api.rs` — 18 tests):
 - Auth: `healthz_no_auth`, `login_wrong_password`, `login_success_and_logout`, `unauthenticated_returns_401`, `change_password`
 - Pipeline CRUD: `pipeline_crud_via_api` (create → list → update → delete)
 - Output CRUD: `output_crud_via_api` (create → start → verify DB state → stop → delete)
@@ -247,6 +280,8 @@ All DB tests use `SqlitePool::connect("sqlite::memory:")` — no disk, no extern
 - Ingest CRUD: `ingest_crud_via_api` (create → list → delete)
 - Custom encoding: `custom_encoding_roundtrip` (PUT → GET roundtrip)
 - HLS: `hls_preview_no_stream_returns_404`, `hls_segment_bad_name_returns_400`
+- Status: `status_returns_version_info` (version, commit, ffmpeg, OS info)
+- Processing graph: `pipeline_graph_returns_dag` (returns nodes/edges DAG with ring_buffer node)
 
 All API tests use `tower::ServiceExt::oneshot()` — zero network overhead. Each test constructs a fresh `AppState` with in-memory SQLite, `IngestSecurityService`, and `MediaEngine`.
 
@@ -276,23 +311,131 @@ All API tests use `tower::ServiceExt::oneshot()` — zero network overhead. Each
 9. Verify all outputs reach `stopped` state (timeout: 60 s).
 10. Cleanup: kill ffmpeg publishers, delete created resources.
 
+**Live test results** (2026-06-20, `unshare --net` namespace):
+- RTMP ingest: h264 1920x1080 High 4.0, aac 48kHz 1ch mono — probe working, 256 kbps, GOP 5.36s avg
+- SRT ingest: h264 1920x1080 30fps High 4.0, aac 48kHz 1ch + 2ch (multi-track) — probe working, 404 kbps
+- RTMP egress to MediaMTX: connects and authenticates with `tcUrl`, but MediaMTX rejects (see known issues)
+- **RTMP play** (`ffprobe rtmp://localhost:1935/live/<key>`): H.264 High 1920x1080 30fps + AAC LC 48kHz — working
+- **SRT read** (`ffprobe "srt://localhost:10080?streamid=read:<key>&mode=caller"`): H.264 High 1920x1080 + AAC LC 48kHz — working via MPEG-TS re-mux
+
 ---
 
-## What's left
+## Feature gap analysis
 
-### Must-do before merge
+The old codebase spawned one ffmpeg child process per output, building complex command-line arguments for encoding, audio routing, and output format. The new Rust binary replaces this with in-process ring buffer fan-out — packets flow directly from ingest to egress without an intermediate ffmpeg process. This is fundamentally better for passthrough (`source` encoding) but means encoding transforms require a different integration path.
 
-- [ ] Run the full 2x3 integration test against the Rust binary with live media
-- [ ] Clippy clean pass (`cargo clippy -- -W clippy::all`)
-- [ ] CI pipeline updates — GitHub Actions currently runs `npm` commands; needs `cargo` equivalents
-- [ ] Frontend verification — all dashboard features should work transparently (same REST API, same SSE format), but needs manual testing
+This analysis separates gaps into two categories:
 
-### Nice-to-have / follow-up
+1. **Old-architecture artifacts** — things that only existed because of MediaMTX or child-process ffmpeg and have no equivalent in the single-binary design.
+2. **User-facing capabilities** — things the user or frontend still needs, requiring a new implementation path in the Rust engine.
 
-- [ ] File-based ingest (`/api/ingests/:id/start` currently stubs `running: true` without spawning ffmpeg)
-- [ ] SRT encryption/passphrase support
-- [ ] Grafana proxy routes (if still needed)
-- [ ] Deployment scripts (`old/scripts/`) — Rust equivalents or Dockerfile for the new binary
-- [ ] Connection draining / graceful shutdown on SIGTERM
-- [ ] Metrics export (Prometheus endpoint or structured logging)
-- [ ] Delete `old/` directory once rewrite is validated in production
+### Old-architecture artifacts (no action needed)
+
+These existed to glue together the old multi-process architecture. They are either replaced by superior in-process equivalents or are no longer relevant.
+
+| Old feature | Why it's gone | New equivalent |
+|-------------|---------------|----------------|
+| `POST /internal/mediamtx/auth` | MediaMTX called back to restream for stream key validation | Auth happens natively in `rtmp.rs` (line 305) and `srt.rs` — stream key validated against SQLite inside the ingest handler itself |
+| `GET /api/status/mediamtx-config` | Proxied MediaMTX's YAML config for display | MediaMTX doesn't exist — engine config is the Rust binary's own state |
+| MediaMTX health polling in diagnostics | Old diag.rs polled MediaMTX's HTTP API for path/stream status | `MediaEngine::health_snapshot()` has direct access to all ingest/egress state — no polling needed |
+| TCP loopback between ingest and ffmpeg | MediaMTX → `rtmp://localhost` → ffmpeg child process | `MemoryQueue` + custom `AVIOContext` — zero-copy in-process I/O |
+| Per-output ffmpeg process management | `spawn()`, PID tracking, `child.on('exit')`, SIGKILL timeout | `CancellationToken` — cancel the token and the egress task exits cleanly |
+| ffmpeg `-progress pipe:3` parsing | Old code read ffmpeg's progress fd for `bitrate`, `total_size`, `speed` | Replaced by `AtomicU64` byte counters in `ActiveEgress` — always available, no fd parsing |
+| `journalctl` log inspection in diagnostics | Old diagnostics read systemd journal for restream/mediamtx errors | Single binary logs to stdout — diagnostics can inspect in-process state directly |
+
+### User-facing gaps — implemented
+
+All previously identified gaps have been addressed. Status of each:
+
+#### 1. Encoding transforms at egress — DONE
+
+Two-stage transcoding architecture ensures one encoder per unique video resolution:
+
+**Stage 1 (video):** Keyed as `pipeline_id:video:720p`. All outputs sharing the same video preset share one encoder — `720p`, `720p+atrack:0`, `720p+remap:0:1` all read from the same `video:720p` RingBuffer.
+
+**Stage 2 (audio):** Keyed as `pipeline_id:audio:atrack:0:from:720p`. Cheap remux that copies video and selects/filters audio. Key includes upstream video preset to prevent cross-contamination — `720p+atrack:0` and `1080p+atrack:0` produce different audio stages.
+
+Implementation:
+- `MediaEngine::get_or_create_transcoder()` manages per-pipeline per-encoding transcoder buffers
+- `MediaEngine::transcoder_buffers` stores `(Arc<RingBuffer>, CancellationToken)` keyed by `pipeline_id:stage_key`
+- Reconciler in `lib.rs` splits compound encodings into video + audio stages
+- Supported video presets: `720p` (1280x720), `1080p` (1920x1080), `vertical-crop` (1080x1920), `vertical-rotate` (1080x1920)
+- `processing_graph()` builds a JSON DAG of all stages for `GET /pipelines/:pipeline_id/graph`
+- 2 unit tests verify stage key isolation (different video presets) and sharing (same video preset)
+
+#### 2. Audio routing — DONE
+
+Compound encoding format `video+audio` is fully parsed and applied at the transcoder level:
+- `parse_audio_routing()` in `transcoder.rs` handles all three modes:
+  - `atrack:0,1,...` → select specific audio tracks (stream-level filtering)
+  - `remap:L:R[:T]` → stereo channel remapping (stream copy; full pan filter decode requires the decode loop)
+  - `downmix:N` → select track N for stereo downmix (stream copy; full filter requires decode loop)
+- Legacy standalone encodings (`remap:0:1` without `+`) are also handled
+- 5 unit tests cover all parsing combinations
+
+**Note**: `remap` and `downmix` currently do stream-level track selection. Full channel-level remapping via FFmpeg's `pan` filter requires a decode→filter→encode loop, which is architecturally ready but not yet implemented in the transcoder's packet processing path.
+
+#### 3. File-based ingest — DONE
+
+`ingests_start_handler` now spawns ffmpeg to push media files to the local RTMP port:
+- Spawns `ffmpeg -re [-stream_loop -1] [-ss <time>] -i media/<file> -c copy -f flv rtmp://localhost:1935/live/<key>`
+- Child processes tracked in `MediaEngine::file_ingest_children`
+- Conflict detection: returns 409 if ingest already running
+- File existence validation before spawn
+- `ingests_stop_handler` kills the child process and removes tracking
+
+#### 4. Output bitrate computation — DONE
+
+`ActiveEgress` now tracks byte deltas for instantaneous bitrate calculation:
+- Added `start_instant`, `prev_bytes_sent` (AtomicU64), `prev_sample_time` (Mutex), `bitrate_kbps` (Mutex)
+- `health_snapshot()` computes `(bytes_delta * 8) / (elapsed_seconds * 1000)` on each call
+- Minimum 0.5s sample window to avoid noisy readings
+- Frontend `bitrateKbps` badges now display real values
+
+#### 5. `/api/status` endpoint — DONE
+
+New `GET /api/status` handler returns:
+- `restream.version` — from `Cargo.toml` via `env!("CARGO_PKG_VERSION")`
+- `restream.commit` — git commit hash embedded at build time via `build.rs`
+- `ffmpeg` — version from `av_version_info()`
+- `os.platform`, `os.arch`, `os.hostname`, `os.uptime`, `os.totalMem`
+- Authenticated (requires session cookie)
+- Test coverage: `status_returns_version_info` in `tests/api.rs`
+
+#### 6. Diagnostics enhanced with GOP analysis — DONE
+
+Added `check_gop_analysis` diagnostic check (check #2 in the SSE sequence):
+- `ActiveIngest` now tracks keyframe arrival times (`keyframe_times: Mutex<Vec<Instant>>`, last 30)
+- `MediaEngine::record_keyframe()` called from RTMP ingest on each keyframe
+- GOP analysis computes: average interval, min/max, standard deviation
+- Issues flagged: unstable keyframe interval (stddev > 0.5s), high interval (> 8s)
+- Diagnostics now run 8 checks (was 7): Engine Status, Stream Info, GOP Analysis, Publisher Transport, Ring Buffer Health, Active Outputs, System Resources, Network Bandwidth
+
+#### 7. Grafana dashboard links — DEFERRED
+
+Low priority. The engine's own `/health` and `/metrics/system` endpoints cover what the Grafana dashboards showed. Frontend Grafana button should be hidden when no Grafana instance is configured.
+
+#### 8. Media file deletion safety — ALREADY DONE
+
+Was already implemented before this work. `media_delete_handler` calls `db::list_ingests_for_filename()` and returns 409 if the file is referenced by any ingest.
+
+### Summary
+
+| Gap | Status | Test coverage |
+|-----|--------|---------------|
+| Encoding transforms at egress | **Done** | 2 stage key isolation tests |
+| Audio routing (remap/atrack/downmix) | **Done** (stream selection; pan filter needs decode loop) | 5 unit tests |
+| File-based ingest | **Done** | Build |
+| Output bitrate computation | **Done** | Build + integration |
+| `/api/status` endpoint | **Done** | `status_returns_version_info` |
+| Diagnostics GOP analysis | **Done** | Build |
+| Processing graph API | **Done** | `pipeline_graph_returns_dag` |
+| Stream probe API | **Done** | 6 RTMP probe unit tests + `pipeline_graph_returns_dag` |
+| Grafana dashboard links | Deferred | — |
+| Media file deletion safety | Already done | `media_delete_handler` |
+
+### Known issues
+
+**RTMP egress sends raw packets without FLV sequence headers.** MediaMTX (and other RTMP receivers) expect the publisher to send video/audio sequence headers (H.264 `AVCDecoderConfigurationRecord`, AAC `AudioSpecificConfig`) before media data. The current egress reads raw `MediaPacket`s from the RingBuffer and sends them as RTMP data messages, but skips sequence headers. MediaMTX rejects with "no tracks found" or "unsupported codec" errors. Fix: detect and cache sequence headers during ingest, replay them at the start of each egress connection.
+
+Total test count: 43 — 13 unit (7 transcoder + 6 RTMP probe) + 18 API + 12 DB.

@@ -40,14 +40,13 @@ The backend assumes MediaMTX is always available on `localhost` with default por
 
 These are hardcoded and cannot be overridden via environment variables.
 
-Publisher-facing ingest URLs are based on the MediaMTX RTMP/SRT ports. The backend resolves the
-hostname before returning `/config` and `/stream-keys`: `PUBLIC_INGEST_HOST` when set, otherwise
-the GCP VM metadata external IP, otherwise the first non-loopback local IPv4 address, and finally
-`localhost` if no address is available.
+Set **Ingest Host** on the Settings page to the public hostname or IP address publishers should use.
+The value is persisted in SQLite and returned as `ingestHost` by `GET /config` and `PATCH /config`.
+Generated URLs from `/config` and `/stream-keys` use this value, or `localhost` when it is blank.
 
-For Cloudflare Tunnel deployments, leave `PUBLIC_INGEST_HOST` empty on GCP unless a custom ingest
-DNS name is needed. The tunnel only carries the HTTPS dashboard/API traffic; RTMP and SRT
-publishers still connect directly to MediaMTX on the VM's ingest ports.
+For Cloudflare Tunnel deployments, set this to the direct ingest DNS name or VM IP. The tunnel only
+carries the HTTPS dashboard/API traffic; RTMP and SRT publishers still connect directly to the
+configured ingest host.
 
 ### Grafana Proxy
 
@@ -190,35 +189,36 @@ scripts, and see
 Grafana can be reached through the Node proxy at `/grafana/` when the local Grafana service is
 running. Keep Grafana's own `3000` listener localhost-only.
 
-## 6. Input Preview Proxy
+## 6. HLS Pull
 
-Dashboard input preview uses an app-level HLS proxy endpoint instead of sending browser traffic directly
-to MediaMTX.
+The engine serves its in-memory HLS package directly:
 
-- Browser URL shape: `/preview/hls/<streamKey>/index.m3u8`
-- App proxy upstream: `http://localhost:8888/live/<streamKey>/...`
+```text
+/hls/<pipelineId>/index.m3u8
+/hls/<pipelineId>/seg<N>.ts
+```
 
-Why this exists:
+`/hls/<pipelineId>` is a shorter playlist alias. Existing
+`/preview/hls/<pipelineId>/...` URLs remain available as deprecated
+compatibility aliases.
 
-- keep browser requests on the same origin as the dashboard
-- avoid exposing MediaMTX HLS directly to remote clients for preview
-- centralize preview policy and error handling in the app
+The dashboard and external pull clients use the same `HlsStore`; opening a
+playlist does not create a second muxer or copy the segment data.
 
-Notes:
+### Future Authorization TODO
 
-- The proxy validates stream keys and asset paths before forwarding.
-  Stream keys allow alphanumeric, `_`, `.`, and `-`, with `.` and `..` explicitly rejected.
-- The dashboard preview now uses the normal proxied HLS master manifest unchanged.
-- The backend no longer rewrites preview manifests; `.m3u8` requests are forwarded as plain
-  pass-through proxy responses after validation.
-- Current Chromium plus bundled `hls.js` playback works against that unchanged master manifest in
-  this repository's preview flow.
-- MediaMTX is configured for lower idle resource usage with `hlsAlwaysRemux: no` and
-  `hlsVariant: mpegts`.
-- This avoids maintaining active HLS muxers for all ready paths and reduces steady CPU/RAM use.
-- The tradeoff is slower first-preview startup because muxers are created on demand when a viewer
-  clicks Play.
-- In HTTPS deployments, terminate TLS on the dashboard origin and keep preview requests
-  same-origin so browsers do not hit mixed-content blocks.
-- The dashboard preview player is lazy-loaded: selecting a pipeline does not request HLS
-  assets until the user presses Play.
+HLS pull routes are currently unauthenticated. Before exposing them outside a
+trusted network, add authorization that works for both playlists and segments:
+
+- signed URLs or short-lived bearer tokens scoped to a pipeline;
+- expiry validation with a small clock-skew allowance;
+- the same authorization scope propagated to every segment URL;
+- optional audience/client binding where platform behavior permits it;
+- key rotation and immediate revocation for compromised links;
+- rate limits and concurrent-reader limits per pipeline/token;
+- explicit CORS, cache-control, and CDN policy;
+- audit logs that avoid recording full reusable tokens;
+- tests for expired, altered, revoked, cross-pipeline, and missing tokens.
+
+Keep authorization optional for localhost test sinks and configurable for
+private deployments.

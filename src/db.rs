@@ -727,6 +727,14 @@ pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> Result<Strin
     Ok(value.to_string())
 }
 
+pub async fn get_ingest_host(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
+    get_meta(pool, "ingest_host").await
+}
+
+pub async fn set_ingest_host(pool: &SqlitePool, host: &str) -> Result<String, sqlx::Error> {
+    set_meta(pool, "ingest_host", host.trim()).await
+}
+
 /* Session Operations */
 
 pub async fn create_session(pool: &SqlitePool, token: &str, ts: i64) -> Result<(), sqlx::Error> {

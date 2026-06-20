@@ -1,4 +1,15 @@
 fn main() {
+    // Embed git commit hash at build time
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output();
+    let commit = output
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=GIT_COMMIT_HASH={}", commit.trim());
+
     // Enforce static linking of the native C libraries via pkg-config
     let mut config = pkg_config::Config::new();
     config.statik(false);

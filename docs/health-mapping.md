@@ -6,18 +6,16 @@ This document explains exactly how input and output health statuses are derived 
 
 ## 1. Data Sources
 
-The background health collector fetches multiple MediaMTX APIs in parallel on a fixed interval, then merges that runtime data with DB state and stores an in-memory snapshot. `GET /health` serves that cached snapshot and adds `ageMs` plus an `ETag` header. The interval defaults to 2000 ms and can be overridden with `HEALTH_SNAPSHOT_INTERVAL_MS`.
+The Rust backend builds `GET /health` directly from `MediaEngine` state and DB configuration. Ingest and egress byte counters are updated in the native protocol loops; transport quality is sampled while each publisher connection is alive.
 
 | Source | What it provides |
 |---|---|
-| `GET /v3/paths/list` | Per-path: online, available, availableTime (plus deprecated ready/readyTime), bytesReceived, bytesSent, tracks2, readers list |
-| `GET /v3/rtmpconns/list` | RTMP publisher sessions (state/path/remote and byte counters) |
-| `GET /v3/srtconns/list` | SRT publisher sessions and ingest quality counters (RTT/loss/retrans/drop/undecrypt/rate) |
-| Linux `ss -tin` from `iproute2` | RTMP TCP socket statistics (RTT, retransmissions, congestion window, unacked, pacing, delivery rate) when available |
+| `MediaEngine::active_ingests` | Publisher protocol, remote address, uptime, byte counters, stream metadata, and current quality snapshot |
+| libsrt `srt_bistats()` | SRT RTT, receive rate, link capacity, latency buffers, NAKs, and cumulative loss/drop/retransmit/undecrypt counters |
+| Linux `ss -tinmH` from `iproute2` | RTMP receiver-side TCP RTT, bytes received, receive rate, last receive age, receive RTT/window, out-of-order packets, and receive-buffer occupancy |
 | DB: `listPipelines()` | Pipeline ↔ stream key mapping |
 | DB: `listOutputs()` | Output ↔ pipeline mapping |
-| DB: `listJobs()` | One current job row per output (upsert model) |
-| FFmpeg progress (in-memory) | Per-job `key=value` progress from fd3; used for output health and runtime stats |
+| Native egress state | Per-output status, bytes sent, and bitrate computed from byte deltas |
 
 The collector loop also performs bounded DB writes for lifecycle bookkeeping:
 
@@ -73,7 +71,7 @@ Probe connections are tracked by the health collector using the SRT `streamid` p
 
 The input health payload also includes:
 
-- `input.publisher`: active publisher identity and protocol-specific ingest quality counters (RTMP/SRT), including SRT RTT, receive rate, packet loss/drop/retransmit counters, latency buffers, estimated link capacity, and NAK count when MediaMTX exposes them, plus Linux RTMP TCP socket metrics from `ss -tin` when available. When Restream is not running on Linux or `ss` is missing, the publisher health modal shows a specific unavailable reason instead of an empty metrics table.
+- `input.publisher`: active publisher identity and protocol-gated transport quality. SRT exposes current per-second loss/drop/retransmit/undecrypt rates alongside connection totals; alerting uses the rates so a recovered stream returns to healthy. RTMP exposes receiver-side TCP metrics from `ss -tinmH`, including receive throughput, last-receive age, out-of-order packets, receive window, and kernel receive-buffer saturation. Sender-side congestion-window, pacing, delivery, and send-rate fields are not used for RTMP publisher health.
 - `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
 
 `input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes managed output types (`rtmpconn`, `srtconn`, `hlsMuxer`) and internal probe readers.

@@ -46,5 +46,4 @@ public/output.css
 
 # Runtime data
 data.db
-media/
-media/*.mkv
+/media/

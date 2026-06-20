@@ -1,6 +1,7 @@
 import {
     loadSettings,
     saveServerName,
+    saveIngestHost,
     saveIngestSecurity,
     saveCustomEncoding,
     loadMediaFiles,
@@ -27,6 +28,7 @@ async function init(): Promise<void> {
 void init();
 
 window.saveServerName = saveServerName;
+window.saveIngestHost = saveIngestHost;
 window.saveIngestSecurity = saveIngestSecurity;
 window.saveCustomEncoding = saveCustomEncoding;
 window.openAddIngestForm = openAddIngestForm;

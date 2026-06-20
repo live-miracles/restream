@@ -158,7 +158,60 @@ pub async fn run_app() {
                 );
 
                 // Get source pipeline ring buffer
-                let ring_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
+                let source_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
+
+                // Two-stage transcoding: video transcode (shared) → audio filter (if needed)
+                //
+                // Stage 1 (video): keyed on video preset only.
+                //   720p, 720p+atrack:0,1, 720p+remap:0:1 all share one 720p encoder.
+                //   All audio streams are carried through (passthrough).
+                //
+                // Stage 2 (audio): keyed on video_preset + audio_routing.
+                //   Cheap remux that copies video and selects/filters audio.
+                //   Key includes upstream video preset to prevent cross-contamination:
+                //   720p+atrack:0 and 1080p+atrack:0 must NOT share an audio stage.
+                //
+                // See docs/media-pipeline-stage-design.md for rationale.
+                let encoding = output.encoding.clone();
+                let video_preset = encoding.split('+').next().unwrap_or("source");
+                let audio_part = encoding.split('+').nth(1);
+
+                let needs_video_transcode = !video_preset.is_empty()
+                    && video_preset != "source"
+                    && video_preset != "custom";
+
+                // Stage 1: shared video transcode (or passthrough)
+                let video_stage_key = if needs_video_transcode {
+                    video_preset
+                } else {
+                    "source"
+                };
+                let video_buf = if needs_video_transcode {
+                    engine
+                        .get_or_create_transcoder(
+                            &output.pipeline_id,
+                            &format!("video:{}", video_preset),
+                            source_buf.clone(),
+                        )
+                        .await
+                } else {
+                    source_buf
+                };
+
+                // Stage 2: audio filter (reads from video stage output)
+                // Key includes upstream: "audio:atrack:0:from:720p" not just "atrack:0"
+                let ring_buf = if let Some(audio) = audio_part {
+                    if !audio.is_empty() {
+                        let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
+                        engine
+                            .get_or_create_transcoder(&output.pipeline_id, &audio_key, video_buf)
+                            .await
+                    } else {
+                        video_buf
+                    }
+                } else {
+                    video_buf
+                };
 
                 // Register egress and get token
                 let cancel_token = engine.register_egress(&output.id, &output.url).await;

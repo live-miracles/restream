@@ -1,4 +1,6 @@
-# MediaMTX Monitoring Notes
+# Legacy MediaMTX Monitoring Notes
+
+> The Rust rewrite no longer uses MediaMTX. This document describes the previous backend and is retained only as migration context. Current publisher transport health comes from native libsrt statistics and Linux receiver-side TCP socket statistics.
 
 This document is a short guide to how Restream uses MediaMTX runtime information and where future monitoring work should look. It intentionally does not duplicate the full MediaMTX API reference.
 
@@ -20,7 +22,7 @@ Restream currently uses MediaMTX for three control-plane jobs:
 |---|---|---|
 | Readiness and ingest URL discovery | `GET /v3/config/global/get` | Confirms the API is reachable and reads active protocol ports |
 | Stream key provisioning | `POST /v3/config/paths/add/{name}`, `DELETE /v3/config/paths/delete/{name}` | Creates and removes `live/<streamKey>` path config |
-| Health snapshot | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list`, Linux `ss -tin` from `iproute2` | Builds input status, publisher identity, and protocol quality signals |
+| Health snapshot (legacy) | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list` | Previous backend path/session data; superseded by native engine state and receiver-side socket sampling |
 
 The health model is intentionally ingest-centric today. Details are in [health-mapping.md](./health-mapping.md).
 
@@ -68,12 +70,12 @@ These should normalize MediaMTX details into Restream terms such as pipeline, st
 
 ### SRT Quality
 
-SRT is one of the richest MediaMTX telemetry surfaces. For RTMP, equivalent transport signals have
-to come from the kernel TCP socket layer instead of MediaMTX itself. Restream uses Linux `ss -tin`
-from the `iproute2` package to surface compact RTMP socket metrics such as RTT, retransmissions,
-congestion window, unacked segments, pacing rate, and delivery rate. VM setup and update scripts
-install `iproute2`; on non-Linux hosts or hosts without `ss`, the UI reports why RTMP socket
-metrics cannot be shown.
+In the Rust rewrite, SRT quality comes directly from `srt_bistats()`. Alerting uses per-second
+deltas for loss, drop, retransmit, and undecrypt counters while retaining connection totals for
+context. RTMP quality comes from Linux `ss -tinmH` receiver-side fields: receive throughput,
+receive RTT, last-receive age, out-of-order packets, receive window, and receive-buffer occupancy.
+The previous sender-side congestion-window, unacked, pacing, delivery-rate, and send-rate fields
+are not used for publisher health.
 
 ### HLS Playback Visibility
 

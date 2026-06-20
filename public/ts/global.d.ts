@@ -56,6 +56,7 @@ declare global {
         navigateOutputHistorySearch: (direction: number) => void;
         togglePipelineHistoryPlayPause: () => void;
         saveServerName: () => Promise<void>;
+        saveIngestHost: () => Promise<void>;
         saveIngestSecurity: () => Promise<void>;
         saveCustomEncoding: () => Promise<void>;
         openAddIngestForm: () => void;

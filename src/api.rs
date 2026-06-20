@@ -32,6 +32,7 @@ const SESSION_COOKIE_NAME: &str = "session";
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const PASSWORD_META_KEY: &str = "dashboardPasswordHash";
 const INGEST_SECURITY_CONFIG_META_KEY: &str = "ingest_security_config";
+const DEFAULT_INGEST_HOST: &str = "localhost";
 
 // Hardcoded stream keys matching mediamtx.yml compatibility
 const STREAM_KEYS: &[(&str, &str)] = &[
@@ -98,12 +99,11 @@ fn clear_session_cookie() -> String {
     )
 }
 
-fn get_host_from_headers(headers: &HeaderMap) -> String {
-    if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
-        host.split(':').next().unwrap_or(host).to_string()
-    } else {
-        "localhost".to_string()
-    }
+async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
+    Ok(db::get_ingest_host(db_pool)
+        .await?
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| DEFAULT_INGEST_HOST.to_string()))
 }
 
 // Hex encoding helper
@@ -218,6 +218,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/pipelines/:pipeline_id/history",
             get(pipeline_history_handler),
         )
+        .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
+        .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
         .route(
             "/pipelines/:pipeline_id/diagnostics",
             get(pipeline_diagnostics_sse_handler),
@@ -244,9 +246,18 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/ingests/:id/start", post(ingests_start_handler))
         .route("/api/ingests/:id/stop", post(ingests_stop_handler))
+        .route("/api/status", get(status_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
+        .route("/hls/:pipeline_id", get(hls_playlist_handler))
+        .route("/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
+        .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
+        // Deprecated compatibility aliases. New clients should use /hls/.
         .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
+        .route(
+            "/preview/hls/:pipeline_id/index.m3u8",
+            get(hls_playlist_handler),
+        )
         .route(
             "/preview/hls/:pipeline_id/:segment",
             get(hls_segment_handler),
@@ -494,7 +505,10 @@ async fn stream_keys_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let host = get_host_from_headers(&headers);
+    let host = match get_ingest_host(&state.db).await {
+        Ok(host) => host,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     let mut keys = Vec::new();
     for &(key, label) in STREAM_KEYS {
         keys.push(serde_json::json!({
@@ -521,7 +535,15 @@ async fn config_get_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let host = get_host_from_headers(&headers);
+    let ingest_host = match db::get_ingest_host(&state.db).await {
+        Ok(host) => host.unwrap_or_default(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let effective_ingest_host = if ingest_host.is_empty() {
+        DEFAULT_INGEST_HOST
+    } else {
+        &ingest_host
+    };
     let raw_pipelines = match db::list_pipelines(&state.db).await {
         Ok(p) => p,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -536,8 +558,8 @@ async fn config_get_handler(
             "inputSource": p.input_source,
             "encoding": p.encoding,
             "ingestUrls": {
-                "rtmp": format!("rtmp://{}:1935/live/{}", host, p.stream_key),
-                "srt": format!("srt://{}:10080?streamid=publish:live/{}", host, p.stream_key)
+                "rtmp": format!("rtmp://{}:1935/live/{}", effective_ingest_host, p.stream_key),
+                "srt": format!("srt://{}:10080?streamid=publish:live/{}", effective_ingest_host, p.stream_key)
             }
         }));
     }
@@ -552,6 +574,7 @@ async fn config_get_handler(
 
     Json(serde_json::json!({
         "serverName": server_name,
+        "ingestHost": ingest_host,
         "ingestSecurity": sec,
         "pipelines": pipelines,
         "outputs": outputs,
@@ -564,6 +587,7 @@ async fn config_get_handler(
 #[serde(rename_all = "camelCase")]
 struct ConfigPatchPayload {
     server_name: Option<String>,
+    ingest_host: Option<String>,
     ingest_security: Option<IngestSecurityConfig>,
 }
 
@@ -591,6 +615,12 @@ async fn config_patch_handler(
         let _ = db::set_meta(&state.db, "server_name", name).await;
     }
 
+    if let Some(ref host) = payload.ingest_host {
+        if db::set_ingest_host(&state.db, host).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
     if let Some(ref sec) = payload.ingest_security {
         state.security.update_config(sec.clone());
         if let Ok(raw_json) = serde_json::to_string(sec) {
@@ -602,10 +632,15 @@ async fn config_patch_handler(
         .await
         .unwrap_or(Some("Name".to_string()))
         .unwrap_or("Name".to_string());
+    let ingest_host = match db::get_ingest_host(&state.db).await {
+        Ok(host) => host.unwrap_or_default(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
     let sec = state.security.get_config();
 
     Json(serde_json::json!({
         "serverName": server_name,
+        "ingestHost": ingest_host,
         "ingestSecurity": sec
     }))
     .into_response()
@@ -1135,16 +1170,88 @@ async fn ingests_start_handler(
         _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
     };
 
-    // Placeholder for ingest starting
-    Json(serde_json::json!({
-        "id": ingest.id,
-        "filename": ingest.filename,
-        "streamKey": ingest.stream_key,
-        "loop": ingest.loop_flag,
-        "startTime": ingest.start_time,
-        "running": true
-    }))
-    .into_response()
+    // Check if already running
+    if state
+        .engine
+        .file_ingest_children
+        .read()
+        .await
+        .contains_key(&id)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "Ingest already running"})),
+        )
+            .into_response();
+    }
+
+    let file_path = format!("media/{}", ingest.filename);
+    if !std::path::Path::new(&file_path).exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Media file not found"})),
+        )
+            .into_response();
+    }
+
+    let rtmp_url = format!("rtmp://localhost:1935/live/{}", ingest.stream_key);
+    let mut args: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "warning".into(),
+        "-re".into(),
+    ];
+    if ingest.loop_flag {
+        args.extend(["-stream_loop".into(), "-1".into()]);
+    }
+    if !ingest.start_time.is_empty() {
+        args.extend(["-ss".into(), ingest.start_time.clone()]);
+    }
+    args.extend([
+        "-i".into(),
+        file_path,
+        "-map".into(),
+        "0".into(),
+        "-c".into(),
+        "copy".into(),
+        "-flvflags".into(),
+        "no_duration_filesize".into(),
+        "-f".into(),
+        "flv".into(),
+        rtmp_url,
+    ]);
+
+    match tokio::process::Command::new("ffmpeg")
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            state
+                .engine
+                .file_ingest_children
+                .write()
+                .await
+                .insert(id.clone(), child);
+            Json(serde_json::json!({
+                "id": ingest.id,
+                "filename": ingest.filename,
+                "streamKey": ingest.stream_key,
+                "loop": ingest.loop_flag,
+                "startTime": ingest.start_time,
+                "running": true
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to spawn ffmpeg: {}", e)})),
+        )
+            .into_response(),
+    }
 }
 
 async fn ingests_stop_handler(
@@ -1165,6 +1272,11 @@ async fn ingests_stop_handler(
         _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
     };
 
+    let mut children = state.engine.file_ingest_children.write().await;
+    if let Some(mut child) = children.remove(&id) {
+        let _ = child.kill().await;
+    }
+
     Json(serde_json::json!({
         "id": ingest.id,
         "filename": ingest.filename,
@@ -1172,6 +1284,45 @@ async fn ingests_stop_handler(
         "loop": ingest.loop_flag,
         "startTime": ingest.start_time,
         "running": false
+    }))
+    .into_response()
+}
+
+async fn status_get_handler(
+    State(_state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !_state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let sys = System::new_all();
+    let ffmpeg_version = unsafe {
+        let v = ffmpeg_next::ffi::av_version_info();
+        if v.is_null() {
+            "unknown".to_string()
+        } else {
+            std::ffi::CStr::from_ptr(v).to_string_lossy().to_string()
+        }
+    };
+
+    Json(serde_json::json!({
+        "restream": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": env!("GIT_COMMIT_HASH"),
+        },
+        "ffmpeg": ffmpeg_version,
+        "os": {
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "hostname": System::host_name().unwrap_or_default(),
+            "uptime": System::uptime(),
+            "totalMem": sys.total_memory(),
+        }
     }))
     .into_response()
 }
@@ -1379,6 +1530,43 @@ struct DiagnosticsQuery {
     since: Option<String>,
 }
 
+async fn pipeline_probe_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    match state.engine.probe_snapshot(&pipeline_id).await {
+        Some(probe) => Json(probe).into_response(),
+        None => (StatusCode::NOT_FOUND, "No active ingest for this pipeline").into_response(),
+    }
+}
+
+async fn pipeline_graph_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
+    let graph = state.engine.processing_graph(&pipeline_id, &outputs).await;
+    Json(graph).into_response()
+}
+
 async fn pipeline_diagnostics_sse_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
@@ -1393,7 +1581,34 @@ async fn pipeline_diagnostics_sse_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let probe_protocol = query.probe.unwrap_or_else(|| "rtmp".to_string());
+    let probe_protocol = match state
+        .engine
+        .active_ingests
+        .read()
+        .await
+        .get(&pipeline_id)
+        .map(|ingest| match ingest.protocol.as_str() {
+            "file" => "rtmp".to_string(),
+            protocol => protocol.to_string(),
+        }) {
+        Some(protocol) => protocol,
+        None => {
+            return (StatusCode::NOT_FOUND, "No active ingest for this pipeline").into_response();
+        }
+    };
+
+    if let Some(requested_protocol) = query.probe {
+        if requested_protocol != probe_protocol {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Probe protocol must match active ingest protocol ({})",
+                    probe_protocol
+                ),
+            )
+                .into_response();
+        }
+    }
     let engine = state.engine.clone();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);

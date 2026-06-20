@@ -66,6 +66,9 @@ export function renderPublisherHealthModal(): void {
     const grafanaBtn = document.getElementById(
         'publisher-health-grafana-btn',
     ) as HTMLButtonElement | null;
+    const copyBtn = document.getElementById(
+        'publisher-health-copy-btn',
+    ) as HTMLButtonElement | null;
     if (!title || !subtitle || !tbody || !empty || !grafanaBtn) return;
 
     title.textContent = `Publisher Health${pipe?.name ? ` - ${pipe.name}` : ''}`;
@@ -78,6 +81,10 @@ export function renderPublisherHealthModal(): void {
         grafanaBtn.disabled = true;
         grafanaBtn.classList.add('btn-disabled');
         grafanaBtn.onclick = null;
+        if (copyBtn) {
+            copyBtn.disabled = true;
+            copyBtn.onclick = null;
+        }
         return;
     }
 
@@ -88,7 +95,7 @@ export function renderPublisherHealthModal(): void {
     tbody.innerHTML = rows
         .map(
             (row) => `<tr>
-                <td>${row.label}</td>
+                <td title="${row.description}">${row.label} <span class="text-xs opacity-40">&#9432;</span></td>
                 <td class="text-right font-mono">${row.displayValue}</td>
                 <td class="text-right"><span class="badge badge-xs ${row.isAlert ? 'badge-warning' : 'badge-success'}">${row.isAlert ? 'Alert' : 'OK'}</span></td>
             </tr>`,
@@ -97,6 +104,22 @@ export function renderPublisherHealthModal(): void {
 
     empty.textContent = getPublisherQualityEmptyMessage(publisher);
     empty.classList.toggle('hidden', rows.length > 0);
+
+    if (copyBtn) {
+        copyBtn.disabled = rows.length === 0;
+        copyBtn.onclick = () => {
+            const header = `${title.textContent}\n${subtitle.textContent}`;
+            const lines = rows.map(
+                (row) => `${row.label}: ${row.displayValue} [${row.isAlert ? 'Alert' : 'OK'}]`,
+            );
+            navigator.clipboard.writeText([header, '', ...lines].join('\n')).then(() => {
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = 'Copy';
+                }, 1500);
+            });
+        };
+    }
 
     grafanaBtn.disabled = !pipe.key;
     grafanaBtn.classList.toggle('btn-disabled', !pipe.key);

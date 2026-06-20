@@ -73,8 +73,8 @@ function loadHlsRuntime(): Promise<HlsConstructor> {
     return hlsRuntimePromise;
 }
 
-function buildInputPreviewUrl(streamKey: string): string {
-    return withBasePath(`/preview/hls/${encodeURIComponent(streamKey)}/index.m3u8`);
+function buildInputPreviewUrl(pipelineId: string): string {
+    return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/index.m3u8`);
 }
 
 function formatPreviewSampleRate(rate: number | null | undefined): string | null {
@@ -147,7 +147,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         return;
     }
 
-    const previewSrc = buildInputPreviewUrl(pipe.key);
+    const previewSrc = buildInputPreviewUrl(pipe.id);
     if (playerElem.dataset.previewSrc === previewSrc) {
         return;
     }

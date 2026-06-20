@@ -6,13 +6,39 @@ All request/response bodies are JSON. All timestamps are ISO 8601 UTC strings.
 
 ---
 
+## HLS Pull
+
+The engine exposes its shared in-memory HLS package at:
+
+```text
+GET /hls/:pipelineId/index.m3u8
+GET /hls/:pipelineId/seg<N>.ts
+```
+
+`GET /hls/:pipelineId` is a playlist alias. The older
+`/preview/hls/:pipelineId/...` routes remain temporarily available for
+compatibility.
+
+Responses:
+
+- playlist: `application/vnd.apple.mpegurl`
+- segment: `video/mp2t`
+- `404`: no active HLS store, no completed segments, or an evicted segment
+- `400`: invalid segment filename
+
+Authorization is not implemented yet. See the future authorization TODO in
+[Configuration](./configuration.md#future-authorization-todo) before exposing
+these routes on an untrusted network.
+
+---
+
 ## 1. Stream Keys
 
 ### `GET /stream-keys`
 
 Returns all stream keys ordered by creation date descending.
 
-`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`. The backend resolves the hostname from `PUBLIC_INGEST_HOST`, GCE metadata external IP, local network address, or `localhost`.
+`ingestUrls` ports are derived from MediaMTX global runtime config (`GET /v3/config/global/get`). If a protocol port cannot be resolved, that protocol URL is returned as `null`. The backend uses the persisted `ingestHost` setting for the hostname and falls back to `localhost` when the setting is blank.
 
 **Response 200:**
 ```json
@@ -525,6 +551,7 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
 ```json
 {
   "serverName": "My Server",
+  "ingestHost": "stream.example.com",
   "ingestSecurity": {
     "failureLimit": 10,
     "failureWindowMs": 60000,
@@ -550,7 +577,8 @@ Returns the full state snapshot used by the dashboard. Reads directly from SQLit
 
 Each output includes `desiredState`, the persistent operator intent (`running` or `stopped`).
 
-`ingestUrls` hostnames are resolved by the backend before the response is returned.
+`ingestHost` is the persisted operator setting. A blank value is returned as `""`, while generated
+`ingestUrls` use `localhost` as the effective fallback.
 
 ---
 
@@ -562,6 +590,7 @@ Updates server settings.
 ```json
 {
   "serverName": "My Server",
+  "ingestHost": "stream.example.com",
   "ingestSecurity": {
     "failureLimit": 10,
     "failureWindowMs": 60000,
@@ -575,6 +604,7 @@ Updates server settings.
 ```json
 {
   "serverName": "My Server",
+  "ingestHost": "stream.example.com",
   "ingestSecurity": {
     "failureLimit": 10,
     "failureWindowMs": 60000,

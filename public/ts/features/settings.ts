@@ -23,6 +23,8 @@ import { withBasePath } from '../core/base-path.js';
 export async function loadSettings(): Promise<void> {
     const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
     if (nameInput) nameInput.value = state.config?.serverName || '';
+    const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
+    if (hostInput) hostInput.value = state.config?.ingestHost || '';
     populateIngestSecuritySettings();
 
     const enc = await getCustomEncoding();
@@ -45,6 +47,19 @@ export async function saveServerName(): Promise<void> {
     if (result) {
         state.config = { ...state.config, serverName: result.serverName };
         showSavedFeedback('server-name-saved');
+    }
+}
+
+// ── Ingest Host ───────────────────────────────────────
+
+export async function saveIngestHost(): Promise<void> {
+    const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
+    const ingestHost = hostInput?.value?.trim() ?? '';
+    const result = await patchConfig({ ingestHost });
+    if (result) {
+        state.config = { ...state.config, ingestHost: result.ingestHost };
+        if (hostInput) hostInput.value = result.ingestHost;
+        showSavedFeedback('ingest-host-saved');
     }
 }
 

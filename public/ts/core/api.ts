@@ -276,12 +276,18 @@ async function getPipelineHistory(
 
 async function patchConfig(body: {
     serverName?: string;
+    ingestHost?: string;
     ingestSecurity?: Partial<IngestSecurityConfig>;
-}): Promise<{ serverName: string; ingestSecurity: IngestSecurityConfig } | null> {
-    return apiRequest<{ serverName: string; ingestSecurity: IngestSecurityConfig }>('/config', {
-        method: 'PATCH',
-        body,
-    });
+}): Promise<{
+    serverName: string;
+    ingestHost: string;
+    ingestSecurity: IngestSecurityConfig;
+} | null> {
+    return apiRequest<{
+        serverName: string;
+        ingestHost: string;
+        ingestSecurity: IngestSecurityConfig;
+    }>('/config', { method: 'PATCH', body });
 }
 
 async function getCustomEncoding(): Promise<{ ffmpegArgs: string | null } | null> {
