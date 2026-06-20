@@ -147,10 +147,11 @@ export function registerPipelineApi({
 }): void {
     app.get('/stream-keys', async (req, res) => {
         try {
+            const ingestHost = db.getIngestHost() || 'localhost';
             const streamKeys = await Promise.all(
                 (await getPermanentStreamKeys()).map(async (streamKey) => ({
                     ...streamKey,
-                    ingestUrls: await buildIngestUrls(streamKey.key),
+                    ingestUrls: await buildIngestUrls(streamKey.key, ingestHost),
                 })),
             );
             return res.json(streamKeys);
