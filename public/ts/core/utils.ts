@@ -185,9 +185,10 @@ function setServerConfig(serverName: string | undefined): void {
     const titleEl = document.querySelector('title');
     const viewName = titleEl?.getAttribute('data-name') || 'Dashboard';
 
-    // Find if a pipeline is currently selected
-    const selectedPipeId = getUrlParam('p');
-    const selectedPipe = state.pipelines?.find((p) => p.id === selectedPipeId);
+    const selectedPipeId = viewName === 'Dashboard' ? getUrlParam('p') : null;
+    const selectedPipe = selectedPipeId
+        ? state.pipelines?.find((p) => p.id === selectedPipeId)
+        : null;
     const suffix = selectedPipe ? ` - ${selectedPipe.name}` : '';
 
     if (titleEl) document.title = name + ': ' + viewName + suffix;
