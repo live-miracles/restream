@@ -68,9 +68,7 @@ pub async fn start_recording(
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    for packet in &packets {
-                        queue.write(&packet.payload);
-                    }
+                    queue.write_batch(packets.iter().map(|packet| packet.payload.as_ref()));
                 }
             }
         }

@@ -120,9 +120,8 @@ pub async fn start_transcoder(
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    for packet in &packets {
-                        input_queue.write(&packet.payload);
-                    }
+                    input_queue
+                        .write_batch(packets.iter().map(|packet| packet.payload.as_ref()));
                 }
             }
         }

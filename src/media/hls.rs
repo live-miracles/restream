@@ -164,16 +164,24 @@ pub async fn start_hls_segmenter(
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    for packet in &packets {
+                    let mut write_start = got_first_keyframe.then_some(0);
+                    for (index, packet) in packets.iter().enumerate() {
                         if packet.media_type == MediaType::Video && packet.is_keyframe {
                             if got_first_keyframe {
                                 keyframe_signal.store(true, Ordering::Release);
                             }
                             got_first_keyframe = true;
                         }
-                        if got_first_keyframe {
-                            input_queue.write(&packet.payload);
+                        if got_first_keyframe && write_start.is_none() {
+                            write_start = Some(index);
                         }
+                    }
+                    if let Some(start) = write_start {
+                        input_queue.write_batch(
+                            packets[start..]
+                                .iter()
+                                .map(|packet| packet.payload.as_ref()),
+                        );
                     }
                 }
             }

@@ -334,6 +334,30 @@ fn bench_memory_queue(c: &mut Criterion) {
                 );
             },
         );
+
+        group.bench_with_input(
+            BenchmarkId::new("byte_vecdeque_batch_round_trip", burst),
+            &burst,
+            |b, &burst| {
+                b.iter_batched(
+                    MemoryQueue::new,
+                    |queue| {
+                        black_box(queue.write_batch(std::iter::repeat_n(packet.as_slice(), burst)));
+                        let mut output = vec![0u8; total_bytes];
+                        let mut offset = 0usize;
+                        while offset < output.len() {
+                            let read = queue.read(&mut output[offset..]);
+                            if read == 0 {
+                                break;
+                            }
+                            offset += read;
+                        }
+                        black_box((queue, output, offset));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
 
     group.finish();

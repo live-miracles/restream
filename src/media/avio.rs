@@ -50,6 +50,23 @@ impl MemoryQueue {
         self.cvar.notify_all();
     }
 
+    /// Append multiple chunks while taking the queue lock and notifying once.
+    pub fn write_batch<'a, I>(&self, chunks: I) -> usize
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let mut inner = self.inner.lock().unwrap();
+        let mut bytes = 0usize;
+        for chunk in chunks {
+            bytes += chunk.len();
+            inner.buf.extend(chunk.iter().copied());
+        }
+        if bytes > 0 {
+            self.cvar.notify_all();
+        }
+        bytes
+    }
+
     pub fn close(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.closed = true;
@@ -277,4 +294,27 @@ unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size
     let slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
     queue.write(slice);
     buf_size
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_batch_preserves_chunk_order() {
+        let queue = MemoryQueue::new();
+        assert_eq!(queue.write_batch([b"abc".as_slice(), b"def".as_slice()]), 6);
+
+        let mut output = [0u8; 6];
+        assert_eq!(queue.read(&mut output), output.len());
+        assert_eq!(&output, b"abcdef");
+    }
+
+    #[test]
+    fn empty_write_batch_does_not_add_data() {
+        let queue = MemoryQueue::new();
+        assert_eq!(queue.write_batch(std::iter::empty()), 0);
+        let mut output = [0u8; 1];
+        assert_eq!(queue.read_nonblocking(&mut output), 0);
+    }
 }
