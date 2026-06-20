@@ -64,10 +64,13 @@ harness = false
 name = "avio_throughput"
 harness = false
 
+[[bench]]
+name = "high_performance_data_path"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = false
 panic = "unwind"
-

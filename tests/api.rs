@@ -722,3 +722,131 @@ async fn change_password() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn health_shows_registered_egress() {
+    let (_, pool, engine) = test_app_with_engine().await;
+    let app = {
+        let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
+        api::initialize_auth(&pool, &sessions).await;
+        let security = Arc::new(IngestSecurityService::new(
+            restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
+        ));
+        let state = Arc::new(api::AppState {
+            db: pool.clone(),
+            security,
+            sessions,
+            engine: engine.clone(),
+        });
+        api::create_router(state)
+    };
+    let cookie = login(&app).await;
+
+    // Create pipeline and output
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    // Register an egress in the engine (simulates reconciler start)
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+
+    // Health endpoint should show the output under the correct pipeline
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = body_json(resp).await;
+    assert!(health["srtListener"]["bondingAvailable"].is_boolean());
+    let outputs = &health["pipelines"][&pid]["outputs"];
+    assert!(
+        outputs[&oid].is_object(),
+        "egress should appear under its pipeline in /health: {outputs}"
+    );
+    assert_eq!(outputs[&oid]["status"], "running");
+}
+
+#[tokio::test]
+async fn delete_output_cancels_egress() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
+        ))
+        .await
+        .unwrap();
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    let token = engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    assert!(!token.is_cancelled());
+
+    // Delete the output
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "DELETE",
+            &format!("/pipelines/{pid}/outputs/{oid}"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Egress cancellation token should be cancelled
+    assert!(token.is_cancelled(), "deleting output should cancel egress");
+}

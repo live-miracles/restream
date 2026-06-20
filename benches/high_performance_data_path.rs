@@ -1,0 +1,252 @@
+use bytes::Bytes;
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
+use restream::media::avio::MemoryQueue;
+use restream::media::engine::MediaEngine;
+use restream::media::ring_buffer::{AlignedSlot, MediaPacket, MediaType, Reader, RingBuffer};
+use std::mem::{align_of, size_of};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const PACKET_BYTES: usize = 1316;
+const RING_CAPACITY: usize = 4096;
+
+fn packet(sequence: usize, payload: &Bytes) -> MediaPacket {
+    MediaPacket {
+        media_type: if sequence % 3 == 0 {
+            MediaType::Audio
+        } else {
+            MediaType::Video
+        },
+        track_index: 0,
+        pts: sequence as i64 * 20,
+        dts: sequence as i64 * 20,
+        is_keyframe: sequence % 60 == 0,
+        payload: payload.clone(),
+    }
+}
+
+fn print_layout_baseline() {
+    eprintln!(
+        "data-path layout: MediaPacket={}B align={}B, AlignedSlot={}B align={}B, \
+         {} slots={}KiB",
+        size_of::<MediaPacket>(),
+        align_of::<MediaPacket>(),
+        size_of::<AlignedSlot>(),
+        align_of::<AlignedSlot>(),
+        RING_CAPACITY,
+        size_of::<AlignedSlot>() * RING_CAPACITY / 1024,
+    );
+}
+
+fn bench_control_plane_lookup(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let engine = Arc::new(MediaEngine::new());
+    let cached = runtime.block_on(engine.get_or_create_pipeline("data-path-bench"));
+    let mut group = c.benchmark_group("data_path/control_plane_lookup");
+
+    group.bench_function("locked_hashmap_get_or_create", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    black_box(engine.get_or_create_pipeline("data-path-bench").await);
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    group.bench_function("cached_hot_handle_clone", |b| {
+        b.iter(|| black_box(cached.clone()));
+    });
+
+    group.finish();
+}
+
+fn bench_ring_producer(c: &mut Criterion) {
+    let payload = Bytes::from(vec![0x47; PACKET_BYTES]);
+    let mut group = c.benchmark_group("data_path/ring_producer");
+
+    for burst in [1usize, 4, 8, 16, 32, 64] {
+        group.throughput(Throughput::Elements(burst as u64));
+        group.bench_with_input(
+            BenchmarkId::new("current_push_loop", burst),
+            &burst,
+            |b, &burst| {
+                let ring = RingBuffer::new(RING_CAPACITY);
+                let mut sequence = 0usize;
+                b.iter(|| {
+                    for _ in 0..burst {
+                        ring.push(packet(sequence, &payload));
+                        sequence = sequence.wrapping_add(1);
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_ring_consumer(c: &mut Criterion) {
+    let payload = Bytes::from(vec![0x47; PACKET_BYTES]);
+    let mut group = c.benchmark_group("data_path/ring_consumer");
+
+    for burst in [1usize, 4, 8, 16, 32, 64] {
+        group.throughput(Throughput::Elements(burst as u64));
+        group.bench_with_input(
+            BenchmarkId::new("current_pull_loop", burst),
+            &burst,
+            |b, &burst| {
+                b.iter_custom(|iterations| {
+                    let mut remaining = iterations;
+                    let mut elapsed = Duration::ZERO;
+                    let mut sequence = 0usize;
+
+                    while remaining > 0 {
+                        let chunk = remaining.min(64) as usize;
+                        let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
+                        let mut reader = Reader::new(ring.clone());
+                        for _ in 0..chunk * burst {
+                            ring.push(packet(sequence, &payload));
+                            sequence = sequence.wrapping_add(1);
+                        }
+
+                        let started = Instant::now();
+                        let mut packets = 0usize;
+                        let mut bytes = 0usize;
+                        let mut checksum = 0i64;
+                        while packets < chunk * burst {
+                            match reader.pull() {
+                                Ok(Some(packet)) => {
+                                    packets += 1;
+                                    bytes += packet.payload.len();
+                                    checksum = checksum.wrapping_add(packet.pts ^ packet.dts);
+                                }
+                                Ok(None) => break,
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                        elapsed += started.elapsed();
+                        black_box((packets, bytes, checksum));
+                        remaining -= chunk as u64;
+                    }
+
+                    elapsed
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_fanout_delivery(c: &mut Criterion) {
+    let payload = Bytes::from(vec![0x47; PACKET_BYTES]);
+    let mut group = c.benchmark_group("data_path/fanout_delivery");
+    group.sample_size(20);
+
+    for readers in [1usize, 32, 128, 500] {
+        for burst in [1usize, 32] {
+            let deliveries = readers * burst;
+            group.throughput(Throughput::Elements(deliveries as u64));
+            group.bench_with_input(
+                BenchmarkId::new(format!("readers_{readers}"), burst),
+                &(readers, burst),
+                |b, &(readers, burst)| {
+                    b.iter_custom(|iterations| {
+                        let mut remaining = iterations;
+                        let mut elapsed = Duration::ZERO;
+                        let mut sequence = 0usize;
+
+                        while remaining > 0 {
+                            let chunk = remaining.min(4) as usize;
+                            let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
+                            let mut consumers = (0..readers)
+                                .map(|_| Reader::new(ring.clone()))
+                                .collect::<Vec<_>>();
+                            for _ in 0..chunk * burst {
+                                ring.push(packet(sequence, &payload));
+                                sequence = sequence.wrapping_add(1);
+                            }
+
+                            let started = Instant::now();
+                            let mut delivered = 0usize;
+                            let mut checksum = 0i64;
+                            for consumer in &mut consumers {
+                                for _ in 0..chunk * burst {
+                                    let packet = consumer
+                                        .pull()
+                                        .expect("reader overflow")
+                                        .expect("missing packet");
+                                    delivered += 1;
+                                    checksum = checksum
+                                        .wrapping_add(packet.pts)
+                                        .wrapping_add(packet.payload.len() as i64);
+                                }
+                            }
+                            elapsed += started.elapsed();
+                            black_box((delivered, checksum));
+                            remaining -= chunk as u64;
+                        }
+
+                        elapsed
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_memory_queue(c: &mut Criterion) {
+    let packet = vec![0x47u8; PACKET_BYTES];
+    let mut group = c.benchmark_group("data_path/memory_queue");
+
+    for burst in [1usize, 4, 8, 16, 32, 64] {
+        let total_bytes = PACKET_BYTES * burst;
+        group.throughput(Throughput::Bytes(total_bytes as u64));
+        group.bench_with_input(
+            BenchmarkId::new("byte_vecdeque_round_trip", burst),
+            &burst,
+            |b, &burst| {
+                b.iter_batched(
+                    MemoryQueue::new,
+                    |queue| {
+                        for _ in 0..burst {
+                            queue.write(&packet);
+                        }
+                        let mut output = vec![0u8; total_bytes];
+                        let mut offset = 0usize;
+                        while offset < output.len() {
+                            let read = queue.read(&mut output[offset..]);
+                            if read == 0 {
+                                break;
+                            }
+                            offset += read;
+                        }
+                        black_box((queue, output, offset));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn benches(c: &mut Criterion) {
+    print_layout_baseline();
+    bench_control_plane_lookup(c);
+    bench_ring_producer(c);
+    bench_ring_consumer(c);
+    bench_fanout_delivery(c);
+    bench_memory_queue(c);
+}
+
+criterion_group!(data_path_benches, benches);
+criterion_main!(data_path_benches);

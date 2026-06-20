@@ -45,6 +45,11 @@ export interface PublisherQuality {
     msReceiveBuf?: number | null;
     mbpsLinkCapacity?: number | null;
     packetsSentNAK?: number | null;
+    srtBonded?: boolean | null;
+    srtGroupMemberCount?: number | null;
+    srtGroupConnectedMembers?: number | null;
+    srtGroupActiveMembers?: number | null;
+    srtGroupBrokenMembers?: number | null;
     tcpRttMs?: number | null;
     tcpRttVarMs?: number | null;
     tcpBytesReceived?: number | null;
@@ -57,9 +62,7 @@ export interface PublisherQuality {
     tcpReceiveRateMbps?: number | null;
     tcpStatsUnavailableReason?:
         | 'not_linux'
-        | 'ss_missing'
         | 'collection_failed'
-        | 'no_matching_socket'
         | string;
 }
 

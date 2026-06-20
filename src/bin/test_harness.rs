@@ -4,7 +4,7 @@ use restream::media::engine::MediaEngine;
 use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use restream::media::rtmp::{start_rtmp_egress, start_rtmp_server_on};
 use restream::media::security::{DEFAULT_INGEST_SECURITY_CONFIG, IngestSecurityService};
-use restream::media::srt::SrtServer;
+use restream::media::srt::{SrtServer, start_srt_egress};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -37,20 +37,25 @@ async fn run() -> Result<(), String> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
     let result = match command.as_str() {
         "correctness" => correctness().await,
+        "egress" => egress_correctness().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
         "all" => {
             let correctness = correctness().await?;
             let in_process = in_process_load(500, 2_000).await?;
             let network = network_load(32, Duration::from_secs(5)).await?;
+            // egress_correctness calls process::exit to avoid FFmpeg/SRT
+            // teardown segfaults, so it must run last.
+            let egress = egress_correctness().await?;
             Ok(json!({
                 "correctness": correctness,
+                "egress": egress,
                 "inProcess": in_process,
                 "network": network,
             }))
         }
         other => Err(format!(
-            "unknown command {other:?}; use correctness, in-process, network, or all"
+            "unknown command {other:?}; use correctness, egress, in-process, network, or all"
         )),
     };
 
@@ -64,7 +69,11 @@ async fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             println!("{}", serde_json::to_string_pretty(&value).unwrap());
             println!("artifact={}", path.display());
-            Ok(())
+            // Skip runtime teardown — OS threads holding FFmpeg/SRT C contexts
+            // race with global cleanup and cause spurious segfaults on exit.
+            // Use _exit to also skip atexit handlers (FFmpeg codec deregistration
+            // can deadlock with OS threads).
+            unsafe { libc::_exit(0) };
         }
         Err(error) => Err(error),
     }
@@ -173,6 +182,161 @@ async fn correctness() -> Result<Value, String> {
         "normalizedStreams": rtmp_media,
         "probesMatch": matches,
     }))
+}
+
+async fn egress_correctness() -> Result<Value, String> {
+    let db_path = artifact_path("egress.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = SqlitePool::connect(&db_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for (id, name, key) in [
+        ("pipe-src", "RTMP source", "e2e-src"),
+        ("pipe-rtmp-sink", "RTMP egress sink", "e2e-rtmp-sink"),
+        ("pipe-srt-sink", "SRT egress sink", "e2e-srt-sink"),
+    ] {
+        db::create_pipeline(&pool, id, name, key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let rtmp_task = tokio::spawn(start_rtmp_server_on(
+        pool.clone(),
+        security,
+        engine.clone(),
+        RTMP_PORT,
+    ));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+    let srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = artifact_path("correctness-h264.ts");
+    if !fixture.exists() {
+        generate_fixture(&fixture).await?;
+    }
+
+    let mut publisher = spawn_publisher(
+        &fixture,
+        &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-src"),
+        "flv",
+    )
+    .await?;
+    wait_for_ingests(&engine, &["pipe-src"], Duration::from_secs(12)).await?;
+
+    let source_ring = engine.get_or_create_pipeline("pipe-src").await;
+
+    let rtmp_egress_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp-sink");
+    let rtmp_token = engine
+        .register_egress("out-rtmp", "pipe-src", &rtmp_egress_url)
+        .await;
+    let _rtmp_egress = tokio::spawn(start_rtmp_egress(
+        "out-rtmp".to_string(),
+        "pipe-src".to_string(),
+        rtmp_egress_url.clone(),
+        source_ring.clone(),
+        engine.clone(),
+        rtmp_token.clone(),
+    ));
+
+    let srt_egress_url =
+        format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-srt-sink&pkt_size=1316");
+    let srt_token = engine
+        .register_egress("out-srt", "pipe-src", &srt_egress_url)
+        .await;
+    let _srt_egress = tokio::spawn(start_srt_egress(
+        "out-srt".to_string(),
+        "pipe-src".to_string(),
+        srt_egress_url.clone(),
+        source_ring,
+        engine.clone(),
+        srt_token.clone(),
+    ));
+
+    let egress_up = wait_for_ingests(
+        &engine,
+        &["pipe-rtmp-sink", "pipe-srt-sink"],
+        Duration::from_secs(15),
+    )
+    .await;
+
+    let mut results = json!({});
+
+    if let Err(ref e) = egress_up {
+        results["rtmpEgress"] = json!({"passed": false, "error": e.to_string()});
+        results["srtEgress"] = json!({"passed": false, "error": e.to_string()});
+    } else {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let rtmp_read_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp-sink");
+        let rtmp_result = ffprobe(&rtmp_read_url).await;
+        let rtmp_passed = rtmp_result.is_ok();
+        let rtmp_error = rtmp_result.as_ref().err().map(|e| e.to_string());
+        let rtmp_streams = rtmp_result
+            .as_ref()
+            .ok()
+            .and_then(|v| normalized_streams(v).ok());
+
+        results["rtmpEgress"] = json!({
+            "passed": rtmp_passed,
+            "egressUrl": rtmp_egress_url,
+            "readUrl": rtmp_read_url,
+            "probe": rtmp_result.ok(),
+            "normalizedStreams": rtmp_streams,
+            "error": rtmp_error,
+        });
+
+        let srt_read_url =
+            format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-srt-sink&mode=caller");
+        let srt_result = ffprobe(&srt_read_url).await;
+        let srt_passed = srt_result.is_ok();
+        let srt_error = srt_result.as_ref().err().map(|e| e.to_string());
+        let srt_streams = srt_result
+            .as_ref()
+            .ok()
+            .and_then(|v| normalized_streams(v).ok());
+
+        results["srtEgress"] = json!({
+            "passed": srt_passed,
+            "egressUrl": srt_egress_url,
+            "readUrl": srt_read_url,
+            "probe": srt_result.ok(),
+            "normalizedStreams": srt_streams,
+            "error": srt_error,
+        });
+    }
+
+    let rtmp_bytes = engine.egress_bytes("out-rtmp").await;
+    let srt_bytes = engine.egress_bytes("out-srt").await;
+    results["rtmpEgressBytes"] = json!(rtmp_bytes);
+    results["srtEgressBytes"] = json!(srt_bytes);
+
+    let passed = results["rtmpEgress"]["passed"].as_bool().unwrap_or(false)
+        && results["srtEgress"]["passed"].as_bool().unwrap_or(false);
+    results["passed"] = json!(passed);
+
+    // Write results and exit immediately. OS threads hold FFmpeg/SRT C
+    // contexts whose destructors race with Rust drop ordering and segfault.
+    let path = artifact_path("egress.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    // Use _exit to bypass atexit handlers — FFmpeg's atexit codec
+    // deregistration can deadlock with OS threads still holding locks.
+    unsafe { libc::_exit(if passed { 0 } else { 1 }) };
 }
 
 async fn generate_fixture(path: &Path) -> Result<(), String> {
@@ -442,7 +606,9 @@ async fn network_load(connections: usize, duration: Duration) -> Result<Value, S
     for index in 0..connections {
         let output_id = format!("load-{index}");
         let url = format!("rtmp://127.0.0.1:{SINK_PORT}/live/{output_id}");
-        let token = engine.register_egress(&output_id, &url).await;
+        let token = engine
+            .register_egress(&output_id, "load-pipeline", &url)
+            .await;
         tokens.push(token.clone());
         let pid = "load-pipeline".to_string();
         tasks.push(tokio::spawn(start_rtmp_egress(

@@ -22,6 +22,14 @@
 //!     → returns Arc<MediaPacket> (zero-copy, ref-counted)
 //! ```
 //!
+//! # Capacity
+//!
+//! Default: 4096 slots. At 4K 60fps a stream produces ~120 video + ~50 audio
+//! = ~170 packets/sec, giving ~24 seconds of buffer depth. At 1080p30 the
+//! depth doubles. This is sufficient for transient egress stalls without
+//! triggering overflow, while keeping per-pipeline memory bounded (the slots
+//! hold `Arc` refs, not copies — actual payload memory is shared via refcount).
+//!
 //! # Overflow & Recovery
 //!
 //! When a reader falls behind by ≥ capacity slots, `pull()` detects the gap
@@ -47,7 +55,7 @@ pub enum MediaType {
     Audio,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MediaPacket {
     pub media_type: MediaType,
     pub track_index: u32,
@@ -177,5 +185,241 @@ impl Reader {
     pub async fn wait_for_data(&self) {
         let notify = self.buffer.get_notify();
         notify.notified().await;
+    }
+}
+
+/// Per-stream DTS monotonicity enforcer for MPEG-TS muxing.
+///
+/// FFmpeg's `write_interleaved` requires strictly increasing DTS per stream.
+/// Audio packets at millisecond granularity can share timestamps (e.g. two AAC
+/// frames in the same millisecond). This enforcer bumps colliding DTS by 1 and
+/// adjusts PTS to maintain PTS >= DTS.
+pub struct DtsEnforcer {
+    last_dts: Vec<i64>,
+}
+
+impl DtsEnforcer {
+    pub fn new(num_streams: usize) -> Self {
+        Self {
+            last_dts: vec![i64::MIN; num_streams],
+        }
+    }
+
+    /// Enforce monotonically increasing DTS for a given stream.
+    /// Returns the corrected (pts, dts) pair.
+    pub fn enforce(&mut self, stream_idx: usize, pts: i64, dts: i64) -> (i64, i64) {
+        let mut dts = dts;
+        if let Some(prev) = self.last_dts.get(stream_idx) {
+            if dts <= *prev {
+                dts = *prev + 1;
+            }
+        }
+        let pts = if pts < dts { dts } else { pts };
+        if let Some(slot) = self.last_dts.get_mut(stream_idx) {
+            *slot = dts;
+        }
+        (pts, dts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn video_packet(pts: i64, dts: i64, keyframe: bool) -> MediaPacket {
+        MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts,
+            dts,
+            is_keyframe: keyframe,
+            payload: Bytes::from_static(&[0; 16]),
+        }
+    }
+
+    fn audio_packet(pts: i64, dts: i64) -> MediaPacket {
+        MediaPacket {
+            media_type: MediaType::Audio,
+            track_index: 0,
+            pts,
+            dts,
+            is_keyframe: false,
+            payload: Bytes::from_static(&[0; 4]),
+        }
+    }
+
+    // -- RingBuffer push/pull --
+
+    #[test]
+    fn push_then_pull_returns_packets_in_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let rb = Arc::new(RingBuffer::new(16));
+            rb.push(video_packet(0, 0, true));
+            rb.push(audio_packet(10, 10));
+            rb.push(video_packet(33, 30, false));
+
+            let mut reader = Reader::new(rb);
+            let p1 = reader.pull().unwrap().unwrap();
+            assert_eq!(p1.pts, 0);
+            assert!(p1.is_keyframe);
+
+            let p2 = reader.pull().unwrap().unwrap();
+            assert_eq!(p2.media_type, MediaType::Audio);
+            assert_eq!(p2.pts, 10);
+
+            let p3 = reader.pull().unwrap().unwrap();
+            assert_eq!(p3.pts, 33);
+
+            assert!(reader.pull().unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn reader_starts_at_last_keyframe() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let rb = Arc::new(RingBuffer::new(64));
+            // Push some packets, including keyframes at different positions
+            for i in 0..20 {
+                rb.push(video_packet(i * 33, i * 33, i % 10 == 0)); // KF at 0, 10
+            }
+            rb.push(audio_packet(660, 660));
+
+            let mut reader = Reader::new(rb);
+            // Should start at or after the last keyframe (index 10)
+            let first = reader.pull().unwrap().unwrap();
+            assert!(first.pts >= 10 * 33);
+        });
+    }
+
+    #[test]
+    fn overflow_triggers_fast_forward_to_keyframe() {
+        let rb = Arc::new(RingBuffer::new(8));
+
+        let mut reader = Reader {
+            buffer: rb.clone(),
+            read_idx: 0,
+        };
+
+        // Push 20 packets with a keyframe at index 15
+        for i in 0..20 {
+            rb.push(video_packet(i * 33, i * 33, i == 0 || i == 15));
+        }
+        // write_idx=20, reader at 0, gap=20 >= capacity=8 → overflow
+
+        let result = reader.pull();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Overflow"));
+
+        // After fast-forward to keyframe at index 15, reader can pull
+        let pkt = reader.pull().unwrap();
+        assert!(pkt.is_some());
+        assert_eq!(pkt.unwrap().pts, 15 * 33);
+    }
+
+    #[test]
+    fn multiple_readers_pull_same_packets() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let rb = Arc::new(RingBuffer::new(64));
+            rb.push(video_packet(0, 0, true));
+            rb.push(video_packet(33, 33, false));
+
+            let mut r1 = Reader::new(rb.clone());
+            let mut r2 = Reader::new(rb.clone());
+
+            let p1 = r1.pull().unwrap().unwrap();
+            let p2 = r2.pull().unwrap().unwrap();
+            assert_eq!(p1.pts, p2.pts);
+            assert_eq!(p1.dts, p2.dts);
+        });
+    }
+
+    #[test]
+    fn fill_and_capacity_reports_correct_values() {
+        let rb = RingBuffer::new(16);
+        assert_eq!(rb.fill_and_capacity(), (0, 16));
+
+        rb.push(video_packet(0, 0, true));
+        assert_eq!(rb.fill_and_capacity(), (1, 16));
+
+        for i in 1..16 {
+            rb.push(audio_packet(i, i));
+        }
+        assert_eq!(rb.fill_and_capacity(), (16, 16));
+
+        // After wrapping, fill stays at capacity
+        rb.push(audio_packet(100, 100));
+        assert_eq!(rb.fill_and_capacity(), (16, 16));
+    }
+
+    // -- DtsEnforcer --
+
+    #[test]
+    fn dts_enforcer_passes_through_increasing_dts() {
+        let mut e = DtsEnforcer::new(2);
+        assert_eq!(e.enforce(0, 0, 0), (0, 0));
+        assert_eq!(e.enforce(0, 33, 33), (33, 33));
+        assert_eq!(e.enforce(0, 66, 66), (66, 66));
+    }
+
+    #[test]
+    fn dts_enforcer_bumps_equal_dts() {
+        let mut e = DtsEnforcer::new(2);
+        // Two audio packets with the same DTS (common at ms granularity)
+        assert_eq!(e.enforce(1, 10, 10), (10, 10));
+        assert_eq!(e.enforce(1, 10, 10), (11, 11)); // bumped
+        assert_eq!(e.enforce(1, 10, 10), (12, 12)); // bumped again
+    }
+
+    #[test]
+    fn dts_enforcer_bumps_decreasing_dts() {
+        let mut e = DtsEnforcer::new(1);
+        assert_eq!(e.enforce(0, 100, 100), (100, 100));
+        assert_eq!(e.enforce(0, 50, 50), (101, 101)); // backwards jump corrected
+    }
+
+    #[test]
+    fn dts_enforcer_adjusts_pts_below_dts() {
+        let mut e = DtsEnforcer::new(1);
+        assert_eq!(e.enforce(0, 100, 100), (100, 100));
+        // PTS=90, DTS=90 → DTS bumped to 101, PTS raised to 101
+        assert_eq!(e.enforce(0, 90, 90), (101, 101));
+    }
+
+    #[test]
+    fn dts_enforcer_preserves_pts_cts_offset() {
+        let mut e = DtsEnforcer::new(1);
+        // B-frame pattern: PTS ahead of DTS (composition time offset)
+        assert_eq!(e.enforce(0, 132, 99), (132, 99));
+        assert_eq!(e.enforce(0, 165, 132), (165, 132));
+    }
+
+    #[test]
+    fn dts_enforcer_independent_per_stream() {
+        let mut e = DtsEnforcer::new(2);
+        assert_eq!(e.enforce(0, 100, 100), (100, 100));
+        // Stream 1 has its own DTS tracking
+        assert_eq!(e.enforce(1, 50, 50), (50, 50));
+        // Stream 0 continues from 100
+        assert_eq!(e.enforce(0, 100, 100), (101, 101));
+    }
+
+    #[test]
+    fn dts_enforcer_handles_out_of_bounds_stream() {
+        let mut e = DtsEnforcer::new(1);
+        // Stream index 5 is out of bounds — passes through unchanged
+        assert_eq!(e.enforce(5, 100, 100), (100, 100));
     }
 }

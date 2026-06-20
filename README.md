@@ -1,334 +1,177 @@
 # Restream
 
-Restream is a host-run streaming control plane built on [MediaMTX](https://github.com/bluenviron/mediamtx). It manages stream keys, pipelines, output destinations, and FFmpeg jobs from a browser dashboard.
+Restream is a host-run live-stream routing service with a Rust control plane and
+in-process media engine. A single application owns the dashboard, SQLite state,
+RTMP/SRT ingest, RTMP/SRT egress, HLS preview, recording, diagnostics, and
+transcoding stages.
 
-## How It Works
+The previous Node.js + MediaMTX implementation is archived under `old/`.
+MediaMTX is not part of the production runtime; it is still useful as an
+independent interoperability sink in end-to-end tests.
 
-1. A publisher sends RTMP or SRT ingest to MediaMTX, or a pre-recorded video in `/media` is used as the input source.
-2. Restream stores stream keys, pipelines, outputs, job state, and logs in local SQLite (`data.db`).
-3. When an output starts, Restream probes the MediaMTX path, spawns FFmpeg pulling from MediaMTX, and tracks the process.
-4. The dashboard reads `/config` and `/health` to show pipeline state, output state, system metrics, and logs.
+## Current Capabilities
 
-MediaMTX owns media routing. Restream owns orchestration and state.
+- RTMP ingest and egress through `rml_rtmp`
+- SRT ingest, read, and egress through libsrt with MPEG-TS demux/remux
+- SRT listener/single-link tuning, UDP-buffer monitoring, bonded-ingest group
+  telemetry, and an unproven backup-group egress code path
+- Lock-free per-pipeline packet fan-out through `RingBuffer`
+- Shared processing-stage scaffolding and stream-level audio selection
+- In-memory HLS playlist/segment storage and pull routes
+- Matroska recording scaffolding
+- File ingest by spawning the system `ffmpeg` binary into the local RTMP ingest
+- SQLite-backed pipelines, outputs, jobs, ingests, settings, and sessions
+- Native health, probe, processing-graph, diagnostics, and host-metrics APIs
 
-## Features
+Important boundaries:
 
-- **Pipeline management** — create pipelines tied to stream keys; start/stop outputs per pipeline
-- **Output encoding** — source copy, 720p, 1080p, vertical-crop, vertical-rotate, and custom FFmpeg presets
-- **Pipeline recording** — record any live pipeline to an MP4 file in the `/media` folder
-- **Video ingest** — use pre-recorded videos from `/media` as input sources for pipelines (loops and start-time supported)
-- **Auto-recovery** — configurable retry and backoff when outputs fail or the input drops
-- **System metrics** — CPU, RAM, disk, and network throughput in the navbar
-- **Prometheus-ready MediaMTX metrics** — optional Prometheus/Grafana starter config under `monitoring/`
-- **HLS preview** — in-dashboard live preview proxied through the app
+- HTTP/HTTPS output URLs currently create the local HLS segmenter. They do not
+  upload playlists or segments to the destination URL.
+- `remap` and `downmix` currently select streams; channel-level filtering is not
+  implemented.
+- The custom encoding value is stored by the API, but the reconciler currently
+  treats `custom` as source passthrough.
+- Standard RTMP does not carry H.265. The reconciler inserts an H.264 transcode
+  stage for an H.265 source sent to RTMP, but that stage does not currently
+  decode and re-encode packets.
+- HLS generation and recording feed concatenated `MediaPacket.payload` bytes
+  into FFmpeg format detection. Because packet payloads are not a self-describing
+  container stream, those paths need end-to-end repair/validation before being
+  called working media outputs.
+- A proper SRT bonding publisher is accepted as one libsrt group on the single
+  SRT listener when libsrt was built with `ENABLE_BONDING=ON`. The runtime logs
+  a warning if the linked library exposes only disabled bonding stubs. Two
+  unrelated callers that merely reuse the same StreamID are rejected as
+  duplicate publishers.
+- RTMP play and egress use DTS for video message timestamps and PTS for audio.
+  B-frame round-trip validation remains an end-to-end gate.
+- Output and pipeline deletion cancel owned egress/ingest tasks; deleting a
+  file-ingest kills its tracked child process.
 
-## Local Development
+See [Rewrite Status](REWRITE-STATUS.md) for the tested status and open gates.
 
-Install dependencies and build:
+## Runtime Shape
 
-```sh
-npm ci
-npm run build
+```text
+RTMP/SRT publisher
+        |
+        v
+native ingest -> RingBuffer -> RTMP/SRT output
+                    |        -> HLS scaffolding (contract repair required)
+                    |        -> MKV scaffolding (contract repair required)
+                    `--------> transform scaffolding -> output RingBuffer
+
+Axum API/dashboard -> SQLite
 ```
 
-Download the MediaMTX binary for your platform from the [official GitHub releases](https://github.com/bluenviron/mediamtx/releases) and place the executable (`mediamtx` or `mediamtx.exe`) in the repo root. Then start it with the checked-in config:
+Most media work is in-process through linked FFmpeg libraries. File ingest is
+the exception and requires the `ffmpeg` executable on `PATH`.
+
+## Build and Run
+
+The pinned Rust toolchain is defined in `rust-toolchain.toml`. Native development
+packages must provide pkg-config metadata for:
+
+- `libavcodec`
+- `libavformat`
+- `libavfilter`
+- `libswscale`
+- `libswresample`
+- `libavutil`
+- `libsrt`
+
+Bonded SRT ingest additionally requires a libsrt build configured with
+`ENABLE_BONDING=ON`. Some distribution packages, including the library linked
+on the current development host, ship the group API symbols as disabled stubs.
+Restream detects this at listener startup instead of silently claiming support.
+
+Build and start:
 
 ```sh
-./mediamtx        # Linux/macOS
-mediamtx.exe      # Windows
+cargo build
+cargo run
 ```
 
-In another terminal, start the app:
-
-```sh
-npm start
-```
-
-The dashboard runs on `http://localhost:3030/` by default.
-
-### Development Mode
-
-Run each in its own terminal for live reload:
-
-```sh
-npm run dev             # backend with live reload via tsx watch
-npm run watch:frontend  # frontend TypeScript in watch mode
-npm run watch:css       # Tailwind CSS in watch mode
-```
-
-`npm run dev` runs the backend source directly via `tsx` — no compile step needed.
-
-### Build Commands
-
-```sh
-npm run build           # backend (src/ → dist/) + frontend (public/ts/ → public/js/) + CSS
-npm run build:backend   # backend only
-npm run build:frontend  # frontend TS + CSS
-```
-
-**Always edit `public/ts/` not `public/js/`** — `public/js/` is generated.
-
-### Other Commands
-
-```sh
-npm run format           # run Prettier
-npm run format:check     # check formatting (used in CI)
-npm run test:routes      # unit tests for REST routes (no external services needed)
-npm run test:normalization  # unit tests for URL normalization helpers
-npm run test:integration # 2x3 end-to-end test (requires running app + MediaMTX)
-```
-
-## Runtime Files
-
-| Path | Description |
-|---|---|
-| `data.db` | SQLite database — symlink to `/var/lib/restream/data.db` on VM deployments |
-| `media/` | Recordings and video ingest sources — symlink to `/var/lib/restream/media/` on VM deployments |
-| `public/output.css` | Generated CSS — do not edit |
-| `public/js/` | Compiled frontend JS — do not edit |
-| `dist/` | Compiled backend JS — do not edit |
-
-## Testing
-
-### Unit Tests
-
-Run without any external services:
-
-```sh
-npm run test:routes        # REST route tests
-npm run test:normalization # URL normalization helpers
-```
-
-### Integration Test (2x3)
-
-Starts RTMP and SRT publishers for two pipelines, starts all six outputs, waits for `on` status, then stops everything. Requires a running app and MediaMTX.
-
-```sh
-npm run test:integration
-```
-
-Environment overrides:
-
-| Variable | Default | Description |
-|---|---|---|
-| `API_URL` | `http://localhost:3030` | Backend base URL |
-| `MANIFEST_PATH` | `test/artifacts/session-2x3-manifest.json` | Path to manifest |
-| `INPUT_PROTOCOLS` | `rtmp,srt` | Comma-separated ingest protocols |
-| `TIMEOUT_SEC` | `120` | Seconds to wait for all streams to go green |
-| `KEEP_RUNNING` | `0` | Set to `1` to leave resources in place after the run |
-
-### CI
-
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request:
-
-- **format** — Prettier check
-- **unit** — route and normalization tests
-- **integration** — 2x3 end-to-end test; installs FFmpeg, downloads MediaMTX, starts both services, runs the test; uploads logs as an artifact on failure
-
-## Linux VM Deployment (GCP)
-
-### Host Requirements
-
-- 2 vCPU, 4 GB RAM, 20 GB disk
-- Debian 12 or Ubuntu 24.04 with systemd
-- Node.js 22, FFmpeg 7.1+, MediaMTX, git — all installed by the setup script
-
-### Initial Setup
-
-SSH into a fresh VM, clone the repo, and run the setup script as root:
-
-```sh
-sudo git clone https://github.com/live-miracles/restream /opt/restream
-sudo bash /opt/restream/scripts/server-setup.sh
-```
-
-The script installs Node.js 22, FFmpeg 7.1 (BtbN static build), MediaMTX 1.17.1, Prometheus, and Grafana, creates a `restream` service user, builds the app, copies the checked-in monitoring manifests into the system package paths, and registers the services to start on every boot. Restream and MediaMTX run as the non-root `restream` user; Prometheus and Grafana run as their package-managed service users.
-
-The dashboard is password protected. The first-run default password is `admin`; change it from
-Settings after logging in.
-
-### GCP Firewall Rules
-
-Open these ports in your VPC firewall (VPC Network → Firewall):
+Listeners are currently fixed:
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `3030` | TCP | Direct dashboard access before nginx is configured; close or restrict after HTTPS is live |
-| `443` | TCP | HTTPS dashboard when using a reverse proxy |
-| `1935` | TCP | RTMP ingest |
-| `8890` | UDP/TCP | SRT ingest |
+| `3030` | TCP/HTTP | Dashboard and API |
+| `1935` | TCP/RTMP | RTMP ingest and play |
+| `10080` | UDP/SRT | SRT ingest and read |
 
-MediaMTX API (`9997`), metrics (`9998`), HLS preview (`8888`), Prometheus (`9090`), and Grafana
-(`3000`) stay localhost-only. Grafana is reached through the dashboard origin at `/grafana/`.
+Runtime files:
 
-### Settings
+| Path | Purpose |
+|---|---|
+| `data.db` | SQLite database |
+| `media/` | File-ingest sources and `.mkv` recordings |
+| `public/js/` | Generated frontend JavaScript |
+| `public/output.css` | Generated frontend CSS |
 
-Open `http://<VM-external-IP>:3030/settings.html` to change the server name, dashboard password,
-ingest security, custom encodings, and video ingest settings. Logout is available from Settings.
+The first-run dashboard password is `admin`. Change it immediately through the
+Settings page or `POST /api/auth/change-password`.
 
-To reset a forgotten dashboard password back to `admin`:
+## Testing
 
-```sh
-sudo bash /opt/restream/scripts/server-reset-password.sh
-```
-
-To edit MediaMTX config and apply it:
-
-```sh
-sudo vim /opt/restream/mediamtx.yml
-sudo bash /opt/restream/scripts/server-update.sh
-```
-
-### Updating
+Run the full Rust suite:
 
 ```sh
-sudo bash /opt/restream/scripts/server-update.sh
+cargo test
 ```
 
-Pulls the latest code, rebuilds, recopies MediaMTX plus monitoring manifests, and restarts Prometheus, Grafana, MediaMTX, and Restream.
+As of June 20, 2026 this runs 72 passing tests:
 
-### Operations
+- 37 library/unit tests
+- 23 API integration tests
+- 12 database integration tests
 
-Follow logs:
+Run the 2-pipeline × 3-output live test against a running application:
 
 ```sh
-journalctl -u restream.service -f
-journalctl -u mediamtx.service -f
-journalctl -u prometheus.service -f
-journalctl -u grafana-server.service -f
-tail -f /var/log/restream/mediamtx.log
+./test/run-2x3.sh
 ```
 
-MediaMTX writes to both journald and `/var/log/restream/mediamtx.log` in production. The file is
-rotated daily and retained for seven rotations so the dashboard diagnostics can read MediaMTX logs
-without granting the web application access to the full system journal.
+Required tools: `ffmpeg`, `curl`, and `jq`. MediaMTX is not required by the
+script itself; output targets in the selected manifest must be reachable.
+Output-health association is covered by API regression tests.
 
-Stop services (without disabling boot start):
+For the broader media/scale harness:
 
 ```sh
-sudo bash /opt/restream/scripts/server-down.sh
+./test/run-media-validation.sh
 ```
 
-Restart services:
+Detailed correctness and scale gates are in
+[End-to-End Testing](docs/end-to-end-testing.md).
 
-```sh
-sudo systemctl restart mediamtx.service
-sudo systemctl restart restream.service
-sudo systemctl restart prometheus.service
-sudo systemctl restart grafana-server.service
-```
+## Operational APIs
 
-Check health:
+| Endpoint | Purpose | Authentication |
+|---|---|---|
+| `GET /healthz` | Process liveness | No |
+| `GET /health` | Native pipeline and transport snapshot | No |
+| `GET /metrics/system` | CPU, memory, disk, and host-network JSON | Session |
+| `GET /api/status` | Build, linked FFmpeg, and host information | Session |
+| `GET /pipelines/:id/probe` | Active ingest metadata | Session |
+| `GET /pipelines/:id/graph` | Active processing DAG | Session |
+| `GET /pipelines/:id/diagnostics` | SSE diagnostic run | Session |
 
-```sh
-curl -fsS http://127.0.0.1:3030/healthz
-curl -fsS http://127.0.0.1:3030/health
-curl -fsS http://127.0.0.1:9998/metrics | head
-curl -fsS http://127.0.0.1:9090/-/ready
-```
+HLS pull routes are currently unauthenticated. Treat them as trusted-network
+surfaces until signed URLs or equivalent authorization are implemented.
 
-Backup data:
+## Documentation
 
-```sh
-cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
-# media files live in /var/lib/restream/media/
-```
-
-### Reverse Proxy and TLS
-
-Put nginx in front of port `3030` and terminate TLS at `443`. Keep MediaMTX API (`9997`) bound to localhost. Restrict direct access to port `3030` via firewall once nginx is in place.
-
-The deployment uses a stable self-signed origin certificate for nginx. The public certificate may be shared with the upstream/Cloudflare owner so they can trust the origin. Do not generate a new certificate when the public IP is moved to a different VM; copy the existing certificate and private key to the new VM instead. Regenerating it changes the certificate fingerprint and requires upstream/Cloudflare reconfiguration.
-
-Only share the public certificate (`/etc/ssl/certs/nginx-selfsigned.crt`) outside the VM. The private key (`/etc/ssl/private/nginx-selfsigned.key`) is required only on origin VMs that will terminate HTTPS.
-
-Generate the origin certificate only once on the first origin VM:
-
-```sh
-sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-  -keyout /etc/ssl/private/nginx-selfsigned.key \
-  -out /etc/ssl/certs/nginx-selfsigned.crt \
-  -subj "/CN=mtx-india-test-v1"
-```
-
-When moving the public IP to another VM, copy the same files from the old VM to the same paths on the new VM:
-
-```sh
-/etc/ssl/private/nginx-selfsigned.key
-/etc/ssl/certs/nginx-selfsigned.crt
-```
-
-Then set ownership and permissions on the destination VM:
-
-```sh
-sudo chown root:root /etc/ssl/private/nginx-selfsigned.key /etc/ssl/certs/nginx-selfsigned.crt
-sudo chmod 600 /etc/ssl/private/nginx-selfsigned.key
-sudo chmod 644 /etc/ssl/certs/nginx-selfsigned.crt
-```
-
-Do not commit exported certificates or any private key material to the repo.
-
-The nginx site config is checked in at `deploy/nginx/restream.conf`. Install it as the active site config:
-
-```sh
-sudo cp /opt/restream/deploy/nginx/restream.conf /etc/nginx/sites-available/restream
-sudo ln -sf /etc/nginx/sites-available/restream /etc/nginx/sites-enabled/restream
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
-Make sure the VM has the GCP network tags required by the existing firewall rules:
-
-```sh
-gcloud compute instances add-tags <instance-name> \
-  --zone=<instance-zone> \
-  --tags=http-server,https-server
-```
-
-Test from inside the VM:
-
-```sh
-curl -fsSI http://127.0.0.1/
-curl -k -fsSI https://127.0.0.1/
-curl -k -fsS https://127.0.0.1/healthz
-```
-
-From outside after the public IP and firewall are in place:
-
-```sh
-curl -fsSI http://<VM-external-IP>/
-curl -k -fsSI https://<VM-external-IP>/
-curl -k -fsS https://<VM-external-IP>/healthz
-```
-
-Expected results:
-
-- `http://<VM-external-IP>/` returns `301` and redirects to HTTPS.
-- `https://<VM-external-IP>/` returns `200`.
-- `https://<VM-external-IP>/healthz` returns `{"status":"ok"}`.
-
-Browsers will show a warning when visiting the VM directly because the certificate is self-signed. Cloudflare/upstream should trust the stable origin certificate separately.
-
-### Security Baseline
-
-- Both services run as non-root (`restream` user).
-- Dashboard, API, Grafana proxy, preview, and media routes require the dashboard session cookie.
-  `/login`, `/healthz`, and the localhost-only `/internal/mediamtx/auth` callback remain public.
-- Keep `9997`, `9998`, `8888`, `9090`, and `3000` local-only.
-- Use firewall rules to restrict ingest and UI ports.
-- MediaMTX publish/read/playback authorization is delegated to the local Restream auth endpoint,
-  which rejects unknown stream keys and temporarily bans IPs after repeated failures.
-- For dashboard/API traffic, also put HTTPS and request rate limiting at the reverse proxy or
-  Google Cloud Armor layer. RTMP/SRT stream-key abuse is handled in the MediaMTX auth callback
-  because those protocols are not HTTP requests.
-- Rotate stream keys periodically.
-- Apply OS and package updates on a maintenance schedule.
-
-## Docs
-
-- [Architecture](docs/architecture.md): system map, data model, and core flows
-- [Configuration](docs/configuration.md): environment variables and runtime settings
-- [API Reference](docs/api-reference.md): REST endpoints
-- [Health Mapping](docs/health-mapping.md): how input and output statuses are derived
-- [Observability](docs/observability.md): MediaMTX metrics, Prometheus, and Grafana
+- [Rewrite Status](REWRITE-STATUS.md): implementation status, evidence, and gaps
+- [Architecture](docs/architecture.md): runtime and packet flow
+- [Configuration](docs/configuration.md): fixed ports and SQLite-backed settings
+- [API Reference](docs/api-reference.md): current Rust routes
+- [Health Mapping](docs/health-mapping.md): `/health` field derivation
+- [Diagnostics](docs/diagnostics.md): current diagnostics and residency design
+- [Media Pipeline Stage Design](docs/media-pipeline-stage-design.md): processing
+  stages, protocol contracts, and buffer sizing
+- [Observability](docs/observability.md): available JSON observability surfaces
+- [Protocol Correctness](docs/protocol-correctness-notes.md): codec and transport
+  correctness requirements
+- [Legacy MediaMTX Monitoring](docs/mediamtx-control-api-monitoring.md): retained
+  migration context only

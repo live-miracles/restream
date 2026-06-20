@@ -176,13 +176,34 @@ pub async fn run_app() {
                 let video_preset = encoding.split('+').next().unwrap_or("source");
                 let audio_part = encoding.split('+').nth(1);
 
-                let needs_video_transcode = !video_preset.is_empty()
-                    && video_preset != "source"
-                    && video_preset != "custom";
+                // Standard RTMP does not support H.265 — auto-transcode to H.264
+                let is_rtmp =
+                    output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
+                let ingest_is_hevc = {
+                    let ingests = engine.active_ingests.read().await;
+                    ingests
+                        .get(&output.pipeline_id)
+                        .and_then(|i| i.video.as_ref())
+                        .map(|v| v.codec == "hevc" || v.codec == "h265")
+                        .unwrap_or(false)
+                };
+                let needs_h264_transcode = is_rtmp
+                    && ingest_is_hevc
+                    && (video_preset == "source" || video_preset.is_empty());
+
+                let needs_video_transcode = needs_h264_transcode
+                    || (!video_preset.is_empty()
+                        && video_preset != "source"
+                        && video_preset != "custom");
 
                 // Stage 1: shared video transcode (or passthrough)
-                let video_stage_key = if needs_video_transcode {
+                let effective_preset = if needs_h264_transcode {
+                    "h264"
+                } else {
                     video_preset
+                };
+                let video_stage_key = if needs_video_transcode {
+                    effective_preset
                 } else {
                     "source"
                 };
@@ -190,7 +211,7 @@ pub async fn run_app() {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            &format!("video:{}", video_preset),
+                            &format!("video:{}", effective_preset),
                             source_buf.clone(),
                         )
                         .await
@@ -214,7 +235,9 @@ pub async fn run_app() {
                 };
 
                 // Register egress and get token
-                let cancel_token = engine.register_egress(&output.id, &output.url).await;
+                let cancel_token = engine
+                    .register_egress(&output.id, &output.pipeline_id, &output.url)
+                    .await;
 
                 let job_id = format!("job_{}", output.id);
                 let _ = db::create_job(

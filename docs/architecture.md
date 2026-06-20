@@ -1,154 +1,205 @@
 # Architecture
 
-Single Rust binary replacing Node.js + MediaMTX + spawned FFmpeg processes. All media transport, orchestration, state, and UI are in-process.
+Restream is a Rust application that owns the control plane and the production
+media path. The previous Node.js/MediaMTX runtime is archived under `old/`.
 
 ## System Shape
 
 ```text
-Publisher (RTMP/SRT)
-  │
-  ▼
-┌──────────────────────────────────────────────────────────┐
-│                    restream binary                        │
-│                                                          │
-│  RTMP Server ─┐                                          │
-│  SRT Server  ─┤─► RingBuffer ─┬─► RTMP Egress ──► CDN   │
-│               │   (per pipe)  ├─► SRT Egress  ──► CDN    │
-│               │               ├─► HLS Muxer  ──► disk   │
-│               │               ├─► MKV Recorder ► disk   │
-│               │               └─► Transcoder ──► RingBuf │
-│                                                          │
-│  Axum Web Server ──► REST API ──► SQLite (data.db)       │
-│                  ──► Dashboard (embedded frontend)        │
-│                  ──► SSE /health + /diagnostics           │
-│                                                          │
-│  Reconciler (1s) ──► output lifecycle + recording mgmt   │
-└──────────────────────────────────────────────────────────┘
+Publisher
+  | RTMP or SRT
+  v
++---------------------------- restream -----------------------------+
+| native ingest -> source RingBuffer                                |
+|                     |                                             |
+|                     +-> RTMP egress                               |
+|                     +-> SRT MPEG-TS egress                        |
+|                     +-> HLS segmenter scaffold                    |
+|                     +-> Matroska recorder scaffold                |
+|                     `-> transform scaffold -> RingBuffer -> egress|
+|                                                                   |
+| Axum dashboard/API -> SQLite                                      |
+| reconciler (1 second) -> output and recording lifecycle           |
++-------------------------------------------------------------------+
 ```
 
-## Threading Model
+MediaMTX may be used as an independent test sink, but it is not a production
+dependency.
+
+## Concurrency
+
+Tokio tasks handle:
+
+- Axum HTTP
+- RTMP connections
+- SRT connection coordination
+- output reconciliation
+- egress lifecycle
+
+Dedicated OS threads handle blocking/native FFmpeg work:
+
+- SRT demux
+- MPEG-TS mux
+- HLS mux/segment splitting
+- Matroska recording
+- transcoding
+
+Native worker entry points are wrapped with `catch_unwind` where the code needs
+to contain FFmpeg failures.
+
+## Packet Flow
 
 ```text
-┌───────────────── tokio runtime (multi-threaded) ─────────────────┐
-│  Axum web server          HTTP handlers, SSE streams             │
-│  RTMP listener            per-connection async tasks             │
-│  SRT accept loop          per-connection async tasks             │
-│  Reconciler (1s tick)     output lifecycle + recording start/stop│
-│  Egress tasks             RingBuffer reader → network send       │
-└──────────────────────────────────────────────────────────────────┘
+RTMP:
+socket -> rml_rtmp -> FLV audio/video payload -> MediaPacket -> RingBuffer
 
-┌───────────── std::thread (OS threads, catch_unwind) ─────────────┐
-│  FFmpeg demuxer           RTMP/SRT ingest → RingBuffer push      │
-│  FFmpeg HLS muxer         MemoryQueue → HLS segments on disk     │
-│  FFmpeg MKV muxer         MemoryQueue → .mkv recording file      │
-│  FFmpeg transcoder        MemoryQueue → encode → MemoryQueue     │
-└──────────────────────────────────────────────────────────────────┘
+SRT:
+libsrt socket -> MPEG-TS bytes -> MemoryQueue -> FFmpeg demux
+             -> MediaPacket -> RingBuffer
+
+egress:
+RingBuffer Reader -> protocol/container packaging -> socket or local store
 ```
 
-Tokio handles all network I/O and coordination. CPU-bound FFmpeg work runs on dedicated OS threads to avoid starving the async runtime. All `std::thread::spawn` calls are wrapped in `catch_unwind` so an FFmpeg panic logs an error instead of taking down the process.
+`MediaPacket` carries media type, track index, PTS, DTS, keyframe state, and a
+reference-counted payload.
 
-## Packet Walk (Ingest → Egress)
+## Ring Buffer
+
+Each pipeline uses a 4096-slot single-producer/multi-consumer buffer.
+`ArcSwapOption` slots permit lock-free reader loads, and payloads are shared
+through `Arc`/`Bytes`.
+
+Single-producer is an architectural assumption, not currently enforced. A
+second independent publisher for the same pipeline can write concurrently and
+invalidate it. A proper SRT bonded publisher is different: libsrt presents the
+bond as one accepted group ID and one application receive path.
+
+When a reader falls behind by at least the full capacity, it fast-forwards to
+the latest known keyframe. The code does not yet expose per-reader lag,
+overflow, or queue-residency metrics; current diagnostics must not describe the
+write count as live occupancy.
+
+The 4096-slot value is sized as a working target for high-rate streams, not a
+certified number of seconds. Actual depth depends on packetization, frame rate,
+audio-track count, and encoder behavior.
+
+## Shared Processing Stages
+
+Output encoding strings are split into two stage identities:
+
+1. video preset, shared across outputs using the same transform;
+2. audio routing, keyed by both routing mode and upstream video stage.
+
+Example:
 
 ```text
-1. Publisher sends RTMP/SRT stream
-2. Protocol handler (rtmp.rs/srt.rs) receives raw data
-3. For RTMP: rml_rtmp parses FLV, emits VideoDataReceived/AudioDataReceived
-   For SRT: raw MPEG-TS → MemoryQueue → FFmpeg demuxer (OS thread) → packets
-4. MediaPacket { media_type, track_index, pts, dts, is_keyframe, payload }
-5. RingBuffer.push() → ArcSwapOption.store() → Notify.notify_waiters()
-6. N readers wake → ArcSwapOption.load_full() → Arc<MediaPacket> (zero-copy)
-7. Each egress/muxer forwards the packet to its destination
+source ring
+  +-> video:720p -> audio:atrack:0:from:720p -> output A
+  |             `-> audio:atrack:1:from:720p -> output B
+  `-> source --------------------------------> output C
 ```
 
-## Ring Buffer Design
+The stage cache is intended to prevent one encoder per destination. The current
+transcoder creates output encoder parameters but then stream-copies compressed
+input packets; it does not run a decode/filter/encode loop. Resolution,
+crop/rotate, and H.265-to-H.264 presets therefore remain non-functional
+transforms even though their stages appear in the graph. Stage lifecycle cleanup
+is also an area for further hardening.
+
+Task “active” state is generally cancellation-token presence, not a worker
+health signal. A native worker thread can fail while its feeder task/token
+remains active.
+
+## Protocol and Codec Boundaries
+
+| Area | Current state |
+|---|---|
+| RTMP H.264/AAC | Native ingest/play/egress implemented; basic interoperability observed, but outbound B-frame timestamp handling is wrong |
+| SRT H.264/AAC | Native ingest/read/egress code exists with MPEG-TS remux; prior local evidence, current matrix rerun required |
+| SRT H.265 | Codec mapping implemented; full matrix remains an end-to-end gate |
+| RTMP H.265 | Enhanced RTMP is not implemented; an H.264 stage is selected, but actual decode/encode conversion is incomplete |
+| Multi-track audio | SRT ingest preserves audio track indices |
+| Audio remap/downmix | Stream selection only; channel-level filtering is open |
+| HLS pull routes/store | Implemented; live segment generation is blocked by the packet/container contract |
+| HLS upload | Not implemented |
+| RTMPS output | Parser support exists, but reconciler dispatch is not wired |
+
+## SRT Transport
+
+The listener and single-link egress call the high-bitrate option helper.
+Accepted sockets may inherit listener settings through libsrt, but the code does
+not explicitly apply or verify them. The bonded egress group is created from a
+parsed `bond=` list but does not call the helper after group creation.
+
+The listener requests `SRTO_GROUPCONNECT`. With a libsrt build configured using
+`ENABLE_BONDING=ON`, `srt_accept` returns the group ID when the first link
+connects; later members attach in the background. The application reads the
+logical group through the same `srt_recv` loop, so only one ingest endpoint and
+one ring producer are needed. Startup warns when the linked libsrt rejects the
+option; single-link ingest remains available in that case.
+
+StreamID alone does not create a group. Two ordinary caller sockets using the
+same StreamID are independent publishers and should be rejected as duplicates.
+
+Linux listener monitoring reads `/proc/net/udp` for receive-queue occupancy and
+kernel drops. Per-connection quality comes from `srt_bistats()`; accepted groups
+also export member counts and connected/active/broken state from
+`srt_group_data()`.
+
+URL parsing, option constants, group-state summarization, and duplicate
+publisher rejection have unit coverage. A loopback test exercises real group
+acceptance when the linked library supports bonding and reports a prerequisite
+skip otherwise. Live member failover and the full H.265 matrix remain open.
+
+## HLS and Recording
+
+HLS segments are stored in memory in a ten-segment sliding window and served by
+Axum. The store and playlist behavior are tested. The live feeder currently
+concatenates `MediaPacket.payload` values and asks FFmpeg to detect an input
+format; those payloads are raw codec/FLV media payloads, not a complete container
+stream. Live HLS generation is therefore not considered correct yet. There is no
+disk-backed HLS path and no HTTP upload worker.
+
+Recordings use the Matroska muxer and are written under `media/`. Recordings
+shorter than five seconds are removed automatically. Recording uses the same
+packet-payload-to-`CustomInput` pattern and needs the same contract repair before
+it is considered reliable.
+
+## File Ingest Exception
+
+Most media processing is linked in-process. Configured file ingest still spawns:
 
 ```text
-Capacity: 4096 slots (at 30fps ≈ 136 seconds of buffering)
-
-┌─────────────────────────────────────────────┐
-│ Slot 0 │ Slot 1 │ Slot 2 │ ... │ Slot 4095 │  ← 64-byte aligned (cache line)
-│ArcSwap │ArcSwap │ArcSwap │     │ ArcSwap   │
-└─────────────────────────────────────────────┘
-     ▲ write_idx (AtomicUsize, 64-byte aligned)
-     ▲ last_keyframe_idx (AtomicUsize, O(1) fast-forward)
+ffmpeg -re ... -c copy -f flv rtmp://localhost:1935/live/<key>
 ```
 
-- **Single producer**: only the ingest thread calls `push()`, guaranteed by monotonic `write_idx`
-- **Multi consumer**: readers call `load_full()` (lock-free, wait-free via `arc-swap`)
-- **Overflow**: when a reader lags by ≥ capacity, it fast-forwards to `last_keyframe_idx` (O(1) atomic read)
-- **False sharing prevention**: each slot is `#[repr(align(64))]` so concurrent readers on adjacent slots never stall each other
+The child is tracked by ingest ID and can be stopped through the API.
 
-## In-Memory AVIO (MemoryQueue)
+## State and Authentication
 
-Replaces TCP loopback sockets for FFmpeg I/O. Data flows through a `VecDeque<u8>` protected by `Mutex` + `Condvar`.
+SQLite stores pipelines, outputs, jobs, logs, file-ingest definitions, metadata,
+and sessions. The default password is created on first startup and stored as a
+scrypt hash. Session cookies are `HttpOnly` and `SameSite=Strict`.
 
-- **Bulk reads**: `as_slices()` + `copy_from_slice` + `drain()` — single memcpy per read (was per-byte `pop_front()`)
-- **Buffer size**: 32 KB (FFmpeg default) — 8x fewer callback invocations than the 4 KB buffer
-- **Benchmark**: 173 µs for 1 MB transfer (2.3x faster than TCP loopback)
-
-## Codec Support
-
-| Codec | Ingest | Passthrough | Transcode |
-|-------|--------|-------------|-----------|
-| H.264 | RTMP, SRT | All egress | Yes |
-| H.265/HEVC | SRT, Enhanced RTMP | All egress | Yes |
-| AAC | RTMP, SRT | All egress | Yes |
-| Multi-track audio | SRT | All egress | — |
-
-RTMP keyframe detection uses FLV FrameType (`data[0] >> 4 == 1`), which is codec-agnostic. SRT demuxer maps all video and audio streams (not just "best") with per-track `track_index` for multi-track support.
-
-## SIMD Optimizations
-
-Runtime-dispatched: AVX-512 → AVX2 → SSE2 → scalar fallback.
-
-| Operation | Size | Scalar | SIMD | Speedup |
-|-----------|------|--------|------|---------|
-| Sync byte scan | 1 KB | 257 ns | 15 ns | 17x |
-| Sync byte scan | 64 KB | 16 µs | 894 ns | 18x |
-
-## Scaling Target
-
-- 50 concurrent ingests, each with its own `RingBuffer`
-- Up to 500 egress readers on the hottest pipeline (Zipfian distribution)
-- ArcSwap lock-free reads handle 500 concurrent readers without contention
-- `mimalloc` allocator for reduced lock contention under multi-threaded load
-- File descriptor limit raised to 65536 at startup via `setrlimit`
-
-## Frontend Embedding
-
-Static assets from `public/` are compiled into the binary via `rust-embed`. At runtime, the server tries disk first (for development hot-reload), then falls back to embedded assets (for production single-binary deployment). The SPA fallback serves `index.html` for all unmatched routes.
+Deletion handlers cancel active output/ingest tasks before removing their
+database rows, and file-ingest deletion kills its tracked child. Reaping
+naturally exited file-ingest children remains open.
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `src/lib.rs` | App composition, reconciliation loop |
-| `src/api.rs` | Axum router, REST handlers, embedded asset serving |
+| File | Responsibility |
+|---|---|
+| `src/lib.rs` | App composition and reconciliation |
+| `src/api.rs` | Router, auth, REST/SSE handlers, embedded assets |
 | `src/db.rs` | SQLite schema and queries |
-| `src/diag.rs` | Streaming SSE diagnostics |
-| `src/types.rs` | Domain types (Pipeline, Output, Job) |
-| `src/media/engine.rs` | Central state: ingests, egresses, ring buffers |
-| `src/media/ring_buffer.rs` | Lock-free SPMC ring buffer with ArcSwap |
-| `src/media/avio.rs` | In-memory FFmpeg I/O (MemoryQueue + AVIO) |
-| `src/media/rtmp.rs` | RTMP ingest/egress via rml_rtmp |
-| `src/media/srt.rs` | SRT ingest/egress via libsrt FFI |
-| `src/media/hls.rs` | HLS segment muxer |
-| `src/media/recording.rs` | MKV recording muxer |
-| `src/media/transcoder.rs` | In-process transcoder (H.264/H.265) |
-| `src/media/simd.rs` | SIMD-accelerated memcpy and sync byte scan |
-| `src/media/security.rs` | Ingest rate limiter |
-
-## Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| `tokio` | Async runtime |
-| `axum` | HTTP framework |
-| `sqlx` | SQLite driver |
-| `ffmpeg-next` | FFmpeg bindings (libavformat/libavcodec 6.x) |
-| `rml_rtmp` | RTMP protocol |
-| `arc-swap` | Lock-free atomic Arc for ring buffer slots |
-| `rust-embed` | Compile-time asset embedding |
-| `sysinfo` | CPU/memory/disk/network monitoring |
-| `mimalloc` | Performance allocator |
-| `nix` | Unix socket stats (TCP_INFO) |
+| `src/diag.rs` | Native diagnostics |
+| `src/media/engine.rs` | Active state and health/graph snapshots |
+| `src/media/ring_buffer.rs` | Packet fan-out |
+| `src/media/avio.rs` | In-memory FFmpeg AVIO |
+| `src/media/rtmp.rs` | RTMP server/client |
+| `src/media/srt.rs` | SRT server/client, MPEG-TS, bonding, stats |
+| `src/media/tcp_stats.rs` | Linux RTMP receiver socket metrics |
+| `src/media/hls.rs` | In-memory HLS |
+| `src/media/recording.rs` | Matroska recording |
+| `src/media/transcoder.rs` | Shared video/audio stages |

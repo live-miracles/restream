@@ -33,6 +33,7 @@ use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
 
 const TARGET_DURATION_SECS: f64 = 6.0;
 const MIN_SEGMENT_SECS: f64 = 1.0;
+// 10 segments × ~6s target = ~60s sliding window
 const MAX_SEGMENTS: usize = 10;
 
 struct HlsSegment {
@@ -239,7 +240,9 @@ fn run_segment_splitter(
     token: CancellationToken,
 ) {
     let mut buf = vec![0u8; 32768];
-    let mut accumulator: Vec<u8> = Vec::with_capacity(2 * 1024 * 1024);
+    // 8 MB: a 4K60 H.264 segment at 6s target duration can reach 4-8 MB;
+    // pre-allocating avoids repeated reallocs during the first segment.
+    let mut accumulator: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
     let mut segment_start = Instant::now();
 
     loop {

@@ -70,6 +70,35 @@ function getPublisherQualityMetrics(publisher: Publisher | null): QualityMetric[
     };
 
     if (publisher.protocol === 'srt') {
+        if (q.srtBonded) {
+            addNumericMetric({
+                code: 'srt_bond_members',
+                label: 'Bond member links',
+                description:
+                    'Number of network paths currently attached to this libsrt socket group.',
+                rawValue: q.srtGroupMemberCount,
+                alertCheck: (v) => v < 2,
+                alwaysShow: true,
+            });
+            addNumericMetric({
+                code: 'srt_bond_active',
+                label: 'Bond active links',
+                description:
+                    'Member links currently carrying data for this bonded SRT publisher.',
+                rawValue: q.srtGroupActiveMembers,
+                alertCheck: (v) => v < 1,
+                alwaysShow: true,
+            });
+            addNumericMetric({
+                code: 'srt_bond_broken',
+                label: 'Bond broken links',
+                description:
+                    'Member links that libsrt reports as broken. Any broken path reduces redundancy.',
+                rawValue: q.srtGroupBrokenMembers,
+                alertCheck: (v) => v > 0,
+                alwaysShow: true,
+            });
+        }
         addNumericMetric({
             code: 'rtp_loss',
             label: 'Packets lost (inbound RTP)',
@@ -279,16 +308,10 @@ function getPublisherQualityEmptyMessage(publisher: Publisher | null): string {
         if (reason === 'not_linux') {
             return 'RTMP TCP socket metrics are only available when Restream runs on Linux.';
         }
-        if (reason === 'ss_missing') {
-            return 'RTMP TCP socket metrics require the Linux ss tool. Install the iproute2 package on this host.';
-        }
         if (reason === 'collection_failed') {
-            return 'RTMP TCP socket metrics could not be collected from ss on this host.';
+            return 'RTMP receiver-side TCP socket metrics could not be read from the active connection.';
         }
-        if (reason === 'no_matching_socket') {
-            return 'RTMP is publishing, but no matching TCP socket stats were found yet.';
-        }
-        return 'RTMP TCP socket metrics are not available from this host.';
+        return 'RTMP receiver-side TCP socket metrics are not available from this host.';
     }
 
     return 'No protocol-specific transport metrics available for this publisher.';

@@ -1,204 +1,129 @@
-# Health Mapping: Status Derivation
+# Health Mapping
 
-This document explains exactly how input and output health statuses are derived for the periodic health collector that backs `GET /health`.
+`GET /health` is built on demand from native `MediaEngine` state and per-pipeline
+recording settings in SQLite. It does not call MediaMTX, ffprobe, or child
+FFmpeg progress endpoints.
 
----
+## Top-Level Shape
 
-## 1. Data Sources
+```json
+{
+  "generatedAt": "2026-06-20T12:00:00Z",
+  "status": "ready",
+  "pipelines": {},
+  "srtListener": {
+    "bondingAvailable": false,
+    "udpRxQueueBytes": 0,
+    "udpRxQueuePeakBytes": 0,
+    "udpDrops": 0
+  }
+}
+```
 
-The Rust backend builds `GET /health` directly from `MediaEngine` state and DB configuration. Ingest and egress byte counters are updated in the native protocol loops; transport quality is sampled while each publisher connection is alive.
+`status` is currently always `ready` when the handler returns. `/healthz` is the
+separate process-liveness endpoint and returns `{ "status": "ok" }`.
 
-| Source | What it provides |
+## Input Status
+
+For every configured pipeline:
+
+| Condition | `input.status` |
 |---|---|
-| `MediaEngine::active_ingests` | Publisher protocol, remote address, uptime, byte counters, stream metadata, and current quality snapshot |
-| libsrt `srt_bistats()` | SRT RTT, receive rate, link capacity, latency buffers, NAKs, and cumulative loss/drop/retransmit/undecrypt counters |
-| Linux `ss -tinmH` from `iproute2` | RTMP receiver-side TCP RTT, bytes received, receive rate, last receive age, receive RTT/window, out-of-order packets, and receive-buffer occupancy |
-| DB: `listPipelines()` | Pipeline ↔ stream key mapping |
-| DB: `listOutputs()` | Output ↔ pipeline mapping |
-| Native egress state | Per-output status, bytes sent, and bitrate computed from byte deltas |
+| `MediaEngine::active_ingests` contains the pipeline ID | `on` |
+| No active ingest is registered | `off` |
 
-The collector loop also performs bounded DB writes for lifecycle bookkeeping:
+The Rust implementation does not currently emit `warning` or `error` for input
+state. The frontend may still understand those legacy values, but `/health`
+does not derive them.
 
-- marks `pipelines.input_ever_seen_live = 1` when a configured input first becomes available
-- appends pipeline-level history events (`pipeline_state`) only when status changes
+Active input fields:
 
----
+| Field | Source |
+|---|---|
+| `publishStartedAt` | Current UTC time minus the ingest's monotonic uptime |
+| `bytesReceived` | Ingest `AtomicU64` counter |
+| `bitrateKbps` | Average bytes received over total ingest uptime |
+| `video` | RTMP FLV parser or SRT FFmpeg demux metadata |
+| `audio` | Primary audio metadata |
+| `publisher.protocol` | `rtmp`, `srt`, or `file` |
+| `publisher.remoteAddr` | Accepted peer address when available |
+| `publisher.quality` | Protocol-specific live transport snapshot |
 
-## 2. Input Health Derivation
+`bytesSent`, `readers`, and `unexpectedReaders.count` are currently emitted as
+zero placeholders.
 
-For each pipeline, the input status is derived from the pipeline's `streamKey`:
+### RTMP Quality
 
-```mermaid
-flowchart TD
-  A["pipeline.streamKey"] --> B["effectivePath = live/<streamKey>"]
-  B --> C["pathByName.get(effectivePath)"]
+On Linux, the accepted socket is queried with `TCP_INFO` and `SO_MEMINFO` about
+every two seconds. Fields include RTT, receive RTT, bytes received, last-receive
+age, receive space/window, out-of-order packets, receive-buffer occupancy, and a
+rate derived from consecutive byte samples.
 
-  C --> D{has stream key?}
-  D -->|no| OFF["status = 'off'"]
-  D -->|yes| E{"pathInfo.available?"}
-  E -->|yes| ON["status = 'on'\npublishStartedAt = pathInfo.availableTime"]
-  E -->|no| F{"pathInfo.online?"}
-  F -->|yes| WARN["status = 'warning'"]
-  F -->|no| G{"inputEverSeenLive == 1?"}
-  G -->|yes| ERR["status = 'error'"]
-  G -->|no| OFF
+The first rate sample is unavailable because no prior counter exists. On
+unsupported hosts or collection failure, `tcpStatsUnavailableReason` explains
+the absence.
+
+### SRT Quality
+
+The receive loop samples `srt_bistats()` approximately once per second.
+Cumulative loss/drop/retransmit/undecrypt counters are retained for context.
+Alerting should use the per-second delta fields so a recovered connection can
+return to healthy.
+
+The snapshot also includes SRT buffer occupancy and packets in flight when
+libsrt provides them.
+
+## Output Status
+
+Active native egresses appear in `pipelines[id].outputs`:
+
+- `register_egress()` stores `active_egresses[outputId]` with an explicit
+  `pipeline_id`;
+- `health_snapshot()` includes entries whose `ActiveEgress.pipeline_id`
+  matches the pipeline being rendered.
+
+| Field | Source |
+|---|---|
+| `status` | `ActiveEgress.status` (normally `running`) |
+| `totalSize` | Atomic bytes-sent counter |
+| `bitrateKbps` | Byte delta divided by elapsed sample time; cached between samples |
+| `startedAt` | Egress registration timestamp |
+
+Stopped configured outputs are absent rather than being emitted with `off`.
+The dashboard merges those definitions from `/config`; active output counters
+come from `/health`.
+
+The egress bitrate updates only after a sample window longer than 0.5 seconds
+and only when the byte counter advances.
+
+## Recording State
+
+Each pipeline includes:
+
+```json
+{
+  "recording": {
+    "enabled": true,
+    "active": true
+  }
+}
 ```
 
-**Input status values:**
+- `enabled` comes from SQLite key `recording_enabled:<pipelineId>`.
+- `active` reflects a live recording cancellation token.
 
-| Value | Condition |
-|-------|-----------|
-| `on` | Path exists AND `pathInfo.available === true` *(fallback to deprecated `ready` for older MediaMTX versions)* |
-| `warning` | Path exists, `pathInfo.online === true`, but not yet `available` |
-| `error` | Stream key is configured, path is neither online nor available, and `inputEverSeenLive === 1` |
-| `off` | No stream key configured, or stream key configured but never seen live |
+The reconciler starts an enabled recording when an ingest is active and stops
+it when the ingest disappears or recording is disabled.
 
-**Additional input fields from MediaMTX:**
+## SRT Listener State
 
-- `publishStartedAt` — `pathInfo.availableTime` (fallback `readyTime`) ISO timestamp when input became available, across publisher protocols (RTMP, SRT)
-- `video` — from `pathInfo.tracks2` (first H264 track) + `ffprobe` cache for FPS only
-- `audio` — from `pathInfo.tracks2` (first non-video codec) + `ffprobe` cache for codec/profile, with fallback for channels/sample rate
-- `readers` — `pathInfo.readers.length`
-- `bytesReceived` / `bytesSent` — from `pathInfo`
+The shared SRT listener monitor reads Linux `/proc/net/udp` and tracks:
 
-**ffprobe caching:**
+- whether the linked libsrt accepted `SRTO_GROUPCONNECT` at startup
+- current receive-queue bytes
+- peak receive-queue bytes since process start
+- cumulative kernel UDP drops
 
-When a path is available, the collector checks `streamProbeCache` and triggers `ffprobe` refreshes using stale-while-revalidate semantics. The probe connects via SRT (`srt://localhost:8890?streamid=read:live/<streamKey>`) and reads codec and format details. Probe results stay cached in `streamProbeCache` for `PROBE_CACHE_TTL_MS` (default 30 s). The probe is intentionally narrow: it supplements MediaMTX with video FPS plus audio codec/profile details, while MediaMTX remains the primary source for video dimensions/profile/level and audio channel count/sample rate.
-
-Probe connections are tracked by the health collector using the SRT `streamid` pattern so they can be excluded from unexpected-reader counts.
-
-### 2.1 Publisher And Reader-Safety Signals
-
-The input health payload also includes:
-
-- `input.publisher`: active publisher identity and protocol-gated transport quality. SRT exposes current per-second loss/drop/retransmit/undecrypt rates alongside connection totals; alerting uses the rates so a recovered stream returns to healthy. RTMP exposes receiver-side TCP metrics from `ss -tinmH`, including receive throughput, last-receive age, out-of-order packets, receive window, and kernel receive-buffer saturation. Sender-side congestion-window, pacing, delivery, and send-rate fields are not used for RTMP publisher health.
-- `input.unexpectedReaders`: reader inventory that excludes expected managed output readers and internal probes
-
-`input.unexpectedReaders.count` is surfaced in the dashboard as a warning badge. It excludes managed output types (`rtmpconn`, `srtconn`, `hlsMuxer`) and internal probe readers.
-
----
-
-## 3. Output Health Derivation
-
-### 3.1 Overview
-
-Output health combines the latest DB job state with live FFmpeg progress data from the in-memory progress map (populated via fd3).
-
-```mermaid
-flowchart TD
-  A["output.id"] --> B["jobByOutputId.get(outputId)"]
-  B --> C{latest job\nstatus?}
-
-  C -->|"failed"| ERR["status = 'error'"]
-  C -->|"stopped / null"| OFF["status = 'off'"]
-  C -->|"running"| D["Check ffmpegProgressByJobId"]
-
-  D --> E{progress\nentries?}
-  E -->|yes| ON["status = 'on'\nmetrics from ffmpeg progress"]
-  E -->|no| WARN["status = 'warning'"]
-```
-
-### 3.2 FFmpeg Progress (Primary Mechanism)
-
-Each FFmpeg output process writes progress data to fd3 (`-progress pipe:3`). The app reads that stream and stores the latest key=value block in `ffmpegProgressByJobId` keyed by job ID.
-
-When a job is running:
-
-- **`on`** — `ffmpegProgressByJobId.get(jobId)` has at least one entry (FFmpeg has sent progress)
-- **`warning`** — the map entry exists but is empty, meaning FFmpeg is running but has not emitted progress yet
-
-This approach is direct: the presence of progress data from the process is the health signal, without any dependency on MediaMTX connection tracking.
-
-Output runtime progress fields sourced from FFmpeg fd3:
-
-- `totalSize` — from `total_size`, normalized to a numeric byte count (`N/A` → `null`)
-- `bitrate` — raw `bitrate` string (e.g. `1842.5kbits/s`), or `null`
-- `bitrateKbps` — server-normalized numeric Kbps
-- `progressFrame` — from `frame`, normalized to an integer (`N/A` → `null`)
-- `progressFps` — from `fps`, normalized to a numeric value (`N/A` → `null`)
-
-### 3.3 Diagnosing `warning` Output Status
-
-A running output stuck at `warning` means the job is running but FFmpeg has not emitted any progress data yet. Common causes:
-
-1. **FFmpeg failed immediately at startup.** Check `job_logs` in SQLite for the latest output job; the 250 ms stability check will usually have caught a fast exit, but borderline cases can slip through.
-2. **FFmpeg is running but stalled before producing output.** This can happen if the source path is not actually delivering data even though the MediaMTX path shows as available.
-3. **Transient startup delay.** Status is briefly `warning` for 1–2 poll cycles while FFmpeg initialises and begins writing progress.
-
----
-
-## 4. `jobByOutputId` Map Construction
-
-With upsert in place, `jobs` has at most one row per `(pipeline_id, output_id)`. `/health` maps rows directly by `outputId` without timestamp reduction:
-
-```
-for each job from db.listJobs():
-  map.set(job.outputId, job)
-```
-
-This keeps `/health` processing bounded to output count and avoids scanning historical job rows.
-
----
-
-## 5. UI Color Mapping
-
-The split badge on each pipeline card in the dashboard maps statuses to colors:
-
-| Status | Badge color | Applies to |
-|--------|-------------|------------|
-| `on` | Green | input + output |
-| `warning` | Yellow | input + output |
-| `error` | Red | input + output |
-| `off` | Grey | input + output |
-
-The left half shows input status (`on` / `warning` / `off`); the right half shows the aggregate of all output statuses for that pipeline (worst-case wins: `error` > `warning` > `on` > `off`).
-
----
-
-## 6. Field Source Matrix (MediaMTX vs ffprobe)
-
-### 6.1 Input Fields
-
-| Field | Source | Notes |
-|---|---|---|
-| `input.status` | MediaMTX | `on` when `pathInfo.available`; `warning` when `pathInfo.online && !pathInfo.available`; fallback to deprecated `ready` for older MediaMTX versions. |
-| `input.publishStartedAt` | MediaMTX | `pathInfo.availableTime` (fallback `readyTime`). |
-| `input.streamKey` | DB/config | Pipeline `streamKey` from DB-backed pipeline config. |
-| `input.readers` | MediaMTX | `pathInfo.readers.length`. |
-| `input.bytesReceived` | MediaMTX | `pathInfo.bytesReceived`. |
-| `input.bytesSent` | MediaMTX | `pathInfo.bytesSent`. |
-| `input.video.codec` | MediaMTX | First H264-like track in `pathInfo.tracks2`. |
-| `input.video.width` | MediaMTX | `firstVideoTrack.codecProps.width`. |
-| `input.video.height` | MediaMTX | `firstVideoTrack.codecProps.height`. |
-| `input.video.profile` | MediaMTX | `firstVideoTrack.codecProps.profile`. |
-| `input.video.level` | MediaMTX | `firstVideoTrack.codecProps.level`. |
-| `input.video.fps` | ffprobe | `probeInfo.video.fps` from cached SRT probe; MediaMTX does not expose FPS. |
-| `input.audio.codec` | Mixed | Prefer `probeInfo.audio.codec` (e.g. `aac`), fallback to MediaMTX track codec. |
-| `input.audio.channels` | Mixed | Prefer `probeInfo.audio.channels`, fallback to `firstAudioTrack.codecProps.channelCount`. |
-| `input.audio.sample_rate` | Mixed | Prefer `probeInfo.audio.sampleRate`, fallback to `firstAudioTrack.codecProps.sampleRate`. |
-| `input.audio.profile` | Mixed | Prefer `probeInfo.audio.profile`; MediaMTX often does not expose audio profile. |
-
-Frontend-only derived input stats:
-
-| Field | Source | Notes |
-|---|---|---|
-| `input.bitrateKbps` | Computed in UI | Calculated from deltas of `input.bytesReceived` across poll intervals. |
-| `input.time` | Computed in UI | Derived from `publishStartedAt` to now. |
-
-### 6.2 Output Fields
-
-| Field | Source | Notes |
-|---|---|---|
-| `outputs[outputId].status` | Mixed | Base from latest DB job status, then `on/warning` from FFmpeg progress presence. |
-| `outputs[outputId].jobId` | DB | Latest job row ID for this output. |
-| `outputs[outputId].totalSize` | FFmpeg progress (fd3) | Parsed from `total_size` into a numeric byte count; `N/A` becomes `null`. |
-| `outputs[outputId].bitrate` | FFmpeg progress (fd3) | Raw `bitrate` string from in-memory progress map, or `null`. |
-| `outputs[outputId].bitrateKbps` | Server-normalized | Parsed from `bitrate` into numeric Kbps; `N/A` becomes `null`. |
-| `outputs[outputId].progressFrame` | FFmpeg progress (fd3) | Parsed from `frame` into an integer frame count; `N/A` becomes `null`. |
-| `outputs[outputId].progressFps` | FFmpeg progress (fd3) | Parsed from `fps` into a numeric FPS value; `N/A` becomes `null`. |
-
-Notes on HLS outputs:
-
-- Transcoded HLS outputs can emit `progressFrame` and `progressFps` normally.
-- HLS `source` copy outputs may omit `frame` and `fps` in ffmpeg progress, so those fields can remain `null` even while the output is healthy.
-- HLS uploads commonly report `N/A` for `bitrate` and `total_size`; the backend converts those to `null` before the dashboard sees them.
+These are listener-wide values, not per-pipeline values. A false
+`bondingAvailable` value means ordinary SRT works but the installed libsrt must
+be rebuilt with `ENABLE_BONDING=ON` before bonded ingest can work.

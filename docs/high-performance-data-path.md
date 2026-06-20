@@ -1,0 +1,404 @@
+# High-Performance Media Data Path
+
+This document turns the media data-path audit into an incremental implementation
+and measurement plan. The application should retain Tokio and the operating
+system's TCP/SRT stacks while applying proven high-performance packet-processing
+principles inside ingest, fan-out, packaging, and sender stages.
+
+The governing rule is:
+
+> Change the unit of work from one packet, one lookup, and one wakeup to a
+> bounded burst owned by a stable worker.
+
+No change should be accepted because it merely resembles a fast networking
+framework. Every step must preserve protocol correctness and demonstrate an
+improvement in production-shaped measurements.
+
+## Current Baseline
+
+Existing strengths:
+
+- compressed payloads use reference-counted `Bytes`;
+- source fan-out uses a single-producer, multi-consumer ring;
+- global ring indexes are cache-line aligned;
+- identical encoding stages can be shared;
+- FFmpeg provides optimized native codec implementations;
+- release builds use optimization, fat LTO, and one codegen unit.
+
+The critical path remains predominantly packet-at-a-time:
+
+```text
+socket read
+  -> protocol parse
+  -> locked pipeline lookup
+  -> locked counter lookup
+  -> packet wrapper allocation
+  -> ring push
+  -> wake all waiters
+  -> one reference-counted ring load per reader
+  -> per-output package or mux
+  -> socket write
+```
+
+| Area | Current behavior | Consequence |
+|---|---|---|
+| Pipeline lookup | RTMP calls `get_or_create_pipeline()` for each packet | write-locked hash-map access on the ingest path |
+| Counters | packet-rate updates find their owner through async maps | control-plane registry access in the data plane |
+| Ring publication | one allocation, release publication, and `notify_waiters()` per packet | allocator and scheduler work scales with source packet rate |
+| Ring consumption | one index load, modulo, slot load, and reference increment per delivery | synchronization repeats across every output |
+| Ring layout | each pointer slot is aligned to 64 bytes | 4096 slots require at least 256 KiB and one line per slot |
+| AVIO bridge | mutex-protected `VecDeque<u8>` populated byte by byte | data is copied into and back out of an unbounded byte queue |
+| SRT packaging | one MPEG-TS muxer and sender thread per output | packaging work and threads scale with destinations |
+| HLS finalization | segment accumulator is copied into a new `Bytes` | an extra multi-megabyte copy per segment |
+| Worker placement | heavy threads have no ownership or affinity policy | migration and memory locality are uncontrolled |
+| SIMD | custom routines are disconnected from production | no demonstrated end-to-end benefit |
+
+## Target Shape
+
+```text
+control plane
+  -> immutable hot handles and shared stage graph
+
+socket workers
+  -> read burst
+  -> classify, timestamp, and account burst
+  -> bounded source ring
+
+shared workers
+  -> unique video transforms
+  -> late audio routing
+  -> unique protocol packaging
+
+package rings
+  -> sharded destination senders
+```
+
+The control plane owns strings, hash maps, configuration, lifecycle, and
+diagnostic objects. The data plane should operate on direct handles, integer
+stage identifiers, bounded rings, compact metadata, and immutable payload
+references.
+
+## Optimization Areas
+
+### Direct hot handles
+
+Resolve a pipeline during authentication and retain its data-path state:
+
+```rust
+struct PipelineHotHandle {
+    ring: Arc<RingBuffer>,
+    bytes_received: Arc<AtomicU64>,
+    keyframes: Arc<KeyframeTracker>,
+    stream: Arc<StreamDescriptor>,
+}
+```
+
+Apply the same pattern to outputs. Hash maps remain appropriate for setup,
+health snapshots, and teardown. If a future worker handles unrelated pipelines
+in one iteration, bulk lookup can then be evaluated; for the current
+connection-owned flow, no lookup is better than a batched lookup.
+
+### Bounded burst APIs
+
+Introduce and benchmark:
+
+```text
+RingBuffer::push_batch()
+Reader::pull_burst()
+ChunkQueue::enqueue_batch()
+ChunkQueue::dequeue_batch()
+```
+
+Initial packet counts:
+
+```text
+1, 4, 8, 16, 32, 64
+```
+
+Use both a count and a latency threshold. Start by testing a maximum of 32
+packets with a 50–200 microsecond flush timer. Keyframes and queue pressure may
+force earlier publication.
+
+Batching should amortize:
+
+- index acquisition and publication;
+- queue synchronization;
+- wakeups;
+- timestamp and track classification;
+- counter updates;
+- package-stage calls.
+
+### Run-to-completion for cheap work
+
+An ingest worker should process a received burst locally:
+
+```text
+parse -> classify -> normalize timestamps -> account -> publish
+```
+
+Queue boundaries remain useful around expensive, shareable, or blocking work:
+decode, encode, filtering, muxing, recording, and network backpressure. Cheap
+packet-local operations should not each become a separate task or channel.
+
+### Compact ring storage
+
+Measure densely packed slots against the existing cache-line-per-slot layout.
+Readers do not modify the slots, so aligning every slot does not prevent useful
+reader false sharing.
+
+A candidate layout is:
+
+```rust
+struct Slot {
+    sequence: AtomicUsize,
+    packet: ArcSwapOption<MediaPacket>,
+}
+```
+
+Keep producer index, keyframe index, and notification state on separate cache
+lines. The sequence protects readers from accepting a packet belonging to a
+later wraparound generation.
+
+### Bounded chunk queues
+
+Replace the byte queue with an SPSC-oriented queue of immutable or pooled
+chunks:
+
+```rust
+struct ChunkQueue {
+    chunks: BoundedRing<Bytes>,
+    read_offset: usize,
+}
+```
+
+FFmpeg input callbacks consume across chunk boundaries. Output callbacks copy
+their ephemeral buffer into pooled `BytesMut`, freeze it, and enqueue one
+chunk. Expose capacity, occupancy, high-water mark, full events, and closure.
+
+### Shared protocol packaging
+
+Packaging should scale with unique media shape, not destination count:
+
+```text
+canonical packets
+  -> one MPEG-TS package stage
+  -> immutable 1316-byte chunk ring
+  -> many SRT senders
+```
+
+Package identity must include upstream stage identity, codec shape, selected
+tracks, timestamp policy, and mux options. RTMP should likewise investigate
+sharing media-message bodies while retaining per-connection chunk-stream state.
+
+### Stable workers and local pools
+
+Long-lived workers should own:
+
+- reusable packet-batch storage;
+- local payload-buffer caches;
+- counters periodically published to diagnostics;
+- assigned pipelines or package stages.
+
+Return buffers in batches. Derive size classes from recorded traffic rather
+than guessing permanently. Pin only expensive demux, encode, mux, and fan-out
+workers where measurements demonstrate a benefit; do not pin every socket task.
+
+### Batch-oriented memory layout
+
+Keep ergonomic packet objects at boundaries. Inside hot loops test an
+array-of-structs-of-arrays representation:
+
+```rust
+struct PacketBatch<const N: usize> {
+    pts: [i64; N],
+    dts: [i64; N],
+    tracks: [u16; N],
+    flags: [u8; N],
+    payloads: [Bytes; N],
+    len: usize,
+}
+```
+
+This can improve timestamp rescaling, track selection, keyframe classification,
+and package planning. A sender-worker layout containing arrays of session
+handles, reader indexes, pending byte counts, queue depths, and connection
+states may produce a larger gain.
+
+### Prefetch and SIMD
+
+Prefetch only inside real burst loops after compacting the layout. Candidate
+data includes upcoming slots, payload headers, stream-map entries, and sharded
+sender state. Test distances of one to four iterations and retain prefetch only
+when cycles or cache stalls improve.
+
+Use SIMD at protocol edges:
+
+- MPEG-TS sync and alignment;
+- H.264/H.265 start-code scans;
+- AAC ADTS sync;
+- fixed-header classification.
+
+Use a wide candidate scan followed by scalar protocol verification. Do not
+replace ordinary memory copies or codec operations without production-shaped
+evidence.
+
+## Baseline Benchmark
+
+`high_performance_data_path` preserves current behavior as named baselines:
+
+| Group | Measures |
+|---|---|
+| `data_path/control_plane_lookup` | locked pipeline registry lookup versus cached direct handle |
+| `data_path/ring_producer` | current publication loop at application burst sizes |
+| `data_path/ring_consumer` | current pull loop at application burst sizes |
+| `data_path/fanout_delivery` | slot and reference-count cost for 1–500 readers |
+| `data_path/memory_queue` | byte-oriented AVIO queue round-trip throughput |
+
+It also prints `MediaPacket` and aligned-slot sizes.
+
+Run everything:
+
+```bash
+cargo bench --bench high_performance_data_path
+```
+
+Run one group:
+
+```bash
+cargo bench --bench high_performance_data_path -- control_plane_lookup
+cargo bench --bench high_performance_data_path -- ring_producer
+cargo bench --bench high_performance_data_path -- ring_consumer
+cargo bench --bench high_performance_data_path -- fanout_delivery
+cargo bench --bench high_performance_data_path -- memory_queue
+```
+
+### Initial local baseline
+
+Short smoke measurements recorded on June 20, 2026 verify that the benchmark
+seams work. These are not release claims; save a full Criterion baseline on the
+target deployment hardware before implementation work.
+
+| Case | Initial result |
+|---|---|
+| locked pipeline `get_or_create` | approximately 69 ns |
+| cached ring-handle clone | approximately 12 ns |
+| current producer loop, 32 packets | approximately 5.00 microseconds, 6.40 million packets/s |
+| current consumer loop, 32 packets | approximately 776 ns, 41.3 million deliveries/s |
+| current fan-out, 500 readers × 32 packets | approximately 374 microseconds, 42.8 million deliveries/s |
+| byte queue round trip, 32 × 1316-byte packets | approximately 9.20 microseconds, 4.26 GiB/s |
+| `MediaPacket` layout | 56 bytes, 8-byte alignment |
+| aligned ring slot layout | 64 bytes per slot; 4096 slots consume 256 KiB |
+
+The lookup comparison supports moving registry resolution out of the packet
+loop. The ring numbers measure in-memory steady-state delivery and deliberately
+exclude sleeping-reader wakeups, socket work, packaging, and ring construction.
+Those costs require the follow-up measurements listed below.
+
+As optimized primitives are added, add them beside the immutable baseline:
+
+```text
+current_push_loop           push_batch
+current_pull_loop           pull_burst
+byte_vecdeque_round_trip    chunk_ring_round_trip
+                            pooled_chunk_ring_round_trip
+```
+
+## Required Follow-Up Measurements
+
+These need production seams or primitives that do not yet exist:
+
+1. Sleeping-reader notifications: wakeups and p99 delivery latency.
+2. Shared package stage versus one muxer per output.
+3. Recorded RTMP and SRT packet-trace replay.
+4. Worker-local pools versus allocator-backed copies.
+5. Compact versus aligned slots under concurrent readers.
+6. Sharded sender worker versus one task per destination.
+7. Batch metadata timestamp and track-routing loops.
+8. Prefetch-distance sweep on the winning compact layout.
+9. Single-socket and multi-socket locality tests.
+
+For release-mode harnesses collect:
+
+```text
+cycles and instructions
+branches and branch misses
+L1 and last-level cache misses
+context switches and CPU migrations
+allocations and allocated bytes
+reference clone/drop rate
+queue occupancy and high-water marks
+wakeups
+threads and Tokio tasks
+RSS before, during, and after teardown
+p50, p95, and p99 packet latency
+```
+
+Use realistic pre-demuxed traces in both realtime and saturation modes.
+
+## Incremental Plan
+
+### Step 0: Baselines and instrumentation
+
+- Keep baseline benchmark names immutable.
+- Add allocation and queue high-water instrumentation.
+- Record CPU topology, compiler flags, FFmpeg version, and kernel.
+- Save Criterion baselines before production changes.
+
+### Step 1: Direct hot handles
+
+- Resolve rings and counters once at authentication.
+- Remove packet-rate engine-map access.
+- Batch counter publication if direct atomics remain contended.
+
+### Step 2: Burst ring APIs
+
+- Add `push_batch()` and `pull_burst()`.
+- Publish the write index once per burst.
+- Coalesce notifications.
+- Preserve overflow and keyframe recovery.
+
+### Step 3: Compact ring layout
+
+- Add generation validation.
+- Pack read-mostly slots.
+- Isolate only contended mutable indexes.
+
+### Step 4: Bounded chunk queues
+
+- Add chunk-based FFmpeg input/output queues.
+- Instrument backpressure and occupancy.
+- Compare ordinary and pooled chunks.
+
+### Step 5: Shared package stages
+
+- Establish a canonical packet contract.
+- Cache package stages by upstream identity and final media shape.
+- Fan immutable package chunks to destinations.
+
+### Step 6: Worker sharding and pools
+
+- Assign package and sender work to stable workers.
+- Add local pools and batched counter publication.
+- Test optional affinity and locality.
+
+### Step 7: Layout, prefetch, and SIMD refinement
+
+- Introduce `PacketBatch` only for demonstrated hot loops.
+- Sweep prefetch distance.
+- Integrate scanners only where they replace measured scalar work.
+
+## Correctness Gates
+
+Every step must retain:
+
+- existing unit and integration tests;
+- RTMP and SRT protocol probes;
+- packet and byte counts;
+- PTS/DTS ordering and B-frame behavior;
+- keyframe startup and overflow recovery;
+- audio-track identity;
+- HLS playlist and segment ordering;
+- recording validity;
+- bounded queue behavior and clean teardown.
+
+Throughput produced by invalid media is not an optimization result.

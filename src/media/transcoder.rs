@@ -94,31 +94,13 @@ pub async fn start_transcoder(
         }
     });
 
-    // Spawn thread to read from output_queue and push to output_buffer
+    // Spawn thread to demux output MPEG-TS and push packets with proper timestamps
     let out_queue_clone = output_queue.clone();
     let out_buf = _output_buffer.clone();
     let cancel = cancel_token.clone();
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut buf = vec![0u8; 4096];
-            loop {
-                if cancel.is_cancelled() {
-                    break;
-                }
-                let n = out_queue_clone.read(&mut buf);
-                if n == 0 {
-                    break;
-                }
-                let packet = MediaPacket {
-                    media_type: MediaType::Video,
-                    track_index: 0,
-                    pts: 0,
-                    dts: 0,
-                    is_keyframe: false,
-                    payload: bytes::Bytes::copy_from_slice(&buf[..n]),
-                };
-                out_buf.push(packet);
-            }
+            demux_transcoder_output(out_queue_clone, out_buf, cancel);
         }));
         if result.is_err() {
             eprintln!("[transcoder] Output reader thread panicked");
@@ -246,6 +228,66 @@ mod tests {
 const SKIP_STREAM: usize = usize::MAX;
 
 // In-process FFmpeg transcoder using CustomInput and CustomOutput
+fn demux_transcoder_output(
+    queue: Arc<crate::media::avio::MemoryQueue>,
+    ring: Arc<RingBuffer>,
+    token: CancellationToken,
+) {
+    use crate::media::avio::CustomInput;
+
+    let mut custom_input = match CustomInput::new(&*queue) {
+        Ok(ci) => ci,
+        Err(e) => {
+            eprintln!("[transcoder] output demux failed to open: {e}");
+            return;
+        }
+    };
+    let Some(mut ictx) = custom_input.input.take() else {
+        eprintln!("[transcoder] output demux: no input context");
+        return;
+    };
+
+    let mut audio_index = 0usize;
+    let mut stream_meta: Vec<(MediaType, usize)> = Vec::new();
+    for stream in ictx.streams() {
+        match stream.parameters().medium() {
+            ffmpeg_next::media::Type::Video => {
+                stream_meta.push((MediaType::Video, 0));
+            }
+            ffmpeg_next::media::Type::Audio => {
+                stream_meta.push((MediaType::Audio, audio_index));
+                audio_index += 1;
+            }
+            _ => {
+                stream_meta.push((MediaType::Video, 0));
+            }
+        }
+    }
+
+    for (stream, packet) in ictx.packets() {
+        if token.is_cancelled() {
+            break;
+        }
+        let idx = stream.index();
+        let &(media_type, track_idx) = stream_meta.get(idx).unwrap_or(&(MediaType::Video, 0));
+        let track_index = track_idx as u32;
+
+        let pts = packet.pts().unwrap_or(0);
+        let dts = packet.dts().unwrap_or(pts);
+        let is_keyframe = packet.is_key();
+        let data = packet.data().unwrap_or(&[]);
+
+        ring.push(MediaPacket {
+            media_type,
+            track_index,
+            pts,
+            dts,
+            is_keyframe,
+            payload: bytes::Bytes::copy_from_slice(data),
+        });
+    }
+}
+
 fn run_ffmpeg_transcoder(
     in_queue: Arc<crate::media::avio::MemoryQueue>,
     out_queue: Arc<crate::media::avio::MemoryQueue>,
@@ -285,17 +327,24 @@ fn run_ffmpeg_transcoder(
     let mut audio_stream_index = 0usize;
     let mut stream_mapping: Vec<usize> = Vec::new();
 
-    let needs_video_transcode =
-        !video_preset.is_empty() && video_preset != "source" && video_preset != "custom";
+    // "h264" preset forces H264 output regardless of input codec (for RTMP egress of H265 sources)
+    let force_h264 = video_preset == "h264";
+    let needs_video_transcode = force_h264
+        || (!video_preset.is_empty() && video_preset != "source" && video_preset != "custom");
 
     for stream in ictx.streams() {
         let medium = stream.parameters().medium();
         if medium == ffmpeg_next::media::Type::Video {
             if needs_video_transcode {
                 let input_codec_id = stream.parameters().id();
-                let out_codec_id = match input_codec_id {
-                    ffmpeg_next::codec::Id::HEVC => ffmpeg_next::codec::Id::HEVC,
-                    _ => ffmpeg_next::codec::Id::H264,
+                // H265→H264 when forced or for resolution presets on RTMP (standard RTMP has no H265)
+                let out_codec_id = if force_h264 {
+                    ffmpeg_next::codec::Id::H264
+                } else {
+                    match input_codec_id {
+                        ffmpeg_next::codec::Id::HEVC => ffmpeg_next::codec::Id::HEVC,
+                        _ => ffmpeg_next::codec::Id::H264,
+                    }
                 };
                 let codec = ffmpeg_next::encoder::find(out_codec_id)
                     .ok_or("Video encoder not found (tried H.264/H.265)")?;
@@ -303,11 +352,19 @@ fn run_ffmpeg_transcoder(
                     .add_stream(codec)
                     .map_err(|_| "Failed to add video stream")?;
 
-                let (w, h) = match video_preset {
-                    "720p" => (1280, 720),
-                    "1080p" => (1920, 1080),
-                    "vertical-crop" | "vertical-rotate" => (1080, 1920),
-                    _ => (1280, 720),
+                let (w, h) = if force_h264 {
+                    // Preserve source resolution
+                    let sw = unsafe { (*stream.parameters().as_ptr()).width } as u32;
+                    let sh = unsafe { (*stream.parameters().as_ptr()).height } as u32;
+                    (sw, sh)
+                } else {
+                    match video_preset {
+                        "720p" => (1280, 720),
+                        "1080p" => (1920, 1080),
+                        "2160p" | "4k" => (3840, 2160),
+                        "vertical-crop" | "vertical-rotate" => (1080, 1920),
+                        _ => (1280, 720),
+                    }
                 };
 
                 let enc_ctx = ffmpeg_next::codec::context::Context::new();

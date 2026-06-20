@@ -53,20 +53,148 @@ Runtime child processes:
 - `build.rs` also runs `git rev-parse --short HEAD`, but that is build-time
   metadata collection, not runtime media work.
 
+## Recognized Resolution Presets
+
+The configuration and stage-key code recognizes these presets. They are not yet
+working transforms: the transcoder creates encoder/output parameters but then
+writes the original compressed packets without a decode/filter/encode loop.
+
+| Preset | Resolution | Notes |
+|---|---|---|
+| `source` | passthrough | preserves original resolution and frame rate |
+| `720p` | 1280x720 | recognized; transform incomplete |
+| `1080p` | 1920x1080 | recognized; transform incomplete |
+| `2160p` / `4k` | 3840x2160 | recognized; transform incomplete |
+| `vertical-crop` | 1080x1920 | no crop filter yet |
+| `vertical-rotate` | 1080x1920 | no rotate filter yet |
+| `h264` | source resolution | intended H.265→H.264 conversion; incomplete |
+| `custom` | user-specified | reserved for future custom encoder params |
+
+The encoder time base is inherited from the input stream, but no frame-rate or
+4K60 throughput guarantee should be made until the encode loop exists and is
+benchmarked.
+
+## H.265 Egress Policy
+
+Standard RTMP (non-Enhanced) does not carry H.265. The reconciler enforces:
+
+| Egress protocol | H.265 input | Behavior |
+|---|---|---|
+| RTMP | H.265 source | Auto-inserts intended `h264` stage; conversion incomplete |
+| RTMP | H.265 + resolution preset | Intended H.264 transform; incomplete |
+| SRT | H.265 source | Passthrough (MPEG-TS carries HEVC natively) |
+| SRT | H.265 + resolution preset | Intended HEVC transform; incomplete |
+| HLS | H.265 source | Intended passthrough; live HLS generation contract is broken |
+
+Enhanced RTMP/HEVC packetization is not implemented. RTMPS is also not currently
+dispatched by the reconciler.
+
 ## Current Protocol Matrix
 
-The code nominally supports RTMP and SRT ingest, file ingest through the RTMP
-loopback bridge, and RTMP/SRT/HLS/recording egress. It does not yet have a fully
-correct universal ingest-to-egress matrix.
+The code implements RTMP and SRT ingest, file ingest through the RTMP loopback
+bridge, and RTMP/SRT/HLS/recording egress. The matrix below separates
+passthrough paths from incomplete transform paths.
 
 | Ingest | RTMP egress | SRT egress | HLS preview | Recording |
 |---|---|---|---|---|
-| RTMP | Likely | Weak | Likely | Likely |
-| SRT | Suspect | Weak | Likely | Likely |
-| File | Likely through RTMP bridge | Weak | Likely | Likely |
+| RTMP H.264 | Basic interoperability only; B-frame timestamp defect | Implemented; full matrix gate | Store/routes exist; live generation contract broken | Mux path exists; live generation contract broken |
+| RTMP H.265 | Not supported without Enhanced RTMP | Not assumed | Not assumed | Not assumed |
+| SRT H.264 | Not protocol-correct | Locally validated | Store/routes exist; live generation contract broken | Mux path exists; live generation contract broken |
+| SRT H.265 | H.264 conversion incomplete | Passthrough implemented; E2E gate | Store/routes exist; live generation contract broken | Mux path exists; live generation contract broken |
+| File | RTMP-shaped source; basic path only and same timestamp caveat | Implemented for compatible FLV codecs | Live generation contract broken | Live generation contract broken |
 
 The weak spots are not mostly about FFmpeg availability. They are about what
 `MediaPacket.payload` means on each path.
+
+## Buffer Sizing Target (4K 60fps)
+
+Sizing target: 4K UHD (3840×2160) at 60 fps. A 4K60 H.264 stream runs
+20–50 Mbps; H.265 runs 10–25 Mbps. Individual I-frames can be 200–500 KB
+(H.264) or 100–250 KB (H.265). P/B-frames are 5–20× smaller. The table
+below states each component's size, the constraint that drove it, and the
+source file where the constant lives.
+
+| Component | Size | Constraint | Source |
+|---|---|---|---|
+| RingBuffer capacity | 4096 slots | Working estimate of ~24s at an assumed 170 packets/sec. Actual depth depends on packetization, frame rate, and audio tracks. Overflow fast-forwards to the most recent keyframe. | `engine.rs`, `ring_buffer.rs` |
+| AVIO buffer | 32 KB | FFmpeg's internal AVIO read/write chunk. Smaller values increase callback frequency ~8× per frame without throughput gain. | `avio.rs:18` |
+| MemoryQueue | Unbounded `VecDeque<u8>` | Auto-grows. Backpressure is structural: the downstream consumer blocks on `read()`, so the queue only grows if the producer is faster than the consumer (which is transient for live streams). | `avio.rs:26` |
+| sync_channel (muxer) | 256 `Arc<MediaPacket>` | ~1.5s at 4K60. Bounded to provide backpressure — if the MPEG-TS muxer stalls, the feeder blocks instead of growing unbounded. Slots hold refcounted pointers, not copies. | `srt.rs` play/egress muxer |
+| HLS segment accumulator | 8 MB initial alloc | A 4K60 H.264 segment at 6s target duration can reach 12 MB (50 Mbps × 2s GOP, though typical is 4–8 MB). Pre-allocating avoids repeated reallocs during the first segment. Vec grows beyond 8 MB if needed. | `hls.rs:243` |
+| HLS MAX_SEGMENTS | 10 | ~60s sliding window at 6s target duration. Bounded to cap memory — 10 × 8 MB = 80 MB worst case per pipeline at 4K. | `hls.rs:36` |
+| HLS TARGET_DURATION | 6s | Standard HLS segment length. MIN_SEGMENT (1s) prevents micro-segments from keyframe bursts. | `hls.rs:34–35` |
+| RTMP TCP SO_RCVBUF / SO_SNDBUF | 8 MB | Applied to accepted ingest sockets. The egress client currently sets only `TCP_NODELAY`. | `rtmp.rs` |
+| SRT SRTO_LATENCY | 250 ms | Dejitter + retransmit window. Formula: 4×RTT + 2×jitter for 50 ms RTT, ~10 ms jitter = 220 ms, rounded to 250 ms for margin. At 50 Mbps, 250 ms = 1.56 MB in flight. Sender and receiver negotiate the max of both sides at handshake. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT SRTO_LOSSMAXTTL | 256 packets | Reorder tolerance before declaring loss. At 50 Mbps / 1316 B = ~4750 pkt/s, 256 packets ≈ 54 ms. Prevents premature NACK storms on jittery links. Default (0) = auto-detect, which can react too slowly on first jitter burst. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT UDP socket (SRTO_UDP_SNDBUF / RCVBUF) | 8 MB | Kernel UDP buffers — libsrt does **not** propagate `SRTO_SNDBUF` to the kernel socket. Default ~208 KB fills in 33 ms at 50 Mbps; any scheduling hiccup causes irrecoverable kernel drops. Must be set explicitly via `SRTO_UDP_SNDBUF`/`RCVBUF` (option IDs 8/9). Requires `net.core.rmem_max` / `wmem_max` ≥ 8 MB; startup warns if too low. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT internal (SRTO_SNDBUF / RCVBUF) | 12 MB | SRT's own retransmission and reordering buffers (option IDs 5/6). Must be ≥ latency × bitrate × (1 + loss_overhead). At 250 ms, 50 Mbps, 5% loss: 1.56 MB × 1.15 ≈ 1.8 MB minimum. 12 MB gives ~2s headroom for retransmission bursts on lossy links. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT SRTO_FC | 32768 packets | Flow control window (option ID 4). Default 8192 limits throughput on high-latency links (FC × payload ÷ RTT = max throughput). At 1316 B/pkt, 32768 × 1316 = ~43 MB window. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT SRTO_MAXBW | -1 (unlimited) | Lets SRT auto-detect bandwidth from the input rate (option ID 16). A fixed cap would throttle 4K streams. | `srt.rs` `srt_set_highbitrate_opts` |
+| SRT recv loop buffer | 1316 bytes | One SRT payload (1500 MTU − IP/UDP/SRT headers). Matches libsrt's internal packet size. | `srt.rs:669` |
+
+**Runtime verification hook**: `srt_log_effective_opts` reads back values after
+`srt_setsockopt` and logs them, warning if the kernel clamped UDP buffers.
+Example output:
+
+```
+[srt] listener config: latency=250ms lossmaxttl=256 UDP snd=8192KB rcv=8192KB, SRT snd=12287KB rcv=12287KB, FC=32768
+```
+
+**Kernel socket verification via `ss`**: `ss -ulnm sport = :10080` shows `rb` (recv buf) and `tb` (transmit buf) — kernel doubles the requested value per `SO_RCVBUF` convention, so 8 MB request → `rb16777216`.
+
+## SRT Bonding
+
+SRT connection bonding provides link redundancy by sending data over multiple
+network paths simultaneously. Two modes are available:
+
+- **Backup** (`SRT_GTYPE_BACKUP`): one active link, failover to standby on
+  loss. Lower bandwidth cost.
+- **Broadcast** (`SRT_GTYPE_BROADCAST`): all links active, highest resilience.
+
+### Ingest bonding
+
+The SRT listener requests `SRTO_GROUPCONNECT=1`. This requires libsrt compiled
+with `ENABLE_BONDING=ON`; startup warns and retains single-link ingest if the
+linked library rejects the option. A publisher-created bonded connection is
+accepted as one logical group:
+
+1. The first member causes `srt_accept` to return a group ID.
+2. `handle_client` runs once for that group ID.
+3. Later member links in the same group are attached by libsrt in the
+   background and do not produce additional application accepts.
+4. The existing `srt_recv(group_id, ...)` loop receives the recovered logical
+   payload and feeds one queue/demuxer/ring producer.
+5. `srt_group_data` reports total, connected, active, and broken members through
+   health/diagnostic publisher quality.
+
+This works through the single `:10080` listener when both publisher paths target
+that endpoint. `srt_accept_bond` is only needed when the application listens on
+multiple local endpoints.
+
+The publisher must use SRT's group/bonding API. Matching StreamIDs on two
+independent caller sockets are not enough; those are separate publishers and
+are rejected by the single-producer reservation rather than byte-merged.
+
+### Egress bonding
+
+Specify additional link targets via the `bond=` URL parameter:
+
+```
+srt://primary:10080?streamid=publish:live/key&bond=secondary:10080,tertiary:10080
+```
+
+When `bond=` is present, the egress creates an `SRT_GTYPE_BACKUP` group, calls
+`srt_connect_group` with all member endpoints, and uses the group socket for
+`srt_send`. The first address has weight=1 (primary), additional addresses have
+weight=0 (standby). The streamid is shared across all members via
+`srt_create_config` / `srt_config_add`.
+
+Without `bond=`, the egress uses a single `srt_create_socket` + `srt_connect`
+(no change from prior behavior).
+
+The bonded group branch does not currently call `srt_set_highbitrate_opts()`;
+only the listener and single-link egress do. Live failover and effective option
+inheritance remain to be verified.
 
 ## Packet Contract Issue
 

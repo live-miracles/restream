@@ -107,6 +107,12 @@ Discarding this offset makes B-frames use the wrong presentation order and can
 cause A/V sync drift or non-monotonic timestamp behavior during remuxing. Audio
 does not use the FLV video composition offset.
 
+Current defect: ingest stores the two values correctly, but RTMP play and RTMP
+egress call `send_video_data` / `publish_video_data` with `packet.pts` as the
+RTMP timestamp while forwarding the original FLV payload, which still contains
+the composition-time offset. The outbound RTMP timestamp must use
+`packet.dts`; otherwise B-frame composition offset can be applied twice.
+
 ## H.265
 
 H.265 must be tested explicitly. It is not enough for H.264 to work:

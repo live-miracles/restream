@@ -6,7 +6,7 @@
 use ffmpeg_next as ffmpeg;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +45,17 @@ pub struct PublisherQuality {
     pub packets_received_drop_per_sec: Option<f64>,
     pub packets_received_retrans_per_sec: Option<f64>,
     pub packets_received_undecrypt_per_sec: Option<f64>,
+    // SRT buffer occupancy
+    pub srt_send_buf_bytes: Option<i32>,
+    pub srt_recv_buf_bytes: Option<i32>,
+    pub srt_send_buf_avail_bytes: Option<i32>,
+    pub srt_recv_buf_avail_bytes: Option<i32>,
+    pub srt_flight_size_pkts: Option<i32>,
+    pub srt_bonded: Option<bool>,
+    pub srt_group_member_count: Option<u32>,
+    pub srt_group_connected_members: Option<u32>,
+    pub srt_group_active_members: Option<u32>,
+    pub srt_group_broken_members: Option<u32>,
     pub inbound_rtp_packets_lost: Option<u64>,
     pub inbound_rtp_packets_in_error: Option<u64>,
     pub inbound_rtp_packets_jitter: Option<f64>,
@@ -108,6 +119,7 @@ pub struct ActiveIngest {
 /// Runtime state for one active egress target.
 pub struct ActiveEgress {
     pub output_id: String,
+    pub pipeline_id: String,
     pub target_url: String,
     pub status: String, // "running" | "stopped" | "failed"
     pub started_at: String,
@@ -116,6 +128,15 @@ pub struct ActiveEgress {
     pub prev_bytes_sent: AtomicU64,
     pub prev_sample_time: std::sync::Mutex<Instant>,
     pub bitrate_kbps: std::sync::Mutex<Option<f64>>,
+}
+
+/// Shared listener socket buffer occupancy, updated by the SRT monitor task.
+#[derive(Debug, Default)]
+pub struct ListenerSocketStats {
+    pub bonding_available: AtomicBool,
+    pub rx_queue_bytes: AtomicU64,
+    pub rx_queue_max_bytes: AtomicU64,
+    pub drops: AtomicU64,
 }
 
 pub struct MediaEngine {
@@ -137,6 +158,8 @@ pub struct MediaEngine {
     pub file_ingest_children: TokioRwLock<HashMap<String, tokio::process::Child>>,
     // Map of "pipeline_id:encoding" -> transcoded RingBuffer + cancel token
     pub transcoder_buffers: TokioRwLock<HashMap<String, (Arc<RingBuffer>, CancellationToken)>>,
+    // SRT listener socket kernel buffer stats
+    pub srt_listener_stats: Arc<ListenerSocketStats>,
 }
 
 impl MediaEngine {
@@ -154,6 +177,7 @@ impl MediaEngine {
             hls_stores: TokioRwLock::new(HashMap::new()),
             file_ingest_children: TokioRwLock::new(HashMap::new()),
             transcoder_buffers: TokioRwLock::new(HashMap::new()),
+            srt_listener_stats: Arc::new(ListenerSocketStats::default()),
         }
     }
 
@@ -162,7 +186,7 @@ impl MediaEngine {
         if let Some(rb) = pipelines.get(pipeline_id) {
             rb.clone()
         } else {
-            let rb = Arc::new(RingBuffer::new(4096)); // 4096 frames (~10-20 seconds)
+            let rb = Arc::new(RingBuffer::new(4096)); // ~24s at 4K60, ~48s at 1080p30
             pipelines.insert(pipeline_id.to_string(), rb.clone());
             rb
         }
@@ -233,13 +257,25 @@ impl MediaEngine {
         pipelines.remove(pipeline_id);
     }
 
-    pub async fn register_ingest(
+    /// Register a publisher for a pipeline.
+    ///
+    /// A pipeline has one application-level producer. A bonded SRT publisher is
+    /// still one producer because libsrt presents the accepted bond as one group
+    /// socket. A second independent RTMP/SRT connection must be rejected instead
+    /// of overwriting the token and creating concurrent RingBuffer writers.
+    pub async fn try_register_ingest(
         &self,
         pipeline_id: &str,
         stream_key: &str,
         protocol: &str,
-    ) -> CancellationToken {
+    ) -> Option<CancellationToken> {
         let mut tokens = self.ingest_cancel_tokens.write().await;
+        if let Some(existing) = tokens.get(pipeline_id) {
+            if !existing.is_cancelled() {
+                return None;
+            }
+        }
+
         let token = CancellationToken::new();
         tokens.insert(pipeline_id.to_string(), token.clone());
 
@@ -262,7 +298,7 @@ impl MediaEngine {
             },
         );
 
-        token
+        Some(token)
     }
 
     pub async fn unregister_ingest(&self, pipeline_id: &str) {
@@ -275,7 +311,12 @@ impl MediaEngine {
         ingests.remove(pipeline_id);
     }
 
-    pub async fn register_egress(&self, output_id: &str, url: &str) -> CancellationToken {
+    pub async fn register_egress(
+        &self,
+        output_id: &str,
+        pipeline_id: &str,
+        url: &str,
+    ) -> CancellationToken {
         let mut tokens = self.egress_cancel_tokens.write().await;
         let token = CancellationToken::new();
         tokens.insert(output_id.to_string(), token.clone());
@@ -286,6 +327,7 @@ impl MediaEngine {
             output_id.to_string(),
             ActiveEgress {
                 output_id: output_id.to_string(),
+                pipeline_id: pipeline_id.to_string(),
                 target_url: url.to_string(),
                 status: "running".to_string(),
                 started_at: chrono::Utc::now().to_rfc3339(),
@@ -335,6 +377,14 @@ impl MediaEngine {
         if let Some(egress) = egresses.get(output_id) {
             egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
         }
+    }
+
+    pub async fn egress_bytes(&self, output_id: &str) -> u64 {
+        let egresses = self.active_egresses.read().await;
+        egresses
+            .get(output_id)
+            .map(|e| e.bytes_sent.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     /// Update stream metadata discovered during demux/decode for an active ingest.
@@ -566,7 +616,8 @@ impl MediaEngine {
 
             let mut outputs_json = serde_json::Map::new();
             for (egress_key, egress) in egresses.iter() {
-                if let Some(output_id) = egress_key.strip_prefix(&format!("{}:", pipeline_id)) {
+                if egress.pipeline_id == *pipeline_id {
+                    let output_id = egress_key;
                     let bytes_sent = egress.bytes_sent.load(Ordering::Relaxed);
 
                     // Compute instantaneous bitrate from byte delta
@@ -612,10 +663,30 @@ impl MediaEngine {
             );
         }
 
+        let rx_queue = self
+            .srt_listener_stats
+            .rx_queue_bytes
+            .load(Ordering::Relaxed);
+        let rx_max = self
+            .srt_listener_stats
+            .rx_queue_max_bytes
+            .load(Ordering::Relaxed);
+        let drops = self.srt_listener_stats.drops.load(Ordering::Relaxed);
+        let bonding_available = self
+            .srt_listener_stats
+            .bonding_available
+            .load(Ordering::Relaxed);
+
         serde_json::json!({
             "generatedAt": chrono::Utc::now().to_rfc3339(),
             "status": "ready",
             "pipelines": serde_json::Value::Object(pipelines_json),
+            "srtListener": {
+                "bondingAvailable": bonding_available,
+                "udpRxQueueBytes": rx_queue,
+                "udpRxQueuePeakBytes": rx_max,
+                "udpDrops": drops,
+            },
         })
     }
 
@@ -862,5 +933,163 @@ impl MediaEngine {
             "nodes": nodes,
             "edges": edges,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_a_second_independent_publisher_for_the_same_pipeline() {
+        let engine = MediaEngine::new();
+
+        assert!(
+            engine
+                .try_register_ingest("pipeline-1", "stream-key", "srt")
+                .await
+                .is_some()
+        );
+        assert!(
+            engine
+                .try_register_ingest("pipeline-1", "stream-key", "srt")
+                .await
+                .is_none()
+        );
+
+        engine.unregister_ingest("pipeline-1").await;
+        assert!(
+            engine
+                .try_register_ingest("pipeline-1", "stream-key", "srt")
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_ingest_cancels_token() {
+        let engine = MediaEngine::new();
+        let token = engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        assert!(!token.is_cancelled());
+
+        engine.unregister_ingest("p1").await;
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn unregister_ingest_idempotent() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        engine.unregister_ingest("p1").await;
+        // Second unregister should not panic
+        engine.unregister_ingest("p1").await;
+    }
+
+    #[tokio::test]
+    async fn egress_register_and_cancel() {
+        let engine = MediaEngine::new();
+        let token = engine
+            .register_egress("out-1", "pipe-1", "rtmp://example.com/live/key")
+            .await;
+        assert!(!token.is_cancelled());
+
+        engine.unregister_egress("out-1").await;
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn egress_unregister_idempotent() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://example.com/live/key")
+            .await;
+        engine.unregister_egress("out-1").await;
+        engine.unregister_egress("out-1").await;
+    }
+
+    #[tokio::test]
+    async fn egress_bytes_counter() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://example.com/live/key")
+            .await;
+
+        engine.update_egress_bytes("out-1", 1000).await;
+        engine.update_egress_bytes("out-1", 500).await;
+        assert_eq!(engine.egress_bytes("out-1").await, 1500);
+
+        // Non-existent egress returns 0
+        assert_eq!(engine.egress_bytes("out-nonexistent").await, 0);
+    }
+
+    #[tokio::test]
+    async fn pipeline_create_and_remove() {
+        let engine = MediaEngine::new();
+        let rb1 = engine.get_or_create_pipeline("p1").await;
+        let rb2 = engine.get_or_create_pipeline("p1").await;
+        // Same pipeline returns same buffer
+        assert!(Arc::ptr_eq(&rb1, &rb2));
+
+        engine.remove_pipeline("p1").await;
+        let rb3 = engine.get_or_create_pipeline("p1").await;
+        // After removal, new buffer is created
+        assert!(!Arc::ptr_eq(&rb1, &rb3));
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_includes_egress_under_correct_pipeline() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-a", "pipe-1", "rtmp://a.com/live/key")
+            .await;
+        engine
+            .register_egress("out-b", "pipe-2", "rtmp://b.com/live/key")
+            .await;
+        engine
+            .register_egress("out-c", "pipe-1", "srt://c.com?streamid=key")
+            .await;
+
+        let ids = vec!["pipe-1".to_string(), "pipe-2".to_string()];
+        let rec = std::collections::HashMap::new();
+        let snap = engine.health_snapshot(&ids, &rec).await;
+
+        let pipe1_outputs = &snap["pipelines"]["pipe-1"]["outputs"];
+        assert!(pipe1_outputs.get("out-a").is_some());
+        assert!(pipe1_outputs.get("out-c").is_some());
+        assert!(pipe1_outputs.get("out-b").is_none());
+
+        let pipe2_outputs = &snap["pipelines"]["pipe-2"]["outputs"];
+        assert!(pipe2_outputs.get("out-b").is_some());
+        assert!(pipe2_outputs.get("out-a").is_none());
+    }
+
+    #[tokio::test]
+    async fn recording_lifecycle() {
+        let engine = MediaEngine::new();
+        assert!(!engine.is_recording_active("p1").await);
+
+        let token = engine.register_recording("p1").await;
+        assert!(engine.is_recording_active("p1").await);
+        assert!(!token.is_cancelled());
+
+        engine.unregister_recording("p1").await;
+        assert!(!engine.is_recording_active("p1").await);
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn ingest_bytes_and_meta_on_nonexistent_pipeline_is_noop() {
+        let engine = MediaEngine::new();
+        // Should not panic
+        engine.update_ingest_bytes("nonexistent", 1000).await;
+        engine
+            .update_ingest_meta("nonexistent", None, None, None)
+            .await;
     }
 }

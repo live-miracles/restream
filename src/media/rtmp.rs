@@ -430,12 +430,13 @@ async fn handle_rtmp_client(
     // Configure socket for low jitter and fast response
     let _ = socket.set_nodelay(true);
 
-    // Set socket buffer sizes to absorb network bursts
+    // 8 MB kernel buffers: at 4K60 (~50 Mbps) a 1.3s burst fills 8 MB.
+    // Default ~128 KB would overflow within a single GOP.
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;
         let fd = socket.as_raw_fd();
-        let size: libc::c_int = 8 * 1024 * 1024; // 8MB
+        let size: libc::c_int = 8 * 1024 * 1024;
         unsafe {
             libc::setsockopt(
                 fd,
@@ -522,7 +523,7 @@ async fn handle_rtmp_client(
         let results = session
             .handle_input(&remaining)
             .map_err(|_| "Session parse error on remaining bytes")?;
-        handle_session_results(
+        if let Err(error) = handle_session_results(
             &mut session,
             results,
             &mut socket,
@@ -534,7 +535,13 @@ async fn handle_rtmp_client(
             &mut probe,
             &mut active_pipeline_id,
         )
-        .await?;
+        .await
+        {
+            if let Some(ref pipeline_id) = active_pipeline_id {
+                engine.unregister_ingest(pipeline_id).await;
+            }
+            return Err(error);
+        }
     }
 
     // 3. Main Protocol Loop
@@ -573,9 +580,8 @@ async fn handle_rtmp_client(
             _ = tcp_stats_interval.tick(), if active_pipeline_id.is_some() => {
                 let pipeline_id = active_pipeline_id.as_deref().unwrap_or_default();
                 let now = Instant::now();
-                let local_port = socket.local_addr().map(|addr| addr.port()).unwrap_or(1935);
-                let quality = match collect_rtmp_receiver_stats(&client_addr_text, local_port).await {
-                    Ok(Some(stats)) => {
+                let quality = match collect_rtmp_receiver_stats(&socket) {
+                    Ok(stats) => {
                         let receive_rate = stats.tcp_bytes_received.and_then(|bytes| {
                             let rate = previous_tcp_bytes.and_then(|(previous, sampled_at)| {
                                 let elapsed = now.duration_since(sampled_at).as_secs_f64();
@@ -601,13 +607,8 @@ async fn handle_rtmp_client(
                             ..PublisherQuality::default()
                         }
                     }
-                    Ok(None) => PublisherQuality {
-                        tcp_stats_unavailable_reason: Some("no_matching_socket".to_string()),
-                        ..PublisherQuality::default()
-                    },
                     Err(error) => PublisherQuality {
                         tcp_stats_unavailable_reason: Some(match error.kind() {
-                            std::io::ErrorKind::NotFound => "ss_missing",
                             std::io::ErrorKind::Unsupported => "not_linux",
                             _ => "collection_failed",
                         }.to_string()),
@@ -705,6 +706,23 @@ async fn handle_session_results(
                             }
                         };
 
+                        // Reserve the pipeline before accepting the publish request.
+                        // A bonded SRT group is one logical publisher, but a second
+                        // independent RTMP/SRT publisher must not create another
+                        // writer for the same RingBuffer.
+                        let Some(_token) = engine
+                            .try_register_ingest(&pipeline.id, &stream_key, "rtmp")
+                            .await
+                        else {
+                            let _ = session.reject_request(
+                                request_id,
+                                "NetStream.Publish.BadName",
+                                "Pipeline already has an active publisher",
+                            );
+                            return Err("Pipeline already has an active publisher");
+                        };
+                        *active_pipeline_id = Some(pipeline.id.clone());
+
                         // Success! Accept publish request
                         let resp = session
                             .accept_request(request_id)
@@ -718,10 +736,6 @@ async fn handle_session_results(
                             }
                         }
 
-                        // Register ingest
-                        let _token = engine
-                            .register_ingest(&pipeline.id, &stream_key, "rtmp")
-                            .await;
                         engine
                             .update_ingest_meta(
                                 &pipeline.id,
@@ -730,8 +744,6 @@ async fn handle_session_results(
                                 Some(client_addr.to_string()),
                             )
                             .await;
-                        *active_pipeline_id = Some(pipeline.id.clone());
-
                         security.record_success(client_ip);
                         println!(
                             "[rtmp] Ingest successfully started on pipeline: {}",
@@ -931,7 +943,14 @@ async fn handle_session_results(
                         loop {
                             match reader.pull() {
                                 Ok(Some(pkt)) => {
-                                    let ts = RtmpTimestamp::new(pkt.pts.max(0) as u32);
+                                    let ts = match pkt.media_type {
+                                        MediaType::Video => {
+                                            RtmpTimestamp::new(pkt.dts.max(0) as u32)
+                                        }
+                                        MediaType::Audio => {
+                                            RtmpTimestamp::new(pkt.pts.max(0) as u32)
+                                        }
+                                    };
                                     let result = match pkt.media_type {
                                         MediaType::Video => session.send_video_data(
                                             stream_id,
@@ -1175,12 +1194,16 @@ pub async fn start_rtmp_egress(
             // Write packets from ring buffer when publishing is active
             _ = reader.wait_for_data(), if is_publishing => {
                 while let Ok(Some(packet)) = reader.pull() {
+                    let ts = match packet.media_type {
+                        MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
+                        MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
+                    };
                     let pkt = match packet.media_type {
                         MediaType::Video => {
-                            session.publish_video_data(packet.payload.clone(), RtmpTimestamp::new(packet.pts as u32), packet.is_keyframe)
+                            session.publish_video_data(packet.payload.clone(), ts, packet.is_keyframe)
                         }
                         MediaType::Audio => {
-                            session.publish_audio_data(packet.payload.clone(), RtmpTimestamp::new(packet.pts as u32), false)
+                            session.publish_audio_data(packet.payload.clone(), ts, false)
                         }
                     };
                     match pkt {

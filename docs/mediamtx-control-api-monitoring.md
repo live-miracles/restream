@@ -1,102 +1,54 @@
 # Legacy MediaMTX Monitoring Notes
 
-> The Rust rewrite no longer uses MediaMTX. This document describes the previous backend and is retained only as migration context. Current publisher transport health comes from native libsrt statistics and Linux receiver-side TCP socket statistics.
+This document is retained as migration context for the archived Node.js
+implementation under `old/`. MediaMTX is not part of the current production
+runtime.
 
-This document is a short guide to how Restream uses MediaMTX runtime information and where future monitoring work should look. It intentionally does not duplicate the full MediaMTX API reference.
+## Previous Architecture
 
-## Useful MediaMTX References
+The old backend used MediaMTX for:
 
-- [MediaMTX Control API reference](https://mediamtx.org/docs/references/control-api)
-- [MediaMTX configuration reference](https://mediamtx.org/docs/references/configuration-file)
-- [MediaMTX metrics](https://mediamtx.org/docs/usage/metrics)
-- [MediaMTX pprof/performance monitoring](https://mediamtx.org/docs/usage/pprof)
+- RTMP/SRT publisher and reader transport;
+- dynamic path configuration and authorization callbacks;
+- path/connection health APIs;
+- Prometheus metrics;
+- HLS preview;
+- protocol session IDs used by diagnostics.
+
+The Node control plane merged MediaMTX state, FFmpeg child progress, ffprobe
+results, and SQLite job state into its dashboard health model.
+
+Those statements are historical. They do not describe the Rust router or
+`MediaEngine`.
+
+## Rust Replacements
+
+| Previous MediaMTX surface | Current source |
+|---|---|
+| Publish authorization callback | Native RTMP/SRT stream-key validation |
+| Path/connection APIs | `MediaEngine::active_ingests` and `active_egresses` |
+| SRT connection quality | Direct `srt_bistats()` samples |
+| RTMP connection quality | Linux `TCP_INFO` and `SO_MEMINFO` on the accepted socket |
+| HLS preview surface | In-memory `HlsStore` and Axum routes; live media generation still needs packet-contract repair |
+| MediaMTX config/status pages | `/api/status`, `/config`, native diagnostics |
+| MediaMTX Prometheus endpoint | No Rust equivalent yet |
+
+The current `/health` endpoint is built directly from native state and does not
+poll a sidecar.
+
+## Remaining Migration Work
+
+- Remove or replace frontend Grafana links that target old MediaMTX dashboards.
+- Replace the old Node/MediaMTX GitHub Actions workflow with Rust-native CI.
+- Add a Rust Prometheus exporter if time-series monitoring is still required.
+- Keep MediaMTX only as an isolated interoperability sink in protocol tests.
+
+## Historical References
+
+These links remain useful when reading archived code or building an independent
+test sink:
+
+- [MediaMTX Control API](https://mediamtx.org/docs/references/control-api)
+- [MediaMTX configuration](https://mediamtx.org/docs/references/configuration-file)
+- [MediaMTX metrics](https://mediamtx.org/docs/features/metrics)
 - [MediaMTX architecture](https://mediamtx.org/docs/features/architecture)
-
-Use those pages for current endpoint shapes, available fields, and version-specific behavior.
-
-## What Restream Uses Today
-
-Restream currently uses MediaMTX for three control-plane jobs:
-
-| Area | MediaMTX surface | Why Restream uses it |
-|---|---|---|
-| Readiness and ingest URL discovery | `GET /v3/config/global/get` | Confirms the API is reachable and reads active protocol ports |
-| Stream key provisioning | `POST /v3/config/paths/add/{name}`, `DELETE /v3/config/paths/delete/{name}` | Creates and removes `live/<streamKey>` path config |
-| Health snapshot (legacy) | `GET /v3/paths/list`, `GET /v3/rtmpconns/list`, `GET /v3/srtconns/list` | Previous backend path/session data; superseded by native engine state and receiver-side socket sampling |
-
-The health model is intentionally ingest-centric today. Details are in [health-mapping.md](./health-mapping.md).
-
-## Monitoring Model
-
-Restream should keep MediaMTX monitoring split into three layers:
-
-| Layer | Purpose | Shape |
-|---|---|---|
-| Health summary | Fast dashboard polling | Compact `/health` payload with pipeline status, output status, publisher protocol, quality flags, and aggregate counts |
-| Drilldown | Operator investigation | Focused endpoints for one path/session/connection using MediaMTX `get/{id}` or `get/{name}` APIs |
-| Admin actions | Explicit remediation | Optional guarded actions such as kicking a stuck session |
-| Time series | Trend dashboards and alerts | Prometheus scraping MediaMTX `http://127.0.0.1:9998/metrics`, visualized in Grafana |
-
-The key design point: do not put every MediaMTX field into `/health`. Keep `/health` small and add drilldown views when the UI needs detail.
-
-## High-Value Future Additions
-
-### MediaMTX Uptime And Version
-
-Add `GET /v3/info` to detect MediaMTX restarts, expose version, and help correlate stream issues with server restarts.
-
-### Runtime Drift Checks
-
-Use config read endpoints for operator warnings, not automatic mutation:
-
-- `GET /v3/config/global/get`
-- `GET /v3/config/pathdefaults/get`
-- `GET /v3/config/paths/list`
-
-Useful checks include API disabled, unexpected port changes, missing HLS settings, unexpected path overrides, recording enabled on only some paths, or auth settings that differ from the expected deployment shape.
-
-### Protocol Drilldown
-
-Add backend drilldown endpoints instead of expanding `/health` indefinitely:
-
-- one MediaMTX path
-- one RTMP connection
-- one SRT connection
-- one RTMP connection
-- one SRT connection
-- one HLS muxer, if HLS playback monitoring matters
-
-These should normalize MediaMTX details into Restream terms such as pipeline, stream key, publisher, reader, output, and warning.
-
-### SRT Quality
-
-In the Rust rewrite, SRT quality comes directly from `srt_bistats()`. Alerting uses per-second
-deltas for loss, drop, retransmit, and undecrypt counters while retaining connection totals for
-context. RTMP quality comes from Linux `ss -tinmH` receiver-side fields: receive throughput,
-receive RTT, last-receive age, out-of-order packets, receive window, and receive-buffer occupancy.
-The previous sender-side congestion-window, unacked, pacing, delivery-rate, and send-rate fields
-are not used for publisher health.
-
-### HLS Playback Visibility
-
-If dashboard preview or external HLS playback becomes operationally important, use HLS muxer runtime APIs to show whether a path has active playback, when it was last requested, and whether frames are being discarded.
-
-### Remediation Actions
-
-MediaMTX exposes kick endpoints for protocol sessions and connections. These are useful, but should stay behind explicit admin action and should not be part of background monitoring.
-
-## Adjacent Observability
-
-The Control API is good for object state: paths, sessions, connections, muxers, config, and recordings.
-
-For time-series observability, use MediaMTX metrics instead. MediaMTX exposes Prometheus-compatible metrics when enabled in config; those are a better fit for dashboards and alerts over time. Restream enables this in `mediamtx.yml` on `127.0.0.1:9998`.
-
-For CPU, memory, and goroutine investigation, use MediaMTX pprof when enabled. That belongs in an operator/debug workflow, not in Restream's normal polling loop.
-
-## Current Priority
-
-1. Add `GET /v3/info` to the health service for restart/version visibility.
-2. Add compact aggregate protocol counters to `/health`.
-3. Add targeted drilldown endpoints before adding more fields to `/health`.
-4. Add HLS/SRT detail only when those workflows become operationally important.
-5. Keep write-side MediaMTX actions explicit and admin-only.

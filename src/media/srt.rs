@@ -4,14 +4,28 @@
 //! pipes MPEG-TS data into a `MemoryQueue`, and runs an FFmpeg demuxer on a
 //! dedicated OS thread (wrapped in `catch_unwind`). The demuxer publishes ALL
 //! video and audio streams (not just "best") into the `RingBuffer` with per-track
-//! indices for multi-track audio support.
+//! indices for multi-track audio support. The listener has `SRTO_GROUPCONNECT=1`
+//! enabled, so bonded ingest connections from encoders that support SRT bonding
+//! (e.g., Haivision, srt-live-transmit) are accepted transparently.
 //!
-//! Egress: connects to an SRT target and forwards ring buffer packets.
+//! Egress: connects to an SRT target via `srt_connect` (single link) or
+//! `srt_connect_group` (bonded backup, when `bond=` URL parameter is present).
+//! MPEG-TS muxing is deferred until ingest metadata is available to avoid
+//! "no streams to mux" errors when the egress starts before ingest.
+//!
+//! # Socket Sizing
+//!
+//! All sockets (listener, accepted, egress) get high-bitrate tuning via
+//! `srt_set_highbitrate_opts`: 12 MB send/recv buffers (vs. default ~1.5 MB),
+//! 32768-packet flow control window (vs. default 8192), unlimited max bandwidth.
+//! These values accommodate 4K 60fps H.264 streams at 50 Mbps peak with
+//! headroom for retransmission bursts on lossy links.
 
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -118,6 +132,42 @@ pub struct SrtTraceBStats {
     pub byte_recv_unique: u64,
 }
 
+// SRT bonding group types
+pub const SRTGROUP_MASK: c_int = 1 << 30;
+pub const SRT_GTYPE_BROADCAST: c_int = 1;
+pub const SRT_GTYPE_BACKUP: c_int = 2;
+const SRTS_CONNECTED: c_int = 5;
+const SRTS_BROKEN: c_int = 6;
+const SRT_GST_RUNNING: c_int = 2;
+const SRT_GST_BROKEN: c_int = 3;
+
+#[repr(C)]
+pub struct SrtSockOptConfig {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct SrtGroupMemberConfig {
+    pub id: SRTSOCKET,
+    pub srcaddr: libc::sockaddr_storage,
+    pub peeraddr: libc::sockaddr_storage,
+    pub weight: u16,
+    pub config: *mut SrtSockOptConfig,
+    pub errorcode: c_int,
+    pub token: c_int,
+}
+
+#[repr(C)]
+pub struct SrtSocketGroupData {
+    pub id: SRTSOCKET,
+    pub peeraddr: libc::sockaddr_storage,
+    pub sockstate: c_int,
+    pub weight: u16,
+    pub memberstate: c_int,
+    pub result: c_int,
+    pub token: c_int,
+}
+
 unsafe extern "C" {
     pub fn srt_startup() -> c_int;
     pub fn srt_cleanup() -> c_int;
@@ -127,7 +177,31 @@ unsafe extern "C" {
     pub fn srt_bind(u: SRTSOCKET, name: *const sockaddr_in, namelen: c_int) -> c_int;
     pub fn srt_listen(u: SRTSOCKET, backlog: c_int) -> c_int;
     pub fn srt_accept(u: SRTSOCKET, addr: *mut sockaddr_in, addrlen: *mut c_int) -> SRTSOCKET;
+    pub fn srt_getsockname(u: SRTSOCKET, name: *mut sockaddr_in, namelen: *mut c_int) -> c_int;
     pub fn srt_connect(u: SRTSOCKET, name: *const sockaddr_in, namelen: c_int) -> c_int;
+    pub fn srt_connect_group(
+        group: SRTSOCKET,
+        name: *mut SrtGroupMemberConfig,
+        arraysize: c_int,
+    ) -> c_int;
+    pub fn srt_group_data(
+        group: SRTSOCKET,
+        output: *mut SrtSocketGroupData,
+        inoutlen: *mut usize,
+    ) -> c_int;
+    pub fn srt_prepare_endpoint(
+        src: *const libc::sockaddr,
+        adr: *const libc::sockaddr,
+        namelen: c_int,
+    ) -> SrtGroupMemberConfig;
+    pub fn srt_create_config() -> *mut SrtSockOptConfig;
+    pub fn srt_delete_config(config: *mut SrtSockOptConfig);
+    pub fn srt_config_add(
+        config: *mut SrtSockOptConfig,
+        option: c_int,
+        contents: *const c_void,
+        len: c_int,
+    ) -> c_int;
     pub fn srt_recv(u: SRTSOCKET, buf: *mut u8, len: c_int) -> c_int;
     pub fn srt_send(u: SRTSOCKET, buf: *const u8, len: c_int) -> c_int;
     pub fn srt_setsockopt(
@@ -153,14 +227,271 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-// SRT socket options constants
+// SRT socket options — values from srt.h SRT_SOCKOPT enum
 pub const SRTO_SNDSYN: c_int = 1;
 pub const SRTO_RCVSYN: c_int = 2;
+pub const SRTO_FC: c_int = 4;
+pub const SRTO_SNDBUF: c_int = 5;
+pub const SRTO_RCVBUF: c_int = 6;
+pub const SRTO_UDP_SNDBUF: c_int = 8;
+pub const SRTO_UDP_RCVBUF: c_int = 9;
+pub const SRTO_MAXBW: c_int = 16;
+pub const SRTO_LATENCY: c_int = 23;
+pub const SRTO_INPUTBW: c_int = 24;
+pub const SRTO_OHEADBW: c_int = 25;
+pub const SRTO_LOSSMAXTTL: c_int = 42;
+pub const SRTO_RCVLATENCY: c_int = 43;
+pub const SRTO_PEERLATENCY: c_int = 44;
 pub const SRTO_STREAMID: c_int = 46;
 pub const SRTO_TRANSTYPE: c_int = 50;
-pub const SRTO_GROUPCONNECT: c_int = 51;
+pub const SRTO_GROUPCONNECT: c_int = 57;
 
 pub const SRTT_LIVE: c_int = 0;
+
+pub const DESIRED_UDP_BUF: i32 = 8 * 1024 * 1024;
+const DESIRED_SRT_BUF: i32 = 12 * 1024 * 1024;
+const DESIRED_FC: i32 = 32768;
+// 4×RTT + 2×jitter for 50ms RTT, ~10ms jitter = 220ms. Round to 250ms for margin.
+const DESIRED_LATENCY_MS: i32 = 250;
+// Max reorder tolerance: at 50 Mbps / 1316 B per packet ≈ 4750 pkt/s.
+// 50ms of reordering ≈ 238 packets. Default (0) lets SRT auto-detect, but
+// setting a floor prevents premature loss declarations on jittery links.
+const DESIRED_LOSSMAXTTL: i32 = 256;
+
+fn enable_srt_group_connect(listener: SRTSOCKET) -> Result<(), String> {
+    let group_connect: c_int = 1;
+    let result = unsafe {
+        srt_setsockopt(
+            listener,
+            0,
+            SRTO_GROUPCONNECT,
+            &group_connect as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        )
+    };
+    if result >= 0 {
+        Ok(())
+    } else {
+        let error = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+        Err(error.to_string_lossy().into_owned())
+    }
+}
+
+fn check_sysctl_limits() {
+    let check = |path: &str, need: usize, label: &str| {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            if let Ok(val) = s.trim().parse::<usize>() {
+                if val < need {
+                    eprintln!(
+                        "[srt] WARNING: {} = {} but we need {}. \
+                         Run: sudo sysctl -w {}={}",
+                        path, val, need, label, need,
+                    );
+                }
+            }
+        }
+    };
+    check(
+        "/proc/sys/net/core/rmem_max",
+        DESIRED_UDP_BUF as usize,
+        "net.core.rmem_max",
+    );
+    check(
+        "/proc/sys/net/core/wmem_max",
+        DESIRED_UDP_BUF as usize,
+        "net.core.wmem_max",
+    );
+}
+
+/// Tune SRT socket for streams up to 4K 60fps (~50 Mbps H.264 peak).
+///
+/// Sizing rationale (designed for ≤50ms RTT, ~10ms jitter, ≤5% loss):
+///
+/// 1. **Latency** (`SRTO_LATENCY`): governs the receiver's dejitter/retransmit
+///    window. Formula: `4×RTT + 2×jitter` = 4×50 + 2×10 = 220ms. Set 250ms
+///    for margin. Sender and receiver negotiate the max of both sides. At
+///    50 Mbps, 250ms = 1.56 MB in flight — well within our buffer sizes.
+///
+/// 2. **Kernel UDP socket** (`SRTO_UDP_SNDBUF`/`RCVBUF`): default ~208 KB
+///    fills in ~33ms at 50 Mbps. Set to 8 MB (~1.3s at peak rate).
+///
+/// 3. **SRT internal buffers** (`SRTO_SNDBUF`/`RCVBUF`): hold packets for
+///    retransmission. Must be ≥ latency × bitrate × (1 + loss_overhead).
+///    At 250ms, 50 Mbps, 5% loss: 1.56 MB × 1.15 ≈ 1.8 MB minimum.
+///    Set to 12 MB for headroom on burst retransmissions.
+///
+/// 4. **Flow control window** (`SRTO_FC`): max packets in flight. At 50 Mbps
+///    / 1316 B = ~4750 pkt/s; 250ms latency = ~1188 in-flight packets.
+///    Default 8192 is OK but set 32768 for high-latency links.
+///
+/// 5. **Loss max TTL** (`SRTO_LOSSMAXTTL`): reorder tolerance before
+///    declaring loss. Default 0 = auto. Set 256 packets (~54ms at 50 Mbps)
+///    to handle jitter without premature NACK storms.
+fn srt_set_highbitrate_opts(sock: SRTSOCKET) {
+    unsafe {
+        // Latency: dejitter + retransmit window (4×RTT + 2×jitter)
+        let latency: c_int = DESIRED_LATENCY_MS;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_LATENCY,
+            &latency as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+
+        // Reorder tolerance before declaring loss
+        let lossmaxttl: c_int = DESIRED_LOSSMAXTTL;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_LOSSMAXTTL,
+            &lossmaxttl as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+
+        let udp_buf: c_int = DESIRED_UDP_BUF;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_UDP_SNDBUF,
+            &udp_buf as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_UDP_RCVBUF,
+            &udp_buf as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+
+        let srt_buf: c_int = DESIRED_SRT_BUF;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_SNDBUF,
+            &srt_buf as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_RCVBUF,
+            &srt_buf as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+
+        let fc: c_int = DESIRED_FC;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_FC,
+            &fc as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+
+        let maxbw: i64 = -1;
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_MAXBW,
+            &maxbw as *const _ as *const c_void,
+            std::mem::size_of::<i64>() as c_int,
+        );
+    }
+}
+
+fn srt_log_effective_opts(sock: SRTSOCKET, label: &str) {
+    unsafe {
+        let mut udp_snd = 0i32;
+        let mut udp_rcv = 0i32;
+        let mut srt_snd = 0i32;
+        let mut srt_rcv = 0i32;
+        let mut fc = 0i32;
+        let mut latency = 0i32;
+        let mut lossmaxttl = 0i32;
+        let sz = std::mem::size_of::<c_int>() as c_int;
+        let mut len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_UDP_SNDBUF,
+            &mut udp_snd as *mut _ as *mut c_void,
+            &mut len,
+        );
+        len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_UDP_RCVBUF,
+            &mut udp_rcv as *mut _ as *mut c_void,
+            &mut len,
+        );
+        len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_SNDBUF,
+            &mut srt_snd as *mut _ as *mut c_void,
+            &mut len,
+        );
+        len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_RCVBUF,
+            &mut srt_rcv as *mut _ as *mut c_void,
+            &mut len,
+        );
+        len = sz;
+        srt_getsockopt(sock, 0, SRTO_FC, &mut fc as *mut _ as *mut c_void, &mut len);
+        len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_LATENCY,
+            &mut latency as *mut _ as *mut c_void,
+            &mut len,
+        );
+        len = sz;
+        srt_getsockopt(
+            sock,
+            0,
+            SRTO_LOSSMAXTTL,
+            &mut lossmaxttl as *mut _ as *mut c_void,
+            &mut len,
+        );
+        println!(
+            "[srt] {} config: latency={}ms lossmaxttl={} UDP snd={}KB rcv={}KB, SRT snd={}KB rcv={}KB, FC={}",
+            label,
+            latency,
+            lossmaxttl,
+            udp_snd / 1024,
+            udp_rcv / 1024,
+            srt_snd / 1024,
+            srt_rcv / 1024,
+            fc,
+        );
+        if udp_snd < DESIRED_UDP_BUF {
+            eprintln!(
+                "[srt] WARNING: {} UDP send buffer clamped to {}KB (wanted {}KB). \
+                 Raise net.core.wmem_max",
+                label,
+                udp_snd / 1024,
+                DESIRED_UDP_BUF / 1024,
+            );
+        }
+        if udp_rcv < DESIRED_UDP_BUF {
+            eprintln!(
+                "[srt] WARNING: {} UDP recv buffer clamped to {}KB (wanted {}KB). \
+                 Raise net.core.rmem_max",
+                label,
+                udp_rcv / 1024,
+                DESIRED_UDP_BUF / 1024,
+            );
+        }
+    }
+}
 
 fn to_sockaddr_in(addr: SocketAddr) -> sockaddr_in {
     let ip = match addr.ip() {
@@ -180,6 +511,67 @@ fn from_sockaddr_in(addr: sockaddr_in) -> SocketAddr {
         std::net::IpAddr::V4(std::net::Ipv4Addr::from(addr.sin_addr.to_ne_bytes())),
         u16::from_be(addr.sin_port),
     )
+}
+
+fn is_srt_group(socket: SRTSOCKET) -> bool {
+    socket & SRTGROUP_MASK != 0
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SrtGroupSummary {
+    member_count: u32,
+    connected_members: u32,
+    active_members: u32,
+    broken_members: u32,
+}
+
+fn summarize_group_members(members: &[SrtSocketGroupData]) -> SrtGroupSummary {
+    let mut summary = SrtGroupSummary {
+        member_count: members.len() as u32,
+        ..SrtGroupSummary::default()
+    };
+    for member in members {
+        if member.sockstate == SRTS_CONNECTED {
+            summary.connected_members += 1;
+        }
+        if member.memberstate == SRT_GST_RUNNING {
+            summary.active_members += 1;
+        }
+        if member.sockstate == SRTS_BROKEN || member.memberstate == SRT_GST_BROKEN {
+            summary.broken_members += 1;
+        }
+    }
+    summary
+}
+
+fn srt_group_summary(group: SRTSOCKET) -> Option<SrtGroupSummary> {
+    // Ingest bonds are normally two links. Keep ample room so this call stays
+    // allocation-only and does not need to guess at libsrt's resize semantics.
+    const MAX_GROUP_MEMBERS: usize = 64;
+    let mut members: Vec<SrtSocketGroupData> = (0..MAX_GROUP_MEMBERS)
+        .map(|_| unsafe { std::mem::zeroed() })
+        .collect();
+    let mut member_count = members.len();
+    let result = unsafe { srt_group_data(group, members.as_mut_ptr(), &mut member_count) };
+    if result < 0 {
+        return None;
+    }
+    members.truncate(member_count.min(members.len()));
+    Some(summarize_group_members(&members))
+}
+
+fn add_srt_group_quality(
+    quality: &mut PublisherQuality,
+    is_group: bool,
+    summary: Option<SrtGroupSummary>,
+) {
+    quality.srt_bonded = Some(is_group);
+    if let Some(summary) = summary {
+        quality.srt_group_member_count = Some(summary.member_count);
+        quality.srt_group_connected_members = Some(summary.connected_members);
+        quality.srt_group_active_members = Some(summary.active_members);
+        quality.srt_group_broken_members = Some(summary.broken_members);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -259,6 +651,11 @@ fn srt_quality_from_stats(
                     )
                 },
             ),
+            srt_send_buf_bytes: Some(stats.byte_snd_buf),
+            srt_recv_buf_bytes: Some(stats.byte_rcv_buf),
+            srt_send_buf_avail_bytes: Some(stats.byte_avail_snd_buf),
+            srt_recv_buf_avail_bytes: Some(stats.byte_avail_rcv_buf),
+            srt_flight_size_pkts: Some(stats.pkt_flight_size),
             ..PublisherQuality::default()
         },
         current,
@@ -348,6 +745,102 @@ fn audio_codec_id(codec: &str) -> Option<ffmpeg_next::ffi::AVCodecID> {
     }
 }
 
+/// Read the kernel UDP recv queue occupancy and drop count for a given local port
+/// from /proc/net/udp. Returns (rx_queue_bytes, drops).
+fn read_udp_socket_stats(port: u16) -> Option<(u64, u64)> {
+    let port_hex = format!("{:04X}", port);
+    let content = std::fs::read_to_string("/proc/net/udp").ok()?;
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 13 {
+            continue;
+        }
+        // local_address is field[1], format "ADDR:PORT" in hex
+        if let Some(lport) = fields[1].split(':').nth(1) {
+            if lport == port_hex {
+                // rx_queue is second half of field[4] "tx_queue:rx_queue"
+                let queues: Vec<&str> = fields[4].split(':').collect();
+                let rx_queue = queues
+                    .get(1)
+                    .and_then(|s| u64::from_str_radix(s, 16).ok())
+                    .unwrap_or(0);
+                let drops = fields
+                    .get(12)
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+                return Some((rx_queue, drops));
+            }
+        }
+    }
+    None
+}
+
+async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::ListenerSocketStats>) {
+    use std::sync::atomic::Ordering;
+
+    let configured_buf = DESIRED_UDP_BUF as u64;
+    let warn_threshold = configured_buf / 2; // 50%
+    let crit_threshold = (configured_buf * 3) / 4; // 75%
+    let mut prev_drops = 0u64;
+    let mut warned = false;
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let (rx_queue, drops) = match read_udp_socket_stats(port) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        stats.rx_queue_bytes.store(rx_queue, Ordering::Relaxed);
+        stats.drops.store(drops, Ordering::Relaxed);
+
+        let prev_peak = stats.rx_queue_max_bytes.load(Ordering::Relaxed);
+        if rx_queue > prev_peak {
+            stats.rx_queue_max_bytes.store(rx_queue, Ordering::Relaxed);
+        }
+
+        if drops > prev_drops {
+            eprintln!(
+                "[srt] ALERT: kernel dropped {} UDP packets on listener :{}  \
+                 (total drops: {}, rx_queue: {}KB / {}KB). \
+                 Increase net.core.rmem_max and restart, or reduce ingest count.",
+                drops - prev_drops,
+                port,
+                drops,
+                rx_queue / 1024,
+                configured_buf / 1024,
+            );
+            prev_drops = drops;
+            warned = false; // reset warning so it fires again after drops
+        }
+
+        if rx_queue > crit_threshold {
+            eprintln!(
+                "[srt] ALERT: listener :{} UDP recv queue at {}KB / {}KB ({:.0}%) — \
+                 imminent packet loss. Consider reducing concurrent ingest streams \
+                 or increasing net.core.rmem_max.",
+                port,
+                rx_queue / 1024,
+                configured_buf / 1024,
+                rx_queue as f64 / configured_buf as f64 * 100.0,
+            );
+            warned = true;
+        } else if rx_queue > warn_threshold && !warned {
+            eprintln!(
+                "[srt] WARNING: listener :{} UDP recv queue at {}KB / {}KB ({:.0}%)",
+                port,
+                rx_queue / 1024,
+                configured_buf / 1024,
+                rx_queue as f64 / configured_buf as f64 * 100.0,
+            );
+            warned = true;
+        } else if rx_queue < warn_threshold / 2 {
+            warned = false;
+        }
+    }
+}
+
 pub struct SrtServer {
     db: sqlx::SqlitePool,
     engine: Arc<MediaEngine>,
@@ -358,6 +851,7 @@ impl SrtServer {
         unsafe {
             srt_startup();
         }
+        check_sysctl_limits();
         Self { db, engine }
     }
 
@@ -378,6 +872,28 @@ impl SrtServer {
                 std::mem::size_of::<c_int>() as c_int,
             );
         }
+        match enable_srt_group_connect(server_sock) {
+            Ok(()) => {
+                self.engine
+                    .srt_listener_stats
+                    .bonding_available
+                    .store(true, Ordering::Relaxed);
+                println!("[srt] Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)")
+            }
+            Err(error) => {
+                self.engine
+                    .srt_listener_stats
+                    .bonding_available
+                    .store(false, Ordering::Relaxed);
+                eprintln!(
+                    "[srt] WARNING: bonded ingest is unavailable: linked libsrt rejected \
+                 SRTO_GROUPCONNECT ({error}). Install/build libsrt with ENABLE_BONDING=ON. \
+                 Single-link SRT ingest remains available."
+                )
+            }
+        }
+        srt_set_highbitrate_opts(server_sock);
+        srt_log_effective_opts(server_sock, "listener");
 
         let addr_str = format!("0.0.0.0:{}", port);
         let addr = match addr_str.parse::<SocketAddr>() {
@@ -414,6 +930,12 @@ impl SrtServer {
         }
 
         println!("[srt] Server listening on srt://{}", addr_str);
+
+        // Monitor the shared listener socket's kernel UDP buffer occupancy
+        let listener_stats = self.engine.srt_listener_stats.clone();
+        tokio::spawn(async move {
+            monitor_listener_socket(port, listener_stats).await;
+        });
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(SRTSOCKET, sockaddr_in)>();
 
@@ -454,6 +976,8 @@ impl SrtServer {
     }
 
     async fn handle_client(&self, client_sock: SRTSOCKET, client_addr: SocketAddr) {
+        let is_group = is_srt_group(client_sock);
+
         // Read streamid
         let mut streamid_buf = [0u8; 512];
         let mut optlen = streamid_buf.len() as c_int;
@@ -475,7 +999,16 @@ impl SrtServer {
             "".to_string()
         };
 
-        println!("[srt] Connection accepted. StreamID: {}", streamid);
+        println!(
+            "[srt] {} accepted (id={}). StreamID: {}",
+            if is_group {
+                "Bonded group"
+            } else {
+                "Connection"
+            },
+            client_sock,
+            streamid
+        );
 
         let parsed = parse_srt_stream_id(&streamid);
         let is_reader = parsed.mode == SrtConnectionMode::Read;
@@ -509,13 +1042,37 @@ impl SrtServer {
         }
 
         let ring_buffer = self.engine.get_or_create_pipeline(&pipeline.id).await;
-        let token = self
+        let Some(token) = self
             .engine
-            .register_ingest(&pipeline.id, stream_key, "srt")
-            .await;
+            .try_register_ingest(&pipeline.id, stream_key, "srt")
+            .await
+        else {
+            eprintln!(
+                "[srt] Rejecting duplicate publisher for pipeline {}",
+                pipeline.id
+            );
+            unsafe { srt_close(client_sock) };
+            return;
+        };
         self.engine
             .update_ingest_meta(&pipeline.id, None, None, Some(client_addr.to_string()))
             .await;
+        if is_group {
+            match srt_group_summary(client_sock) {
+                Some(summary) => println!(
+                    "[srt] Bonded ingest group {}: members={} connected={} active={} broken={}",
+                    client_sock,
+                    summary.member_count,
+                    summary.connected_members,
+                    summary.active_members,
+                    summary.broken_members
+                ),
+                None => eprintln!(
+                    "[srt] Bonded ingest group {} accepted, but member state is not available yet",
+                    client_sock
+                ),
+            }
+        }
 
         // In-memory queue instead of TCP loopback
         let queue = Arc::new(crate::media::avio::MemoryQueue::new());
@@ -575,16 +1132,24 @@ impl SrtServer {
 
             if last_stats_sample.elapsed() >= std::time::Duration::from_secs(1) {
                 let mut stats: SrtTraceBStats = unsafe { std::mem::zeroed() };
+                let sampled_at = Instant::now();
+                let group_summary = is_group.then(|| srt_group_summary(client_sock)).flatten();
                 if unsafe { srt_bistats(client_sock, &mut stats, 0, 1) } >= 0 {
-                    let sampled_at = Instant::now();
-                    let (quality, snapshot) =
+                    let (mut quality, snapshot) =
                         srt_quality_from_stats(&stats, previous_stats, sampled_at);
+                    add_srt_group_quality(&mut quality, is_group, group_summary);
                     previous_stats = Some(snapshot);
-                    last_stats_sample = sampled_at;
+                    self.engine
+                        .update_publisher_quality(&pipeline.id, quality)
+                        .await;
+                } else {
+                    let mut quality = PublisherQuality::default();
+                    add_srt_group_quality(&mut quality, is_group, group_summary);
                     self.engine
                         .update_publisher_quality(&pipeline.id, quality)
                         .await;
                 }
+                last_stats_sample = sampled_at;
             }
         }
 
@@ -647,14 +1212,15 @@ impl SrtServer {
         };
         let (video_sh, audio_sh) = self.engine.get_sequence_headers(pipeline_id).await;
 
-        // Muxer thread: reads packets from channel, writes MPEG-TS to out_queue
+        // 256 slots of Arc refs (~1.5s at 4K60). Backpressure stalls the feeder
+        // if the muxer can't keep up, which is preferable to unbounded growth.
         let (pkt_tx, pkt_rx) = std::sync::mpsc::sync_channel::<Arc<MediaPacket>>(256);
         let out_queue_mux = out_queue.clone();
 
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_play_muxer(
-                    out_queue_mux,
+                    out_queue_mux.clone(),
                     pkt_rx,
                     video_meta,
                     audio_tracks,
@@ -664,8 +1230,14 @@ impl SrtServer {
                 )
             }));
             match result {
-                Ok(Err(e)) => eprintln!("[srt] Play muxer failed: {}", e),
-                Err(_) => eprintln!("[srt] Play muxer panicked"),
+                Ok(Err(e)) => {
+                    eprintln!("[srt] Play muxer failed: {}", e);
+                    out_queue_mux.close();
+                }
+                Err(_) => {
+                    eprintln!("[srt] Play muxer panicked");
+                    out_queue_mux.close();
+                }
                 _ => {}
             }
         });
@@ -722,7 +1294,7 @@ impl SrtServer {
         }
 
         drop(pkt_tx);
-        out_queue.close();
+        // Muxer thread owns closing out_queue after write_trailer
     }
 }
 
@@ -809,6 +1381,9 @@ fn run_play_muxer(
     octx.write_header()
         .map_err(|e| format!("Write header: {}", e))?;
 
+    let num_streams = octx.nb_streams() as usize;
+    let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+
     while let Ok(pkt) = pkt_rx.recv() {
         let (stream_idx, payload) = match pkt.media_type {
             MediaType::Video => match video_stream_idx {
@@ -831,10 +1406,12 @@ fn run_play_muxer(
             },
         };
 
+        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+
         let mut av_pkt = ffmpeg_next::Packet::copy(payload);
         av_pkt.set_stream(stream_idx);
-        av_pkt.set_pts(Some(pkt.pts));
-        av_pkt.set_dts(Some(pkt.dts));
+        av_pkt.set_pts(Some(pts));
+        av_pkt.set_dts(Some(dts));
         if pkt.is_keyframe {
             av_pkt.set_flags(ffmpeg_next::codec::packet::flag::Flags::KEY);
         }
@@ -844,6 +1421,7 @@ fn run_play_muxer(
 
     octx.write_trailer()
         .map_err(|e| format!("Write trailer: {}", e))?;
+    out_queue.close();
     Ok(())
 }
 
@@ -1012,6 +1590,212 @@ mod tests {
             Some(ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_AAC)
         );
         assert_eq!(audio_codec_id("opus"), None);
+    }
+
+    #[test]
+    fn egress_url_parses_simple_target() {
+        let u = parse_srt_egress_url("srt://192.168.1.5:9000");
+        assert_eq!(u.host_port, "192.168.1.5:9000");
+        assert!(u.streamid.is_empty());
+        assert!(u.bond_addrs.is_empty());
+    }
+
+    #[test]
+    fn egress_url_parses_streamid() {
+        let u = parse_srt_egress_url("srt://host:9000?streamid=publish:live/key1");
+        assert_eq!(u.host_port, "host:9000");
+        assert_eq!(u.streamid, "publish:live/key1");
+        assert!(u.bond_addrs.is_empty());
+    }
+
+    #[test]
+    fn egress_url_parses_bond_addresses() {
+        let u = parse_srt_egress_url(
+            "srt://primary:9000?streamid=live/out&bond=backup1:9000,backup2:9000",
+        );
+        assert_eq!(u.host_port, "primary:9000");
+        assert_eq!(u.streamid, "live/out");
+        assert_eq!(u.bond_addrs, vec!["backup1:9000", "backup2:9000"]);
+    }
+
+    #[test]
+    fn egress_url_bond_only_no_streamid() {
+        let u = parse_srt_egress_url("srt://10.0.0.1:4200?bond=10.0.0.2:4200");
+        assert_eq!(u.host_port, "10.0.0.1:4200");
+        assert!(u.streamid.is_empty());
+        assert_eq!(u.bond_addrs, vec!["10.0.0.2:4200"]);
+    }
+
+    #[test]
+    fn sysctl_check_does_not_panic() {
+        // Smoke test: runs on any Linux, should not panic even if paths don't exist
+        check_sysctl_limits();
+    }
+
+    #[test]
+    fn socket_option_constants_match_srt_header() {
+        // Guard against regression: these values are from srt.h SRT_SOCKOPT enum
+        assert_eq!(SRTO_SNDSYN, 1);
+        assert_eq!(SRTO_RCVSYN, 2);
+        assert_eq!(SRTO_FC, 4);
+        assert_eq!(SRTO_SNDBUF, 5);
+        assert_eq!(SRTO_RCVBUF, 6);
+        assert_eq!(SRTO_UDP_SNDBUF, 8);
+        assert_eq!(SRTO_UDP_RCVBUF, 9);
+        assert_eq!(SRTO_MAXBW, 16);
+        assert_eq!(SRTO_LATENCY, 23);
+        assert_eq!(SRTO_LOSSMAXTTL, 42);
+        assert_eq!(SRTO_RCVLATENCY, 43);
+        assert_eq!(SRTO_PEERLATENCY, 44);
+        assert_eq!(SRTO_STREAMID, 46);
+        assert_eq!(SRTO_TRANSTYPE, 50);
+        assert_eq!(SRTO_GROUPCONNECT, 57);
+        assert_eq!(SRTGROUP_MASK, 1 << 30);
+    }
+
+    #[test]
+    fn detects_srt_group_ids() {
+        assert!(!is_srt_group(42));
+        assert!(is_srt_group(SRTGROUP_MASK | 42));
+    }
+
+    #[test]
+    fn summarizes_srt_group_member_state() {
+        let mut connected: SrtSocketGroupData = unsafe { std::mem::zeroed() };
+        connected.sockstate = SRTS_CONNECTED;
+        connected.memberstate = SRT_GST_RUNNING;
+
+        let mut idle: SrtSocketGroupData = unsafe { std::mem::zeroed() };
+        idle.sockstate = SRTS_CONNECTED;
+        idle.memberstate = 1;
+
+        let mut broken: SrtSocketGroupData = unsafe { std::mem::zeroed() };
+        broken.sockstate = SRTS_BROKEN;
+        broken.memberstate = SRT_GST_BROKEN;
+
+        assert_eq!(
+            summarize_group_members(&[connected, idle, broken]),
+            SrtGroupSummary {
+                member_count: 3,
+                connected_members: 2,
+                active_members: 1,
+                broken_members: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn libsrt_accepts_two_links_as_one_group_socket() {
+        unsafe {
+            assert_eq!(srt_startup(), 0);
+        }
+
+        let listener = unsafe { srt_create_socket() };
+        assert!(listener >= 0);
+        if let Err(error) = enable_srt_group_connect(listener) {
+            eprintln!(
+                "skipping live bonding assertion: libsrt was built without ENABLE_BONDING ({error})"
+            );
+            unsafe {
+                srt_close(listener);
+            }
+            return;
+        }
+
+        let bind_addr = to_sockaddr_in("127.0.0.1:0".parse().unwrap());
+        assert_eq!(
+            unsafe {
+                srt_bind(
+                    listener,
+                    &bind_addr,
+                    std::mem::size_of::<sockaddr_in>() as c_int,
+                )
+            },
+            0
+        );
+        assert_eq!(unsafe { srt_listen(listener, 4) }, 0);
+
+        let mut listener_addr: sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut listener_addr_len = std::mem::size_of::<sockaddr_in>() as c_int;
+        assert_eq!(
+            unsafe { srt_getsockname(listener, &mut listener_addr, &mut listener_addr_len) },
+            0
+        );
+
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut peer: sockaddr_in = unsafe { std::mem::zeroed() };
+            let mut peer_len = std::mem::size_of::<sockaddr_in>() as c_int;
+            let accepted = unsafe { srt_accept(listener, &mut peer, &mut peer_len) };
+            let mut summary = None;
+            if accepted >= 0 {
+                for _ in 0..100 {
+                    summary = srt_group_summary(accepted);
+                    if summary.is_some_and(|state| state.member_count >= 2) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+            let _ = accepted_tx.send((accepted, summary));
+            if accepted >= 0 {
+                unsafe {
+                    srt_close(accepted);
+                }
+            }
+            unsafe {
+                srt_close(listener);
+            }
+        });
+
+        let group = unsafe { srt_create_group(SRT_GTYPE_BROADCAST) };
+        assert!(group >= 0);
+        let peer_addr = from_sockaddr_in(listener_addr);
+        let (peer_storage, peer_len) = to_libc_sockaddr(peer_addr);
+        let mut members = [
+            unsafe {
+                srt_prepare_endpoint(
+                    std::ptr::null(),
+                    &peer_storage as *const _ as *const libc::sockaddr,
+                    peer_len,
+                )
+            },
+            unsafe {
+                srt_prepare_endpoint(
+                    std::ptr::null(),
+                    &peer_storage as *const _ as *const libc::sockaddr,
+                    peer_len,
+                )
+            },
+        ];
+        assert_eq!(
+            unsafe { srt_connect_group(group, members.as_mut_ptr(), members.len() as c_int) },
+            0
+        );
+
+        let (accepted, summary) = accepted_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("listener did not accept the SRT group");
+        assert!(is_srt_group(accepted));
+        let summary = summary.expect("accepted group did not expose member state");
+        assert_eq!(summary.member_count, 2);
+        assert_eq!(summary.connected_members, 2);
+
+        unsafe {
+            srt_close(group);
+        }
+    }
+
+    #[test]
+    fn reads_udp_socket_stats_for_listener_port() {
+        // On a system without an SRT listener, this should return None
+        // (port 10080 not bound). If it's bound, it returns Some.
+        let result = read_udp_socket_stats(10080);
+        // Either None or Some with valid values — should not panic
+        if let Some((rx_queue, drops)) = result {
+            assert!(rx_queue < u64::MAX);
+            assert!(drops < u64::MAX);
+        }
     }
 }
 
@@ -1192,6 +1976,74 @@ fn run_ffmpeg_demuxer(
     Ok(())
 }
 
+async fn resolve_host(host_port: &str) -> Option<SocketAddr> {
+    match host_port.parse::<SocketAddr>() {
+        Ok(a) => Some(a),
+        Err(_) => tokio::net::lookup_host(host_port)
+            .await
+            .ok()
+            .and_then(|mut addrs| addrs.next()),
+    }
+}
+
+fn to_libc_sockaddr(addr: SocketAddr) -> (libc::sockaddr_storage, c_int) {
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    match addr {
+        SocketAddr::V4(v4) => {
+            let sin = &mut storage as *mut _ as *mut libc::sockaddr_in;
+            unsafe {
+                (*sin).sin_family = libc::AF_INET as libc::sa_family_t;
+                (*sin).sin_port = v4.port().to_be();
+                (*sin).sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
+            }
+            (storage, std::mem::size_of::<libc::sockaddr_in>() as c_int)
+        }
+        SocketAddr::V6(v6) => {
+            let sin6 = &mut storage as *mut _ as *mut libc::sockaddr_in6;
+            unsafe {
+                (*sin6).sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                (*sin6).sin6_port = v6.port().to_be();
+                (*sin6).sin6_addr.s6_addr = v6.ip().octets();
+            }
+            (storage, std::mem::size_of::<libc::sockaddr_in6>() as c_int)
+        }
+    }
+}
+
+struct SrtEgressUrl {
+    host_port: String,
+    streamid: String,
+    bond_addrs: Vec<String>,
+}
+
+fn parse_srt_egress_url(url: &str) -> SrtEgressUrl {
+    let url_cleaned = url.replace("srt://", "");
+    let parts: Vec<&str> = url_cleaned.split('?').collect();
+    let host_port = parts[0].to_string();
+
+    let mut streamid = String::new();
+    let mut bond_addrs: Vec<String> = Vec::new();
+    if parts.len() > 1 {
+        for param in parts[1].split('&') {
+            let key_val: Vec<&str> = param.splitn(2, '=').collect();
+            if key_val.len() == 2 {
+                match key_val[0] {
+                    "streamid" => streamid = key_val[1].to_string(),
+                    "bond" => {
+                        bond_addrs = key_val[1].split(',').map(|s| s.to_string()).collect();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    SrtEgressUrl {
+        host_port,
+        streamid,
+        bond_addrs,
+    }
+}
+
 // SRT Egress Client
 pub async fn start_srt_egress(
     output_id: String,
@@ -1201,105 +2053,209 @@ pub async fn start_srt_egress(
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
-    let url_cleaned = target_url.replace("srt://", "");
-    let parts: Vec<&str> = url_cleaned.split('?').collect();
-    let host_port = parts[0];
+    let parsed = parse_srt_egress_url(&target_url);
+    let host_port = &parsed.host_port;
+    let streamid = parsed.streamid;
+    let bond_addrs = parsed.bond_addrs;
 
-    let mut streamid = "";
-    if parts.len() > 1 {
-        for param in parts[1].split('&') {
-            let key_val: Vec<&str> = param.split('=').collect();
-            if key_val.len() == 2 && key_val[0] == "streamid" {
-                streamid = key_val[1];
-            }
-        }
-    }
-
-    let addr = match host_port.parse::<SocketAddr>() {
-        Ok(a) => a,
-        Err(_) => {
-            if let Ok(mut addrs) = tokio::net::lookup_host(host_port).await {
-                if let Some(a) = addrs.next() {
-                    a
-                } else {
-                    eprintln!("[srt-egress] Failed to parse target URL: {}", target_url);
-                    return;
-                }
-            } else {
-                eprintln!(
-                    "[srt-egress] Failed to parse/resolve target URL: {}",
-                    target_url
-                );
-                return;
-            }
+    let addr = match resolve_host(host_port).await {
+        Some(a) => a,
+        None => {
+            eprintln!("[srt-egress] Failed to resolve target: {}", target_url);
+            return;
         }
     };
 
-    let client_sock = unsafe { srt_create_socket() };
-    if client_sock < 0 {
-        eprintln!("[srt-egress] Failed to create socket");
-        return;
+    // Resolve bond addresses
+    let mut all_addrs = vec![addr];
+    for bond_hp in &bond_addrs {
+        match resolve_host(bond_hp).await {
+            Some(a) => all_addrs.push(a),
+            None => eprintln!("[srt-egress] Failed to resolve bond address: {}", bond_hp),
+        }
     }
 
-    if !streamid.is_empty() {
-        let streamid_c = match std::ffi::CString::new(streamid) {
-            Ok(c) => c,
-            Err(_) => {
-                eprintln!("[srt-egress] Invalid stream ID (contains null byte)");
+    let use_bonding = all_addrs.len() > 1;
+    let client_sock: SRTSOCKET;
+
+    if use_bonding {
+        // Create a bonding group (backup mode: one active, failover to next)
+        client_sock = unsafe { srt_create_group(SRT_GTYPE_BACKUP) };
+        if client_sock < 0 {
+            eprintln!("[srt-egress] Failed to create bonding group");
+            return;
+        }
+
+        if !streamid.is_empty() {
+            let streamid_c = std::ffi::CString::new(streamid.as_str()).unwrap();
+            // Set streamid on the group via per-member config
+            let config = unsafe { srt_create_config() };
+            if !config.is_null() {
+                unsafe {
+                    srt_config_add(
+                        config,
+                        SRTO_STREAMID,
+                        streamid_c.as_ptr() as *const c_void,
+                        streamid.len() as c_int,
+                    );
+                }
+            }
+
+            let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
+            for (i, &peer_addr) in all_addrs.iter().enumerate() {
+                let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                let mut member = unsafe {
+                    srt_prepare_endpoint(
+                        std::ptr::null(),
+                        &peer_storage as *const _ as *const libc::sockaddr,
+                        addrlen,
+                    )
+                };
+                member.weight = if i == 0 { 1 } else { 0 };
+                if !config.is_null() {
+                    member.config = config;
+                }
+                members.push(member);
+            }
+
+            let conn_res = unsafe {
+                srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
+            };
+            if conn_res < 0 {
+                let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+                eprintln!(
+                    "[srt-egress] Bonded connection failed: {}",
+                    err.to_string_lossy()
+                );
+                unsafe {
+                    srt_close(client_sock);
+                    if !config.is_null() {
+                        srt_delete_config(config);
+                    }
+                }
+                return;
+            }
+            // config ownership transfers to SRT on successful connect
+        } else {
+            let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
+            for (i, &peer_addr) in all_addrs.iter().enumerate() {
+                let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                let mut member = unsafe {
+                    srt_prepare_endpoint(
+                        std::ptr::null(),
+                        &peer_storage as *const _ as *const libc::sockaddr,
+                        addrlen,
+                    )
+                };
+                member.weight = if i == 0 { 1 } else { 0 };
+                members.push(member);
+            }
+
+            let conn_res = unsafe {
+                srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
+            };
+            if conn_res < 0 {
+                let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+                eprintln!(
+                    "[srt-egress] Bonded connection failed: {}",
+                    err.to_string_lossy()
+                );
                 unsafe {
                     srt_close(client_sock);
                 }
                 return;
             }
-        };
-        unsafe {
-            srt_setsockopt(
+        }
+
+        println!(
+            "[srt-egress] Bonded connection ({} links) to {}",
+            all_addrs.len(),
+            target_url
+        );
+        srt_log_effective_opts(client_sock, "egress-bonded");
+    } else {
+        // Single connection (original path)
+        client_sock = unsafe { srt_create_socket() };
+        if client_sock < 0 {
+            eprintln!("[srt-egress] Failed to create socket");
+            return;
+        }
+        srt_set_highbitrate_opts(client_sock);
+
+        if !streamid.is_empty() {
+            let streamid_c = match std::ffi::CString::new(streamid.as_str()) {
+                Ok(c) => c,
+                Err(_) => {
+                    eprintln!("[srt-egress] Invalid stream ID (contains null byte)");
+                    unsafe {
+                        srt_close(client_sock);
+                    }
+                    return;
+                }
+            };
+            unsafe {
+                srt_setsockopt(
+                    client_sock,
+                    0,
+                    SRTO_STREAMID,
+                    streamid_c.as_ptr() as *const c_void,
+                    streamid.len() as c_int,
+                );
+            }
+        }
+
+        let sin = to_sockaddr_in(addr);
+        let conn_res = unsafe {
+            srt_connect(
                 client_sock,
-                0,
-                SRTO_STREAMID,
-                streamid_c.as_ptr() as *const c_void,
-                streamid.len() as c_int,
-            );
+                &sin,
+                std::mem::size_of::<sockaddr_in>() as c_int,
+            )
+        };
+        if conn_res < 0 {
+            eprintln!("[srt-egress] Connection failed to {}", target_url);
+            unsafe {
+                srt_close(client_sock);
+            }
+            return;
         }
+
+        println!("[srt-egress] Connected to {}", target_url);
+        srt_log_effective_opts(client_sock, "egress");
     }
 
-    let sin = to_sockaddr_in(addr);
-    let conn_res = unsafe {
-        srt_connect(
-            client_sock,
-            &sin,
-            std::mem::size_of::<sockaddr_in>() as c_int,
-        )
-    };
-    if conn_res < 0 {
-        eprintln!("[srt-egress] Connection failed to {}", target_url);
-        unsafe {
-            srt_close(client_sock);
+    // Wait for ingest metadata before starting the MPEG-TS muxer
+    let (video_meta, audio_tracks, flv_payloads) = loop {
+        if cancel_token.is_cancelled() {
+            unsafe {
+                srt_close(client_sock);
+            }
+            return;
         }
-        return;
-    }
-
-    println!("[srt-egress] Connected to {}", target_url);
-
-    // Get ingest metadata and sequence headers for MPEG-TS muxer
-    let (video_meta, audio_tracks, flv_payloads) = {
-        let ingests = engine.active_ingests.read().await;
-        match ingests.get(&pipeline_id) {
-            Some(i) => {
+        let result = {
+            let ingests = engine.active_ingests.read().await;
+            ingests.get(&pipeline_id).and_then(|i| {
+                let video = i.video.clone();
+                if video.is_none() {
+                    return None;
+                }
                 let mut tracks = i.audio_tracks.lock().unwrap().clone();
                 if tracks.is_empty() {
                     if let Some(audio) = i.audio.clone() {
                         tracks.push(audio);
                     }
                 }
-                (
-                    i.video.clone(),
+                Some((
+                    video,
                     tracks,
                     matches!(i.protocol.as_str(), "rtmp" | "file"),
-                )
-            }
-            None => (None, Vec::new(), true),
+                ))
+            })
+        };
+        if let Some(meta) = result {
+            break meta;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
     let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
 
@@ -1311,7 +2267,7 @@ pub async fn start_srt_egress(
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_play_muxer(
-                out_queue_mux,
+                out_queue_mux.clone(),
                 pkt_rx,
                 video_meta,
                 audio_tracks,
@@ -1321,8 +2277,14 @@ pub async fn start_srt_egress(
             )
         }));
         match result {
-            Ok(Err(e)) => eprintln!("[srt-egress] Muxer failed: {}", e),
-            Err(_) => eprintln!("[srt-egress] Muxer panicked"),
+            Ok(Err(e)) => {
+                eprintln!("[srt-egress] Muxer failed: {}", e);
+                out_queue_mux.close();
+            }
+            Err(_) => {
+                eprintln!("[srt-egress] Muxer panicked");
+                out_queue_mux.close();
+            }
             _ => {}
         }
     });
@@ -1331,8 +2293,10 @@ pub async fn start_srt_egress(
     let out_queue_send = out_queue.clone();
     let oid = output_id.clone();
     let engine_send = engine.clone();
+    let rt_handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 1316];
+        let mut total_sent = 0u64;
         loop {
             let n = out_queue_send.read(&mut buf);
             if n == 0 {
@@ -1342,12 +2306,23 @@ pub async fn start_srt_egress(
             if sent < 0 {
                 break;
             }
-            // Fire-and-forget stats update from blocking thread
+            total_sent += sent as u64;
+            // Batch stats updates every ~100KB to reduce async overhead
+            if total_sent >= 100_000 {
+                let bytes = total_sent;
+                total_sent = 0;
+                let oid2 = oid.clone();
+                let engine2 = engine_send.clone();
+                rt_handle.spawn(async move {
+                    engine2.update_egress_bytes(&oid2, bytes).await;
+                });
+            }
+        }
+        if total_sent > 0 {
             let oid2 = oid.clone();
             let engine2 = engine_send.clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(engine2.update_egress_bytes(&oid2, sent as u64));
+            rt_handle.spawn(async move {
+                engine2.update_egress_bytes(&oid2, total_sent).await;
             });
         }
         println!("[srt-egress] Sender thread finished for {}", oid);
@@ -1372,5 +2347,5 @@ pub async fn start_srt_egress(
     }
 
     drop(pkt_tx);
-    out_queue.close();
+    // Muxer thread owns closing out_queue after write_trailer
 }

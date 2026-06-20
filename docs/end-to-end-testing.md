@@ -55,17 +55,20 @@ The following must be treated as test results, not assumed capabilities.
 
 | Area | Current implementation | Required test outcome |
 | --- | --- | --- |
-| RTMP ingest/read/egress | Native `rml_rtmp` path | Must pass H.264/AAC correctness and timestamp checks |
+| RTMP ingest/read/egress | Native `rml_rtmp` path; outbound video uses DTS and audio uses PTS | Must pass H.264/AAC B-frame timestamp checks |
 | SRT ingest/read | libsrt plus MPEG-TS demux/remux | Must pass H.264 and H.265 correctness |
-| SRT egress | Sends ring packet payloads directly over SRT | Expected to fail MPEG-TS correctness until a package stage is used |
+| SRT egress | Uses an MPEG-TS mux stage before `srt_send` | Must pass H.264/H.265 packaging, timestamp, and sink-readability checks |
 | Video presets | Encoder parameters are created, but compressed input packets are currently copied instead of decoded, filtered, and encoded | `720p`, `1080p`, crop, and rotate are expected to fail visual/codec assertions until the encode loop is complete |
 | Transcoder output contract | MPEG-TS byte chunks are pushed back as timestamp-zero video packets | Expected to fail protocol-neutral packet and timestamp assertions |
 | Cross-protocol egress | Ring payload shape depends on ingest and stage origin | Expected to fail combinations that require a missing protocol package stage |
 | HLS preview | In-memory MPEG-TS segments served by Axum | Must pass pull/playback tests |
+| Recording | Matroska mux path exists, but raw packet payloads are concatenated into format detection | Must produce a readable file with correct streams/timestamps before being marked supported |
 | HLS upload egress | Not implemented: a non-RTMP/SRT URL starts the local segmenter and ignores the destination URL | Must not be marked supported until HTTP PUT is implemented |
 | `remap` and `downmix` | Select the requested track but currently perform stream copy | Expected to fail channel-semantic assertions until filtering/encoding is implemented |
 | Custom encoding | Configuration API exists, but the in-process reconciler treats `custom` as source | Expected to fail transformation assertions until custom arguments are applied |
 | RTMP H.265 | Requires Enhanced RTMP handling | Capability test; do not infer support from SRT H.265 |
+| `/health` output telemetry | `ActiveEgress` stores `pipeline_id`; API regression tests cover association | Must pass live bitrate/status polling |
+| Bonded SRT ingest | One listener accepts a group ID, exposes member state, and rejects unrelated duplicate publishers; requires `ENABLE_BONDING=ON` | Must run against a bonding-enabled libsrt and validate one receive path plus member failover |
 
 The HLS upload behavior to match is documented by
 [`mediamtx_push_targets_v1.17.1.patch`](https://github.com/live-miracles/restream/blob/master/patches/mediamtx/mediamtx_push_targets_v1.17.1.patch):
@@ -543,7 +546,8 @@ Acceptance:
 Until these assertions pass, report:
 
 ```text
-HLS playback/preview: supported
+HLS playlist/store routes: supported
+HLS live media generation: not yet supported
 HLS upload-style egress: not supported
 ```
 

@@ -1,11 +1,9 @@
-//! Linux receiver-side TCP socket statistics for RTMP publishers.
+//! Native Linux receiver-side TCP statistics for RTMP publishers.
 //!
-//! `ss -tinmH` exposes fields that are not consistently available through the
-//! portable socket APIs used by Tokio, including receive-buffer occupancy,
-//! receive RTT, last-receive age, and out-of-order packet counts.
+//! The RTMP server owns the accepted socket, so it can read `TCP_INFO` and
+//! `SO_MEMINFO` directly without spawning `ss` or matching address strings.
 
 use std::io;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TcpReceiverStats {
@@ -20,195 +18,236 @@ pub struct TcpReceiverStats {
     pub tcp_skmem_rmem_max: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct TcpSocketEntry {
-    state: String,
-    local_key: String,
-    peer_key: String,
-    stats: TcpReceiverStats,
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct LinuxTcpInfo {
+    tcpi_state: u8,
+    tcpi_ca_state: u8,
+    tcpi_retransmits: u8,
+    tcpi_probes: u8,
+    tcpi_backoff: u8,
+    tcpi_options: u8,
+    tcpi_snd_rcv_wscale: u8,
+    tcpi_delivery_rate_flags: u8,
+    tcpi_rto: u32,
+    tcpi_ato: u32,
+    tcpi_snd_mss: u32,
+    tcpi_rcv_mss: u32,
+    tcpi_unacked: u32,
+    tcpi_sacked: u32,
+    tcpi_lost: u32,
+    tcpi_retrans: u32,
+    tcpi_fackets: u32,
+    tcpi_last_data_sent: u32,
+    tcpi_last_ack_sent: u32,
+    tcpi_last_data_recv: u32,
+    tcpi_last_ack_recv: u32,
+    tcpi_pmtu: u32,
+    tcpi_rcv_ssthresh: u32,
+    tcpi_rtt: u32,
+    tcpi_rttvar: u32,
+    tcpi_snd_ssthresh: u32,
+    tcpi_snd_cwnd: u32,
+    tcpi_advmss: u32,
+    tcpi_reordering: u32,
+    tcpi_rcv_rtt: u32,
+    tcpi_rcv_space: u32,
+    tcpi_total_retrans: u32,
+    tcpi_pacing_rate: u64,
+    tcpi_max_pacing_rate: u64,
+    tcpi_bytes_acked: u64,
+    tcpi_bytes_received: u64,
+    tcpi_segs_out: u32,
+    tcpi_segs_in: u32,
+    tcpi_notsent_bytes: u32,
+    tcpi_min_rtt: u32,
+    tcpi_data_segs_in: u32,
+    tcpi_data_segs_out: u32,
+    tcpi_delivery_rate: u64,
+    tcpi_busy_time: u64,
+    tcpi_rwnd_limited: u64,
+    tcpi_sndbuf_limited: u64,
+    tcpi_delivered: u32,
+    tcpi_delivered_ce: u32,
+    tcpi_bytes_sent: u64,
+    tcpi_bytes_retrans: u64,
+    tcpi_dsack_dups: u32,
+    tcpi_reord_seen: u32,
+    tcpi_rcv_ooopack: u32,
+    tcpi_snd_wnd: u32,
+    tcpi_rcv_wnd: u32,
+    tcpi_rehash: u32,
+    tcpi_total_rto: u16,
+    tcpi_total_rto_recoveries: u16,
+    tcpi_total_rto_time: u32,
 }
 
-fn normalize_socket_key(value: &str) -> Option<String> {
-    let raw = value.trim();
-    let (host, port) = if let Some(rest) = raw.strip_prefix('[') {
-        let (host, port) = rest.rsplit_once("]:")?;
-        (host, port)
-    } else {
-        raw.rsplit_once(':')?
-    };
-
-    let host = host
-        .trim()
-        .to_ascii_lowercase()
-        .strip_prefix("::ffff:")
-        .unwrap_or(host.trim())
-        .to_string();
-    if host.is_empty() || port.parse::<u16>().is_err() {
-        return None;
-    }
-    Some(format!("{}:{}", host, port))
+#[cfg(target_os = "linux")]
+fn field_available<T>(returned_len: usize, offset: usize) -> bool {
+    returned_len >= offset + std::mem::size_of::<T>()
 }
 
-fn parse_stats_line(line: &str) -> TcpReceiverStats {
-    fn number<T: std::str::FromStr>(line: &str, label: &str) -> Option<T> {
-        line.split_whitespace()
-            .find_map(|part| part.strip_prefix(label))
-            .and_then(|value| value.parse().ok())
-    }
-
-    fn decimal(line: &str, label: &str) -> Option<f64> {
-        number(line, label)
-    }
-
-    let (tcp_rtt_ms, tcp_rtt_var_ms) = line
-        .split_whitespace()
-        .find_map(|part| part.strip_prefix("rtt:"))
-        .and_then(|value| value.split_once('/'))
-        .map(|(rtt, var)| (rtt.parse().ok(), var.parse().ok()))
-        .unwrap_or((None, None));
-
-    let (tcp_skmem_rmem_alloc, tcp_skmem_rmem_max) = line
-        .split_whitespace()
-        .find_map(|part| part.strip_prefix("skmem:(r"))
-        .and_then(|value| value.split_once(",rb"))
-        .map(|(used, rest)| {
-            let max = rest.split(',').next().unwrap_or_default();
-            (used.parse().ok(), max.parse().ok())
-        })
-        .unwrap_or((None, None));
-
+#[cfg(target_os = "linux")]
+fn stats_from_tcp_info(info: &LinuxTcpInfo, returned_len: usize) -> TcpReceiverStats {
     TcpReceiverStats {
-        tcp_rtt_ms,
-        tcp_rtt_var_ms,
-        tcp_bytes_received: number(line, "bytes_received:"),
-        tcp_last_rcv_ms: number(line, "lastrcv:"),
-        tcp_rcv_rtt_ms: decimal(line, "rcv_rtt:"),
-        tcp_rcv_space: number(line, "rcv_space:"),
-        tcp_rcv_ooopack: number(line, "rcv_ooopack:"),
-        tcp_skmem_rmem_alloc,
-        tcp_skmem_rmem_max,
-    }
-}
-
-fn parse_ss_tcp_socket_entries(stdout: &str) -> Vec<TcpSocketEntry> {
-    let lines: Vec<&str> = stdout.lines().collect();
-    let mut entries = Vec::new();
-    let mut index = 0;
-
-    while index < lines.len() {
-        let line = lines[index];
-        if line.trim().is_empty() || line.starts_with(char::is_whitespace) {
-            index += 1;
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 {
-            index += 1;
-            continue;
-        }
-
-        let Some(local_key) = normalize_socket_key(parts[3]) else {
-            index += 1;
-            continue;
-        };
-        let Some(peer_key) = normalize_socket_key(parts[4]) else {
-            index += 1;
-            continue;
-        };
-
-        let mut stats_lines = Vec::new();
-        index += 1;
-        while index < lines.len() && lines[index].starts_with(char::is_whitespace) {
-            stats_lines.push(lines[index].trim());
-            index += 1;
-        }
-
-        entries.push(TcpSocketEntry {
-            state: parts[0].to_string(),
-            local_key,
-            peer_key,
-            stats: parse_stats_line(&stats_lines.join(" ")),
-        });
-    }
-
-    entries
-}
-
-pub async fn collect_rtmp_receiver_stats(
-    peer_addr: &str,
-    local_port: u16,
-) -> io::Result<Option<TcpReceiverStats>> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (peer_addr, local_port);
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "receiver TCP statistics require Linux",
-        ));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let output = tokio::time::timeout(
-            Duration::from_secs(1),
-            tokio::process::Command::new("ss").arg("-tinmH").output(),
+        tcp_rtt_ms: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_rtt),
         )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "ss timed out"))??;
-
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "ss exited with status {}",
-                output.status
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let peer_key = normalize_socket_key(peer_addr);
-        Ok(parse_ss_tcp_socket_entries(&stdout)
-            .into_iter()
-            .find(|entry| {
-                entry.state == "ESTAB"
-                    && entry.local_key.ends_with(&format!(":{}", local_port))
-                    && Some(entry.peer_key.as_str()) == peer_key.as_deref()
-            })
-            .map(|entry| entry.stats))
+        .then_some(info.tcpi_rtt as f64 / 1_000.0),
+        tcp_rtt_var_ms: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_rttvar),
+        )
+        .then_some(info.tcpi_rttvar as f64 / 1_000.0),
+        tcp_bytes_received: field_available::<u64>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_bytes_received),
+        )
+        .then_some(info.tcpi_bytes_received),
+        tcp_last_rcv_ms: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_last_data_recv),
+        )
+        .then_some(info.tcpi_last_data_recv as u64),
+        tcp_rcv_rtt_ms: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_rcv_rtt),
+        )
+        .then_some(info.tcpi_rcv_rtt as f64 / 1_000.0),
+        tcp_rcv_space: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_rcv_space),
+        )
+        .then_some(info.tcpi_rcv_space as u64),
+        tcp_rcv_ooopack: field_available::<u32>(
+            returned_len,
+            std::mem::offset_of!(LinuxTcpInfo, tcpi_rcv_ooopack),
+        )
+        .then_some(info.tcpi_rcv_ooopack as u64),
+        ..TcpReceiverStats::default()
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn collect_rtmp_receiver_stats(socket: &tokio::net::TcpStream) -> io::Result<TcpReceiverStats> {
+    use std::os::fd::AsRawFd;
+
+    let fd = socket.as_raw_fd();
+    let mut info = LinuxTcpInfo::default();
+    let mut info_len = std::mem::size_of::<LinuxTcpInfo>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_INFO,
+            &mut info as *mut LinuxTcpInfo as *mut libc::c_void,
+            &mut info_len,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut stats = stats_from_tcp_info(&info, info_len as usize);
+    let mut memory = [0u32; 9];
+    let mut memory_len = std::mem::size_of_val(&memory) as libc::socklen_t;
+    let memory_result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_MEMINFO,
+            memory.as_mut_ptr() as *mut libc::c_void,
+            &mut memory_len,
+        )
+    };
+    if memory_result == 0 {
+        let fields = memory_len as usize / std::mem::size_of::<u32>();
+        if fields > libc::SK_MEMINFO_RMEM_ALLOC as usize {
+            stats.tcp_skmem_rmem_alloc = Some(memory[libc::SK_MEMINFO_RMEM_ALLOC as usize] as u64);
+        }
+        if fields > libc::SK_MEMINFO_RCVBUF as usize {
+            stats.tcp_skmem_rmem_max = Some(memory[libc::SK_MEMINFO_RCVBUF as usize] as u64);
+        }
+    }
+
+    Ok(stats)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn collect_rtmp_receiver_stats(
+    _socket: &tokio::net::TcpStream,
+) -> io::Result<TcpReceiverStats> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "receiver TCP statistics require Linux",
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn parses_receiver_side_metrics_and_skmem() {
-        let output = "ESTAB 0 0 127.0.0.1:1935 10.0.0.5:55000\n\
-            \t skmem:(r4096,rb2097152,t0,tb87040,f0,w0,o0,bl0,d0) cubic rtt:12.0/2.0 cwnd:10 bytes_received:1234567 lastrcv:42 rcv_rtt:8.5 rcv_space:65536 rcv_ooopack:15\n";
+    fn converts_receiver_side_tcp_info_fields() {
+        let info = LinuxTcpInfo {
+            tcpi_rtt: 12_000,
+            tcpi_rttvar: 2_000,
+            tcpi_last_data_recv: 42,
+            tcpi_rcv_rtt: 8_500,
+            tcpi_rcv_space: 65_536,
+            tcpi_bytes_received: 1_234_567,
+            tcpi_rcv_ooopack: 15,
+            ..LinuxTcpInfo::default()
+        };
 
-        let entries = parse_ss_tcp_socket_entries(output);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].stats,
-            TcpReceiverStats {
-                tcp_rtt_ms: Some(12.0),
-                tcp_rtt_var_ms: Some(2.0),
-                tcp_bytes_received: Some(1_234_567),
-                tcp_last_rcv_ms: Some(42),
-                tcp_rcv_rtt_ms: Some(8.5),
-                tcp_rcv_space: Some(65_536),
-                tcp_rcv_ooopack: Some(15),
-                tcp_skmem_rmem_alloc: Some(4_096),
-                tcp_skmem_rmem_max: Some(2_097_152),
-            }
-        );
+        let stats = stats_from_tcp_info(&info, std::mem::size_of::<LinuxTcpInfo>());
+        assert_eq!(stats.tcp_rtt_ms, Some(12.0));
+        assert_eq!(stats.tcp_rtt_var_ms, Some(2.0));
+        assert_eq!(stats.tcp_bytes_received, Some(1_234_567));
+        assert_eq!(stats.tcp_last_rcv_ms, Some(42));
+        assert_eq!(stats.tcp_rcv_rtt_ms, Some(8.5));
+        assert_eq!(stats.tcp_rcv_space, Some(65_536));
+        assert_eq!(stats.tcp_rcv_ooopack, Some(15));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn normalizes_ipv4_mapped_addresses() {
-        assert_eq!(
-            normalize_socket_key("[::ffff:127.0.0.1]:55111"),
-            Some("127.0.0.1:55111".to_string())
-        );
+    fn omits_fields_not_returned_by_an_older_kernel() {
+        let info = LinuxTcpInfo {
+            tcpi_rtt: 12_000,
+            tcpi_bytes_received: 1_234_567,
+            ..LinuxTcpInfo::default()
+        };
+        let returned_len = std::mem::offset_of!(LinuxTcpInfo, tcpi_bytes_received);
+        let stats = stats_from_tcp_info(&info, returned_len);
+
+        assert_eq!(stats.tcp_rtt_ms, Some(12.0));
+        assert_eq!(stats.tcp_bytes_received, None);
+        assert_eq!(stats.tcp_rcv_ooopack, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn reads_stats_from_an_owned_tcp_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            socket.write_all(b"receiver-side-stats").await.unwrap();
+        });
+        let (mut server, _) = listener.accept().await.unwrap();
+        let mut payload = [0u8; 19];
+        server.read_exact(&mut payload).await.unwrap();
+        client.await.unwrap();
+
+        let stats = collect_rtmp_receiver_stats(&server).unwrap();
+        assert!(stats.tcp_rtt_ms.is_some());
+        assert!(stats.tcp_bytes_received.unwrap_or(0) >= payload.len() as u64);
+        assert!(stats.tcp_skmem_rmem_max.unwrap_or(0) > 0);
     }
 }

@@ -789,6 +789,14 @@ async fn pipelines_delete_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    // Cancel all running egresses for this pipeline's outputs before deleting
+    if let Ok(outputs) = db::list_outputs(&state.db).await {
+        for output in outputs.iter().filter(|o| o.pipeline_id == id) {
+            state.engine.unregister_egress(&output.id).await;
+        }
+    }
+    state.engine.unregister_ingest(&id).await;
+
     match db::delete_pipeline(&state.db, &id).await {
         Ok(true) => {
             Json(serde_json::json!({"message": format!("Pipeline {} deleted", id)})).into_response()
@@ -885,6 +893,7 @@ async fn outputs_delete_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    state.engine.unregister_egress(&output_id).await;
     match db::delete_output(&state.db, &pipeline_id, &output_id).await {
         Ok(true) => Json(serde_json::json!({"message": "Output deleted"})).into_response(),
         _ => (StatusCode::NOT_FOUND, "Output not found").into_response(),
@@ -1147,6 +1156,12 @@ async fn ingests_delete_handler(
     } else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
+
+    let mut children = state.engine.file_ingest_children.write().await;
+    if let Some(mut child) = children.remove(&id) {
+        let _ = child.kill().await;
+    }
+    drop(children);
 
     let _ = db::delete_ingest(&state.db, &id).await;
     Json(serde_json::json!({"deleted": true})).into_response()

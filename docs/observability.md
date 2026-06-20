@@ -1,152 +1,101 @@
 # Observability
 
-Restream uses two observability layers:
+The Rust rewrite exposes JSON and SSE diagnostics directly from process state.
+It does not currently expose a Prometheus text endpoint or proxy Grafana.
 
-| Layer | Endpoint | Purpose |
+## Available Surfaces
+
+| Surface | Authentication | Purpose |
 |---|---|---|
-| Restream health | `http://127.0.0.1:3030/health` | Current control-plane status for the dashboard |
-| Restream host metrics | `http://127.0.0.1:3030/metrics/system` | JSON CPU, RAM, disk, and network values for the dashboard navbar |
-| MediaMTX metrics | `http://127.0.0.1:9998/metrics` | Prometheus-compatible time-series metrics for Prometheus and Grafana |
+| `GET /healthz` | None | Process liveness |
+| `GET /health` | None | Pipeline input/output state, transport quality, recording state, SRT listener pressure |
+| `GET /metrics/system` | Session | CPU, memory, disk, and host-wide network rates |
+| `GET /api/status` | Session | Restream version/commit, linked FFmpeg version, OS/host information |
+| `GET /pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
+| `GET /pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
+| `GET /pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |
 
-`/health` and `/metrics/system` are JSON APIs. They are intentionally not Prometheus scrape
-targets today. MediaMTX already exposes Prometheus-compatible metrics, so Prometheus should scrape
-MediaMTX directly.
+`/health` is assembled on demand from `MediaEngine`; there is no MediaMTX poll
+or background health-snapshot cache.
 
-## MediaMTX Metrics
+## Publisher Transport Metrics
 
-MediaMTX metrics are enabled in `mediamtx.yml`:
+SRT publisher quality is sampled with `srt_bistats()` and includes:
 
-```yaml
-metrics: yes
-metricsAddress: 127.0.0.1:9998
+- RTT, receive rate, and estimated link capacity
+- receive latency/buffer values and NAK count
+- cumulative loss, drop, retransmit, and undecrypt counters
+- per-second rates derived from counter deltas
+- SRT send/receive buffer occupancy and flight size
+- for bonded sockets, member counts and connected/active/broken state from
+  `srt_group_data()`
+
+RTMP publisher quality is read from the accepted Linux TCP socket with
+`getsockopt(TCP_INFO)` and `getsockopt(SO_MEMINFO)`. It includes:
+
+- RTT and receive RTT
+- bytes received and receive-rate delta
+- time since last receive
+- receive window/space
+- out-of-order packet count
+- kernel receive-buffer allocation and limit
+
+On non-Linux hosts the RTMP socket-specific fields report an explicit
+unavailable reason.
+
+## SRT Listener Pressure
+
+All SRT ingests share the listener's kernel UDP receive buffer. A monitor reads
+`/proc/net/udp` once per second and exports:
+
+```json
+{
+  "srtListener": {
+    "bondingAvailable": false,
+    "udpRxQueueBytes": 0,
+    "udpRxQueuePeakBytes": 0,
+    "udpDrops": 0
+  }
+}
 ```
 
-Keep the metrics listener local-only. Prometheus should run on the same host, or in a trusted
-host-network container on that host.
+The diagnostic runner warns above 50% queue occupancy, alerts above 75%, and
+reports any kernel drop count.
 
-Quick check after MediaMTX is running:
+## Diagnostics Checks
 
-```sh
-curl -fsS http://127.0.0.1:9998/metrics | head
-```
+The current SSE run emits:
 
-## Prometheus
+1. Engine Status
+2. Stream Info
+3. GOP Analysis
+4. Publisher Transport
+5. Ring Buffer Health
+6. Active Outputs
+7. System Resources
+8. Network Bandwidth
+9. SRT Listener Socket
 
-A starter Prometheus config is checked in at `monitoring/prometheus.yml`. On the Linux VM deployment, `scripts/server-setup.sh` and `scripts/server-update.sh` copy it into `/etc/prometheus/prometheus.yml` for the package-managed Prometheus service.
+Some checks are contextual rather than packet-accurate. In particular, network
+bandwidth is host-wide and current ring-buffer fill does not yet represent
+per-reader lag.
 
-Then open:
+Engine Status and Active Outputs associate egresses through the explicit
+`ActiveEgress.pipeline_id` field.
 
-```text
-http://127.0.0.1:9090/targets
-```
+See [Diagnostics](diagnostics.md) for the instrumentation plan and its explicit
+measurement boundaries.
 
-The `mediamtx` target should be `UP`.
+## Prometheus and Grafana Status
 
-## Grafana
+The old MediaMTX Prometheus/Grafana setup belongs to the archived implementation
+under `old/`. The current Rust binary has no `/metrics` text endpoint and no
+`/grafana` reverse proxy.
 
-The `monitoring/grafana/` directory contains provisioning files for:
+The frontend still contains Grafana links from the previous UI. They should be
+treated as dormant compatibility UI until a Rust-native metrics exporter or an
+external dashboard contract is implemented.
 
-- a Prometheus datasource at `http://127.0.0.1:9090`
-- a starter `MediaMTX Overview` dashboard
-- a starter `SRT Connection Health` dashboard
-
-Restream proxies Grafana at `/grafana/`:
-
-```text
-http://127.0.0.1:3030/grafana/
-```
-
-Keep Grafana's own `3000` listener localhost-only. Browser access should go through the same public
-entry point as the Restream dashboard, while Grafana continues to query the local Prometheus
-datasource. The proxy target defaults to `http://127.0.0.1:3000` and can be changed with
-`GRAFANA_PROXY_TARGET`.
-
-For an extra gate in simple deployments, set `GRAFANA_PROXY_TOKEN`. The proxy then accepts either an
-`Authorization: Bearer <token>` header or a one-time `?grafana_token=<token>` visit that sets an
-HTTP-only cookie scoped to the Grafana proxy path. In production, prefer putting the whole Restream
-origin behind normal HTTPS and authentication as well.
-
-The dashboard includes Grafana buttons for each pipeline and output. The publisher health badge now
-opens a health modal first; that modal includes a Grafana drill-down button. Pipeline and output
-Grafana buttons still open the MediaMTX Overview dashboard in a new tab with `var-path=live/<streamKey>`.
-Output buttons also pass `var-output` as operator context; MediaMTX metrics remain path-based until
-Restream exposes output-level Prometheus metrics.
-
-## Package-Managed VM Setup
-
-For the Linux VM deployment shape, Prometheus and Grafana are installed as services by the server
-scripts:
-
-```sh
-sudo bash /opt/restream/scripts/server-setup.sh
-# or later
-sudo bash /opt/restream/scripts/server-update.sh
-```
-
-Ports:
-
-| Port | Purpose |
-|---|---|
-| `9090` | Prometheus localhost listener |
-| `3000` | Grafana localhost listener |
-
-The package-managed Grafana instance is configured to bind to `127.0.0.1` and serve from the
-`/grafana/` subpath so the Restream proxy can expose it safely through the main dashboard origin.
-Prometheus is configured to bind to `127.0.0.1:9090` and scrape the checked-in MediaMTX target.
-
-Quick checks:
-
-```sh
-curl -fsS http://127.0.0.1:9090/-/ready
-curl -I http://127.0.0.1:3030/grafana/
-```
-
-## What To Graph First
-
-Useful starter queries:
-
-```promql
-up{job="mediamtx"}
-sum(paths{job="mediamtx",name=~"$path"})
-sum by (state) (paths{job="mediamtx",name=~"$path"})
-sum(paths_readers{job="mediamtx",name=~"$path"})
-(sum(rate(paths_inbound_bytes{job="mediamtx",name=~"$path"}[1m])) or sum(rate(paths_bytes_received{job="mediamtx",name=~"$path"}[1m]))) * 8
-(sum(rate(paths_outbound_bytes{job="mediamtx",name=~"$path"}[1m])) or sum(rate(paths_bytes_sent{job="mediamtx",name=~"$path"}[1m]))) * 8
-sum(rate(paths_inbound_frames_in_error{job="mediamtx",name=~"$path"}[5m])) or vector(0)
-```
-
-These cover scrape health, active paths, reader count, path states, throughput, and ingest frame
-errors. The byte queries include both newer and older MediaMTX metric names so local development
-and the pinned Linux VM version can use the same starter dashboard. Protocol-specific panels can be
-added once the live traffic shape is clear.
-
-## SRT Connection Health Dashboard
-
-The `SRT Connection Health` dashboard is based on the SRT metrics listed in the
-[MediaMTX metrics documentation](https://mediamtx.org/docs/features/metrics). It focuses on:
-
-- active SRT connection count
-- RTT
-- send and receive rate
-- link capacity
-- send and receive loss rate
-- retransmit, drop, and undecrypt counters
-- send and receive buffer pressure
-- flight size, flow window, and NAK counters
-
-Useful SRT queries:
-
-```promql
-sum(srt_conns{job="mediamtx",path=~"$path"})
-avg(srt_conns_ms_rtt{job="mediamtx",path=~"$path"})
-sum(srt_conns_mbps_send_rate{job="mediamtx",path=~"$path"})
-sum(srt_conns_mbps_receive_rate{job="mediamtx",path=~"$path"})
-sum(srt_conns_mbps_link_capacity{job="mediamtx",path=~"$path"})
-avg(srt_conns_packets_send_loss_rate{job="mediamtx",path=~"$path"})
-avg(srt_conns_packets_received_loss_rate{job="mediamtx",path=~"$path"})
-sum(srt_conns_packets_retrans{job="mediamtx",path=~"$path"})
-sum(srt_conns_packets_received_retrans{job="mediamtx",path=~"$path"})
-sum(srt_conns_packets_send_drop{job="mediamtx",path=~"$path"})
-sum(srt_conns_packets_received_drop{job="mediamtx",path=~"$path"})
-sum(srt_conns_packets_received_undecrypt{job="mediamtx",path=~"$path"})
-```
+Recommended next step: export bounded process, pipeline, transport, ring-reader,
+and egress counters in Prometheus format without putting labels or allocation
+work on the packet hot path.

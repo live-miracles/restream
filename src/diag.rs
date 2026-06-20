@@ -95,7 +95,7 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
     let pipeline_rb = pipelines.get(pipeline_id);
     let active_output_count = egresses
         .iter()
-        .filter(|(k, _)| k.starts_with(&format!("{}:", pipeline_id)))
+        .filter(|(_, e)| e.pipeline_id == pipeline_id)
         .count();
 
     let mut issues = vec![];
@@ -252,7 +252,7 @@ async fn check_active_outputs(
 
     let my_egresses: Vec<_> = egresses
         .iter()
-        .filter(|(k, _)| k.starts_with(&format!("{}:", pipeline_id)))
+        .filter(|(_, e)| e.pipeline_id == pipeline_id)
         .collect();
 
     let mut issues = vec![];
@@ -262,7 +262,7 @@ async fn check_active_outputs(
         lines.push("No active outputs for this pipeline.".to_string());
     } else {
         for (key, egress) in &my_egresses {
-            let output_id = key.split_once(':').map(|(_, o)| o).unwrap_or(key.as_str());
+            let output_id = key.as_str();
             let bytes_sent = egress.bytes_sent.load(std::sync::atomic::Ordering::Relaxed);
             lines.push(format!(
                 "Output {}: status={} target={} bytes_sent={} started_at={}",
@@ -358,6 +358,24 @@ async fn check_publisher_transport(
         let q = &ingest.quality;
         if probe_protocol == "srt" {
             lines.push(format!("Protocol: SRT"));
+            if q.srt_bonded == Some(true) {
+                let members = q.srt_group_member_count.unwrap_or(0);
+                let connected = q.srt_group_connected_members.unwrap_or(0);
+                let active = q.srt_group_active_members.unwrap_or(0);
+                let broken = q.srt_group_broken_members.unwrap_or(0);
+                lines.push(format!(
+                    "Bonded group: {} members, {} connected, {} active, {} broken",
+                    members, connected, active, broken
+                ));
+                if active == 0 {
+                    issues.push("SRT bond has no active member links.".to_string());
+                }
+                if broken > 0 {
+                    issues.push(format!("SRT bond has {} broken member link(s).", broken));
+                }
+            } else if q.srt_bonded == Some(false) {
+                lines.push("Bonded group: no (single SRT link)".to_string());
+            }
             if let Some(rtt) = q.ms_rtt {
                 lines.push(format!("RTT: {:.1} ms", rtt));
                 if rtt > 200.0 {
@@ -446,6 +464,39 @@ async fn check_publisher_transport(
             if let Some(buf) = q.ms_receive_buf {
                 lines.push(format!("Current latency buffer: {:.0}ms", buf));
             }
+            if let (Some(snd), Some(snd_avail)) = (q.srt_send_buf_bytes, q.srt_send_buf_avail_bytes)
+            {
+                let total = snd + snd_avail;
+                let pct = if total > 0 {
+                    (snd as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                lines.push(format!(
+                    "Send buffer: {}KB / {}KB ({:.0}%)",
+                    snd / 1024,
+                    total / 1024,
+                    pct
+                ));
+            }
+            if let (Some(rcv), Some(rcv_avail)) = (q.srt_recv_buf_bytes, q.srt_recv_buf_avail_bytes)
+            {
+                let total = rcv + rcv_avail;
+                let pct = if total > 0 {
+                    (rcv as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                lines.push(format!(
+                    "Recv buffer: {}KB / {}KB ({:.0}%)",
+                    rcv / 1024,
+                    total / 1024,
+                    pct
+                ));
+            }
+            if let Some(flight) = q.srt_flight_size_pkts {
+                lines.push(format!("Packets in flight: {}", flight));
+            }
             if lines.len() == 1 {
                 lines.push("No SRT transport stats available yet.".to_string());
                 issues.push("SRT quality metrics not yet populated. Stats update after first packets arrive.".to_string());
@@ -531,7 +582,7 @@ async fn check_publisher_transport(
         if probe_protocol == "srt" {
             "libsrt srt_bistats()"
         } else {
-            "ss -tinmH (receiver-side TCP socket stats)"
+            "getsockopt(TCP_INFO/SO_MEMINFO)"
         },
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
@@ -642,6 +693,81 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
         "GOP Analysis",
         "Keyframe interval consistency",
         "engine.keyframe_times analysis",
+        lines.join("\n"),
+        start.elapsed().as_millis() as u64,
+    )
+    .with_issues(issues)
+}
+
+async fn check_srt_listener_socket(idx: u32, engine: &Arc<MediaEngine>) -> DiagResult {
+    let start = Instant::now();
+    let stats = &engine.srt_listener_stats;
+    let rx_queue = stats
+        .rx_queue_bytes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let rx_peak = stats
+        .rx_queue_max_bytes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let drops = stats.drops.load(std::sync::atomic::Ordering::Relaxed);
+    let bonding_available = stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    let configured = crate::media::srt::DESIRED_UDP_BUF as u64;
+    let active_count = engine.active_ingests.read().await.len();
+
+    let mut lines = vec![];
+    let mut issues = vec![];
+
+    lines.push(format!("Active SRT ingest streams: {}", active_count));
+    lines.push(format!(
+        "Bonded ingest available: {}",
+        if bonding_available { "yes" } else { "no" }
+    ));
+    lines.push(format!(
+        "UDP recv queue: {}KB / {}KB ({:.1}%)",
+        rx_queue / 1024,
+        configured / 1024,
+        if configured > 0 {
+            rx_queue as f64 / configured as f64 * 100.0
+        } else {
+            0.0
+        }
+    ));
+    lines.push(format!("UDP recv queue peak: {}KB", rx_peak / 1024));
+    lines.push(format!("Kernel UDP drops (total): {}", drops));
+
+    if drops > 0 {
+        issues.push(format!(
+            "Kernel has dropped {} UDP packets — data loss occurred. \
+             Increase net.core.rmem_max and restart.",
+            drops
+        ));
+    }
+    if !bonding_available {
+        issues.push(
+            "Linked libsrt rejected SRTO_GROUPCONNECT; rebuild it with ENABLE_BONDING=ON for bonded ingest."
+                .to_string(),
+        );
+    }
+    if rx_queue > configured * 3 / 4 {
+        issues.push(format!(
+            "UDP recv queue is {:.0}% full — imminent packet loss risk with {} streams.",
+            rx_queue as f64 / configured as f64 * 100.0,
+            active_count,
+        ));
+    } else if rx_queue > configured / 2 {
+        issues.push(format!(
+            "UDP recv queue is {:.0}% full — buffer pressure building.",
+            rx_queue as f64 / configured as f64 * 100.0,
+        ));
+    }
+
+    DiagResult::ok(
+        idx,
+        "SRT Listener Socket",
+        "Shared UDP socket buffer occupancy for all SRT ingest streams",
+        "read /proc/net/udp",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )
@@ -776,6 +902,13 @@ pub async fn run_diagnostics(
         "Network Bandwidth",
         "Per-interface RX/TX throughput measurement",
         check_network_bandwidth(7)
+    );
+
+    run_check!(
+        8,
+        "SRT Listener Socket",
+        "Shared UDP socket buffer occupancy",
+        check_srt_listener_socket(8, &engine)
     );
 
     let total_ms = overall_start.elapsed().as_millis() as u64;
