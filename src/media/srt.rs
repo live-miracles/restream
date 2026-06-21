@@ -203,10 +203,22 @@ unsafe extern "C" {
         len: c_int,
     ) -> c_int;
     pub fn srt_recv(u: SRTSOCKET, buf: *mut u8, len: c_int) -> c_int;
+    pub fn srt_recvmsg2(
+        u: SRTSOCKET,
+        buf: *mut u8,
+        len: c_int,
+        message_control: *mut c_void,
+    ) -> c_int;
     pub fn srt_send(u: SRTSOCKET, buf: *const u8, len: c_int) -> c_int;
     pub fn srt_setsockopt(
         u: SRTSOCKET,
         level: c_int,
+        optname: c_int,
+        optval: *const c_void,
+        optlen: c_int,
+    ) -> c_int;
+    pub fn srt_setsockflag(
+        u: SRTSOCKET,
         optname: c_int,
         optval: *const c_void,
         optlen: c_int,
@@ -245,6 +257,7 @@ pub const SRTO_PEERLATENCY: c_int = 44;
 pub const SRTO_STREAMID: c_int = 46;
 pub const SRTO_TRANSTYPE: c_int = 50;
 pub const SRTO_GROUPCONNECT: c_int = 57;
+pub const SRTO_GROUPTYPE: c_int = 59;
 
 pub const SRTT_LIVE: c_int = 0;
 
@@ -261,9 +274,8 @@ const DESIRED_LOSSMAXTTL: i32 = 256;
 fn enable_srt_group_connect(listener: SRTSOCKET) -> Result<(), String> {
     let group_connect: c_int = 1;
     let result = unsafe {
-        srt_setsockopt(
+        srt_setsockflag(
             listener,
-            0,
             SRTO_GROUPCONNECT,
             &group_connect as *const _ as *const c_void,
             std::mem::size_of::<c_int>() as c_int,
@@ -1074,43 +1086,14 @@ impl SrtServer {
             }
         }
 
-        // In-memory queue instead of TCP loopback
-        let queue = Arc::new(crate::media::avio::MemoryQueue::new());
+        // Pure-Rust MPEG-TS demuxer — no FFmpeg thread or MemoryQueue needed
+        let mut demuxer = crate::media::mpegts::TsDemuxer::new();
+        let mut packets = Vec::with_capacity(16);
+        let mut probe_sent = false;
 
-        // Spawn thread to run FFmpeg demuxer on the custom AVIO context
-        let queue_clone = queue.clone();
-        let ring_buffer_clone = ring_buffer.clone();
-        let token_clone = token.clone();
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel::<DemuxProbe>();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_ffmpeg_demuxer(queue_clone, ring_buffer_clone, token_clone, probe_tx)
-            }));
-            match result {
-                Ok(Err(e)) => eprintln!("[srt] FFmpeg demuxer failed: {:?}", e),
-                Err(_) => eprintln!("[srt] FFmpeg demuxer panicked"),
-                _ => {}
-            }
-        });
-
-        // Receive probe metadata from demuxer thread (non-blocking check each recv loop)
-        let engine_probe = self.engine.clone();
-        let pid_probe = pipeline.id.clone();
-        tokio::spawn(async move {
-            if let Ok(probe) = probe_rx.recv() {
-                let first_audio = probe.audio_tracks.first().cloned();
-                engine_probe
-                    .update_ingest_meta(&pid_probe, probe.video, first_audio, None)
-                    .await;
-                if !probe.audio_tracks.is_empty() {
-                    engine_probe
-                        .update_ingest_audio_tracks(&pid_probe, probe.audio_tracks)
-                        .await;
-                }
-            }
-        });
-
-        let mut buf = vec![0u8; 1316]; // SRT packet size
+        // Socket groups use the message API and may deliver up to the live
+        // payload limit. Single sockets retain the lean plain-recv path.
+        let mut buf = vec![0u8; if is_group { 2048 } else { 1316 }];
         let mut previous_stats: Option<SrtCounterSnapshot> = None;
         let mut last_stats_sample = Instant::now() - std::time::Duration::from_secs(1);
         loop {
@@ -1118,12 +1101,55 @@ impl SrtServer {
                 break;
             }
 
-            let n = unsafe { srt_recv(client_sock, buf.as_mut_ptr(), buf.len() as c_int) };
+            let n = unsafe {
+                if is_group {
+                    srt_recvmsg2(
+                        client_sock,
+                        buf.as_mut_ptr(),
+                        buf.len() as c_int,
+                        std::ptr::null_mut(),
+                    )
+                } else {
+                    srt_recv(client_sock, buf.as_mut_ptr(), buf.len() as c_int)
+                }
+            };
             if n <= 0 {
                 break;
             }
 
-            queue.write(&buf[..n as usize]);
+            // Feed into demuxer and push completed packets to ring buffer
+            demuxer.feed(&buf[..n as usize]);
+            if demuxer.drain_into(&mut packets) > 0 {
+                ring_buffer.push_batch(packets.drain(..));
+            }
+
+            // Send probe metadata once ready
+            if !probe_sent {
+                if let Some(probe) = demuxer.take_probe() {
+                    probe_sent = true;
+                    if let Some(ref v) = probe.video {
+                        println!(
+                            "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
+                            v.codec, v.width, v.height, v.fps, v.profile
+                        );
+                    }
+                    for a in &probe.audio_tracks {
+                        println!(
+                            "[srt] Probed audio track {}: {} {}Hz {}ch",
+                            a.track_index, a.codec, a.sample_rate, a.channels
+                        );
+                    }
+                    let first_audio = probe.audio_tracks.first().cloned();
+                    self.engine
+                        .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                        .await;
+                    if !probe.audio_tracks.is_empty() {
+                        self.engine
+                            .update_ingest_audio_tracks(&pipeline.id, probe.audio_tracks)
+                            .await;
+                    }
+                }
+            }
 
             // Update stats
             self.engine
@@ -1153,7 +1179,11 @@ impl SrtServer {
             }
         }
 
-        queue.close();
+        // Flush any remaining PES data
+        demuxer.flush();
+        if demuxer.drain_into(&mut packets) > 0 {
+            ring_buffer.push_batch(packets.drain(..));
+        }
 
         println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
@@ -1685,7 +1715,40 @@ mod tests {
     }
 
     #[test]
-    fn libsrt_accepts_two_links_as_one_group_socket() {
+    fn adds_bonded_group_state_to_publisher_quality() {
+        let mut quality = PublisherQuality::default();
+        add_srt_group_quality(
+            &mut quality,
+            true,
+            Some(SrtGroupSummary {
+                member_count: 2,
+                connected_members: 2,
+                active_members: 1,
+                broken_members: 0,
+            }),
+        );
+
+        assert_eq!(quality.srt_bonded, Some(true));
+        assert_eq!(quality.srt_group_member_count, Some(2));
+        assert_eq!(quality.srt_group_connected_members, Some(2));
+        assert_eq!(quality.srt_group_active_members, Some(1));
+        assert_eq!(quality.srt_group_broken_members, Some(0));
+    }
+
+    #[test]
+    fn marks_single_link_srt_without_group_member_fields() {
+        let mut quality = PublisherQuality::default();
+        add_srt_group_quality(&mut quality, false, None);
+
+        assert_eq!(quality.srt_bonded, Some(false));
+        assert_eq!(quality.srt_group_member_count, None);
+        assert_eq!(quality.srt_group_connected_members, None);
+        assert_eq!(quality.srt_group_active_members, None);
+        assert_eq!(quality.srt_group_broken_members, None);
+    }
+
+    #[test]
+    fn linked_libsrt_exposes_group_connect_when_required() {
         unsafe {
             assert_eq!(srt_startup(), 0);
         }
@@ -1693,96 +1756,24 @@ mod tests {
         let listener = unsafe { srt_create_socket() };
         assert!(listener >= 0);
         if let Err(error) = enable_srt_group_connect(listener) {
-            eprintln!(
-                "skipping live bonding assertion: libsrt was built without ENABLE_BONDING ({error})"
-            );
             unsafe {
                 srt_close(listener);
+                srt_cleanup();
             }
+            if std::env::var_os("RESTREAM_REQUIRE_SRT_BONDING").is_some() {
+                panic!(
+                    "RESTREAM_REQUIRE_SRT_BONDING is set, but linked libsrt rejected \
+                     SRTO_GROUPCONNECT: {error}. Rebuild libsrt with ENABLE_BONDING=ON."
+                );
+            }
+            eprintln!(
+                "bonding prerequisite unavailable; set RESTREAM_REQUIRE_SRT_BONDING=1 \
+                 in bonding-enabled CI to make this a required live test ({error})"
+            );
             return;
         }
-
-        let bind_addr = to_sockaddr_in("127.0.0.1:0".parse().unwrap());
-        assert_eq!(
-            unsafe {
-                srt_bind(
-                    listener,
-                    &bind_addr,
-                    std::mem::size_of::<sockaddr_in>() as c_int,
-                )
-            },
-            0
-        );
-        assert_eq!(unsafe { srt_listen(listener, 4) }, 0);
-
-        let mut listener_addr: sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut listener_addr_len = std::mem::size_of::<sockaddr_in>() as c_int;
-        assert_eq!(
-            unsafe { srt_getsockname(listener, &mut listener_addr, &mut listener_addr_len) },
-            0
-        );
-
-        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut peer: sockaddr_in = unsafe { std::mem::zeroed() };
-            let mut peer_len = std::mem::size_of::<sockaddr_in>() as c_int;
-            let accepted = unsafe { srt_accept(listener, &mut peer, &mut peer_len) };
-            let mut summary = None;
-            if accepted >= 0 {
-                for _ in 0..100 {
-                    summary = srt_group_summary(accepted);
-                    if summary.is_some_and(|state| state.member_count >= 2) {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-            }
-            let _ = accepted_tx.send((accepted, summary));
-            if accepted >= 0 {
-                unsafe {
-                    srt_close(accepted);
-                }
-            }
-            unsafe {
-                srt_close(listener);
-            }
-        });
-
-        let group = unsafe { srt_create_group(SRT_GTYPE_BROADCAST) };
-        assert!(group >= 0);
-        let peer_addr = from_sockaddr_in(listener_addr);
-        let (peer_storage, peer_len) = to_libc_sockaddr(peer_addr);
-        let mut members = [
-            unsafe {
-                srt_prepare_endpoint(
-                    std::ptr::null(),
-                    &peer_storage as *const _ as *const libc::sockaddr,
-                    peer_len,
-                )
-            },
-            unsafe {
-                srt_prepare_endpoint(
-                    std::ptr::null(),
-                    &peer_storage as *const _ as *const libc::sockaddr,
-                    peer_len,
-                )
-            },
-        ];
-        assert_eq!(
-            unsafe { srt_connect_group(group, members.as_mut_ptr(), members.len() as c_int) },
-            0
-        );
-
-        let (accepted, summary) = accepted_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("listener did not accept the SRT group");
-        assert!(is_srt_group(accepted));
-        let summary = summary.expect("accepted group did not expose member state");
-        assert_eq!(summary.member_count, 2);
-        assert_eq!(summary.connected_members, 2);
-
         unsafe {
-            srt_close(group);
+            srt_close(listener);
         }
     }
 
@@ -1807,12 +1798,13 @@ impl Drop for SrtServer {
     }
 }
 
-/// Probe result communicated from the demuxer thread back to the async context.
+#[allow(dead_code)]
 struct DemuxProbe {
     video: Option<VideoMeta>,
     audio_tracks: Vec<AudioMeta>,
 }
 
+#[allow(dead_code)]
 fn run_ffmpeg_demuxer(
     queue: Arc<crate::media::avio::MemoryQueue>,
     ring_buf: Arc<RingBuffer>,

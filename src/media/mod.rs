@@ -7,6 +7,7 @@
 pub mod avio;
 pub mod engine;
 pub mod hls;
+pub mod mpegts;
 pub mod recording;
 pub mod ring_buffer;
 pub mod rtmp;

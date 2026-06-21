@@ -4,6 +4,7 @@ use criterion::{
 };
 use restream::media::avio::MemoryQueue;
 use restream::media::engine::MediaEngine;
+use restream::media::mpegts::TsDemuxer;
 use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer, RingSlot};
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
@@ -400,6 +401,79 @@ fn bench_segment_finalize(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_mpegts_demux_drain(c: &mut Criterion) {
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test/artifacts/latest/correctness-h264.ts"
+    );
+    let Ok(fixture) = std::fs::read(fixture_path) else {
+        eprintln!("skipping MPEG-TS drain benchmark: fixture not found at {fixture_path}");
+        return;
+    };
+
+    let mut group = c.benchmark_group("data_path/mpegts_demux_drain");
+    group.sample_size(10);
+    group.throughput(Throughput::Bytes(fixture.len() as u64));
+
+    group.bench_function("take_output_vector", |b| {
+        b.iter(|| {
+            let mut demuxer = TsDemuxer::new();
+            let mut packets = 0usize;
+            for chunk in fixture.chunks(1316) {
+                demuxer.feed(chunk);
+                packets += demuxer.drain().len();
+            }
+            demuxer.flush();
+            packets += demuxer.drain().len();
+            black_box(packets);
+        });
+    });
+
+    group.bench_function("reuse_output_vector", |b| {
+        b.iter(|| {
+            let mut demuxer = TsDemuxer::new();
+            let mut output = Vec::with_capacity(16);
+            let mut packets = 0usize;
+            for chunk in fixture.chunks(1316) {
+                demuxer.feed(chunk);
+                packets += demuxer.drain_into(&mut output);
+                output.clear();
+            }
+            demuxer.flush();
+            packets += demuxer.drain_into(&mut output);
+            black_box(packets);
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_mpegts_resync(c: &mut Criterion) {
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test/artifacts/latest/correctness-h264.ts"
+    );
+    let Ok(fixture) = std::fs::read(fixture_path) else {
+        eprintln!("skipping MPEG-TS resync benchmark: fixture not found at {fixture_path}");
+        return;
+    };
+
+    let prefix_len = 64 * 1024;
+    let mut input = vec![0u8; prefix_len];
+    input.extend_from_slice(&fixture[..fixture.len().min(1316)]);
+
+    let mut group = c.benchmark_group("data_path/mpegts_resync");
+    group.throughput(Throughput::Bytes(prefix_len as u64));
+    group.bench_function("corrupt_64k_prefix", |b| {
+        b.iter(|| {
+            let mut demuxer = TsDemuxer::new();
+            demuxer.feed(black_box(&input));
+            black_box(demuxer.has_streams());
+        });
+    });
+    group.finish();
+}
+
 fn benches(c: &mut Criterion) {
     print_layout_baseline();
     bench_control_plane_lookup(c);
@@ -409,6 +483,8 @@ fn benches(c: &mut Criterion) {
     bench_fanout_delivery(c);
     bench_memory_queue(c);
     bench_segment_finalize(c);
+    bench_mpegts_demux_drain(c);
+    bench_mpegts_resync(c);
 }
 
 criterion_group!(data_path_benches, benches);
