@@ -7,11 +7,11 @@
 //! │  SRT accept loop          per-connection async tasks                │
 //! │  Reconciler (1s tick)     output lifecycle + recording auto-start   │
 //! │  Egress tasks             ring buffer reader → network send         │
+//! │  HLS segmenter            TsMuxer → segment accumulator → HlsStore │
 //! └─────────────────────────────────────────────────────────────────────┘
 //!
 //! ┌─────────────── std::thread (OS threads, catch_unwind) ──────────────┐
 //! │  FFmpeg demuxer           RTMP/SRT ingest → RingBuffer push         │
-//! │  FFmpeg HLS muxer         MemoryQueue → HLS segments on disk        │
 //! │  FFmpeg MKV muxer         MemoryQueue → .mkv recording file         │
 //! │  FFmpeg transcoder        MemoryQueue → encode → MemoryQueue        │
 //! └─────────────────────────────────────────────────────────────────────┘
@@ -26,6 +26,7 @@ pub mod api;
 pub mod db;
 pub mod diag;
 pub mod media;
+pub mod runtime_info;
 pub mod types;
 
 use crate::media::engine::MediaEngine;
@@ -292,14 +293,32 @@ pub async fn run_app() {
                         )
                         .await;
                     } else {
-                        let hls_store = engine_c.get_or_create_hls_store(&pipeline_id_c).await;
-                        crate::media::hls::start_hls_segmenter(
-                            output_id_c.clone(),
-                            hls_store,
-                            ring_buf,
-                            cancel_token.clone(),
-                        )
-                        .await;
+                        // HLS egress: use the shared segmenter, register as persistent consumer
+                        let (store, already_running) =
+                            engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
+                        if !already_running {
+                            let hls_cancel =
+                                engine_c.get_hls_cancel_token(&pipeline_id_c).await.unwrap();
+                            let eng2 = engine_c.clone();
+                            let pid2 = pipeline_id_c.clone();
+                            let rb2 = ring_buf.clone();
+                            tokio::spawn(async move {
+                                crate::media::hls::start_hls_segmenter(
+                                    pid2.clone(),
+                                    store,
+                                    rb2,
+                                    eng2.clone(),
+                                    hls_cancel,
+                                )
+                                .await;
+                                eng2.shutdown_hls_segmenter(&pid2).await;
+                            });
+                        }
+                        engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
+                        cancel_token.cancelled().await;
+                        engine_c
+                            .remove_hls_persistent_consumer(&pipeline_id_c)
+                            .await;
                     }
 
                     // On terminate, clean up and register failure if cancelled without operator intent
@@ -352,21 +371,23 @@ pub async fn run_app() {
             Err(_) => continue,
         };
         for pipeline in pipelines {
-            let meta_key = format!("recording_enabled:{}", pipeline.id);
-            let enabled = db::get_meta(&pool, &meta_key)
-                .await
-                .ok()
-                .flatten()
-                .map(|v| v == "1")
-                .unwrap_or(false);
             let has_ingest = engine
                 .active_ingests
                 .read()
                 .await
                 .contains_key(&pipeline.id);
+
+            // Reconcile recordings
+            let rec_key = format!("recording_enabled:{}", pipeline.id);
+            let rec_enabled = db::get_meta(&pool, &rec_key)
+                .await
+                .ok()
+                .flatten()
+                .map(|v| v == "1")
+                .unwrap_or(false);
             let rec_active = engine.is_recording_active(&pipeline.id).await;
 
-            if enabled && has_ingest && !rec_active {
+            if rec_enabled && has_ingest && !rec_active {
                 let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
                 let cancel_token = engine.register_recording(&pipeline.id).await;
                 let engine_c = engine.clone();
@@ -382,8 +403,25 @@ pub async fn run_app() {
                     .await;
                     engine_c.unregister_recording(&pid).await;
                 });
-            } else if rec_active && (!enabled || !has_ingest) {
+            } else if rec_active && (!rec_enabled || !has_ingest) {
                 engine.unregister_recording(&pipeline.id).await;
+            }
+        }
+
+        // Sweep idle HLS segmenters: shut down if no consumers for 60s
+        // or if ingest disconnected.
+        let hls_ids: Vec<String> = engine.hls_consumers.read().await.keys().cloned().collect();
+        for pid in hls_ids {
+            let has_ingest = engine.active_ingests.read().await.contains_key(&pid);
+            let idle = {
+                let consumers = engine.hls_consumers.read().await;
+                match consumers.get(&pid) {
+                    Some(c) => !has_ingest || c.is_idle(60_000),
+                    None => false,
+                }
+            };
+            if idle {
+                engine.shutdown_hls_segmenter(&pid).await;
             }
         }
     }

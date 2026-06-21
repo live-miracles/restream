@@ -608,8 +608,113 @@ async fn status_returns_version_info() {
     assert!(json["restream"]["version"].is_string());
     assert!(json["restream"]["commit"].is_string());
     assert!(json["ffmpeg"].is_string());
+    assert!(json["toolchain"]["rustc"].is_string());
+    assert!(json["nativeLibraries"]["ffmpeg"]["version"].is_string());
+    assert!(json["nativeLibraries"]["ffmpeg"]["configuration"].is_string());
+    assert!(json["nativeLibraries"]["srt"]["version"].is_string());
+    assert!(json["nativeLibraries"]["openssl"]["version"].is_string());
+    assert!(json["nativeLibraries"]["sqlite"]["version"].is_string());
+    assert!(json["nativeLibraries"]["x264"]["version"].is_string());
+    assert_eq!(json["sbom"]["format"], "CycloneDX");
+    assert_eq!(json["sbom"]["specVersion"], "1.5");
+    assert_eq!(json["sbom"]["licensesIncluded"], true);
+    assert!(json["sbom"]["componentCount"].as_u64().unwrap() > 20);
     assert!(json["os"]["platform"].is_string());
     assert!(json["os"]["hostname"].is_string());
+}
+
+#[tokio::test]
+async fn status_sbom_is_authenticated_cyclonedx_with_licenses() {
+    let (app, _) = test_app().await;
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/status/sbom")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(auth_req("GET", "/api/status/sbom", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/vnd.cyclonedx+json; version=1.5"
+    );
+    let json = body_json(response).await;
+
+    assert_eq!(json["bomFormat"], "CycloneDX");
+    assert_eq!(json["specVersion"], "1.5");
+    assert_eq!(json["metadata"]["component"]["name"], "restream");
+
+    let components = json["components"].as_array().unwrap();
+    assert!(components.len() > 20);
+    assert!(components.iter().all(|component| {
+        component["licenses"]
+            .as_array()
+            .is_some_and(|licenses| !licenses.is_empty())
+    }));
+    assert!(
+        !components
+            .iter()
+            .any(|component| component["name"] == "criterion")
+    );
+    assert!(
+        !components
+            .iter()
+            .any(|component| component["name"] == "pulp")
+    );
+    for build_only in ["proc-macro2", "quote", "serde_derive", "syn"] {
+        assert!(
+            !components
+                .iter()
+                .any(|component| component["name"] == build_only),
+            "build-only crate leaked into runtime SBOM: {build_only}"
+        );
+    }
+    assert!(!components.iter().any(|component| {
+        component["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("windows-"))
+    }));
+    for name in [
+        "libavcodec",
+        "libavformat",
+        "libavfilter",
+        "libswscale",
+        "libswresample",
+        "libavutil",
+        "libsrt",
+        "libssl",
+        "libcrypto",
+        "SQLite",
+        "x264",
+        "libstdc++",
+        "libgcc",
+        "Rust standard library",
+        "tokio",
+        "axum",
+        "sqlx",
+    ] {
+        let component = components
+            .iter()
+            .find(|component| component["name"] == name)
+            .unwrap_or_else(|| panic!("missing SBOM component {name}"));
+        assert!(component["version"].is_string());
+        assert!(
+            component["licenses"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+        );
+    }
 }
 
 // --- Processing graph ---

@@ -169,6 +169,7 @@ pub struct SrtSocketGroupData {
 }
 
 unsafe extern "C" {
+    pub fn srt_getversion() -> u32;
     pub fn srt_startup() -> c_int;
     pub fn srt_cleanup() -> c_int;
     pub fn srt_create_socket() -> SRTSOCKET;
@@ -237,6 +238,16 @@ unsafe extern "C" {
         clear: c_int,
         instantaneous: c_int,
     ) -> c_int;
+}
+
+pub fn linked_srt_version() -> String {
+    let version = unsafe { srt_getversion() };
+    format!(
+        "{}.{}.{}",
+        (version >> 16) & 0xff,
+        (version >> 8) & 0xff,
+        version & 0xff
+    )
 }
 
 // SRT socket options — values from srt.h SRT_SOCKOPT enum

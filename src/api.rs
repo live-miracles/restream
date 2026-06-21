@@ -247,6 +247,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/ingests/:id/start", post(ingests_start_handler))
         .route("/api/ingests/:id/stop", post(ingests_stop_handler))
         .route("/api/status", get(status_get_handler))
+        .route("/api/status/sbom", get(status_sbom_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
         .route("/hls/:pipeline_id", get(hls_playlist_handler))
@@ -1304,11 +1305,11 @@ async fn ingests_stop_handler(
 }
 
 async fn status_get_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
-        if !_state.is_authenticated(&token).await {
+        if !state.is_authenticated(&token).await {
             return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
     } else {
@@ -1316,30 +1317,50 @@ async fn status_get_handler(
     }
 
     let sys = System::new_all();
-    let ffmpeg_version = unsafe {
-        let v = ffmpeg_next::ffi::av_version_info();
-        if v.is_null() {
-            "unknown".to_string()
-        } else {
-            std::ffi::CStr::from_ptr(v).to_string_lossy().to_string()
-        }
-    };
+    let bonding_available = state
+        .engine
+        .srt_listener_stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    status["os"] = serde_json::json!({
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "hostname": System::host_name().unwrap_or_default(),
+        "kernelVersion": System::kernel_version(),
+        "uptime": System::uptime(),
+        "totalMem": sys.total_memory(),
+    });
 
-    Json(serde_json::json!({
-        "restream": {
-            "version": env!("CARGO_PKG_VERSION"),
-            "commit": env!("GIT_COMMIT_HASH"),
-        },
-        "ffmpeg": ffmpeg_version,
-        "os": {
-            "platform": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "hostname": System::host_name().unwrap_or_default(),
-            "uptime": System::uptime(),
-            "totalMem": sys.total_memory(),
+    Json(status).into_response()
+}
+
+async fn status_sbom_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
-    }))
-    .into_response()
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let bonding_available = state
+        .engine
+        .srt_listener_stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (_, sbom) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/vnd.cyclonedx+json; version=1.5",
+        )],
+        Json(sbom),
+    )
+        .into_response()
 }
 
 async fn media_list_handler(
@@ -1423,14 +1444,14 @@ async fn health_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
     };
     let mut recording_enabled = std::collections::HashMap::new();
     for pid in &pipeline_ids {
-        let key = format!("recording_enabled:{}", pid);
-        let enabled = db::get_meta(&state.db, &key)
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
             .await
             .ok()
             .flatten()
             .map(|v| v == "1")
             .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), enabled);
+        recording_enabled.insert(pid.clone(), rec);
     }
     let snapshot = state
         .engine
@@ -1739,17 +1760,62 @@ async fn hls_playlist_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
-        return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
-    };
-    match store.get_playlist() {
-        Some(playlist) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
-            playlist,
-        )
-            .into_response(),
-        None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+    // Auto-start segmenter on first request if ingest is active
+    let has_ingest = state
+        .engine
+        .active_ingests
+        .read()
+        .await
+        .contains_key(&pipeline_id);
+    if has_ingest {
+        let (store, already_running) = state.engine.ensure_hls_segmenter(&pipeline_id).await;
+        if !already_running {
+            let engine_c = state.engine.clone();
+            let pid = pipeline_id.clone();
+            let ring_buf = state.engine.get_or_create_pipeline(&pipeline_id).await;
+            let cancel_token = state
+                .engine
+                .get_hls_cancel_token(&pipeline_id)
+                .await
+                .unwrap();
+            let store_c = store.clone();
+            tokio::spawn(async move {
+                crate::media::hls::start_hls_segmenter(
+                    pid.clone(),
+                    store_c,
+                    ring_buf,
+                    engine_c.clone(),
+                    cancel_token,
+                )
+                .await;
+                engine_c.shutdown_hls_segmenter(&pid).await;
+            });
+        }
+        state.engine.touch_hls(&pipeline_id).await;
+        match store.get_playlist() {
+            Some(playlist) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+                playlist,
+            )
+                .into_response(),
+            None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+        }
+    } else {
+        // No ingest — serve from existing store if any
+        let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+            return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
+        };
+        state.engine.touch_hls(&pipeline_id).await;
+        match store.get_playlist() {
+            Some(playlist) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+                playlist,
+            )
+                .into_response(),
+            None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+        }
     }
 }
 
@@ -1757,6 +1823,7 @@ async fn hls_segment_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, segment)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    state.engine.touch_hls(&pipeline_id).await;
     let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
         return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
     };

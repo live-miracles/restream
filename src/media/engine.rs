@@ -14,6 +14,126 @@ use tokio_util::sync::CancellationToken;
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 
+/// Lock-free counters for one processing stage.
+/// Updated atomically on the hot path; read by `/graph` for operator visibility.
+#[derive(Debug)]
+pub struct StageMetrics {
+    pub packets_in: AtomicU64,
+    pub packets_out: AtomicU64,
+    pub bytes_in: AtomicU64,
+    pub bytes_out: AtomicU64,
+    /// Cumulative processing time in microseconds.
+    pub processing_us: AtomicU64,
+    pub start_instant: Instant,
+}
+
+impl StageMetrics {
+    pub fn new() -> Self {
+        Self {
+            packets_in: AtomicU64::new(0),
+            packets_out: AtomicU64::new(0),
+            bytes_in: AtomicU64::new(0),
+            bytes_out: AtomicU64::new(0),
+            processing_us: AtomicU64::new(0),
+            start_instant: Instant::now(),
+        }
+    }
+
+    #[inline]
+    pub fn record_in(&self, bytes: u64) {
+        self.packets_in.fetch_add(1, Ordering::Relaxed);
+        self.bytes_in.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn record_out(&self, bytes: u64) {
+        self.packets_out.fetch_add(1, Ordering::Relaxed);
+        self.bytes_out.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn record_processing(&self, us: u64) {
+        self.processing_us.fetch_add(us, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> serde_json::Value {
+        let pkts_in = self.packets_in.load(Ordering::Relaxed);
+        let pkts_out = self.packets_out.load(Ordering::Relaxed);
+        let bytes_in = self.bytes_in.load(Ordering::Relaxed);
+        let bytes_out = self.bytes_out.load(Ordering::Relaxed);
+        let proc_us = self.processing_us.load(Ordering::Relaxed);
+        let elapsed = self.start_instant.elapsed().as_secs_f64();
+
+        let avg_us_per_packet = if pkts_in > 0 {
+            proc_us as f64 / pkts_in as f64
+        } else {
+            0.0
+        };
+
+        serde_json::json!({
+            "packetsIn": pkts_in,
+            "packetsOut": pkts_out,
+            "bytesIn": bytes_in,
+            "bytesOut": bytes_out,
+            "processingUs": proc_us,
+            "avgUsPerPacket": avg_us_per_packet,
+            "uptimeSecs": elapsed,
+            "packetsPerSec": if elapsed > 0.0 { pkts_in as f64 / elapsed } else { 0.0 },
+        })
+    }
+}
+
+/// Tracks HLS consumers for a pipeline. Persistent consumers (egress outputs)
+/// register/unregister explicitly. Transient consumers (browser preview) keep
+/// the segmenter alive via playlist fetch heartbeats.
+pub struct HlsConsumers {
+    /// Number of persistent consumers (HLS egress outputs).
+    pub persistent: AtomicU64,
+    /// Epoch millis of the last playlist/segment fetch (transient consumer heartbeat).
+    pub last_access_ms: AtomicU64,
+    /// Cancel token for the segmenter task.
+    pub cancel_token: CancellationToken,
+}
+
+impl HlsConsumers {
+    pub fn new(cancel_token: CancellationToken) -> Self {
+        Self {
+            persistent: AtomicU64::new(0),
+            last_access_ms: AtomicU64::new(Self::now_ms()),
+            cancel_token,
+        }
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    pub fn touch(&self) {
+        self.last_access_ms.store(Self::now_ms(), Ordering::Relaxed);
+    }
+
+    pub fn add_persistent(&self) {
+        self.persistent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn remove_persistent(&self) {
+        self.persistent.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn is_idle(&self, timeout_ms: u64) -> bool {
+        let persistent = self.persistent.load(Ordering::Relaxed);
+        if persistent > 0 {
+            return false;
+        }
+        let last = self.last_access_ms.load(Ordering::Relaxed);
+        let now = Self::now_ms();
+        now.saturating_sub(last) >= timeout_ms
+    }
+}
+
 /// Per-pipeline ingest quality snapshot (RTMP TCP or SRT link stats).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +225,7 @@ pub struct ActiveIngest {
     pub start_time: Instant,
     pub protocol: String, // "rtmp" | "srt" | "file"
     pub bytes_received: Arc<AtomicU64>,
+    pub metrics: Arc<StageMetrics>,
     pub remote_addr: Option<String>,
     pub video: Option<VideoMeta>,
     pub audio: Option<AudioMeta>,
@@ -125,6 +246,7 @@ pub struct ActiveEgress {
     pub started_at: String,
     pub start_instant: Instant,
     pub bytes_sent: Arc<AtomicU64>,
+    pub metrics: Arc<StageMetrics>,
     pub prev_bytes_sent: AtomicU64,
     pub prev_sample_time: std::sync::Mutex<Instant>,
     pub bitrate_kbps: std::sync::Mutex<Option<f64>>,
@@ -160,6 +282,10 @@ pub struct MediaEngine {
     pub transcoder_buffers: TokioRwLock<HashMap<String, (Arc<RingBuffer>, CancellationToken)>>,
     // SRT listener socket kernel buffer stats
     pub srt_listener_stats: Arc<ListenerSocketStats>,
+    // Map of pipeline_id -> HLS consumer tracking (refcount + idle timer)
+    pub hls_consumers: TokioRwLock<HashMap<String, HlsConsumers>>,
+    // Per-stage processing metrics keyed by "<pipeline_id>:<stage_name>"
+    pub stage_metrics: TokioRwLock<HashMap<String, Arc<StageMetrics>>>,
 }
 
 impl MediaEngine {
@@ -178,7 +304,27 @@ impl MediaEngine {
             file_ingest_children: TokioRwLock::new(HashMap::new()),
             transcoder_buffers: TokioRwLock::new(HashMap::new()),
             srt_listener_stats: Arc::new(ListenerSocketStats::default()),
+            hls_consumers: TokioRwLock::new(HashMap::new()),
+            stage_metrics: TokioRwLock::new(HashMap::new()),
         }
+    }
+
+    pub async fn get_or_create_stage_metrics(
+        &self,
+        pipeline_id: &str,
+        stage_name: &str,
+    ) -> Arc<StageMetrics> {
+        let key = format!("{}:{}", pipeline_id, stage_name);
+        let mut metrics = self.stage_metrics.write().await;
+        metrics
+            .entry(key)
+            .or_insert_with(|| Arc::new(StageMetrics::new()))
+            .clone()
+    }
+
+    pub async fn remove_stage_metrics(&self, pipeline_id: &str, stage_name: &str) {
+        let key = format!("{}:{}", pipeline_id, stage_name);
+        self.stage_metrics.write().await.remove(&key);
     }
 
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
@@ -287,6 +433,7 @@ impl MediaEngine {
                 start_time: Instant::now(),
                 protocol: protocol.to_string(),
                 bytes_received: Arc::new(AtomicU64::new(0)),
+                metrics: Arc::new(StageMetrics::new()),
                 remote_addr: None,
                 video: None,
                 audio: None,
@@ -333,6 +480,7 @@ impl MediaEngine {
                 started_at: chrono::Utc::now().to_rfc3339(),
                 start_instant: now,
                 bytes_sent: Arc::new(AtomicU64::new(0)),
+                metrics: Arc::new(StageMetrics::new()),
                 prev_bytes_sent: AtomicU64::new(0),
                 prev_sample_time: std::sync::Mutex::new(now),
                 bitrate_kbps: std::sync::Mutex::new(None),
@@ -538,6 +686,61 @@ impl MediaEngine {
         tokens.contains_key(pipeline_id)
     }
 
+    /// Ensure an HLS segmenter is running for this pipeline. Returns the store
+    /// and whether the segmenter was already running (true) or just started (false).
+    pub async fn ensure_hls_segmenter(&self, pipeline_id: &str) -> (Arc<HlsStore>, bool) {
+        let mut consumers = self.hls_consumers.write().await;
+        let already_running = consumers.contains_key(pipeline_id);
+        if !already_running {
+            let token = CancellationToken::new();
+            consumers.insert(pipeline_id.to_string(), HlsConsumers::new(token));
+        }
+        drop(consumers);
+
+        let store = self.get_or_create_hls_store(pipeline_id).await;
+        (store, already_running)
+    }
+
+    /// Touch the HLS consumer heartbeat (called on playlist/segment fetch).
+    pub async fn touch_hls(&self, pipeline_id: &str) {
+        let consumers = self.hls_consumers.read().await;
+        if let Some(c) = consumers.get(pipeline_id) {
+            c.touch();
+        }
+    }
+
+    /// Register a persistent HLS consumer (e.g. HLS egress output).
+    pub async fn add_hls_persistent_consumer(&self, pipeline_id: &str) {
+        let consumers = self.hls_consumers.read().await;
+        if let Some(c) = consumers.get(pipeline_id) {
+            c.add_persistent();
+        }
+    }
+
+    /// Unregister a persistent HLS consumer.
+    pub async fn remove_hls_persistent_consumer(&self, pipeline_id: &str) {
+        let consumers = self.hls_consumers.read().await;
+        if let Some(c) = consumers.get(pipeline_id) {
+            c.remove_persistent();
+        }
+    }
+
+    /// Shut down an idle HLS segmenter and clean up its store.
+    pub async fn shutdown_hls_segmenter(&self, pipeline_id: &str) {
+        let mut consumers = self.hls_consumers.write().await;
+        if let Some(c) = consumers.remove(pipeline_id) {
+            c.cancel_token.cancel();
+        }
+        drop(consumers);
+        self.hls_stores.write().await.remove(pipeline_id);
+    }
+
+    /// Get the cancel token for a running HLS segmenter (used to spawn the task).
+    pub async fn get_hls_cancel_token(&self, pipeline_id: &str) -> Option<CancellationToken> {
+        let consumers = self.hls_consumers.read().await;
+        consumers.get(pipeline_id).map(|c| c.cancel_token.clone())
+    }
+
     pub async fn get_or_create_hls_store(&self, pipeline_id: &str) -> Arc<HlsStore> {
         let mut stores = self.hls_stores.write().await;
         stores
@@ -557,7 +760,6 @@ impl MediaEngine {
     }
 
     /// Build the full health snapshot JSON that the `/health` endpoint returns.
-    /// `recording_enabled` maps pipeline_id -> whether recording is enabled in DB.
     pub async fn health_snapshot(
         &self,
         pipeline_ids: &[String],
@@ -566,6 +768,7 @@ impl MediaEngine {
         let ingests = self.active_ingests.read().await;
         let egresses = self.active_egresses.read().await;
         let rec_tokens = self.recording_cancel_tokens.read().await;
+        let hls_consumers = self.hls_consumers.read().await;
 
         let mut pipelines_json = serde_json::Map::new();
 
@@ -652,13 +855,15 @@ impl MediaEngine {
 
             let rec_enabled = recording_enabled.get(pipeline_id).copied().unwrap_or(false);
             let rec_active = rec_tokens.contains_key(pipeline_id.as_str());
+            let hls_active = hls_consumers.contains_key(pipeline_id.as_str());
 
             pipelines_json.insert(
                 pipeline_id.clone(),
                 serde_json::json!({
                     "input": input_json,
                     "outputs": serde_json::Value::Object(outputs_json),
-                    "recording": { "enabled": rec_enabled, "active": rec_active }
+                    "recording": { "enabled": rec_enabled, "active": rec_active },
+                    "hlsPreview": { "active": hls_active }
                 }),
             );
         }
@@ -703,6 +908,7 @@ impl MediaEngine {
         let transcoder_buffers = self.transcoder_buffers.read().await;
         let rec_tokens = self.recording_cancel_tokens.read().await;
         let hls_stores = self.hls_stores.read().await;
+        let all_stage_metrics = self.stage_metrics.read().await;
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -726,6 +932,7 @@ impl MediaEngine {
                 "audio": i.audio,
                 "bytesReceived": i.bytes_received.load(Ordering::Relaxed),
             })),
+            "metrics": ingest.map(|i| i.metrics.snapshot()),
         }));
 
         // Node: source ring buffer
@@ -778,12 +985,14 @@ impl MediaEngine {
                     format!("Stage: {}", stage_key)
                 };
 
+                let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
                 nodes.push(serde_json::json!({
                     "id": stage_id,
                     "type": if is_audio { "audio_filter" } else { "transcoder" },
                     "label": label,
                     "stageKey": stage_key,
                     "active": !token.is_cancelled(),
+                    "metrics": all_stage_metrics.get(&stage_metrics_key).map(|m| m.snapshot()),
                 }));
 
                 if is_audio {
@@ -854,6 +1063,7 @@ impl MediaEngine {
                         "startedAt": e.started_at,
                     })
                 }),
+                "metrics": egress.map(|e| e.metrics.snapshot()),
             }));
 
             // Edge: from the appropriate stage to this egress
@@ -899,11 +1109,13 @@ impl MediaEngine {
         // Node: recording (if active)
         if rec_tokens.contains_key(pipeline_id) {
             let rec_id = format!("{}_recording", pipeline_id);
+            let rec_metrics_key = format!("{}:recording", pipeline_id);
             nodes.push(serde_json::json!({
                 "id": rec_id,
                 "type": "recording",
                 "label": "MKV Recording",
                 "active": true,
+                "metrics": all_stage_metrics.get(&rec_metrics_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
                 "from": rb_node_id,
@@ -915,11 +1127,13 @@ impl MediaEngine {
         // Node: HLS (if active)
         if hls_stores.contains_key(pipeline_id) {
             let hls_id = format!("{}_hls_preview", pipeline_id);
+            let hls_metrics_key = format!("{}:hls", pipeline_id);
             nodes.push(serde_json::json!({
                 "id": hls_id,
                 "type": "hls",
                 "label": "HLS Preview",
                 "active": true,
+                "metrics": all_stage_metrics.get(&hls_metrics_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
                 "from": rb_node_id,

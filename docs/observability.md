@@ -10,7 +10,8 @@ It does not currently expose a Prometheus text endpoint or proxy Grafana.
 | `GET /healthz` | None | Process liveness |
 | `GET /health` | None | Pipeline input/output state, transport quality, recording state, SRT listener pressure |
 | `GET /metrics/system` | Session | CPU, memory, disk, and host-wide network rates |
-| `GET /api/status` | Session | Restream version/commit, linked FFmpeg version, OS/host information |
+| `GET /api/status` | Session | Restream build/toolchain, linked native-library versions, SBOM summary, and OS/host information |
+| `GET /api/status/sbom` | Session | CycloneDX 1.5 runtime SBOM for resolved Rust crates and linked native libraries, including licenses |
 | `GET /pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
 | `GET /pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
 | `GET /pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |

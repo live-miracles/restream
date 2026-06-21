@@ -318,17 +318,82 @@ Authenticated build/runtime information:
 
 ```json
 {
-  "restream": { "version": "0.1.0", "commit": "444221c" },
+  "restream": {
+    "version": "0.1.0",
+    "commit": "abc558b",
+    "nativeBuildId": "..."
+  },
   "ffmpeg": "6.x",
+  "toolchain": {
+    "rustc": "1.96.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "llvm": "22.1.2",
+    "gccRuntime": "13.3.0"
+  },
+  "nativeLibraries": {
+    "ffmpeg": {
+      "version": "6.1.5",
+      "configuration": "... --enable-x86asm ...",
+      "license": "GPL version 2 or later",
+      "x86Assembly": true
+    },
+    "srt": {
+      "version": "1.5.5",
+      "buildVersion": "1.5.5",
+      "bondingAvailable": true
+    },
+    "openssl": {
+      "version": "OpenSSL 3.0.x ...",
+      "buildVersion": "3.0.x"
+    },
+    "sqlite": { "version": "3.x", "sourceId": "..." },
+    "x264": {
+      "version": "0.164.x",
+      "versionSource": "linked pkg-config metadata at build time"
+    }
+  },
+  "sbom": {
+    "format": "CycloneDX",
+    "specVersion": "1.5",
+    "endpoint": "/api/status/sbom",
+    "componentCount": 100,
+    "rustComponentCount": 85,
+    "nativeComponentCount": 15,
+    "licensesIncluded": true
+  },
   "os": {
     "platform": "linux",
     "arch": "x86_64",
     "hostname": "host",
+    "kernelVersion": "6.x",
     "uptime": 12345,
     "totalMem": 17179869184
   }
 }
 ```
+
+The top-level `ffmpeg` string remains for compatibility. Detailed native
+versions are obtained from the running libraries where they expose a runtime
+API. x264 has no public runtime version call, so its exact linked pkg-config
+version is embedded at build time and labeled accordingly.
+
+### `GET /api/status/sbom`
+
+Authenticated CycloneDX 1.5 JSON software bill of materials. The response uses
+content type `application/vnd.cyclonedx+json; version=1.5` and contains:
+
+- the Restream application component and build identity;
+- every resolved normal/runtime Rust crate from Cargo's locked dependency
+  graph, including version, Cargo package URL, source, and declared license;
+- FFmpeg component libraries, SRT, libssl, libcrypto, SQLite, x264, glibc when
+  applicable, Rust's standard library, libstdc++, and libgcc;
+- runtime-reported versions where an API exists, with explicit provenance for
+  build-resolved versions;
+- SPDX license expressions or `NOASSERTION` when upstream metadata does not
+  declare a license.
+
+The SBOM describes software present in the running artifact. It intentionally
+does not include development-only or benchmark dependencies.
 
 ## HLS Pull
 
