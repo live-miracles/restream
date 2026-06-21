@@ -7,5 +7,11 @@ set -euo pipefail
 # - 32 loopback RTMP egress sessions
 
 mkdir -p test/artifacts/latest
-cargo run --release --bin test_harness -- all \
-  | tee test/artifacts/latest/run.log
+cargo build --release --bin test_harness
+
+: > test/artifacts/latest/run.log
+for mode in correctness-rtmp correctness-srt egress in-process network; do
+  echo "== $mode ==" | tee -a test/artifacts/latest/run.log
+  target/release/test_harness "$mode" \
+    | tee -a test/artifacts/latest/run.log
+done

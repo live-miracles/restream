@@ -29,7 +29,9 @@ const SINK_PORT: u16 = 12935;
 async fn main() {
     if let Err(error) = run().await {
         eprintln!("test harness failed: {error}");
-        std::process::exit(1);
+        // Native FFmpeg/libsrt worker threads can still be alive on a failed
+        // test. Avoid process-global C teardown while those threads exist.
+        unsafe { libc::_exit(1) };
     }
 }
 
@@ -37,6 +39,8 @@ async fn run() -> Result<(), String> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
     let result = match command.as_str() {
         "correctness" => correctness().await,
+        "correctness-rtmp" => correctness_rtmp().await,
+        "correctness-srt" => correctness_srt().await,
         "egress" => egress_correctness().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
@@ -55,7 +59,8 @@ async fn run() -> Result<(), String> {
             }))
         }
         other => Err(format!(
-            "unknown command {other:?}; use correctness, egress, in-process, network, or all"
+            "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
+             egress, in-process, network, or all"
         )),
     };
 
@@ -115,19 +120,23 @@ async fn correctness() -> Result<Value, String> {
     let srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let fixture = artifact_path("correctness-h264.ts");
-    generate_fixture(&fixture).await?;
+    let rtmp_fixture = artifact_path("correctness-h264.ts");
+    generate_fixture_h264(&rtmp_fixture).await?;
+    let srt_fixture = artifact_path("correctness-h265.ts");
+    generate_fixture_h265(&srt_fixture).await?;
 
     let mut rtmp_publisher = spawn_publisher(
-        &fixture,
+        &rtmp_fixture,
         &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp"),
         "flv",
+        false,
     )
     .await?;
     let mut srt_publisher = spawn_publisher(
-        &fixture,
+        &srt_fixture,
         &format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-srt&pkt_size=1316"),
         "mpegts",
+        true,
     )
     .await?;
 
@@ -148,39 +157,136 @@ async fn correctness() -> Result<Value, String> {
     ))
     .await?;
 
+    assert_media_only(&rtmp_probe, "RTMP read")?;
+    assert_media_only(&srt_probe, "SRT read")?;
     let rtmp_media = normalized_streams(&rtmp_probe)?;
     let srt_media = normalized_streams(&srt_probe)?;
-    let matches = rtmp_media == srt_media;
+
+    assert_snapshot_matches_probe(&rtmp_snapshot, &rtmp_media, "RTMP")?;
+    assert_snapshot_matches_probe(&srt_snapshot, &srt_media, "SRT")?;
 
     stop_child(&mut rtmp_publisher).await;
     stop_child(&mut srt_publisher).await;
     rtmp_task.abort();
     srt_task.abort();
 
-    if !matches {
-        return Err(format!(
-            "normalized probes differ: RTMP={} SRT={}",
-            rtmp_media, srt_media
-        ));
-    }
-
     Ok(json!({
         "passed": true,
-        "fixture": fixture,
         "rtmp": {
+            "fixture": rtmp_fixture,
             "publishUrl": format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp"),
             "readUrl": format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp"),
             "snapshot": rtmp_snapshot,
             "probe": rtmp_probe,
+            "normalizedStreams": rtmp_media,
         },
         "srt": {
+            "fixture": srt_fixture,
             "publishUrl": format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-srt"),
             "readUrl": format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-srt&mode=caller"),
             "snapshot": srt_snapshot,
             "probe": srt_probe,
+            "normalizedStreams": srt_media,
         },
-        "normalizedStreams": rtmp_media,
-        "probesMatch": matches,
+    }))
+}
+
+async fn correctness_rtmp() -> Result<Value, String> {
+    correctness_one_protocol("rtmp").await
+}
+
+async fn correctness_srt() -> Result<Value, String> {
+    correctness_one_protocol("srt").await
+}
+
+async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
+    let db_path = artifact_path(&format!("correctness-{protocol}.sqlite"));
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = SqlitePool::connect(&db_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let pipeline_id = format!("pipe-{protocol}");
+    let stream_key = format!("e2e-{protocol}");
+    db::create_pipeline(
+        &pool,
+        &pipeline_id,
+        &format!("{protocol} test"),
+        &stream_key,
+        None,
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let _server_task = if protocol == "rtmp" {
+        tokio::spawn(start_rtmp_server_on(
+            pool,
+            security,
+            engine.clone(),
+            RTMP_PORT,
+        ))
+    } else {
+        let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+        tokio::spawn(srt_server.run(SRT_PORT))
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = if protocol == "rtmp" {
+        let p = artifact_path("correctness-h264.ts");
+        if !p.exists() {
+            generate_fixture_h264(&p).await?;
+        }
+        p
+    } else {
+        let p = artifact_path("correctness-h265.ts");
+        if !p.exists() {
+            generate_fixture_h265(&p).await?;
+        }
+        p
+    };
+    let (publish_url, read_url, format) = if protocol == "rtmp" {
+        (
+            format!("rtmp://127.0.0.1:{RTMP_PORT}/live/{stream_key}"),
+            format!("rtmp://127.0.0.1:{RTMP_PORT}/live/{stream_key}"),
+            "flv",
+        )
+    } else {
+        (
+            format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/{stream_key}&pkt_size=1316"),
+            format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/{stream_key}&mode=caller"),
+            "mpegts",
+        )
+    };
+    let map_all = protocol == "srt";
+    let mut publisher = spawn_publisher(&fixture, &publish_url, format, map_all).await?;
+    wait_for_ingests(&engine, &[&pipeline_id], Duration::from_secs(12)).await?;
+    let snapshot = engine
+        .probe_snapshot(&pipeline_id)
+        .await
+        .ok_or_else(|| format!("missing {protocol} snapshot"))?;
+    let probe = ffprobe(&read_url).await?;
+    assert_media_only(&probe, &format!("{protocol} read"))?;
+    let normalized = normalized_streams(&probe)?;
+    assert_snapshot_matches_probe(&snapshot, &normalized, protocol)?;
+    stop_child(&mut publisher).await;
+
+    Ok(json!({
+        "passed": true,
+        "protocol": protocol,
+        "publishUrl": publish_url,
+        "readUrl": read_url,
+        "snapshot": snapshot,
+        "probe": probe,
+        "normalizedStreams": normalized,
     }))
 }
 
@@ -223,7 +329,7 @@ async fn egress_correctness() -> Result<Value, String> {
 
     let fixture = artifact_path("correctness-h264.ts");
     if !fixture.exists() {
-        generate_fixture(&fixture).await?;
+        generate_fixture_h264(&fixture).await?;
     }
 
     // Retain the publisher process handle so it remains alive for the probes.
@@ -231,6 +337,7 @@ async fn egress_correctness() -> Result<Value, String> {
         &fixture,
         &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-src"),
         "flv",
+        false,
     )
     .await?;
     wait_for_ingests(&engine, &["pipe-src"], Duration::from_secs(12)).await?;
@@ -281,8 +388,12 @@ async fn egress_correctness() -> Result<Value, String> {
 
         let rtmp_read_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp-sink");
         let rtmp_result = ffprobe(&rtmp_read_url).await;
-        let rtmp_passed = rtmp_result.is_ok();
-        let rtmp_error = rtmp_result.as_ref().err().map(|e| e.to_string());
+        let rtmp_validation = rtmp_result
+            .as_ref()
+            .map_err(|error| error.to_string())
+            .and_then(|probe| assert_media_only(probe, "RTMP egress"));
+        let rtmp_passed = rtmp_validation.is_ok();
+        let rtmp_error = rtmp_validation.err();
         let rtmp_streams = rtmp_result
             .as_ref()
             .ok()
@@ -300,8 +411,12 @@ async fn egress_correctness() -> Result<Value, String> {
         let srt_read_url =
             format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-srt-sink&mode=caller");
         let srt_result = ffprobe(&srt_read_url).await;
-        let srt_passed = srt_result.is_ok();
-        let srt_error = srt_result.as_ref().err().map(|e| e.to_string());
+        let srt_validation = srt_result
+            .as_ref()
+            .map_err(|error| error.to_string())
+            .and_then(|probe| assert_media_only(probe, "SRT egress"));
+        let srt_passed = srt_validation.is_ok();
+        let srt_error = srt_validation.err();
         let srt_streams = srt_result
             .as_ref()
             .ok()
@@ -341,7 +456,7 @@ async fn egress_correctness() -> Result<Value, String> {
     unsafe { libc::_exit(if passed { 0 } else { 1 }) };
 }
 
-async fn generate_fixture(path: &Path) -> Result<(), String> {
+async fn generate_fixture_h264(path: &Path) -> Result<(), String> {
     let status = Command::new("ffmpeg")
         .args([
             "-y",
@@ -351,7 +466,7 @@ async fn generate_fixture(path: &Path) -> Result<(), String> {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=640x360:rate=30",
+            "testsrc2=size=1920x1080:rate=30",
             "-f",
             "lavfi",
             "-i",
@@ -365,7 +480,7 @@ async fn generate_fixture(path: &Path) -> Result<(), String> {
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "slow",
             "-g",
             "60",
             "-bf",
@@ -384,29 +499,76 @@ async fn generate_fixture(path: &Path) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("fixture generation failed: {status}"))
+        Err(format!("H.264 fixture generation failed: {status}"))
     }
 }
 
-async fn spawn_publisher(path: &Path, url: &str, format: &str) -> Result<Child, String> {
-    Command::new("ffmpeg")
-        .args([
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-re",
-            "-stream_loop",
-            "-1",
-            "-i",
-        ])
-        .arg(path)
-        .args(["-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", format])
-        .arg(url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())
+async fn generate_fixture_h265(path: &Path) -> Result<(), String> {
+    let multi_audio_source = Path::new("media/colorbar-timer.mp4");
+    if !multi_audio_source.exists() {
+        return Err(format!(
+            "multi-track audio source not found: {}",
+            multi_audio_source.display()
+        ));
+    }
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=3840x2160:rate=60",
+        "-t",
+        "8",
+        "-i",
+    ]);
+    cmd.arg(multi_audio_source);
+    cmd.args(["-map", "0:v"]);
+    for i in 0..16 {
+        cmd.args(["-map", &format!("1:a:{i}")]);
+    }
+    cmd.args([
+        "-t", "8", "-c:v", "libx265", "-preset", "slow", "-g", "120", "-bf", "2", "-c:a", "copy",
+        "-f", "mpegts",
+    ]);
+    cmd.arg(path);
+    let status = cmd.status().await.map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("H.265 fixture generation failed: {status}"))
+    }
+}
+
+async fn spawn_publisher(
+    path: &Path,
+    url: &str,
+    format: &str,
+    map_all: bool,
+) -> Result<Child, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-stream_loop",
+        "-1",
+        "-i",
+    ]);
+    cmd.arg(path);
+    if map_all {
+        cmd.args(["-map", "0"]);
+    } else {
+        cmd.args(["-map", "0:v", "-map", "0:a:0"]);
+    }
+    cmd.args(["-c", "copy", "-f", format]).arg(url);
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd.spawn().map_err(|e| e.to_string())
 }
 
 async fn wait_for_ingests(
@@ -488,6 +650,72 @@ fn normalized_streams(probe: &Value) -> Result<Value, String> {
         .collect();
     normalized.sort_by_key(|entry| entry["type"].as_str().unwrap_or("").to_string());
     Ok(Value::Array(normalized))
+}
+
+fn assert_media_only(probe: &Value, label: &str) -> Result<(), String> {
+    let streams = probe["streams"]
+        .as_array()
+        .ok_or_else(|| format!("{label}: ffprobe output has no streams"))?;
+    let non_media: Vec<&str> = streams
+        .iter()
+        .filter_map(|stream| stream["codec_type"].as_str())
+        .filter(|kind| !matches!(*kind, "video" | "audio"))
+        .collect();
+    let video_count = streams
+        .iter()
+        .filter(|stream| stream["codec_type"] == "video")
+        .count();
+    let audio_count = streams
+        .iter()
+        .filter(|stream| stream["codec_type"] == "audio")
+        .count();
+    if !non_media.is_empty() || video_count != 1 || audio_count < 1 {
+        return Err(format!(
+            "{label}: expected 1 video + >=1 audio, got video={video_count} \
+             audio={audio_count} non_media={non_media:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn assert_snapshot_matches_probe(
+    snapshot: &Value,
+    normalized: &Value,
+    label: &str,
+) -> Result<(), String> {
+    let streams = normalized
+        .as_array()
+        .ok_or_else(|| format!("{label}: normalized streams are not an array"))?;
+    let video = streams
+        .iter()
+        .find(|stream| stream["type"] == "video")
+        .ok_or_else(|| format!("{label}: missing normalized video"))?;
+    let audio = streams
+        .iter()
+        .find(|stream| stream["type"] == "audio")
+        .ok_or_else(|| format!("{label}: missing normalized audio"))?;
+    let snapshot_audio = snapshot["audioTracks"]
+        .as_array()
+        .and_then(|tracks| tracks.first())
+        .ok_or_else(|| format!("{label}: snapshot missing audio"))?;
+    let probe_sample_rate = audio["sampleRate"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| audio["sampleRate"].as_u64());
+
+    let matches = snapshot["video"]["codec"] == video["codec"]
+        && snapshot["video"]["width"] == video["width"]
+        && snapshot["video"]["height"] == video["height"]
+        && snapshot_audio["codec"] == audio["codec"]
+        && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
+        && snapshot_audio["channels"] == audio["channels"];
+    if !matches {
+        return Err(format!(
+            "{label}: engine snapshot does not match external probe: snapshot={} probe={}",
+            snapshot, normalized
+        ));
+    }
+    Ok(())
 }
 
 async fn stop_child(child: &mut Child) {
