@@ -31,6 +31,8 @@ improvement in production-shaped measurements.
 | Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
+| Reusable MPEG-TS demux drains | Measured, awaiting native MPEG-TS base commit | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
+| Direct MPEG-TS PID dispatch | Measured, awaiting native MPEG-TS base commit | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
 
 ## Current Baseline
 
@@ -465,6 +467,8 @@ Track:
 | `data_path/fanout_delivery` | slot and reference-count cost for 1–500 readers |
 | `data_path/memory_queue` | byte-oriented AVIO queue round-trip throughput |
 | `data_path/segment_finalize` | completed segment copy versus zero-copy ownership transfer |
+| `data_path/mpegts_demux_drain` | real 6.7 MB fixture replay with disposable versus reusable output vectors |
+| `data_path/mpegts_resync` | recovery cost for a 64 KiB corrupted prefix before aligned TS packets |
 
 It also prints `MediaPacket` and aligned-slot sizes.
 
@@ -510,6 +514,9 @@ target deployment hardware before implementation work.
 | compact ring slot layout | 8 bytes per slot; 4096 slots consume 32 KiB, 87.5% lower |
 | HLS 8 MiB segment copy | approximately 4.26 milliseconds |
 | HLS 8 MiB ownership transfer | approximately 347 nanoseconds, over 99.99% lower finalization time |
+| MPEG-TS disposable output-vector replay | approximately 12.44 milliseconds for the 6.7 MB H.264 fixture |
+| MPEG-TS reusable output-vector replay | approximately 11.36 milliseconds, about 8.7% lower |
+| MPEG-TS direct PID-table replay | approximately 8.54 milliseconds versus 11.40 milliseconds linear lookup, about 25.9% lower |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately

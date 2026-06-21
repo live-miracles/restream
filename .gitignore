@@ -1,5 +1,7 @@
 # Rust build artifacts
 /target
+/.build
+/test/artifacts/latest/
 
 # Old Node.js/TypeScript codebase (archived)
 old/

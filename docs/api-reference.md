@@ -271,7 +271,13 @@ Public native state snapshot:
         "publisher": {
           "protocol": "srt",
           "remoteAddr": "203.0.113.10:50000",
-          "quality": {}
+          "quality": {
+            "srtBonded": true,
+            "srtGroupMemberCount": 2,
+            "srtGroupConnectedMembers": 2,
+            "srtGroupActiveMembers": 1,
+            "srtGroupBrokenMembers": 0
+          }
         }
       },
       "outputs": {},
@@ -290,7 +296,8 @@ Public native state snapshot:
 See [Health Mapping](health-mapping.md) for exact derivation.
 
 Active egresses are stored by `outputId` and associated through the explicit
-`pipeline_id` field.
+`pipeline_id` field. SRT group member fields are present only for a bonded
+publisher; `srtBonded` is false for a normal single-link SRT publisher.
 
 ### `GET /healthz`
 

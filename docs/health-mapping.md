@@ -71,7 +71,17 @@ Alerting should use the per-second delta fields so a recovered connection can
 return to healthy.
 
 The snapshot also includes SRT buffer occupancy and packets in flight when
-libsrt provides them.
+libsrt provides them. For SRT publishers it also reports:
+
+| Field | Meaning |
+|---|---|
+| `srtBonded` | Whether libsrt accepted this publisher as a socket group |
+| `srtGroupMemberCount` | Total member tuples currently reported for the group |
+| `srtGroupConnectedMembers` | Members in the connected state |
+| `srtGroupActiveMembers` | Members carrying the active backup-group path |
+| `srtGroupBrokenMembers` | Members reported broken |
+
+The member-count fields are omitted for ordinary single-link publishers.
 
 ## Output Status
 
@@ -126,4 +136,6 @@ The shared SRT listener monitor reads Linux `/proc/net/udp` and tracks:
 
 These are listener-wide values, not per-pipeline values. A false
 `bondingAvailable` value means ordinary SRT works but the installed libsrt must
-be rebuilt with `ENABLE_BONDING=ON` before bonded ingest can work.
+be rebuilt with `ENABLE_BONDING=ON` before bonded ingest can work. The static
+release build supplies a bonding-enabled libsrt; development builds still
+report the capability of whichever system library they link.

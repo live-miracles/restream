@@ -68,7 +68,20 @@ The following must be treated as test results, not assumed capabilities.
 | Custom encoding | Configuration API exists, but the in-process reconciler treats `custom` as source | Expected to fail transformation assertions until custom arguments are applied |
 | RTMP H.265 | Requires Enhanced RTMP handling | Capability test; do not infer support from SRT H.265 |
 | `/health` output telemetry | `ActiveEgress` stores `pipeline_id`; API regression tests cover association | Must pass live bitrate/status polling |
-| Bonded SRT ingest | One listener accepts a group ID, exposes member state, and rejects unrelated duplicate publishers; requires `ENABLE_BONDING=ON` | Must run against a bonding-enabled libsrt and validate one receive path plus member failover |
+| Bonded SRT ingest | One listener accepts a group ID, exposes member state, and rejects unrelated duplicate publishers; release setup builds libsrt with `ENABLE_BONDING=ON` | Separate-process broadcast and backup/failover loopback tests pass; retain them as a release gate |
+
+The unit suite always tests group-ID detection, member-state summarization,
+quality/health serialization, and atomic duplicate-publisher rejection. In CI
+that provides bonding-enabled libsrt, require the real two-link loopback test:
+
+```sh
+./scripts/test-srt-bonding.sh
+```
+
+This builds and runs separate client/server processes for both broadcast and
+backup groups. It fails if `SRTO_GROUPCONNECT` is unavailable, if two member
+tuples do not attach to one accepted group, or if backup delivery does not
+continue after the primary member is closed.
 
 The HLS upload behavior to match is documented by
 [`mediamtx_push_targets_v1.17.1.patch`](https://github.com/live-miracles/restream/blob/master/patches/mediamtx/mediamtx_push_targets_v1.17.1.patch):

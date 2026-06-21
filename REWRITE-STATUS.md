@@ -1,7 +1,7 @@
 # Rust Backend Rewrite — Status
 
 Branch: `feat/rust-backend-rewrite`
-Code snapshot reviewed: June 20, 2026 (`444221c` plus current working-tree changes)
+Code snapshot reviewed: June 21, 2026 (`abc558b` plus current working-tree changes)
 
 ## Executive Status
 
@@ -17,14 +17,24 @@ open gates.
 
 ## Evidence
 
-`cargo test` on June 20, 2026:
+`cargo test` on June 21, 2026:
 
 | Suite | Result |
 |---|---|
-| Library/unit | 58 passed |
+| Library/unit | 80 passed |
 | API integration | 23 passed |
 | Database integration | 12 passed |
-| Total | **93 passed, 0 failed** |
+| Total | **115 passed, 0 failed** |
+
+Release-build validation on June 21, 2026 also passed:
+
+- conventional statically linked x86-64 ELF with no dynamic interpreter or
+  `DT_NEEDED` entries;
+- pinned SRT 1.5.5 built with bonding, FFmpeg 6.1.5, and x264;
+- static codec probe for libx264, H.264/H.265, AAC, MP3, AC-3, and E-AC-3;
+- separate-process SRT broadcast bonding and backup-link failover tests;
+- five-second isolated-network startup smoke test with HTTP, RTMP, and the
+  bonding-enabled SRT listener active.
 
 The current unit coverage includes:
 
@@ -148,7 +158,7 @@ The labels below distinguish implementation from proof.
 | Custom encoding arguments | **Not applied** | API persists value; reconciler treats `custom` as passthrough |
 | RTMPS output | **Not wired** | URL parser accepts RTMPS, reconciler dispatches only `rtmp://` |
 | SRT bonded egress | Constructed, live failover unproven | URL/group code exists; bonded group does not receive the high-bitrate option helper |
-| SRT bonded ingest | Implemented; deployment library and live failover validation required | One listener accepts a group ID, reads it through one `srt_recv` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Requires libsrt built with `ENABLE_BONDING=ON`; the current host library has bonding disabled |
+| SRT bonded ingest | Implemented and locally validated | One listener accepts a group ID, reads it through one `srt_recvmsg2` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Separate-process tests pass for two-member broadcast and backup groups, including primary-member failure and standby delivery |
 | File ingest | Implemented with child FFmpeg | Not fully in-process; list endpoint reports `running:false` placeholder |
 
 CRUD/lifecycle: deleting an output now cancels its egress task before removing
@@ -213,8 +223,8 @@ See `docs/api-reference.md` for the executable route surface.
 5. Reap exited file-ingest children and report actual running state.
 6. ~~Detect/log accepted SRT group IDs, expose `srt_group_data`, and reject a
    second independent publisher that only reuses the same StreamID~~ — done.
-   Production packaging must still provide libsrt with `ENABLE_BONDING=ON`,
-   and live member-failure recovery remains an end-to-end gate.
+   Static release packaging now builds libsrt with `ENABLE_BONDING=ON`;
+   separate-process broadcast and backup failover tests pass.
 7. ~~Replace the transcoder byte-stream reconstruction~~ — done; output reader
    now demuxes MPEG-TS to recover timestamps and keyframes. HLS and recording
    muxers still use the raw-byte approach.
@@ -242,10 +252,12 @@ See `docs/api-reference.md` for the executable route surface.
 
 ### Claims intentionally not made
 
-- The binary is not documented as fully static: `build.rs` uses dynamic
-  pkg-config probing for FFmpeg/libsrt.
+- A static glibc binary is not claimed to be universally portable across every
+  Linux kernel, NSS setup, or architecture; the current artifact is an x86-64
+  GNU/Linux release build.
 - 4K60 is a sizing target, not a benchmarked throughput guarantee.
-- SRT bonding is not considered production-proven until live failover is tested.
+- SRT bonded egress is not production-proven; only bonded ingest broadcast and
+  backup/failover modes have live loopback evidence.
 - A MediaMTX sink accepting a stream is interoperability evidence, not platform
   certification.
 

@@ -80,10 +80,9 @@ packages must provide pkg-config metadata for:
 - `libavutil`
 - `libsrt`
 
-Bonded SRT ingest additionally requires a libsrt build configured with
-`ENABLE_BONDING=ON`. Some distribution packages, including the library linked
-on the current development host, ship the group API symbols as disabled stubs.
-Restream detects this at listener startup instead of silently claiming support.
+Bonded SRT ingest requires libsrt configured with `ENABLE_BONDING=ON`. Some
+distribution packages ship the group API symbols as disabled stubs. Restream
+detects this at listener startup instead of silently claiming support.
 
 Build and start:
 
@@ -91,6 +90,24 @@ Build and start:
 cargo build
 cargo run
 ```
+
+For a reproducible release build, the setup script installs missing Debian or
+Ubuntu build packages when possible, then builds pinned static SRT, x264, and
+FFmpeg dependencies:
+
+```sh
+./scripts/setup-static-build.sh
+./scripts/test-srt-bonding.sh
+./scripts/build-static.sh
+```
+
+The resulting binary is
+`.build/static/cargo-target/release/restream`. The build script verifies that
+it has no dynamic loader dependency and checks the required H.264/H.265 and
+audio codec set. The bonding test uses separate client/server processes and
+proves two tuples on one listener in both broadcast and backup/failover modes.
+Because this build enables x264, redistribution must comply with the applicable
+GPL licensing requirements.
 
 Listeners are currently fixed:
 
@@ -120,9 +137,9 @@ Run the full Rust suite:
 cargo test
 ```
 
-As of June 20, 2026 this runs 72 passing tests:
+As of June 21, 2026 this runs 115 passing tests:
 
-- 37 library/unit tests
+- 80 library/unit tests
 - 23 API integration tests
 - 12 database integration tests
 

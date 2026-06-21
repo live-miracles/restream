@@ -115,7 +115,7 @@ remains active.
 
 | Area | Current state |
 |---|---|
-| RTMP H.264/AAC | Native ingest/play/egress implemented; basic interoperability observed, but outbound B-frame timestamp handling is wrong |
+| RTMP H.264/AAC | Native ingest/play/egress implemented; video uses DTS and carries the FLV composition offset, with full B-frame round-trip still an end-to-end gate |
 | SRT H.264/AAC | Native ingest/read/egress code exists with MPEG-TS remux; prior local evidence, current matrix rerun required |
 | SRT H.265 | Codec mapping implemented; full matrix remains an end-to-end gate |
 | RTMP H.265 | Enhanced RTMP is not implemented; an H.264 stage is selected, but actual decode/encode conversion is incomplete |
@@ -135,7 +135,7 @@ parsed `bond=` list but does not call the helper after group creation.
 The listener requests `SRTO_GROUPCONNECT`. With a libsrt build configured using
 `ENABLE_BONDING=ON`, `srt_accept` returns the group ID when the first link
 connects; later members attach in the background. The application reads the
-logical group through the same `srt_recv` loop, so only one ingest endpoint and
+logical group through one `srt_recvmsg2` loop, so only one ingest endpoint and
 one ring producer are needed. Startup warns when the linked libsrt rejects the
 option; single-link ingest remains available in that case.
 
@@ -148,9 +148,10 @@ also export member counts and connected/active/broken state from
 `srt_group_data()`.
 
 URL parsing, option constants, group-state summarization, and duplicate
-publisher rejection have unit coverage. A loopback test exercises real group
-acceptance when the linked library supports bonding and reports a prerequisite
-skip otherwise. Live member failover and the full H.265 matrix remain open.
+publisher rejection have unit coverage. Separate-process loopback tests pass
+for two-member broadcast and backup groups, including closing the primary
+member and receiving the next message through the standby. Bonded egress and
+the full H.265 matrix remain open.
 
 ## HLS and Recording
 
