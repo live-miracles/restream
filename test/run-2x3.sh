@@ -13,7 +13,7 @@ set -euo pipefail
 API_URL="${API_URL:-http://localhost:3030}"
 MANIFEST="${MANIFEST:-test/artifacts/session-2x3-manifest.json}"
 LOG_DIR="${LOG_DIR:-test/artifacts/logs}"
-INPUT_FILE="${INPUT_FILE:-media/colorbar-timer.mp4}"
+INPUT_FILE="${INPUT_FILE:-media/colorbar-timer-2v16a.mp4}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-120}"
 POLL_SEC="${POLL_SEC:-2}"
 KEEP_RUNNING="${KEEP_RUNNING:-0}"
@@ -129,12 +129,15 @@ for pi in $(seq 0 $((PIPE_COUNT - 1))); do
     if [[ "$PROTO" == "rtmp" ]]; then
         TARGET="rtmp://localhost:1935/live/$PIPE_KEY"
         ffmpeg -nostdin -re -stream_loop -1 -i "$INPUT_FILE" \
-            -map 0:v -map 0:a:0 -c copy -f flv "$TARGET" \
+            -map 0:1 -map 0:3 -c copy -f flv "$TARGET" \
             >"$LOG_DIR/input-$((pi+1))-$PROTO.log" 2>&1 &
     else
         TARGET="srt://localhost:10080?streamid=publish:live/$PIPE_KEY"
         ffmpeg -nostdin -re -stream_loop -1 -i "$INPUT_FILE" \
-            -map 0 -c copy -f mpegts "$TARGET" \
+            -map 0:0 -map 0:2 -map 0:3 -map 0:4 -map 0:5 -map 0:6 -map 0:7 \
+            -map 0:8 -map 0:9 -map 0:10 -map 0:11 -map 0:12 -map 0:13 \
+            -map 0:14 -map 0:15 -map 0:16 -map 0:17 \
+            -c copy -f mpegts "$TARGET" \
             >"$LOG_DIR/input-$((pi+1))-$PROTO.log" 2>&1 &
     fi
     OWNED_PIDS+=($!)
