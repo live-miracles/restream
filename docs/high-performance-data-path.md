@@ -28,11 +28,12 @@ improvement in production-shaped measurements.
 | Batched AVIO queue writes | Complete in `10eaaf6` | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
-| Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
+| Batch metadata, prefetch, and SIMD refinement | SIMD resync validated | TS resync uses SIMD sync scan (18× over scalar); Annex-B SIMD deferred (short-circuited by TS random-access flag); prefetch and batch metadata pending |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 | Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
 | Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
+| SIMD-accelerated TS resync | Complete | 64 KiB corrupted prefix: SIMD scan 907 ns (67.3 GiB/s), scalar scan 16.4 µs (3.7 GiB/s), 18× speedup; full demuxer resync 1.31 µs (46.6 GiB/s) |
 
 ## Current Baseline
 
@@ -329,27 +330,39 @@ and call `RingBuffer::push_batch()` without allocating a new vector on every
 receive. A mux batch can resolve stream mappings once, reserve aggregate output
 capacity, and emit 1316-byte-aligned groups of seven TS packets for the sender.
 
-### P1: Resynchronization and framing
+### P1: Resynchronization and framing — complete
 
-The current demuxer advances one byte at a time until it sees `0x47`. A valid
-candidate should be verified at offsets `+188` and `+376` where available.
-Extend the existing SIMD scanner to return candidate sync positions, followed
-by scalar stride verification:
+The demuxer uses `find_ts_sync()` which calls the SIMD `find_sync_byte()`
+scanner, then verifies `+188` and `+376` stride candidates scalarly. The normal
+aligned path tests the expected sync byte directly and skips the scanner
+entirely.
 
-```text
-wide 0x47 scan -> verify 188-byte cadence -> resume packet loop
-```
+Measured on a 64 KiB corrupted prefix followed by aligned TS packets:
 
-Do not run the scanner while input remains correctly aligned; the normal path
-should test the expected sync byte and advance directly.
+| Variant | Time | Throughput |
+|---|---|---|
+| SIMD sync scan (raw `find_sync_byte`) | 907 ns | 67.3 GiB/s |
+| Scalar sync scan (`iter().position()`) | 16.4 µs | 3.7 GiB/s |
+| Full demuxer resync (SIMD + stride verify + parse) | 1.31 µs | 46.6 GiB/s |
 
-### P1: Annex-B start-code scanning
+The SIMD scanner provides an 18× speedup for the raw search. The full demuxer
+resync adds only ~400 ns for stride validation and TS packet parsing, confirming
+the scan dominates recovery cost. AVX2 is the active dispatch path on the
+development host.
 
-H.264/H.265 keyframe and probe parsing use scalar searches for three- and
-four-byte start codes. Add a vectorized zero-byte candidate scanner and verify
-`00 00 01` / `00 00 00 01` scalarly. Benchmark realistic P-frames and large
-I-frames separately. Skip the scan when the TS random-access flag already
-establishes keyframe status.
+### P1: Annex-B start-code scanning — deferred
+
+H.264/H.265 keyframe detection uses `for_each_nal_raw()` to scan for three- and
+four-byte Annex-B start codes (`00 00 01` / `00 00 00 01`). However, the
+demuxer short-circuits on the TS adaptation field's `random_access_indicator`
+flag: `random_access || h264_is_keyframe(&payload)`. Well-formed MPEG-TS
+streams set this flag on IDR frames, so the scalar NAL scan runs only as a
+fallback for non-conformant sources. The SPS probe path (`try_build_probe`)
+also uses NAL scanning but executes exactly once per stream.
+
+A vectorized zero-byte candidate scanner remains a valid optimization, but
+profiling should confirm the NAL scan appears in hot samples before investing.
+Defer until a non-conformant source demonstrates measurable cost.
 
 ### P2: Stream lookup in the muxer
 
@@ -378,7 +391,7 @@ Before replacing the FFmpeg path or adopting the native muxer broadly, add:
 - demux bytes/s, TS packets/s, media packets/s, allocations, and copied bytes;
 - mux tests at small audio packets, ordinary P-frames, and 200–500 KiB I-frames;
 - native demux versus FFmpeg demux throughput and output equivalence;
-- scalar versus SIMD resync and Annex-B scanning;
+- scalar versus SIMD resync (done: 18× SIMD win on 64 KiB prefix) and Annex-B scanning;
 - packet-at-a-time versus batch demux/mux;
 - output validation with `ffprobe` and the existing protocol probes.
 
@@ -468,7 +481,7 @@ Track:
 | `data_path/memory_queue` | byte-oriented AVIO queue round-trip throughput |
 | `data_path/segment_finalize` | completed segment copy versus zero-copy ownership transfer |
 | `data_path/mpegts_demux_drain` | real 6.7 MB fixture replay with disposable versus reusable output vectors |
-| `data_path/mpegts_resync` | recovery cost for a 64 KiB corrupted prefix before aligned TS packets |
+| `data_path/mpegts_resync` | SIMD vs scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
 
 It also prints `MediaPacket` and aligned-slot sizes.
 
@@ -517,6 +530,9 @@ target deployment hardware before implementation work.
 | MPEG-TS disposable output-vector replay | approximately 12.44 milliseconds for the 6.7 MB H.264 fixture |
 | MPEG-TS reusable output-vector replay | approximately 11.36 milliseconds, about 8.7% lower |
 | MPEG-TS direct PID-table replay | approximately 8.54 milliseconds versus 11.40 milliseconds linear lookup, about 25.9% lower |
+| SIMD sync scan, 64 KiB corrupted prefix | approximately 907 nanoseconds, 67.3 GiB/s |
+| scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; SIMD is 18× faster |
+| full demuxer resync, 64 KiB corrupted prefix | approximately 1.31 microseconds, 46.6 GiB/s |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately
