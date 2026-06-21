@@ -31,8 +31,8 @@ improvement in production-shaped measurements.
 | Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
-| Reusable MPEG-TS demux drains | Measured, awaiting native MPEG-TS base commit | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
-| Direct MPEG-TS PID dispatch | Measured, awaiting native MPEG-TS base commit | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
+| Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
+| Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
 
 ## Current Baseline
 
