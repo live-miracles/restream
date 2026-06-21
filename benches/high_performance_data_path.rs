@@ -4,9 +4,10 @@ use criterion::{
 };
 use restream::media::avio::MemoryQueue;
 use restream::media::engine::MediaEngine;
-use restream::media::mpegts::TsDemuxer;
-use restream::media::simd::find_sync_byte;
+use restream::media::engine::{AudioMeta, VideoMeta};
+use restream::media::mpegts::{TsDemuxer, TsMuxer};
 use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer, RingSlot};
+use restream::media::simd::find_sync_byte;
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -484,6 +485,82 @@ fn bench_mpegts_resync(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_mpegts_mux(c: &mut Criterion) {
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test/artifacts/latest/correctness-h264.ts"
+    );
+    let Ok(fixture) = std::fs::read(fixture_path) else {
+        eprintln!("skipping MPEG-TS mux benchmark: fixture not found at {fixture_path}");
+        return;
+    };
+
+    let mut demuxer = TsDemuxer::new();
+    demuxer.feed(&fixture);
+    demuxer.flush();
+    let packets = demuxer.drain();
+    let probe = demuxer.take_probe();
+    if packets.is_empty() {
+        eprintln!("skipping MPEG-TS mux benchmark: no packets decoded from fixture");
+        return;
+    }
+
+    let video = probe.as_ref().and_then(|p| {
+        p.video.as_ref().map(|v| VideoMeta {
+            codec: v.codec.clone(),
+            width: v.width,
+            height: v.height,
+            fps: v.fps,
+            bw: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        })
+    });
+    let audio_tracks: Vec<AudioMeta> = probe
+        .as_ref()
+        .map(|p| {
+            p.audio_tracks
+                .iter()
+                .map(|a| AudioMeta {
+                    codec: a.codec.clone(),
+                    sample_rate: a.sample_rate,
+                    channels: a.channels,
+                    channel_layout: None,
+                    track_index: a.track_index,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let total_payload: usize = packets.iter().map(|p| p.payload.len()).sum();
+
+    let mut group = c.benchmark_group("data_path/mpegts_mux");
+    group.sample_size(10);
+    group.throughput(Throughput::Bytes(total_payload as u64));
+
+    group.bench_function("mux_all_packets", |b| {
+        b.iter(|| {
+            let mut muxer = TsMuxer::new(video.as_ref(), &audio_tracks);
+            let mut total_bytes = 0usize;
+            for pkt in &packets {
+                let ts = muxer.mux_packet(
+                    pkt.media_type,
+                    pkt.track_index,
+                    pkt.pts,
+                    pkt.dts,
+                    pkt.is_keyframe,
+                    &pkt.payload,
+                );
+                total_bytes += ts.len();
+            }
+            black_box(total_bytes)
+        });
+    });
+
+    group.finish();
+}
+
 fn benches(c: &mut Criterion) {
     print_layout_baseline();
     bench_control_plane_lookup(c);
@@ -494,6 +571,7 @@ fn benches(c: &mut Criterion) {
     bench_memory_queue(c);
     bench_segment_finalize(c);
     bench_mpegts_demux_drain(c);
+    bench_mpegts_mux(c);
     bench_mpegts_resync(c);
 }
 

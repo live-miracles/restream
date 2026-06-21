@@ -643,53 +643,49 @@ impl TsMuxer {
             self.last_pat_pmt_dts = Some(dts_ms);
         }
 
-        // Build PES packet
+        // Build PES header on the stack — no allocation, no payload copy.
+        // The logical PES is pes_hdr[..hdr_len] ++ payload.
         let pts_differs = pts_90k != dts_90k;
-        let pes_header_size = if pts_differs { 19 } else { 14 };
-        let mut pes = Vec::with_capacity(pes_header_size + payload.len());
-
-        // PES start code + stream_id
-        pes.extend_from_slice(&PES_START_CODE);
-        let stream_id: u8 = match media_type {
+        let mut pes_hdr = [0u8; 19];
+        pes_hdr[0..3].copy_from_slice(&PES_START_CODE);
+        pes_hdr[3] = match media_type {
             MediaType::Video => 0xE0,
             MediaType::Audio => 0xC0,
         };
-        pes.push(stream_id);
-
-        // PES packet length (0 = unbounded for video, or actual for short audio)
-        let pes_data_len = pes_header_size - 6 + payload.len();
+        let hdr_len: usize = if pts_differs { 19 } else { 14 };
+        let pes_data_len = hdr_len - 6 + payload.len();
         if media_type == MediaType::Audio && pes_data_len <= 0xFFFF {
-            pes.push((pes_data_len >> 8) as u8);
-            pes.push(pes_data_len as u8);
-        } else {
-            pes.push(0x00);
-            pes.push(0x00);
+            pes_hdr[4] = (pes_data_len >> 8) as u8;
+            pes_hdr[5] = pes_data_len as u8;
         }
-
-        // PES flags
-        pes.push(0x80); // marker bits
-        let pts_dts_flags: u8 = if pts_differs { 0xC0 } else { 0x80 };
-        pes.push(pts_dts_flags);
-        let header_data_len: u8 = if pts_differs { 10 } else { 5 };
-        pes.push(header_data_len);
-
-        // PTS
-        write_timestamp(&mut pes, pts_90k, if pts_differs { 0x03 } else { 0x02 });
-        // DTS (only if different from PTS)
+        pes_hdr[6] = 0x80;
+        pes_hdr[7] = if pts_differs { 0xC0 } else { 0x80 };
+        pes_hdr[8] = if pts_differs { 10 } else { 5 };
+        write_timestamp_buf(
+            &mut pes_hdr[9..14],
+            pts_90k,
+            if pts_differs { 0x03 } else { 0x02 },
+        );
         if pts_differs {
-            write_timestamp(&mut pes, dts_90k, 0x01);
+            write_timestamp_buf(&mut pes_hdr[14..19], dts_90k, 0x01);
         }
 
-        pes.extend_from_slice(payload);
+        let total_pes = hdr_len + payload.len();
+        let ts_count = (total_pes + 183) / 184; // upper bound
+        self.output
+            .reserve(ts_count * TS_PACKET_SIZE + 2 * TS_PACKET_SIZE);
 
-        // Packetize into 188-byte TS packets
-        let mut pes_offset = 0;
+        // Packetize: walk two logical slices (pes_hdr, payload) without copying
+        // them into a contiguous PES buffer.
+        let mut pes_offset = 0usize;
         let mut first = true;
 
-        while pes_offset < pes.len() {
-            let mut ts = [0xFFu8; TS_PACKET_SIZE];
-            ts[0] = TS_SYNC_BYTE;
+        while pes_offset < total_pes {
+            let base = self.output.len();
+            self.output.resize(base + TS_PACKET_SIZE, 0xFF);
+            let ts = &mut self.output[base..base + TS_PACKET_SIZE];
 
+            ts[0] = TS_SYNC_BYTE;
             let pusi_bit: u8 = if first { 0x40 } else { 0x00 };
             ts[1] = pusi_bit | ((pid >> 8) as u8 & 0x1F);
             ts[2] = pid as u8;
@@ -697,33 +693,26 @@ impl TsMuxer {
             let cc = self.continuity[stream_idx];
             self.continuity[stream_idx] = (cc + 1) & 0x0F;
 
-            let remaining_pes = pes.len() - pes_offset;
+            let remaining_pes = total_pes - pes_offset;
 
-            // Adaptation field for keyframe or PCR or stuffing
-            let need_af = first && (is_keyframe || pid == self.pcr_pid);
-            let max_payload = if need_af {
-                // Write adaptation field
-                let pcr_bytes = if pid == self.pcr_pid && first { 6 } else { 0 };
-                let af_flags: u8 = if is_keyframe && first { 0x40 } else { 0x00 }
-                    | if pcr_bytes > 0 { 0x10 } else { 0x00 };
+            let header_end = if first && (is_keyframe || pid == self.pcr_pid) {
+                let pcr_bytes = if pid == self.pcr_pid { 6 } else { 0 };
+                let af_flags: u8 =
+                    if is_keyframe { 0x40 } else { 0x00 } | if pcr_bytes > 0 { 0x10 } else { 0x00 };
 
-                let min_af_len = 1 + pcr_bytes; // flags + optional PCR
-                let available = TS_PACKET_SIZE - 4 - 1 - min_af_len; // header + af_length + af
+                let min_af_len = 1 + pcr_bytes;
+                let available = TS_PACKET_SIZE - 4 - 1 - min_af_len;
                 let payload_in_packet = remaining_pes.min(available);
                 let stuff = available - payload_in_packet;
                 let af_len = min_af_len + stuff;
 
-                ts[3] = 0x30 | cc; // adaptation + payload
+                ts[3] = 0x30 | cc;
                 ts[4] = af_len as u8;
                 ts[5] = af_flags;
 
-                let mut af_pos = 6;
                 if pcr_bytes > 0 {
-                    write_pcr(&mut ts[af_pos..], dts_90k);
-                    af_pos += 6;
+                    write_pcr(&mut ts[6..], dts_90k);
                 }
-                // Stuffing bytes (already 0xFF from init)
-                let _ = af_pos + stuff;
 
                 5 + af_len
             } else {
@@ -731,34 +720,39 @@ impl TsMuxer {
                 let payload_in_packet = remaining_pes.min(available);
 
                 if payload_in_packet < available {
-                    // Need stuffing adaptation field
                     let stuff = available - payload_in_packet;
                     if stuff == 1 {
                         ts[3] = 0x30 | cc;
-                        ts[4] = 0x00; // af_length = 0
+                        ts[4] = 0x00;
                         5
                     } else {
                         ts[3] = 0x30 | cc;
                         ts[4] = (stuff - 1) as u8;
                         if stuff >= 2 {
-                            ts[5] = 0x00; // af flags = none
+                            ts[5] = 0x00;
                         }
-                        // rest is stuffing (0xFF from init)
                         4 + stuff
                     }
                 } else {
-                    ts[3] = 0x10 | cc; // payload only
+                    ts[3] = 0x10 | cc;
                     4
                 }
             };
 
-            let payload_space = TS_PACKET_SIZE - max_payload;
+            // Copy from the two logical PES slices into this TS packet's
+            // payload region, without ever building a contiguous PES buffer.
+            let payload_space = TS_PACKET_SIZE - header_end;
             let copy_len = remaining_pes.min(payload_space);
-            ts[TS_PACKET_SIZE - copy_len..]
-                .copy_from_slice(&pes[pes_offset..pes_offset + copy_len]);
+            let dst_start = TS_PACKET_SIZE - copy_len;
+            copy_pes_slices(
+                &mut ts[dst_start..],
+                &pes_hdr[..hdr_len],
+                payload,
+                pes_offset,
+                copy_len,
+            );
             pes_offset += copy_len;
 
-            self.output.extend_from_slice(&ts);
             first = false;
         }
 
@@ -871,6 +865,34 @@ fn write_timestamp(buf: &mut Vec<u8>, ts: i64, marker: u8) {
     buf.push((((ts >> 15) & 0x7F) as u8) << 1 | 0x01);
     buf.push(((ts >> 7) & 0xFF) as u8);
     buf.push((((ts) & 0x7F) as u8) << 1 | 0x01);
+}
+
+fn write_timestamp_buf(buf: &mut [u8], ts: i64, marker: u8) {
+    buf[0] = (marker << 4) | (((ts >> 30) as u8) & 0x07) << 1 | 0x01;
+    buf[1] = ((ts >> 22) & 0xFF) as u8;
+    buf[2] = (((ts >> 15) & 0x7F) as u8) << 1 | 0x01;
+    buf[3] = ((ts >> 7) & 0xFF) as u8;
+    buf[4] = (((ts) & 0x7F) as u8) << 1 | 0x01;
+}
+
+fn copy_pes_slices(dst: &mut [u8], hdr: &[u8], payload: &[u8], offset: usize, len: usize) {
+    let hdr_len = hdr.len();
+    let mut written = 0;
+    if offset < hdr_len {
+        let from_hdr = (hdr_len - offset).min(len);
+        dst[..from_hdr].copy_from_slice(&hdr[offset..offset + from_hdr]);
+        written = from_hdr;
+    }
+    if written < len {
+        let payload_offset = if offset > hdr_len {
+            offset - hdr_len
+        } else {
+            0
+        };
+        let remaining = len - written;
+        dst[written..written + remaining]
+            .copy_from_slice(&payload[payload_offset..payload_offset + remaining]);
+    }
 }
 
 fn write_pcr(buf: &mut [u8], ts_90k: i64) {

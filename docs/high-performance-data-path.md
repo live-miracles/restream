@@ -35,6 +35,7 @@ improvement in production-shaped measurements.
 | Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
 | SIMD-accelerated TS resync | Complete | 64 KiB corrupted prefix: SIMD scan 907 ns (67.3 GiB/s), scalar scan 16.4 µs (3.7 GiB/s), 18× speedup; full demuxer resync 1.31 µs (46.6 GiB/s) |
 | Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
+| Zero-copy PES muxer | Complete | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
 
 ## Current Baseline
 
@@ -302,19 +303,16 @@ An `i16` table occupies 16 KiB and removes a branchy linear scan from every TS
 packet. Populate it when the PMT is parsed. Keep PAT and PMT PID checks before
 the table lookup.
 
-### P0: Avoid constructing and copying a contiguous PES packet in the muxer
+### P0: ~~Avoid constructing and copying a contiguous PES packet in the muxer~~ Done
 
-`TsMuxer::mux_packet()` currently:
+PES header is now built on a `[u8; 19]` stack array. TS packets are written
+directly into `self.output` via `resize` + slice mutation—no intermediate
+`Vec<u8>` PES allocation, no full payload copy, no per-packet `[u8; 188]` temp
+array. A `copy_pes_slices` helper walks the two logical slices (header +
+original payload) without ever building a contiguous PES buffer.
 
-1. allocates a `Vec` for PES;
-2. copies the complete codec payload into it;
-3. copies PES slices into a temporary 188-byte TS array;
-4. copies each TS array into the output vector.
-
-Packetize a small stack-resident PES header and the original payload as two
-logical slices. Write TS packets directly into reserved output-vector space.
-This removes the full payload copy, the per-packet PES allocation, and one
-188-byte copy per TS packet.
+**Result:** 6.7 MB fixture mux time dropped from ~880 µs to ~490 µs (45% faster,
+throughput 6.8 → 12.3 GiB/s).
 
 ### P1: Native batch APIs
 
@@ -482,6 +480,7 @@ Track:
 | `data_path/memory_queue` | byte-oriented AVIO queue round-trip throughput |
 | `data_path/segment_finalize` | completed segment copy versus zero-copy ownership transfer |
 | `data_path/mpegts_demux_drain` | real 6.7 MB fixture replay with disposable versus reusable output vectors |
+| `data_path/mpegts_mux` | real 6.7 MB fixture re-mux throughput |
 | `data_path/mpegts_resync` | SIMD vs scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
 
 It also prints `MediaPacket` and aligned-slot sizes.
@@ -534,6 +533,7 @@ target deployment hardware before implementation work.
 | SIMD sync scan, 64 KiB corrupted prefix | approximately 907 nanoseconds, 67.3 GiB/s |
 | scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; SIMD is 18× faster |
 | full demuxer resync, 64 KiB corrupted prefix | approximately 1.31 microseconds, 46.6 GiB/s |
+| MPEG-TS mux, 6.7 MB fixture | approximately 490 microseconds, 12.3 GiB/s (zero-copy PES; was ~880 µs before) |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately
