@@ -34,6 +34,7 @@ improvement in production-shaped measurements.
 | Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
 | Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
 | SIMD-accelerated TS resync | Complete | 64 KiB corrupted prefix: SIMD scan 907 ns (67.3 GiB/s), scalar scan 16.4 µs (3.7 GiB/s), 18× speedup; full demuxer resync 1.31 µs (46.6 GiB/s) |
+| Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
 
 ## Current Baseline
 
@@ -527,8 +528,8 @@ target deployment hardware before implementation work.
 | compact ring slot layout | 8 bytes per slot; 4096 slots consume 32 KiB, 87.5% lower |
 | HLS 8 MiB segment copy | approximately 4.26 milliseconds |
 | HLS 8 MiB ownership transfer | approximately 347 nanoseconds, over 99.99% lower finalization time |
-| MPEG-TS disposable output-vector replay | approximately 12.44 milliseconds for the 6.7 MB H.264 fixture |
-| MPEG-TS reusable output-vector replay | approximately 11.36 milliseconds, about 8.7% lower |
+| MPEG-TS disposable output-vector replay | approximately 4.43 milliseconds for the 6.7 MB H.264 fixture (cumulative: PID dispatch + reusable drains + SIMD resync) |
+| MPEG-TS reusable output-vector replay | approximately 4.28 milliseconds, about 3.4% lower than disposable |
 | MPEG-TS direct PID-table replay | approximately 8.54 milliseconds versus 11.40 milliseconds linear lookup, about 25.9% lower |
 | SIMD sync scan, 64 KiB corrupted prefix | approximately 907 nanoseconds, 67.3 GiB/s |
 | scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; SIMD is 18× faster |
