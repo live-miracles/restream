@@ -2,7 +2,7 @@ use bytes::Bytes;
 
 use crate::media::engine::{AudioMeta, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType};
-use crate::media::simd::find_sync_byte;
+use memchr::memchr;
 
 const TS_PACKET_SIZE: usize = 188;
 const TS_SYNC_BYTE: u8 = 0x47;
@@ -497,7 +497,7 @@ fn find_ts_sync(data: &[u8]) -> usize {
 
     let mut search_offset = 0usize;
     while search_offset < data.len() {
-        let Some(relative) = find_sync_byte(&data[search_offset..]) else {
+        let Some(relative) = memchr(TS_SYNC_BYTE, &data[search_offset..]) else {
             return data.len();
         };
         let candidate = search_offset + relative;
@@ -859,6 +859,7 @@ fn parse_timestamp(data: &[u8]) -> i64 {
     ((b0 >> 1) & 0x07) << 30 | (b1 << 22) | ((b2 >> 1) << 15) | (b3 << 7) | (b4 >> 1)
 }
 
+#[cfg(test)]
 fn write_timestamp(buf: &mut Vec<u8>, ts: i64, marker: u8) {
     buf.push((marker << 4) | (((ts >> 30) as u8) & 0x07) << 1 | 0x01);
     buf.push(((ts >> 22) & 0xFF) as u8);

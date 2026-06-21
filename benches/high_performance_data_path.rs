@@ -2,12 +2,12 @@ use bytes::{Bytes, BytesMut};
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
+use memchr::memchr;
 use restream::media::avio::MemoryQueue;
 use restream::media::engine::MediaEngine;
 use restream::media::engine::{AudioMeta, VideoMeta};
 use restream::media::mpegts::{TsDemuxer, TsMuxer};
 use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer, RingSlot};
-use restream::media::simd::find_sync_byte;
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -467,8 +467,8 @@ fn bench_mpegts_resync(c: &mut Criterion) {
     let mut group = c.benchmark_group("data_path/mpegts_resync");
     group.throughput(Throughput::Bytes(prefix_len as u64));
 
-    group.bench_function("simd_sync_scan", |b| {
-        b.iter(|| black_box(find_sync_byte(black_box(&input))))
+    group.bench_function("memchr_sync_scan", |b| {
+        b.iter(|| black_box(memchr(0x47, black_box(&input))))
     });
 
     group.bench_function("scalar_sync_scan", |b| {

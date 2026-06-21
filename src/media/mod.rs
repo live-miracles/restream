@@ -12,7 +12,6 @@ pub mod recording;
 pub mod ring_buffer;
 pub mod rtmp;
 pub mod security;
-pub mod simd;
 pub mod srt;
 pub mod tcp_stats;
 pub mod transcoder;
