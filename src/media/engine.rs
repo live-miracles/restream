@@ -939,6 +939,7 @@ impl MediaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn rejects_a_second_independent_publisher_for_the_same_pipeline() {
@@ -964,6 +965,69 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_publishers_cannot_both_reserve_the_same_pipeline() {
+        let engine = Arc::new(MediaEngine::new());
+        let first_engine = engine.clone();
+        let second_engine = engine.clone();
+
+        let (first, second) = tokio::join!(
+            async move {
+                first_engine
+                    .try_register_ingest("pipeline-race", "stream-key", "srt")
+                    .await
+                    .is_some()
+            },
+            async move {
+                second_engine
+                    .try_register_ingest("pipeline-race", "stream-key", "srt")
+                    .await
+                    .is_some()
+            }
+        );
+
+        assert_ne!(first, second, "exactly one publisher must win reservation");
+        assert_eq!(engine.active_ingests.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_exposes_bonding_and_member_telemetry() {
+        let engine = MediaEngine::new();
+        engine
+            .srt_listener_stats
+            .bonding_available
+            .store(true, Ordering::Relaxed);
+        engine
+            .try_register_ingest("pipeline-bond", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_publisher_quality(
+                "pipeline-bond",
+                PublisherQuality {
+                    srt_bonded: Some(true),
+                    srt_group_member_count: Some(2),
+                    srt_group_connected_members: Some(2),
+                    srt_group_active_members: Some(1),
+                    srt_group_broken_members: Some(0),
+                    ..PublisherQuality::default()
+                },
+            )
+            .await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-bond".to_string()], &HashMap::new())
+            .await;
+        let quality = &snapshot["pipelines"]["pipeline-bond"]["input"]["publisher"]["quality"];
+
+        assert_eq!(snapshot["srtListener"]["bondingAvailable"], true);
+        assert_eq!(quality["srtBonded"], true);
+        assert_eq!(quality["srtGroupMemberCount"], 2);
+        assert_eq!(quality["srtGroupConnectedMembers"], 2);
+        assert_eq!(quality["srtGroupActiveMembers"], 1);
+        assert_eq!(quality["srtGroupBrokenMembers"], 0);
     }
 
     #[tokio::test]
