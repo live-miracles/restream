@@ -28,20 +28,20 @@ improvement in production-shaped measurements.
 | Batched AVIO queue writes | Complete in `10eaaf6` | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
-| Batch metadata, prefetch, and vectorized-search refinement | TS resync validated | Production TS resync now uses portable runtime-dispatched `memchr`; 64 KiB search is ~631 ns versus ~907 ns for the removed hand-written scanner and ~16.4 µs scalar. Annex-B work remains deferred; prefetch and batch metadata are pending |
+| Batch metadata, prefetch, and vectorized-search refinement | TS resync complete in `467e5c9`; remainder pending | Production TS resync now uses portable runtime-dispatched `memchr`; 64 KiB search is ~631 ns versus ~907 ns for the removed hand-written scanner and ~16.4 µs scalar. Annex-B work remains deferred; prefetch and batch metadata are pending |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native shared HLS packaging | Complete in `a5d736f` | Replaced the FFmpeg queue plus two-OS-thread path with inline `TsMuxer`, a reusable accumulator, one shared segmenter per pipeline, demand-driven browser heartbeats, and persistent-output reference tracking |
 | Native HLS cost benchmark | Complete in `a5d736f` | Mux-only cost is ~27–147 µs per second of content across 720p30 to 4K30 profiles; six-second mux/accumulate/store cost is ~0.23–2.75 ms. A ten-segment window retains ~23–111 MiB depending on bitrate |
 | Lock-free stage telemetry | HLS complete in `a5d736f`, broader wiring pending | Graph nodes can expose atomic packet, byte, throughput, and processing-time snapshots; HLS records them on its hot path. Ingest/egress objects and other stage slots exist but still need direct-handle updates before their values are meaningful |
-| Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
+| Native MPEG-TS data-path audit | Complete in `abc558b` | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 | Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
 | Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
 | Vectorized TS resync | Complete in `467e5c9` | 64 KiB corrupted prefix: portable `memchr` scan ~631 ns (~96.8 GiB/s), removed hand-written scanner ~907 ns, scalar scan ~16.4 µs. Production keeps stride verification after candidate search |
-| Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
-| Zero-copy PES muxer | Complete | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
+| Cumulative native demux | Complete in `ed40c91` | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
+| Zero-copy PES muxer | Complete in `5eaedcd` | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
 | Native codec assembly | Complete in `8b03aad` | Matched pinned runs show the intended 4K HEVC decode/scale/H.264 encode chain at 2.49 s versus 5.45 s without FFmpeg x86 assembly, a 2.19× speedup; static setup now verifies assembly support |
-| Cached SRT ingest byte counter | Complete | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
-| Cached egress byte counters | Complete | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
+| Cached SRT ingest byte counter | Complete in `4eb8ea6` | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
+| Cached egress byte counters | Complete in `a9c534f` | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
 
 ## Current Baseline
 
