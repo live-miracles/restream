@@ -36,6 +36,7 @@ improvement in production-shaped measurements.
 | SIMD-accelerated TS resync | Complete | 64 KiB corrupted prefix: SIMD scan 907 ns (67.3 GiB/s), scalar scan 16.4 µs (3.7 GiB/s), 18× speedup; full demuxer resync 1.31 µs (46.6 GiB/s) |
 | Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
 | Zero-copy PES muxer | Complete | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
+| Cached SRT ingest byte counter | Complete | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
 
 ## Current Baseline
 
@@ -406,11 +407,11 @@ Moving SRT ingest from an FFmpeg thread plus `MemoryQueue` to `TsDemuxer`
 removes a thread boundary and at least two byte-queue copies. Preserve that
 advantage by avoiding new allocation and registry costs:
 
-- cache the ingest byte counter in the SRT connection handle instead of calling
-  `update_ingest_bytes()` through an async map lookup for every receive;
-- drain demux output into a reusable packet vector instead of returning a new
-  vector from `TsDemuxer::drain()`;
-- keep `push_batch()` at the demux-to-ring boundary;
+- ~~cache the ingest byte counter in the SRT connection handle instead of calling
+  `update_ingest_bytes()` through an async map lookup for every receive~~ — done;
+- ~~drain demux output into a reusable packet vector instead of returning a new
+  vector from `TsDemuxer::drain()`~~ — done (`drain_into` adopted);
+- ~~keep `push_batch()` at the demux-to-ring boundary~~ — done;
 - benchmark 1316-byte single-link receives separately from larger group-message
   receives;
 - record allocations, copied bytes, TS packets/s, and media packets/s against

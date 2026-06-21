@@ -1086,6 +1086,21 @@ impl SrtServer {
             }
         }
 
+        let bytes_received = {
+            let ingests = self.engine.active_ingests.read().await;
+            ingests
+                .get(&pipeline.id)
+                .map(|ingest| ingest.bytes_received.clone())
+        };
+        let Some(bytes_received) = bytes_received else {
+            eprintln!(
+                "[srt] Ingest vanished before receive loop for pipeline {}",
+                pipeline.id
+            );
+            unsafe { srt_close(client_sock) };
+            return;
+        };
+
         // Pure-Rust MPEG-TS demuxer — no FFmpeg thread or MemoryQueue needed
         let mut demuxer = crate::media::mpegts::TsDemuxer::new();
         let mut packets = Vec::with_capacity(16);
@@ -1151,10 +1166,7 @@ impl SrtServer {
                 }
             }
 
-            // Update stats
-            self.engine
-                .update_ingest_bytes(&pipeline.id, n as u64)
-                .await;
+            bytes_received.fetch_add(n as u64, Ordering::Relaxed);
 
             if last_stats_sample.elapsed() >= std::time::Duration::from_secs(1) {
                 let mut stats: SrtTraceBStats = unsafe { std::mem::zeroed() };
