@@ -118,7 +118,7 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure \
     --disable-debug \
     --disable-autodetect \
     --disable-network \
-    --disable-x86asm \
+    --enable-x86asm \
     --disable-everything \
     --enable-gpl \
     --enable-libx264 \
@@ -135,6 +135,12 @@ PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure \
     --enable-parser=h264,hevc,aac,ac3,mpegaudio \
     --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
     --enable-filter=scale,crop,transpose,format,aformat,aresample,pan,volume,null,anull
+
+if ! grep -q '^#define HAVE_X86ASM 1$' config.h; then
+    echo "FFmpeg configured without standalone x86 assembly" >&2
+    exit 1
+fi
+
 make -j"${BUILD_JOBS:-$(nproc)}"
 make install
 popd >/dev/null

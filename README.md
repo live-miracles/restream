@@ -104,8 +104,10 @@ FFmpeg dependencies:
 The resulting binary is
 `.build/static/cargo-target/release/restream`. The build script verifies that
 it has no dynamic loader dependency and checks the required H.264/H.265 and
-audio codec set. The bonding test uses separate client/server processes and
-proves two tuples on one listener in both broadcast and backup/failover modes.
+audio codec set. FFmpeg and x264 use their runtime-dispatched x86 assembly
+paths; setup fails if FFmpeg cannot build its standalone assembly. OpenCL stays
+disabled. The bonding test uses separate client/server processes and proves two
+tuples on one listener in both broadcast and backup/failover modes.
 Because this build enables x264, redistribution must comply with the applicable
 GPL licensing requirements.
 
@@ -137,10 +139,10 @@ Run the full Rust suite:
 cargo test
 ```
 
-As of June 21, 2026 this runs 115 passing tests:
+As of June 21, 2026 this runs 117 passing tests:
 
-- 80 library/unit tests
-- 23 API integration tests
+- 81 library/unit tests
+- 24 API integration tests
 - 12 database integration tests
 
 Run the 2-pipeline × 3-output live test against a running application:
@@ -169,7 +171,8 @@ Detailed correctness and scale gates are in
 | `GET /healthz` | Process liveness | No |
 | `GET /health` | Native pipeline and transport snapshot | No |
 | `GET /metrics/system` | CPU, memory, disk, and host-network JSON | Session |
-| `GET /api/status` | Build, linked FFmpeg, and host information | Session |
+| `GET /api/status` | Build, toolchain, native-library, SBOM summary, and host information | Session |
+| `GET /api/status/sbom` | CycloneDX runtime software bill of materials with versions and licenses | Session |
 | `GET /pipelines/:id/probe` | Active ingest metadata | Session |
 | `GET /pipelines/:id/graph` | Active processing DAG | Session |
 | `GET /pipelines/:id/diagnostics` | SSE diagnostic run | Session |

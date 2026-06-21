@@ -21,20 +21,25 @@ open gates.
 
 | Suite | Result |
 |---|---|
-| Library/unit | 80 passed |
-| API integration | 23 passed |
+| Library/unit | 81 passed |
+| API integration | 24 passed |
 | Database integration | 12 passed |
-| Total | **115 passed, 0 failed** |
+| Total | **117 passed, 0 failed** |
 
 Release-build validation on June 21, 2026 also passed:
 
 - conventional statically linked x86-64 ELF with no dynamic interpreter or
   `DT_NEEDED` entries;
 - pinned SRT 1.5.5 built with bonding, FFmpeg 6.1.5, and x264;
+- runtime-dispatched FFmpeg/x264 x86 assembly enabled, with the intended
+  HEVC-decode/scale/H.264-encode chain measuring 2.19× faster than the matched
+  FFmpeg-no-x86asm build;
 - static codec probe for libx264, H.264/H.265, AAC, MP3, AC-3, and E-AC-3;
 - separate-process SRT broadcast bonding and backup-link failover tests;
 - five-second isolated-network startup smoke test with HTTP, RTMP, and the
   bonding-enabled SRT listener active.
+- authenticated CycloneDX 1.5 runtime SBOM endpoint with target-filtered Cargo
+  dependencies, linked native-library versions, provenance, and licenses.
 
 The current unit coverage includes:
 

@@ -88,10 +88,10 @@ PASS
 The complete suite passed outside the restricted network sandbox:
 
 ```text
-80 library tests
-23 API integration tests
+81 library tests
+24 API integration tests
 12 database integration tests
-115 total passing tests
+117 total passing tests
 ```
 
 The SRT live group tests needed a cleanup fix when bonding is unavailable; the
@@ -105,9 +105,29 @@ new static release environment built SRT 1.5.5 with `ENABLE_BONDING=ON`;
 separate-process broadcast and backup/failover tests both passed on the shared
 listener.
 
-The same release environment produced a 21 MiB statically linked x86-64 ELF.
+The same release environment produced a 22 MiB statically linked x86-64 ELF.
 Its codec probe found libx264, H.264/H.265, AAC, MP3, AC-3, and E-AC-3, and an
 isolated-network smoke test started HTTP, RTMP, and bonded SRT listeners.
+
+## FFmpeg Assembly Benchmark — June 21, 2026
+
+Before enabling FFmpeg's standalone x86 assembly permanently, matched static
+FFmpeg 6.1.5 builds were compared with only `--disable-x86asm` versus
+`--enable-x86asm` changed. Both builds used the same assembly-enabled x264
+archive. Trials were pinned to one CPU and alternated between variants; the
+table reports the median of seven measured runs after warmup.
+
+| Workload | No FFmpeg x86 asm | FFmpeg x86 asm | Speedup |
+|---|---:|---:|---:|
+| 4K HEVC decode, 3 seconds | 2.48 s | 1.27 s | 1.95× |
+| 1080p H.264 decode, 5 seconds | 0.62 s | 0.29 s | 2.14× |
+| 4K HEVC decode plus 1080p scale, 2 seconds | 3.82 s | 1.22 s | 3.13× |
+| 4K HEVC to 1080p H.264/x264, 2 seconds | 5.45 s | 2.49 s | 2.19× |
+
+The permanent static configuration therefore enables FFmpeg x86 assembly and
+fails setup if `HAVE_X86ASM` is not set. OpenCL remains disabled: the measured
+CPU assembly directly accelerates the decode, scale, and H.264 encode feeder
+path without adding a GPU runtime or static `dlopen` dependency.
 
 The host also reports:
 
