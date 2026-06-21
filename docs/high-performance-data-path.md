@@ -21,15 +21,15 @@ improvement in production-shaped measurements.
 | Baseline suite and roadmap | Complete in `e266608` | Added lookup, ring, fan-out, queue, and layout measurements |
 | Clean benchmark builds | Complete in `205aae2` | Removed four test-harness warnings from benchmark compilation |
 | Direct RTMP ingest handles | Complete in `5299db4` | Ring and byte-counter access fell from ~119 ns to ~7.3 ns, about 94% lower |
-| Compact ring slots | Accepted, commit pending | Controlled pinned-CPU rerun: storage fell 256 KiB → 32 KiB, producer throughput was neutral, 32-packet consumer improved ~5.7%, and 500-reader fan-out improved ~9.6% |
+| Compact ring slots | Complete in `ad4ac9b` | Controlled pinned-CPU rerun: storage fell 256 KiB → 32 KiB, producer throughput was neutral, 32-packet consumer improved ~5.7%, and 500-reader fan-out improved ~9.6% |
 | Burst ring primitives | Complete in `e0f33ac` | `push_batch()` improved 32-packet publication by ~15%; `pull_burst()` improved 8-packet consumption by ~17%. All 14 ring tests pass. Existing single-packet APIs remain the latency path |
 | Burst adoption in internal stages | Complete in `95f2849` | HLS, recording, and transcoder feeders drain reusable 32-packet bursts. The primitive measured up to ~17% faster; module tests and all-target compilation pass |
 | Bounded chunk queues | Pending | Not started |
-| Batched AVIO queue writes | Complete, commit pending | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
+| Batched AVIO queue writes | Complete in `10eaaf6` | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
 | Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
-| Zero-copy HLS segment finalization | Complete, commit pending | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
+| Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 
 ## Current Baseline
@@ -383,6 +383,74 @@ Before replacing the FFmpeg path or adopting the native muxer broadly, add:
 Also remove the duplicate `try_build_probe(stream_idx, &payload)` invocation in
 `flush_pes()`; it is mostly masked by the probe cache but is unnecessary work
 and obscures the intended one-shot probe path.
+
+## Opportunities From Other Recent Media Changes
+
+### SRT native ingest
+
+Moving SRT ingest from an FFmpeg thread plus `MemoryQueue` to `TsDemuxer`
+removes a thread boundary and at least two byte-queue copies. Preserve that
+advantage by avoiding new allocation and registry costs:
+
+- cache the ingest byte counter in the SRT connection handle instead of calling
+  `update_ingest_bytes()` through an async map lookup for every receive;
+- drain demux output into a reusable packet vector instead of returning a new
+  vector from `TsDemuxer::drain()`;
+- keep `push_batch()` at the demux-to-ring boundary;
+- benchmark 1316-byte single-link receives separately from larger group-message
+  receives;
+- record allocations, copied bytes, TS packets/s, and media packets/s against
+  the removed FFmpeg path.
+
+### RTMP readers and egress
+
+RTMP play and egress loops still use one `Reader::pull()` per packet. Adopt
+`pull_burst()` with a reusable vector, but retain socket backpressure:
+
+- serialize packets from a bounded burst;
+- compare per-message `write_all()` with a bounded `BytesMut` coalescing buffer;
+- flush immediately on keyframes, protocol control messages, cancellation, or a
+  short latency deadline;
+- do not combine data across independent RTMP sessions.
+
+### Transcoder output
+
+The transcoder output demuxer copies every FFmpeg packet with
+`Bytes::copy_from_slice()` and publishes one ring packet at a time. Opportunities:
+
+- collect demuxed packets into a small vector and publish with `push_batch()`;
+- investigate transferring or reference-counting FFmpeg `AVBufferRef` ownership
+  before adding a custom payload pool;
+- preserve stream identity and timestamps in the batch rather than emitting
+  anonymous byte chunks;
+- benchmark allocation count and copied bytes per output media packet.
+
+### Native packaging and shared stages
+
+The native `TsMuxer` is currently test-focused while SRT output still uses
+per-output FFmpeg muxing. The intended high-performance shape is:
+
+```text
+canonical packet burst
+  -> one native MPEG-TS package stage per final media shape
+  -> immutable 1316-byte package ring
+  -> many destination senders
+```
+
+Before adoption, validate native output against `ffprobe`, H.264/H.265 fixtures,
+multi-track AAC, PCR/PTS/DTS ordering, continuity counters, PAT/PMT cadence, and
+the existing end-to-end protocol gates.
+
+### Thread and scheduler model
+
+Recent transport and bonding work adds more long-lived socket and helper tasks.
+Track:
+
+- OS threads and Tokio tasks per pipeline and per destination;
+- context switches and CPU migrations;
+- whether package work scales with unique media shapes or output count;
+- affinity experiments only for long-lived demux, mux, and encode workers;
+- one slow destination versus the other readers in the same package fan-out.
 
 ## Baseline Benchmark
 
