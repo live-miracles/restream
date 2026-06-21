@@ -42,6 +42,9 @@ improvement in production-shaped measurements.
 | Native codec assembly | Complete in `8b03aad` | Matched pinned runs show the intended 4K HEVC decode/scale/H.264 encode chain at 2.49 s versus 5.45 s without FFmpeg x86 assembly, a 2.19× speedup; static setup now verifies assembly support |
 | Cached SRT ingest byte counter | Complete in `4eb8ea6` | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
 | Cached egress byte counters | Complete in `a9c534f` | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
+| Production transcoder-stage benchmark | Complete in `76d3969` | Replaced the fake `Bytes::clone()` benchmark with the exact FFmpeg `MemoryQueue` + custom-AVIO stage. Current `source` passthrough processes the 6.4 MiB fixture in ~26.8 ms (~238 MiB/s) |
+| Actual decode/filter/encode transcoder | Missing | Resolution presets configure encoder metadata but currently remux original compressed packets; implement and benchmark the real decoder, scaler/filter graph, encoder, output demux, and ring publication path |
+| Custom AVIO teardown | Fixed in `76d3969` | Production-context benchmarking exposed a custom `AVIOContext` double-close. Contexts now remain owned by their wrappers, which detach `pb` before FFmpeg context destruction; repeated benchmark iterations complete cleanly |
 
 ## Current Baseline
 
@@ -509,6 +512,7 @@ Track:
 | `data_path/mpegts_resync` | `memchr` versus scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
 | `simd_alternatives` | Portable byte-search and copy alternatives used to decide whether custom architecture-specific routines are justified |
 | `hls_cost` | Native HLS mux, accumulation, segment-store CPU cost, and retained ten-segment memory across representative profiles |
+| `transcoder_runtime_stage` | Exact current FFmpeg `MemoryQueue` + custom-AVIO source passthrough stage over the full H.264 fixture; this is not labelled transcoding until decode/filter/encode is implemented |
 
 It also prints `MediaPacket` and aligned-slot sizes.
 
@@ -562,6 +566,7 @@ target deployment hardware before implementation work.
 | scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; `memchr` is roughly 26× faster |
 | full demuxer resync, 64 KiB corrupted prefix | approximately 1.31 microseconds, 46.6 GiB/s |
 | MPEG-TS mux, 6.7 MB fixture | approximately 490 microseconds, 12.3 GiB/s (zero-copy PES; was ~880 µs before) |
+| FFmpeg source passthrough stage, 6.4 MiB fixture | approximately 26.8 milliseconds, 238 MiB/s through production custom AVIO |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately
