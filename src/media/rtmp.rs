@@ -856,9 +856,18 @@ async fn handle_session_results(
                                     .await;
                             }
 
-                            // Probe audio metadata from sequence header
+                            // AAC's FLV sound-rate/channel bits are only legacy
+                            // hints. Wait for AudioSpecificConfig so 48 kHz,
+                            // mono, and other real AAC layouts are not reported
+                            // as the FLV fallback of 44.1 kHz stereo.
                             if !probe.audio_done {
-                                if let Some(meta) = parse_flv_audio_meta(&data) {
+                                let format_id =
+                                    data.first().map(|byte| (byte >> 4) & 0x0f).unwrap_or(0xff);
+                                let has_complete_config =
+                                    format_id != 10 || (data.len() >= 3 && data[1] == 0);
+                                if has_complete_config
+                                    && let Some(meta) = parse_flv_audio_meta(&data)
+                                {
                                     probe.audio_done = true;
                                     println!(
                                         "[rtmp] Probed audio: {} {}Hz {}ch",
@@ -922,7 +931,14 @@ async fn handle_session_results(
                         let resp = session
                             .accept_request(request_id)
                             .map_err(|_| "Failed to accept play request")?;
-                        for r in resp {
+                        // rml_rtmp 0.8 appends two optional AMF data messages
+                        // after the required reset, stream-begin, and play-start
+                        // responses: |RtmpSampleAccess and NetStream.Data.Start.
+                        // FFmpeg exposes those notifications as synthetic
+                        // subtitle/data streams. We do not send metadata on
+                        // their chunk stream, so omitting these two optional
+                        // messages is safe and keeps the read endpoint media-only.
+                        for r in resp.into_iter().take(3) {
                             if let ServerSessionResult::OutboundResponse(pkt) = r {
                                 socket
                                     .write_all(&pkt.bytes)
