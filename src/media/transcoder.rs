@@ -80,7 +80,7 @@ pub async fn start_transcoder(
     let cancel_token_clone = cancel_token.clone();
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_ffmpeg_transcoder(
+            run_ffmpeg_transcoder_stage(
                 input_queue_clone,
                 output_queue_clone,
                 &preset_clone,
@@ -248,7 +248,7 @@ fn demux_transcoder_output(
             return;
         }
     };
-    let Some(mut ictx) = custom_input.input.take() else {
+    let Some(ictx) = custom_input.input.as_mut() else {
         eprintln!("[transcoder] output demux: no input context");
         return;
     };
@@ -294,7 +294,12 @@ fn demux_transcoder_output(
     }
 }
 
-fn run_ffmpeg_transcoder(
+/// Execute the FFmpeg-backed processing stage used by `start_transcoder`.
+///
+/// This is public so production-path benchmarks can exercise the exact stage
+/// implementation rather than a synthetic stand-in.
+#[doc(hidden)]
+pub fn run_ffmpeg_transcoder_stage(
     in_queue: Arc<crate::media::avio::MemoryQueue>,
     out_queue: Arc<crate::media::avio::MemoryQueue>,
     preset: &str,
@@ -318,15 +323,15 @@ fn run_ffmpeg_transcoder(
     };
 
     let mut custom_input = CustomInput::new(&*in_queue)?;
-    let mut ictx = custom_input
+    let ictx = custom_input
         .input
-        .take()
+        .as_mut()
         .ok_or("Failed to get CustomInput context")?;
 
     let mut custom_output = CustomOutput::new(&*out_queue, "mpegts")?;
-    let mut octx = custom_output
+    let octx = custom_output
         .output
-        .take()
+        .as_mut()
         .ok_or("Failed to get CustomOutput context")?;
 
     // Track audio stream indices (0-based within audio streams only)
@@ -451,7 +456,7 @@ fn run_ffmpeg_transcoder(
         let out_time_base = out_stream.time_base();
         packet.rescale_ts(in_time_base, out_time_base);
 
-        let _ = packet.write_interleaved(&mut octx);
+        let _ = packet.write_interleaved(&mut *octx);
     }
 
     octx.write_trailer()

@@ -54,10 +54,6 @@ name = "ring_buffer"
 harness = false
 
 [[bench]]
-name = "packet_remux"
-harness = false
-
-[[bench]]
 name = "transcoder_throughput"
 harness = false
 

@@ -1837,9 +1837,9 @@ fn run_ffmpeg_demuxer(
     use crate::media::avio::CustomInput;
 
     let mut custom_input = CustomInput::new(&*queue)?;
-    let mut ictx = custom_input
+    let ictx = custom_input
         .input
-        .take()
+        .as_mut()
         .ok_or("Failed to get CustomInput context")?;
 
     // Extract stream metadata before reading packets

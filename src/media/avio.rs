@@ -192,12 +192,16 @@ impl CustomInput {
 impl Drop for CustomInput {
     fn drop(&mut self) {
         unsafe {
-            self.input.take();
-            // avformat_close_input may replace the internal buffer, so only free the
-            // AVIOContext (which owns whatever buffer pointer it holds at this point).
+            if let Some(mut input) = self.input.take() {
+                // `ffmpeg-next` owns the AVFormatContext, but this wrapper owns
+                // the custom AVIOContext. Detach it before the input destructor
+                // calls avformat_close_input().
+                (*input.as_mut_ptr()).pb = std::ptr::null_mut();
+                drop(input);
+            }
             if !self.avio_ctx.is_null() {
                 ffmpeg::ffi::av_freep(&mut (*self.avio_ctx).buffer as *mut _ as *mut c_void);
-                ffmpeg::ffi::av_free(self.avio_ctx as *mut c_void);
+                ffmpeg::ffi::avio_context_free(&mut self.avio_ctx);
             }
         }
     }
@@ -269,10 +273,16 @@ impl CustomOutput {
 impl Drop for CustomOutput {
     fn drop(&mut self) {
         unsafe {
-            self.output.take();
+            if let Some(mut output) = self.output.take() {
+                // `ffmpeg-next`'s output destructor unconditionally calls
+                // avio_close(pb). Detach our custom AVIOContext so it is not
+                // closed there and then freed a second time below.
+                (*output.as_mut_ptr()).pb = std::ptr::null_mut();
+                drop(output);
+            }
             if !self.avio_ctx.is_null() {
                 ffmpeg::ffi::av_freep(&mut (*self.avio_ctx).buffer as *mut _ as *mut c_void);
-                ffmpeg::ffi::av_free(self.avio_ctx as *mut c_void);
+                ffmpeg::ffi::avio_context_free(&mut self.avio_ctx);
             }
         }
     }
@@ -316,5 +326,13 @@ mod tests {
         assert_eq!(queue.write_batch(std::iter::empty()), 0);
         let mut output = [0u8; 1];
         assert_eq!(queue.read_nonblocking(&mut output), 0);
+    }
+
+    #[test]
+    fn custom_output_drop_does_not_double_close_avio() {
+        ffmpeg::init().expect("FFmpeg init");
+        let queue = MemoryQueue::new();
+        let output = CustomOutput::new(&queue, "mpegts").expect("custom output");
+        drop(output);
     }
 }

@@ -97,9 +97,9 @@ fn run_mkv_muxer(
     use crate::media::avio::CustomInput;
 
     let mut custom_input = CustomInput::new(&*queue)?;
-    let mut ictx = custom_input
+    let ictx = custom_input
         .input
-        .take()
+        .as_mut()
         .ok_or("Failed to get CustomInput context")?;
 
     let path = std::path::Path::new(file_path);
