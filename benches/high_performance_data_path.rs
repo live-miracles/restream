@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
@@ -363,6 +363,43 @@ fn bench_memory_queue(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_segment_finalize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("data_path/segment_finalize");
+    group.sample_size(20);
+
+    for size in [2usize * 1024 * 1024, 8 * 1024 * 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_from_slice", size),
+            &size,
+            |b, &size| {
+                b.iter_batched(
+                    || vec![0x47u8; size],
+                    |data| black_box(Bytes::copy_from_slice(&data)),
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("split_and_freeze", size),
+            &size,
+            |b, &size| {
+                b.iter_batched(
+                    || {
+                        let mut data = BytesMut::with_capacity(size);
+                        data.resize(size, 0x47);
+                        data
+                    },
+                    |mut data| black_box(data.split().freeze()),
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn benches(c: &mut Criterion) {
     print_layout_baseline();
     bench_control_plane_lookup(c);
@@ -371,6 +408,7 @@ fn benches(c: &mut Criterion) {
     bench_ring_consumer(c);
     bench_fanout_delivery(c);
     bench_memory_queue(c);
+    bench_segment_finalize(c);
 }
 
 criterion_group!(data_path_benches, benches);

@@ -21,7 +21,7 @@ improvement in production-shaped measurements.
 | Baseline suite and roadmap | Complete in `e266608` | Added lookup, ring, fan-out, queue, and layout measurements |
 | Clean benchmark builds | Complete in `205aae2` | Removed four test-harness warnings from benchmark compilation |
 | Direct RTMP ingest handles | Complete in `5299db4` | Ring and byte-counter access fell from ~119 ns to ~7.3 ns, about 94% lower |
-| Compact ring-slot experiment | Rejected | Reduced 4096-slot storage from 256 KiB to 32 KiB, but timing did not establish a reliable throughput improvement; aligned slots retained |
+| Compact ring slots | Accepted, commit pending | Controlled pinned-CPU rerun: storage fell 256 KiB → 32 KiB, producer throughput was neutral, 32-packet consumer improved ~5.7%, and 500-reader fan-out improved ~9.6% |
 | Burst ring primitives | Complete in `e0f33ac` | `push_batch()` improved 32-packet publication by ~15%; `pull_burst()` improved 8-packet consumption by ~17%. All 14 ring tests pass. Existing single-packet APIs remain the latency path |
 | Burst adoption in internal stages | Complete in `95f2849` | HLS, recording, and transcoder feeders drain reusable 32-packet bursts. The primitive measured up to ~17% faster; module tests and all-target compilation pass |
 | Bounded chunk queues | Pending | Not started |
@@ -29,6 +29,8 @@ improvement in production-shaped measurements.
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
 | Batch metadata, prefetch, and SIMD refinement | Pending | Not started |
+| Zero-copy HLS segment finalization | Complete, commit pending | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
+| Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 
 ## Current Baseline
 
@@ -258,6 +260,130 @@ Use a wide candidate scan followed by scalar protocol verification. Do not
 replace ordinary memory copies or codec operations without production-shaped
 evidence.
 
+## Native MPEG-TS Opportunities
+
+The new `mpegts.rs` path removes the FFmpeg demux thread and byte queue from SRT
+ingest, then publishes completed packets with `push_batch()`. That is a strong
+architectural improvement, but it also moves MPEG-TS parsing and muxing into the
+application's hottest loops. Optimize it in the following order.
+
+### P0: Retain output and accumulator capacity
+
+`TsDemuxer::drain()` currently uses `std::mem::take(&mut self.output)`. The
+demuxer therefore loses the preallocated output vector every time SRT drains
+packets. Add an API such as:
+
+```rust
+fn drain_into(&mut self, output: &mut Vec<MediaPacket>)
+```
+
+Use `Vec::append` so the demuxer's vector retains its allocation and the SRT
+loop reuses a caller-owned packet batch.
+
+PES payload storage similarly loses its 16 KiB capacity after
+`std::mem::take()`. Benchmark size-classed payload pools or a `BytesMut`
+ownership-transfer design. `Bytes::from(Vec<u8>)` is already zero-copy, so the
+remaining target is allocation reuse rather than another payload copy.
+
+### P0: Constant-time PID dispatch
+
+Every 188-byte TS packet currently searches `streams` with
+`iter().position(...)`. Replace this with a PID-index table:
+
+```text
+pid_to_stream[8192] -> stream index or sentinel
+```
+
+An `i16` table occupies 16 KiB and removes a branchy linear scan from every TS
+packet. Populate it when the PMT is parsed. Keep PAT and PMT PID checks before
+the table lookup.
+
+### P0: Avoid constructing and copying a contiguous PES packet in the muxer
+
+`TsMuxer::mux_packet()` currently:
+
+1. allocates a `Vec` for PES;
+2. copies the complete codec payload into it;
+3. copies PES slices into a temporary 188-byte TS array;
+4. copies each TS array into the output vector.
+
+Packetize a small stack-resident PES header and the original payload as two
+logical slices. Write TS packets directly into reserved output-vector space.
+This removes the full payload copy, the per-packet PES allocation, and one
+188-byte copy per TS packet.
+
+### P1: Native batch APIs
+
+Add:
+
+```text
+TsDemuxer::feed_batch(chunks)
+TsDemuxer::drain_into(packet_batch)
+TsMuxer::mux_batch(media_packets)
+```
+
+The SRT receive loop should retain a reusable `Vec<MediaPacket>`, drain into it,
+and call `RingBuffer::push_batch()` without allocating a new vector on every
+receive. A mux batch can resolve stream mappings once, reserve aggregate output
+capacity, and emit 1316-byte-aligned groups of seven TS packets for the sender.
+
+### P1: Resynchronization and framing
+
+The current demuxer advances one byte at a time until it sees `0x47`. A valid
+candidate should be verified at offsets `+188` and `+376` where available.
+Extend the existing SIMD scanner to return candidate sync positions, followed
+by scalar stride verification:
+
+```text
+wide 0x47 scan -> verify 188-byte cadence -> resume packet loop
+```
+
+Do not run the scanner while input remains correctly aligned; the normal path
+should test the expected sync byte and advance directly.
+
+### P1: Annex-B start-code scanning
+
+H.264/H.265 keyframe and probe parsing use scalar searches for three- and
+four-byte start codes. Add a vectorized zero-byte candidate scanner and verify
+`00 00 01` / `00 00 00 01` scalarly. Benchmark realistic P-frames and large
+I-frames separately. Skip the scan when the TS random-access flag already
+establishes keyframe status.
+
+### P2: Stream lookup in the muxer
+
+`TsMuxer::mux_packet()` linearly searches stream metadata for every media
+packet. Cache the video stream index and an audio-track-index lookup table when
+constructing the muxer. The expected stream count is small, so this is lower
+priority than TS-packet PID dispatch and payload-copy elimination.
+
+### P2: Timestamp and CRC helpers
+
+Timestamp conversion currently uses floating point for the exact `90 kHz ->
+milliseconds` conversion. Benchmark an integer implementation with explicit
+negative-timestamp semantics.
+
+PAT/PMT CRC uses a bit-at-a-time scalar loop. Tables or hardware acceleration
+are possible, but PAT/PMT are emitted roughly every 500 ms and the sections are
+small, so CRC work is not a significant SIMD target unless profiling proves
+otherwise.
+
+### Correctness and benchmark requirements
+
+Before replacing the FFmpeg path or adopting the native muxer broadly, add:
+
+- recorded H.264/H.265 plus multi-track AAC demux traces;
+- aligned, split-packet, corrupted-prefix, and continuity-gap inputs;
+- demux bytes/s, TS packets/s, media packets/s, allocations, and copied bytes;
+- mux tests at small audio packets, ordinary P-frames, and 200–500 KiB I-frames;
+- native demux versus FFmpeg demux throughput and output equivalence;
+- scalar versus SIMD resync and Annex-B scanning;
+- packet-at-a-time versus batch demux/mux;
+- output validation with `ffprobe` and the existing protocol probes.
+
+Also remove the duplicate `try_build_probe(stream_idx, &payload)` invocation in
+`flush_pes()`; it is mostly masked by the probe cache but is unnecessary work
+and obscures the intended one-shot probe path.
+
 ## Baseline Benchmark
 
 `high_performance_data_path` preserves current behavior as named baselines:
@@ -270,6 +396,7 @@ evidence.
 | `data_path/ring_consumer` | current pull loop at application burst sizes |
 | `data_path/fanout_delivery` | slot and reference-count cost for 1–500 readers |
 | `data_path/memory_queue` | byte-oriented AVIO queue round-trip throughput |
+| `data_path/segment_finalize` | completed segment copy versus zero-copy ownership transfer |
 
 It also prints `MediaPacket` and aligned-slot sizes.
 
@@ -288,6 +415,7 @@ cargo bench --bench high_performance_data_path -- ring_producer
 cargo bench --bench high_performance_data_path -- ring_consumer
 cargo bench --bench high_performance_data_path -- fanout_delivery
 cargo bench --bench high_performance_data_path -- memory_queue
+cargo bench --bench high_performance_data_path -- segment_finalize
 ```
 
 ### Initial local baseline
@@ -311,6 +439,8 @@ target deployment hardware before implementation work.
 | batched byte queue round trip, 32 × 1316-byte packets | approximately 3.84 microseconds versus 7.49 microseconds for repeated writes, about 49% lower |
 | `MediaPacket` layout | 56 bytes, 8-byte alignment |
 | aligned ring slot layout | 64 bytes per slot; 4096 slots consume 256 KiB |
+| HLS 8 MiB segment copy | approximately 4.26 milliseconds |
+| HLS 8 MiB ownership transfer | approximately 347 nanoseconds, over 99.99% lower finalization time |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately
