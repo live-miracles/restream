@@ -28,14 +28,18 @@ improvement in production-shaped measurements.
 | Batched AVIO queue writes | Complete in `10eaaf6` | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
-| Batch metadata, prefetch, and SIMD refinement | SIMD resync validated | TS resync uses SIMD sync scan (18× over scalar); Annex-B SIMD deferred (short-circuited by TS random-access flag); prefetch and batch metadata pending |
+| Batch metadata, prefetch, and vectorized-search refinement | TS resync validated | Production TS resync now uses portable runtime-dispatched `memchr`; 64 KiB search is ~631 ns versus ~907 ns for the removed hand-written scanner and ~16.4 µs scalar. Annex-B work remains deferred; prefetch and batch metadata are pending |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
+| Native shared HLS packaging | Complete in `a5d736f` | Replaced the FFmpeg queue plus two-OS-thread path with inline `TsMuxer`, a reusable accumulator, one shared segmenter per pipeline, demand-driven browser heartbeats, and persistent-output reference tracking |
+| Native HLS cost benchmark | Complete in `a5d736f` | Mux-only cost is ~27–147 µs per second of content across 720p30 to 4K30 profiles; six-second mux/accumulate/store cost is ~0.23–2.75 ms. A ten-segment window retains ~23–111 MiB depending on bitrate |
+| Lock-free stage telemetry | HLS complete in `a5d736f`, broader wiring pending | Graph nodes can expose atomic packet, byte, throughput, and processing-time snapshots; HLS records them on its hot path. Ingest/egress objects and other stage slots exist but still need direct-handle updates before their values are meaningful |
 | Native MPEG-TS data-path audit | Complete | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 | Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
 | Direct MPEG-TS PID dispatch | Complete in `a741faf` | 8192-entry PID table reduced pinned fixture replay from ~11.40 ms to ~8.54 ms, about 25.9%; throughput improved ~34.9% |
-| SIMD-accelerated TS resync | Complete | 64 KiB corrupted prefix: SIMD scan 907 ns (67.3 GiB/s), scalar scan 16.4 µs (3.7 GiB/s), 18× speedup; full demuxer resync 1.31 µs (46.6 GiB/s) |
+| Vectorized TS resync | Complete in `467e5c9` | 64 KiB corrupted prefix: portable `memchr` scan ~631 ns (~96.8 GiB/s), removed hand-written scanner ~907 ns, scalar scan ~16.4 µs. Production keeps stride verification after candidate search |
 | Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
 | Zero-copy PES muxer | Complete | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
+| Native codec assembly | Complete in `8b03aad` | Matched pinned runs show the intended 4K HEVC decode/scale/H.264 encode chain at 2.49 s versus 5.45 s without FFmpeg x86 assembly, a 2.19× speedup; static setup now verifies assembly support |
 | Cached SRT ingest byte counter | Complete | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
 | Cached egress byte counters | Complete | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
 
@@ -74,9 +78,9 @@ socket read
 | Ring layout | each pointer slot is aligned to 64 bytes | 4096 slots require at least 256 KiB and one line per slot |
 | AVIO bridge | mutex-protected `VecDeque<u8>` populated byte by byte | data is copied into and back out of an unbounded byte queue |
 | SRT packaging | one MPEG-TS muxer and sender thread per output | packaging work and threads scale with destinations |
-| HLS finalization | segment accumulator is copied into a new `Bytes` | an extra multi-megabyte copy per segment |
+| HLS packaging | native muxing and segment storage are shared per pipeline | retained segment memory scales with bitrate and window size; slow consumers and idle cleanup still require validation |
 | Worker placement | heavy threads have no ownership or affinity policy | migration and memory locality are uncontrolled |
-| SIMD | custom routines are disconnected from production | no demonstrated end-to-end benefit |
+| Vector search | production uses `memchr` for TS sync candidates | retain protocol verification and avoid custom architecture-specific code unless it beats the portable implementation |
 
 ## Target Shape
 
@@ -249,14 +253,14 @@ and package planning. A sender-worker layout containing arrays of session
 handles, reader indexes, pending byte counts, queue depths, and connection
 states may produce a larger gain.
 
-### Prefetch and SIMD
+### Prefetch and vectorized search
 
 Prefetch only inside real burst loops after compacting the layout. Candidate
 data includes upcoming slots, payload headers, stream-map entries, and sharded
 sender state. Test distances of one to four iterations and retain prefetch only
 when cycles or cache stalls improve.
 
-Use SIMD at protocol edges:
+Use portable vectorized search at protocol edges:
 
 - MPEG-TS sync and alignment;
 - H.264/H.265 start-code scans;
@@ -333,23 +337,25 @@ capacity, and emit 1316-byte-aligned groups of seven TS packets for the sender.
 
 ### P1: Resynchronization and framing — complete
 
-The demuxer uses `find_ts_sync()` which calls the SIMD `find_sync_byte()`
-scanner, then verifies `+188` and `+376` stride candidates scalarly. The normal
-aligned path tests the expected sync byte directly and skips the scanner
+The demuxer uses `find_ts_sync()` with the runtime-dispatched `memchr`
+implementation, then verifies `+188` and `+376` stride candidates scalarly. The
+normal aligned path tests the expected sync byte directly and skips the scanner
 entirely.
 
 Measured on a 64 KiB corrupted prefix followed by aligned TS packets:
 
 | Variant | Time | Throughput |
 |---|---|---|
-| SIMD sync scan (raw `find_sync_byte`) | 907 ns | 67.3 GiB/s |
+| Portable `memchr` sync scan | 631 ns | 96.8 GiB/s |
+| Removed hand-written vector scanner | 907 ns | 67.3 GiB/s |
 | Scalar sync scan (`iter().position()`) | 16.4 µs | 3.7 GiB/s |
-| Full demuxer resync (SIMD + stride verify + parse) | 1.31 µs | 46.6 GiB/s |
+| Full demuxer resync (vector search + stride verify + parse) | 1.31 µs | 46.6 GiB/s |
 
-The SIMD scanner provides an 18× speedup for the raw search. The full demuxer
-resync adds only ~400 ns for stride validation and TS packet parsing, confirming
-the scan dominates recovery cost. AVX2 is the active dispatch path on the
-development host.
+`memchr` is about 30% faster than the removed custom scanner and roughly 26×
+faster than scalar search in this case. It also removes local unsafe
+architecture-specific code while preserving runtime dispatch. The full
+demuxer still performs scalar cadence verification before accepting a
+candidate.
 
 ### P1: Annex-B start-code scanning — deferred
 
@@ -393,7 +399,7 @@ Before replacing the FFmpeg path or adopting the native muxer broadly, add:
 - demux bytes/s, TS packets/s, media packets/s, allocations, and copied bytes;
 - mux tests at small audio packets, ordinary P-frames, and 200–500 KiB I-frames;
 - native demux versus FFmpeg demux throughput and output equivalence;
-- scalar versus SIMD resync (done: 18× SIMD win on 64 KiB prefix) and Annex-B scanning;
+- scalar versus vectorized resync (done: `memchr` is roughly 26× faster on the 64 KiB prefix) and Annex-B scanning;
 - packet-at-a-time versus batch demux/mux;
 - output validation with `ffprobe` and the existing protocol probes.
 
@@ -444,8 +450,11 @@ The transcoder output demuxer copies every FFmpeg packet with
 
 ### Native packaging and shared stages
 
-The native `TsMuxer` is currently test-focused while SRT output still uses
-per-output FFmpeg muxing. The intended high-performance shape is:
+HLS now uses one shared native `TsMuxer` segmenter per source pipeline. Browser
+preview requests keep it alive through access heartbeats, persistent HLS
+outputs hold a reference, and the reconciler removes idle segmenters after 60
+seconds. SRT output still uses per-output FFmpeg muxing. The intended broader
+high-performance shape is:
 
 ```text
 canonical packet burst
@@ -457,6 +466,19 @@ canonical packet burst
 Before adoption, validate native output against `ffprobe`, H.264/H.265 fixtures,
 multi-track AAC, PCR/PTS/DTS ordering, continuity counters, PAT/PMT cadence, and
 the existing end-to-end protocol gates.
+
+The HLS cost benchmark currently reports:
+
+| Profile | Mux cost for 1 s content | Full 6 s segment | Ten-segment window |
+|---|---:|---:|---:|
+| 720p30 H.264, 3 Mbps | ~27 µs | ~0.23 ms | ~23 MiB |
+| 1080p30 H.264, 5 Mbps | ~46 µs | ~0.41 ms | ~37 MiB |
+| 1080p60 H.264, 8 Mbps | ~71 µs | ~0.66 ms | ~62 MiB |
+| 4K30 HEVC, 15 Mbps | ~147 µs | ~2.75 ms | ~111 MiB |
+
+These synthetic measurements isolate packaging and retained segment storage;
+they do not include ring waits, socket delivery, browser behavior, or
+production payload distributions.
 
 ### Thread and scheduler model
 
@@ -484,7 +506,9 @@ Track:
 | `data_path/segment_finalize` | completed segment copy versus zero-copy ownership transfer |
 | `data_path/mpegts_demux_drain` | real 6.7 MB fixture replay with disposable versus reusable output vectors |
 | `data_path/mpegts_mux` | real 6.7 MB fixture re-mux throughput |
-| `data_path/mpegts_resync` | SIMD vs scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
+| `data_path/mpegts_resync` | `memchr` versus scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
+| `simd_alternatives` | Portable byte-search and copy alternatives used to decide whether custom architecture-specific routines are justified |
+| `hls_cost` | Native HLS mux, accumulation, segment-store CPU cost, and retained ten-segment memory across representative profiles |
 
 It also prints `MediaPacket` and aligned-slot sizes.
 
@@ -530,11 +554,12 @@ target deployment hardware before implementation work.
 | compact ring slot layout | 8 bytes per slot; 4096 slots consume 32 KiB, 87.5% lower |
 | HLS 8 MiB segment copy | approximately 4.26 milliseconds |
 | HLS 8 MiB ownership transfer | approximately 347 nanoseconds, over 99.99% lower finalization time |
-| MPEG-TS disposable output-vector replay | approximately 4.43 milliseconds for the 6.7 MB H.264 fixture (cumulative: PID dispatch + reusable drains + SIMD resync) |
+| MPEG-TS disposable output-vector replay | approximately 4.43 milliseconds for the 6.7 MB H.264 fixture (cumulative: PID dispatch + reusable drains + vectorized resync) |
 | MPEG-TS reusable output-vector replay | approximately 4.28 milliseconds, about 3.4% lower than disposable |
 | MPEG-TS direct PID-table replay | approximately 8.54 milliseconds versus 11.40 milliseconds linear lookup, about 25.9% lower |
-| SIMD sync scan, 64 KiB corrupted prefix | approximately 907 nanoseconds, 67.3 GiB/s |
-| scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; SIMD is 18× faster |
+| portable `memchr` scan, 64 KiB corrupted prefix | approximately 631 nanoseconds, 96.8 GiB/s |
+| removed custom vector scan, 64 KiB corrupted prefix | approximately 907 nanoseconds, 67.3 GiB/s; `memchr` is about 30% faster |
+| scalar sync scan, 64 KiB corrupted prefix | approximately 16.4 microseconds, 3.7 GiB/s; `memchr` is roughly 26× faster |
 | full demuxer resync, 64 KiB corrupted prefix | approximately 1.31 microseconds, 46.6 GiB/s |
 | MPEG-TS mux, 6.7 MB fixture | approximately 490 microseconds, 12.3 GiB/s (zero-copy PES; was ~880 µs before) |
 
