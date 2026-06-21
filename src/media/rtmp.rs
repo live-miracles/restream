@@ -1166,6 +1166,11 @@ pub async fn start_rtmp_egress(
         }
     }
 
+    let egress_bytes_sent = {
+        let egresses = engine.active_egresses.read().await;
+        egresses.get(&output_id).map(|e| e.bytes_sent.clone())
+    };
+
     let mut is_publishing = false;
     let mut reader = Reader::new(ring_buffer);
 
@@ -1248,8 +1253,9 @@ pub async fn start_rtmp_egress(
                     match pkt {
                         Ok(ClientSessionResult::OutboundResponse(p)) => {
                             if socket.write_all(&p.bytes).await.is_err() { return; }
-                            // Update bytes sent stats
-                            engine.update_egress_bytes(&output_id, p.bytes.len() as u64).await;
+                            if let Some(ref counter) = egress_bytes_sent {
+                                counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
+                            }
                         }
                         _ => {
                             eprintln!("[rtmp-egress] Failed to build publish data packet or get OutboundResponse");

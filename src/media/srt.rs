@@ -2296,11 +2296,12 @@ pub async fn start_srt_egress(
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT
     let out_queue_send = out_queue.clone();
     let oid = output_id.clone();
-    let engine_send = engine.clone();
-    let rt_handle = tokio::runtime::Handle::current();
+    let egress_bytes_sent = {
+        let egresses = engine.active_egresses.read().await;
+        egresses.get(&output_id).map(|e| e.bytes_sent.clone())
+    };
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 1316];
-        let mut total_sent = 0u64;
         loop {
             let n = out_queue_send.read(&mut buf);
             if n == 0 {
@@ -2310,24 +2311,9 @@ pub async fn start_srt_egress(
             if sent < 0 {
                 break;
             }
-            total_sent += sent as u64;
-            // Batch stats updates every ~100KB to reduce async overhead
-            if total_sent >= 100_000 {
-                let bytes = total_sent;
-                total_sent = 0;
-                let oid2 = oid.clone();
-                let engine2 = engine_send.clone();
-                rt_handle.spawn(async move {
-                    engine2.update_egress_bytes(&oid2, bytes).await;
-                });
+            if let Some(ref counter) = egress_bytes_sent {
+                counter.fetch_add(sent as u64, Ordering::Relaxed);
             }
-        }
-        if total_sent > 0 {
-            let oid2 = oid.clone();
-            let engine2 = engine_send.clone();
-            rt_handle.spawn(async move {
-                engine2.update_egress_bytes(&oid2, total_sent).await;
-            });
         }
         println!("[srt-egress] Sender thread finished for {}", oid);
         unsafe {

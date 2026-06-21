@@ -37,6 +37,7 @@ improvement in production-shaped measurements.
 | Cumulative native demux | Complete | After all native MPEG-TS optimizations, 6.7 MB fixture replay runs in ~4.28 ms (1.45 GiB/s), down from original ~12.44 ms—65.6% lower end-to-end |
 | Zero-copy PES muxer | Complete | Stack-resident PES header + direct TS output eliminated payload copy and temp arrays; 6.7 MB mux time fell from ~880 µs to ~490 µs (45% faster, 6.8 → 12.3 GiB/s) |
 | Cached SRT ingest byte counter | Complete | Cloned the `Arc<AtomicU64>` before the receive loop, replacing a per-receive `active_ingests.read().await` + HashMap lookup with a direct `fetch_add` |
+| Cached egress byte counters | Complete | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
 
 ## Current Baseline
 
@@ -364,12 +365,13 @@ A vectorized zero-byte candidate scanner remains a valid optimization, but
 profiling should confirm the NAL scan appears in hot samples before investing.
 Defer until a non-conformant source demonstrates measurable cost.
 
-### P2: Stream lookup in the muxer
+### P2: ~~Stream lookup in the muxer~~ — not beneficial
 
-`TsMuxer::mux_packet()` linearly searches stream metadata for every media
-packet. Cache the video stream index and an audio-track-index lookup table when
-constructing the muxer. The expected stream count is small, so this is lower
-priority than TS-packet PID dispatch and payload-copy elimination.
+Benchmarked a cached `video_stream_idx` + `audio_idx_by_track` lookup table
+against the existing linear `.position()` search. With typical stream counts
+(1 video + 1–16 audio), the linear scan is already branch-predicted and L1-hot.
+The table lookup added indirection overhead and measured ~10% *slower*. Keeping
+the simple linear search.
 
 ### P2: Timestamp and CRC helpers
 
