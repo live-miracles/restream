@@ -2,9 +2,9 @@
 //!
 //! # Memory Layout
 //!
-//! Each slot is `#[repr(align(64))]` — one cache line — so concurrent readers
-//! on different slots never cause false-sharing stalls. The write index is
-//! similarly isolated to its own cache line.
+//! Packet slots are densely packed because readers only load them; cache-line
+//! isolation is reserved for the producer-owned indexes that are actively
+//! modified. This keeps the 4096-slot working set small enough for cache.
 //!
 //! # Packet Walk
 //!
@@ -65,8 +65,7 @@ pub struct MediaPacket {
     pub payload: Bytes,
 }
 
-#[repr(align(64))]
-pub struct AlignedSlot {
+pub struct RingSlot {
     data: ArcSwapOption<MediaPacket>,
 }
 
@@ -76,7 +75,7 @@ pub struct AlignedAtomicUsize {
 }
 
 pub struct RingBuffer {
-    slots: Vec<AlignedSlot>,
+    slots: Vec<RingSlot>,
     write_idx: AlignedAtomicUsize,
     last_keyframe_idx: AlignedAtomicUsize,
     capacity: usize,
@@ -87,7 +86,7 @@ impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         let mut slots = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            slots.push(AlignedSlot {
+            slots.push(RingSlot {
                 data: ArcSwapOption::empty(),
             });
         }

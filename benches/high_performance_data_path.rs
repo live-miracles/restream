@@ -4,7 +4,7 @@ use criterion::{
 };
 use restream::media::avio::MemoryQueue;
 use restream::media::engine::MediaEngine;
-use restream::media::ring_buffer::{AlignedSlot, MediaPacket, MediaType, Reader, RingBuffer};
+use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer, RingSlot};
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -30,14 +30,14 @@ fn packet(sequence: usize, payload: &Bytes) -> MediaPacket {
 
 fn print_layout_baseline() {
     eprintln!(
-        "data-path layout: MediaPacket={}B align={}B, AlignedSlot={}B align={}B, \
+        "data-path layout: MediaPacket={}B align={}B, RingSlot={}B align={}B, \
          {} slots={}KiB",
         size_of::<MediaPacket>(),
         align_of::<MediaPacket>(),
-        size_of::<AlignedSlot>(),
-        align_of::<AlignedSlot>(),
+        size_of::<RingSlot>(),
+        align_of::<RingSlot>(),
         RING_CAPACITY,
-        size_of::<AlignedSlot>() * RING_CAPACITY / 1024,
+        size_of::<RingSlot>() * RING_CAPACITY / 1024,
     );
 }
 

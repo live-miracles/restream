@@ -439,6 +439,7 @@ target deployment hardware before implementation work.
 | batched byte queue round trip, 32 × 1316-byte packets | approximately 3.84 microseconds versus 7.49 microseconds for repeated writes, about 49% lower |
 | `MediaPacket` layout | 56 bytes, 8-byte alignment |
 | aligned ring slot layout | 64 bytes per slot; 4096 slots consume 256 KiB |
+| compact ring slot layout | 8 bytes per slot; 4096 slots consume 32 KiB, 87.5% lower |
 | HLS 8 MiB segment copy | approximately 4.26 milliseconds |
 | HLS 8 MiB ownership transfer | approximately 347 nanoseconds, over 99.99% lower finalization time |
 

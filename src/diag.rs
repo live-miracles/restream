@@ -607,7 +607,7 @@ async fn check_ring_buffer_health(
         let fill_pct = if cap > 0 { fill * 100 / cap } else { 0 };
         lines.push(format!("Capacity: {} slots", cap));
         lines.push(format!("Filled: {} slots ({}%)", fill, fill_pct));
-        lines.push(format!("Cache-line aligned slots: yes"));
+        lines.push(format!("Compact packet slots: yes"));
         lines.push(format!("Frame size: variable (media packets)"));
         if fill_pct > 85 {
             issues.push(format!(
