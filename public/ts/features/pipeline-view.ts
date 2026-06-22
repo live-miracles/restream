@@ -13,7 +13,6 @@ import { state } from '../core/state.js';
 import { getPublisherQualityAlerts, normalizePublisherProtocolLabel } from './publisher-quality.js';
 import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url-details.js';
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
-import { openGrafanaDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { AudioTrack, PipelineView, OutputView } from '../types.js';
 
@@ -32,6 +31,7 @@ interface PipelineViewDependencies {
     deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
     refreshDashboard: (() => Promise<void>) | null;
     openDiagnosticsModal: ((pipeId: string) => void) | null;
+    openGraphModal: ((pipeId: string) => void) | null;
 }
 
 const pipelineViewDependencies: PipelineViewDependencies = {
@@ -45,6 +45,7 @@ const pipelineViewDependencies: PipelineViewDependencies = {
     deleteOutBtn: null,
     refreshDashboard: null,
     openDiagnosticsModal: null,
+    openGraphModal: null,
 };
 
 const ingestUiState = {
@@ -135,18 +136,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         };
     }
 
-    const grafanaBtn = document.getElementById('pipe-grafana-btn') as HTMLButtonElement | null;
-    if (grafanaBtn) {
-        grafanaBtn.disabled = !pipe.key;
-        grafanaBtn.classList.toggle('btn-disabled', !pipe.key);
-        grafanaBtn.title = pipe.key
-            ? 'Open Grafana dashboard for this pipeline'
-            : 'Pipeline has no stream key';
-        grafanaBtn.onclick = () => {
-            if (!pipe.key) return;
-            openGrafanaDashboard(pipe);
-        };
-    }
+
 
     const recordBtn = document.getElementById('record-pipe-btn') as HTMLButtonElement | null;
     if (recordBtn) {
@@ -167,6 +157,17 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
                 await startRecording(pipe.id);
             }
             await pipelineViewDependencies.refreshDashboard?.();
+        };
+    }
+
+    const graphBtn = document.getElementById('graph-pipe-btn') as HTMLButtonElement | null;
+    if (graphBtn) {
+        const inputOn = pipe.input.status === 'on';
+        graphBtn.disabled = !inputOn;
+        graphBtn.classList.toggle('btn-disabled', !inputOn);
+        graphBtn.title = inputOn ? '' : 'Input must be online to view graph';
+        graphBtn.onclick = () => {
+            pipelineViewDependencies.openGraphModal?.(pipe.id);
         };
     }
 
@@ -322,7 +323,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         renderInputPreview(playerElem, pipe);
 
         const video = pipe.input.video || {};
-        const stats = pipe.stats || {};
+        const stats = pipe.stats || ({} as Partial<import('../types.js').PipelineStats>);
 
         const setTextContent = (id: string, value: unknown): void => {
             const el = document.getElementById(id);
@@ -424,7 +425,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
     outputsList.innerHTML = pipe.outs
         .map((o: OutputView, outputIndex: number) => {
             const statusColor =
-                o.status === 'on'
+                o.status === 'on' || o.status === 'running'
                     ? 'status-primary'
                     : o.status === 'warning'
                       ? 'status-warning'
@@ -433,7 +434,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                         : 'status-neutral';
 
             const isStopped = o.desiredState === 'stopped';
-            const isActive = o.status === 'on' || o.status === 'warning';
+            const isActive = o.status === 'on' || o.status === 'running' || o.status === 'warning';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
             const badges: string[] = [];
 
@@ -490,7 +491,6 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                     <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
-                    <button class="btn btn-xs btn-accent btn-outline" data-action="grafana-output" data-output-index="${outputIndex}" title="Open Grafana dashboard for this output">Grafana</button>
                     <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
                     <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
                 </div>
@@ -541,9 +541,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             pipelineViewDependencies.openOutputHistoryModal?.(pipe.id, out.id, out.name);
         }
 
-        if (button.dataset.action === 'grafana-output') {
-            openGrafanaDashboard(pipe, out);
-        }
+
 
         if (button.dataset.action === 'edit-output') {
             pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);

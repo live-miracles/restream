@@ -173,7 +173,7 @@ function parsePipelinesInfo(
             );
 
         let outTime: number | null = null;
-        if (status === 'on' && latestJob?.startedAt) {
+        if ((status === 'on' || status === 'running') && latestJob?.startedAt) {
             outTime = Math.max(0, nowMs - new Date(latestJob.startedAt).getTime());
         }
 
@@ -197,7 +197,7 @@ function parsePipelinesInfo(
         const readerCount = pipe.input.readers || 0;
 
         const activeOutputKbps = pipe.outs
-            .filter((o) => o.status === 'on' || o.status === 'warning')
+            .filter((o) => o.status === 'on' || o.status === 'running' || o.status === 'warning')
             .map((o) => o.bitrateKbps)
             .filter((k): k is number => k !== null && k >= 0);
         const outputBitrateKbps =

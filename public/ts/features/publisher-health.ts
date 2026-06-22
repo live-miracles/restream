@@ -7,7 +7,6 @@ import {
     getPublisherQualityMetrics,
     normalizePublisherProtocolLabel,
 } from './publisher-quality.js';
-import { buildGrafanaDashboardUrl, buildSrtConnectionHealthDashboardUrl } from './grafana.js';
 
 let publisherHealthModalPipeId: string | null = null;
 let modalRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -63,13 +62,10 @@ export function renderPublisherHealthModal(): void {
     const subtitle = document.getElementById('publisher-health-subtitle');
     const tbody = document.getElementById('publisher-health-rows');
     const empty = document.getElementById('publisher-health-empty');
-    const grafanaBtn = document.getElementById(
-        'publisher-health-grafana-btn',
-    ) as HTMLButtonElement | null;
     const copyBtn = document.getElementById(
         'publisher-health-copy-btn',
     ) as HTMLButtonElement | null;
-    if (!title || !subtitle || !tbody || !empty || !grafanaBtn) return;
+    if (!title || !subtitle || !tbody || !empty) return;
 
     title.textContent = `Publisher Health${pipe?.name ? ` - ${pipe.name}` : ''}`;
 
@@ -78,9 +74,6 @@ export function renderPublisherHealthModal(): void {
         tbody.innerHTML = '';
         empty.textContent = 'Start a publisher to inspect transport health.';
         empty.classList.remove('hidden');
-        grafanaBtn.disabled = true;
-        grafanaBtn.classList.add('btn-disabled');
-        grafanaBtn.onclick = null;
         if (copyBtn) {
             copyBtn.disabled = true;
             copyBtn.onclick = null;
@@ -121,16 +114,7 @@ export function renderPublisherHealthModal(): void {
         };
     }
 
-    grafanaBtn.disabled = !pipe.key;
-    grafanaBtn.classList.toggle('btn-disabled', !pipe.key);
-    grafanaBtn.onclick = () => {
-        if (!pipe.key) return;
-        const url =
-            publisher.protocol === 'srt'
-                ? buildSrtConnectionHealthDashboardUrl(pipe)
-                : buildGrafanaDashboardUrl(pipe);
-        window.open(url, '_blank', 'noopener,noreferrer');
-    };
+
 }
 
 export function openPublisherHealthModal(pipeId: string): void {

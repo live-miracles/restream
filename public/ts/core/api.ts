@@ -400,6 +400,10 @@ async function changePassword(
     });
 }
 
+async function getProcessingGraph(pipelineId: string): Promise<unknown | null> {
+    return apiRequest(`/pipelines/${encodeURIComponent(pipelineId)}/graph`);
+}
+
 export {
     apiRequest,
     getConfig,
@@ -431,4 +435,5 @@ export {
     stopIngest,
     logout,
     changePassword,
+    getProcessingGraph,
 };

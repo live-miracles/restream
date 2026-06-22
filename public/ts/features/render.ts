@@ -19,7 +19,7 @@ function isOutputIntentStopped(output: OutputView | null | undefined): boolean {
 }
 
 function isOutputRunning(output: OutputView | null | undefined): boolean {
-    return output?.status === 'on' || output?.status === 'warning';
+    return output?.status === 'on' || output?.status === 'running' || output?.status === 'warning';
 }
 
 function isOutputUnexpectedlyDown(output: OutputView | null | undefined): boolean {
@@ -40,7 +40,7 @@ function renderPipelinesList(selectedPipe: string | null): void {
 
     const outputTotal = state.pipelines.reduce((sum, p) => sum + p.outs.length, 0);
     const outputOn = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => o.status === 'on').length,
+        (sum, p) => sum + p.outs.filter((o) => o.status === 'on' || o.status === 'running').length,
         0,
     );
     const outputWarning = state.pipelines.reduce(
@@ -76,13 +76,13 @@ function renderPipelinesList(selectedPipe: string | null): void {
             let outStatus = 'off';
             if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) outStatus = 'error';
             else if (p.outs.some((o) => o.status === 'warning')) outStatus = 'warning';
-            else if (p.outs.some((o) => o.status === 'on')) outStatus = 'on';
+            else if (p.outs.some((o) => o.status === 'on' || o.status === 'running')) outStatus = 'on';
 
             const inputColor = getStatusColor(p.input.status);
             const outColor = getStatusColor(outStatus);
             const selected = p.id === selectedPipe ? 'bg-base-100' : '';
 
-            const outOks = p.outs.filter((o) => o.status === 'on').length;
+            const outOks = p.outs.filter((o) => o.status === 'on' || o.status === 'running').length;
             const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
             const outErrors = p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length;
             const outOffs = p.outs.filter((o) => isOutputIntentStopped(o)).length;
@@ -171,7 +171,7 @@ function renderStatsColumn(selectedPipe: string | null): void {
     html += sectionHeader('Outputs', activeOuts.length);
     state.pipelines.forEach((p) => {
         p.outs.forEach((o) => {
-            const isActive = o.status === 'on' || o.status === 'warning';
+            const isActive = o.status === 'on' || o.status === 'running' || o.status === 'warning';
             const isUnexpectedlyDown = isOutputUnexpectedlyDown(o);
             const bitrateMbps =
                 isActive && o.bitrateKbps != null && o.bitrateKbps >= 0

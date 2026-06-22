@@ -4,7 +4,7 @@ import { escapeHtml } from '../core/utils.js';
 interface StatusData {
     restream: { commitHash: string; commitDate: string };
     mediamtx: string;
-    ffmpeg: string;
+    nativeLibraries: { ffmpeg: { version: string } };
     ffprobe: string;
     os: { kernel: string; distribution: string };
 }
@@ -22,7 +22,7 @@ export async function loadStatus(): Promise<void> {
     const rows: [string, string][] = [
         ['Restream Commit', `${data.restream.commitHash} (${data.restream.commitDate})`],
         ['MediaMTX', data.mediamtx],
-        ['FFmpeg', data.ffmpeg],
+        ['FFmpeg', data.nativeLibraries.ffmpeg.version],
         ['FFprobe', data.ffprobe],
         ['OS / Distribution', data.os.distribution],
         ['Kernel', data.os.kernel],

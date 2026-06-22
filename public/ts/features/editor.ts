@@ -690,7 +690,7 @@ async function openPipeModal(pipe: PipelineView): Promise<void> {
 }
 
 function isPipelineKeyChangeLocked(pipe: PipelineView): boolean {
-    return !!pipe?.outs?.some((o) => o.status === 'on' || o.status === 'warning');
+    return !!pipe?.outs?.some((o) => o.status === 'on' || o.status === 'running' || o.status === 'warning');
 }
 
 export async function pipeFormBtn(event: Event): Promise<void> {
@@ -809,7 +809,7 @@ async function openOutModal(
     populateRemapChannelOptions(getTrackChannelCount(remapTrack), remapLeft, remapRight);
 
     const isRunning =
-        mode === 'edit' && !!output && (output.status === 'on' || output.status === 'warning');
+        mode === 'edit' && !!output && (output.status === 'on' || output.status === 'running' || output.status === 'warning');
 
     const baseRtmpUrl = `rtmp://${getDefaultOutputHost()}:1935/live/`;
     const isCreateMode = mode !== 'edit' || !output;

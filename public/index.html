@@ -372,7 +372,6 @@
           </div>
           <div class="flex gap-1">
             <button type="button" class="btn btn-xs btn-outline" id="publisher-health-copy-btn">Copy</button>
-            <button type="button" class="btn btn-xs btn-accent btn-outline" id="publisher-health-grafana-btn">Grafana</button>
           </div>
         </div>
         <div class="mt-4 overflow-x-auto">
@@ -410,6 +409,21 @@
           </div>
         </div>
         <div class="mt-3 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" id="diagnostics-list"></div>
+        <div class="modal-action shrink-0">
+          <form method="dialog">
+            <button class="btn btn-sm">Close</button>
+          </form>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <dialog id="graph-modal" class="modal">
+      <div class="modal-box flex h-[80vh] max-w-5xl flex-col">
+        <div class="flex shrink-0 items-center justify-between gap-2">
+          <h3 class="text-lg font-bold" id="graph-title">Processing Graph</h3>
+        </div>
+        <div class="mt-3 flex min-h-0 flex-1 overflow-auto" id="graph-container"></div>
         <div class="modal-action shrink-0">
           <form method="dialog">
             <button class="btn btn-sm">Close</button>
@@ -458,8 +472,8 @@
             <span class="truncate" id="pipe-name"></span>
             <div class="flex shrink-0 items-center gap-2">
               <button class="btn btn-xs btn-accent btn-outline" id="pipe-history-btn">History</button>
-              <button class="btn btn-xs btn-accent btn-outline" id="pipe-grafana-btn">Grafana</button>
               <button class="btn btn-xs btn-accent btn-outline" id="record-pipe-btn">⏺ Record</button>
+              <button class="btn btn-xs btn-accent btn-outline" id="graph-pipe-btn">Graph</button>
               <button class="btn btn-xs btn-accent btn-outline" id="diagnose-pipe-btn">Diagnose</button>
               <button class="btn btn-xs btn-accent btn-outline" id="edit-pipe-btn" onclick="editPipeBtn()">✎</button>
               <button class="btn btn-xs btn-error btn-outline" id="delete-pipe-btn" onclick="deletePipeBtn()">🗙</button>
