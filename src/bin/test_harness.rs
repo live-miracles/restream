@@ -47,10 +47,12 @@ async fn run() -> Result<(), String> {
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
+        "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
         "all" => {
             let correctness = correctness().await?;
+            let hevc_rtmp = hevc_rtmp_egress_correctness().await?;
             let in_process = in_process_load(500, 2_000).await?;
             let network = network_load(32, Duration::from_secs(5)).await?;
             // egress_correctness calls process::exit to avoid FFmpeg/SRT
@@ -58,6 +60,7 @@ async fn run() -> Result<(), String> {
             let egress = egress_correctness().await?;
             Ok(json!({
                 "correctness": correctness,
+                "correctnessHevcRtmp": hevc_rtmp,
                 "egress": egress,
                 "inProcess": in_process,
                 "network": network,
@@ -65,7 +68,7 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-             matrix, matrix-in-memory, egress, in-process, network, or all"
+             matrix, matrix-in-memory, egress, correctness-hevc-rtmp, in-process, network, or all"
         )),
     };
 
@@ -530,6 +533,185 @@ async fn egress_correctness() -> Result<Value, String> {
     println!("artifact={}", path.display());
     // Use _exit to bypass atexit handlers — FFmpeg's atexit codec
     // deregistration can deadlock with OS threads still holding locks.
+    unsafe { libc::_exit(if passed { 0 } else { 1 }) };
+}
+
+/// Test: SRT ingest of H.265 → RTMP egress with inline H.265→H.264 transcoding.
+///
+/// Validates that the RTMP output stream contains valid H.264 video + AAC audio
+/// (proving the transcoder works correctly end-to-end).
+async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
+    let db_path = artifact_path("correctness-hevc-rtmp.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = SqlitePool::connect(&db_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for (id, name, key) in [
+        ("pipe-hevc-src", "H.265 SRT source", "e2e-hevc"),
+        ("pipe-hevc-sink", "H.264 RTMP sink", "e2e-hevc-sink"),
+    ] {
+        db::create_pipeline(&pool, id, name, key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let _rtmp_task = tokio::spawn(start_rtmp_server_on(
+        pool.clone(),
+        security.clone(),
+        engine.clone(),
+        RTMP_PORT,
+    ));
+    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone()));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = artifact_path("correctness-h265.ts");
+    if !fixture.exists() {
+        generate_fixture_h265(&fixture).await?;
+    }
+
+    let _publisher = spawn_publisher(
+        &fixture,
+        &format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-hevc&pkt_size=1316"),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_ingests(&engine, &["pipe-hevc-src"], Duration::from_secs(15)).await?;
+    println!("[hevc-rtmp] Source ingest established (H.265 via SRT)");
+
+    // Verify the source is actually H.265
+    let mut results = json!({});
+    {
+        let ingests = engine.active_ingests.read().await;
+        let v = ingests.get("pipe-hevc-src").and_then(|i| i.video.as_ref());
+        let codec = v.map(|v| v.codec.as_str()).unwrap_or("unknown");
+        println!("[hevc-rtmp] Source video codec: {codec}");
+        if codec != "hevc" {
+            results["sourceCodec"] = json!(codec);
+            results["passed"] = json!(false);
+            results["error"] = json!("source codec is not hevc");
+            let path = artifact_path("correctness-hevc-rtmp.json");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+                .map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&results).unwrap());
+            unsafe { libc::_exit(1) };
+        }
+    }
+
+    let source_ring = engine.get_or_create_pipeline("pipe-hevc-src").await;
+    let rtmp_sink_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-hevc-sink");
+
+    let egress_token = engine
+        .register_egress("out-hevc-rtmp", "pipe-hevc-src", &rtmp_sink_url)
+        .await;
+    let _rtmp_egress = tokio::spawn(start_rtmp_egress(
+        "out-hevc-rtmp".to_string(),
+        "pipe-hevc-src".to_string(),
+        rtmp_sink_url.clone(),
+        source_ring,
+        engine.clone(),
+        egress_token.clone(),
+    ));
+
+    // Wait for the RTMP egress to connect and publish to the sink pipeline.
+    // The egress re-publishes to `rtmp://127.0.0.1:11935/live/e2e-hevc-sink`,
+    // which the local RTMP server accepts as a new ingest on pipe-hevc-sink.
+    match wait_for_ingests(&engine, &["pipe-hevc-sink"], Duration::from_secs(15)).await {
+        Ok(()) => println!("[hevc-rtmp] Sink ingest established (H.264 via RTMP egress)"),
+        Err(e) => {
+            results["passed"] = json!(false);
+            results["error"] = json!(format!("sink ingest never appeared: {e}"));
+            results["rtmpEgressBytes"] = json!(engine.egress_bytes("out-hevc-rtmp").await);
+            let path = artifact_path("correctness-hevc-rtmp.json");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+                .map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&results).unwrap());
+            unsafe { libc::_exit(1) };
+        }
+    }
+
+    // Let enough data accumulate for ffprobe to get a valid stream probe
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let rtmp_read_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-hevc-sink");
+    let rtmp_probe = ffprobe(&rtmp_read_url).await;
+
+    match rtmp_probe {
+        Ok(probe) => {
+            let media_check = assert_media_only(&probe, "HEVC→RTMP egress");
+            let streams = normalized_streams(&probe).ok();
+
+            // The key assertion: video codec must be H.264 (transcoded from H.265)
+            let video_h264 = probe["streams"]
+                .as_array()
+                .and_then(|streams| {
+                    streams
+                        .iter()
+                        .find(|s| s["codec_type"] == "video")
+                        .map(|s| s["codec_name"].as_str())
+                })
+                .flatten()
+                == Some("h264");
+            let audio_aac = probe["streams"]
+                .as_array()
+                .and_then(|streams| {
+                    streams
+                        .iter()
+                        .find(|s| s["codec_type"] == "audio")
+                        .map(|s| s["codec_name"].as_str())
+                })
+                .flatten()
+                == Some("aac");
+
+            results["passed"] = json!(media_check.is_ok() && video_h264 && audio_aac);
+            results["videoCodec"] = json!(if video_h264 { "h264" } else { "NOT_h264" });
+            results["audioCodec"] = json!(if audio_aac { "aac" } else { "NOT_aac" });
+            results["mediaCheck"] = json!(media_check.is_ok());
+            results["mediaError"] = json!(media_check.err());
+            if let Some(ref s) = streams {
+                results["streams"] = s.clone();
+            }
+            results["probe"] = probe;
+            results["rtmpEgressBytes"] = json!(engine.egress_bytes("out-hevc-rtmp").await);
+
+            if !video_h264 {
+                results["error"] = json!("RTMP output video codec is not H.264 — transcoding failed");
+            }
+        }
+        Err(e) => {
+            results["passed"] = json!(false);
+            results["error"] = json!(format!("ffprobe failed: {e}"));
+            results["rtmpEgressBytes"] = json!(engine.egress_bytes("out-hevc-rtmp").await);
+        }
+    }
+
+    let passed = results["passed"].as_bool().unwrap_or(false);
+    let path = artifact_path("correctness-hevc-rtmp.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    // _exit to avoid FFmpeg/SRT teardown races
     unsafe { libc::_exit(if passed { 0 } else { 1 }) };
 }
 

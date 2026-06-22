@@ -885,7 +885,10 @@ async fn handle_session_results(
                                         meta.codec, meta.sample_rate, meta.channels
                                     );
                                     engine
-                                        .update_ingest_meta(pipeline_id, None, Some(meta), None)
+                                        .update_ingest_meta(pipeline_id, None, Some(meta.clone()), None)
+                                        .await;
+                                    engine
+                                        .update_ingest_audio_tracks(pipeline_id, vec![meta])
                                         .await;
                                 }
                             }
@@ -1147,20 +1150,23 @@ fn run_hevc_to_h264_transcoder(
                     Ok(e) => e,
                     Err(e) => { eprintln!("[rtmp-h265-tc] encoder ctx: {e}"); return; }
                 };
+
+                // time_base = 1/fps so x264 derives a sensible frame rate
                 enc_video.set_width(width);
                 enc_video.set_height(height);
                 enc_video.set_format(Pixel::YUV420P);
-                // time_base = 1/fps so x264 derives a sensible frame rate
                 enc_video.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
                 enc_video.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
                 enc_video.set_bit_rate(2_500_000);
+                enc_video.set_max_bit_rate(2_500_000);
+                enc_video.set_tolerance(2_500_000);
                 enc_video.set_gop(60);
+                enc_video.set_max_b_frames(0);
+                enc_video.set_global_quality(-1);
+                enc_video.set_qmin(10);
+                enc_video.set_qmax(51);
 
-                let mut opts = ffmpeg_next::Dictionary::new();
-                opts.set("preset", "ultrafast");
-                opts.set("tune",   "zerolatency");
-
-                let opened = match enc_video.open_as_with(enc_codec, opts) {
+                let opened = match enc_video.open_as(enc_codec) {
                     Ok(e) => e,
                     Err(e) => { eprintln!("[rtmp-h265-tc] encoder open: {e}"); return; }
                 };
@@ -1328,15 +1334,27 @@ pub async fn start_rtmp_egress(
         egresses.get(&output_id).map(|e| e.bytes_sent.clone())
     };
 
-    // Detect H.265 ingest — standard RTMP only carries H.264, so we transcode
-    // H.265 → H.264 on a dedicated OS thread using FFmpeg decode+encode.
-    let is_h265 = {
-        let ingests = engine.active_ingests.read().await;
-        ingests
-            .get(&pipeline_id)
-            .and_then(|i| i.video.as_ref())
-            .map(|v| v.codec == "hevc")
-            .unwrap_or(false)
+    // H.265 detection via ingest metadata probe. The probe arrives asynchronously
+    // from the SRT/RTMP ingest loop, so we wait briefly (up to 5s) for it.
+    let is_h265 = 'probe: {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let ingests = engine.active_ingests.read().await;
+            let meta = ingests
+                .get(&pipeline_id)
+                .and_then(|i| i.video.as_ref());
+            match meta {
+                Some(v) if v.codec == "hevc" => break 'probe true,
+                Some(_) => break 'probe false,
+                None => {} // no metadata yet — wait and retry
+            }
+            drop(ingests);
+            if Instant::now() >= deadline {
+                eprintln!("[rtmp-egress] Timed out waiting for ingest video metadata on pipeline {pipeline_id}, assuming H.264");
+                break 'probe false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     };
 
     // H.265 transcoder infrastructure (only active when is_h265).
@@ -1628,6 +1646,145 @@ async fn handle_client_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::engine::{MediaEngine, VideoMeta};
+
+    #[tokio::test]
+    async fn detects_h265_from_ingest_video_meta() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("p1", "key", "srt")
+            .await
+            .unwrap();
+
+        // No video meta yet → not H.265
+        {
+            let ingests = engine.active_ingests.read().await;
+            let is_h265 = ingests
+                .get("p1")
+                .and_then(|i| i.video.as_ref())
+                .map(|v| v.codec == "hevc")
+                .unwrap_or(false);
+            assert!(!is_h265, "no video meta should not be hevc");
+        }
+
+        // H.264 meta → not H.265
+        engine
+            .update_ingest_meta(
+                "p1",
+                Some(VideoMeta {
+                    codec: "h264".into(),
+                    width: 0,
+                    height: 0,
+                    fps: 0.0,
+                    bw: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                None,
+                None,
+            )
+            .await;
+        {
+            let ingests = engine.active_ingests.read().await;
+            let is_h265 = ingests
+                .get("p1")
+                .and_then(|i| i.video.as_ref())
+                .map(|v| v.codec == "hevc")
+                .unwrap_or(false);
+            assert!(!is_h265, "h264 meta should not be hevc");
+        }
+
+        // H.265 meta → is H.265
+        engine
+            .update_ingest_meta(
+                "p1",
+                Some(VideoMeta {
+                    codec: "hevc".into(),
+                    width: 0,
+                    height: 0,
+                    fps: 0.0,
+                    bw: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                None,
+                None,
+            )
+            .await;
+        {
+            let ingests = engine.active_ingests.read().await;
+            let is_h265 = ingests
+                .get("p1")
+                .and_then(|i| i.video.as_ref())
+                .map(|v| v.codec == "hevc")
+                .unwrap_or(false);
+            assert!(is_h265, "hevc meta should be detected");
+        }
+
+        engine.unregister_ingest("p1").await;
+    }
+
+    #[tokio::test]
+    async fn h265_detection_waits_for_probe_meta() {
+        let engine = Arc::new(MediaEngine::new());
+        let engine_clone = engine.clone();
+        let pipeline_id = "p2".to_string();
+
+        engine
+            .try_register_ingest(&pipeline_id, "key", "srt")
+            .await
+            .unwrap();
+
+        // Spawn a task that sets the video meta after a delay (simulating probe arrival)
+        let delayed_engine = engine.clone();
+        let delayed_pid = pipeline_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            delayed_engine
+                .update_ingest_meta(
+                    &delayed_pid,
+                    Some(VideoMeta {
+                        codec: "hevc".into(),
+                        width: 0,
+                        height: 0,
+                        fps: 0.0,
+                        bw: None,
+                        profile: None,
+                        level: None,
+                        pixel_format: None,
+                    }),
+                    None,
+                    None,
+                )
+                .await;
+        });
+
+        // Now run the same probe-wait logic that start_rtmp_egress uses
+        let is_h265 = 'probe: {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                let ingests = engine_clone.active_ingests.read().await;
+                let meta = ingests
+                    .get(&pipeline_id)
+                    .and_then(|i| i.video.as_ref());
+                match meta {
+                    Some(v) if v.codec == "hevc" => break 'probe true,
+                    Some(_) => break 'probe false,
+                    None => {}
+                }
+                drop(ingests);
+                if std::time::Instant::now() >= deadline {
+                    break 'probe false;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        assert!(is_h265, "should detect hevc after probe arrives");
+
+        engine.unregister_ingest(&pipeline_id).await;
+    }
 
     #[test]
     fn parse_flv_audio_aac_44100_stereo() {

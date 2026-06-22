@@ -230,19 +230,19 @@ pub async fn run_app() {
                     && ingest_is_hevc
                     && (video_preset == "source" || video_preset.is_empty());
 
-                let needs_video_transcode = needs_h264_transcode
-                    || (!video_preset.is_empty()
-                        && video_preset != "source"
-                        && video_preset != "custom");
+                // Standard RTMP does not support H.265 — inline H.265→H.264 transcoding
+                // happens inside start_rtmp_egress. Don't create a shared transcoder
+                // for this case (it would add a wasteful mux→demux cycle for zero gain).
+                let needs_video_transcode = !needs_h264_transcode
+                    && !video_preset.is_empty()
+                    && video_preset != "source"
+                    && video_preset != "custom";
 
                 // Stage 1: shared video transcode (or passthrough)
-                let effective_preset = if needs_h264_transcode {
+                let video_stage_key = if needs_h264_transcode {
                     "h264"
-                } else {
+                } else if needs_video_transcode {
                     video_preset
-                };
-                let video_stage_key = if needs_video_transcode {
-                    effective_preset
                 } else {
                     "source"
                 };
@@ -250,7 +250,7 @@ pub async fn run_app() {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            &format!("video:{}", effective_preset),
+                            &format!("video:{}", video_preset),
                             source_buf.clone(),
                         )
                         .await
