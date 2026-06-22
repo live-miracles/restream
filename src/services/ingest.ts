@@ -3,6 +3,7 @@ import type { ChildProcess } from 'child_process';
 import path from 'path';
 import { errMsg, log } from '../utils/app';
 import type { Db, Ingest } from '../types';
+import { gracefullyKillProcess, isProcessAlive } from '../utils/process';
 
 const MEDIAMTX_RTMP_BASE = 'rtmp://localhost:1935';
 const LIVE_PATH_PREFIX = 'live/';
@@ -10,6 +11,7 @@ const LIVE_PATH_PREFIX = 'live/';
 export interface IngestService {
     start(id: string): { ok: boolean; error?: string };
     stop(id: string): void;
+    stopAll(): Promise<void>;
     isRunning(id: string): boolean;
 }
 
@@ -21,7 +23,7 @@ export function createIngestService({ db, mediaDir }: { db: Db; mediaDir: string
         const filePath = path.join(mediaDir, ingest.filename);
         const rtmpUrl = `${MEDIAMTX_RTMP_BASE}/${LIVE_PATH_PREFIX}${ingest.streamKey}`;
 
-        const args = ['-nostdin', '-hide_banner', '-loglevel', 'info', '-nostats'];
+        const args = ['-hide_banner', '-loglevel', 'info', '-nostats'];
 
         if (ingest.loop) {
             args.push('-stream_loop', '-1');
@@ -51,7 +53,7 @@ export function createIngestService({ db, mediaDir }: { db: Db; mediaDir: string
             let child: ChildProcess;
             try {
                 child = spawn(ffmpegCmd, args, {
-                    stdio: ['ignore', 'ignore', 'pipe'],
+                    stdio: ['pipe', 'ignore', 'pipe'],
                     env: process.env,
                 });
             } catch (err) {
@@ -93,12 +95,28 @@ export function createIngestService({ db, mediaDir }: { db: Db; mediaDir: string
         stop(id: string): void {
             const proc = processes.get(id);
             if (!proc) return;
-            try {
-                proc.kill('SIGTERM');
-            } catch {
-                // process may already be gone
-            }
+            gracefullyKillProcess(proc, { logTag: `ingest:${id}` });
             processes.delete(id);
+        },
+
+        async stopAll(): Promise<void> {
+            const promises = [...processes.entries()].map(async ([id, child]) => {
+                return new Promise<void>((resolve) => {
+                    if (!isProcessAlive(child)) {
+                        return resolve();
+                    }
+                    const timer = setTimeout(() => {
+                        resolve();
+                    }, 6000);
+                    child.once('exit', () => {
+                        clearTimeout(timer);
+                        resolve();
+                    });
+                    gracefullyKillProcess(child, { logTag: `ingest:${id}` });
+                });
+            });
+            await Promise.allSettled(promises);
+            processes.clear();
         },
 
         isRunning(id: string): boolean {

@@ -6,11 +6,13 @@ import { errMsg, log } from '../utils/app';
 import { buildPullInputUrl } from '../utils/mediamtx';
 import type { PullProtocol } from '../utils/mediamtx';
 import type { Db } from '../types';
+import { gracefullyKillProcess, isProcessAlive } from '../utils/process';
 
 export interface RecordingService {
     init(): void;
     enableRecording(pipelineId: string): Promise<void>;
     disableRecording(pipelineId: string): void;
+    stopAll(): Promise<void>;
     getState(pipelineId: string): { enabled: boolean; active: boolean };
     onInputRecovered(pipelineId: string): void;
     onInputLost(pipelineId: string): void;
@@ -67,7 +69,6 @@ export function createRecordingService({
         const inputUrl = buildPullInputUrl(pipeline.streamKey, inputPullProtocol);
 
         const args = [
-            '-nostdin',
             '-hide_banner',
             '-loglevel',
             'info',
@@ -86,7 +87,7 @@ export function createRecordingService({
         let child: ChildProcess;
         try {
             child = spawn(ffmpegCmd, args, {
-                stdio: ['ignore', 'ignore', 'pipe'],
+                stdio: ['pipe', 'ignore', 'pipe'],
                 env: process.env,
             });
         } catch (err) {
@@ -141,11 +142,7 @@ export function createRecordingService({
         const proc = processes.get(pipelineId);
         if (!proc) return;
         stopRequested.add(pipelineId);
-        try {
-            proc.kill('SIGTERM');
-        } catch {
-            // process may already be gone
-        }
+        gracefullyKillProcess(proc, { logTag: `recording:${pipelineId}` });
     }
 
     return {
@@ -166,6 +163,27 @@ export function createRecordingService({
         disableRecording(pipelineId: string): void {
             db.setMeta(`recording_enabled:${pipelineId}`, '0');
             stopRecording(pipelineId);
+        },
+
+        async stopAll(): Promise<void> {
+            const promises = [...processes.entries()].map(async ([pipelineId, child]) => {
+                stopRequested.add(pipelineId);
+                return new Promise<void>((resolve) => {
+                    if (!isProcessAlive(child)) {
+                        return resolve();
+                    }
+                    const timer = setTimeout(() => {
+                        resolve();
+                    }, 6000);
+                    child.once('exit', () => {
+                        clearTimeout(timer);
+                        resolve();
+                    });
+                    gracefullyKillProcess(child, { logTag: `recording:${pipelineId}` });
+                });
+            });
+            await Promise.allSettled(promises);
+            processes.clear();
         },
 
         getState(pipelineId: string): { enabled: boolean; active: boolean } {

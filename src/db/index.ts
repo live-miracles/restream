@@ -525,6 +525,16 @@ export function cleanupOldJobs(): { deletedJobs: number; deletedLogs: number } {
     return tx();
 }
 
+export function resetRunningJobs(): void {
+    db.prepare(
+        `
+        UPDATE jobs
+        SET status = 'stopped', ended_at = ?, exit_code = NULL, exit_signal = 'SIGKILL'
+        WHERE status = 'running'
+    `,
+    ).run(new Date().toISOString());
+}
+
 function rowToIngest(row: unknown): Ingest {
     const r = row as {
         id: string;

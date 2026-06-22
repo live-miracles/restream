@@ -113,6 +113,9 @@ async function main() {
     console.log('== Step 5: Stop all outputs ==');
     await stopOutputs(resolved.outputs);
 
+    console.log('== Step 6: Verify graceful shutdown of all outputs ==');
+    await verifyGracefulShutdown(resolved.outputs);
+
     console.log('== 2x3 run complete ==');
 }
 
@@ -712,6 +715,55 @@ async function stopOutputs(outputs) {
     );
 
     console.log('All outputs stopped');
+}
+
+async function verifyGracefulShutdown(outputs) {
+    const configState = await fetchConfigState();
+
+    for (const target of outputs) {
+        const label = `${target.pipelineName}/${target.outputName}`;
+
+        const job = configState.jobs.find(
+            (j) => j.pipelineId === target.pipelineId && j.outputId === target.outputId,
+        );
+
+        if (!job) {
+            throw new Error(`Graceful shutdown check failed: no job found for ${label}`);
+        }
+
+        if (job.status !== 'stopped') {
+            throw new Error(
+                `Graceful shutdown check failed: ${label} job status is ${job.status}, expected 'stopped'`,
+            );
+        }
+
+        if (job.exitCode !== 0) {
+            throw new Error(
+                `Graceful shutdown check failed: ${label} job exit code is ${job.exitCode}, expected 0`,
+            );
+        }
+
+        if (job.exitSignal !== null) {
+            throw new Error(
+                `Graceful shutdown check failed: ${label} job exit signal is ${job.exitSignal}, expected null`,
+            );
+        }
+
+        const historyUrl = `/pipelines/${target.pipelineId}/outputs/${target.outputId}/history?limit=50`;
+        const historyResult = await requestJson(historyUrl);
+        const logs = historyResult.json?.logs || [];
+        const hasQCommand = logs.some((logEntry) =>
+            String(logEntry.message).includes('[q] command received'),
+        );
+
+        if (!hasQCommand) {
+            throw new Error(
+                `Graceful shutdown check failed: ${label} logs do not contain '[q] command received' message`,
+            );
+        }
+
+        console.log(`  Graceful shutdown verified for ${label}`);
+    }
 }
 
 async function verifyDesiredStateForOutputs(outputs, expectedDesiredState) {
