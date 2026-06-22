@@ -66,88 +66,84 @@ Axum API/dashboard -> SQLite
 Most media work is in-process through linked FFmpeg libraries. File ingest is
 the exception and requires the `ffmpeg` executable on `PATH`.
 
-## Build and Run
+## Development
 
-The pinned Rust toolchain is defined in `rust-toolchain.toml`. Native development
-packages must provide pkg-config metadata for:
+### Prerequisites
 
-- `libavcodec`
-- `libavformat`
-- `libavfilter`
-- `libswscale`
-- `libswresample`
-- `libavutil`
-- `libsrt`
+There are two build paths with different FFmpeg requirements:
 
-Bonded SRT ingest requires libsrt configured with `ENABLE_BONDING=ON`. Some
-distribution packages ship the group API symbols as disabled stubs. Restream
-detects this at listener startup instead of silently claiming support.
+**Debug / fast iteration** — links against system FFmpeg and libsrt:
 
-Build and start:
-
-```sh
-cargo build
-cargo run
-```
-
-For a reproducible release build, the setup script installs missing Debian or
-Ubuntu build packages when possible, then builds pinned static SRT, x264, and
-FFmpeg dependencies:
-
-```sh
-./scripts/setup-static-build.sh
-./scripts/test-srt-bonding.sh
-./scripts/build-static.sh
-```
-
-Unchanged native setup is content-addressed and reuses SRT, x264, and FFmpeg
-builds. Force a clean native reconfiguration when investigating toolchain or
-cache problems:
-
-```sh
-RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh
-```
-
-For faster edit/build iteration, use thin LTO and parallel Rust code generation:
-
-```sh
-RESTREAM_BUILD_PROFILE=fast-release ./scripts/build-static.sh
-```
-
-This writes `.build/static/cargo-target/fast-release/restream`. Use the default
-command without `RESTREAM_BUILD_PROFILE` for the final fat-LTO release binary.
-
-The resulting binary is
-`.build/static/cargo-target/release/restream`. The build script verifies that
-it has no dynamic loader dependency and checks the required H.264/H.265 and
-audio codec set. FFmpeg and x264 use their runtime-dispatched x86 assembly
-paths; setup fails if FFmpeg cannot build its standalone assembly. OpenCL stays
-disabled. The bonding test uses separate client/server processes and proves two
-tuples on one listener in both broadcast and backup/failover modes.
-Because this build enables x264, redistribution must comply with the applicable
-GPL licensing requirements.
-
-Listeners are currently fixed:
-
-| Port | Protocol | Purpose |
-|---|---|---|
-| `3030` | TCP/HTTP | Dashboard and API |
-| `1935` | TCP/RTMP | RTMP ingest and play |
-| `10080` | UDP/SRT | SRT ingest and read |
-
-Runtime files:
-
-| Path | Purpose |
+| Dependency | Purpose |
 |---|---|
-| `data.db` | SQLite database |
-| `media/` | File-ingest sources and `.mkv` recordings |
-| `public/js/` | Generated frontend JavaScript |
-| `public/output.css` | Generated frontend CSS |
+| Rust toolchain | Pinned in `rust-toolchain.toml` (1.96.0, includes rustfmt + clippy) |
+| FFmpeg dev libs | `libavcodec`, `libavformat`, `libavfilter`, `libswscale`, `libswresample`, `libavutil` (via pkg-config) |
+| libsrt dev | SRT transport (via pkg-config) |
+| nasm | Assembler for FFmpeg x86 codecs |
+| clang | C compiler for FFmpeg/SRT bindings in `build.rs` |
+| Node.js / npx | Frontend TypeScript compiler and Tailwind CSS (UI work only) |
+| ffmpeg, curl, jq | Live integration test tools |
 
-The first-run dashboard password is `admin`. Change it immediately through the
-Settings page or `POST /api/auth/change-password`.
+Debian/Ubuntu:
 
-## Testing
+```sh
+apt-get install -y ffmpeg jq pkg-config clang nasm libsrt-dev \
+  libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
+  libswscale-dev libavfilter-dev libavdevice-dev
+```
+
+Note: distribution FFmpeg and libsrt may not have x86 ASM or bonding enabled.
+Performance and bonding behaviour will differ from the static release build.
+
+**Static release** — builds its own FFmpeg, x264, and SRT from source (see
+[Static Release Build](#static-release-build) below). This is the only path
+that guarantees `--enable-x86asm`, pinned codec versions, and
+`ENABLE_BONDING=ON`.
+
+### Inner Loop
+
+**Rust backend** — the primary edit cycle:
+
+```sh
+cargo build            # debug build
+cargo run              # start on :3030 / :1935 / :10080
+cargo test             # 132 tests (92 lib + 24 API + 12 DB + 4 transcoder)
+cargo clippy           # lint
+cargo fmt              # format
+```
+
+**Frontend** — only when editing `public/ts/` or `public/input.css`:
+
+```sh
+npx tsc -p tsconfig.frontend.json                          # TS → public/js/
+npx tailwindcss -i public/input.css -o public/output.css   # rebuild CSS
+```
+
+Always edit `public/ts/` — never the generated `public/js/`. In dev mode
+`rust-embed` serves assets from disk, so frontend rebuilds take effect without
+restarting the backend.
+
+### Benchmarks
+
+Run before and after any hotpath change:
+
+```sh
+cargo bench --bench <name>    # one suite
+cargo bench                   # all suites
+```
+
+| Suite | What it measures |
+|---|---|
+| `ring_buffer` | push/pull throughput, multi-reader fan-out |
+| `avio_throughput` | MemoryQueue and AVIO bridge throughput |
+| `hls_cost` | TsMuxer + segment + HlsStore push per profile |
+| `matrix_throughput` | full pipeline matrix (mux → ring → egress) |
+| `srt_ingest_latency` | SRT receive-to-ring latency |
+| `transcoder_throughput` | FFmpeg demux → RingBuffer push |
+| `simd_alternatives` | SIMD vs portable byte-search and memcpy |
+| `high_performance_data_path` | end-to-end data path micro-benchmarks |
+
+### Testing
 
 Run the full Rust suite:
 
@@ -162,23 +158,105 @@ As of June 22, 2026 this runs 132 passing tests:
 - 12 database integration tests
 - 4 transcoder integration tests
 
-Run the 2-pipeline × 3-output live test against a running application:
+**Live integration tests** require isolated network (ports 3030/1935/10080 must
+be free):
 
 ```sh
-./test/run-2x3.sh
+# Lightweight: Linux network namespace
+unshare --net --map-root-user bash -c '
+  ip link set lo up
+  ./target/release/restream &
+  until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
+  ./test/run-2x3.sh
+'
+
+# Alternative: Docker
+docker run --rm -v "$(pwd)":/app -w /app rust:1-bookworm bash -c '
+  apt-get update -qq && apt-get install -y -qq ffmpeg jq libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev pkg-config clang > /dev/null 2>&1
+  cargo build --release
+  ./target/release/restream &
+  until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
+  ./test/run-2x3.sh
+'
 ```
 
-Required tools: `ffmpeg`, `curl`, and `jq`. MediaMTX is not required by the
-script itself; output targets in the selected manifest must be reachable.
-Output-health association is covered by API regression tests.
-
-For the broader media/scale harness:
-
-```sh
-./test/run-media-validation.sh
-```
+For the broader media/scale harness: `./test/run-media-validation.sh`
 
 Detailed correctness and scale gates are in [Testing](docs/testing.md).
+
+### Static Release Build
+
+`setup-static-build.sh` builds the following from pinned sources into a local
+prefix (`.build/static/prefix/`). These are **not** taken from the OS:
+
+| Library | Pinned version | Why built from source |
+|---|---|---|
+| **FFmpeg** | n6.1.5 | `--enable-x86asm` — runtime-dispatched SSE/AVX codec paths in H.264/H.265 decode and encode |
+| **x264** | b35605ac | Matches FFmpeg's `--enable-libx264`; static PIC build |
+| **libsrt** | v1.5.5 | `ENABLE_BONDING=ON` — OS packages typically ship bonding as disabled stubs |
+
+**FFmpeg components compiled in:**
+
+| Component | Status | Used for |
+|---|---|---|
+| `mpegts` demuxer | Active | `CustomInput` AVIO probe — transcoder input |
+| `matroska`, `mov` demuxers | Planned | In-process file ingest (`.mkv`/`.mp4`/`.mov` sources) |
+| `mpegts`, `matroska` muxers | Active / Planned | `CustomOutput`; recording MKV (recording currently writes raw bytes — FFmpeg muxer not yet called) |
+| `h264`, `hevc`, `aac`, `mp3`, `ac3`, `eac3` decoders | Active / Planned | Stream info via `avformat_find_stream_info`; decode loop (transcoder, not yet implemented) |
+| `libx264`, `aac` encoders | Planned | Transcoder H.264 encode + audio re-encode for remap/downmix (not yet implemented) |
+| `h264`, `hevc`, `aac`, `ac3` parsers | Active | Required by `avformat_find_stream_info` |
+| `h264_mp4toannexb`, `hevc_mp4toannexb`, `aac_adtstoasc` BSFs | Active | Header conversion in `codec.rs` |
+| `pipe` protocol | Active | AVIO callback bridge for `MemoryQueue` |
+| `scale`, `crop`, `transpose` filters | Planned | Resolution change (720p/1080p/2160p); vertical/rotate |
+| `format`, `aformat` filters | Planned | Pixel/sample format negotiation before encoder |
+| `aresample`, `pan` filters | Planned | `AudioRouting::Downmix`, `AudioRouting::Remap` |
+| `swscale`, `swresample` | Planned | Used by scale and aresample filters |
+| `avfilter` | Planned | Filter graph for transcoder |
+
+The following come from the **OS** and are not compiled by the script:
+
+| Dependency | Why OS-provided |
+|---|---|
+| **OpenSSL** (`libssl`, `libcrypto`) | libsrt uses it for encryption; OS version is sufficient |
+| **clang / cc, nasm, cmake, ninja, perl, python3** | Build toolchain only |
+
+Build steps:
+
+```sh
+./scripts/setup-static-build.sh   # compile native deps (content-addressed, reuses cache)
+./scripts/test-srt-bonding.sh     # verify broadcast + backup failover
+./scripts/build-static.sh         # fat-LTO static binary → .build/static/cargo-target/release/restream
+```
+
+Force a full native rebuild: `RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh`
+
+For faster iteration, use thin LTO: `RESTREAM_BUILD_PROFILE=fast-release ./scripts/build-static.sh`
+(output: `.build/static/cargo-target/fast-release/restream`)
+
+The build script verifies the binary has no dynamic loader dependency, probes
+the required H.264/H.265 and audio codec set, and asserts that FFmpeg's x86
+assembly paths are active (2× faster transcoding vs no-asm build). Because
+this build enables x264, redistribution must comply with GPL.
+
+### Runtime
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `3030` | TCP/HTTP | Dashboard and API |
+| `1935` | TCP/RTMP | RTMP ingest and play |
+| `10080` | UDP/SRT | SRT ingest and read |
+
+Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT`.
+
+| Path | Purpose |
+|---|---|
+| `data.db` | SQLite database |
+| `media/` | File-ingest sources and `.mkv` recordings |
+| `public/js/` | Generated frontend JavaScript |
+| `public/output.css` | Generated frontend CSS |
+
+The first-run dashboard password is `admin`. Change it immediately through the
+Settings page or `POST /api/auth/change-password`.
 
 ## Operational APIs
 

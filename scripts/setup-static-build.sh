@@ -201,14 +201,14 @@ FFMPEG_FINGERPRINT="$(
             --enable-avfilter \
             --enable-swscale \
             --enable-swresample \
-            --enable-protocol=file,pipe \
-            --enable-demuxer=mpegts,flv,matroska,mov,aac,h264,hevc \
-            --enable-muxer=mpegts,matroska,flv \
+            --enable-protocol=pipe \
+            --enable-demuxer=mpegts,matroska,mov \
+            --enable-muxer=mpegts,matroska \
             --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-            --enable-encoder=aac,ac3,libx264 \
-            --enable-parser=h264,hevc,aac,ac3,mpegaudio \
+            --enable-encoder=aac,libx264 \
+            --enable-parser=h264,hevc,aac,ac3 \
             --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
-            --enable-filter=scale,crop,transpose,format,aformat,aresample,pan,volume,null,anull
+            --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
     } | fingerprint
 )"
 FFMPEG_STAMP="$STAMPS/ffmpeg"
@@ -235,14 +235,14 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-avfilter \
         --enable-swscale \
         --enable-swresample \
-        --enable-protocol=file,pipe \
-        --enable-demuxer=mpegts,flv,matroska,mov,aac,h264,hevc \
-        --enable-muxer=mpegts,matroska,flv \
+        --enable-protocol=pipe \
+        --enable-demuxer=mpegts,matroska,mov \
+        --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-        --enable-encoder=aac,ac3,libx264 \
-        --enable-parser=h264,hevc,aac,ac3,mpegaudio \
+        --enable-encoder=aac,libx264 \
+        --enable-parser=h264,hevc,aac,ac3 \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
-        --enable-filter=scale,crop,transpose,format,aformat,aresample,pan,volume,null,anull
+        --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
 
     if ! grep -q '^#define HAVE_X86ASM 1$' config.h; then
         echo "FFmpeg configured without standalone x86 assembly" >&2

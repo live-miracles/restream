@@ -183,7 +183,7 @@ function renderStatsColumn(selectedPipe: string | null): void {
             let videoFps = '--';
             let outTracks: AudioTrack[] = [];
 
-            if (isActive && o.encoding === 'source') {
+            if (isActive) {
                 const video = p.input.video || {};
                 videoCodec = formatCodecName(video.codec) || '--';
                 videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';

@@ -2,30 +2,12 @@
 
 ## Build & Test Commands
 Standard cargo commands (`cargo build`, `cargo test`, `cargo fmt`, `cargo clippy`) work as expected.
-- **Frontend Compile**: `npx tsc -p tsconfig.frontend.json` (Always edit `public/ts/` - never the generated `public/js/`).
+- **Frontend Compile**: `npx tsc -p tsconfig.frontend.json` (Always edit `public/ts/` — never the generated `public/js/`).
 - **Tailwind Build**: `npx tailwindcss -i public/input.css -o public/output.css`
-- **Integration Tests**: `./test/run-2x3.sh` (Requires isolated network namespace to avoid port conflicts).
-  - *Docker alternative*:
-    ```sh
-    docker run --rm \
-      -v "$(pwd)":/app -w /app \
-      rust:1-bookworm bash -c '
-        apt-get update -qq && apt-get install -y -qq ffmpeg jq libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev pkg-config clang > /dev/null 2>&1
-        cargo build --release
-        ./target/release/restream &
-        until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-        ./test/run-2x3.sh
-      '
-    ```
-  - *Linux Unshare (lighter)*:
-    ```sh
-    unshare --net --map-root-user bash -c '
-      ip link set lo up
-      ./target/release/restream &
-      until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-      ./test/run-2x3.sh
-    '
-    ```
+- **Benchmarks**: `cargo bench --bench <name>` (run before and after any hotpath change).
+- **Integration Tests**: `./test/run-2x3.sh` (requires isolated network namespace to avoid port conflicts).
+
+See [README.md § Development](README.md#development) for full dev setup, prerequisites, inner loop, and benchmark suite reference.
 
 ## Key Constraints
 - **Ports**: Defaults are HTTP=3030, RTMP=1935, SRT=10080. Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT` env vars.
