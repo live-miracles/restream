@@ -1054,6 +1054,151 @@ async fn handle_session_results(
     Ok(())
 }
 
+/// H.265 → H.264 transcoder for RTMP egress.
+///
+/// Reads H.265 MPEG-TS from `in_queue`, decodes with FFmpeg's HEVC decoder,
+/// re-encodes to H.264 Annex B, and sends `(annexb, is_keyframe, pts_ms)` via
+/// `out_tx`. Runs on a dedicated OS thread (FFmpeg codec calls block).
+fn run_hevc_to_h264_transcoder(
+    in_queue: Arc<crate::media::avio::MemoryQueue>,
+    out_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, bool, i64)>,
+    cancel: CancellationToken,
+) {
+    use crate::media::avio::CustomInput;
+    use ffmpeg_next::{codec, format::Pixel, frame, software};
+
+    let mut custom = match CustomInput::new(&*in_queue) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[rtmp-h265-tc] custom input failed: {e}"); return; }
+    };
+    let ictx = match custom.input.as_mut() {
+        Some(i) => i,
+        None => return,
+    };
+
+    let video_idx = match ictx.streams()
+        .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video)
+        .map(|s| s.index())
+    {
+        Some(i) => i,
+        None => { eprintln!("[rtmp-h265-tc] no video stream found"); return; }
+    };
+
+    let dec_params = ictx.stream(video_idx).unwrap().parameters();
+    let dec_ctx = match codec::Context::from_parameters(dec_params) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[rtmp-h265-tc] decoder context: {e}"); return; }
+    };
+    let mut decoder = match dec_ctx.decoder().video() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("[rtmp-h265-tc] decoder open: {e}"); return; }
+    };
+
+    let enc_codec = match codec::encoder::find(codec::Id::H264) {
+        Some(c) => c,
+        None => { eprintln!("[rtmp-h265-tc] no H.264 encoder found"); return; }
+    };
+
+    // Encoder and scaler are initialized lazily on the first decoded frame
+    // so we know width/height/pixel format from the decoder.
+    let mut encoder: Option<codec::encoder::video::Encoder> = None;
+    let mut scaler: Option<software::scaling::Context> = None;
+    let mut enc_frame = frame::Video::empty();
+    let mut enc_pkt = ffmpeg_next::Packet::empty();
+    let mut pts_counter: i64 = 0;  // frame counter (increments by 1 per frame)
+    let mut fps_den_stored: i64 = 1;
+    let mut fps_num_stored: i64 = 30; // updated after encoder opens
+
+    for (stream, pkt) in ictx.packets() {
+        if cancel.is_cancelled() { break; }
+        if stream.index() != video_idx { continue; }
+
+        if decoder.send_packet(&pkt).is_err() { continue; }
+
+        let mut dec_frame = frame::Video::empty();
+        while decoder.receive_frame(&mut dec_frame).is_ok() {
+            // Lazy encoder + scaler init on first decoded frame
+            if encoder.is_none() {
+                let width  = decoder.width();
+                let height = decoder.height();
+                let in_fmt = dec_frame.format();
+
+                let sw = match software::scaling::Context::get(
+                    in_fmt, width, height,
+                    Pixel::YUV420P, width, height,
+                    software::scaling::Flags::BILINEAR,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("[rtmp-h265-tc] scaler: {e}"); return; }
+                };
+
+                // Derive frame rate before opening the encoder (x264 requires it)
+                let fr = stream.avg_frame_rate();
+                let (fps_num, fps_den) = if fr.numerator() > 0 && fr.denominator() > 0 {
+                    (fr.numerator(), fr.denominator())
+                } else {
+                    (30, 1) // fallback 30fps
+                };
+                fps_num_stored = fps_num as i64;
+                fps_den_stored = fps_den as i64;
+
+                let enc_ctx = codec::Context::new();
+                let mut enc_video = match enc_ctx.encoder().video() {
+                    Ok(e) => e,
+                    Err(e) => { eprintln!("[rtmp-h265-tc] encoder ctx: {e}"); return; }
+                };
+                enc_video.set_width(width);
+                enc_video.set_height(height);
+                enc_video.set_format(Pixel::YUV420P);
+                // time_base = 1/fps so x264 derives a sensible frame rate
+                enc_video.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
+                enc_video.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
+                enc_video.set_bit_rate(2_500_000);
+                enc_video.set_gop(60);
+
+                let mut opts = ffmpeg_next::Dictionary::new();
+                opts.set("preset", "ultrafast");
+                opts.set("tune",   "zerolatency");
+
+                let opened = match enc_video.open_as_with(enc_codec, opts) {
+                    Ok(e) => e,
+                    Err(e) => { eprintln!("[rtmp-h265-tc] encoder open: {e}"); return; }
+                };
+
+                scaler  = Some(sw);
+                encoder = Some(opened);
+            }
+
+            let enc = encoder.as_mut().unwrap();
+            let sw  = scaler.as_mut().unwrap();
+
+            if sw.run(&dec_frame, &mut enc_frame).is_err() { continue; }
+            enc_frame.set_pts(Some(pts_counter));
+            pts_counter += 1;
+
+            if enc.send_frame(&enc_frame).is_err() { continue; }
+            while enc.receive_packet(&mut enc_pkt).is_ok() {
+                let data   = enc_pkt.data().unwrap_or(&[]).to_vec();
+                let is_key = enc_pkt.is_key();
+                // pts in frame units → ms: frame * fps_den * 1000 / fps_num
+                let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den_stored * 1000 / fps_num_stored;
+                if out_tx.send((data, is_key, pts_ms)).is_err() { return; }
+            }
+        }
+    }
+
+    // Flush remaining encoder output
+    if let Some(enc) = encoder.as_mut() {
+        let _ = enc.send_eof();
+        while enc.receive_packet(&mut enc_pkt).is_ok() {
+            let data   = enc_pkt.data().unwrap_or(&[]).to_vec();
+            let is_key = enc_pkt.is_key();
+            let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den_stored * 1000 / fps_num_stored;
+            let _ = out_tx.send((data, is_key, pts_ms));
+        }
+    }
+}
+
 /// RTMP Egress Client
 pub async fn start_rtmp_egress(
     output_id: String,
@@ -1183,6 +1328,60 @@ pub async fn start_rtmp_egress(
         egresses.get(&output_id).map(|e| e.bytes_sent.clone())
     };
 
+    // Detect H.265 ingest — standard RTMP only carries H.264, so we transcode
+    // H.265 → H.264 on a dedicated OS thread using FFmpeg decode+encode.
+    let is_h265 = {
+        let ingests = engine.active_ingests.read().await;
+        ingests
+            .get(&pipeline_id)
+            .and_then(|i| i.video.as_ref())
+            .map(|v| v.codec == "hevc")
+            .unwrap_or(false)
+    };
+
+    // H.265 transcoder infrastructure (only active when is_h265).
+    // We mux H.265 ring-buffer packets into a MemoryQueue as MPEG-TS so that
+    // the FFmpeg-based transcoder can demux, decode, re-encode, and return
+    // H.264 Annex B packets via a tokio channel.
+    let h265_in_queue: Option<Arc<crate::media::avio::MemoryQueue>>;
+    let mut h264_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, bool, i64)>>;
+    let mut h265_ts_muxer: Option<crate::media::mpegts::TsMuxer>;
+    let mut h265_dts_enforcer: Option<crate::media::ring_buffer::DtsEnforcer>;
+    let mut h264_seq_sent = false;
+    let mut h265_nalu_len = 4usize;
+    let mut h265_sps_cache: Vec<u8> = Vec::new();
+
+    if is_h265 {
+        println!("[rtmp-egress] H.265 source on pipeline {pipeline_id}: transcoding to H.264 for RTMP");
+        let iq = Arc::new(crate::media::avio::MemoryQueue::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, bool, i64)>();
+        let iq_clone = iq.clone();
+        let cancel_clone = cancel_token.clone();
+        std::thread::spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_hevc_to_h264_transcoder(iq_clone, tx, cancel_clone);
+            }));
+        });
+
+        // Build a video-only TsMuxer for the H.265 input stream
+        let video_meta = {
+            let ingests = engine.active_ingests.read().await;
+            ingests.get(&pipeline_id).and_then(|i| i.video.clone())
+        };
+        let mux = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &[]);
+        let dts = crate::media::ring_buffer::DtsEnforcer::new(1);
+
+        h265_in_queue    = Some(iq);
+        h264_rx          = Some(rx);
+        h265_ts_muxer    = Some(mux);
+        h265_dts_enforcer = Some(dts);
+    } else {
+        h265_in_queue    = None;
+        h264_rx          = None;
+        h265_ts_muxer    = None;
+        h265_dts_enforcer = None;
+    }
+
     let mut is_publishing = false;
     let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
     let mut raw_seq_header_sent = false;
@@ -1219,7 +1418,9 @@ pub async fn start_rtmp_egress(
                                 }
                                 ClientSessionEvent::PublishRequestAccepted => {
                                     println!("[rtmp-egress] Stream publishing accepted on target");
-                                    // Send cached sequence headers before media data
+                                    // Send cached sequence headers before media data.
+                                    // For H.265 ingests, video_sh is None (only RTMP ingest
+                                    // caches FLV seq headers), so this is a no-op for H.265.
                                     let (video_sh, mut audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
                                     if let Some(vsh) = video_sh {
                                         if let Ok(ClientSessionResult::OutboundResponse(p)) =
@@ -1266,6 +1467,31 @@ pub async fn start_rtmp_egress(
                 let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for packet in packets {
+                        // H.265 video: mux to MPEG-TS and hand off to the transcoder thread.
+                        // The resulting H.264 packets arrive on the h264_rx branch below.
+                        if is_h265 && packet.media_type == MediaType::Video {
+                            if let (Some(mux), Some(dts), Some(iq)) = (
+                                &mut h265_ts_muxer,
+                                &mut h265_dts_enforcer,
+                                &h265_in_queue,
+                            ) {
+                                if let Some(payload) = crate::media::codec::video_for_ts(
+                                    &packet.payload,
+                                    packet.format,
+                                    &mut h265_nalu_len,
+                                    &mut h265_sps_cache,
+                                ) {
+                                    let (pts, dts_val) = dts.enforce(0, packet.pts, packet.dts);
+                                    let ts_bytes = mux.mux_packet(
+                                        crate::media::ring_buffer::MediaType::Video,
+                                        0, pts, dts_val, packet.is_keyframe, &payload,
+                                    );
+                                    iq.write(&ts_bytes);
+                                }
+                            }
+                            continue;
+                        }
+
                         let ts = match packet.media_type {
                             MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
                             MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
@@ -1318,7 +1544,45 @@ pub async fn start_rtmp_egress(
                     }
                 }
             }
+            // H.264 packets from the HEVC→H.264 transcoder (only active for H.265 ingests)
+            h264_res = async {
+                match h264_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None     => std::future::pending().await,
+                }
+            }, if is_publishing => {
+                if let Some((h264_data, is_kf, pts_ms)) = h264_res {
+                    // Send FLV sequence header before the first H.264 IDR frame
+                    if is_kf && !h264_seq_sent {
+                        if let Some(seq_hdr) = codec::build_avcc_sequence_header(&h264_data) {
+                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                session.publish_video_data(seq_hdr, RtmpTimestamp::new(0), true)
+                            {
+                                if socket.write_all(&p.bytes).await.is_err() { return; }
+                            }
+                            h264_seq_sent = true;
+                        }
+                    }
+                    if h264_seq_sent {
+                        if let Some(flv) = codec::video_for_rtmp(&h264_data, is_kf) {
+                            let ts = RtmpTimestamp::new(pts_ms.max(0) as u32);
+                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                session.publish_video_data(Bytes::from(flv), ts, is_kf)
+                            {
+                                if socket.write_all(&p.bytes).await.is_err() { return; }
+                                if let Some(ref counter) = egress_bytes_sent {
+                                    counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+    // Drain the H.265 transcoder queue so its thread can exit cleanly
+    if let Some(iq) = &h265_in_queue {
+        iq.close();
     }
 }
 
