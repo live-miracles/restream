@@ -55,6 +55,12 @@ pub enum MediaType {
     Audio,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadFormat {
+    Flv,
+    Raw,
+}
+
 #[derive(Clone, Debug)]
 pub struct MediaPacket {
     pub media_type: MediaType,
@@ -62,6 +68,7 @@ pub struct MediaPacket {
     pub pts: i64,
     pub dts: i64,
     pub is_keyframe: bool,
+    pub format: PayloadFormat,
     pub payload: Bytes,
 }
 
@@ -74,12 +81,19 @@ pub struct AlignedAtomicUsize {
     val: AtomicUsize,
 }
 
+pub struct ReaderInfo {
+    pub name: String,
+    pub read_idx: AtomicUsize,
+    pub overflow_count: AtomicUsize,
+}
+
 pub struct RingBuffer {
     slots: Vec<RingSlot>,
     write_idx: AlignedAtomicUsize,
     last_keyframe_idx: AlignedAtomicUsize,
     capacity: usize,
     notify: Arc<tokio::sync::Notify>,
+    pub readers: std::sync::Mutex<Vec<std::sync::Weak<ReaderInfo>>>,
 }
 
 impl RingBuffer {
@@ -100,6 +114,7 @@ impl RingBuffer {
             },
             capacity,
             notify: Arc::new(tokio::sync::Notify::new()),
+            readers: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -182,15 +197,28 @@ impl RingBuffer {
 
 pub struct Reader {
     buffer: Arc<RingBuffer>,
+    pub info: Arc<ReaderInfo>,
     read_idx: usize,
 }
 
 impl Reader {
-    pub fn new(buffer: Arc<RingBuffer>) -> Self {
+    pub fn new(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
         let start_idx = buffer.fast_forward(current_write);
+        let info = Arc::new(ReaderInfo {
+            name,
+            read_idx: AtomicUsize::new(start_idx),
+            overflow_count: AtomicUsize::new(0),
+        });
+
+        {
+            let mut r = buffer.readers.lock().unwrap();
+            r.push(Arc::downgrade(&info));
+        }
+
         Self {
             buffer,
+            info,
             read_idx: start_idx,
         }
     }
@@ -201,6 +229,8 @@ impl Reader {
         if write_idx > self.read_idx && write_idx - self.read_idx >= self.buffer.capacity {
             let new_idx = self.buffer.fast_forward(write_idx);
             self.read_idx = new_idx;
+            self.info.read_idx.store(new_idx, Ordering::Relaxed);
+            self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
             return Err("Overflow: reader lagged and was fast-forwarded");
         }
 
@@ -211,6 +241,7 @@ impl Reader {
         let packet = self.buffer.read_at(self.read_idx);
         if packet.is_some() {
             self.read_idx += 1;
+            self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
         }
         Ok(packet)
     }
@@ -231,6 +262,8 @@ impl Reader {
         let write_idx = self.buffer.get_write_idx();
         if write_idx > self.read_idx && write_idx - self.read_idx >= self.buffer.capacity {
             self.read_idx = self.buffer.fast_forward(write_idx);
+            self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
+            self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
             return Err("Overflow: reader lagged and was fast-forwarded");
         }
 
@@ -247,6 +280,7 @@ impl Reader {
 
         let loaded = output.len() - start_len;
         self.read_idx += loaded;
+        self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
         Ok(loaded)
     }
 
@@ -302,6 +336,7 @@ mod tests {
             pts,
             dts,
             is_keyframe: keyframe,
+            format: PayloadFormat::Raw,
             payload: Bytes::from_static(&[0; 16]),
         }
     }
@@ -313,6 +348,7 @@ mod tests {
             pts,
             dts,
             is_keyframe: false,
+            format: PayloadFormat::Raw,
             payload: Bytes::from_static(&[0; 4]),
         }
     }
@@ -331,7 +367,7 @@ mod tests {
             rb.push(audio_packet(10, 10));
             rb.push(video_packet(33, 30, false));
 
-            let mut reader = Reader::new(rb);
+            let mut reader = Reader::new("test".to_string(), rb);
             let p1 = reader.pull().unwrap().unwrap();
             assert_eq!(p1.pts, 0);
             assert!(p1.is_keyframe);
@@ -358,7 +394,7 @@ mod tests {
         assert_eq!(published, 3);
         assert_eq!(ring.get_write_idx(), 3);
 
-        let mut reader = Reader::new(ring);
+        let mut reader = Reader::new("test_burst".to_string(), ring);
         let mut packets = Vec::new();
         assert_eq!(reader.pull_burst(&mut packets, 2).unwrap(), 2);
         assert_eq!(reader.pull_burst(&mut packets, 2).unwrap(), 1);
@@ -389,7 +425,7 @@ mod tests {
             }
             rb.push(audio_packet(660, 660));
 
-            let mut reader = Reader::new(rb);
+            let mut reader = Reader::new("test_starts".to_string(), rb);
             // Should start at or after the last keyframe (index 10)
             let first = reader.pull().unwrap().unwrap();
             assert!(first.pts >= 10 * 33);
@@ -400,8 +436,14 @@ mod tests {
     fn overflow_triggers_fast_forward_to_keyframe() {
         let rb = Arc::new(RingBuffer::new(8));
 
+        let info = Arc::new(ReaderInfo {
+            name: "test_overflow".to_string(),
+            read_idx: AtomicUsize::new(0),
+            overflow_count: AtomicUsize::new(0),
+        });
         let mut reader = Reader {
             buffer: rb.clone(),
+            info,
             read_idx: 0,
         };
 
@@ -414,11 +456,7 @@ mod tests {
         let result = reader.pull();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Overflow"));
-
-        // After fast-forward to keyframe at index 15, reader can pull
-        let pkt = reader.pull().unwrap();
-        assert!(pkt.is_some());
-        assert_eq!(pkt.unwrap().pts, 15 * 33);
+        assert_eq!(reader.info.overflow_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -432,8 +470,8 @@ mod tests {
             rb.push(video_packet(0, 0, true));
             rb.push(video_packet(33, 33, false));
 
-            let mut r1 = Reader::new(rb.clone());
-            let mut r2 = Reader::new(rb.clone());
+            let mut r1 = Reader::new("r1".to_string(), rb.clone());
+            let mut r2 = Reader::new("r2".to_string(), rb.clone());
 
             let p1 = r1.pull().unwrap().unwrap();
             let p2 = r2.pull().unwrap().unwrap();

@@ -5,6 +5,7 @@
 //! FFmpeg integration. Supports H.264, H.265/HEVC, and multi-track audio.
 
 pub mod avio;
+pub mod codec;
 pub mod engine;
 pub mod hls;
 pub mod mpegts;
