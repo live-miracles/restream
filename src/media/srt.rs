@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::MediaEngine;
 use crate::media::engine::{AudioMeta, PublisherQuality, VideoMeta};
-use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 
 // Raw SRT Types & FFI Bindings
 pub type SRTSOCKET = c_int;
@@ -753,6 +753,7 @@ fn parse_srt_stream_id(streamid: &str) -> ParsedStreamId {
     ParsedStreamId { mode, stream_key }
 }
 
+#[cfg(test)]
 fn video_codec_id(codec: &str) -> Option<ffmpeg_next::ffi::AVCodecID> {
     match codec {
         "h264" | "avc" => Some(ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_H264),
@@ -761,6 +762,7 @@ fn video_codec_id(codec: &str) -> Option<ffmpeg_next::ffi::AVCodecID> {
     }
 }
 
+#[cfg(test)]
 fn audio_codec_id(codec: &str) -> Option<ffmpeg_next::ffi::AVCodecID> {
     match codec {
         "aac" => Some(ffmpeg_next::ffi::AVCodecID::AV_CODEC_ID_AAC),
@@ -1146,6 +1148,11 @@ impl SrtServer {
             // Feed into demuxer and push completed packets to ring buffer
             demuxer.feed(&buf[..n as usize]);
             if demuxer.drain_into(&mut packets) > 0 {
+                for pkt in &packets {
+                    if pkt.media_type == crate::media::ring_buffer::MediaType::Video && pkt.is_keyframe {
+                        self.engine.record_keyframe(&pipeline.id, pkt.pts).await;
+                    }
+                }
                 ring_buffer.push_batch(packets.drain(..));
             }
 
@@ -1232,13 +1239,11 @@ impl SrtServer {
         }
 
         let ring_buf = self.engine.get_or_create_pipeline(pipeline_id).await;
-        let mut reader = Reader::new(ring_buf);
+        let mut reader = Reader::new(format!("srt_play:{}", pipeline_id), ring_buf);
 
-        // Use MemoryQueue + FFmpeg to mux MediaPackets back to MPEG-TS
         let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
-        let out_queue_reader = out_queue.clone();
 
-        let (video_meta, audio_tracks, flv_payloads) = {
+        let (video_meta, audio_tracks) = {
             let ingests = self.engine.active_ingests.read().await;
             match ingests.get(pipeline_id) {
                 Some(i) => {
@@ -1248,11 +1253,7 @@ impl SrtServer {
                             audio_tracks.push(audio);
                         }
                     }
-                    (
-                        i.video.clone(),
-                        audio_tracks,
-                        matches!(i.protocol.as_str(), "rtmp" | "file"),
-                    )
+                    (i.video.clone(), audio_tracks)
                 }
                 None => {
                     eprintln!("[srt] No active ingest for play: {}", pipeline_id);
@@ -1263,40 +1264,9 @@ impl SrtServer {
                 }
             }
         };
-        let (video_sh, audio_sh) = self.engine.get_sequence_headers(pipeline_id).await;
-
-        // 256 slots of Arc refs (~1.5s at 4K60). Backpressure stalls the feeder
-        // if the muxer can't keep up, which is preferable to unbounded growth.
-        let (pkt_tx, pkt_rx) = std::sync::mpsc::sync_channel::<Arc<MediaPacket>>(256);
-        let out_queue_mux = out_queue.clone();
-
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_play_muxer(
-                    out_queue_mux.clone(),
-                    pkt_rx,
-                    video_meta,
-                    audio_tracks,
-                    flv_payloads,
-                    video_sh,
-                    audio_sh,
-                )
-            }));
-            match result {
-                Ok(Err(e)) => {
-                    eprintln!("[srt] Play muxer failed: {}", e);
-                    out_queue_mux.close();
-                }
-                Err(_) => {
-                    eprintln!("[srt] Play muxer panicked");
-                    out_queue_mux.close();
-                }
-                _ => {}
-            }
-        });
 
         // Sender thread: reads MPEG-TS from out_queue, sends via SRT
-        let out_queue_send = out_queue_reader;
+        let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 1316];
@@ -1319,16 +1289,62 @@ impl SrtServer {
             }
         });
 
-        // Feed loop: read from RingBuffer, send to muxer
+        // Feed loop: read from RingBuffer, mux inline, write to sender queue
+        let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
+        let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
+        let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+        let mut nalu_len_size: usize = 4;
+
         loop {
             match reader.pull() {
                 Ok(Some(pkt)) => {
-                    if pkt_tx.send(pkt).is_err() {
-                        break;
+                    let payload = match pkt.media_type {
+                        MediaType::Video => {
+                            match crate::media::codec::video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                Some(p) => p,
+                                None => continue,
+                            }
+                        }
+                        MediaType::Audio => {
+                            let track = audio_tracks.iter()
+                                .find(|a| a.track_index == pkt.track_index)
+                                .or(audio_tracks.first());
+                            let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                            match crate::media::codec::audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                Some(p) => p,
+                                None => continue,
+                            }
+                        }
+                    };
+
+                    let stream_idx = match pkt.media_type {
+                        MediaType::Video => 0,
+                        MediaType::Audio => {
+                            let video_offset = video_meta.is_some() as usize;
+                            audio_tracks
+                                .iter()
+                                .position(|a| a.track_index == pkt.track_index)
+                                .map(|i| i + video_offset)
+                                .unwrap_or(0)
+                        }
+                    };
+
+                    let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+
+                    let ts_bytes = muxer.mux_packet(
+                        pkt.media_type,
+                        pkt.track_index,
+                        pts,
+                        dts,
+                        pkt.is_keyframe,
+                        &payload,
+                    );
+
+                    if !ts_bytes.is_empty() {
+                        out_queue.write(ts_bytes);
                     }
                 }
                 Ok(None) => {
-                    // Check if ingest is still active
                     if !self
                         .engine
                         .active_ingests
@@ -1346,139 +1362,11 @@ impl SrtServer {
             }
         }
 
-        drop(pkt_tx);
-        // Muxer thread owns closing out_queue after write_trailer
+        out_queue.close();
     }
 }
 
-fn run_play_muxer(
-    out_queue: Arc<crate::media::avio::MemoryQueue>,
-    pkt_rx: std::sync::mpsc::Receiver<Arc<MediaPacket>>,
-    video_meta: Option<VideoMeta>,
-    audio_tracks: Vec<AudioMeta>,
-    flv_payloads: bool,
-    video_seq_header: Option<Bytes>,
-    audio_seq_header: Option<Bytes>,
-) -> Result<(), String> {
-    use crate::media::avio::CustomOutput;
-
-    let mut custom_output = CustomOutput::new(&*out_queue, "mpegts").map_err(|e| e.to_string())?;
-    let octx = custom_output
-        .output
-        .as_mut()
-        .ok_or("Failed to get output context")?;
-
-    let mut video_stream_idx = None;
-    let mut audio_stream_indices = Vec::new();
-
-    if let Some(video) = &video_meta {
-        let codec_id = video_codec_id(&video.codec)
-            .ok_or_else(|| format!("Unsupported video codec for MPEG-TS: {}", video.codec))?;
-        let mut stream = octx
-            .add_stream(None)
-            .map_err(|_| "Failed to add video stream")?;
-        unsafe {
-            let par = (*stream.as_mut_ptr()).codecpar;
-            (*par).codec_type = ffmpeg_next::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
-            (*par).codec_id = codec_id;
-            (*par).width = video.width as i32;
-            (*par).height = video.height as i32;
-            (*stream.as_mut_ptr()).time_base = ffmpeg_next::ffi::AVRational { num: 1, den: 1000 };
-            // Set extradata from FLV video sequence header (AVCDecoderConfigurationRecord)
-            if let Some(ref vsh) = video_seq_header {
-                if vsh.len() > 5 {
-                    let extradata = &vsh[5..]; // skip FLV header (frame_type|codec + avc_type + 3-byte CTS)
-                    let buf = ffmpeg_next::ffi::av_malloc(extradata.len()) as *mut u8;
-                    if !buf.is_null() {
-                        std::ptr::copy_nonoverlapping(extradata.as_ptr(), buf, extradata.len());
-                        (*par).extradata = buf;
-                        (*par).extradata_size = extradata.len() as c_int;
-                    }
-                }
-            }
-        }
-        video_stream_idx = Some(stream.index());
-    }
-
-    for audio in &audio_tracks {
-        let codec_id = audio_codec_id(&audio.codec)
-            .ok_or_else(|| format!("Unsupported audio codec for MPEG-TS: {}", audio.codec))?;
-        let mut stream = octx
-            .add_stream(None)
-            .map_err(|_| "Failed to add audio stream")?;
-        unsafe {
-            let par = (*stream.as_mut_ptr()).codecpar;
-            (*par).codec_type = ffmpeg_next::ffi::AVMediaType::AVMEDIA_TYPE_AUDIO;
-            (*par).codec_id = codec_id;
-            (*par).sample_rate = audio.sample_rate as i32;
-            (*par).ch_layout.nb_channels = audio.channels as i32;
-            (*stream.as_mut_ptr()).time_base = ffmpeg_next::ffi::AVRational { num: 1, den: 1000 };
-            // Set extradata from FLV audio sequence header (AudioSpecificConfig)
-            if audio.track_index == 0 {
-                if let Some(ref ash) = audio_seq_header {
-                    if ash.len() > 2 {
-                        let extradata = &ash[2..]; // skip FLV header (sound_format|etc + aac_type)
-                        let buf = ffmpeg_next::ffi::av_malloc(extradata.len()) as *mut u8;
-                        if !buf.is_null() {
-                            std::ptr::copy_nonoverlapping(extradata.as_ptr(), buf, extradata.len());
-                            (*par).extradata = buf;
-                            (*par).extradata_size = extradata.len() as c_int;
-                        }
-                    }
-                }
-            }
-        }
-        audio_stream_indices.push((audio.track_index, stream.index()));
-    }
-
-    octx.write_header()
-        .map_err(|e| format!("Write header: {}", e))?;
-
-    let num_streams = octx.nb_streams() as usize;
-    let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
-
-    while let Ok(pkt) = pkt_rx.recv() {
-        let (stream_idx, payload) = match pkt.media_type {
-            MediaType::Video => match video_stream_idx {
-                Some(i) => match video_payload_for_mux(&pkt.payload, flv_payloads) {
-                    Some(payload) => (i, payload),
-                    None => continue,
-                },
-                None => continue,
-            },
-            MediaType::Audio => match audio_stream_indices
-                .iter()
-                .find(|(track_index, _)| *track_index == pkt.track_index)
-                .map(|(_, stream_index)| *stream_index)
-            {
-                Some(i) => match audio_payload_for_mux(&pkt.payload, flv_payloads) {
-                    Some(payload) => (i, payload),
-                    None => continue,
-                },
-                None => continue,
-            },
-        };
-
-        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
-
-        let mut av_pkt = ffmpeg_next::Packet::copy(payload);
-        av_pkt.set_stream(stream_idx);
-        av_pkt.set_pts(Some(pts));
-        av_pkt.set_dts(Some(dts));
-        if pkt.is_keyframe {
-            av_pkt.set_flags(ffmpeg_next::codec::packet::flag::Flags::KEY);
-        }
-
-        let _ = av_pkt.write_interleaved(octx);
-    }
-
-    octx.write_trailer()
-        .map_err(|e| format!("Write trailer: {}", e))?;
-    out_queue.close();
-    Ok(())
-}
-
-fn video_payload_for_mux(payload: &[u8], flv_payloads: bool) -> Option<&[u8]> {
+pub fn video_payload_for_mux(payload: &[u8], flv_payloads: bool) -> Option<&[u8]> {
     if !flv_payloads {
         return (!payload.is_empty()).then_some(payload);
     }
@@ -1493,7 +1381,7 @@ fn video_payload_for_mux(payload: &[u8], flv_payloads: bool) -> Option<&[u8]> {
     Some(&payload[5..])
 }
 
-fn audio_payload_for_mux(payload: &[u8], flv_payloads: bool) -> Option<&[u8]> {
+pub fn audio_payload_for_mux(payload: &[u8], flv_payloads: bool) -> Option<&[u8]> {
     if !flv_payloads {
         return (!payload.is_empty()).then_some(payload);
     }
@@ -1959,34 +1847,34 @@ fn run_ffmpeg_demuxer(
     }
     drop(probe_tx);
 
-    for (stream, packet) in ictx.packets() {
+    let packets_to_push = ictx.packets().filter_map(|(stream, packet)| {
         if token.is_cancelled() {
-            break;
+            return None;
         }
 
         let (media_type, track_index) =
             stream_map.get(stream.index()).copied().unwrap_or((None, 0));
 
-        if let Some(mt) = media_type {
-            let pts = packet.pts().unwrap_or(0);
-            let dts = packet.dts().unwrap_or(0);
+        let mt = media_type?;
+        let pts = packet.pts().unwrap_or(0);
+        let dts = packet.dts().unwrap_or(0);
 
-            let time_base = stream.time_base();
-            let pts_ms = (pts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
-            let dts_ms = (dts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
+        let time_base = stream.time_base();
+        let pts_ms = (pts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
+        let dts_ms = (dts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
 
-            let media_pkt = MediaPacket {
-                media_type: mt,
-                track_index,
-                pts: pts_ms,
-                dts: dts_ms,
-                is_keyframe: packet.is_key(),
-                payload: Bytes::copy_from_slice(packet.data().unwrap_or(&[])),
-            };
+        Some(MediaPacket {
+            media_type: mt,
+            track_index,
+            pts: pts_ms,
+            dts: dts_ms,
+            is_keyframe: packet.is_key(),
+            format: PayloadFormat::Raw,
+            payload: Bytes::copy_from_slice(packet.data().unwrap_or(&[])),
+        })
+    });
 
-            ring_buf.push(media_pkt);
-        }
-    }
+    ring_buf.push_batch(packets_to_push);
 
     Ok(())
 }
@@ -2240,7 +2128,7 @@ pub async fn start_srt_egress(
     }
 
     // Wait for ingest metadata before starting the MPEG-TS muxer
-    let (video_meta, audio_tracks, flv_payloads) = loop {
+    let (video_meta, audio_tracks) = loop {
         if cancel_token.is_cancelled() {
             unsafe {
                 srt_close(client_sock);
@@ -2260,11 +2148,7 @@ pub async fn start_srt_egress(
                         tracks.push(audio);
                     }
                 }
-                Some((
-                    video,
-                    tracks,
-                    matches!(i.protocol.as_str(), "rtmp" | "file"),
-                ))
+                Some((video, tracks))
             })
         };
         if let Some(meta) = result {
@@ -2272,37 +2156,7 @@ pub async fn start_srt_egress(
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
-    let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
-
-    // MPEG-TS muxer thread: receives MediaPackets, writes MPEG-TS to out_queue
     let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
-    let (pkt_tx, pkt_rx) = std::sync::mpsc::sync_channel::<Arc<MediaPacket>>(256);
-    let out_queue_mux = out_queue.clone();
-
-    std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_play_muxer(
-                out_queue_mux.clone(),
-                pkt_rx,
-                video_meta,
-                audio_tracks,
-                flv_payloads,
-                video_sh,
-                audio_sh,
-            )
-        }));
-        match result {
-            Ok(Err(e)) => {
-                eprintln!("[srt-egress] Muxer failed: {}", e);
-                out_queue_mux.close();
-            }
-            Err(_) => {
-                eprintln!("[srt-egress] Muxer panicked");
-                out_queue_mux.close();
-            }
-            _ => {}
-        }
-    });
 
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT
     let out_queue_send = out_queue.clone();
@@ -2332,21 +2186,70 @@ pub async fn start_srt_egress(
         }
     });
 
-    // Feed loop: read from RingBuffer, send to muxer
-    let mut reader = Reader::new(ring_buffer);
+    // Feed loop: read from RingBuffer, mux inline, write to sender queue
+    let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
+    let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
+    let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+    let mut nalu_len_size: usize = 4;
+
+    let mut reader = Reader::new(format!("srt_egress:{}", output_id), ring_buffer);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                while let Ok(Some(pkt)) = reader.pull() {
-                    if pkt_tx.send(pkt).is_err() {
-                        return;
+                let mut packets = Vec::with_capacity(32);
+                if reader.pull_burst(&mut packets, 32).is_ok() {
+                    for pkt in packets {
+                        let payload = match pkt.media_type {
+                            MediaType::Video => {
+                                match crate::media::codec::video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                            MediaType::Audio => {
+                                let track = audio_tracks.iter()
+                                    .find(|a| a.track_index == pkt.track_index)
+                                    .or(audio_tracks.first());
+                                let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                                match crate::media::codec::audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                        };
+
+                        let stream_idx = match pkt.media_type {
+                            MediaType::Video => 0,
+                            MediaType::Audio => {
+                                let video_offset = video_meta.is_some() as usize;
+                                audio_tracks
+                                    .iter()
+                                    .position(|a| a.track_index == pkt.track_index)
+                                    .map(|i| i + video_offset)
+                                    .unwrap_or(0)
+                            }
+                        };
+
+                        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+
+                        let ts_bytes = muxer.mux_packet(
+                            pkt.media_type,
+                            pkt.track_index,
+                            pts,
+                            dts,
+                            pkt.is_keyframe,
+                            &payload,
+                        );
+
+                        if !ts_bytes.is_empty() {
+                            out_queue.write(ts_bytes);
+                        }
                     }
                 }
             }
         }
     }
 
-    drop(pkt_tx);
-    // Muxer thread owns closing out_queue after write_trailer
+    out_queue.close();
 }

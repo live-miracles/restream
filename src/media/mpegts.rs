@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
 use crate::media::engine::{AudioMeta, VideoMeta};
-use crate::media::ring_buffer::{MediaPacket, MediaType};
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat};
 use memchr::memchr;
 
 const TS_PACKET_SIZE: usize = 188;
@@ -321,6 +321,7 @@ impl TsDemuxer {
             pts: pts_ms,
             dts: dts_ms,
             is_keyframe,
+            format: PayloadFormat::Raw,
             payload: Bytes::from(payload),
         });
 
@@ -1469,46 +1470,22 @@ fn for_each_nal_raw<F>(data: &[u8], mut callback: F) -> bool
 where
     F: FnMut(&[u8]) -> bool,
 {
-    let mut i = 0;
-    while i + 3 <= data.len() {
-        if data[i] == 0 && data[i + 1] == 0 {
-            let (sc_len, found) = if data[i + 2] == 1 {
-                (3, true)
-            } else if i + 3 < data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                (4, true)
-            } else {
-                (0, false)
-            };
-
-            if found {
-                let nal_start = i + sc_len;
-                if nal_start >= data.len() {
-                    break;
-                }
-
-                let mut nal_end = data.len();
-                let mut j = nal_start + 1;
-                while j + 2 < data.len() {
-                    if data[j] == 0
-                        && data[j + 1] == 0
-                        && (data[j + 2] == 1
-                            || (j + 3 < data.len() && data[j + 2] == 0 && data[j + 3] == 1))
-                    {
-                        nal_end = j;
-                        break;
-                    }
-                    j += 1;
-                }
-
-                if callback(&data[nal_start..nal_end]) {
-                    return true;
-                }
-
-                i = nal_end;
-                continue;
+    let starts = crate::media::codec::find_annexb_start_codes(data);
+    if starts.is_empty() {
+        return false;
+    }
+    for i in 0..starts.len() {
+        let nalu_start = starts[i].1;
+        let nalu_end = if i + 1 < starts.len() {
+            starts[i + 1].0
+        } else {
+            data.len()
+        };
+        if nalu_start < nalu_end {
+            if callback(&data[nalu_start..nalu_end]) {
+                return true;
             }
         }
-        i += 1;
     }
     false
 }

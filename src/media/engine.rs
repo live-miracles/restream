@@ -231,7 +231,7 @@ pub struct ActiveIngest {
     pub audio: Option<AudioMeta>,
     pub audio_tracks: std::sync::Mutex<Vec<AudioMeta>>,
     pub quality: PublisherQuality,
-    pub keyframe_times: std::sync::Mutex<Vec<Instant>>,
+    pub keyframe_times: std::sync::Mutex<Vec<i64>>,
     /// Cached FLV sequence headers for RTMP play subscribers (video config + audio config)
     pub video_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
     pub audio_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
@@ -376,8 +376,17 @@ impl MediaEngine {
         let pid = pipeline_id.to_string();
         let enc = encoding.to_string();
         let ob = output_buf.clone();
+        let self_clone = self.clone();
         tokio::spawn(async move {
-            crate::media::transcoder::start_transcoder(pid, enc, source_buffer, ob, cancel).await;
+            crate::media::transcoder::start_transcoder(
+                pid,
+                enc,
+                source_buffer,
+                ob,
+                self_clone,
+                cancel,
+            )
+            .await;
         });
 
         output_buf
@@ -508,11 +517,11 @@ impl MediaEngine {
         }
     }
 
-    pub async fn record_keyframe(&self, pipeline_id: &str) {
+    pub async fn record_keyframe(&self, pipeline_id: &str, pts: i64) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             let mut times = ingest.keyframe_times.lock().unwrap();
-            times.push(Instant::now());
+            times.push(pts);
             if times.len() > 30 {
                 times.remove(0);
             }
@@ -629,7 +638,7 @@ impl MediaEngine {
             if times.len() >= 2 {
                 let intervals: Vec<f64> = times
                     .windows(2)
-                    .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+                    .map(|w| ((w[1] - w[0]) as f64 / 1000.0).max(0.0))
                     .collect();
                 let avg = intervals.iter().sum::<f64>() / intervals.len() as f64;
                 Some(serde_json::json!({

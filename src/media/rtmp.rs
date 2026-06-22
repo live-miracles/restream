@@ -22,8 +22,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
+use bytes::Bytes;
+use crate::media::codec;
 use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, VideoMeta};
-use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
 use crate::media::tcp_stats::collect_rtmp_receiver_stats;
 
@@ -709,7 +711,14 @@ async fn handle_session_results(
                         .fetch_optional(db)
                         .await {
                             Ok(Some(p)) => p,
-                            _ => {
+                            Ok(None) => {
+                                eprintln!("[rtmp] publish stream key not found: {:?}", stream_key);
+                                security.record_failure(client_ip);
+                                let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
+                                return Err("Invalid stream key");
+                            }
+                            Err(e) => {
+                                eprintln!("[rtmp] publish stream key DB query failed: {:?}", e);
                                 security.record_failure(client_ip);
                                 let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
                                 return Err("Invalid stream key");
@@ -793,8 +802,11 @@ async fn handle_session_results(
                                 (data[0] >> 4) == 1
                             };
 
+                            let dts = timestamp.value as i64;
+                            let pts = dts + flv_video_composition_time_ms(&data) as i64;
+
                             if is_keyframe {
-                                engine.record_keyframe(pipeline_id).await;
+                                engine.record_keyframe(pipeline_id, pts).await;
                             }
 
                             // Cache video sequence header for play subscribers
@@ -824,14 +836,13 @@ async fn handle_session_results(
                                 }
                             }
 
-                            let dts = timestamp.value as i64;
-                            let pts = dts + flv_video_composition_time_ms(&data) as i64;
                             let packet = MediaPacket {
                                 media_type: MediaType::Video,
                                 track_index: 0,
                                 pts,
                                 dts,
                                 is_keyframe,
+                                format: PayloadFormat::Flv,
                                 payload: data,
                             };
                             active.ring.push(packet);
@@ -885,6 +896,7 @@ async fn handle_session_results(
                                 pts: timestamp.value as i64,
                                 dts: timestamp.value as i64,
                                 is_keyframe: false,
+                                format: PayloadFormat::Flv,
                                 payload: data,
                             };
                             active.ring.push(packet);
@@ -977,7 +989,7 @@ async fn handle_session_results(
 
                         // Feed loop: read from RingBuffer and send RTMP data
                         let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
-                        let mut reader = Reader::new(ring_buf);
+                        let mut reader = Reader::new(format!("rtmp_play:{}", pipeline.id), ring_buf);
 
                         loop {
                             match reader.pull() {
@@ -1172,7 +1184,8 @@ pub async fn start_rtmp_egress(
     };
 
     let mut is_publishing = false;
-    let mut reader = Reader::new(ring_buffer);
+    let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
+    let mut raw_seq_header_sent = false;
 
     loop {
         tokio::select! {
@@ -1237,28 +1250,57 @@ pub async fn start_rtmp_egress(
             }
             // Write packets from ring buffer when publishing is active
             _ = reader.wait_for_data(), if is_publishing => {
-                while let Ok(Some(packet)) = reader.pull() {
-                    let ts = match packet.media_type {
-                        MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
-                        MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
-                    };
-                    let pkt = match packet.media_type {
-                        MediaType::Video => {
-                            session.publish_video_data(packet.payload.clone(), ts, packet.is_keyframe)
-                        }
-                        MediaType::Audio => {
-                            session.publish_audio_data(packet.payload.clone(), ts, false)
-                        }
-                    };
-                    match pkt {
-                        Ok(ClientSessionResult::OutboundResponse(p)) => {
-                            if socket.write_all(&p.bytes).await.is_err() { return; }
-                            if let Some(ref counter) = egress_bytes_sent {
-                                counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
+                let mut packets = Vec::with_capacity(32);
+                if reader.pull_burst(&mut packets, 32).is_ok() {
+                    for packet in packets {
+                        let ts = match packet.media_type {
+                            MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
+                            MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
+                        };
+                        let payload = if packet.format == PayloadFormat::Raw {
+                            match packet.media_type {
+                                MediaType::Video => {
+                                    // Send sequence header before first keyframe
+                                    if packet.is_keyframe && !raw_seq_header_sent {
+                                        if let Some(seq_hdr) = codec::build_avcc_sequence_header(&packet.payload) {
+                                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                                session.publish_video_data(seq_hdr, RtmpTimestamp::new(0), true)
+                                            {
+                                                if socket.write_all(&p.bytes).await.is_err() { return; }
+                                            }
+                                            raw_seq_header_sent = true;
+                                        }
+                                    }
+                                    match codec::video_for_rtmp(&packet.payload, packet.is_keyframe) {
+                                        Some(v) => Bytes::from(v),
+                                        None => continue,
+                                    }
+                                }
+                                MediaType::Audio => {
+                                    Bytes::from(codec::audio_for_rtmp(&packet.payload))
+                                }
                             }
-                        }
-                        _ => {
-                            eprintln!("[rtmp-egress] Failed to build publish data packet or get OutboundResponse");
+                        } else {
+                            packet.payload.clone()
+                        };
+                        let pkt = match packet.media_type {
+                            MediaType::Video => {
+                                session.publish_video_data(payload, ts, packet.is_keyframe)
+                            }
+                            MediaType::Audio => {
+                                session.publish_audio_data(payload, ts, false)
+                            }
+                        };
+                        match pkt {
+                            Ok(ClientSessionResult::OutboundResponse(p)) => {
+                                if socket.write_all(&p.bytes).await.is_err() { return; }
+                                if let Some(ref counter) = egress_bytes_sent {
+                                    counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
+                                }
+                            }
+                            _ => {
+                                eprintln!("[rtmp-egress] Failed to build publish data packet or get OutboundResponse");
+                            }
                         }
                     }
                 }

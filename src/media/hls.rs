@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::MediaEngine;
 use crate::media::mpegts::TsMuxer;
+use crate::media::codec::{audio_for_ts, video_for_ts};
 use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
 
 const TARGET_DURATION_SECS: f64 = 6.0;
@@ -51,6 +52,13 @@ impl HlsStore {
                 target_duration: TARGET_DURATION_SECS,
             }),
         }
+    }
+
+    pub fn clear(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.segments.clear();
+        inner.next_index = 0;
+        inner.target_duration = TARGET_DURATION_SECS;
     }
 
     pub fn push_segment(&self, duration: f64, data: Bytes) {
@@ -111,9 +119,10 @@ pub async fn start_hls_segmenter(
     let metrics = engine
         .get_or_create_stage_metrics(&pipeline_id, "hls")
         .await;
-    let mut reader = Reader::new(ring_buffer);
+    let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer);
     let mut packets = Vec::with_capacity(32);
-    let mut muxer: Option<TsMuxer> = None;
+    let mut muxer: Option<(TsMuxer, Vec<crate::media::engine::AudioMeta>)> = None;
+    let mut nalu_len_size: usize = 4;
     let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
@@ -149,8 +158,8 @@ pub async fn start_hls_segmenter(
                         metrics.record_in(packet.payload.len() as u64);
 
                         // Lazily create the muxer once we have ingest metadata
-                        let mux = match &mut muxer {
-                            Some(m) => m,
+                        let (mux, tracks) = match &mut muxer {
+                            Some((m, t)) => (m, t),
                             None => {
                                 let ingests = engine.active_ingests.read().await;
                                 let ingest = match ingests.get(&pipeline_id) {
@@ -158,11 +167,31 @@ pub async fn start_hls_segmenter(
                                     None => continue,
                                 };
                                 let video = ingest.video.as_ref();
-                                let audio_tracks = ingest.audio_tracks.lock().unwrap();
-                                muxer = Some(TsMuxer::new(video, &audio_tracks));
-                                drop(audio_tracks);
+                                let audio_tracks = ingest.audio_tracks.lock().unwrap().clone();
+                                let m = TsMuxer::new(video, &audio_tracks);
                                 drop(ingests);
-                                muxer.as_mut().unwrap()
+                                muxer = Some((m, audio_tracks));
+                                let (m, t) = muxer.as_mut().unwrap();
+                                (m, t)
+                            }
+                        };
+
+                        let raw_payload = match packet.media_type {
+                            MediaType::Video => {
+                                match video_for_ts(&packet.payload, packet.format, &mut nalu_len_size) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                            MediaType::Audio => {
+                                let track = tracks.iter()
+                                    .find(|a| a.track_index == packet.track_index)
+                                    .or(tracks.first());
+                                let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                                match audio_for_ts(&packet.payload, packet.format, sr, ch) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
                             }
                         };
 
@@ -173,7 +202,7 @@ pub async fn start_hls_segmenter(
                             packet.pts,
                             packet.dts,
                             packet.is_keyframe,
-                            &packet.payload,
+                            &raw_payload,
                         );
                         metrics.record_processing(t0.elapsed().as_micros() as u64);
                         metrics.record_out(ts_bytes.len() as u64);

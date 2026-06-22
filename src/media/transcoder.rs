@@ -1,12 +1,12 @@
-//! In-process FFmpeg transcoder — re-encodes video to a target resolution preset.
-//! Supports H.264 and H.265/HEVC (auto-detected from input codec). Uses two
-//! `MemoryQueue`s: one for input (source `RingBuffer` → FFmpeg decoder) and one
-//! for output (FFmpeg encoder → destination `RingBuffer`).
+//! In-process FFmpeg transcoder — demuxes input MPEG-TS, applies stream filtering,
+//! and pushes `MediaPacket`s directly to the output `RingBuffer`. Uses a single
+//! `MemoryQueue` for input (source `RingBuffer` → TsMuxer → FFmpeg demux).
 //!
 //! Audio routing: compound encodings like `720p+atrack:0,1` or `source+remap:0:1`
-//! are parsed to select/remap audio streams at the mux level.
+//! are parsed to select/remap audio streams.
 
-use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
+use crate::media::codec::{audio_for_ts, video_for_ts};
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -63,65 +63,135 @@ pub fn parse_audio_routing(encoding: &str) -> AudioRouting {
 }
 
 pub async fn start_transcoder(
-    _pipeline_id: String,
+    pipeline_id: String,
     preset: String,
     input_buffer: Arc<RingBuffer>,
-    _output_buffer: Arc<RingBuffer>,
+    output_buffer: Arc<RingBuffer>,
+    engine: Arc<crate::media::engine::MediaEngine>,
     cancel_token: CancellationToken,
 ) {
-    // Setup in-memory queues instead of TCP loopback
-    let input_queue = Arc::new(crate::media::avio::MemoryQueue::new());
-    let output_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+    // Wait for ingest metadata before starting the transcoder
+    let (video_meta, audio_tracks) = loop {
+        if cancel_token.is_cancelled() {
+            return;
+        }
+        let result = {
+            let ingests = engine.active_ingests.read().await;
+            ingests.get(&pipeline_id).and_then(|i| {
+                let video = i.video.clone();
+                if video.is_none() {
+                    return None;
+                }
+                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                if tracks.is_empty() {
+                    if let Some(audio) = i.audio.clone() {
+                        tracks.push(audio);
+                    }
+                }
+                Some((video, tracks))
+            })
+        };
+        if let Some(meta) = result {
+            break meta;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
 
-    // Spawn thread to run FFmpeg transcoding from CustomInput to CustomOutput
+    let input_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+
+    // Spawn thread to run FFmpeg processing: demux input MPEG-TS, push packets
+    // directly to the output RingBuffer (no output mux/demux round-trip).
     let input_queue_clone = input_queue.clone();
-    let output_queue_clone = output_queue.clone();
     let preset_clone = preset.clone();
     let cancel_token_clone = cancel_token.clone();
+    let cancel_on_exit = cancel_token.clone();
+    let pipeline_id_clone = pipeline_id.clone();
+    let out_buf = output_buffer.clone();
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_ffmpeg_transcoder_stage(
                 input_queue_clone,
-                output_queue_clone,
+                out_buf,
                 &preset_clone,
                 cancel_token_clone,
             )
         }));
         match result {
-            Ok(Err(e)) => eprintln!("[transcoder] FFmpeg transcode thread failed: {:?}", e),
-            Err(_) => eprintln!("[transcoder] FFmpeg transcode thread panicked"),
+            Ok(Err(e)) => eprintln!(
+                "[transcoder] FFmpeg transcode thread failed for {} ({}): {:?}",
+                pipeline_id_clone, preset_clone, e
+            ),
+            Err(_) => eprintln!(
+                "[transcoder] FFmpeg transcode thread panicked for {} ({})",
+                pipeline_id_clone, preset_clone
+            ),
             _ => {}
         }
+        cancel_on_exit.cancel();
     });
 
-    // Spawn thread to demux output MPEG-TS and push packets with proper timestamps
-    let out_queue_clone = output_queue.clone();
-    let out_buf = _output_buffer.clone();
-    let cancel = cancel_token.clone();
-    std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            demux_transcoder_output(out_queue_clone, out_buf, cancel);
-        }));
-        if result.is_err() {
-            eprintln!("[transcoder] Output reader thread panicked");
-        }
-    });
-
-    // Forward source RingBuffer packets to input_queue
-    let mut reader = Reader::new(input_buffer);
-    let mut packets = Vec::with_capacity(32);
+    // Forward source RingBuffer packets to input_queue, muxed as MPEG-TS
+    let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
+    let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
+    let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+    let mut reader = Reader::new(format!("transcoder:{}:{}", pipeline_id, preset), input_buffer);
+    let mut nalu_len_size: usize = 4;
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                loop {
-                    packets.clear();
-                    match reader.pull_burst(&mut packets, 32) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                let mut packets = Vec::with_capacity(32);
+                if reader.pull_burst(&mut packets, 32).is_ok() {
+                    for pkt in packets {
+                        let payload = match pkt.media_type {
+                            MediaType::Video => {
+                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                            MediaType::Audio => {
+                                let track = audio_tracks
+                                    .iter()
+                                    .find(|a| a.track_index == pkt.track_index)
+                                    .or(audio_tracks.first());
+                                let (sr, ch) = track
+                                    .map(|a| (a.sample_rate, a.channels))
+                                    .unwrap_or((48000, 1));
+                                match audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                        };
+
+                        let stream_idx = match pkt.media_type {
+                            MediaType::Video => 0,
+                            MediaType::Audio => {
+                                let video_offset = video_meta.is_some() as usize;
+                                audio_tracks
+                                    .iter()
+                                    .position(|a| a.track_index == pkt.track_index)
+                                    .map(|i| i + video_offset)
+                                    .unwrap_or(0)
+                            }
+                        };
+
+                        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+
+                        let ts_bytes = muxer.mux_packet(
+                            pkt.media_type,
+                            pkt.track_index,
+                            pts,
+                            dts,
+                            pkt.is_keyframe,
+                            &payload,
+                        );
+
+                        if !ts_bytes.is_empty() {
+                            input_queue.write(&ts_bytes);
+                        }
                     }
-                    input_queue
-                        .write_batch(packets.iter().map(|packet| packet.payload.as_ref()));
                 }
             }
         }
@@ -231,84 +301,20 @@ mod tests {
     }
 }
 
-const SKIP_STREAM: usize = usize::MAX;
-
-// In-process FFmpeg transcoder using CustomInput and CustomOutput
-fn demux_transcoder_output(
-    queue: Arc<crate::media::avio::MemoryQueue>,
-    ring: Arc<RingBuffer>,
-    token: CancellationToken,
-) {
-    use crate::media::avio::CustomInput;
-
-    let mut custom_input = match CustomInput::new(&*queue) {
-        Ok(ci) => ci,
-        Err(e) => {
-            eprintln!("[transcoder] output demux failed to open: {e}");
-            return;
-        }
-    };
-    let Some(ictx) = custom_input.input.as_mut() else {
-        eprintln!("[transcoder] output demux: no input context");
-        return;
-    };
-
-    let mut audio_index = 0usize;
-    let mut stream_meta: Vec<(MediaType, usize)> = Vec::new();
-    for stream in ictx.streams() {
-        match stream.parameters().medium() {
-            ffmpeg_next::media::Type::Video => {
-                stream_meta.push((MediaType::Video, 0));
-            }
-            ffmpeg_next::media::Type::Audio => {
-                stream_meta.push((MediaType::Audio, audio_index));
-                audio_index += 1;
-            }
-            _ => {
-                stream_meta.push((MediaType::Video, 0));
-            }
-        }
-    }
-
-    for (stream, packet) in ictx.packets() {
-        if token.is_cancelled() {
-            break;
-        }
-        let idx = stream.index();
-        let &(media_type, track_idx) = stream_meta.get(idx).unwrap_or(&(MediaType::Video, 0));
-        let track_index = track_idx as u32;
-
-        let pts = packet.pts().unwrap_or(0);
-        let dts = packet.dts().unwrap_or(pts);
-        let is_keyframe = packet.is_key();
-        let data = packet.data().unwrap_or(&[]);
-
-        ring.push(MediaPacket {
-            media_type,
-            track_index,
-            pts,
-            dts,
-            is_keyframe,
-            payload: bytes::Bytes::copy_from_slice(data),
-        });
-    }
-}
-
 /// Execute the FFmpeg-backed processing stage used by `start_transcoder`.
 ///
-/// This is public so production-path benchmarks can exercise the exact stage
-/// implementation rather than a synthetic stand-in.
+/// Demuxes input MPEG-TS from `in_queue`, applies stream filtering (audio
+/// routing), and pushes `MediaPacket`s directly to the output `RingBuffer`.
+/// No output muxer or demux thread needed.
 #[doc(hidden)]
 pub fn run_ffmpeg_transcoder_stage(
     in_queue: Arc<crate::media::avio::MemoryQueue>,
-    out_queue: Arc<crate::media::avio::MemoryQueue>,
+    out_ring: Arc<RingBuffer>,
     preset: &str,
     token: CancellationToken,
 ) -> Result<(), &'static str> {
-    use crate::media::avio::{CustomInput, CustomOutput};
+    use crate::media::avio::CustomInput;
 
-    // Parse stage key format: "video:720p", "audio:atrack:0:from:720p",
-    // or legacy compound "720p+atrack:0,1"
     let (video_preset, audio_routing) = if let Some(vp) = preset.strip_prefix("video:") {
         (vp, AudioRouting::Passthrough)
     } else if let Some(rest) = preset.strip_prefix("audio:") {
@@ -328,80 +334,16 @@ pub fn run_ffmpeg_transcoder_stage(
         .as_mut()
         .ok_or("Failed to get CustomInput context")?;
 
-    let mut custom_output = CustomOutput::new(&*out_queue, "mpegts")?;
-    let octx = custom_output
-        .output
-        .as_mut()
-        .ok_or("Failed to get CustomOutput context")?;
-
-    // Track audio stream indices (0-based within audio streams only)
     let mut audio_stream_index = 0usize;
-    let mut stream_mapping: Vec<usize> = Vec::new();
+    let mut audio_out_index = 0u32;
+    let mut stream_meta: Vec<Option<(MediaType, u32)>> = Vec::new();
 
-    // "h264" preset forces H264 output regardless of input codec (for RTMP egress of H265 sources)
-    let force_h264 = video_preset == "h264";
-    let needs_video_transcode = force_h264
-        || (!video_preset.is_empty() && video_preset != "source" && video_preset != "custom");
+    let _force_h264 = video_preset == "h264";
 
     for stream in ictx.streams() {
         let medium = stream.parameters().medium();
         if medium == ffmpeg_next::media::Type::Video {
-            if needs_video_transcode {
-                let input_codec_id = stream.parameters().id();
-                // H265→H264 when forced or for resolution presets on RTMP (standard RTMP has no H265)
-                let out_codec_id = if force_h264 {
-                    ffmpeg_next::codec::Id::H264
-                } else {
-                    match input_codec_id {
-                        ffmpeg_next::codec::Id::HEVC => ffmpeg_next::codec::Id::HEVC,
-                        _ => ffmpeg_next::codec::Id::H264,
-                    }
-                };
-                let codec = ffmpeg_next::encoder::find(out_codec_id)
-                    .ok_or("Video encoder not found (tried H.264/H.265)")?;
-                let mut new_stream = octx
-                    .add_stream(codec)
-                    .map_err(|_| "Failed to add video stream")?;
-
-                let (w, h) = if force_h264 {
-                    // Preserve source resolution
-                    let sw = unsafe { (*stream.parameters().as_ptr()).width } as u32;
-                    let sh = unsafe { (*stream.parameters().as_ptr()).height } as u32;
-                    (sw, sh)
-                } else {
-                    match video_preset {
-                        "720p" => (1280, 720),
-                        "1080p" => (1920, 1080),
-                        "2160p" | "4k" => (3840, 2160),
-                        "vertical-crop" | "vertical-rotate" => (1080, 1920),
-                        _ => (1280, 720),
-                    }
-                };
-
-                let enc_ctx = ffmpeg_next::codec::context::Context::new();
-                let mut encoder = enc_ctx
-                    .encoder()
-                    .video()
-                    .map_err(|_| "Failed to create video encoder")?;
-                encoder.set_width(w);
-                encoder.set_height(h);
-                encoder.set_format(ffmpeg_next::format::Pixel::YUV420P);
-                encoder.set_time_base(stream.time_base());
-
-                let opened_encoder = encoder
-                    .open_as(codec)
-                    .map_err(|_| "Failed to open encoder")?;
-                new_stream.set_parameters(&opened_encoder);
-                stream_mapping.push(new_stream.index());
-            } else {
-                // Video passthrough
-                let codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::None);
-                let mut new_stream = octx
-                    .add_stream(codec)
-                    .map_err(|_| "Failed to add video copy stream")?;
-                new_stream.set_parameters(stream.parameters());
-                stream_mapping.push(new_stream.index());
-            }
+            stream_meta.push(Some((MediaType::Video, 0)));
         } else if medium == ffmpeg_next::media::Type::Audio {
             let include = match &audio_routing {
                 AudioRouting::Passthrough => true,
@@ -409,59 +351,42 @@ pub fn run_ffmpeg_transcoder_stage(
                 AudioRouting::Remap { track, .. } => audio_stream_index == *track,
                 AudioRouting::Downmix(track) => audio_stream_index == *track,
             };
-
             if include {
-                // Copy audio stream (remap/downmix would need decode+filter+encode,
-                // which requires the full decode loop — for now, stream copy)
-                let codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::None);
-                let mut new_stream = octx
-                    .add_stream(codec)
-                    .map_err(|_| "Failed to add audio stream")?;
-                new_stream.set_parameters(stream.parameters());
-                stream_mapping.push(new_stream.index());
+                stream_meta.push(Some((MediaType::Audio, audio_out_index)));
+                audio_out_index += 1;
             } else {
-                stream_mapping.push(SKIP_STREAM);
+                stream_meta.push(None);
             }
             audio_stream_index += 1;
         } else {
-            let codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::None);
-            let mut new_stream = octx
-                .add_stream(codec)
-                .map_err(|_| "Failed to add stream copy")?;
-            new_stream.set_parameters(stream.parameters());
-            stream_mapping.push(new_stream.index());
+            stream_meta.push(None);
         }
     }
 
-    octx.write_header()
-        .map_err(|_| "Transcoder: Failed to write header")?;
-
-    for (stream, mut packet) in ictx.packets() {
+    for (stream, packet) in ictx.packets() {
         if token.is_cancelled() {
             break;
         }
 
-        let Some(&out_stream_idx) = stream_mapping.get(stream.index()) else {
+        let idx = stream.index();
+        let Some(&Some((media_type, track_index))) = stream_meta.get(idx) else {
             continue;
         };
-        if out_stream_idx == SKIP_STREAM {
-            continue;
-        }
-        packet.set_stream(out_stream_idx);
 
-        let in_time_base = stream.time_base();
-        let Some(out_stream) = octx.stream(out_stream_idx) else {
-            continue;
-        };
-        let out_time_base = out_stream.time_base();
-        packet.rescale_ts(in_time_base, out_time_base);
+        let pts = packet.pts().unwrap_or(0);
+        let dts = packet.dts().unwrap_or(pts);
+        let data = packet.data().unwrap_or(&[]);
 
-        let _ = packet.write_interleaved(&mut *octx);
+        out_ring.push(MediaPacket {
+            media_type,
+            track_index,
+            pts,
+            dts,
+            is_keyframe: packet.is_key(),
+            format: PayloadFormat::Raw,
+            payload: bytes::Bytes::copy_from_slice(data),
+        });
     }
 
-    octx.write_trailer()
-        .map_err(|_| "Transcoder: Failed to write trailer")?;
-
-    out_queue.close();
     Ok(())
 }

@@ -56,7 +56,7 @@ pub async fn start_recording(
         }
     });
 
-    let mut reader = Reader::new(ring_buffer);
+    let mut reader = Reader::new(format!("recording:{}", pipeline_name), ring_buffer);
     let mut packets = Vec::with_capacity(32);
     loop {
         tokio::select! {

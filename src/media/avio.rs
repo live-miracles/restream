@@ -152,6 +152,8 @@ impl CustomInput {
 
             (*raw_ctx).pb = avio_ctx;
             (*raw_ctx).flags |= ffmpeg::ffi::AVFMT_FLAG_CUSTOM_IO;
+            (*raw_ctx).probesize = 32768;
+            (*raw_ctx).max_analyze_duration = 500_000; // 0.5s in microseconds
 
             let mut raw_ctx_mut = raw_ctx;
             let open_res = ffmpeg::ffi::avformat_open_input(
