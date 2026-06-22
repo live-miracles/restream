@@ -24,14 +24,11 @@ Tokio worker count = `num_cpus` (tokio default, not configurable).
 |---|---|---|---|
 | RTMP ingest handler | tokio task | 1 per RTMP publisher | TCP connection lifetime |
 | RTMP egress handler | tokio task | 1 per RTMP output | Output lifetime |
-| SRT ingest handler | tokio task | 1 per SRT publisher | SRT session lifetime |
-| SRT ingest demuxer | `std::thread` | 1 per SRT publisher | Demuxes MPEG-TS via FFmpeg |
-| SRT egress muxer | `std::thread` | 1 per SRT output | Muxes to MPEG-TS via FFmpeg |
+| SRT ingest handler | tokio task | 1 per SRT publisher | SRT session lifetime (inline native TsDemuxer) |
+| SRT egress feed+mux | tokio task | 1 per SRT output | Inline TsMuxer in async feed loop |
 | SRT egress sender | `std::thread` | 1 per SRT output | Blocks on `srt_send()` |
-| HLS muxer | `std::thread` | 1 per HLS output | MPEG-TS mux via FFmpeg |
-| HLS splitter | `std::thread` | 1 per HLS output | Splits on keyframe, stores segments |
-| Transcoder encoder | `std::thread` | 1 per unique (pipeline, preset) | FFmpeg decode + encode |
-| Transcoder output reader | `std::thread` | 1 per unique (pipeline, preset) | Demuxes encoder output to RingBuffer |
+| HLS segmenter | tokio task | 1 per HLS pipeline | TsMuxer + segment accumulator (inline async) |
+| Transcoder stage | `std::thread` | 1 per unique (pipeline, preset) | FFmpeg demux → direct RingBuffer push |
 | Recording muxer | `std::thread` | 1 per active recording | MKV mux via FFmpeg |
 
 All `std::thread` spawns wrap FFmpeg work in `catch_unwind(AssertUnwindSafe(…))`
@@ -43,10 +40,10 @@ to prevent panics from crashing the process.
 total_os_threads =
     num_cpus                           # tokio workers (fixed)
   + 1                                  # SRT accept loop (fixed)
-  + N_srt_ingest × 1                   # SRT demuxer threads
-  + N_srt_egress × 2                   # muxer + sender per SRT output
-  + N_hls_egress × 2                   # muxer + splitter per HLS output
-  + N_unique_presets × 2               # encoder + output reader per transcode
+  + N_srt_ingest × 0                   # SRT demuxer is inline in tokio task (no OS threads)
+  + N_srt_egress × 1                   # sender per SRT output (TsMuxer is inline async)
+  + N_hls_egress × 0                   # inline TsMuxer in async task (no OS threads)
+  + N_unique_presets × 1               # transcoder stage per preset (direct RingBuffer push)
   + N_recordings × 1                   # MKV muxer per active recording
   + N_rtmp_ingest × 0                  # RTMP is pure async
   + N_rtmp_egress × 0                  # RTMP is pure async
@@ -60,12 +57,12 @@ but multiplex onto the fixed worker pool.
 ```
 num_cpus (e.g. 8)    tokio workers
 + 1                  SRT accept loop
-+ 1                  SRT demuxer
-+ 6                  3 × (muxer + sender)
-+ 2                  transcoder encoder + output reader
++ 0                  SRT demuxer (inline)
++ 3                  3 × sender (TsMuxer inline)
++ 1                  transcoder stage (direct push)
 + 1                  recording MKV muxer
 ─────
-19 OS threads total
+14 OS threads total
 ```
 
 ### Example: 1 RTMP ingest, 3 RTMP egress, no transcoding
@@ -261,31 +258,15 @@ reading the same preset share the transcoded RingBuffer.
                                │      Mutex + Condvar
                                ▼
  ┌───────────────────────────────────────────────────────────────┐
- │ OS Thread: transcoder encoder                                 │  std::thread
+ │ OS Thread: transcoder stage                                   │  std::thread
  │                                                               │  catch_unwind
  │  CustomInput ← input_queue                                    │
- │  CustomOutput → output_queue                                  │
  │                                                               │
  │  loop:                                                        │
- │    av_read_frame() → avcodec_decode_video2()                  │
- │    → scale/filter (if needed)                                  │
- │    → avcodec_encode_video2() (H.264 @ 720p)                   │
- │    → av_interleaved_write_frame() → output_queue              │
- └──────────────────────────┬────────────────────────────────────┘
-                            │
-  ══════════════════════════╪═══════  thread hop #5 (MemoryQueue)
-                            │          Mutex + Condvar
-                            ▼
- ┌───────────────────────────────────────────────────────────────┐
- │ OS Thread: transcoder output reader                           │  std::thread
- │                                                               │  catch_unwind
- │  CustomInput ← output_queue                                   │
- │                                                               │
- │  loop:                                                        │
- │    output_queue.read() ← Condvar::wait                        │
- │    FFmpeg: av_read_frame() (demux transcoded MPEG-TS)         │
- │    → MediaPacket { pts, dts, payload }                        │
- │    output_ring.push(packet)                                   │
+ │    av_read_frame() (demux input MPEG-TS)                      │
+ │    → apply stream filter (audio routing)                       │
+ │    → MediaPacket { pts, dts, payload, format: Raw }           │
+ │    output_ring.push(packet) (direct RingBuffer push)          │
  └──────────────────────────┬────────────────────────────────────┘
                             │
                ┌────────────┴─────────────┐
@@ -296,7 +277,7 @@ reading the same preset share the transcoded RingBuffer.
   │  lock-free SPMC        │   │   from same ring)     │
   └───────────┬───────────┘   └───────────────────────┘
               │
-  ════════════╪═══════════════  thread hop #6 (Notify + Acquire)
+  ════════════╪═══════════════  thread hop #5 (Notify + Acquire)
               │
  ╔════════════╪═══════════════════════════════════════════════════╗
  ║  TOKIO     ▼                                                   ║
@@ -305,23 +286,14 @@ reading the same preset share the transcoded RingBuffer.
  ║  │                                                          │  ║
  ║  │  reader.wait_for_data().await                            │  ║
  ║  │  while reader.pull():                                    │  ║
- ║  │    pkt_tx.send(packet) → sync_channel                    │  ║
+ ║  │    video/audio_payload_for_mux() (strip FLV if needed)   │  ║
+ ║  │    dts_enforcer.enforce()                                │  ║
+ ║  │    TsMuxer::mux_packet() (MPEG-TS mux, ~0.6µs/pkt)      │  ║
+ ║  │    → out_queue.write(ts_bytes)                           │  ║
  ║  └────────────────────────────┬─────────────────────────────┘  ║
  ╚═══════════════════════════════╪════════════════════════════════╝
                                  │
-  ═══════════════════════════════╪═══  thread hop #7 (sync_channel)
-                                 │      bounded, may block sender
-                                 ▼
- ┌───────────────────────────────────────────────────────────────┐
- │ OS Thread: SRT egress muxer                                   │  std::thread
- │                                                               │  catch_unwind
- │  loop:                                                        │
- │    pkt_rx.recv() ← blocks on sync_channel                     │
- │    FFmpeg: av_interleaved_write_frame() (MPEG-TS mux)         │
- │    → out_queue.write(ts_bytes)                                │
- └──────────────────────────┬────────────────────────────────────┘
-                            │
-  ══════════════════════════╪═══════  thread hop #8 (MemoryQueue)
+  ═══════════════════════════════╪═══  thread hop #6 (MemoryQueue)
                             │          Mutex + Condvar
                             ▼
  ┌───────────────────────────────────────────────────────────────┐
@@ -348,10 +320,9 @@ reading the same preset share the transcoded RingBuffer.
  │  EGRESS NIC                                                   │
  └───────────────────────────────────────────────────────────────┘
 
- Thread hops: 8
- Sync boundaries: 10 (2 lock-free rings, 4 MemoryQueues, 1 mpsc, 1 sync_channel,
-                       2 Notify wakeups)
- OS threads spawned: 5 (demuxer + encoder + output reader + muxer + sender)
+ Thread hops: 5
+ Sync boundaries: 7 (2 lock-free rings, 2 MemoryQueues, 1 mpsc, 2 Notify wakeups)
+ OS threads spawned: 2 (transcoder stage + sender)
 ```
 
 ### Data flow between rings and queues
@@ -372,33 +343,33 @@ reading the same preset share the transcoded RingBuffer.
                                          │
            ┌─────────────────────────────┼───────────────────┐
            ▼                             ▼                   ▼
-     Transcode feeder              HLS feeder          Recording feeder
+     Transcode feeder              HLS segmenter       Recording feeder
      (tokio task)                  (tokio task)         (tokio task)
            │                             │                   │
-           ▼                             ▼                   ▼
-  ┌─────────────┐              ┌─────────────┐     ┌─────────────┐
-  │ MemoryQueue │              │ MemoryQueue │     │ MemoryQueue │
-  │ (to encoder)│              │ (to muxer)  │     │ (to muxer)  │
-  └──────┬──────┘              └──────┬──────┘     └──────┬──────┘
-         ▼                            ▼                   ▼
-  FFmpeg encoder              FFmpeg TS muxer       FFmpeg MKV muxer
-  thread                      thread                thread
-         │                            │                   │
-         ▼                            ▼                   ▼
-  ┌─────────────┐              ┌─────────────┐     ┌──────────┐
-  │ MemoryQueue │              │ MemoryQueue │     │ File I/O │
-  │ (encoded)   │              │ (TS output) │     │ (.mkv)   │
-  └──────┬──────┘              └──────┬──────┘     └──────────┘
-         ▼                            ▼
-  Transcoder output           HLS splitter
-  reader thread               thread
-         │                            │
-         ▼                            ▼
-  ┌────────────────────┐     ┌─────────────────┐
-  │ Transcoded         │     │ HlsStore        │
-  │ RingBuffer         │     │ Mutex<VecDeque> │
-  │ (shared by egress) │     │ → Axum handler  │
-  └─────────┬──────────┘     └─────────────────┘
+           ▼                             │                   ▼
+  ┌─────────────┐                        │          ┌─────────────┐
+  │ MemoryQueue │                        │          │ MemoryQueue │
+  │ (to encoder)│                        │          │ (to muxer)  │
+  └──────┬──────┘                        │          └──────┬──────┘
+         ▼                               │                 ▼
+  FFmpeg encoder                         │          FFmpeg MKV muxer
+  thread                                 │          thread
+         │                               │                 │
+         ▼                               ▼                 ▼
+  ┌─────────────┐               ┌─────────────────┐  ┌──────────┐
+  │ MemoryQueue │               │ HlsStore        │  │ File I/O │
+  │ (encoded)   │               │ Mutex<VecDeque> │  │ (.mkv)   │
+  └──────┬──────┘               │ → Axum handler  │  └──────────┘
+         ▼                      └─────────────────┘
+  Transcoder output
+  reader thread
+         │
+         ▼
+  ┌────────────────────┐
+  │ Transcoded         │
+  │ RingBuffer         │
+  │ (shared by egress) │
+  └─────────┬──────────┘
             │
     ┌───────┼───────┐
     ▼       ▼       ▼
@@ -412,15 +383,13 @@ reading the same preset share the transcoded RingBuffer.
 | Boundary | Mechanism | Blocking? |
 |---|---|---|
 | SRT accept → tokio handler | `mpsc::channel` | No (async recv) |
-| Tokio handler → demuxer | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |
-| Demuxer → source RingBuffer | `ArcSwap` + `AtomicUsize` Release | No (lock-free) |
+| Ingest handler → source RingBuffer | `push_batch()` (`ArcSwap` + `Release`) | No (lock-free) |
 | Source ring → transcode feeder | `tokio::sync::Notify` + Acquire | No (async wait) |
 | Feeder → transcoder | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |
-| Transcoder → output reader | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |
-| Output reader → transcoded ring | `ArcSwap` + Release | No (lock-free) |
+| Transcoder → transcoded ring | `ArcSwap` + Release | No (lock-free, direct push) |
 | Transcoded ring → egress handler | `tokio::sync::Notify` + Acquire | No (async wait) |
-| Egress handler → SRT muxer | `sync_channel` | Yes (bounded channel) |
-| SRT muxer → SRT sender | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |
+| SRT egress task → SRT sender | `MemoryQueue` | Yes (Mutex + Condvar) |
+| SRT TsMuxer → SRT sender | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |
 
 ## Packet walk: SRT ingest → SRT egress (no transcoding)
 
@@ -442,10 +411,7 @@ The egress reads directly from the source RingBuffer.
            ┌────────────────────────────────────────┼────────────────┐
            ▼                                        ▼                ▼
   SRT egress task #1                    SRT egress task #2   SRT egress task #3
-  pull → sync_channel                   pull → sync_channel  pull → sync_channel
-           │                                        │                │
-  SRT muxer thread                      SRT muxer thread     SRT muxer thread
-  FFmpeg TS mux → MemoryQueue           TS mux → MQ          TS mux → MQ
+  pull → inline TsMux → MQ              pull → TsMux → MQ    pull → TsMux → MQ
            │                                        │                │
   SRT sender thread                     SRT sender           SRT sender
   srt_send()                            srt_send()           srt_send()
@@ -454,7 +420,7 @@ The egress reads directly from the source RingBuffer.
  Kernel → libsrt → EGRESS NIC
 
  Thread hops: 5 (per egress path)
- OS threads spawned: 1 (demuxer) + 3×2 (muxer+sender) = 7
+ OS threads spawned: 1 (demuxer) + 3×1 (sender) = 4
 ```
 
 ## Packet walk: HLS segmenter
@@ -464,42 +430,25 @@ The egress reads directly from the source RingBuffer.
      │
      │  Notify + Acquire
      ▼
- ╔════════════════════════════════════════════════╗
- ║ TOKIO                                          ║
- ║ ┌────────────────────────────────────────────┐ ║
- ║ │ Task: HLS feeder                           │ ║
- ║ │   reader.pull()                            │ ║
- ║ │   if keyframe: signal.store(true, Release) │ ║
- ║ │   input_queue.write(payload)               │ ║
- ║ └──────────────────┬─────────────────────────┘ ║
- ╚════════════════════╪═══════════════════════════╝
-                      │
-      ════════════════╪════  thread hop (MemoryQueue, Condvar)
-                      ▼
- ┌──────────────────────────────────────────┐
- │ OS Thread: HLS muxer                     │
- │   input_queue.read() → FFmpeg demux      │
- │   → FFmpeg mux to MPEG-TS               │
- │   → output_queue.write()                 │
- └──────────────────┬───────────────────────┘
-                    │
-    ════════════════╪════  thread hop (MemoryQueue, Condvar)
-                    ▼
- ┌──────────────────────────────────────────────────┐
- │ OS Thread: HLS splitter                          │
- │   output_queue.read()                            │
- │   accumulate TS bytes in buffer                  │
- │   when keyframe_signal + min_duration:           │
- │     hls_store.push_segment(duration, bytes)      │
- │     ┌──────────────────────────────────────────┐ │
- │     │  HlsStore (Mutex<VecDeque<HlsSegment>>) │ │
- │     │  max_segments segments in memory         │ │
- │     │  served directly by Axum GET handler     │ │
- │     └──────────────────────────────────────────┘ │
- └──────────────────────────────────────────────────┘
+ ╔════════════════════════════════════════════════════════════╗
+ ║ TOKIO                                                      ║
+ ║ ┌────────────────────────────────────────────────────────┐ ║
+ ║ │ Task: HLS segmenter                                    │ ║
+ ║ │   reader.pull()                                        │ ║
+ ║ │   TsMuxer::mux_packet() (inline, ~0.6µs/pkt)          │ ║
+ ║ │   accumulate TS bytes in buffer                        │ ║
+ ║ │   when keyframe + min_duration:                        │ ║
+ ║ │     hls_store.push_segment(duration, bytes)            │ ║
+ ║ │     ┌────────────────────────────────────────────────┐ │ ║
+ ║ │     │  HlsStore (Mutex<VecDeque<HlsSegment>>)       │ │ ║
+ ║ │     │  max_segments segments in memory               │ │ ║
+ ║ │     │  served directly by Axum GET handler           │ │ ║
+ ║ │     └────────────────────────────────────────────────┘ │ ║
+ ║ └────────────────────────────────────────────────────────┘ ║
+ ╚════════════════════════════════════════════════════════════╝
 
- Thread hops: 2
- OS threads spawned: 2 (muxer + splitter)
+ Thread hops: 0
+ OS threads spawned: 0 (inline TsMuxer in async task)
 ```
 
 ## Packet walk: MKV recording
@@ -568,15 +517,15 @@ The egress reads directly from the source RingBuffer.
                                │        │        │       │
                     ┌──────────┘   ┌────┘   ┌────┘  ┌────┘
                     ▼              ▼        ▼       ▼
-              RTMP egress    transcode   HLS     recording
-              tasks (async)  feeder     feeder   feeder
-                    │         (task)    (task)    (task)
-                    │              │        │       │
-                    │         encoder    muxer    MKV muxer
-                    │         thread    thread    thread
-                    │              │        │       │
-                    │         output    splitter   disk
-                    │         reader    thread
+              RTMP egress    transcode   HLS          recording
+              tasks (async)  feeder     segmenter    feeder
+                    │         (task)    (inline       (task)
+                    │              │     TsMuxer)        │
+                    │         encoder      │         MKV muxer
+                    │         thread       │         thread
+                    │              │       │            │
+                    │         output       │          disk
+                    │         reader       │
                     │         thread       │
                     │              │       ▼
                     │              ▼    HlsStore
@@ -586,9 +535,7 @@ The egress reads directly from the source RingBuffer.
                     │        │     │     │
                     │      SRT   SRT   SRT
                     │      egress tasks
-                    │        │     │     │
-                    │      muxer muxer muxer
-                    │      thrd  thrd  thrd
+                    │      (inline TsMux)
                     │        │     │     │
                     │      sendr sendr sendr
                     │      thrd  thrd  thrd
@@ -646,6 +593,32 @@ keeps the async runtime responsive.
 
 All FFmpeg threads use `catch_unwind(AssertUnwindSafe(…))` so that corrupt
 streams or codec bugs log errors without crashing the process.
+
+## Payload format tagging
+
+`MediaPacket.format` is a `PayloadFormat` enum (`Flv` or `Raw`) set by the
+producer and checked by each consumer:
+
+| Producer | Format | Payload content |
+|---|---|---|
+| RTMP ingest | `Flv` | FLV-wrapped: 5-byte video header, 2-byte audio header |
+| SRT ingest demuxer | `Raw` | Annex B (video), raw AAC (audio) from FFmpeg demux |
+| Transcoder stage | `Raw` | Annex B / raw AAC from FFmpeg demux of input MPEG-TS |
+| Rust MPEG-TS demuxer | `Raw` | Annex B / raw AAC extracted from PES |
+
+Consumers use `format` to decide whether to strip FLV headers:
+
+| Consumer | `Flv` action | `Raw` action |
+|---|---|---|
+| RTMP egress | Publish payload directly | Would need FLV re-wrap (not yet implemented) |
+| SRT egress TsMuxer | Strip 5/2 byte FLV header, skip sequence headers | Pass through |
+| HLS segmenter TsMuxer | Strip 5/2 byte FLV header, skip sequence headers | Pass through |
+| Transcoder feeder | Strip FLV headers before muxing to input MPEG-TS | Pass through |
+| Recording feeder | Passes raw bytes to FFmpeg MemoryQueue | Passes raw bytes |
+
+This replaces the previous approach of guessing payload format from
+`ingest.protocol`, which broke when a transcoded RingBuffer (always `Raw`)
+was consumed by an egress that checked the original ingest protocol.
 
 ## Shared transcoding stages
 

@@ -146,13 +146,11 @@ URL behavior:
 |---|---|
 | `rtmp://` | RTMP |
 | `srt://` | SRT/MPEG-TS |
-| Anything else | Local in-memory HLS segmenter |
+| `hls://` | Local in-memory HLS segmenter |
+| `http://` | Local in-memory HLS segmenter |
+| `https://` | Local in-memory HLS segmenter |
 
-RTMPS parsing exists in the RTMP module, but the reconciler currently dispatches
-only `rtmp://`; treat `rtmps://` output as not wired.
-
-HTTP/HTTPS HLS upload is not implemented. The configured destination URL is not
-used by the local segmenter.
+Any other prefix is rejected during validation with a `400 Bad Request`. RTMPS is not supported and will be rejected. HLS upload via HTTP/HTTPS is not implemented; the target URL is only used for scheme identification.
 
 ## History
 
@@ -228,7 +226,7 @@ Start returns `400` if `media/<filename>` does not exist and `409` if that inges
 ID already has a tracked child. The list endpoint currently reports
 `running: false` for every row; it does not consult the child map. Natural child
 exit is not reaped from the map, so a later start can remain stuck at `409`.
-Deleting an ingest definition does not kill a running child.
+Deleting an ingest definition terminates its running child process if one exists.
 
 ## Media Files
 
@@ -323,7 +321,6 @@ Authenticated build/runtime information:
     "commit": "abc558b",
     "nativeBuildId": "..."
   },
-  "ffmpeg": "6.x",
   "toolchain": {
     "rustc": "1.96.0",
     "target": "x86_64-unknown-linux-gnu",
@@ -372,10 +369,9 @@ Authenticated build/runtime information:
 }
 ```
 
-The top-level `ffmpeg` string remains for compatibility. Detailed native
-versions are obtained from the running libraries where they expose a runtime
-API. x264 has no public runtime version call, so its exact linked pkg-config
-version is embedded at build time and labeled accordingly.
+Native versions are obtained from the running libraries where they expose a
+runtime API. x264 has no public runtime version call, so its exact linked
+pkg-config version is embedded at build time and labeled accordingly.
 
 ### `GET /api/status/sbom`
 

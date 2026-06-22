@@ -19,15 +19,15 @@ flowchart LR
   FILEI["File ingest"]
 
   CHILD["ffmpeg child process\nfile -> FLV/RTMP"]
-  SRTDEMUX["FFmpeg demux\nMPEG-TS -> packets"]
+  SRTDEMUX["TsDemuxer\nMPEG-TS -> packets (inline)"]
 
   RB["Ring buffer\nMediaPacket payloads"]
 
   TRANS["Optional transcoder\nFFmpeg -> MPEG-TS bytes"]
 
   RTMPE["RTMP egress\ndirect publish payload"]
-  SRTE["SRT egress\ndirect send payload"]
-  HLS["HLS\nFFmpeg TS mux + segment"]
+  SRTE["SRT egress\nTsMuxer + srt_send"]
+  HLS["HLS\nTsMuxer (inline) + segment"]
   REC["Recording\nFFmpeg MKV mux"]
 
   FILEI --> CHILD --> RTMPI
@@ -237,26 +237,17 @@ audio/video data. That works best when ingest already produced RTMP-ready
 payloads. File ingest currently works around this by using an external FFmpeg
 process to normalize files into FLV/RTMP before Rust sees the media.
 
-SRT egress is currently the clearest gap: it directly sends `packet.payload` over
-SRT, but SRT outputs normally need a proper MPEG-TS muxed byte stream.
+SRT egress is packaged with a proper MPEG-TS mux stage using the native `TsMuxer` (running on a dedicated thread) before transport via `srt_send` (also running on a dedicated sender thread).
 
-## Existing Muxing Stages
-
-There are muxing stages today, but they are path-specific rather than a universal
-egress packaging layer.
+## Muxing Stages
 
 | Stage | Current role |
 |---|---|
 | Transcoder | FFmpeg `CustomInput -> CustomOutput("mpegts")`, then pushes output chunks back into a ring buffer |
-| HLS | FFmpeg remux to MPEG-TS, then segment in memory |
+| HLS | Native `TsMuxer` remux to MPEG-TS, then segment in memory (inline) |
 | Recording | FFmpeg remux to MKV file |
-| SRT ingest | FFmpeg demux from MPEG-TS into `MediaPacket`s |
-
-What is missing is a consistent final layer:
-
-```text
-canonical packets -> protocol mux/packetizer -> protocol sender
-```
+| SRT Ingest | Native `TsDemuxer` demux from MPEG-TS into `MediaPacket`s (inline) |
+| SRT Egress | Native `TsMuxer` remux to MPEG-TS (on dedicated thread) |
 
 ## Audio Stage Cache Concern
 
@@ -289,14 +280,7 @@ flowchart LR
   A --> O2
 ```
 
-The short-term correctness fix is to key audio/filter stages by the upstream
-stage identity as well as the audio operation:
-
-```text
-pipeline:video:720p:from:source
-pipeline:audio:atrack:0:from:video:720p
-pipeline:audio:atrack:0:from:video:1080p
-```
+This correctness issue is resolved. Audio/filter stages are keyed by the upstream stage identity as well as the audio operation (e.g. `audio:atrack:0:from:video:720p`), preventing outputs using different presets from cross-contaminating.
 
 ## Proposed Near-Term Model
 

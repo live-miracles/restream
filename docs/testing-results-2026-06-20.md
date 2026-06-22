@@ -129,6 +129,23 @@ fails setup if `HAVE_X86ASM` is not set. OpenCL remains disabled: the measured
 CPU assembly directly accelerates the decode, scale, and H.264 encode feeder
 path without adding a GPU runtime or static `dlopen` dependency.
 
+## Static Build Caching — June 21, 2026
+
+The native setup script now fingerprints source revisions, compiler/assembler
+versions, install prefix, OpenSSL version, and complete configure options.
+Unchanged SRT, x264, and FFmpeg builds are reused; configuration or toolchain
+changes invalidate the affected layer.
+
+| Operation | Before | After | Improvement |
+|---|---:|---:|---:|
+| Unchanged native setup | 63.88 s | 0.14 s | 456× |
+| Restream-only static rebuild | 61.09 s fat LTO | 23.56 s thin LTO | 2.59× |
+
+`RESTREAM_BUILD_PROFILE=fast-release` selects the faster thin-LTO profile for
+iteration. The default remains the fat-LTO release profile. Setting
+`RESTREAM_REBUILD_NATIVE=1` bypasses native cache stamps when a complete
+reconfiguration is required.
+
 The host also reports:
 
 ```text

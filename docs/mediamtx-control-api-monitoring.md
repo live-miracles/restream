@@ -38,7 +38,7 @@ poll a sidecar.
 
 ## Remaining Migration Work
 
-- Remove or replace frontend Grafana links that target old MediaMTX dashboards.
+- ~~Remove or replace frontend Grafana links that target old MediaMTX dashboards.~~ (Done - Grafana links removed)
 - Replace the old Node/MediaMTX GitHub Actions workflow with Rust-native CI.
 - Add a Rust Prometheus exporter if time-series monitoring is still required.
 - Keep MediaMTX only as an isolated interoperability sink in protocol tests.

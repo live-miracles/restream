@@ -1,25 +1,23 @@
 # Configuration Reference
 
-The Rust runtime currently has a small configuration surface. Listener ports and
-runtime paths are fixed in code; user-facing settings are stored in SQLite.
+The Rust runtime currently has a small configuration surface. Listener ports can be overridden via environment variables; runtime paths are fixed in code; user-facing settings are stored in SQLite.
 
-## Fixed Runtime Values
+## Fixed Runtime Values and Environment Variables
 
-| Value | Current setting |
-|---|---|
-| Dashboard/API listener | `0.0.0.0:3030` |
-| RTMP listener | `0.0.0.0:1935` |
-| SRT listener | `0.0.0.0:10080` |
-| SQLite database | `data.db` |
-| Media directory | `media/` |
-| File-ingest executable | `ffmpeg` from `PATH` |
-| Output reconciliation interval | 1 second |
-| Failed-output restart delay | 5 seconds |
+| Value | Default setting | Environment Variable Override |
+|---|---|---|
+| Dashboard/API listener | `0.0.0.0:3030` | `RESTREAM_HTTP_PORT` (port only) |
+| RTMP listener | `0.0.0.0:1935` | `RESTREAM_RTMP_PORT` |
+| SRT listener | `0.0.0.0:10080` | `RESTREAM_SRT_PORT` |
+| SQLite database | `data.db` | *None* |
+| Media directory | `media/` | *None* |
+| File-ingest executable | `ffmpeg` from `PATH` | *None* |
+| Output reconciliation interval | 1 second | *None* |
+| Failed-output restart delay | 5 seconds | *None* |
 
 The Rust server does not currently read the old Node environment variables such
-as `BASE_PATH`, `PUBLIC_INGEST_HOST`, `GRAFANA_PROXY_TARGET`,
-`HEALTH_SNAPSHOT_INTERVAL_MS`, or the old output-recovery knobs. Do not depend
-on those variables until equivalent Rust configuration is implemented.
+as `BASE_PATH`, `PUBLIC_INGEST_HOST`, `HEALTH_SNAPSHOT_INTERVAL_MS`,
+or the old output-recovery knobs. Do not depend on those variables.
 
 ## SQLite-Backed Settings
 
@@ -82,10 +80,9 @@ Supported routing behavior:
 |---|---|
 | `rtmp://...` | Native RTMP egress |
 | `srt://...` | Native SRT MPEG-TS egress |
-| Any other scheme, including `http://` and `https://` | Starts the pipeline's local in-memory HLS segmenter |
+| `hls://...`, `http://...`, `https://...` | Starts the pipeline's local in-memory HLS segmenter |
 
-The last case is not HTTP HLS upload. The URL is currently ignored after the
-protocol decision.
+Any other prefix is rejected during validation. The target URL for HLS routing is not used for HTTP HLS upload; the target host is ignored after the protocol decision.
 
 Encoding strings are compound values:
 

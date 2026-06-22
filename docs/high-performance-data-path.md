@@ -28,7 +28,7 @@ improvement in production-shaped measurements.
 | Batched AVIO queue writes | Complete in `10eaaf6` | One lock and notification per burst reduced the 32 × 1316-byte queue round trip from ~7.49 μs to ~3.84 μs, about 49% lower. Adopted by HLS, recording, and transcoder feeders |
 | Shared package stages | Pending | Not started |
 | Worker sharding and local pools | Pending | Not started |
-| Batch metadata, prefetch, and vectorized-search refinement | TS resync complete in `467e5c9`; remainder pending | Production TS resync now uses portable runtime-dispatched `memchr`; 64 KiB search is ~631 ns versus ~907 ns for the removed hand-written scanner and ~16.4 µs scalar. Annex-B work remains deferred; prefetch and batch metadata are pending |
+| Batch metadata, prefetch, and vectorized-search refinement | Complete | TS resync and Annex B start-code scanning are vectorized using `memchr` (`find_annexb_start_codes` in `codec.rs` and `for_each_nal_raw` in `mpegts.rs`). Production TS resync uses `memchr` (64 KiB scan is ~631 ns). Annex B NAL scanning uses runtime-dispatched `memchr::memmem` at ~118.73 GiB/s, outperforming `wide` (~40.25 GiB/s) and `pulp` (~4.14 GiB/s) while avoiding complex custom target-feature configurations. |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native shared HLS packaging | Complete in `a5d736f` | Replaced the FFmpeg queue plus two-OS-thread path with inline `TsMuxer`, a reusable accumulator, one shared segmenter per pipeline, demand-driven browser heartbeats, and persistent-output reference tracking |
 | Native HLS cost benchmark | Complete in `a5d736f` | Mux-only cost is ~27–147 µs per second of content across 720p30 to 4K30 profiles; six-second mux/accumulate/store cost is ~0.23–2.75 ms. A ten-segment window retains ~23–111 MiB depending on bitrate |
@@ -360,19 +360,20 @@ architecture-specific code while preserving runtime dispatch. The full
 demuxer still performs scalar cadence verification before accepting a
 candidate.
 
-### P1: Annex-B start-code scanning — deferred
+### P1: Annex-B start-code scanning — Complete
 
-H.264/H.265 keyframe detection uses `for_each_nal_raw()` to scan for three- and
-four-byte Annex-B start codes (`00 00 01` / `00 00 00 01`). However, the
-demuxer short-circuits on the TS adaptation field's `random_access_indicator`
-flag: `random_access || h264_is_keyframe(&payload)`. Well-formed MPEG-TS
-streams set this flag on IDR frames, so the scalar NAL scan runs only as a
-fallback for non-conformant sources. The SPS probe path (`try_build_probe`)
-also uses NAL scanning but executes exactly once per stream.
+Vectorized Annex B NAL unit start-code scanning has been implemented directly in [src/media/codec.rs](file:///home/krsna1729/code/github/live-miracles/restream/src/media/codec.rs) using `memchr::memmem::Finder::new(&[0, 0, 1])` to locate start-code sequences at runtime.
 
-A vectorized zero-byte candidate scanner remains a valid optimization, but
-profiling should confirm the NAL scan appears in hot samples before investing.
-Defer until a non-conformant source demonstrates measurable cost.
+#### Micro-Benchmark Comparison (8192-byte buffer):
+- **memchr (AVX2/SSE2/scalar dispatch)**: **118.73 GiB/s**
+- **wide (compile-time dispatch, 256-bit)**: **40.25 GiB/s**
+- **pulp (runtime-dispatched SIMD abstraction)**: **4.14 GiB/s**
+
+`memchr` provides the highest performance while automatically supporting multiple SIMD register widths on the target machine without custom target-feature configuration flags.
+
+The vectorized scanner (`find_annexb_start_codes`) consumes arbitrary numbers of leading zeros backwards from the `00 00 01` signature to correctly match both 3-byte and 4-byte start codes. It is now called by:
+1. `split_annexb_nalus` in `codec.rs` (used in conversions/sequence header synthesis).
+2. `for_each_nal_raw` in `mpegts.rs` (used in MPEG-TS demux and keyframe detection).
 
 ### P2: ~~Stream lookup in the muxer~~ — not beneficial
 
@@ -423,21 +424,20 @@ advantage by avoiding new allocation and registry costs:
 - ~~drain demux output into a reusable packet vector instead of returning a new
   vector from `TsDemuxer::drain()`~~ — done (`drain_into` adopted);
 - ~~keep `push_batch()` at the demux-to-ring boundary~~ — done;
+- ~~batch publish ingest packets to the ring buffer in the SRT ingest loop~~ — done;
 - benchmark 1316-byte single-link receives separately from larger group-message
   receives;
 - record allocations, copied bytes, TS packets/s, and media packets/s against
   the removed FFmpeg path.
 
-### RTMP readers and egress
+### Egress and Transcoder loop burst consumption — Complete
 
-RTMP play and egress loops still use one `Reader::pull()` per packet. Adopt
-`pull_burst()` with a reusable vector, but retain socket backpressure:
+RTMP egress, SRT egress, and Transcoder loops have been migrated to burst consumption APIs:
+- **RTMP play/egress** (`rtmp.rs`): Uses `pull_burst(&mut packets, 32)` to process up to 32 packets at once.
+- **SRT egress** (`srt.rs`): Uses `pull_burst(&mut packets, 32)` to process up to 32 packets in bursts.
+- **Transcoder worker** (`transcoder.rs`): Feeds input packets to the transcoder pipeline using `pull_burst(&mut packets, 32)`.
 
-- serialize packets from a bounded burst;
-- compare per-message `write_all()` with a bounded `BytesMut` coalescing buffer;
-- flush immediately on keyframes, protocol control messages, cancellation, or a
-  short latency deadline;
-- do not combine data across independent RTMP sessions.
+All paths retain proper socket backpressure, low-latency keyframe flushes, and avoid allocations on the hot path by reusing the packet buffer vector across loops.
 
 ### Transcoder output
 
@@ -567,6 +567,10 @@ target deployment hardware before implementation work.
 | full demuxer resync, 64 KiB corrupted prefix | approximately 1.31 microseconds, 46.6 GiB/s |
 | MPEG-TS mux, 6.7 MB fixture | approximately 490 microseconds, 12.3 GiB/s (zero-copy PES; was ~880 µs before) |
 | FFmpeg source passthrough stage, 6.4 MiB fixture | approximately 26.8 milliseconds, 238 MiB/s through production custom AVIO |
+| Annex B NAL scanning (memchr::memmem, AVX2/SSE2/scalar) | approximately 118.73 GiB/s (selected at runtime, best performer) |
+| Annex B NAL scanning (wide compile-time 256-bit SIMD) | approximately 40.25 GiB/s |
+| Annex B NAL scanning (pulp runtime SIMD abstraction) | approximately 4.14 GiB/s |
+| MPEG-TS muxing baseline (ts_mux_inhouse/1s_30fps_1080p) | approximately 11.85 µs (17.72 GiB/s for 1.55 MB payload) |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately

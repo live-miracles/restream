@@ -32,20 +32,19 @@ Tokio tasks handle:
 
 - Axum HTTP
 - RTMP connections
-- SRT connection coordination
+- SRT connection coordination and ingest (inline native MPEG-TS demux)
+- HLS segmenting and store (inline native MPEG-TS mux)
 - output reconciliation
 - egress lifecycle
 
-Dedicated OS threads handle blocking/native FFmpeg work:
+Dedicated OS threads handle blocking/native FFmpeg work, blocking network send, or dedicated egress muxing:
 
-- SRT demux
-- MPEG-TS mux
-- HLS mux/segment splitting
+- SRT egress MPEG-TS mux (TsMuxer) and sender
 - Matroska recording
-- transcoding
+- transcoding (FFmpeg decode + encode)
 
 Native worker entry points are wrapped with `catch_unwind` where the code needs
-to contain FFmpeg failures.
+to contain FFmpeg/libsrt failures.
 
 ## Packet Flow
 
@@ -54,8 +53,7 @@ RTMP:
 socket -> rml_rtmp -> FLV audio/video payload -> MediaPacket -> RingBuffer
 
 SRT:
-libsrt socket -> MPEG-TS bytes -> MemoryQueue -> FFmpeg demux
-             -> MediaPacket -> RingBuffer
+libsrt socket -> MPEG-TS bytes -> TsDemuxer (inline) -> MediaPacket -> RingBuffer
 
 egress:
 RingBuffer Reader -> protocol/container packaging -> socket or local store

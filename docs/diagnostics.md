@@ -61,8 +61,8 @@ Examples:
 - A source `MediaPacket` pulled from the source ring and written directly to
   RTMP egress can be measured through RTMP packet construction and the socket
   write call.
-- SRT ingest can be measured from the FFmpeg demuxer producing a
-  `MediaPacket`; the earlier SRT receive and MPEG-TS byte queue do not yet have
+- SRT ingest can be measured from the native TsDemuxer producing a
+  `MediaPacket`; the earlier SRT receive does not yet have
   packet lineage.
 - The current transcoder converts packets to an opaque byte stream and creates
   new packets with zero timestamps. Source lineage ends when the source packet
@@ -219,16 +219,15 @@ TCP reads, and the current parser does not expose byte-range provenance.
 
 ### SRT ingest
 
-Current lineage begins when the FFmpeg demuxer emits a codec packet and
+Current lineage begins when the native TsDemuxer yields a parsed packet and
 Restream constructs a `MediaPacket`.
 
 Record:
 
-- `pipeline_enter_ns` after FFmpeg returns the demuxed packet;
+- `pipeline_enter_ns` after TsDemuxer returns the parsed packet;
 - `ring_push_ns` immediately before `RingBuffer::push()`.
 
-Do not attribute `srt_recv()`, MPEG-TS `MemoryQueue`, or demux discovery time to
-an individual media packet.
+Do not attribute `srt_recv()` or demux discovery time to an individual media packet.
 
 Track those earlier stages only with aggregate queue/counter measurements if
 needed.

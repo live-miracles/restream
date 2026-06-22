@@ -43,7 +43,7 @@ Active input fields:
 | `publishStartedAt` | Current UTC time minus the ingest's monotonic uptime |
 | `bytesReceived` | Ingest `AtomicU64` counter |
 | `bitrateKbps` | Average bytes received over total ingest uptime |
-| `video` | RTMP FLV parser or SRT FFmpeg demux metadata |
+| `video` | RTMP FLV parser or SRT native TsDemuxer metadata |
 | `audio` | Primary audio metadata |
 | `publisher.protocol` | `rtmp`, `srt`, or `file` |
 | `publisher.remoteAddr` | Accepted peer address when available |

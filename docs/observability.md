@@ -93,9 +93,9 @@ The old MediaMTX Prometheus/Grafana setup belongs to the archived implementation
 under `old/`. The current Rust binary has no `/metrics` text endpoint and no
 `/grafana` reverse proxy.
 
-The frontend still contains Grafana links from the previous UI. They should be
-treated as dormant compatibility UI until a Rust-native metrics exporter or an
-external dashboard contract is implemented.
+All legacy Grafana links and buttons have been removed from the frontend dashboard.
+Any future telemetry integration will require implementing a Rust-native metrics
+exporter or an external dashboard contract.
 
 Recommended next step: export bounded process, pipeline, transport, ring-reader,
 and egress counters in Prometheus format without putting labels or allocation
