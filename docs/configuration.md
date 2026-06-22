@@ -161,10 +161,9 @@ The in-memory HLS store is served at:
 /hls/<pipelineId>/seg<N>.ts
 ```
 
-The older `/preview/hls/...` paths are compatibility aliases. Store/route tests
-pass, but live generation is not yet considered protocol-correct because the
-feeder concatenates raw `MediaPacket.payload` values into FFmpeg format
-detection rather than supplying a defined container stream.
+The older `/preview/hls/...` paths are compatibility aliases. Live generation
+uses the native inline `TsMuxer`; one shared segmenter per pipeline serves
+browser previews and HLS-type outputs.
 
 These routes are currently unauthenticated. Before exposing them publicly, add
 signed URLs or short-lived bearer tokens covering both playlists and segments,

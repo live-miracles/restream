@@ -34,10 +34,9 @@ Important boundaries:
 - Standard RTMP does not carry H.265. The reconciler inserts an H.264 transcode
   stage for an H.265 source sent to RTMP, but that stage does not currently
   decode and re-encode packets.
-- HLS generation and recording feed concatenated `MediaPacket.payload` bytes
-  into FFmpeg format detection. Because packet payloads are not a self-describing
-  container stream, those paths need end-to-end repair/validation before being
-  called working media outputs.
+- HLS generation uses the native inline `TsMuxer` and is structurally sound;
+  recording feeds concatenated `MediaPacket.payload` bytes into FFmpeg format
+  detection and needs contract repair before being called a working media output.
 - A proper SRT bonding publisher is accepted as one libsrt group on the single
   SRT listener when libsrt was built with `ENABLE_BONDING=ON`. The runtime logs
   a warning if the linked library exposes only disabled bonding stubs. Two
@@ -57,9 +56,9 @@ RTMP/SRT publisher
         |
         v
 native ingest -> RingBuffer -> RTMP/SRT output
-                    |        -> HLS scaffolding (contract repair required)
-                    |        -> MKV scaffolding (contract repair required)
-                    `--------> transform scaffolding -> output RingBuffer
+                    |        -> HLS (native TsMuxer, in-memory segments)
+                    |        -> MKV recording (contract repair required)
+                    `--------> transform stage -> output RingBuffer
 
 Axum API/dashboard -> SQLite
 ```
@@ -156,11 +155,12 @@ Run the full Rust suite:
 cargo test
 ```
 
-As of June 21, 2026 this runs 117 passing tests:
+As of June 22, 2026 this runs 132 passing tests:
 
-- 81 library/unit tests
+- 92 library/unit tests
 - 24 API integration tests
 - 12 database integration tests
+- 4 transcoder integration tests
 
 Run the 2-pipeline × 3-output live test against a running application:
 
@@ -178,8 +178,7 @@ For the broader media/scale harness:
 ./test/run-media-validation.sh
 ```
 
-Detailed correctness and scale gates are in
-[End-to-End Testing](docs/end-to-end-testing.md).
+Detailed correctness and scale gates are in [Testing](docs/testing.md).
 
 ## Operational APIs
 
@@ -200,15 +199,10 @@ surfaces until signed URLs or equivalent authorization are implemented.
 ## Documentation
 
 - [Rewrite Status](REWRITE-STATUS.md): implementation status, evidence, and gaps
-- [Architecture](docs/architecture.md): runtime and packet flow
-- [Configuration](docs/configuration.md): fixed ports and SQLite-backed settings
-- [API Reference](docs/api-reference.md): current Rust routes
-- [Health Mapping](docs/health-mapping.md): `/health` field derivation
-- [Diagnostics](docs/diagnostics.md): current diagnostics and residency design
-- [Media Pipeline Stage Design](docs/media-pipeline-stage-design.md): processing
-  stages, protocol contracts, and buffer sizing
-- [Observability](docs/observability.md): available JSON observability surfaces
-- [Protocol Correctness](docs/protocol-correctness-notes.md): codec and transport
-  correctness requirements
-- [Legacy MediaMTX Monitoring](docs/mediamtx-control-api-monitoring.md): retained
-  migration context only
+- [Architecture](docs/architecture.md): runtime shape, thread model, packet walks, key files
+- [Configuration](docs/configuration.md): ports, SQLite settings, encoding strings, SRT socket policy
+- [API Reference](docs/api-reference.md): route surface and request/response details
+- [Media Pipeline](docs/media-pipeline.md): processing stages, protocol contracts, buffer sizing, correctness requirements
+- [Observability](docs/observability.md): health mapping, diagnostics, publisher transport, residency design
+- [Testing](docs/testing.md): test suite, live validation results, E2E test plan
+- [High-Performance Data Path](docs/high-performance-data-path.md): optimization plan, benchmarks, progress log

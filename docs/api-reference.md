@@ -180,7 +180,7 @@ Streams Server-Sent Events. An optional `probe=rtmp|srt` query must match the
 active ingest protocol. Returns `404` without an active ingest and `400` for a
 protocol mismatch.
 
-The current run contains nine checks; see [Diagnostics](diagnostics.md).
+The current run contains nine checks; see [Observability](observability.md).
 
 ## Recording
 
@@ -291,11 +291,8 @@ Public native state snapshot:
 }
 ```
 
-See [Health Mapping](health-mapping.md) for exact derivation.
-
-Active egresses are stored by `outputId` and associated through the explicit
-`pipeline_id` field. SRT group member fields are present only for a bonded
-publisher; `srtBonded` is false for a normal single-link SRT publisher.
+See [Observability](observability.md) for field derivation, publisher quality,
+and diagnostic check details.
 
 ### `GET /healthz`
 

@@ -1,7 +1,7 @@
 # Rust Backend Rewrite — Status
 
 Branch: `feat/rust-backend-rewrite`
-Code snapshot reviewed: June 21, 2026 (`abc558b` plus current working-tree changes)
+Code snapshot reviewed: June 22, 2026 (current working-tree changes)
 
 ## Executive Status
 
@@ -17,14 +17,15 @@ open gates.
 
 ## Evidence
 
-`cargo test` on June 21, 2026:
+`cargo test` on June 22, 2026:
 
 | Suite | Result |
 |---|---|
-| Library/unit | 81 passed |
+| Library/unit | 92 passed |
 | API integration | 24 passed |
 | Database integration | 12 passed |
-| Total | **117 passed, 0 failed** |
+| Transcoder integration | 4 passed |
+| Total | **132 passed, 0 failed** |
 
 Release-build validation on June 21, 2026 also passed:
 
@@ -157,7 +158,7 @@ The labels below distinguish implementation from proof.
 | `atrack` | Implemented at stream-selection level | Parser tests |
 | `remap` / `downmix` | Partial | Select streams; no channel-level `pan`/mix filter |
 | HLS store and HTTP pull routes | Implemented | Playlist/window and route tests |
-| Live HLS media generation | **Unproven / structurally suspect** | Concatenated packet payloads are passed to FFmpeg format detection without a container |
+| Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
 | Matroska recording | **Unproven / structurally suspect** | Same packet-payload-to-`CustomInput` contract as HLS |
 | HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URL starts local segmenter and ignores destination |
 | Custom encoding arguments | **Not applied** | API persists value; reconciler treats `custom` as passthrough |
@@ -187,7 +188,7 @@ Current semantics:
 - ring diagnostics do not yet expose per-reader lag or true occupancy.
 - Engine Status and Active Outputs diagnostics filter by `pipeline_id` field.
 
-The diagnostics design in `docs/diagnostics.md` correctly treats application
+The diagnostics design in `docs/observability.md` correctly treats application
 residency, reader lag, packet lineage, and transcode lineage as future
 instrumentation work.
 
@@ -233,7 +234,7 @@ See `docs/api-reference.md` for the executable route surface.
 7. ~~Replace the transcoder byte-stream reconstruction~~ — done; output reader
    now demuxes MPEG-TS to recover timestamps and keyframes. HLS and recording
    muxers still use the raw-byte approach.
-8. Run the protocol matrix from `docs/end-to-end-testing.md`, including H.265,
+8. Run the protocol matrix from `docs/testing.md`, including H.265,
    B-frame timestamps, cross-protocol packaging, and destination restart.
 9. Implement the decode/filter/encode packet loop, then prove every advertised
    video preset.
@@ -272,16 +273,20 @@ Approximate lines in the reviewed working tree:
 
 | Area | Lines |
 |---|---:|
-| `src/api.rs` | 1,776 |
+| `src/api.rs` | 1,887 |
 | `src/db.rs` | 776 |
-| `src/diag.rs` | 887 |
-| `src/lib.rs` | 388 |
-| `src/media/engine.rs` | 915 |
-| `src/media/rtmp.rs` | 1,385 |
-| `src/media/srt.rs` | 2,056 |
-| `src/media/transcoder.rs` | 456 |
-| `tests/api.rs` | 851 |
+| `src/diag.rs` | 987 |
+| `src/lib.rs` | 500 |
+| `src/media/engine.rs` | 1,382 |
+| `src/media/mpegts.rs` | 2,065 |
+| `src/media/rtmp.rs` | 1,496 |
+| `src/media/srt.rs` | 2,290 |
+| `src/media/codec.rs` | 544 |
+| `src/media/ring_buffer.rs` | 568 |
+| `src/media/transcoder.rs` | 403 |
+| `tests/api.rs` | 965 |
 | `tests/db.rs` | 396 |
+| `tests/transcoder.rs` | 120 |
 
 Line counts are descriptive only and should not be treated as a completion
 metric.
