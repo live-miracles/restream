@@ -68,6 +68,16 @@ pub async fn start_recording(
     let mut muxer: Option<TsMuxer> = None;
     let mut dts_enforcer: Option<DtsEnforcer> = None;
     let mut nalu_len_size: usize = 4;
+    let mut sps_pps_cache: Vec<u8> = {
+        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
+        if let Some(ref flv_sh) = vsh {
+            if flv_sh.len() > 5 {
+                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
+                nalu_len_size = nls;
+                annexb
+            } else { Vec::new() }
+        } else { Vec::new() }
+    };
     let mut audio_tracks: Vec<crate::media::engine::AudioMeta> = Vec::new();
 
     loop {
@@ -103,7 +113,7 @@ pub async fn start_recording(
 
                         let payload = match pkt.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
                                     Some(p) => p,
                                     None => continue,
                                 }

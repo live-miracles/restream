@@ -124,6 +124,23 @@ pub async fn start_hls_segmenter(
     let mut muxer: Option<(TsMuxer, Vec<crate::media::engine::AudioMeta>)> = None;
     let mut dts_enforcer: Option<DtsEnforcer> = None;
     let mut nalu_len_size: usize = 4;
+    // Pre-populate SPS/PPS cache from the engine's stored FLV sequence header.
+    // This handles the case where the HLS task starts after the seq header has
+    // already passed through the ring buffer (e.g. late-joining consumers).
+    let mut sps_pps_cache: Vec<u8> = {
+        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
+        if let Some(ref flv_sh) = vsh {
+            if flv_sh.len() > 5 {
+                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
+                nalu_len_size = nls;
+                annexb
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    };
     let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
@@ -181,7 +198,7 @@ pub async fn start_hls_segmenter(
 
                         let raw_payload = match packet.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&packet.payload, packet.format, &mut nalu_len_size) {
+                                match video_for_ts(&packet.payload, packet.format, &mut nalu_len_size, &mut sps_pps_cache) {
                                     Some(p) => p,
                                     None => continue,
                                 }

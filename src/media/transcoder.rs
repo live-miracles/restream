@@ -136,6 +136,16 @@ pub async fn start_transcoder(
     let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
     let mut reader = Reader::new(format!("transcoder:{}:{}", pipeline_id, preset), input_buffer);
     let mut nalu_len_size: usize = 4;
+    let mut sps_pps_cache: Vec<u8> = {
+        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
+        if let Some(ref flv_sh) = vsh {
+            if flv_sh.len() > 5 {
+                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
+                nalu_len_size = nls;
+                annexb
+            } else { Vec::new() }
+        } else { Vec::new() }
+    };
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
@@ -145,7 +155,7 @@ pub async fn start_transcoder(
                     for pkt in packets {
                         let payload = match pkt.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
                                     Some(p) => p,
                                     None => continue,
                                 }

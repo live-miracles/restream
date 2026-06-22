@@ -7,7 +7,7 @@ use restream::media::ring_buffer::{
 use restream::media::rtmp::{start_rtmp_egress, start_rtmp_server_on};
 use restream::media::security::{DEFAULT_INGEST_SECURITY_CONFIG, IngestSecurityService};
 use restream::media::srt::{SrtServer, start_srt_egress};
-use restream::media::srt::{audio_payload_for_mux, video_payload_for_mux};
+use restream::media::codec::{audio_for_ts, video_for_ts};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -1652,16 +1652,23 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
 
             let num_streams = 1 + audio_tracks.len();
             let mut dts_enforcer = DtsEnforcer::new(num_streams);
+            let mut nalu_len_size: usize = 4;
+            let mut sps_pps_cache: Vec<u8> = Vec::new();
 
             let start = Instant::now();
             let mut has_ts_bytes = false;
             while start.elapsed() < Duration::from_millis(1500) && pulled < num_packets {
                 if let Ok(Some(pkt)) = reader.pull() {
                     max_pts = max_pts.max(pkt.pts).max(pkt.dts);
-                    let is_flv = pkt.format == PayloadFormat::Flv;
                     let payload = match pkt.media_type {
-                        MediaType::Video => video_payload_for_mux(&pkt.payload, is_flv),
-                        MediaType::Audio => audio_payload_for_mux(&pkt.payload, is_flv),
+                        MediaType::Video => video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache),
+                        MediaType::Audio => {
+                            let track = audio_tracks.iter()
+                                .find(|a| a.track_index == pkt.track_index)
+                                .or(audio_tracks.first());
+                            let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                            audio_for_ts(&pkt.payload, pkt.format, sr, ch)
+                        }
                     };
                     if let Some(raw) = payload {
                         let stream_idx = match pkt.media_type {
@@ -1679,7 +1686,7 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
                             pts,
                             dts,
                             pkt.is_keyframe,
-                            raw,
+                            &raw,
                         );
                         if !ts_bytes.is_empty() {
                             has_ts_bytes = true;

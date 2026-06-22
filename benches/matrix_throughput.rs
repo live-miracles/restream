@@ -5,7 +5,7 @@ use restream::media::mpegts::TsMuxer;
 use restream::media::ring_buffer::{
     DtsEnforcer, MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer,
 };
-use restream::media::srt::{audio_payload_for_mux, video_payload_for_mux};
+use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::transcoder::start_transcoder;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -248,14 +248,21 @@ async fn run_matrix_iteration(
         let mut muxer = TsMuxer::new(Some(video_meta), audio_tracks);
         let num_streams = 1 + audio_tracks.len();
         let mut dts_enforcer = DtsEnforcer::new(num_streams);
+        let mut nalu_len_size: usize = 4;
+        let mut sps_pps_cache: Vec<u8> = Vec::new();
 
         let start = Instant::now();
         while pulled < NUM_PACKETS && start.elapsed() < Duration::from_millis(2000) {
             if let Ok(Some(pkt)) = reader.pull() {
-                let is_flv = pkt.format == PayloadFormat::Flv;
                 let payload = match pkt.media_type {
-                    MediaType::Video => video_payload_for_mux(&pkt.payload, is_flv),
-                    MediaType::Audio => audio_payload_for_mux(&pkt.payload, is_flv),
+                    MediaType::Video => video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache),
+                    MediaType::Audio => {
+                        let track = audio_tracks.iter()
+                            .find(|a| a.track_index == pkt.track_index)
+                            .or(audio_tracks.first());
+                        let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                        audio_for_ts(&pkt.payload, pkt.format, sr, ch)
+                    }
                 };
                 if let Some(raw) = payload {
                     let stream_idx = match pkt.media_type {
@@ -273,7 +280,7 @@ async fn run_matrix_iteration(
                         pts,
                         dts,
                         pkt.is_keyframe,
-                        raw,
+                        &raw,
                     );
                     black_box(ts_bytes);
                 }

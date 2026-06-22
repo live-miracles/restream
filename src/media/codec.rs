@@ -19,13 +19,15 @@ use crate::media::ring_buffer::PayloadFormat;
 /// Prepare a video payload for MPEG-TS muxing (Annex B output).
 ///
 /// - **FLV**: strips 5-byte header; sequence headers (packet_type 0) update
-///   `*nalu_len_size` and return the SPS/PPS as Annex B; data packets convert
-///   AVCC → Annex B.
-/// - **Raw**: pass-through (already Annex B).
+///   `*nalu_len_size` and `*sps_pps_cache` (does NOT emit a standalone packet,
+///   returns None); data keyframes prepend cached SPS/PPS then AVCC→Annex B;
+///   non-keyframes convert AVCC→Annex B.
+/// - **Raw**: pass-through (already Annex B with inline SPS/PPS).
 pub fn video_for_ts<'a>(
     payload: &'a [u8],
     format: PayloadFormat,
     nalu_len_size: &mut usize,
+    sps_pps_cache: &mut Vec<u8>,
 ) -> Option<Cow<'a, [u8]>> {
     match format {
         PayloadFormat::Raw => {
@@ -40,20 +42,25 @@ pub fn video_for_ts<'a>(
                 return None;
             }
             if payload[1] == 0 {
-                // Sequence header — extract SPS/PPS as Annex B
+                // Sequence header — cache SPS/PPS Annex B for inline injection
                 let (nls, annexb) = parse_avcc_config(&payload[5..]);
                 *nalu_len_size = nls;
+                *sps_pps_cache = annexb;
+                // Don't emit a standalone packet; SPS/PPS will be prepended to IDR frames
+                None
+            } else {
+                let is_keyframe = (payload[0] & 0xF0) == 0x10;
+                let annexb = avcc_to_annexb(&payload[5..], *nalu_len_size);
                 if annexb.is_empty() {
-                    None
+                    return None;
+                }
+                if is_keyframe && !sps_pps_cache.is_empty() {
+                    // Prepend SPS/PPS inline before IDR so every keyframe is self-contained
+                    let mut out = sps_pps_cache.clone();
+                    out.extend_from_slice(&annexb);
+                    Some(Cow::Owned(out))
                 } else {
                     Some(Cow::Owned(annexb))
-                }
-            } else {
-                let converted = avcc_to_annexb(&payload[5..], *nalu_len_size);
-                if converted.is_empty() {
-                    None
-                } else {
-                    Some(Cow::Owned(converted))
                 }
             }
         }
@@ -456,7 +463,8 @@ mod tests {
     fn video_for_ts_flv_passthrough_raw() {
         let annexb_payload = vec![0, 0, 0, 1, 0x65, 0x88];
         let mut nls = 4;
-        let result = video_for_ts(&annexb_payload, PayloadFormat::Raw, &mut nls);
+        let mut cache = Vec::new();
+        let result = video_for_ts(&annexb_payload, PayloadFormat::Raw, &mut nls, &mut cache);
         assert!(result.is_some());
         // Raw should be zero-copy
         assert!(matches!(result, Some(Cow::Borrowed(_))));
