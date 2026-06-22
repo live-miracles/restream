@@ -1,10 +1,13 @@
 use bytes::Bytes;
 use restream::db;
 use restream::media::engine::MediaEngine;
-use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
+use restream::media::ring_buffer::{
+    DtsEnforcer, MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer,
+};
 use restream::media::rtmp::{start_rtmp_egress, start_rtmp_server_on};
 use restream::media::security::{DEFAULT_INGEST_SECURITY_CONFIG, IngestSecurityService};
 use restream::media::srt::{SrtServer, start_srt_egress};
+use restream::media::srt::{audio_payload_for_mux, video_payload_for_mux};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -41,6 +44,8 @@ async fn run() -> Result<(), String> {
         "correctness" => correctness().await,
         "correctness-rtmp" => correctness_rtmp().await,
         "correctness-srt" => correctness_srt().await,
+        "matrix" => matrix_correctness().await,
+        "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
@@ -60,7 +65,7 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-             egress, in-process, network, or all"
+             matrix, matrix-in-memory, egress, in-process, network, or all"
         )),
     };
 
@@ -730,8 +735,8 @@ async fn in_process_load(readers: usize, packets: usize) -> Result<Value, String
     let started = Instant::now();
     let mut tasks = Vec::with_capacity(readers);
 
-    for _ in 0..readers {
-        let mut reader = Reader::new(ring.clone());
+    for i in 0..readers {
+        let mut reader = Reader::new(format!("load_reader_{}", i), ring.clone());
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
@@ -766,6 +771,7 @@ async fn in_process_load(readers: usize, packets: usize) -> Result<Value, String
             pts: index as i64 * 20,
             dts: index as i64 * 20,
             is_keyframe: index % 60 == 0,
+            format: PayloadFormat::Raw,
             payload: payload.clone(),
         });
     }
@@ -863,6 +869,7 @@ async fn network_load(connections: usize, duration: Duration) -> Result<Value, S
             pts: frame as i64 * 33,
             dts: frame as i64 * 33,
             is_keyframe: frame % 60 == 0,
+            format: PayloadFormat::Flv,
             payload: Bytes::from(
                 [if frame % 60 == 0 { 0x17 } else { 0x27 }, 0x01, 0, 0, 0]
                     .into_iter()
@@ -876,6 +883,7 @@ async fn network_load(connections: usize, duration: Duration) -> Result<Value, S
             pts: frame as i64 * 33,
             dts: frame as i64 * 33,
             is_keyframe: false,
+            format: PayloadFormat::Flv,
             payload: Bytes::from(
                 [0xaf, 0x01]
                     .into_iter()
@@ -1033,4 +1041,659 @@ async fn write_sink_results(
         }
     }
     Ok(())
+}
+
+async fn matrix_correctness() -> Result<Value, String> {
+    let db_path = artifact_path("matrix.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = SqlitePool::connect(&db_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Create 4 source pipelines + 8 sink pipelines
+    let pipelines = [
+        ("pipe-rtmp-direct", "RTMP Direct Source", "e2e-rtmp-direct"),
+        (
+            "pipe-rtmp-trans",
+            "RTMP Transcoded Source",
+            "e2e-rtmp-trans",
+        ),
+        ("pipe-srt-direct", "SRT Direct Source", "e2e-srt-direct"),
+        ("pipe-srt-trans", "SRT Transcoded Source", "e2e-srt-trans"),
+        (
+            "pipe-rtmp-rtmp-direct-sink",
+            "RTMP->RTMP Direct Sink",
+            "e2e-rtmp-rtmp-direct-sink",
+        ),
+        (
+            "pipe-rtmp-rtmp-trans-sink",
+            "RTMP->RTMP Trans Sink",
+            "e2e-rtmp-rtmp-trans-sink",
+        ),
+        (
+            "pipe-rtmp-srt-direct-sink",
+            "RTMP->SRT Direct Sink",
+            "e2e-rtmp-srt-direct-sink",
+        ),
+        (
+            "pipe-rtmp-srt-trans-sink",
+            "RTMP->SRT Trans Sink",
+            "e2e-rtmp-srt-trans-sink",
+        ),
+        (
+            "pipe-srt-rtmp-direct-sink",
+            "SRT->RTMP Direct Sink",
+            "e2e-srt-rtmp-direct-sink",
+        ),
+        (
+            "pipe-srt-rtmp-trans-sink",
+            "SRT->RTMP Trans Sink",
+            "e2e-srt-rtmp-trans-sink",
+        ),
+        (
+            "pipe-srt-srt-direct-sink",
+            "SRT->SRT Direct Sink",
+            "e2e-srt-srt-direct-sink",
+        ),
+        (
+            "pipe-srt-srt-trans-sink",
+            "SRT->SRT Trans Sink",
+            "e2e-srt-srt-trans-sink",
+        ),
+    ];
+
+    for (id, name, key) in pipelines {
+        db::create_pipeline(&pool, id, name, key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+
+    // Spawn servers
+    let _rtmp_task = tokio::spawn(start_rtmp_server_on(
+        pool.clone(),
+        security,
+        engine.clone(),
+        RTMP_PORT,
+    ));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Check fixtures
+    let rtmp_fixture = artifact_path("correctness-h264.ts");
+    if !rtmp_fixture.exists() {
+        generate_fixture_h264(&rtmp_fixture).await?;
+    }
+    let srt_fixture = artifact_path("correctness-h265.ts");
+    if !srt_fixture.exists() {
+        generate_fixture_h265(&srt_fixture).await?;
+    }
+
+    // Set up direct and transcoded outputs manually
+    let mut egress_handles = Vec::new();
+    let mut transcode_handles = Vec::new();
+    let mut hls_handles = Vec::new();
+
+    let paths = [
+        // (src_pipe, is_transcoded, sink_rtmp_key, sink_srt_key)
+        (
+            "pipe-rtmp-direct",
+            false,
+            "e2e-rtmp-rtmp-direct-sink",
+            "e2e-rtmp-srt-direct-sink",
+        ),
+        (
+            "pipe-rtmp-trans",
+            true,
+            "e2e-rtmp-rtmp-trans-sink",
+            "e2e-rtmp-srt-trans-sink",
+        ),
+        (
+            "pipe-srt-direct",
+            false,
+            "e2e-srt-rtmp-direct-sink",
+            "e2e-srt-srt-direct-sink",
+        ),
+        (
+            "pipe-srt-trans",
+            true,
+            "e2e-srt-rtmp-trans-sink",
+            "e2e-srt-srt-trans-sink",
+        ),
+    ];
+
+    for (src_pipe, trans, rtmp_sink_key, srt_sink_key) in paths {
+        let source_ring = engine.get_or_create_pipeline(src_pipe).await;
+        let target_ring = if trans {
+            let trans_ring = Arc::new(RingBuffer::new(4096));
+            let cancel = tokio_util::sync::CancellationToken::new();
+            transcode_handles.push(cancel.clone());
+            tokio::spawn(restream::media::transcoder::start_transcoder(
+                src_pipe.to_string(),
+                "720p".to_string(),
+                source_ring,
+                trans_ring.clone(),
+                engine.clone(),
+                cancel,
+            ));
+            trans_ring
+        } else {
+            source_ring
+        };
+
+        // 1. Spawn RTMP egress
+        let rtmp_egress_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/{rtmp_sink_key}");
+        let rtmp_token = engine
+            .register_egress(&format!("out-rtmp-{src_pipe}"), src_pipe, &rtmp_egress_url)
+            .await;
+        egress_handles.push(rtmp_token.clone());
+        tokio::spawn(start_rtmp_egress(
+            format!("out-rtmp-{src_pipe}"),
+            src_pipe.to_string(),
+            rtmp_egress_url,
+            target_ring.clone(),
+            engine.clone(),
+            rtmp_token,
+        ));
+
+        // 2. Spawn SRT egress
+        let srt_egress_url = format!(
+            "srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/{srt_sink_key}&pkt_size=1316"
+        );
+        let srt_token = engine
+            .register_egress(&format!("out-srt-{src_pipe}"), src_pipe, &srt_egress_url)
+            .await;
+        egress_handles.push(srt_token.clone());
+        tokio::spawn(start_srt_egress(
+            format!("out-srt-{src_pipe}"),
+            src_pipe.to_string(),
+            srt_egress_url,
+            target_ring.clone(),
+            engine.clone(),
+            srt_token,
+        ));
+
+        // 3. Spawn HLS segmenter
+        let (store, _) = engine.ensure_hls_segmenter(src_pipe).await;
+        let hls_cancel = engine.get_hls_cancel_token(src_pipe).await.unwrap();
+        hls_handles.push(hls_cancel.clone());
+        tokio::spawn(restream::media::hls::start_hls_segmenter(
+            src_pipe.to_string(),
+            store,
+            target_ring,
+            engine.clone(),
+            hls_cancel,
+        ));
+        engine.add_hls_persistent_consumer(src_pipe).await;
+    }
+
+    // Now spawn the 4 publishers pushing feeds
+    let mut publishers = Vec::new();
+
+    // pipe-rtmp-direct: RTMP H.264
+    publishers.push(
+        spawn_publisher(
+            &rtmp_fixture,
+            &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp-direct"),
+            "flv",
+            false,
+        )
+        .await?,
+    );
+
+    // pipe-rtmp-trans: RTMP H.265 (to test HEVC transcode to H.264)
+    publishers.push(
+        spawn_publisher(
+            &srt_fixture, // H.265 fixture
+            &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-rtmp-trans"),
+            "flv",
+            false,
+        )
+        .await?,
+    );
+
+    // pipe-srt-direct: SRT H.264
+    publishers.push(
+        spawn_publisher(
+            &rtmp_fixture,
+            &format!(
+                "srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-srt-direct&pkt_size=1316"
+            ),
+            "mpegts",
+            true,
+        )
+        .await?,
+    );
+
+    // pipe-srt-trans: SRT H.265
+    publishers.push(
+        spawn_publisher(
+            &srt_fixture, // H.265 fixture
+            &format!(
+                "srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-srt-trans&pkt_size=1316"
+            ),
+            "mpegts",
+            true,
+        )
+        .await?,
+    );
+
+    println!("[matrix] Waiting for publishers and egress loopbacks to start...");
+    let source_pipes = [
+        "pipe-rtmp-direct",
+        "pipe-rtmp-trans",
+        "pipe-srt-direct",
+        "pipe-srt-trans",
+    ];
+    wait_for_ingests(&engine, &source_pipes, Duration::from_secs(15)).await?;
+
+    let sink_pipes = [
+        "pipe-rtmp-rtmp-direct-sink",
+        "pipe-rtmp-rtmp-trans-sink",
+        "pipe-rtmp-srt-direct-sink",
+        "pipe-rtmp-srt-trans-sink",
+        "pipe-srt-rtmp-direct-sink",
+        "pipe-srt-rtmp-trans-sink",
+        "pipe-srt-srt-direct-sink",
+        "pipe-srt-srt-trans-sink",
+    ];
+    wait_for_ingests(&engine, &sink_pipes, Duration::from_secs(20)).await?;
+
+    println!("[matrix] All streams active. Probing egress endpoints...");
+
+    let mut results = json!({ "passed": true });
+
+    // Validate 8 Loopback Sinks
+    for sink in sink_pipes {
+        let (read_url, _is_rtmp) = if sink.contains("-rtmp-") {
+            let key = sink
+                .strip_prefix("pipe-")
+                .unwrap()
+                .strip_suffix("-sink")
+                .unwrap();
+            (
+                format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-{key}-sink"),
+                true,
+            )
+        } else {
+            let key = sink
+                .strip_prefix("pipe-")
+                .unwrap()
+                .strip_suffix("-sink")
+                .unwrap();
+            (
+                format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-{key}-sink&mode=caller"),
+                false,
+            )
+        };
+
+        match ffprobe(&read_url).await {
+            Ok(probe) => {
+                if let Err(e) = assert_media_only(&probe, &sink) {
+                    results["passed"] = json!(false);
+                    results[sink] = json!({ "passed": false, "error": e });
+                } else {
+                    results[sink] =
+                        json!({ "passed": true, "streams": normalized_streams(&probe)? });
+                }
+            }
+            Err(e) => {
+                results["passed"] = json!(false);
+                results[sink] = json!({ "passed": false, "error": e });
+            }
+        }
+    }
+
+    // Validate 4 HLS Egresses
+    for src in source_pipes {
+        let store_opt = engine.get_hls_store(src).await;
+        if let Some(store) = store_opt {
+            if let Some(playlist) = store.get_playlist() {
+                if playlist.contains(".ts") && store.get_segment(0).is_some() {
+                    results[&format!("{src}-hls")] = json!({ "passed": true, "segment_count": 1 });
+                } else {
+                    results["passed"] = json!(false);
+                    results[&format!("{src}-hls")] =
+                        json!({ "passed": false, "error": "playlist empty or segment 0 missing" });
+                }
+            } else {
+                results["passed"] = json!(false);
+                results[&format!("{src}-hls")] =
+                    json!({ "passed": false, "error": "playlist not found" });
+            }
+        } else {
+            results["passed"] = json!(false);
+            results[&format!("{src}-hls")] =
+                json!({ "passed": false, "error": "HLS store not created" });
+        }
+    }
+
+    // Stop all publishers and clean up
+    for mut pub_proc in publishers {
+        stop_child(&mut pub_proc).await;
+    }
+    for token in egress_handles {
+        token.cancel();
+    }
+    for cancel in transcode_handles {
+        cancel.cancel();
+    }
+    for cancel in hls_handles {
+        cancel.cancel();
+    }
+
+    Ok(results)
+}
+
+async fn matrix_correctness_in_memory() -> Result<Value, String> {
+    let cases = [
+        ("rtmp", "rtmp", false),
+        ("rtmp", "rtmp", true),
+        ("rtmp", "srt", false),
+        ("rtmp", "srt", true),
+        ("rtmp", "hls", false),
+        ("rtmp", "hls", true),
+        ("srt", "rtmp", false),
+        ("srt", "rtmp", true),
+        ("srt", "srt", false),
+        ("srt", "srt", true),
+        ("srt", "hls", false),
+        ("srt", "hls", true),
+    ];
+
+    let mut results = serde_json::Map::new();
+    let mut all_passed = true;
+
+    for (ingest, egress, trans) in cases {
+        let name = format!(
+            "{}_to_{}_{}",
+            ingest,
+            egress,
+            if trans { "trans" } else { "direct" }
+        );
+        println!("[matrix-in-memory] Running case: {}", name);
+
+        let engine = Arc::new(MediaEngine::new());
+        let source_ring = engine.get_or_create_pipeline("pipe").await;
+
+        // Register active ingest
+        engine
+            .try_register_ingest("pipe", "key", ingest)
+            .await
+            .ok_or_else(|| "Failed to register ingest".to_string())?;
+
+        let fixture_name = if trans {
+            "correctness-h265.ts"
+        } else {
+            "correctness-h264.ts"
+        };
+        let (video_meta, audio_tracks, packets) = load_fixture_packets(fixture_name, ingest);
+
+        engine
+            .update_ingest_meta("pipe", Some(video_meta.clone()), None, None)
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe", audio_tracks.clone())
+            .await;
+
+        let (target_ring, transcoder_cancel, transcoder_handle) = if trans {
+            let trans_ring = Arc::new(RingBuffer::new(4096));
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let handle = tokio::spawn(restream::media::transcoder::start_transcoder(
+                "pipe".to_string(),
+                "720p".to_string(),
+                source_ring.clone(),
+                trans_ring.clone(),
+                engine.clone(),
+                cancel.clone(),
+            ));
+            (trans_ring, Some(cancel), Some(handle))
+        } else {
+            (source_ring.clone(), None, None)
+        };
+
+        // Create reader BEFORE pushing packets
+        let mut reader = Reader::new("test_egress_reader".to_string(), target_ring.clone());
+
+        // Spawn HLS segmenter BEFORE pushing packets
+        let hls_segmenter = if egress == "hls" {
+            let (store, _) = engine.ensure_hls_segmenter("pipe").await;
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let segmenter = tokio::spawn(restream::media::hls::start_hls_segmenter(
+                "pipe".to_string(),
+                store.clone(),
+                target_ring.clone(),
+                engine.clone(),
+                cancel.clone(),
+            ));
+            Some((store, cancel, segmenter))
+        } else {
+            None
+        };
+
+        // Wait a tiny bit for background tasks to start
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Prepare test data: push packets
+        let num_packets = packets.len();
+        for pkt in packets {
+            source_ring.push(pkt);
+        }
+
+        // Pull and verify
+        let mut pulled = 0;
+        let mut case_passed = false;
+        let mut err_msg = String::new();
+
+        if let Some((store, cancel, segmenter)) = hls_segmenter {
+            if trans {
+                let mut trans_reader = Reader::new("test_trans_reader".to_string(), target_ring.clone());
+                let mut trans_pulled = 0;
+                let start = Instant::now();
+                while trans_pulled < num_packets && start.elapsed() < Duration::from_millis(2000) {
+                    if let Ok(Some(_)) = trans_reader.pull() {
+                        trans_pulled += 1;
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            cancel.cancel();
+            let _ = segmenter.await;
+            if let Some(playlist) = store.get_playlist() {
+                if playlist.contains(".ts") && store.get_segment(0).is_some() {
+                    case_passed = true;
+                }
+            }
+            if !case_passed {
+                err_msg = "HLS playlist or segment not generated".to_string();
+            }
+        } else if egress == "srt" {
+            let mut muxer = restream::media::mpegts::TsMuxer::new(Some(&video_meta), &audio_tracks);
+
+            let num_streams = 1 + audio_tracks.len();
+            let mut dts_enforcer = DtsEnforcer::new(num_streams);
+
+            let start = Instant::now();
+            let mut has_ts_bytes = false;
+            while start.elapsed() < Duration::from_millis(1500) && pulled < num_packets {
+                if let Ok(Some(pkt)) = reader.pull() {
+                    let is_flv = pkt.format == PayloadFormat::Flv;
+                    let payload = match pkt.media_type {
+                        MediaType::Video => video_payload_for_mux(&pkt.payload, is_flv),
+                        MediaType::Audio => audio_payload_for_mux(&pkt.payload, is_flv),
+                    };
+                    if let Some(raw) = payload {
+                        let stream_idx = match pkt.media_type {
+                            MediaType::Video => 0,
+                            MediaType::Audio => audio_tracks
+                                .iter()
+                                .position(|a| a.track_index == pkt.track_index)
+                                .map(|i| i + 1)
+                                .unwrap_or(0),
+                        };
+                        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+                        let ts_bytes = muxer.mux_packet(
+                            pkt.media_type,
+                            pkt.track_index,
+                            pts,
+                            dts,
+                            pkt.is_keyframe,
+                            raw,
+                        );
+                        if !ts_bytes.is_empty() {
+                            has_ts_bytes = true;
+                        }
+                    }
+                    pulled += 1;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }
+            if pulled == num_packets && has_ts_bytes {
+                case_passed = true;
+            } else {
+                err_msg = format!(
+                    "SRT egress failed: pulled={}/{}, has_ts_bytes={}",
+                    pulled, num_packets, has_ts_bytes
+                );
+            }
+        } else {
+            // RTMP Egress
+            let start = Instant::now();
+            let mut has_video = false;
+            let mut has_audio = false;
+            while start.elapsed() < Duration::from_millis(1500) && pulled < num_packets {
+                if let Ok(Some(pkt)) = reader.pull() {
+                    match pkt.media_type {
+                        MediaType::Video => has_video = true,
+                        MediaType::Audio => has_audio = true,
+                    }
+                    pulled += 1;
+                } else {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }
+            if pulled == num_packets && has_video && has_audio {
+                case_passed = true;
+            } else {
+                err_msg = format!(
+                    "RTMP egress failed: pulled={}/{}, has_video={}, has_audio={}",
+                    pulled, num_packets, has_video, has_audio
+                );
+            }
+        }
+
+        if let Some(cancel) = transcoder_cancel {
+            cancel.cancel();
+        }
+        if let Some(handle) = transcoder_handle {
+            let _ = handle.await;
+        }
+
+        if !case_passed {
+            all_passed = false;
+        }
+        results.insert(
+            name,
+            json!({
+                "passed": case_passed,
+                "error": if case_passed { None } else { Some(err_msg) }
+            }),
+        );
+    }
+
+    let mut final_res = serde_json::Value::Object(results);
+    final_res["passed"] = json!(all_passed);
+
+    if all_passed {
+        Ok(final_res)
+    } else {
+        Err(format!("matrix correctness failed: {}", final_res))
+    }
+}
+
+fn load_fixture_packets(
+    fixture_name: &str,
+    ingest: &str,
+) -> (
+    restream::media::engine::VideoMeta,
+    Vec<restream::media::engine::AudioMeta>,
+    Vec<MediaPacket>,
+) {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(manifest_dir)
+        .join("test/artifacts/latest")
+        .join(fixture_name);
+    let file_bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("failed to read fixture at {}: {}", path.display(), e));
+
+    let mut demuxer = restream::media::mpegts::TsDemuxer::new();
+    let mut all_packets = Vec::new();
+
+    for chunk in file_bytes.chunks(1316) {
+        demuxer.feed(chunk);
+        demuxer.drain_into(&mut all_packets);
+    }
+    demuxer.flush();
+    demuxer.drain_into(&mut all_packets);
+
+    let mut probe = demuxer.take_probe().expect("failed to probe TS file");
+    let video = probe.video.expect("missing video metadata");
+
+    // Keep only the first audio track
+    let mut audio_tracks: Vec<restream::media::engine::AudioMeta> =
+        probe.audio_tracks.drain(..).take(1).collect();
+    let keep_audio_track_index = audio_tracks.first().map(|a| a.track_index).unwrap_or(0);
+    if let Some(a) = audio_tracks.first_mut() {
+        a.track_index = 0;
+    }
+
+    // Filter packets: keep all video packets, and keep audio packets belonging to track 0
+    let mut packets = Vec::new();
+    for mut pkt in all_packets {
+        if pkt.media_type == MediaType::Video {
+            packets.push(pkt);
+        } else if pkt.media_type == MediaType::Audio && pkt.track_index == keep_audio_track_index {
+            // Re-map audio track index to 0
+            pkt.track_index = 0;
+            packets.push(pkt);
+        }
+    }
+
+    // Wrap packets with FLV tags if ingest is RTMP
+    if ingest == "rtmp" {
+        for pkt in &mut packets {
+            let is_video = pkt.media_type == MediaType::Video;
+            let mut wrapped = Vec::with_capacity(pkt.payload.len() + 5);
+            if is_video {
+                let is_hevc = video.codec == "hevc" || video.codec == "h265";
+                let tag_byte = if is_hevc {
+                    if pkt.is_keyframe { 0x1c } else { 0x2c }
+                } else {
+                    if pkt.is_keyframe { 0x17 } else { 0x27 }
+                };
+                wrapped.extend_from_slice(&[tag_byte, 1, 0, 0, 0]);
+            } else {
+                wrapped.extend_from_slice(&[0xaf, 1]);
+            }
+            wrapped.extend_from_slice(&pkt.payload);
+            pkt.payload = Bytes::from(wrapped);
+            pkt.format = PayloadFormat::Flv;
+        }
+    }
+
+    (video, audio_tracks, packets)
 }

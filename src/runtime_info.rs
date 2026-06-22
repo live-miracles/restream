@@ -349,7 +349,6 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
             "llvm": env!("RESTREAM_LLVM_VERSION"),
             "gccRuntime": env!("RESTREAM_GCC_RUNTIME_VERSION"),
         },
-        "ffmpeg": ffmpeg_version,
         "nativeLibraries": {
             "ffmpeg": {
                 "version": ffmpeg_version,

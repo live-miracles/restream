@@ -36,6 +36,31 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 
+pub struct ServerPorts {
+    pub http: u16,
+    pub rtmp: u16,
+    pub srt: u16,
+}
+
+impl ServerPorts {
+    pub fn from_env() -> Self {
+        Self {
+            http: std::env::var("RESTREAM_HTTP_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3030),
+            rtmp: std::env::var("RESTREAM_RTMP_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1935),
+            srt: std::env::var("RESTREAM_SRT_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10080),
+        }
+    }
+}
+
 fn set_rlimit() {
     unsafe {
         let limit = libc::rlimit {
@@ -55,7 +80,7 @@ pub async fn run_app() {
     set_rlimit();
 
     // Initialize database
-    let db_url = "sqlite:data.db";
+    let db_url = "sqlite:data.db?mode=rwc";
     let pool = SqlitePool::connect(db_url)
         .await
         .expect("Failed to connect to SQLite database");
@@ -86,19 +111,29 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     let engine = Arc::new(MediaEngine::new());
 
+    let ports = ServerPorts::from_env();
+
     let state = Arc::new(crate::api::AppState {
         db: pool.clone(),
         security: security.clone(),
         sessions,
         engine: engine.clone(),
+        ports: crate::api::PortConfig {
+            rtmp: ports.rtmp,
+            srt: ports.srt,
+        },
     });
 
     // Start Web Server
+    let http_addr = format!("0.0.0.0:{}", ports.http);
     let app = crate::api::create_router(state);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3030")
+    let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
-        .expect("Failed to bind TCP listener on port 3030");
-    println!("[web] Dashboard API server listening on http://0.0.0.0:3030");
+        .unwrap_or_else(|_| panic!("Failed to bind TCP listener on port {}", ports.http));
+    println!(
+        "[web] Dashboard API server listening on http://{}",
+        http_addr
+    );
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -110,8 +145,10 @@ pub async fn run_app() {
     let db_clone = pool.clone();
     let security_clone = security.clone();
     let engine_clone = engine.clone();
+    let rtmp_port = ports.rtmp;
     tokio::spawn(async move {
-        crate::media::rtmp::start_rtmp_server(db_clone, security_clone, engine_clone).await;
+        crate::media::rtmp::start_rtmp_server_on(db_clone, security_clone, engine_clone, rtmp_port)
+            .await;
     });
 
     // Start SRT server
@@ -119,8 +156,9 @@ pub async fn run_app() {
         pool.clone(),
         engine.clone(),
     ));
+    let srt_port = ports.srt;
     tokio::spawn(async move {
-        srt_server.run(10080).await;
+        srt_server.run(srt_port).await;
     });
 
     // Run reconciliation loop
@@ -292,7 +330,7 @@ pub async fn run_app() {
                             cancel_token.clone(),
                         )
                         .await;
-                    } else {
+                    } else if url_c.starts_with("hls://") || url_c.starts_with("http://") || url_c.starts_with("https://") {
                         // HLS egress: use the shared segmenter, register as persistent consumer
                         let (store, already_running) =
                             engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
@@ -319,6 +357,37 @@ pub async fn run_app() {
                         engine_c
                             .remove_hls_persistent_consumer(&pipeline_id_c)
                             .await;
+                    } else {
+                        // Unsupported URL scheme fallback rejection.
+                        let end_now = chrono::Utc::now().to_rfc3339();
+                        let _ = db::update_job(
+                            &pool_c,
+                            &job_id,
+                            None,
+                            Some("failed"),
+                            Some(&end_now),
+                            Some(0),
+                            None,
+                        )
+                        .await;
+                        let _ = db::append_job_log(
+                            &pool_c,
+                            Some(&job_id),
+                            Some(&pipeline_id_c),
+                            Some(&output_id_c),
+                            "lifecycle.error",
+                            None,
+                            &end_now,
+                            &format!("[lifecycle] Unsupported URL scheme: {}", url_c),
+                        )
+                        .await;
+
+                        engine_c.unregister_egress(&output_id_c).await;
+                        last_failed_c
+                            .lock()
+                            .await
+                            .insert(output_id_c, Instant::now());
+                        return;
                     }
 
                     // On terminate, clean up and register failure if cancelled without operator intent

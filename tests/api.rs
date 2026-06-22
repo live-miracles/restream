@@ -31,6 +31,10 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
         security,
         sessions,
         engine: engine.clone(),
+        ports: api::PortConfig {
+            rtmp: 1935,
+            srt: 10080,
+        },
     });
 
     (api::create_router(state), pool, engine)
@@ -607,7 +611,7 @@ async fn status_returns_version_info() {
     let json = body_json(resp).await;
     assert!(json["restream"]["version"].is_string());
     assert!(json["restream"]["commit"].is_string());
-    assert!(json["ffmpeg"].is_string());
+    assert!(json.get("ffmpeg").is_none());
     assert!(json["toolchain"]["rustc"].is_string());
     assert!(json["nativeLibraries"]["ffmpeg"]["version"].is_string());
     assert!(json["nativeLibraries"]["ffmpeg"]["configuration"].is_string());
@@ -842,6 +846,10 @@ async fn health_shows_registered_egress() {
             security,
             sessions,
             engine: engine.clone(),
+            ports: api::PortConfig {
+                rtmp: 1935,
+                srt: 10080,
+            },
         });
         api::create_router(state)
     };

@@ -58,11 +58,17 @@ const STREAM_KEYS: &[(&str, &str)] = &[
     ("key20_f6b326ffccc2f5a22477f1f9", "key20"),
 ];
 
+pub struct PortConfig {
+    pub rtmp: u16,
+    pub srt: u16,
+}
+
 pub struct AppState {
     pub db: SqlitePool,
     pub security: Arc<IngestSecurityService>,
     pub sessions: Arc<TokioRwLock<HashSet<String>>>,
     pub engine: Arc<MediaEngine>,
+    pub ports: PortConfig,
 }
 
 impl AppState {
@@ -516,8 +522,8 @@ async fn stream_keys_handler(
             "key": key,
             "label": label,
             "ingestUrls": {
-                "rtmp": format!("rtmp://{}:1935/live/{}", host, key),
-                "srt": format!("srt://{}:10080?streamid=publish:live/{}", host, key)
+                "rtmp": format!("rtmp://{}:{}/live/{}", host, state.ports.rtmp, key),
+                "srt": format!("srt://{}:{}?streamid=publish:live/{}", host, state.ports.srt, key)
             }
         }));
     }
@@ -559,8 +565,8 @@ async fn config_get_handler(
             "inputSource": p.input_source,
             "encoding": p.encoding,
             "ingestUrls": {
-                "rtmp": format!("rtmp://{}:1935/live/{}", effective_ingest_host, p.stream_key),
-                "srt": format!("srt://{}:10080?streamid=publish:live/{}", effective_ingest_host, p.stream_key)
+                "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, state.ports.rtmp, p.stream_key),
+                "srt": format!("srt://{}:{}?streamid=publish:live/{}", effective_ingest_host, state.ports.srt, p.stream_key)
             }
         }));
     }
@@ -827,6 +833,22 @@ async fn outputs_create_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    let url = payload.url.trim();
+    if !url.starts_with("rtmp://")
+        && !url.starts_with("srt://")
+        && !url.starts_with("hls://")
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid URL scheme. Supported schemes are rtmp://, srt://, hls://, http://, and https://"
+            })),
+        )
+            .into_response();
+    }
+
     let id = format!("output_{}", to_hex(&rand::random::<[u8; 8]>()));
 
     match db::create_output(
@@ -861,6 +883,22 @@ async fn outputs_update_handler(
         }
     } else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let url = payload.url.trim();
+    if !url.starts_with("rtmp://")
+        && !url.starts_with("srt://")
+        && !url.starts_with("hls://")
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid URL scheme. Supported schemes are rtmp://, srt://, hls://, http://, and https://"
+            })),
+        )
+            .into_response();
     }
 
     match db::update_output(
@@ -1210,7 +1248,10 @@ async fn ingests_start_handler(
             .into_response();
     }
 
-    let rtmp_url = format!("rtmp://localhost:1935/live/{}", ingest.stream_key);
+    let rtmp_url = format!(
+        "rtmp://localhost:{}/live/{}",
+        state.ports.rtmp, ingest.stream_key
+    );
     let mut args: Vec<String> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),

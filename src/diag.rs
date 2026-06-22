@@ -141,6 +141,36 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
                 fill_pct
             ));
         }
+
+        let write_idx = rb.get_write_idx();
+        let mut max_lag = 0;
+        let mut total_overflows = 0;
+        {
+            let mut readers_guard = rb.readers.lock().unwrap();
+            readers_guard.retain(|weak_ref| {
+                if let Some(info) = weak_ref.upgrade() {
+                    let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
+                    let lag = write_idx.saturating_sub(r_idx);
+                    if lag > max_lag {
+                        max_lag = lag;
+                    }
+                    total_overflows += info.overflow_count.load(std::sync::atomic::Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        lines.push(format!(
+            "Ring buffer readers: max lag={}, total overflows={}",
+            max_lag, total_overflows
+        ));
+        if total_overflows > 0 {
+            issues.push(format!(
+                "Consumers are dropping frames due to overflow ({} total overflows).",
+                total_overflows
+            ));
+        }
     } else {
         lines.push("Ring buffer not yet allocated for this pipeline.".to_string());
     }
@@ -609,6 +639,45 @@ async fn check_ring_buffer_health(
         lines.push(format!("Filled: {} slots ({}%)", fill, fill_pct));
         lines.push(format!("Compact packet slots: yes"));
         lines.push(format!("Frame size: variable (media packets)"));
+
+        let write_idx = rb.get_write_idx();
+        let mut readers_info = vec![];
+        {
+            let mut readers_guard = rb.readers.lock().unwrap();
+            readers_guard.retain(|weak_ref| {
+                if let Some(info) = weak_ref.upgrade() {
+                    let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
+                    let lag = write_idx.saturating_sub(r_idx);
+                    let overflow = info.overflow_count.load(std::sync::atomic::Ordering::Relaxed);
+                    readers_info.push((info.name.clone(), lag, overflow));
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+
+        if !readers_info.is_empty() {
+            lines.push("Active readers:".to_string());
+            for (name, lag, overflow) in &readers_info {
+                lines.push(format!("  - {}: lag={} slots, overflows={}", name, lag, overflow));
+                if *lag > (cap * 8 / 10) {
+                    issues.push(format!(
+                        "Reader {} is severely lagging ({} / {} slots). Possible network congestion or performance bottleneck.",
+                        name, lag, cap
+                    ));
+                }
+                if *overflow > 0 {
+                    issues.push(format!(
+                        "Reader {} has experienced {} overflow(s). Dropped frames occurred.",
+                        name, overflow
+                    ));
+                }
+            }
+        } else {
+            lines.push("Active readers: none".to_string());
+        }
+
         if fill_pct > 85 {
             issues.push(format!(
                 "Ring buffer is {}% full. Egress consumers may be lagging behind ingest. \
@@ -653,7 +722,7 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
         } else {
             let intervals: Vec<f64> = times
                 .windows(2)
-                .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+                .map(|w| ((w[1] - w[0]) as f64 / 1000.0).max(0.0))
                 .collect();
             let avg = intervals.iter().sum::<f64>() / intervals.len() as f64;
             let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
