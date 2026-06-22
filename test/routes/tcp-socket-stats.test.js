@@ -35,6 +35,13 @@ ESTAB 0 0 [::1]:1935 [::ffff:127.0.0.1]:55111
             tcpPacingRateMbps: 6.4,
             tcpDeliveryRateMbps: 2.1,
             tcpSendRateMbps: 3.2,
+            tcpBytesReceived: 67890,
+            tcpLastRcvMs: 8,
+            tcpRcvRttMs: null,
+            tcpRcvSpace: null,
+            tcpRcvOoopack: null,
+            tcpSkmemRmemAlloc: null,
+            tcpSkmemRmemMax: null,
         },
     });
 
@@ -42,4 +49,22 @@ ESTAB 0 0 [::1]:1935 [::ffff:127.0.0.1]:55111
     assert.equal(entries[1].peerKey, '127.0.0.1:55111');
     assert.equal(entries[1].stats.tcpRttMs, 12);
     assert.equal(entries[1].stats.tcpRetransmits, 0);
+});
+
+test('parseSsTcpSocketEntries extracts receiver-side metrics and skmem', () => {
+    const output = `ESTAB 0 0 127.0.0.1:1935 10.0.0.5:55000
+\t skmem:(r4096,rb2097152,t0,tb87040,f0,w0,o0,bl0,d0) cubic rtt:12.0/2.0 cwnd:10 bytes_received:1234567 lastrcv:42 rcv_rtt:8.5 rcv_space:65536 rcv_ooopack:15
+`;
+
+    const entries = parseSsTcpSocketEntries(output);
+    assert.equal(entries.length, 1);
+
+    const s = entries[0].stats;
+    assert.equal(s.tcpBytesReceived, 1234567);
+    assert.equal(s.tcpLastRcvMs, 42);
+    assert.equal(s.tcpRcvRttMs, 8.5);
+    assert.equal(s.tcpRcvSpace, 65536);
+    assert.equal(s.tcpRcvOoopack, 15);
+    assert.equal(s.tcpSkmemRmemAlloc, 4096);
+    assert.equal(s.tcpSkmemRmemMax, 2097152);
 });
