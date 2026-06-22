@@ -141,6 +141,11 @@ const SRTS_BROKEN: c_int = 6;
 const SRT_GST_RUNNING: c_int = 2;
 const SRT_GST_BROKEN: c_int = 3;
 
+// SRT epoll event flags
+const SRT_EPOLL_IN: c_int = 0x1;
+const SRT_EPOLL_OUT: c_int = 0x4;
+const SRT_EPOLL_ERR: c_int = 0x8;
+
 #[repr(C)]
 pub struct SrtSockOptConfig {
     _opaque: [u8; 0],
@@ -237,6 +242,22 @@ unsafe extern "C" {
         perf: *mut SrtTraceBStats,
         clear: c_int,
         instantaneous: c_int,
+    ) -> c_int;
+    pub fn srt_epoll_create() -> c_int;
+    pub fn srt_epoll_add_usock(eid: c_int, u: SRTSOCKET, events: *const c_int) -> c_int;
+    pub fn srt_epoll_remove_usock(eid: c_int, u: SRTSOCKET) -> c_int;
+    pub fn srt_epoll_release(eid: c_int) -> c_int;
+    pub fn srt_epoll_wait(
+        eid: c_int,
+        readfds: *mut SRTSOCKET,
+        rnum: *mut c_int,
+        writefds: *mut SRTSOCKET,
+        wnum: *mut c_int,
+        ms_timeout: i64,
+        lrfds: *mut c_int,
+        lrnum: *mut c_int,
+        lwfds: *mut c_int,
+        lwnum: *mut c_int,
     ) -> c_int;
 }
 
@@ -1119,6 +1140,33 @@ impl SrtServer {
         let mut packets = Vec::with_capacity(16);
         let mut probe_sent = false;
 
+        // Set non-blocking mode so srt_recv returns immediately with EAGAIN
+        // instead of blocking the tokio runtime thread
+        let zero: c_int = 0;
+        unsafe {
+            srt_setsockopt(
+                client_sock,
+                0,
+                SRTO_RCVSYN,
+                &zero as *const _ as *const c_void,
+                std::mem::size_of::<c_int>() as c_int,
+            );
+        }
+
+        // Create SRT epoll instance for zero-CPU wait when no data
+        let eid = unsafe { srt_epoll_create() };
+        if eid < 0 {
+            eprintln!("[srt] Failed to create epoll instance");
+            unsafe { srt_close(client_sock) };
+            return;
+        }
+        let epoll_events = SRT_EPOLL_IN as c_int;
+        if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
+            eprintln!("[srt] Failed to add socket to epoll");
+            unsafe { srt_epoll_release(eid); srt_close(client_sock) };
+            return;
+        }
+
         // Socket groups use the message API and may deliver up to the live
         // payload limit. Single sockets retain the lean plain-recv path.
         let mut buf = vec![0u8; if is_group { 2048 } else { 1316 }];
@@ -1141,8 +1189,35 @@ impl SrtServer {
                     srt_recv(client_sock, buf.as_mut_ptr(), buf.len() as c_int)
                 }
             };
-            if n <= 0 {
-                break;
+            if n > 0 {
+                // Data received — process below
+            } else if n == 0 {
+                break; // connection closed
+            } else {
+                // n == -1: non-blocking mode returns EAGAIN when no data.
+                // Use srt_epoll_wait in spawn_blocking (blocks OS thread, not
+                // tokio runtime) so we wake instantly on data arrival instead
+                // of polling with a timer sleep.
+                let _ = tokio::task::spawn_blocking(move || {
+                    let mut read_ready = [SRTSOCKET::default(); 1];
+                    let mut rnum = 1i32;
+                    unsafe {
+                        srt_epoll_wait(
+                            eid,
+                            read_ready.as_mut_ptr(),
+                            &mut rnum,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            -1,  // wait indefinitely
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )
+                    };
+                })
+                .await;
+                continue;
             }
 
             // Feed into demuxer and push completed packets to ring buffer
@@ -1218,6 +1293,7 @@ impl SrtServer {
         println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
         unsafe {
+            srt_epoll_release(eid);
             srt_close(client_sock);
         }
     }
@@ -1294,15 +1370,21 @@ impl SrtServer {
         let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
         let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
         let mut nalu_len_size: usize = 4;
+        let mut packet_count = 0u64;
 
         loop {
             match reader.pull() {
                 Ok(Some(pkt)) => {
+                    packet_count += 1;
+                    if packet_count <= 5 || packet_count % 500 == 0 {
+                        println!("[srt-play] pipeline={} packet={} type={:?} track={} pts={} dts={} payload_len={}",
+                            pipeline_id, packet_count, pkt.media_type, pkt.track_index, pkt.pts, pkt.dts, pkt.payload.len());
+                    }
                     let payload = match pkt.media_type {
                         MediaType::Video => {
                             match crate::media::codec::video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
                                 Some(p) => p,
-                                None => continue,
+                                None => { println!("[srt-play] video_for_ts returned None"); continue; }
                             }
                         }
                         MediaType::Audio => {
@@ -1312,7 +1394,7 @@ impl SrtServer {
                             let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
                             match crate::media::codec::audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
                                 Some(p) => p,
-                                None => continue,
+                                None => { println!("[srt-play] audio_for_ts returned None"); continue; }
                             }
                         }
                     };
@@ -1342,6 +1424,11 @@ impl SrtServer {
 
                     if !ts_bytes.is_empty() {
                         out_queue.write(ts_bytes);
+                    } else {
+                        if packet_count <= 10 {
+                            println!("[srt-play] EMPTY MUX: pipeline={} packet={} type={:?} track={} payload={}",
+                                pipeline_id, packet_count, pkt.media_type, pkt.track_index, payload.len());
+                        }
                     }
                 }
                 Ok(None) => {
@@ -1352,16 +1439,21 @@ impl SrtServer {
                         .await
                         .contains_key(pipeline_id)
                     {
+                        println!("[srt-play] Ingest gone for pipeline={}", pipeline_id);
                         break;
                     }
+                    println!("[srt-play] No data for pipeline={}, waiting...", pipeline_id);
                     reader.wait_for_data().await;
+                    println!("[srt-play] Woke up for pipeline={}", pipeline_id);
                 }
                 Err(_) => {
                     // Overflow — reader was fast-forwarded
+                    println!("[srt-play] Overflow for pipeline={}", pipeline_id);
                 }
             }
         }
 
+        println!("[srt-play] Exiting feed loop for pipeline={} (processed {})", pipeline_id, packet_count);
         out_queue.close();
     }
 }

@@ -74,6 +74,10 @@ harness = false
 name = "matrix_throughput"
 harness = false
 
+[[bench]]
+name = "srt_ingest_latency"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
