@@ -1,0 +1,30 @@
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+api: false
+metrics: false
+pprof: false
+
+rtsp: false
+rtmp: true
+rtmpAddress: :11935
+rtmpEncryption: "no"
+
+hls: false
+webrtc: false
+srt: true
+srtAddress: :11080
+
+authInternalUsers:
+- user: any
+  pass:
+  permissions:
+  - action: publish
+  - action: read
+  - action: playback
+
+paths:
+  all:

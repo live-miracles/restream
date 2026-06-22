@@ -101,6 +101,23 @@ FFmpeg dependencies:
 ./scripts/build-static.sh
 ```
 
+Unchanged native setup is content-addressed and reuses SRT, x264, and FFmpeg
+builds. Force a clean native reconfiguration when investigating toolchain or
+cache problems:
+
+```sh
+RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh
+```
+
+For faster edit/build iteration, use thin LTO and parallel Rust code generation:
+
+```sh
+RESTREAM_BUILD_PROFILE=fast-release ./scripts/build-static.sh
+```
+
+This writes `.build/static/cargo-target/fast-release/restream`. Use the default
+command without `RESTREAM_BUILD_PROFILE` for the final fat-LTO release binary.
+
 The resulting binary is
 `.build/static/cargo-target/release/restream`. The build script verifies that
 it has no dynamic loader dependency and checks the required H.264/H.265 and

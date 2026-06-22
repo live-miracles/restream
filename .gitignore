@@ -49,3 +49,6 @@ public/output.css
 # Runtime data
 data.db
 /media/
+
+# Nodejs
+node_modules

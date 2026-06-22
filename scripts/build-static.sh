@@ -11,8 +11,14 @@ fi
 # shellcheck source=/dev/null
 source "$BUILD_ROOT/env.sh"
 
+PROFILE="${RESTREAM_BUILD_PROFILE:-release}"
+if [[ "$PROFILE" != "release" && "$PROFILE" != "fast-release" ]]; then
+    echo "RESTREAM_BUILD_PROFILE must be release or fast-release" >&2
+    exit 2
+fi
+
 cd "$ROOT"
-cargo rustc --release --bin restream -- \
+cargo rustc --profile "$PROFILE" --bin restream -- \
     -C target-feature=+crt-static \
     -C relocation-model=static \
     -C linker=cc \
@@ -20,7 +26,7 @@ cargo rustc --release --bin restream -- \
     -C link-arg=-static \
     -C link-arg=-no-pie
 
-BINARY="$CARGO_TARGET_DIR/release/restream"
+BINARY="$CARGO_TARGET_DIR/$PROFILE/restream"
 file "$BINARY"
 "$BUILD_ROOT/prefix/bin/restream-ffmpeg-capabilities"
 

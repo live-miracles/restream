@@ -32,6 +32,7 @@ memchr = "2.7"
 tokio-stream = "0.1"
 rust-embed = "8"
 
+
 [build-dependencies]
 pkg-config = "0.3"
 serde_json = "1.0"
@@ -69,9 +70,18 @@ harness = false
 name = "hls_cost"
 harness = false
 
+[[bench]]
+name = "matrix_throughput"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = false
 panic = "unwind"
+
+[profile.fast-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

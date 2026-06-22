@@ -7,7 +7,9 @@ use restream::media::avio::MemoryQueue;
 use restream::media::engine::MediaEngine;
 use restream::media::engine::{AudioMeta, VideoMeta};
 use restream::media::mpegts::{TsDemuxer, TsMuxer};
-use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer, RingSlot};
+use restream::media::ring_buffer::{
+    MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer, RingSlot,
+};
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -27,6 +29,7 @@ fn packet(sequence: usize, payload: &Bytes) -> MediaPacket {
         pts: sequence as i64 * 20,
         dts: sequence as i64 * 20,
         is_keyframe: sequence % 60 == 0,
+        format: PayloadFormat::Raw,
         payload: payload.clone(),
     }
 }
@@ -166,7 +169,7 @@ fn bench_ring_consumer(c: &mut Criterion) {
                     while remaining > 0 {
                         let chunk = remaining.min(64) as usize;
                         let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
-                        let mut reader = Reader::new(ring.clone());
+                        let mut reader = Reader::new("bench_data_path_1".to_string(), ring.clone());
                         for _ in 0..chunk * burst {
                             ring.push(packet(sequence, &payload));
                             sequence = sequence.wrapping_add(1);
@@ -209,7 +212,7 @@ fn bench_ring_consumer(c: &mut Criterion) {
                     while remaining > 0 {
                         let chunk = remaining.min(64) as usize;
                         let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
-                        let mut reader = Reader::new(ring.clone());
+                        let mut reader = Reader::new("bench_data_path_2".to_string(), ring.clone());
                         ring.push_batch((0..chunk * burst).map(|_| {
                             let value = packet(sequence, &payload);
                             sequence = sequence.wrapping_add(1);
@@ -268,7 +271,7 @@ fn bench_fanout_delivery(c: &mut Criterion) {
                             let chunk = remaining.min(4) as usize;
                             let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
                             let mut consumers = (0..readers)
-                                .map(|_| Reader::new(ring.clone()))
+                                .map(|i| Reader::new(format!("bench_data_path_multi_{}", i), ring.clone()))
                                 .collect::<Vec<_>>();
                             for _ in 0..chunk * burst {
                                 ring.push(packet(sequence, &payload));

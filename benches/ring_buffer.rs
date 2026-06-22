@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use criterion::{Criterion, criterion_group, criterion_main};
-use restream::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
+use restream::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use std::thread;
 
@@ -12,7 +12,7 @@ fn benchmark_ring_buffer_concurrency(c: &mut Criterion) {
     for _ in 0..500 {
         let buf_clone = buffer.clone();
         let handle = thread::spawn(move || {
-            let mut reader = Reader::new(buf_clone);
+            let mut reader = Reader::new("bench_ring_buffer".to_string(), buf_clone);
             let mut count = 0;
             while count < 100 {
                 if let Ok(Some(_pkt)) = reader.pull() {
@@ -33,6 +33,7 @@ fn benchmark_ring_buffer_concurrency(c: &mut Criterion) {
                 pts: 0,
                 dts: 0,
                 is_keyframe: true,
+                format: PayloadFormat::Raw,
                 payload: Bytes::from(vec![0u8; 1024]),
             };
             buffer.push(packet);

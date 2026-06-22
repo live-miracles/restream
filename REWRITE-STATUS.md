@@ -251,7 +251,7 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~preserve trustworthy packet metadata across transcoder output~~ — done;
 - add bounded queue-depth/backpressure telemetry for `MemoryQueue`;
 - secure public HLS playlist and segment routes;
-- replace or hide stale Grafana and status-page UI tied to MediaMTX;
+- ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
 - make listener ports, database path, media path, and operational tuning
   configurable.
 

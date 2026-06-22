@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ES2020",
+    "lib": ["ES2021", "DOM"],
+    "moduleResolution": "bundler",
+    "outDir": "public/js",
+    "rootDir": "public/ts",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": true
+  },
+  "include": ["public/ts/**/*.ts"]
+}

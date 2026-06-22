@@ -1,38 +1,28 @@
-//! Benchmark the production FFmpeg-backed transcoder stage as it exists today.
+//! Benchmark the production FFmpeg-backed transcoder stage.
 //!
-//! The current `source` path is a full container passthrough/remux through the
-//! runtime `MemoryQueue` + custom AVIO implementation. Resolution presets are
-//! intentionally not labelled as transcoding here: the production stage does
-//! not yet execute its configured decoder/filter/encoder contexts.
+//! The stage demuxes input MPEG-TS and pushes `MediaPacket`s directly to the
+//! output `RingBuffer` — no output mux/demux round-trip.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use restream::media::avio::MemoryQueue;
+use restream::media::ring_buffer::{Reader, RingBuffer};
 use restream::media::transcoder::run_ffmpeg_transcoder_stage;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 fn run_source_passthrough(fixture: &[u8]) -> usize {
     let input = Arc::new(MemoryQueue::new());
-    let output = Arc::new(MemoryQueue::new());
+    let output = Arc::new(RingBuffer::new(4096));
     input.write(fixture);
     input.close();
 
-    run_ffmpeg_transcoder_stage(
-        input,
-        output.clone(),
-        "source",
-        CancellationToken::new(),
-    )
-    .expect("production passthrough stage");
+    run_ffmpeg_transcoder_stage(input, output.clone(), "source", CancellationToken::new())
+        .expect("production passthrough stage");
 
-    let mut scratch = vec![0u8; 64 * 1024];
+    let mut reader = Reader::new("bench_transcoder".to_string(), output);
     let mut output_bytes = 0usize;
-    loop {
-        let read = output.read_nonblocking(&mut scratch);
-        if read == 0 {
-            break;
-        }
-        output_bytes += read;
+    while let Ok(Some(pkt)) = reader.pull() {
+        output_bytes += pkt.payload.len();
     }
     output_bytes
 }
