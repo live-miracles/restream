@@ -296,6 +296,42 @@ pub fn build_avcc_sequence_header(annexb_data: &[u8]) -> Option<Bytes> {
     Some(Bytes::from(buf))
 }
 
+/// Build an FLV audio sequence header (AudioSpecificConfig) from sample rate
+/// and channel count. Used for the SRT→RTMP Raw path where no cached
+/// AudioSpecificConfig exists — the 2-byte config is synthesized from the
+/// audio metadata that is always available.
+pub fn build_aac_sequence_header(sample_rate: u32, channels: u32) -> Bytes {
+    let freq_idx: u8 = match sample_rate {
+        96000 => 0,
+        88200 => 1,
+        64000 => 2,
+        48000 => 3,
+        44100 => 4,
+        32000 => 5,
+        24000 => 6,
+        22050 => 7,
+        16000 => 8,
+        12000 => 9,
+        11025 => 10,
+        8000 => 11,
+        _ => 3,
+    };
+    let chan_cfg = channels.min(7) as u8;
+    let audio_object_type: u8 = 2; // AAC-LC
+
+    // AudioSpecificConfig (2 bytes for AAC-LC without extension)
+    // byte0: bits[7:3] = audioObjectType, bits[2:0] = samplingFrequencyIndex top 3 bits
+    let asc_byte0 = (audio_object_type << 3) | (freq_idx >> 1);
+    // byte1: bit[7] = samplingFrequencyIndex bottom bit, bits[6:3] = channelConfiguration
+    let asc_byte1 = ((freq_idx & 0x01) << 7) | (chan_cfg << 3);
+
+    let mut out = Vec::with_capacity(4);
+    // FLV audio tag: AAC (0xAF) + packet_type=0 (sequence header)
+    out.extend_from_slice(&[0xAF, 0x00]);
+    out.extend_from_slice(&[asc_byte0, asc_byte1]);
+    Bytes::from(out)
+}
+
 // ---------------------------------------------------------------------------
 // ADTS helpers
 // ---------------------------------------------------------------------------
@@ -469,6 +505,29 @@ mod tests {
         // AVCC data starts at offset 5
         let nalu_len = u32::from_be_bytes([result[5], result[6], result[7], result[8]]) as usize;
         assert_eq!(nalu_len, 4);
+    }
+
+    #[test]
+    fn build_aac_seq_header_synthesizes_correct_config() {
+        // AAC-LC (audioObjectType=2), 48000Hz (freq_idx=3), stereo (ch=2)
+        // asc_byte0 = (2 << 3) | (3 >> 1) = 16 | 1 = 0x11
+        // asc_byte1 = ((3 & 1) << 7) | (2 << 3) = 128 | 16 = 0x90
+        let hdr = build_aac_sequence_header(48000, 2);
+        assert_eq!(hdr.len(), 4);
+        assert_eq!(hdr[0], 0xAF); // AAC, 44kHz, 16-bit, stereo
+        assert_eq!(hdr[1], 0x00); // packet_type = 0 (sequence header)
+        assert_eq!(hdr[2], 0x11);
+        assert_eq!(hdr[3], 0x90);
+
+        // AAC-LC, 44100Hz (freq_idx=4), mono (ch=1)
+        // asc_byte0 = (2 << 3) | (4 >> 1) = 16 | 2 = 0x12
+        // asc_byte1 = ((4 & 1) << 7) | (1 << 3) = 0 | 8 = 0x08
+        let hdr2 = build_aac_sequence_header(44100, 1);
+        assert_eq!(hdr2.len(), 4);
+        assert_eq!(hdr2[0], 0xAF);
+        assert_eq!(hdr2[1], 0x00);
+        assert_eq!(hdr2[2], 0x12);
+        assert_eq!(hdr2[3], 0x08);
     }
 
     #[test]

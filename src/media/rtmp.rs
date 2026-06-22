@@ -1220,12 +1220,25 @@ pub async fn start_rtmp_egress(
                                 ClientSessionEvent::PublishRequestAccepted => {
                                     println!("[rtmp-egress] Stream publishing accepted on target");
                                     // Send cached sequence headers before media data
-                                    let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
+                                    let (video_sh, mut audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
                                     if let Some(vsh) = video_sh {
                                         if let Ok(ClientSessionResult::OutboundResponse(p)) =
                                             session.publish_video_data(vsh, RtmpTimestamp::new(0), true)
                                         {
                                             if socket.write_all(&p.bytes).await.is_err() { return; }
+                                        }
+                                    }
+                                    // Synthesize AAC sequence header from audio meta if not cached
+                                    if audio_sh.is_none() {
+                                        let ingests = engine.active_ingests.read().await;
+                                        if let Some(ingest) = ingests.get(&pipeline_id) {
+                                            let tracks = ingest.audio_tracks.lock().unwrap();
+                                            if let Some(track) = tracks.first() {
+                                                audio_sh = Some(codec::build_aac_sequence_header(
+                                                    track.sample_rate,
+                                                    track.channels,
+                                                ));
+                                            }
                                         }
                                     }
                                     if let Some(ash) = audio_sh {

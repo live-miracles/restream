@@ -265,7 +265,7 @@ mod tests {
 
     /// Verify that stage keys for different video presets with the same audio
     /// routing produce different cache keys, preventing cross-contamination.
-    /// See docs/media-pipeline-stage-design.md "Audio Stage Cache Concern".
+    /// See docs/media-pipeline.md "Audio Stage Cache Concern".
     #[test]
     fn stage_keys_isolate_video_presets() {
         let pipeline = "pipe1";
@@ -373,15 +373,26 @@ pub fn run_ffmpeg_transcoder_stage(
             continue;
         };
 
+        let tb = stream.time_base();
         let pts = packet.pts().unwrap_or(0);
         let dts = packet.dts().unwrap_or(pts);
+        let pts_ms = if tb.1 != 0 {
+            (pts as f64 * tb.0 as f64 / tb.1 as f64 * 1000.0) as i64
+        } else {
+            pts
+        };
+        let dts_ms = if tb.1 != 0 {
+            (dts as f64 * tb.0 as f64 / tb.1 as f64 * 1000.0) as i64
+        } else {
+            dts
+        };
         let data = packet.data().unwrap_or(&[]);
 
         out_ring.push(MediaPacket {
             media_type,
             track_index,
-            pts,
-            dts,
+            pts: pts_ms,
+            dts: dts_ms,
             is_keyframe: packet.is_key(),
             format: PayloadFormat::Raw,
             payload: bytes::Bytes::copy_from_slice(data),

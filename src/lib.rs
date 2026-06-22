@@ -210,7 +210,7 @@ pub async fn run_app() {
                 //   Key includes upstream video preset to prevent cross-contamination:
                 //   720p+atrack:0 and 1080p+atrack:0 must NOT share an audio stage.
                 //
-                // See docs/media-pipeline-stage-design.md for rationale.
+                // See docs/media-pipeline.md for rationale.
                 let encoding = output.encoding.clone();
                 let video_preset = encoding.split('+').next().unwrap_or("source");
                 let audio_part = encoding.split('+').nth(1);
@@ -462,11 +462,14 @@ pub async fn run_app() {
                 let engine_c = engine.clone();
                 let pid = pipeline.id.clone();
                 let pipe_name = pipeline.name.clone();
+                let engine_rec = engine_c.clone();
                 tokio::spawn(async move {
                     crate::media::recording::start_recording(
                         pipe_name,
+                        pid.clone(),
                         "media".to_string(),
                         ring_buf,
+                        engine_rec,
                         cancel_token,
                     )
                     .await;

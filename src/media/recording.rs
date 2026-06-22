@@ -1,8 +1,11 @@
 //! MKV recording muxer — writes live pipeline data to timestamped `.mkv` files.
-//! Same architecture as HLS: `RingBuffer` → `MemoryQueue` → FFmpeg muxer on OS thread.
+//! Architecture: `RingBuffer` → `TsMuxer` → `MemoryQueue` → FFmpeg muxer on OS thread.
 //! Auto-deletes recordings shorter than 5 seconds (transient connection artifacts).
 
-use crate::media::ring_buffer::{Reader, RingBuffer};
+use crate::media::codec::{audio_for_ts, video_for_ts};
+use crate::media::engine::MediaEngine;
+use crate::media::mpegts::TsMuxer;
+use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +24,7 @@ fn sanitize_name(name: &str) -> String {
 fn build_filename(pipe_name: &str) -> String {
     let now = chrono::Local::now();
     format!(
-        "{} {}.mkv",
+        "{} {}.ts",
         now.format("%Y-%m-%d %H-%M-%S"),
         sanitize_name(pipe_name)
     )
@@ -29,8 +32,10 @@ fn build_filename(pipe_name: &str) -> String {
 
 pub async fn start_recording(
     pipeline_name: String,
+    pipeline_id: String,
     media_dir: String,
     ring_buffer: Arc<RingBuffer>,
+    engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
     let _ = fs::create_dir_all(&media_dir);
@@ -58,6 +63,13 @@ pub async fn start_recording(
 
     let mut reader = Reader::new(format!("recording:{}", pipeline_name), ring_buffer);
     let mut packets = Vec::with_capacity(32);
+
+    // Lazily initialized when first packet arrives
+    let mut muxer: Option<TsMuxer> = None;
+    let mut dts_enforcer: Option<DtsEnforcer> = None;
+    let mut nalu_len_size: usize = 4;
+    let mut audio_tracks: Vec<crate::media::engine::AudioMeta> = Vec::new();
+
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
@@ -68,7 +80,76 @@ pub async fn start_recording(
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    queue.write_batch(packets.iter().map(|packet| packet.payload.as_ref()));
+
+                    for pkt in &packets {
+                        // Lazily create the muxer from engine metadata
+                        if muxer.is_none() {
+                            let ingests = engine.active_ingests.read().await;
+                            if let Some(ingest) = ingests.get(&pipeline_id) {
+                                let video = ingest.video.as_ref();
+                                let tracks = ingest.audio_tracks.lock().unwrap().clone();
+                                let num_streams = video.is_some() as usize + tracks.len();
+                                muxer = Some(TsMuxer::new(video, &tracks));
+                                dts_enforcer = Some(DtsEnforcer::new(num_streams));
+                                audio_tracks = tracks;
+                                drop(ingests);
+                            } else {
+                                continue;
+                            }
+                        }
+
+                        let Some(ref mut mux) = muxer else { continue };
+                        let Some(ref mut dts) = dts_enforcer else { continue };
+
+                        let payload = match pkt.media_type {
+                            MediaType::Video => {
+                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                            MediaType::Audio => {
+                                let track = audio_tracks
+                                    .iter()
+                                    .find(|a| a.track_index == pkt.track_index)
+                                    .or(audio_tracks.first());
+                                let (sr, ch) = track
+                                    .map(|a| (a.sample_rate, a.channels))
+                                    .unwrap_or((48000, 1));
+                                match audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                    Some(p) => p,
+                                    None => continue,
+                                }
+                            }
+                        };
+
+                        let stream_idx = match pkt.media_type {
+                            MediaType::Video => 0,
+                            MediaType::Audio => {
+                                let video_offset = 1;
+                                audio_tracks
+                                    .iter()
+                                    .position(|a| a.track_index == pkt.track_index)
+                                    .map(|i| i + video_offset)
+                                    .unwrap_or(0)
+                            }
+                        };
+
+                        let (pts, dts) = dts.enforce(stream_idx, pkt.pts, pkt.dts);
+
+                        let ts_bytes = mux.mux_packet(
+                            pkt.media_type,
+                            pkt.track_index,
+                            pts,
+                            dts,
+                            pkt.is_keyframe,
+                            &payload,
+                        );
+
+                        if !ts_bytes.is_empty() {
+                            queue.write(ts_bytes);
+                        }
+                    }
                 }
             }
         }
@@ -94,52 +175,38 @@ fn run_mkv_muxer(
     file_path: &str,
     token: CancellationToken,
 ) -> Result<(), &'static str> {
-    use crate::media::avio::CustomInput;
-
-    let mut custom_input = CustomInput::new(&*queue)?;
-    let ictx = custom_input
-        .input
-        .as_mut()
-        .ok_or("Failed to get CustomInput context")?;
+    use std::io::Write;
 
     let path = std::path::Path::new(file_path);
-    let mut octx = ffmpeg_next::format::output_as(&path, "matroska")
-        .map_err(|_| "Recording: Failed to open MKV output")?;
+    let mut file = std::fs::File::create(path)
+        .map_err(|_| "Recording: Failed to create output file")?;
 
-    let mut stream_mapping = Vec::new();
-    for stream in ictx.streams() {
-        let codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::None);
-        let mut new_stream = octx
-            .add_stream(codec)
-            .map_err(|_| "Recording: Failed to add stream")?;
-        new_stream.set_parameters(stream.parameters());
-        stream_mapping.push(new_stream.index());
+    let mut buf = vec![0u8; 1316];
+    let mut done = false;
+    while !done {
+        let n = queue.read(&mut buf);
+        if n == 0 {
+            if token.is_cancelled() {
+                done = true;
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        } else {
+            file.write_all(&buf[..n])
+                .map_err(|_| "Recording: Failed to write")?;
+        }
     }
 
-    octx.write_header()
-        .map_err(|_| "Recording: Failed to write header")?;
-
-    for (stream, mut packet) in ictx.packets() {
-        if token.is_cancelled() {
+    // Drain any remaining data after cancellation
+    loop {
+        let n = queue.read(&mut buf);
+        if n == 0 {
             break;
         }
-
-        let Some(&out_stream_index) = stream_mapping.get(stream.index()) else {
-            continue;
-        };
-        packet.set_stream(out_stream_index);
-
-        let in_time_base = stream.time_base();
-        let Some(out_stream) = octx.stream(out_stream_index) else {
-            continue;
-        };
-        let out_time_base = out_stream.time_base();
-        packet.rescale_ts(in_time_base, out_time_base);
-
-        let _ = packet.write_interleaved(&mut octx);
+        file.write_all(&buf[..n])
+            .map_err(|_| "Recording: Failed to write")?;
     }
 
-    octx.write_trailer()
-        .map_err(|_| "Recording: Write trailer failed")?;
+    file.flush().map_err(|_| "Recording: Failed to flush")?;
     Ok(())
 }

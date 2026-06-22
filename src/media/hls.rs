@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::media::engine::MediaEngine;
 use crate::media::mpegts::TsMuxer;
 use crate::media::codec::{audio_for_ts, video_for_ts};
-use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 
 const TARGET_DURATION_SECS: f64 = 6.0;
 const MIN_SEGMENT_SECS: f64 = 1.0;
@@ -122,6 +122,7 @@ pub async fn start_hls_segmenter(
     let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer);
     let mut packets = Vec::with_capacity(32);
     let mut muxer: Option<(TsMuxer, Vec<crate::media::engine::AudioMeta>)> = None;
+    let mut dts_enforcer: Option<DtsEnforcer> = None;
     let mut nalu_len_size: usize = 4;
     let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
     let mut segment_start = Instant::now();
@@ -157,7 +158,7 @@ pub async fn start_hls_segmenter(
 
                         metrics.record_in(packet.payload.len() as u64);
 
-                        // Lazily create the muxer once we have ingest metadata
+                        // Lazily create the muxer and DtsEnforcer once we have ingest metadata
                         let (mux, tracks) = match &mut muxer {
                             Some((m, t)) => (m, t),
                             None => {
@@ -169,6 +170,8 @@ pub async fn start_hls_segmenter(
                                 let video = ingest.video.as_ref();
                                 let audio_tracks = ingest.audio_tracks.lock().unwrap().clone();
                                 let m = TsMuxer::new(video, &audio_tracks);
+                                let num_streams = video.is_some() as usize + audio_tracks.len();
+                                dts_enforcer = Some(DtsEnforcer::new(num_streams));
                                 drop(ingests);
                                 muxer = Some((m, audio_tracks));
                                 let (m, t) = muxer.as_mut().unwrap();
@@ -196,11 +199,23 @@ pub async fn start_hls_segmenter(
                         };
 
                         let t0 = Instant::now();
+                        let stream_idx = match packet.media_type {
+                            MediaType::Video => 0,
+                            MediaType::Audio => tracks
+                                .iter()
+                                .position(|a| a.track_index == packet.track_index)
+                                .map(|i| i + (tracks.is_empty() as usize))
+                                .unwrap_or(0),
+                        };
+                        let (pts, dts) = dts_enforcer
+                            .as_mut()
+                            .map(|de| de.enforce(stream_idx, packet.pts, packet.dts))
+                            .unwrap_or((packet.pts, packet.dts));
                         let ts_bytes = mux.mux_packet(
                             packet.media_type,
                             packet.track_index,
-                            packet.pts,
-                            packet.dts,
+                            pts,
+                            dts,
                             packet.is_keyframe,
                             &raw_payload,
                         );

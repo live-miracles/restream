@@ -286,7 +286,16 @@ impl Reader {
 
     pub async fn wait_for_data(&self) {
         let notify = self.buffer.get_notify();
-        notify.notified().await;
+        loop {
+            // Re-check for data before blocking to avoid a TOCTOU race:
+            // the writer could notify_waiters() between our pull() returning
+            // None and this notified().await registering — Notify does NOT
+            // store notifications for future waiters, so we'd sleep forever.
+            if self.buffer.get_write_idx() > self.read_idx {
+                return;
+            }
+            notify.notified().await;
+        }
     }
 }
 
