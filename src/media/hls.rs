@@ -126,7 +126,7 @@ pub async fn start_hls_segmenter(
     let metrics = engine
         .get_or_create_stage_metrics(&pipeline_id, "hls")
         .await;
-    let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer);
+    let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer.clone());
     let mut packets = Vec::with_capacity(32);
     let mut muxer: Option<(TsMuxer, Vec<crate::media::engine::AudioMeta>)> = None;
     let mut dts_enforcer: Option<DtsEnforcer> = None;
@@ -194,6 +194,14 @@ pub async fn start_hls_segmenter(
                                 let (video, audio_tracks) = loop {
                                     if cancel_token.is_cancelled() {
                                         return;
+                                    }
+                                    if let Some(tracks) = ring_buffer.audio_tracks() {
+                                        let ingests = engine.active_ingests.read().await;
+                                        if let Some(i) = ingests.get(&pipeline_id) {
+                                            if let Some(video) = i.video.clone() {
+                                                break (Some(video), tracks.to_vec());
+                                            }
+                                        }
                                     }
                                     let result = {
                                         let ingests = engine.active_ingests.read().await;

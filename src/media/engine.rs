@@ -461,6 +461,35 @@ impl MediaEngine {
             }
         }
 
+        // Set audio_tracks metadata
+        let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
+            tracks.to_vec()
+        } else {
+            let ingests = self.active_ingests.read().await;
+            ingests.get(pipeline_id)
+                .map(|i| {
+                    let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if tracks.is_empty() && let Some(audio) = i.audio.clone() {
+                        tracks.push(audio);
+                    }
+                    tracks
+                })
+                .unwrap_or_default()
+        };
+
+        let output_tracks = if encoding.starts_with("audio:") {
+            let audio_spec = encoding.strip_prefix("audio:").unwrap_or(encoding);
+            let audio_op = audio_spec
+                .rsplit_once(":from:")
+                .map(|(op, _)| op)
+                .unwrap_or(audio_spec);
+            let routing = crate::media::transcoder::parse_audio_routing(&format!("source+{}", audio_op));
+            crate::media::transcoder::apply_audio_routing(&routing, &input_tracks)
+        } else {
+            input_tracks
+        };
+        output_buf.set_audio_tracks(output_tracks);
+
         println!(
             "[transcoder] Spawning stage: pipeline={} encoding={}",
             pipeline_id, encoding
@@ -590,6 +619,23 @@ impl MediaEngine {
         // hevc_to_h264 stage always produces H.264 — tag the ring so consumers
         // can initialize their TsMuxer / PMT with the correct codec.
         output_buf.set_codec_hint("h264");
+
+        // Inherit audio tracks from source_buffer
+        let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
+            tracks.to_vec()
+        } else {
+            let ingests = self.active_ingests.read().await;
+            ingests.get(pipeline_id)
+                .map(|i| {
+                    let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if tracks.is_empty() && let Some(audio) = i.audio.clone() {
+                        tracks.push(audio);
+                    }
+                    tracks
+                })
+                .unwrap_or_default()
+        };
+        output_buf.set_audio_tracks(input_tracks);
         let cancel = CancellationToken::new();
         buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         drop(buffers); // release write lock before spawning

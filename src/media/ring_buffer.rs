@@ -98,6 +98,8 @@ pub struct RingBuffer {
     /// `"h264"`, `"hevc"`, or empty string (= infer from ingest metadata).
     /// All packets in a ring share one codec — this avoids per-packet tagging.
     pub codec_hint: std::sync::OnceLock<String>,
+    /// Audio tracks metadata of packets in this ring.
+    pub audio_tracks: std::sync::OnceLock<Vec<crate::media::engine::AudioMeta>>,
 }
 
 impl RingBuffer {
@@ -123,6 +125,7 @@ impl RingBuffer {
             notify: Arc::new(tokio::sync::Notify::new()),
             readers: std::sync::Mutex::new(Vec::new()),
             codec_hint: std::sync::OnceLock::new(),
+            audio_tracks: std::sync::OnceLock::new(),
         }
     }
 
@@ -135,6 +138,14 @@ impl RingBuffer {
     /// Return the codec hint if set, or empty string.
     pub fn codec_hint_str(&self) -> &str {
         self.codec_hint.get().map(|s| s.as_str()).unwrap_or("")
+    }
+
+    pub fn set_audio_tracks(&self, tracks: Vec<crate::media::engine::AudioMeta>) {
+        let _ = self.audio_tracks.set(tracks);
+    }
+
+    pub fn audio_tracks(&self) -> Option<&[crate::media::engine::AudioMeta]> {
+        self.audio_tracks.get().map(|v| v.as_slice())
     }
 
     pub fn push(&self, packet: MediaPacket) {
