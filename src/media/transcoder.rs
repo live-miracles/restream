@@ -512,12 +512,15 @@ pub fn run_ffmpeg_transcoder_stage(
         let pts = packet.pts().unwrap_or(0);
         let dts = packet.dts().unwrap_or(pts);
         let pts_ms = if tb.1 != 0 {
-            (pts as f64 * tb.0 as f64 / tb.1 as f64 * 1000.0) as i64
+            // i128 avoids f64 precision loss for large pts values (e.g. after
+            // hours of streaming at 90 kHz: pts ≈ 3×10¹¹, f64 has only 53-bit
+            // mantissa ≈ 9×10¹⁵ exact range but loses sub-ms precision before that).
+            (pts as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64
         } else {
             pts
         };
         let dts_ms = if tb.1 != 0 {
-            (dts as f64 * tb.0 as f64 / tb.1 as f64 * 1000.0) as i64
+            (dts as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64
         } else {
             dts
         };
