@@ -67,8 +67,7 @@ pub fn ensure_ffmpeg_extracted() -> PathBuf {
     ffmpeg_path
 }
 
-/// Cleanup temp FFmpeg directory on shutdown (optional, called via atexit).
-#[allow(dead_code)]
+/// Cleanup temp FFmpeg directory on shutdown.
 pub fn cleanup_ffmpeg() {
     if let Ok(cached) = std::env::var("FFMPEG_BIN_PATH") {
         let path = PathBuf::from(&cached);

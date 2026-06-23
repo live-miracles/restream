@@ -15,4 +15,6 @@ fn main() {
         .build()
         .expect("Failed to build tokio runtime")
         .block_on(restream::run_app());
+
+    restream::ffmpeg_extract::cleanup_ffmpeg();
 }
