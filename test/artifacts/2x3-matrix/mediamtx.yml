@@ -1,0 +1,17 @@
+logLevel: warn
+rtmp: yes
+rtmpAddress: :1936
+rtmpEncryption: "no"
+rtsp: no
+srt: yes
+srtAddress: :8891
+hls: yes
+hlsAddress: :8890
+hlsPartDuration: 200ms
+hlsSegmentDuration: 2s
+webrtc: no
+api: yes
+apiAddress: :9997
+metrics: no
+paths:
+  all:

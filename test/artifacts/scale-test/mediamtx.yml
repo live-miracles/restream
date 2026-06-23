@@ -1,0 +1,11 @@
+logLevel: warn
+rtmp: yes
+rtmpAddress: :1936
+srt: yes
+srtAddress: :8891
+hls: no
+webrtc: no
+api: yes
+apiAddress: :9997
+paths:
+  all:

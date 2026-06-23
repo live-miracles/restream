@@ -1,0 +1,29 @@
+matrix pipelines created: 2
+matrix outputs created: 12
+health-snapshot-check: ok
+hls-player-check: ok
+external-launch-log: observed
+ok: input-live: matrix-rtmp
+ok: input-live: matrix-srt
+ok: ffprobe: rp/rtmp-pass [rtmp] → 1920x1080
+ok: input-live: matrix-rtmp
+ok: input-live: matrix-srt
+ok: ffprobe: rp/rtmp-pass [rtmp] → 1920x1080
+ok: input-live: matrix-rtmp
+ok: input-live: matrix-srt
+ok: ffprobe: rp/rtmp-pass [rtmp] → 1920x1080
+ok: ffprobe: rp/rtmp-720p [rtmp] → 1280x720
+ok: ffprobe: rp/srt-pass [srt] → 1920x1080
+ok: ffprobe: rp/srt-720p [srt] → 1280x720
+ok: ffprobe: rp/rtmp-pass [hls/mtx] → 1920x1080
+ok: ffprobe: rp/rtmp-720p [hls/mtx] → 1280x720
+ok: ffprobe: rp/hls-preview [hls/restream] → 1920x1080
+ok: ffprobe: sp/rtmp-pass [rtmp] → 1920x1080
+ok: ffprobe: sp/rtmp-720p [rtmp] → 1280x720
+ok: ffprobe: sp/srt-pass [srt] → 1920x1080
+ok: ffprobe: sp/srt-720p [srt] → 1280x720
+ok: ffprobe: sp/rtmp-pass [hls/mtx] → 1920x1080
+ok: ffprobe: sp/rtmp-720p [hls/mtx] → 1280x720
+ok: ffprobe: sp/hls-preview [hls/restream] → 1920x1080
+ok: final-counts: pipelines=2 outputs=10
+ok: external-transcoder launches: 0

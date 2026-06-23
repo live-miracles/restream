@@ -56,6 +56,46 @@ api() {
         "$@"
 }
 
+ensure_target_pipeline() {
+    local url="$1"
+    local stream_key
+    stream_key=$(python3 - "$url" <<'PY'
+import sys
+from urllib.parse import urlsplit, parse_qs
+url = sys.argv[1]
+if url.startswith(("rtmp://", "rtmps://")):
+    parts = urlsplit(url)
+    path = parts.path.lstrip("/")
+    if "/" in path:
+        print(path.split("/", 1)[1])
+    else:
+        print("")
+elif url.startswith("srt://"):
+    parts = urlsplit(url)
+    streamid = parse_qs(parts.query).get("streamid", [""])[0]
+    if streamid.startswith("publish:live/"):
+        print(streamid[len("publish:live/"):])
+    elif streamid.startswith("live/"):
+        print(streamid[len("live/"):])
+    else:
+        print(streamid)
+else:
+    print("")
+PY
+)
+    [[ -n "$stream_key" ]] || return 0
+
+    local existing_id
+    existing_id=$(api GET /pipelines | jq -r --arg key "$stream_key" '.[] | select(.streamKey == $key) | .id' | head -n1)
+    if [[ -n "$existing_id" ]]; then
+        return 0
+    fi
+
+    local pipe_name
+    pipe_name="target-$(printf '%s' "$stream_key" | tr '/:' '-' | tr -cd '[:alnum:]._-')"
+    api POST /pipelines -d "{\"name\":\"$pipe_name\",\"streamKey\":\"$stream_key\"}" >/dev/null
+}
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 echo "== Prerequisites =="
@@ -108,6 +148,7 @@ for pi in $(seq 0 $((PIPE_COUNT - 1))); do
             '.outputs[] | select(.pipelineId == $pid and .name == $name) | .id // empty')
 
         if [[ -z "$EXISTING_OUT" ]]; then
+            ensure_target_pipeline "$OUT_URL"
             OUT_ID=$(api POST "/pipelines/$PIPE_ID/outputs" \
                 -d "{\"name\":\"$OUT_NAME\",\"url\":\"$OUT_URL\",\"encoding\":\"$OUT_ENC\"}" | jq -r '.output.id')
             echo "  Created output $OUT_NAME: $OUT_ID"
