@@ -114,7 +114,10 @@ impl RingBuffer {
                 val: AtomicUsize::new(0),
             },
             last_keyframe_idx: AlignedAtomicUsize {
-                val: AtomicUsize::new(0),
+                // usize::MAX is the sentinel meaning "no keyframe seen yet".
+                // This disambiguates from a real keyframe at slot 0 (which
+                // would also produce index 0 if we started from AtomicUsize::new(0)).
+                val: AtomicUsize::new(usize::MAX),
             },
             capacity,
             notify: Arc::new(tokio::sync::Notify::new()),
@@ -243,10 +246,17 @@ impl RingBuffer {
 
     pub fn fast_forward(&self, current_write_idx: usize) -> usize {
         let kf_idx = self.last_keyframe_idx.val.load(Ordering::Acquire);
-        if kf_idx > 0 && current_write_idx.saturating_sub(kf_idx) < self.capacity {
+        // usize::MAX is the sentinel for "no keyframe seen yet".
+        let kf_known = kf_idx != usize::MAX;
+        if kf_known && current_write_idx.saturating_sub(kf_idx) < self.capacity {
             return kf_idx;
         }
-        current_write_idx.saturating_sub(100)
+        // No valid keyframe is known yet (stream start) or the last keyframe
+        // index is more than `capacity` slots behind the write cursor (overflow
+        // without a keyframe in the window).
+        // Return the current write position to start at the live edge rather
+        // than using saturating_sub(100) which returns 0 when write_idx < 100.
+        current_write_idx
     }
 }
 
@@ -769,5 +779,54 @@ mod tests {
             }
         }
         let _ = writer_handle.join();
+    }
+
+    #[test]
+    fn fast_forward_with_no_keyframe_returns_live_edge() {
+        // Bug #8: when no keyframe has been pushed yet (sentinel = usize::MAX)
+        // fast_forward must return current_write_idx, NOT 0 or write_idx.saturating_sub(100).
+        // Returning 0 when write_idx < 100 caused late-joining readers to re-scan
+        // from the beginning of the ring rather than starting at the live edge.
+        let rb = Arc::new(RingBuffer::new(4096));
+
+        // Push 5 non-keyframe audio packets (no video keyframe → sentinel stays)
+        for i in 0..5 {
+            rb.push(MediaPacket {
+                media_type: MediaType::Audio,
+                track_index: 0,
+                pts: i * 10,
+                dts: i * 10,
+                is_keyframe: false,
+                format: PayloadFormat::Raw,
+                payload: bytes::Bytes::from_static(b"\xAA"),
+            });
+        }
+        // write_idx is now 5; no keyframe has been seen → sentinel usize::MAX
+        let write_idx = rb.write_idx.val.load(Ordering::Relaxed);
+        assert_eq!(write_idx, 5);
+
+        // fast_forward should return write_idx (live edge), not 0
+        let ff = rb.fast_forward(write_idx);
+        assert_eq!(
+            ff, write_idx,
+            "fast_forward with no keyframe must return the live edge, not 0"
+        );
+    }
+
+    #[test]
+    fn fast_forward_with_keyframe_at_slot_zero() {
+        // When the very first packet pushed is a video keyframe (idx=0),
+        // fast_forward must still be able to find that keyframe (not confuse it
+        // with the "no keyframe" sentinel).
+        let rb = Arc::new(RingBuffer::new(4096));
+
+        // Push one keyframe at slot 0
+        rb.push(video_packet(0, 0, true));
+        let write_idx = rb.write_idx.val.load(Ordering::Relaxed);
+        assert_eq!(write_idx, 1);
+
+        // fast_forward should return 0 (the keyframe slot), not 1 (live edge)
+        let ff = rb.fast_forward(write_idx);
+        assert_eq!(ff, 0, "fast_forward should return the keyframe at slot 0");
     }
 }
