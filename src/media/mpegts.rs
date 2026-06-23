@@ -446,14 +446,21 @@ impl TsDemuxer {
         }
         self.pmt_version = Some(incoming_version);
 
-        // Version changed (or first parse) — clear existing stream map so we
-        // rebuild it cleanly from the new PMT.
-        if !self.streams.is_empty() {
-            self.streams.clear();
-            self.pid_to_stream.fill(NO_STREAM);
-            self.audio_track_counter = 0;
-            self.probe_payloads.clear();
-        }
+        // Version changed (or first parse) — rebuild the stream map from the new PMT.
+        //
+        // For PIDs that survive unchanged into the new PMT we preserve their
+        // in-flight PesAccumulator so that partially-assembled frames are not
+        // lost mid-decode, which would cause a video glitch/audio pop until the
+        // next IDR.  PIDs that disappear are simply dropped.  New PIDs get a
+        // fresh accumulator.
+        let mut old_pes: std::collections::HashMap<u16, PesAccumulator> = self
+            .streams
+            .drain(..)
+            .map(|s| (s._pid, s.pes))
+            .collect();
+        self.pid_to_stream.fill(NO_STREAM);
+        self.audio_track_counter = 0;
+        self.probe_payloads.clear();
 
         let program_info_len = ((data[10] as usize & 0x0F) << 8) | data[11] as usize;
         let mut pos = 12 + program_info_len;
@@ -482,12 +489,17 @@ impl TsDemuxer {
                 };
 
                 let stream_idx = self.streams.len();
+                // Preserve in-flight PES accumulator for this PID if it existed
+                // in the previous PMT — avoids dropping partially-assembled frames
+                // when the broadcaster sends a PMT update that only changes metadata
+                // (e.g. language descriptor) while keeping the same PIDs.
+                let pes = old_pes.remove(&es_pid).unwrap_or_else(PesAccumulator::new);
                 self.streams.push(StreamInfo {
                     _pid: es_pid,
                     kind,
                     track_index,
                     continuity: None,
-                    pes: PesAccumulator::new(),
+                    pes,
                 });
                 self.pid_to_stream[es_pid as usize] = stream_idx as u16;
             }
@@ -2360,6 +2372,67 @@ mod tests {
             "remainder must be capped at TS_PACKET_SIZE-1 ({}) but was {}",
             TS_PACKET_SIZE - 1,
             dem.remainder.len()
+        );
+    }
+
+    // --- Regression: issue #5 (Round 4) — PMT version rebuild preserves in-flight PES ---
+    // Before the fix, a PMT version change discarded ALL StreamInfo (including
+    // PesAccumulator buffers).  A partially-assembled video frame would be lost,
+    // producing a glitch until the next IDR.  After the fix, PES buffers for PIDs
+    // that survive into the new PMT are carried over.
+    #[test]
+    fn pmt_version_change_preserves_pes_for_unchanged_pid() {
+        // Build a minimal TS PES packet for PID 0x100 that starts a new PES unit
+        // (PUSI=1) but does NOT complete it (no second packet with the next PES
+        // start, so the frame stays in the accumulator).
+        fn make_pes_ts_pkt(pid: u16, pusi: bool, payload: &[u8]) -> Vec<u8> {
+            let mut pkt = vec![0xFFu8; 188];
+            pkt[0] = 0x47;
+            pkt[1] = if pusi { 0x40 } else { 0x00 } | ((pid >> 8) as u8 & 0x1F);
+            pkt[2] = (pid & 0xFF) as u8;
+            pkt[3] = 0x10; // payload_unit_start = pusi flag handled above; CC=0
+            // When PUSI, prepend a minimal PES header: start code + stream_id +
+            // length(0=unbounded) + flags + header_data_length(0)
+            let pes_header: &[u8] = if pusi {
+                &[0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, 0x00, 0x00]
+            } else {
+                &[]
+            };
+            let data_offset = 4usize;
+            let total = pes_header.len() + payload.len();
+            pkt[data_offset..data_offset + total.min(184)]
+                .iter_mut()
+                .zip(pes_header.iter().chain(payload.iter()))
+                .for_each(|(d, &s)| *d = s);
+            pkt
+        }
+
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&make_pat_ts_pkt());
+        // PMT v0: H.264 video at PID 0x100
+        data.extend_from_slice(&make_pmt_ts_pkt(0, &[(0x1B, 0x100u16)]));
+        // PES start for PID 0x100 — frame not yet complete
+        data.extend_from_slice(&make_pes_ts_pkt(0x100, true, &[0xDE, 0xAD]));
+
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&data);
+
+        // Verify the PES buffer has data
+        assert_eq!(demuxer.streams.len(), 1);
+        let buf_before = demuxer.streams[0].pes.buf.clone();
+        assert!(!buf_before.is_empty(), "PES buf must have partial frame data");
+
+        // Now the broadcaster sends a PMT version change for the same PID
+        // (e.g., only the language descriptor changed).
+        let v1_pkt = make_pmt_ts_pkt(1, &[(0x1B, 0x100u16)]);
+        demuxer.feed(&v1_pkt);
+
+        assert_eq!(demuxer.streams.len(), 1, "stream map should still have 1 stream");
+        assert_eq!(demuxer.pmt_version, Some(1));
+        assert_eq!(
+            demuxer.streams[0].pes.buf,
+            buf_before,
+            "in-flight PES buffer must be preserved after PMT version change for same PID"
         );
     }
 }
