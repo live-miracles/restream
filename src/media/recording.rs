@@ -2,7 +2,7 @@
 //! Architecture: `RingBuffer` → `TsMuxer` → `MemoryQueue` → FFmpeg muxer on OS thread.
 //! Auto-deletes recordings shorter than 5 seconds (transient connection artifacts).
 
-use crate::media::codec::{audio_for_ts, video_for_ts};
+use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::MediaEngine;
 use crate::media::mpegts::TsMuxer;
 use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
@@ -75,10 +75,16 @@ pub async fn start_recording(
                 let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
                 nalu_len_size = nls;
                 annexb
-            } else { Vec::new() }
-        } else { Vec::new() }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
     };
     let mut audio_tracks: Vec<crate::media::engine::AudioMeta> = Vec::new();
+    let mut video_conv_buf = Vec::<u8>::new();
+    let mut audio_conv_buf = Vec::<u8>::new();
 
     loop {
         tokio::select! {
@@ -111,9 +117,9 @@ pub async fn start_recording(
                         let Some(ref mut mux) = muxer else { continue };
                         let Some(ref mut dts) = dts_enforcer else { continue };
 
-                        let payload = match pkt.media_type {
+                        let payload: &[u8] = match pkt.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
+                                match video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -126,7 +132,7 @@ pub async fn start_recording(
                                 let (sr, ch) = track
                                     .map(|a| (a.sample_rate, a.channels))
                                     .unwrap_or((48000, 1));
-                                match audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                match audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -153,7 +159,7 @@ pub async fn start_recording(
                             pts,
                             dts,
                             pkt.is_keyframe,
-                            &payload,
+                            payload,
                         );
 
                         if !ts_bytes.is_empty() {
@@ -188,8 +194,8 @@ fn run_mkv_muxer(
     use std::io::Write;
 
     let path = std::path::Path::new(file_path);
-    let mut file = std::fs::File::create(path)
-        .map_err(|_| "Recording: Failed to create output file")?;
+    let mut file =
+        std::fs::File::create(path).map_err(|_| "Recording: Failed to create output file")?;
 
     let mut buf = vec![0u8; 1316];
     let mut done = false;

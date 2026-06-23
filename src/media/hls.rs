@@ -16,16 +16,17 @@ use std::time::Instant;
 use bytes::{Bytes, BytesMut};
 use tokio_util::sync::CancellationToken;
 
+use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::MediaEngine;
 use crate::media::mpegts::TsMuxer;
-use crate::media::codec::{audio_for_ts, video_for_ts};
 use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 
 const TARGET_DURATION_SECS: f64 = 6.0;
 const MIN_SEGMENT_SECS: f64 = 1.0;
 const SEGMENT_CAPACITY: usize = 8 * 1024 * 1024;
-// 10 segments × ~6s target = ~60s sliding window
-const MAX_SEGMENTS: usize = 10;
+// Keep a longer live window so preview clients can still fetch segments that are
+// still referenced by the playlist while the stream is moving forward.
+const MAX_SEGMENTS: usize = 20;
 
 struct HlsSegment {
     index: u64,
@@ -41,6 +42,12 @@ struct HlsStoreInner {
     segments: VecDeque<HlsSegment>,
     next_index: u64,
     target_duration: f64,
+}
+
+impl Default for HlsStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HlsStore {
@@ -144,6 +151,8 @@ pub async fn start_hls_segmenter(
     let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
+    let mut video_conv_buf = Vec::<u8>::new();
+    let mut audio_conv_buf = Vec::<u8>::new();
 
     loop {
         tokio::select! {
@@ -175,30 +184,46 @@ pub async fn start_hls_segmenter(
 
                         metrics.record_in(packet.payload.len() as u64);
 
-                        // Lazily create the muxer and DtsEnforcer once we have ingest metadata
+                        // Lazily create the muxer and DtsEnforcer once we have ingest metadata.
+                        // Wait for video metadata to avoid creating a muxer with zero audio
+                        // streams when the probe hasn't completed yet.
                         let (mux, tracks) = match &mut muxer {
                             Some((m, t)) => (m, t),
                             None => {
-                                let ingests = engine.active_ingests.read().await;
-                                let ingest = match ingests.get(&pipeline_id) {
-                                    Some(i) => i,
-                                    None => continue,
+                                let (video, audio_tracks) = loop {
+                                    if cancel_token.is_cancelled() {
+                                        return;
+                                    }
+                                    let result = {
+                                        let ingests = engine.active_ingests.read().await;
+                                        ingests.get(&pipeline_id).and_then(|i| {
+                                            let video = i.video.clone();
+                                            video.as_ref()?;
+                                            let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                                            if tracks.is_empty()
+                                                && let Some(audio) = i.audio.clone() {
+                                                    tracks.push(audio);
+                                                }
+                                            Some((video, tracks))
+                                        })
+                                    };
+                                    if let Some(meta) = result {
+                                        break meta;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                 };
-                                let video = ingest.video.as_ref();
-                                let audio_tracks = ingest.audio_tracks.lock().unwrap().clone();
-                                let m = TsMuxer::new(video, &audio_tracks);
+                                let m = TsMuxer::new(video.as_ref(), &audio_tracks);
                                 let num_streams = video.is_some() as usize + audio_tracks.len();
                                 dts_enforcer = Some(DtsEnforcer::new(num_streams));
-                                drop(ingests);
                                 muxer = Some((m, audio_tracks));
                                 let (m, t) = muxer.as_mut().unwrap();
                                 (m, t)
                             }
                         };
 
-                        let raw_payload = match packet.media_type {
+                        let raw_payload: &[u8] = match packet.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&packet.payload, packet.format, &mut nalu_len_size, &mut sps_pps_cache) {
+                                match video_for_ts_into(&packet.payload, packet.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -208,7 +233,7 @@ pub async fn start_hls_segmenter(
                                     .find(|a| a.track_index == packet.track_index)
                                     .or(tracks.first());
                                 let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
-                                match audio_for_ts(&packet.payload, packet.format, sr, ch) {
+                                match audio_for_ts_into(&packet.payload, packet.format, sr, ch, &mut audio_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -234,7 +259,7 @@ pub async fn start_hls_segmenter(
                             pts,
                             dts,
                             packet.is_keyframe,
-                            &raw_payload,
+                            raw_payload,
                         );
                         metrics.record_processing(t0.elapsed().as_micros() as u64);
                         metrics.record_out(ts_bytes.len() as u64);
@@ -298,5 +323,16 @@ mod tests {
         assert!(playlist.contains("seg11.ts"));
         assert!(store.get_segment(0).is_none());
         assert!(store.get_segment(2).is_some());
+    }
+
+    #[test]
+    fn keeps_a_longer_live_window_for_preview_clients() {
+        let store = HlsStore::new();
+        for index in 0..14u64 {
+            store.push_segment(2.0, Bytes::from(format!("segment-{index}").into_bytes()));
+        }
+
+        assert!(store.get_segment(3).is_some());
+        assert!(store.get_segment(13).is_some());
     }
 }

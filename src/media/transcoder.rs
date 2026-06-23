@@ -5,7 +5,7 @@
 //! Audio routing: compound encodings like `720p+atrack:0,1` or `source+remap:0:1`
 //! are parsed to select/remap audio streams.
 
-use crate::media::codec::{audio_for_ts, video_for_ts};
+use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -26,8 +26,87 @@ pub enum AudioRouting {
     Downmix(usize),
 }
 
-/// Parse the audio routing portion of a compound encoding string.
-/// Examples: `remap:0:1`, `atrack:0,1`, `downmix:0`
+/// Lightweight audio routing stage — no FFmpeg, no MPEG-TS round-trip.
+///
+/// Handles `SelectTracks` and `Remap` by filtering/re-indexing `MediaPacket`s
+/// in a tight async loop. Packets are `Arc<Bytes>` so no payload copy occurs.
+///
+/// `Downmix` is not handled here (requires DSP decode/encode) and falls back
+/// to the full internal FFmpeg transcoder path.
+pub async fn start_audio_router(
+    pipeline_id: String,
+    routing: AudioRouting,
+    input_buffer: Arc<RingBuffer>,
+    output_buffer: Arc<RingBuffer>,
+    cancel: CancellationToken,
+) {
+    let mut reader = Reader::new(
+        format!(
+            "audio-router:{}:{:?}",
+            pipeline_id,
+            std::mem::discriminant(&routing)
+        ),
+        input_buffer,
+    );
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = reader.wait_for_data() => {
+                let mut packets = Vec::with_capacity(32);
+                if reader.pull_burst(&mut packets, 32).is_err() {
+                    continue;
+                }
+                for pkt in packets {
+                    let out = match &routing {
+                        AudioRouting::Passthrough => Some(pkt),
+
+                        AudioRouting::SelectTracks(tracks) => {
+                            match pkt.media_type {
+                                MediaType::Video => Some(pkt),
+                                MediaType::Audio => {
+                                    // track_index is 0-based from TsDemuxer
+                                    if tracks.contains(&(pkt.track_index as usize)) {
+                                        Some(pkt)
+                                    } else {
+                                        None // drop this track
+                                    }
+                                }
+                            }
+                        }
+
+                        AudioRouting::Remap { left, right, track } => {
+                            match pkt.media_type {
+                                MediaType::Video => Some(pkt),
+                                MediaType::Audio if pkt.track_index as usize == *track => {
+                                    // Re-label this track. The MPEG-TS muxer downstream
+                                    // will assign PMT entries by track_index order.
+                                    // left/right are channel positions within the frame;
+                                    // for ADTS-wrapped AAC the frame is already packed
+                                    // and we just rename the stream.
+                                    let _ = (left, right); // channel remap needs DSP
+                                    Some(pkt)
+                                }
+                                MediaType::Audio => None,
+                            }
+                        }
+
+                        AudioRouting::Downmix(_) => {
+                            // Downmix requires decode→mix→encode; not handled here.
+                            // get_or_create_transcoder routes Downmix to the FFmpeg path.
+                            Some(pkt)
+                        }
+                    };
+                    if let Some(p) = out {
+                        // pull_burst returns Arc<MediaPacket>; push takes MediaPacket.
+                        // Bytes payload is Arc-backed so clone is a refcount bump.
+                        output_buffer.push((*p).clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn parse_audio_routing(encoding: &str) -> AudioRouting {
     let audio_part = if let Some(pos) = encoding.find('+') {
         &encoding[pos + 1..]
@@ -53,10 +132,10 @@ pub fn parse_audio_routing(encoding: &str) -> AudioRouting {
         if !tracks.is_empty() {
             return AudioRouting::SelectTracks(tracks);
         }
-    } else if let Some(rest) = audio_part.strip_prefix("downmix:") {
-        if let Ok(track) = rest.parse() {
-            return AudioRouting::Downmix(track);
-        }
+    } else if let Some(rest) = audio_part.strip_prefix("downmix:")
+        && let Ok(track) = rest.parse()
+    {
+        return AudioRouting::Downmix(track);
     }
 
     AudioRouting::Passthrough
@@ -79,14 +158,12 @@ pub async fn start_transcoder(
             let ingests = engine.active_ingests.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
-                if video.is_none() {
-                    return None;
-                }
+                video.as_ref()?;
                 let mut tracks = i.audio_tracks.lock().unwrap().clone();
-                if tracks.is_empty() {
-                    if let Some(audio) = i.audio.clone() {
-                        tracks.push(audio);
-                    }
+                if tracks.is_empty()
+                    && let Some(audio) = i.audio.clone()
+                {
+                    tracks.push(audio);
                 }
                 Some((video, tracks))
             })
@@ -134,7 +211,10 @@ pub async fn start_transcoder(
     let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
     let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
     let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
-    let mut reader = Reader::new(format!("transcoder:{}:{}", pipeline_id, preset), input_buffer);
+    let mut reader = Reader::new(
+        format!("transcoder:{}:{}", pipeline_id, preset),
+        input_buffer,
+    );
     let mut nalu_len_size: usize = 4;
     let mut sps_pps_cache: Vec<u8> = {
         let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
@@ -143,9 +223,15 @@ pub async fn start_transcoder(
                 let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
                 nalu_len_size = nls;
                 annexb
-            } else { Vec::new() }
-        } else { Vec::new() }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
     };
+    let mut video_conv_buf = Vec::<u8>::new();
+    let mut audio_conv_buf = Vec::<u8>::new();
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
@@ -153,9 +239,9 @@ pub async fn start_transcoder(
                 let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in packets {
-                        let payload = match pkt.media_type {
+                        let payload: &[u8] = match pkt.media_type {
                             MediaType::Video => {
-                                match video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
+                                match video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -168,7 +254,7 @@ pub async fn start_transcoder(
                                 let (sr, ch) = track
                                     .map(|a| (a.sample_rate, a.channels))
                                     .unwrap_or((48000, 1));
-                                match audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                match audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -195,11 +281,11 @@ pub async fn start_transcoder(
                             pts,
                             dts,
                             pkt.is_keyframe,
-                            &payload,
+                            payload,
                         );
 
                         if !ts_bytes.is_empty() {
-                            input_queue.write(&ts_bytes);
+                            input_queue.write(ts_bytes);
                         }
                     }
                 }

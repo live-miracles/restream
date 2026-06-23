@@ -114,6 +114,12 @@ pub struct TsDemuxer {
     pmt_expected: usize,
 }
 
+impl Default for TsDemuxer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TsDemuxer {
     pub fn new() -> Self {
         Self {
@@ -201,16 +207,16 @@ impl TsDemuxer {
         let mut random_access = false;
 
         // Adaptation field
-        if adaptation_field_control == 0x02 || adaptation_field_control == 0x03 {
-            if payload_offset < TS_PACKET_SIZE {
-                let af_len = pkt[payload_offset] as usize;
-                payload_offset += 1;
-                if af_len > 0 && payload_offset < TS_PACKET_SIZE {
-                    let af_flags = pkt[payload_offset];
-                    random_access = af_flags & 0x40 != 0;
-                }
-                payload_offset += af_len;
+        if (adaptation_field_control == 0x02 || adaptation_field_control == 0x03)
+            && payload_offset < TS_PACKET_SIZE
+        {
+            let af_len = pkt[payload_offset] as usize;
+            payload_offset += 1;
+            if af_len > 0 && payload_offset < TS_PACKET_SIZE {
+                let af_flags = pkt[payload_offset];
+                random_access = af_flags & 0x40 != 0;
             }
+            payload_offset += af_len;
         }
 
         // No payload
@@ -295,10 +301,17 @@ impl TsDemuxer {
 
         let kind = stream.kind;
         let track_index = stream.track_index;
-        let payload = std::mem::take(&mut stream.pes.buf);
         let pts_90k = stream.pes.pts;
         let dts_90k = stream.pes.dts;
         let random_access = stream.pes.random_access;
+
+        // Copy payload to a fresh Bytes, then reset the PES buffer keeping its
+        // heap capacity for the next frame.  Using std::mem::take() would strip
+        // the Vec capacity (leaving a 0-capacity Vec), forcing 3–8 reallocs on
+        // the next PES reassembly. copy_from_slice costs one allocation of exactly
+        // the frame size but keeps the PES buf warm — net saving for typical streams.
+        let payload = Bytes::copy_from_slice(&stream.pes.buf);
+        self.streams[stream_idx].pes.reset(); // clears buf, preserves capacity
 
         // Convert 90kHz to milliseconds
         let pts_ms = ts_to_ms(pts_90k);
@@ -322,10 +335,8 @@ impl TsDemuxer {
             dts: dts_ms,
             is_keyframe,
             format: PayloadFormat::Raw,
-            payload: Bytes::from(payload),
+            payload,
         });
-
-        self.streams[stream_idx].pes.reset();
     }
 
     fn parse_pat(&mut self, payload: &[u8], pusi: bool) {
@@ -672,7 +683,7 @@ impl TsMuxer {
         }
 
         let total_pes = hdr_len + payload.len();
-        let ts_count = (total_pes + 183) / 184; // upper bound
+        let ts_count = total_pes.div_ceil(184); // upper bound
         self.output
             .reserve(ts_count * TS_PACKET_SIZE + 2 * TS_PACKET_SIZE);
 
@@ -886,11 +897,7 @@ fn copy_pes_slices(dst: &mut [u8], hdr: &[u8], payload: &[u8], offset: usize, le
         written = from_hdr;
     }
     if written < len {
-        let payload_offset = if offset > hdr_len {
-            offset - hdr_len
-        } else {
-            0
-        };
+        let payload_offset = offset.saturating_sub(hdr_len);
         let remaining = len - written;
         dst[written..written + remaining]
             .copy_from_slice(&payload[payload_offset..payload_offset + remaining]);
@@ -1481,10 +1488,8 @@ where
         } else {
             data.len()
         };
-        if nalu_start < nalu_end {
-            if callback(&data[nalu_start..nalu_end]) {
-                return true;
-            }
+        if nalu_start < nalu_end && callback(&data[nalu_start..nalu_end]) {
+            return true;
         }
     }
     false
@@ -1568,7 +1573,7 @@ impl<'a> BitReader<'a> {
 
     fn read_se(&mut self) -> i32 {
         let ue = self.read_ue();
-        if ue % 2 == 0 {
+        if ue.is_multiple_of(2) {
             -(ue as i32 / 2)
         } else {
             (ue as i32 + 1) / 2
@@ -1964,12 +1969,58 @@ mod tests {
 
     #[test]
     fn h265_irap_detection() {
-        // H.265 NAL header is 2 bytes: (nal_type << 1) in first byte
-        // Type 19 (IDR_W_RADL): (19 << 1) | 0 = 0x26, but our scanner uses & 0x1F
-        // Actually for H.265 the scanner extracts nal_type = header & 0x1F from the first byte,
-        // which for H.265 NAL with type 19 = 0x26: 0x26 & 0x1F = 0x06 (wrong for H.265)
-        // TODO: H.265 NAL type extraction needs (header >> 1) & 0x3F
-        // For now, relying on random_access_indicator from adaptation field
+        // H.265 NAL header: byte0 = forbidden(1b) | nal_unit_type(6b) >> ... encoded as (type << 1)
+        // IDR_W_RADL = type 19 → byte0 = (19 << 1) = 0x26, byte1 = 0x01 (layer=0, tid=1)
+        // for_each_nal_h265 extracts: (byte0 >> 1) & 0x3F = (0x26 >> 1) & 0x3F = 19 ✓
+        let idr_nal = vec![0x00, 0x00, 0x00, 0x01, 0x26u8, 0x01, 0xAA, 0xBB];
+        assert!(
+            h265_is_keyframe(&idr_nal),
+            "IDR_W_RADL (type 19) should be a keyframe"
+        );
+
+        // IDR_N_LP = type 20 → byte0 = (20 << 1) = 0x28
+        let idr_nlp = vec![0x00, 0x00, 0x00, 0x01, 0x28u8, 0x01, 0xCC];
+        assert!(
+            h265_is_keyframe(&idr_nlp),
+            "IDR_N_LP (type 20) should be a keyframe"
+        );
+
+        // Non-IRAP: TRAIL_R = type 1 → byte0 = (1 << 1) = 0x02
+        let trail_r = vec![0x00, 0x00, 0x00, 0x01, 0x02u8, 0x01, 0xDD];
+        assert!(
+            !h265_is_keyframe(&trail_r),
+            "TRAIL_R (type 1) should not be a keyframe"
+        );
+
+        // CRA_NUT = type 21 → byte0 = (21 << 1) = 0x2A
+        // CRA is commonly produced by software encoders (ffmpeg, x265) and hardware
+        // encoders. Must be treated as a keyframe for ring-buffer overflow recovery.
+        let cra = vec![0x00, 0x00, 0x00, 0x01, 0x2Au8, 0x01, 0xEE];
+        assert!(
+            h265_is_keyframe(&cra),
+            "CRA_NUT (type 21) should be a keyframe"
+        );
+
+        // BLA_W_LP = type 16 → byte0 = (16 << 1) = 0x20 (low boundary of IRAP range)
+        let bla = vec![0x00, 0x00, 0x00, 0x01, 0x20u8, 0x01, 0xFF];
+        assert!(
+            h265_is_keyframe(&bla),
+            "BLA_W_LP (type 16) should be a keyframe"
+        );
+
+        // Type 15 (non-IRAP, just below boundary) → byte0 = (15 << 1) = 0x1E
+        let non_irap_below = vec![0x00, 0x00, 0x00, 0x01, 0x1Eu8, 0x01, 0x00];
+        assert!(
+            !h265_is_keyframe(&non_irap_below),
+            "Type 15 is non-IRAP, should not be a keyframe"
+        );
+
+        // Type 24 (just above IRAP range) → byte0 = (24 << 1) = 0x30
+        let non_irap_above = vec![0x00, 0x00, 0x00, 0x01, 0x30u8, 0x01, 0x00];
+        assert!(
+            !h265_is_keyframe(&non_irap_above),
+            "Type 24 is non-IRAP, should not be a keyframe"
+        );
     }
 
     #[test]
