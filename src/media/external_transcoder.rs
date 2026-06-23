@@ -161,9 +161,35 @@ pub async fn start_external_transcoder_stage(
         }
     };
 
-    let mut stdin = child.stdin.take().expect("ffmpeg stdin");
-    let stdout = child.stdout.take().expect("ffmpeg stdout");
-    let stderr = child.stderr.take().expect("ffmpeg stderr");
+    // .take() returns None if the child exited between spawn() and here (rare but possible).
+    // Use pattern matching rather than .expect() to avoid a panic in that race.
+    let mut stdin = match child.stdin.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("[ext-transcoder] ffmpeg stdin unavailable ({}:{})", pipeline_id, encoding);
+            cancel.cancel();
+            return;
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("[ext-transcoder] ffmpeg stdout unavailable ({}:{})", pipeline_id, encoding);
+            cancel.cancel();
+            return;
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("[ext-transcoder] ffmpeg stderr unavailable ({}:{})", pipeline_id, encoding);
+            // Non-fatal — stderr is just for logging
+            // Create a dummy stderr reader that never produces data
+            // by continuing without it
+            cancel.cancel();
+            return;
+        }
+    };
 
     // ── stderr logger ──────────────────────────────────────────────────────
     let label = format!("{}:{}", pipeline_id, encoding);
