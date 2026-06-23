@@ -113,6 +113,8 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
+    // Keep a clone of sessions for the reconciler's hourly prune tick.
+    let sessions_for_reconciler = sessions.clone();
 
     let ports = ServerPorts::from_env();
 
@@ -199,11 +201,26 @@ pub async fn run_app() {
     // Run reconciliation loop
     let last_failed: Arc<TokioMutex<HashMap<String, Instant>>> =
         Arc::new(TokioMutex::new(HashMap::new()));
+    let mut reconciler_tick: u64 = 0;
     loop {
         // Wait 1 second OR until a shutdown signal fires — whichever is first.
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+        reconciler_tick += 1;
+
+        // Hourly session prune (every 3600 ticks × 1 s/tick).
+        // Removes in-memory sessions whose DB token has expired (older than
+        // 30 days). Prevents the HashSet and sessions table from growing
+        // indefinitely across months of uptime.
+        if reconciler_tick % 3600 == 0 {
+            // DB prune
+            let _ = db::prune_expired_sessions(&pool, 30 * 24 * 60 * 60 * 1000).await;
+            // In-memory prune: remove tokens that no longer exist in DB.
+            let live_tokens = db::list_sessions(&pool).await.unwrap_or_default();
+            let live_set: std::collections::HashSet<String> = live_tokens.into_iter().collect();
+            sessions_for_reconciler.write().await.retain(|t| live_set.contains(t));
         }
 
         let outputs = match db::list_outputs(&pool).await {
