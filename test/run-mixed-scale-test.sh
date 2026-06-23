@@ -62,7 +62,7 @@ command -v jq       >/dev/null 2>&1 || { echo "jq not found"       >&2; exit 1; 
 start_restream() {
   local pids
   pids=$(ps -eo pid=,comm= | awk '$2 == "restream" {print $1}' || true)
-  if [[ -n "$pids" ]]; then kill $pids 2>/dev/null || true; sleep 2; fi
+  if [[ -n "$pids" ]]; then kill -9 $pids 2>/dev/null || true; sleep 3; fi
   rm -f "$ROOT"/data.db{,-shm,-wal} "$ROOT"/restream.db{,-shm,-wal}
   : > "$RESTREAM_LOG"
   "$RESTREAM_BIN" >"$RESTREAM_LOG" 2>&1 &
@@ -223,7 +223,7 @@ run_config() {
     "${audio_inputs[@]}" \
     "${codec_args[@]}" "${map_args[@]}" \
     -b:v 1.5M -c:a aac -b:a 64k \
-    "${fmt_args[@]}" >/dev/null 2>&1 &
+    "${fmt_args[@]}" >"${WORK_DIR}/publisher.log" 2>&1 &
   PUB_PID=$!
 
   # Wait for live input
