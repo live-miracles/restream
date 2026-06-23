@@ -13,6 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
+use crate::media::ts_chunk_ring::TsChunkRing;
+
 
 /// Lock-free counters for one processing stage.
 /// Updated atomically on the hot path; read by `/graph` for operator visibility.
@@ -302,6 +304,8 @@ pub struct MediaEngine {
     // moved into the thread) when the thread exits. Caps virtual address space usage
     // at ~512 × 8 MB stack ≈ 4 GB instead of unbounded growth at 1 thread / connection.
     pub srt_sender_semaphore: Arc<tokio::sync::Semaphore>,
+    // Shared TS muxer stages
+    pub ts_muxer_stages: TokioRwLock<HashMap<String, Arc<TsChunkRing>>>,
 }
 
 impl Default for MediaEngine {
@@ -330,6 +334,7 @@ impl MediaEngine {
             stage_metrics: TokioRwLock::new(HashMap::new()),
             os_threads: std::sync::Mutex::new(Vec::new()),
             srt_sender_semaphore: Arc::new(tokio::sync::Semaphore::new(512)),
+            ts_muxer_stages: TokioRwLock::new(HashMap::new()),
         }
     }
 
@@ -448,7 +453,7 @@ impl MediaEngine {
         // • audio:* stages: passthrough → inherit hint from source_buffer
         if encoding.starts_with("video:") {
             // Preserve the input codec: H.265 source → H.265 output, H.264 → H.264.
-            // input_codec_override carries the ingest codec ("hevc" or "h264") so
+            // input_codec_override carries the ingest codec ("hevc" or "h265") so
             // the ring is tagged correctly for downstream audio stages and egress.
             // Falls back to "h264" when no override is provided (H.264 ingest).
             output_buf.set_codec_hint(input_codec_override.unwrap_or("h264"));
@@ -714,6 +719,57 @@ impl MediaEngine {
             }
         });
     }
+
+    pub async fn get_or_create_ts_muxer_stage(
+        self: &Arc<Self>,
+        pipeline_id: &str,
+        stage_key: &str,
+        source_ring: Arc<RingBuffer>,
+    ) -> Arc<TsChunkRing> {
+        let key = format!("{}:{}", pipeline_id, stage_key);
+
+        let mut stages = self.ts_muxer_stages.write().await;
+        if let Some(stage) = stages.get(&key) {
+            if !stage.cancel.is_cancelled() {
+                return stage.clone();
+            }
+        }
+
+        let cancel = CancellationToken::new();
+        let shared_muxer = crate::media::srt::start_shared_ts_muxer(
+            pipeline_id,
+            source_ring,
+            self.clone(),
+            cancel,
+        );
+
+        stages.insert(key, shared_muxer.clone());
+        shared_muxer
+    }
+
+    pub async fn sweep_unused_stages(&self) {
+        let mut stages = self.ts_muxer_stages.write().await;
+        stages.retain(|key, stage| {
+            let has_readers = if let Ok(mut r) = stage.ring.readers.lock() {
+                r.retain(|w| w.upgrade().is_some());
+                !r.is_empty()
+            } else {
+                false
+            };
+
+            // Safeguard: if strong_count > 1, some task still holds the Arc reference
+            let in_use = has_readers || Arc::strong_count(stage) > 1;
+
+            if !in_use {
+                println!("[engine] Sweeping unused TS muxer stage: {}", key);
+                stage.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
 
     ///
     /// A pipeline has one application-level producer. A bonded SRT publisher is

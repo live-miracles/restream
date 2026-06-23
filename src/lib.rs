@@ -412,6 +412,7 @@ pub async fn run_app() {
                 // The egress client is protocol-agnostic w.r.t. this choice.
                 let output_id_c = output.id.clone();
                 let pipeline_id_c = output.pipeline_id.clone();
+                let encoding_c = output.encoding.clone();
                 let url_c = output.url.clone();
                 let pool_c = pool.clone();
                 let last_failed_c = last_failed.clone();
@@ -471,6 +472,7 @@ pub async fn run_app() {
                         crate::media::srt::start_srt_egress(
                             output_id_c.clone(),
                             pipeline_id_c.clone(),
+                            encoding_c,
                             url_c.clone(),
                             ring_buf,
                             engine_c.clone(),
@@ -621,6 +623,7 @@ pub async fn run_app() {
                 }
             }
             engine.sweep_unused_transcoder_stages(&needed_stages).await;
+            engine.sweep_unused_stages().await;
         }
 
         // Reconcile recordings: auto-start/stop based on enabled flag and ingest state
