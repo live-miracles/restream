@@ -94,6 +94,10 @@ pub struct RingBuffer {
     capacity: usize,
     notify: Arc<tokio::sync::Notify>,
     pub readers: std::sync::Mutex<Vec<std::sync::Weak<ReaderInfo>>>,
+    /// Video codec of packets in this ring, set once by the producer.
+    /// `"h264"`, `"hevc"`, or empty string (= infer from ingest metadata).
+    /// All packets in a ring share one codec — this avoids per-packet tagging.
+    pub codec_hint: std::sync::OnceLock<String>,
 }
 
 impl RingBuffer {
@@ -115,7 +119,19 @@ impl RingBuffer {
             capacity,
             notify: Arc::new(tokio::sync::Notify::new()),
             readers: std::sync::Mutex::new(Vec::new()),
+            codec_hint: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Set the video codec hint for this ring.  Called once by the producer
+    /// (e.g. external transcoder, hevc_to_h264 stage).  No-op if already set.
+    pub fn set_codec_hint(&self, codec: &str) {
+        let _ = self.codec_hint.set(codec.to_string());
+    }
+
+    /// Return the codec hint if set, or empty string.
+    pub fn codec_hint_str(&self) -> &str {
+        self.codec_hint.get().map(|s| s.as_str()).unwrap_or("")
     }
 
     pub fn push(&self, packet: MediaPacket) {
@@ -180,10 +196,49 @@ impl RingBuffer {
         self.notify.clone()
     }
 
+    pub fn min_read_idx(&self) -> usize {
+        let write_idx = self.write_idx.val.load(Ordering::Relaxed);
+        if let Ok(readers) = self.readers.lock() {
+            let mut min_idx = write_idx;
+            let mut has_readers = false;
+            for w in readers.iter() {
+                if let Some(info) = w.upgrade() {
+                    let r_idx = info.read_idx.load(Ordering::Relaxed);
+                    min_idx = min_idx.min(r_idx);
+                    has_readers = true;
+                }
+            }
+            if has_readers {
+                min_idx
+            } else {
+                write_idx
+            }
+        } else {
+            write_idx
+        }
+    }
+
     pub fn fill_and_capacity(&self) -> (usize, usize) {
         let write_idx = self.write_idx.val.load(Ordering::Relaxed);
-        let fill = write_idx.min(self.capacity);
-        (fill, self.capacity)
+        if let Ok(readers) = self.readers.lock() {
+            let mut min_idx = write_idx;
+            let mut has_readers = false;
+            for w in readers.iter() {
+                if let Some(info) = w.upgrade() {
+                    let r_idx = info.read_idx.load(Ordering::Relaxed);
+                    min_idx = min_idx.min(r_idx);
+                    has_readers = true;
+                }
+            }
+            let fill = if has_readers {
+                write_idx.saturating_sub(min_idx).min(self.capacity)
+            } else {
+                write_idx.min(self.capacity)
+            };
+            (fill, self.capacity)
+        } else {
+            (write_idx.min(self.capacity), self.capacity)
+        }
     }
 
     pub fn fast_forward(&self, current_write_idx: usize) -> usize {
@@ -254,6 +309,15 @@ impl Reader {
         }
 
         let packet = self.buffer.read_at(self.read_idx);
+        let post_write_idx = self.buffer.get_write_idx();
+        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity {
+            let new_idx = self.buffer.fast_forward(post_write_idx);
+            self.read_idx = new_idx;
+            self.info.read_idx.store(new_idx, Ordering::Relaxed);
+            self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
+            return Err("Overflow: reader lagged and was fast-forwarded");
+        }
+
         if packet.is_some() {
             self.read_idx += 1;
             self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
@@ -291,6 +355,15 @@ impl Reader {
                 break;
             };
             output.push(packet);
+        }
+
+        let post_write_idx = self.buffer.get_write_idx();
+        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity {
+            output.truncate(start_len);
+            self.read_idx = self.buffer.fast_forward(post_write_idx);
+            self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
+            self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
+            return Err("Overflow: reader lagged and was fast-forwarded");
         }
 
         let loaded = output.len() - start_len;
@@ -624,5 +697,57 @@ mod tests {
         drop(r);
         // drop() removes our entry AND prunes the stale one.
         assert_eq!(rb.readers.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_min_read_idx_reporting() {
+        let rb = Arc::new(RingBuffer::new(16));
+        assert_eq!(rb.min_read_idx(), 0);
+
+        rb.push(video_packet(0, 0, true));
+        let r1 = Reader::new("r1".into(), rb.clone());
+        let r2 = Reader::new("r2".into(), rb.clone());
+
+        // Both readers start at last keyframe (0)
+        assert_eq!(rb.min_read_idx(), 0);
+
+        // Advance r1 by pulling packet
+        let mut r1 = r1;
+        let mut r2 = r2;
+        let _ = r1.pull().unwrap();
+        assert_eq!(rb.min_read_idx(), 0); // min remains 0 since r2 is at 0
+
+        let _ = r2.pull().unwrap();
+        assert_eq!(rb.min_read_idx(), 1); // both are now at 1
+    }
+
+    #[test]
+    fn test_concurrent_writer_reader_no_corruption() {
+        let rb = Arc::new(RingBuffer::new(4));
+        rb.push(video_packet(0, 0, true));
+        let mut reader = Reader::new("r1".into(), rb.clone());
+
+        let rb_c = rb.clone();
+        let writer_handle = std::thread::spawn(move || {
+            for i in 1..1000 {
+                rb_c.push(video_packet(i * 10, i * 10, i % 10 == 0));
+                std::thread::yield_now();
+            }
+        });
+
+        for _ in 0..2000 {
+            match reader.pull() {
+                Ok(Some(p)) => {
+                    assert!(p.pts >= 0);
+                }
+                Ok(None) => {
+                    std::thread::yield_now();
+                }
+                Err(e) => {
+                    assert!(e.contains("Overflow"));
+                }
+            }
+        }
+        let _ = writer_handle.join();
     }
 }

@@ -25,6 +25,7 @@
 pub mod api;
 pub mod db;
 pub mod diag;
+pub mod ffmpeg_extract;
 pub mod media;
 pub mod runtime_info;
 pub mod types;
@@ -78,6 +79,10 @@ fn set_rlimit() {
 pub async fn run_app() {
     // Elevate limits for high fd count (500+ egress streams)
     set_rlimit();
+
+    // Extract embedded FFmpeg binary to temp directory
+    // (optimized for startup: decompress once, load from disk thereafter)
+    let _ = ffmpeg_extract::ensure_ffmpeg_extracted();
 
     // Initialize database
     let db_url = "sqlite:data.db?mode=rwc";
@@ -173,7 +178,7 @@ pub async fn run_app() {
             Err(_) => continue,
         };
 
-        for output in outputs {
+        for output in &outputs {
             let is_active = engine
                 .egress_cancel_tokens
                 .read()
@@ -261,12 +266,21 @@ pub async fn run_app() {
                 };
 
                 // Stage 2: shared video transcode (or passthrough)
+                // When h264_base_buf is the upstream (H.265→H.264 conversion),
+                // override the codec hint so the external transcoder initialises
+                // the TsMuxer with "h264" PMT stream_type, not the original "hevc".
+                let video_codec_hint = if needs_h264_transcode && needs_video_transcode {
+                    Some("h264")
+                } else {
+                    None
+                };
                 let video_buf = if needs_video_transcode {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
                             &format!("video:{}", video_preset),
                             video_source,
+                            video_codec_hint,
                         )
                         .await
                 } else if let Some(buf) = h264_base_buf {
@@ -281,7 +295,7 @@ pub async fn run_app() {
                     if !audio.is_empty() {
                         let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
                         engine
-                            .get_or_create_transcoder(&output.pipeline_id, &audio_key, video_buf)
+                            .get_or_create_transcoder(&output.pipeline_id, &audio_key, video_buf, None)
                             .await
                     } else {
                         video_buf
@@ -434,7 +448,7 @@ pub async fn run_app() {
                     let _ = db::append_job_log(
                         &pool_c,
                         Some(&job_id),
-                        Some(&output.pipeline_id),
+                        Some(&pipeline_id_c),
                         Some(&output_id_c),
                         "lifecycle.stop",
                         None,
@@ -457,6 +471,54 @@ pub async fn run_app() {
                 );
                 engine.unregister_egress(&output.id).await;
             }
+        }
+
+        // Clean up unused shared transcoder stages
+        {
+            let mut needed_stages = std::collections::HashSet::new();
+            let ingests = engine.active_ingests.read().await;
+            let egress_tokens = engine.egress_cancel_tokens.read().await;
+            for output in &outputs {
+                let is_active = egress_tokens.contains_key(&output.id);
+                if is_active || output.desired_state == "running" {
+                    let is_rtmp = output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
+                    let ingest_is_hevc = ingests
+                        .get(&output.pipeline_id)
+                        .and_then(|i| i.video.as_ref())
+                        .map(|v| v.codec == "hevc" || v.codec == "h265")
+                        .unwrap_or(false);
+
+                    let encoding = &output.encoding;
+                    let video_preset = encoding.split('+').next().unwrap_or("source");
+                    let audio_part = encoding.split('+').nth(1);
+
+                    let is_passthrough = video_preset.is_empty() || video_preset == "source" || video_preset == "custom";
+                    let needs_h264_transcode = is_rtmp && ingest_is_hevc;
+                    let needs_video_transcode = !is_passthrough;
+
+                    let video_stage_key = if needs_h264_transcode && !needs_video_transcode {
+                        "h264"
+                    } else if needs_video_transcode {
+                        video_preset
+                    } else {
+                        "source"
+                    };
+
+                    if needs_h264_transcode {
+                        needed_stages.insert(format!("{}:hevc_to_h264", output.pipeline_id));
+                    }
+                    if needs_video_transcode {
+                        needed_stages.insert(format!("{}:video:{}", output.pipeline_id, video_preset));
+                    }
+                    if let Some(audio) = audio_part {
+                        if !audio.is_empty() {
+                            let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
+                            needed_stages.insert(format!("{}:{}", output.pipeline_id, audio_key));
+                        }
+                    }
+                }
+            }
+            engine.sweep_unused_transcoder_stages(&needed_stages).await;
         }
 
         // Reconcile recordings: auto-start/stop based on enabled flag and ingest state
@@ -521,5 +583,8 @@ pub async fn run_app() {
                 engine.shutdown_hls_segmenter(&pid).await;
             }
         }
+
+        // Periodically reap exited file-ingest subprocesses
+        engine.reap_file_ingests().await;
     }
 }

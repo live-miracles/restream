@@ -1923,12 +1923,26 @@ fn run_ffmpeg_demuxer(
                 };
                 let sample_rate = unsafe { (*params.as_ptr()).sample_rate } as u32;
                 let ch = unsafe { (*params.as_ptr()).ch_layout.nb_channels } as u32;
+                let profile = unsafe {
+                    let p = (*params.as_ptr()).profile;
+                    if p != ffmpeg_next::ffi::FF_PROFILE_UNKNOWN {
+                        let name = ffmpeg_next::ffi::avcodec_profile_name(codec_id, p);
+                        if !name.is_null() {
+                            Some(std::ffi::CStr::from_ptr(name).to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
                 audio_metas.push(AudioMeta {
                     codec: codec_name,
                     sample_rate,
                     channels: ch,
                     channel_layout: None,
                     track_index: audio_track,
+                    profile,
                 });
                 stream_map.push((Some(MediaType::Audio), audio_track));
                 audio_track += 1;
@@ -2219,6 +2233,26 @@ pub async fn start_srt_egress(
         }
 
         let sin = to_sockaddr_in(addr);
+
+        // Pre-connect warmup: wait for the upstream ring to have data before
+        // connecting to MediaMTX. Transcoded/routed rings (codec_hint set) go
+        // through a multi-stage chain that takes seconds to warm up. Connecting
+        // before any data is ready results in an idle publisher that MediaMTX
+        // closes for inactivity before the first packet ever arrives.
+        if !ring_buffer.codec_hint_str().is_empty() {
+            let warmup = crate::media::ring_buffer::Reader::new(
+                format!("srt_egress_warmup:{}", output_id),
+                ring_buffer.clone(),
+            );
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    unsafe { srt_close(client_sock); }
+                    return;
+                }
+                _ = warmup.wait_for_data() => {}
+            }
+        }
+
         let conn_res = unsafe {
             srt_connect(
                 client_sock,
@@ -2286,6 +2320,9 @@ pub async fn start_srt_egress(
                 }
                 let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
                 if sent < 0 {
+                    let err_str = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) }
+                        .to_string_lossy();
+                    eprintln!("[srt-egress] srt_send failed for {}: {}", oid, err_str);
                     break;
                 }
                 if let Some(ref counter) = egress_bytes_sent {
@@ -2304,7 +2341,25 @@ pub async fn start_srt_egress(
     });
 
     // Feed loop: read from RingBuffer, mux inline, write to sender queue
-    let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
+    // If the ring carries a transcoder-output codec (e.g. H.264 from a 720p or
+    // hevc_to_h264 stage) that differs from the ingest metadata, override the
+    // TsMuxer video codec so the PMT stream_type matches the actual bitstream.
+    let muxer_video_meta = {
+        let ring_codec = ring_buffer.codec_hint_str();
+        let ingest_codec = video_meta.as_ref().map(|v| v.codec.as_str()).unwrap_or("");
+        if !ring_codec.is_empty() && ring_codec != ingest_codec {
+            eprintln!(
+                "[srt-egress] codec_hint override: ingest={} ring={} out={}",
+                ingest_codec, ring_codec, output_id
+            );
+            let mut vm = video_meta.clone();
+            if let Some(ref mut v) = vm { v.codec = ring_codec.to_string(); }
+            vm
+        } else {
+            video_meta.clone()
+        }
+    };
+    let mut muxer = crate::media::mpegts::TsMuxer::new(muxer_video_meta.as_ref(), &audio_tracks);
     let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
     let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
     let mut nalu_len_size: usize = 4;

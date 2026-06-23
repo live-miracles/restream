@@ -40,6 +40,21 @@ pub async fn start_audio_router(
     output_buffer: Arc<RingBuffer>,
     cancel: CancellationToken,
 ) {
+    // Inherit the codec_hint from the input ring so downstream egresses
+    // (SRT, RTMP) build correct PMT even after passing through the audio router.
+    let hint = input_buffer.codec_hint_str();
+    if !hint.is_empty() {
+        output_buffer.set_codec_hint(hint);
+    }
+
+    eprintln!(
+        "[audio-router] start pipeline={} routing={:?} input_codec='{}' output_codec='{}'",
+        pipeline_id,
+        std::mem::discriminant(&routing),
+        input_buffer.codec_hint_str(),
+        output_buffer.codec_hint_str(),
+    );
+
     let mut reader = Reader::new(
         format!(
             "audio-router:{}:{:?}",
@@ -48,6 +63,8 @@ pub async fn start_audio_router(
         ),
         input_buffer,
     );
+    let mut _pushed_count: u64 = 0;
+    let mut first_push_logged = false;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -100,6 +117,15 @@ pub async fn start_audio_router(
                         // pull_burst returns Arc<MediaPacket>; push takes MediaPacket.
                         // Bytes payload is Arc-backed so clone is a refcount bump.
                         output_buffer.push((*p).clone());
+                        _pushed_count += 1;
+                        if !first_push_logged {
+                            eprintln!(
+                                "[audio-router] first push pipeline={} type={:?} track={} codec_out='{}'",
+                                pipeline_id, p.media_type, p.track_index,
+                                output_buffer.codec_hint_str()
+                            );
+                            first_push_logged = true;
+                        }
                     }
                 }
             }

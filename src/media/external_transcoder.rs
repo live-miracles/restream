@@ -60,11 +60,15 @@ pub fn build_stage_ffmpeg_args(preset: &str) -> Vec<String> {
         "-nostdin".to_string(),
         "-hide_banner".to_string(),
         "-loglevel".to_string(),
-        "error".to_string(),
+        "info".to_string(),
         "-f".to_string(),
         "mpegts".to_string(),
         "-i".to_string(),
-        "-".to_string(),
+        "pipe:0".to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "0:a?".to_string(),
     ];
 
     // ── video filter (scaling) ────────────────────────────────────────────
@@ -128,6 +132,10 @@ pub async fn start_external_transcoder_stage(
     output_buffer: Arc<RingBuffer>,
     engine: Arc<crate::media::engine::MediaEngine>,
     cancel: CancellationToken,
+    // Override the video codec used in the TsMuxer PMT.
+    // Required when input_buffer is a transcoded ring whose codec differs from
+    // the original ingest (e.g. hevc_to_h264 output → video:720p stage).
+    input_codec_override: Option<String>,
 ) {
     let args = build_stage_ffmpeg_args(&encoding);
     println!(
@@ -135,7 +143,8 @@ pub async fn start_external_transcoder_stage(
         pipeline_id, encoding
     );
 
-    let mut child = match Command::new("ffmpeg")
+    let ffmpeg_bin = std::env::var("FFMPEG_BIN_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
+    let mut child = match Command::new(&ffmpeg_bin)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -207,7 +216,21 @@ pub async fn start_external_transcoder_stage(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
 
+    // Apply codec override: when the input ring comes from a hevc_to_h264 stage
+    // the ingest metadata says "hevc" but packets are actually H.264 Annex B.
+    // The TsMuxer PMT stream_type must match the actual bitstream so FFmpeg picks
+    // the right decoder (0x1B for H.264, 0x24 for H.265).
+    let video_meta = if let Some(ref oc) = input_codec_override {
+        let mut vm = video_meta;
+        vm.codec = oc.clone();
+        vm
+    } else {
+        video_meta
+    };
+
     // ── stdout task: demux MPEG-TS → output_ring ───────────────────────────
+    // Mark output_ring as H.264: build_stage_ffmpeg_args always uses libx264.
+    output_buffer.set_codec_hint("h264");
     {
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
@@ -360,7 +383,7 @@ mod tests {
         // reads from stdin
         assert!(args.iter().any(|a| a == "-i"));
         let i_pos = args.iter().position(|a| a == "-i").unwrap();
-        assert_eq!(args[i_pos + 1], "-");
+        assert_eq!(args[i_pos + 1], "pipe:0");
         // scale filter
         assert!(args.iter().any(|a| a == "-vf"));
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();

@@ -26,7 +26,7 @@ use crate::types::*;
 
 #[derive(RustEmbed)]
 #[folder = "public/"]
-struct EmbeddedAssets;
+pub struct EmbeddedAssets;
 
 const SESSION_COOKIE_NAME: &str = "session";
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -1144,16 +1144,16 @@ async fn ingests_get_handler(
     }
 
     let ingests = db::list_ingests(&state.db).await.unwrap_or_default();
-    // Wrap them with running status (we will implement ingest_service status soon)
     let mut res = Vec::new();
     for i in ingests {
+        let running = state.engine.is_file_ingest_running(&i.id).await;
         res.push(serde_json::json!({
             "id": i.id,
             "filename": i.filename,
             "streamKey": i.stream_key,
             "loop": i.loop_flag,
             "startTime": i.start_time,
-            "running": false
+            "running": running
         }));
     }
     Json(res).into_response()
@@ -1235,15 +1235,18 @@ async fn ingests_update_handler(
     )
     .await
     {
-        Ok(Some(ingest)) => Json(serde_json::json!({
-            "id": ingest.id,
-            "filename": ingest.filename,
-            "streamKey": ingest.stream_key,
-            "loop": ingest.loop_flag,
-            "startTime": ingest.start_time,
-            "running": false
-        }))
-        .into_response(),
+        Ok(Some(ingest)) => {
+            let running = state.engine.is_file_ingest_running(&ingest.id).await;
+            Json(serde_json::json!({
+                "id": ingest.id,
+                "filename": ingest.filename,
+                "streamKey": ingest.stream_key,
+                "loop": ingest.loop_flag,
+                "startTime": ingest.start_time,
+                "running": running
+            }))
+            .into_response()
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
