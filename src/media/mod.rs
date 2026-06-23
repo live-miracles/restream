@@ -7,8 +7,11 @@
 pub mod avio;
 pub mod codec;
 pub mod engine;
+pub mod external_transcoder;
+pub mod h264_transcoder;
 pub mod hls;
 pub mod mpegts;
+pub mod profiles;
 pub mod recording;
 pub mod ring_buffer;
 pub mod rtmp;

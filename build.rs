@@ -270,10 +270,8 @@ fn embed_rust_dependency_inventory() {
                         .any(|kind| kind["kind"].is_null() || kind["kind"] == "normal")
                 })
                 .unwrap_or(true);
-            if is_runtime {
-                if let Some(package_id) = dep["pkg"].as_str() {
-                    pending.push(package_id.to_string());
-                }
+            if is_runtime && let Some(package_id) = dep["pkg"].as_str() {
+                pending.push(package_id.to_string());
             }
         }
     }

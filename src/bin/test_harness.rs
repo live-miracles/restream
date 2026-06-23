@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use restream::db;
+use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::engine::MediaEngine;
 use restream::media::ring_buffer::{
     DtsEnforcer, MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer,
@@ -7,7 +8,6 @@ use restream::media::ring_buffer::{
 use restream::media::rtmp::{start_rtmp_egress, start_rtmp_server_on};
 use restream::media::security::{DEFAULT_INGEST_SECURITY_CONFIG, IngestSecurityService};
 use restream::media::srt::{SrtServer, start_srt_egress};
-use restream::media::codec::{audio_for_ts, video_for_ts};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
@@ -48,6 +48,7 @@ async fn run() -> Result<(), String> {
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
         "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
+        "hevc-load" => hevc_load_test().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
         "all" => {
@@ -68,7 +69,7 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-             matrix, matrix-in-memory, egress, correctness-hevc-rtmp, in-process, network, or all"
+              matrix, matrix-in-memory, egress, correctness-hevc-rtmp, hevc-load, in-process, network, or all"
         )),
     };
 
@@ -270,7 +271,9 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     } else {
         (
             format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/{stream_key}&pkt_size=1316"),
-            format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/{stream_key}&mode=caller&transtype=live&latency=100"),
+            format!(
+                "srt://127.0.0.1:{SRT_PORT}?streamid=read:live/{stream_key}&mode=caller&transtype=live&latency=100"
+            ),
             "mpegts",
         )
     };
@@ -422,7 +425,11 @@ async fn egress_correctness() -> Result<Value, String> {
         // that the egress sent a reasonable amount of TS data (at least one keyframe).
         let srt_bytes = engine.egress_bytes("out-srt").await;
         let srt_enough_data = srt_bytes > 1_000_000;
-        let srt_error = if srt_enough_data { None } else { Some(format!("SRT egress only sent {srt_bytes} bytes")) };
+        let srt_error = if srt_enough_data {
+            None
+        } else {
+            Some(format!("SRT egress only sent {srt_bytes} bytes"))
+        };
         results["srtEgress"] = json!({
             "passed": srt_enough_data,
             "egressUrl": srt_egress_url,
@@ -476,12 +483,16 @@ async fn egress_correctness() -> Result<Value, String> {
                 Duration::from_secs(12),
                 Command::new("ffprobe")
                     .args([
-                        "-v", "error",
-                        "-probesize", "2M",
-                        "-analyzeduration", "2M",
+                        "-v",
+                        "error",
+                        "-probesize",
+                        "2M",
+                        "-analyzeduration",
+                        "2M",
                         "-show_entries",
                         "stream=index,codec_name,codec_type",
-                        "-of", "json",
+                        "-of",
+                        "json",
                         path.to_string_lossy().as_ref(),
                     ])
                     .output(),
@@ -504,10 +515,14 @@ async fn egress_correctness() -> Result<Value, String> {
                                 json!({"passed": false, "error": "no streams in ffprobe output"})
                             }
                         }
-                        Err(e) => json!({"passed": false, "error": format!("ffprobe parse failed: {e}")}),
+                        Err(e) => {
+                            json!({"passed": false, "error": format!("ffprobe parse failed: {e}")})
+                        }
                     }
                 }
-                Ok(Ok(out)) => json!({"passed": false, "error": format!("ffprobe failed: {}", String::from_utf8_lossy(&out.stderr))}),
+                Ok(Ok(out)) => {
+                    json!({"passed": false, "error": format!("ffprobe failed: {}", String::from_utf8_lossy(&out.stderr))})
+                }
                 Ok(Err(e)) => json!({"passed": false, "error": format!("ffprobe error: {e}")}),
                 Err(_) => json!({"passed": false, "error": "ffprobe timed out"}),
             }
@@ -613,6 +628,9 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
     }
 
     let source_ring = engine.get_or_create_pipeline("pipe-hevc-src").await;
+    let h264_ring = engine
+        .get_or_create_h264_transcoder("pipe-hevc-src", source_ring)
+        .await;
     let rtmp_sink_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-hevc-sink");
 
     let egress_token = engine
@@ -622,7 +640,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
         "out-hevc-rtmp".to_string(),
         "pipe-hevc-src".to_string(),
         rtmp_sink_url.clone(),
-        source_ring,
+        h264_ring,
         engine.clone(),
         egress_token.clone(),
     ));
@@ -692,7 +710,8 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
             results["rtmpEgressBytes"] = json!(engine.egress_bytes("out-hevc-rtmp").await);
 
             if !video_h264 {
-                results["error"] = json!("RTMP output video codec is not H.264 — transcoding failed");
+                results["error"] =
+                    json!("RTMP output video codec is not H.264 — transcoding failed");
             }
         }
         Err(e) => {
@@ -713,6 +732,185 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
     println!("artifact={}", path.display());
     // _exit to avoid FFmpeg/SRT teardown races
     unsafe { libc::_exit(if passed { 0 } else { 1 }) };
+}
+
+async fn hevc_load_test() -> Result<Value, String> {
+    use tokio::fs;
+
+    const LOAD_MEDIAMTX_RTMP: u16 = 11936;
+    const LOAD_SRT_PORT: u16 = 11080;
+
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    db::create_pipeline(
+        &pool,
+        "pipe-hevc-load",
+        "H.265 load source",
+        "hevc-load",
+        None,
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Start mediamtx on 11936
+    let mediamtx_yml = "/tmp/mediamtx-load.yml";
+    fs::write(
+        mediamtx_yml,
+        &format!(
+            "rtmp: yes\nrtmpAddress: :{}\nrtsp: no\nhls: no\nwebrtc: no\nsrt: no\napi: no\n",
+            LOAD_MEDIAMTX_RTMP
+        ),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mediamtx = Command::new("mediamtx")
+        .arg(mediamtx_yml)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Start SRT server only (no RTMP server — egresses go to mediamtx)
+    let engine = Arc::new(MediaEngine::new());
+    let _security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone()));
+    let _srt_task = tokio::spawn(srt_server.run(LOAD_SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Publish H.265 via ffmpeg lavfi → SRT (no fixture file, generated on-the-fly)
+    let _publisher = spawn_h265_generator(&format!(
+        "srt://127.0.0.1:{LOAD_SRT_PORT}?streamid=publish:live/hevc-load&pkt_size=1316"
+    ))
+    .await?;
+    wait_for_ingests(&engine, &["pipe-hevc-load"], Duration::from_secs(30)).await?;
+    println!("[hevc-load] Source ingest established (H.265 via SRT)");
+
+    // Create shared H.264 transcoder
+    let source_ring = engine.get_or_create_pipeline("pipe-hevc-load").await;
+    let _h264_ring = engine
+        .get_or_create_h264_transcoder("pipe-hevc-load", source_ring)
+        .await;
+    tokio::time::sleep(Duration::from_secs(3)).await; // let first keyframe through encoder
+
+    // Helpers for resource monitoring
+    let read_proc_status = |field: &str| -> Option<u64> {
+        let content = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in content.lines() {
+            if let Some(val) = line.strip_prefix(field) {
+                // e.g. "VmRSS:\t123456 kB" or "Threads:\t42"
+                let val = val.trim_start().trim_end_matches(" kB").trim();
+                return val.parse::<u64>().ok();
+            }
+        }
+        None
+    };
+
+    let snapshot_resources = || -> Value {
+        let rss_kb = read_proc_status("VmRSS:").unwrap_or(0);
+        let threads = read_proc_status("Threads:").unwrap_or(0);
+        let transcoder_count = {
+            let buffers = engine.transcoder_buffers.try_read().ok();
+            buffers.map(|b| b.len()).unwrap_or(0)
+        };
+        json!({
+            "rssKb": rss_kb,
+            "threads": threads,
+            "transcoderCount": transcoder_count,
+        })
+    };
+
+    let egress_total = 100;
+    let batch_size = 10;
+    let mut snapshots: Vec<Value> = Vec::new();
+
+    // Baseline snapshot
+    snapshots.push(json!({
+        "egressCount": 0,
+        "resources": snapshot_resources(),
+    }));
+
+    let rtmp_base = format!("rtmp://127.0.0.1:{LOAD_MEDIAMTX_RTMP}/live");
+
+    for batch in 0..(egress_total / batch_size) {
+        let start = batch * batch_size;
+        let end = (start + batch_size).min(egress_total);
+        print!("[hevc-load] Adding egresses {start}..{end} ... ");
+
+        let mut _handles = Vec::with_capacity(batch_size);
+        for i in start..end {
+            let egress_id = format!("hevc-load-rtmp-{i}");
+            let url = format!("{rtmp_base}/hevc-out-{i}");
+            let token = engine
+                .register_egress(&egress_id, "pipe-hevc-load", &url)
+                .await;
+            _handles.push(tokio::spawn(start_rtmp_egress(
+                egress_id,
+                "pipe-hevc-load".to_string(),
+                url,
+                _h264_ring.clone(),
+                engine.clone(),
+                token,
+            )));
+        }
+
+        // Wait for connections to establish
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        snapshots.push(json!({
+            "egressCount": end,
+            "resources": snapshot_resources(),
+        }));
+        println!("{}", snapshots.last().unwrap()["resources"]);
+    }
+
+    // Let everything stabilize
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    snapshots.push(json!({
+        "egressCount": egress_total,
+        "resources": snapshot_resources(),
+    }));
+
+    let final_rss = snapshots.last().unwrap()["resources"]["rssKb"]
+        .as_u64()
+        .unwrap_or(0);
+    let rss_delta = final_rss - snapshots[0]["resources"]["rssKb"].as_u64().unwrap_or(0);
+    let max_transcoder_count = snapshots
+        .iter()
+        .filter_map(|s| s["resources"]["transcoderCount"].as_u64())
+        .max()
+        .unwrap_or(0);
+    let shared = max_transcoder_count == 1;
+
+    let results = json!({
+        "passed": shared,
+        "sharedTranscoder": shared,
+        "maxTranscoderCount": max_transcoder_count,
+        "egressTotal": egress_total,
+        "rssDeltaKb": rss_delta,
+        "rssFinalKb": final_rss,
+        "snapshots": snapshots,
+    });
+
+    let path = artifact_path("hevc-load.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+
+    drop(mediamtx);
+    // _exit to avoid FFmpeg/SRT teardown races
+    unsafe { libc::_exit(if shared { 0 } else { 1 }) };
 }
 
 async fn generate_fixture_h264(path: &Path) -> Result<(), String> {
@@ -763,13 +961,6 @@ async fn generate_fixture_h264(path: &Path) -> Result<(), String> {
 }
 
 async fn generate_fixture_h265(path: &Path) -> Result<(), String> {
-    let multi_audio_source = Path::new("media/colorbar-timer.mp4");
-    if !multi_audio_source.exists() {
-        return Err(format!(
-            "multi-track audio source not found: {}",
-            multi_audio_source.display()
-        ));
-    }
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-y",
@@ -779,19 +970,33 @@ async fn generate_fixture_h265(path: &Path) -> Result<(), String> {
         "-f",
         "lavfi",
         "-i",
-        "testsrc2=size=3840x2160:rate=60",
+        "testsrc2=size=1920x1080:rate=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000",
         "-t",
         "8",
-        "-i",
-    ]);
-    cmd.arg(multi_audio_source);
-    cmd.args(["-map", "0:v"]);
-    for i in 0..16 {
-        cmd.args(["-map", &format!("1:a:{i}")]);
-    }
-    cmd.args([
-        "-t", "8", "-c:v", "libx265", "-preset", "slow", "-g", "120", "-bf", "2", "-c:a", "copy",
-        "-f", "mpegts",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-c:v",
+        "libx265",
+        "-preset",
+        "fast",
+        "-g",
+        "60",
+        "-bf",
+        "0",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-f",
+        "mpegts",
     ]);
     cmd.arg(path);
     let status = cmd.status().await.map_err(|e| e.to_string())?;
@@ -827,6 +1032,59 @@ async fn spawn_publisher(
     }
     cmd.args(["-c", "copy", "-f", format]).arg(url);
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd.spawn().map_err(|e| e.to_string())
+}
+
+/// Generate H.265 4K60 video from lavfi + 16 audio tracks from a file on disk,
+/// streaming directly to SRT. The file is read by ffmpeg, never loaded into
+/// restream's memory.
+async fn spawn_h265_generator(url: &str) -> Result<Child, String> {
+    let audio_source = Path::new("media/colorbar-timer.mp4");
+    if !audio_source.exists() {
+        return Err(format!(
+            "audio source not found: {}",
+            audio_source.display()
+        ));
+    }
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=3840x2160:rate=60",
+        "-stream_loop",
+        "-1",
+        "-i",
+    ]);
+    cmd.arg(audio_source);
+    cmd.args(["-map", "0:v"]);
+    for i in 0..16 {
+        cmd.args(["-map", &format!("1:a:{i}")]);
+    }
+    cmd.args([
+        "-c:v",
+        "libx265",
+        "-preset",
+        "fast",
+        "-g",
+        "120",
+        "-bf",
+        "0",
+        "-x265-params",
+        "log-level=error",
+        "-c:a",
+        "copy",
+        "-f",
+        "mpegts",
+    ]);
+    cmd.arg(url);
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
     cmd.spawn().map_err(|e| e.to_string())
 }
 
@@ -1586,7 +1844,9 @@ async fn matrix_correctness() -> Result<Value, String> {
                 .strip_suffix("-sink")
                 .unwrap();
             (
-                format!("srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-{key}-sink&mode=caller&transtype=live&latency=100"),
+                format!(
+                    "srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-{key}-sink&mode=caller&transtype=live&latency=100"
+                ),
                 false,
             )
         };
@@ -1752,7 +2012,8 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
 
         if let Some((store, cancel, segmenter)) = hls_segmenter {
             if trans {
-                let mut trans_reader = Reader::new("test_trans_reader".to_string(), target_ring.clone());
+                let mut trans_reader =
+                    Reader::new("test_trans_reader".to_string(), target_ring.clone());
                 let mut trans_pulled = 0;
                 let start = Instant::now();
                 while trans_pulled < num_packets && start.elapsed() < Duration::from_millis(2000) {
@@ -1777,12 +2038,16 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
                                 Duration::from_secs(12),
                                 Command::new("ffprobe")
                                     .args([
-                                        "-v", "error",
-                                        "-probesize", "2M",
-                                        "-analyzeduration", "2M",
+                                        "-v",
+                                        "error",
+                                        "-probesize",
+                                        "2M",
+                                        "-analyzeduration",
+                                        "2M",
                                         "-show_entries",
                                         "stream=index,codec_name,codec_type",
-                                        "-of", "json",
+                                        "-of",
+                                        "json",
                                         tmp.to_string_lossy().as_ref(),
                                     ])
                                     .output(),
@@ -1790,16 +2055,12 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
                             .await;
                             let _ = std::fs::remove_file(&tmp);
                             if let Ok(Ok(out)) = output {
-                                if let Ok(probe) =
-                                    serde_json::from_slice::<Value>(&out.stdout)
-                                {
+                                if let Ok(probe) = serde_json::from_slice::<Value>(&out.stdout) {
                                     if let Some(streams) = probe["streams"].as_array() {
-                                        let has_video = streams.iter().any(|s| {
-                                            s["codec_type"] == "video"
-                                        });
-                                        let has_audio = streams.iter().any(|s| {
-                                            s["codec_type"] == "audio"
-                                        });
+                                        let has_video =
+                                            streams.iter().any(|s| s["codec_type"] == "video");
+                                        let has_audio =
+                                            streams.iter().any(|s| s["codec_type"] == "audio");
                                         if has_video && has_audio {
                                             case_passed = true;
                                         } else {
@@ -1843,12 +2104,20 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
                 if let Ok(Some(pkt)) = reader.pull() {
                     max_pts = max_pts.max(pkt.pts).max(pkt.dts);
                     let payload = match pkt.media_type {
-                        MediaType::Video => video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache),
+                        MediaType::Video => video_for_ts(
+                            &pkt.payload,
+                            pkt.format,
+                            &mut nalu_len_size,
+                            &mut sps_pps_cache,
+                        ),
                         MediaType::Audio => {
-                            let track = audio_tracks.iter()
+                            let track = audio_tracks
+                                .iter()
                                 .find(|a| a.track_index == pkt.track_index)
                                 .or(audio_tracks.first());
-                            let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                            let (sr, ch) = track
+                                .map(|a| (a.sample_rate, a.channels))
+                                .unwrap_or((48000, 1));
                             audio_for_ts(&pkt.payload, pkt.format, sr, ch)
                         }
                     };
