@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
 };
+use axum::extract::DefaultBodyLimit;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -23,6 +24,32 @@ use crate::diag;
 use crate::media::engine::MediaEngine;
 use crate::media::security::IngestSecurityService;
 use crate::types::*;
+
+/// Maximum byte lengths for user-supplied string fields stored in SQLite.
+/// These prevent both memory exhaustion and bloated DB rows.
+pub const MAX_NAME_LEN: usize = 256;
+pub const MAX_URL_LEN: usize = 2048;
+pub const MAX_ENCODING_LEN: usize = 512;
+pub const MAX_STREAM_KEY_LEN: usize = 256;
+pub const MAX_FFMPEG_ARGS_LEN: usize = 4096;
+pub const MAX_PASSWORD_LEN: usize = 1024;
+
+/// Returns a 400 Bad Request response if `s` exceeds `max` bytes, else `None`.
+fn check_field_len(field: &str, s: &str, max: usize) -> Option<axum::response::Response> {
+    if s.len() > max {
+        Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("{} exceeds maximum length of {} bytes", field, max)
+                })),
+            )
+                .into_response(),
+        )
+    } else {
+        None
+    }
+}
 
 #[derive(RustEmbed)]
 #[folder = "public/"]
@@ -273,6 +300,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB global cap
         .with_state(state)
 }
 
@@ -367,6 +395,7 @@ async fn login_post_handler(
     Json(payload): Json<LoginPayload>,
 ) -> impl IntoResponse {
     let password = payload.password.unwrap_or_default();
+    if let Some(r) = check_field_len("password", &password, MAX_PASSWORD_LEN) { return r; }
     let stored_hash = match db::get_meta(&state.db, PASSWORD_META_KEY).await {
         Ok(Some(hash)) => hash,
         _ => {
@@ -457,6 +486,8 @@ async fn change_password_handler(
 
     let current_password = payload.current_password.unwrap_or_default();
     let new_password = payload.new_password.unwrap_or_default();
+    if let Some(r) = check_field_len("current_password", &current_password, MAX_PASSWORD_LEN) { return r; }
+    if let Some(r) = check_field_len("new_password", &new_password, MAX_PASSWORD_LEN) { return r; }
 
     if new_password.is_empty() {
         return (
@@ -752,6 +783,9 @@ async fn pipelines_post_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
+    if let Some(ref k) = payload.stream_key { if let Some(r) = check_field_len("stream_key", k, MAX_STREAM_KEY_LEN) { return r; } }
+    if let Some(ref e) = payload.encoding { if let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN) { return r; } }
     if payload.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -945,6 +979,9 @@ async fn outputs_create_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
+    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) { return r; }
+    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) { return r; }
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
         && !url.starts_with("rtmps://")
@@ -998,6 +1035,9 @@ async fn outputs_update_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
+    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) { return r; }
+    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) { return r; }
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
         && !url.starts_with("rtmps://")
@@ -1176,6 +1216,7 @@ async fn custom_encoding_put(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("ffmpeg_args", &payload.ffmpeg_args, MAX_FFMPEG_ARGS_LEN) { return r; }
     let _ = db::set_meta(&state.db, "custom_encoding", &payload.ffmpeg_args).await;
     Json(serde_json::json!({ "ffmpegArgs": payload.ffmpeg_args })).into_response()
 }
@@ -1230,6 +1271,8 @@ async fn ingests_post_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) { return r; }
+    if let Some(r) = check_field_len("stream_key", &payload.stream_key, MAX_STREAM_KEY_LEN) { return r; }
     let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
@@ -2000,5 +2043,40 @@ async fn hls_segment_handler(
             (StatusCode::OK, [(header::CONTENT_TYPE, "video/mp2t")], data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "Segment not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Regression: issue #3 (Round 5) — API string length limits ---
+    #[test]
+    fn check_field_len_accepts_within_limit() {
+        assert!(check_field_len("name", "hello", MAX_NAME_LEN).is_none());
+        assert!(check_field_len("url", "rtmp://host/app/key", MAX_URL_LEN).is_none());
+        assert!(check_field_len("encoding", "720p", MAX_ENCODING_LEN).is_none());
+    }
+
+    #[test]
+    fn check_field_len_rejects_over_limit() {
+        let over = "x".repeat(MAX_NAME_LEN + 1);
+        assert!(check_field_len("name", &over, MAX_NAME_LEN).is_some(),
+            "name over {} bytes must be rejected", MAX_NAME_LEN);
+
+        let over_url = "u".repeat(MAX_URL_LEN + 1);
+        assert!(check_field_len("url", &over_url, MAX_URL_LEN).is_some(),
+            "url over {} bytes must be rejected", MAX_URL_LEN);
+
+        let over_args = "a".repeat(MAX_FFMPEG_ARGS_LEN + 1);
+        assert!(check_field_len("ffmpeg_args", &over_args, MAX_FFMPEG_ARGS_LEN).is_some(),
+            "ffmpeg_args over {} bytes must be rejected", MAX_FFMPEG_ARGS_LEN);
+    }
+
+    #[test]
+    fn check_field_len_accepts_exactly_at_limit() {
+        let exact = "x".repeat(MAX_NAME_LEN);
+        assert!(check_field_len("name", &exact, MAX_NAME_LEN).is_none(),
+            "exactly {} bytes must be accepted", MAX_NAME_LEN);
     }
 }
