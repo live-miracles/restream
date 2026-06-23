@@ -223,9 +223,16 @@ Stage sharing is keyed by `(pipeline_id, stage_key)`:
 
 The per-packet format conversion (AVCC wrap, ADTS strip) is NOT shared between
 egress tasks. This is intentional: sharing would require synchronization and
-outweighs the ~700 ns per frame conversion cost. What IS shared is the far more
+outweigh the ~700 ns per frame conversion cost. What IS shared is the far more
 expensive encode stage (CPU-bound, seconds of latency). This invariant is
 covered by `same_encoding_outputs_share_one_transcoder_stage` in engine tests.
+
+### Resource Sharing Footprint (Verified June 23, 2026)
+
+Bitrate scaling and load tests of the pipeline configurations at 1.5M, 4.0M, and 8.0M verified the following sharing footprints:
+* **External Transcoder Subprocess (Shared):** The CPU-bound H.264 transcoding runs in an external `ffmpeg` subprocess. The memory footprint of this child process remains fixed at **~422 MB to 431 MB** regardless of ingest bitrate (from 1.5M to 8.0M), as frames and scale filters are allocated statically on startup. Only one subprocess is spawned per unique `(pipeline_id, preset)`.
+* **In-Process Transcoding (Shared):** In-process video transcoding (such as H.265 `hevc_to_h264` conversion) runs inside the Restream parent process using FFmpeg C-FFI bindings. This is shared across all downstream outputs requesting the same preset. It scales CPU usage (consuming **67% to 83%** of a core) and adds a **~130 MB to 180 MB** RSS overhead directly to the parent process.
+* **Egress Senders (Not Shared):** Each downstream egress stream (RTMP/SRT) runs as an independent Tokio task. Each task does its own lightweight packet formatting (e.g. `video_for_rtmp_into` or `video_for_ts_into`) and network socket writes. The resource overhead per output is extremely lightweight, scaling at **~350 KB to 1 MB** RSS delta per output with negligible CPU usage.
 
 ## Audio Stage Cache
 
@@ -281,9 +288,7 @@ Backup links via `bond=` URL parameter:
 srt://primary:10080?streamid=publish:live/key&bond=backup1:10080,backup2:10080
 ```
 
-Creates an `SRT_GTYPE_BACKUP` group. The bonded group does not currently call
-`srt_set_highbitrate_opts()` after creation; only the listener and single-link
-egress do.
+Creates an `SRT_GTYPE_BACKUP` group. Both single-connection and bonded egress groups now call `srt_set_highbitrate_opts(client_sock)` immediately after creation to prevent packet drops and buffer overflows under high bitrates.
 
 ## Protocol Correctness Requirements
 
