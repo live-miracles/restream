@@ -143,8 +143,6 @@ const SRT_GST_BROKEN: c_int = 3;
 
 // SRT epoll event flags
 const SRT_EPOLL_IN: c_int = 0x1;
-const SRT_EPOLL_OUT: c_int = 0x4;
-const SRT_EPOLL_ERR: c_int = 0x8;
 
 #[repr(C)]
 pub struct SrtSockOptConfig {
@@ -323,16 +321,15 @@ fn enable_srt_group_connect(listener: SRTSOCKET) -> Result<(), String> {
 
 fn check_sysctl_limits() {
     let check = |path: &str, need: usize, label: &str| {
-        if let Ok(s) = std::fs::read_to_string(path) {
-            if let Ok(val) = s.trim().parse::<usize>() {
-                if val < need {
-                    eprintln!(
-                        "[srt] WARNING: {} = {} but we need {}. \
+        if let Ok(s) = std::fs::read_to_string(path)
+            && let Ok(val) = s.trim().parse::<usize>()
+            && val < need
+        {
+            eprintln!(
+                "[srt] WARNING: {} = {} but we need {}. \
                          Run: sudo sysctl -w {}={}",
-                        path, val, need, label, need,
-                    );
-                }
-            }
+                path, val, need, label, need,
+            );
         }
     };
     check(
@@ -802,20 +799,20 @@ fn read_udp_socket_stats(port: u16) -> Option<(u64, u64)> {
             continue;
         }
         // local_address is field[1], format "ADDR:PORT" in hex
-        if let Some(lport) = fields[1].split(':').nth(1) {
-            if lport == port_hex {
-                // rx_queue is second half of field[4] "tx_queue:rx_queue"
-                let queues: Vec<&str> = fields[4].split(':').collect();
-                let rx_queue = queues
-                    .get(1)
-                    .and_then(|s| u64::from_str_radix(s, 16).ok())
-                    .unwrap_or(0);
-                let drops = fields
-                    .get(12)
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-                return Some((rx_queue, drops));
-            }
+        if let Some(lport) = fields[1].split(':').nth(1)
+            && lport == port_hex
+        {
+            // rx_queue is second half of field[4] "tx_queue:rx_queue"
+            let queues: Vec<&str> = fields[4].split(':').collect();
+            let rx_queue = queues
+                .get(1)
+                .and_then(|s| u64::from_str_radix(s, 16).ok())
+                .unwrap_or(0);
+            let drops = fields
+                .get(12)
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            return Some((rx_queue, drops));
         }
     }
     None
@@ -985,29 +982,35 @@ impl SrtServer {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(SRTSOCKET, sockaddr_in)>();
 
-        // Blocking accept thread — srt_accept in sync mode blocks until a connection arrives
+        // Blocking accept thread — srt_accept in sync mode blocks until a connection arrives.
+        // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
         std::thread::spawn(move || {
-            loop {
-                let mut client_sin = sockaddr_in {
-                    sin_family: 0,
-                    sin_port: 0,
-                    sin_addr: 0,
-                    sin_zero: [0; 8],
-                };
-                let mut len = std::mem::size_of::<sockaddr_in>() as c_int;
-                let client_sock = unsafe { srt_accept(server_sock, &mut client_sin, &mut len) };
-                if client_sock < 0 {
-                    let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
-                    eprintln!("[srt] Accept error: {}", err.to_string_lossy());
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
-                if tx.send((client_sock, client_sin)).is_err() {
-                    unsafe {
-                        srt_close(client_sock);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                loop {
+                    let mut client_sin = sockaddr_in {
+                        sin_family: 0,
+                        sin_port: 0,
+                        sin_addr: 0,
+                        sin_zero: [0; 8],
+                    };
+                    let mut len = std::mem::size_of::<sockaddr_in>() as c_int;
+                    let client_sock = unsafe { srt_accept(server_sock, &mut client_sin, &mut len) };
+                    if client_sock < 0 {
+                        let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+                        eprintln!("[srt] Accept error: {}", err.to_string_lossy());
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
                     }
-                    break;
+                    if tx.send((client_sock, client_sin)).is_err() {
+                        unsafe {
+                            srt_close(client_sock);
+                        }
+                        break;
+                    }
                 }
+            }));
+            if result.is_err() {
+                eprintln!("[srt] Accept thread panicked — ingest listener is down");
             }
         });
 
@@ -1163,7 +1166,10 @@ impl SrtServer {
         let epoll_events = SRT_EPOLL_IN as c_int;
         if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
             eprintln!("[srt] Failed to add socket to epoll");
-            unsafe { srt_epoll_release(eid); srt_close(client_sock) };
+            unsafe {
+                srt_epoll_release(eid);
+                srt_close(client_sock)
+            };
             return;
         }
 
@@ -1208,7 +1214,7 @@ impl SrtServer {
                             &mut rnum,
                             std::ptr::null_mut(),
                             std::ptr::null_mut(),
-                            -1,  // wait indefinitely
+                            -1, // wait indefinitely
                             std::ptr::null_mut(),
                             std::ptr::null_mut(),
                             std::ptr::null_mut(),
@@ -1224,7 +1230,9 @@ impl SrtServer {
             demuxer.feed(&buf[..n as usize]);
             if demuxer.drain_into(&mut packets) > 0 {
                 for pkt in &packets {
-                    if pkt.media_type == crate::media::ring_buffer::MediaType::Video && pkt.is_keyframe {
+                    if pkt.media_type == crate::media::ring_buffer::MediaType::Video
+                        && pkt.is_keyframe
+                    {
                         self.engine.record_keyframe(&pipeline.id, pkt.pts).await;
                     }
                 }
@@ -1232,30 +1240,28 @@ impl SrtServer {
             }
 
             // Send probe metadata once ready
-            if !probe_sent {
-                if let Some(probe) = demuxer.take_probe() {
-                    probe_sent = true;
-                    if let Some(ref v) = probe.video {
-                        println!(
-                            "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
-                            v.codec, v.width, v.height, v.fps, v.profile
-                        );
-                    }
-                    for a in &probe.audio_tracks {
-                        println!(
-                            "[srt] Probed audio track {}: {} {}Hz {}ch",
-                            a.track_index, a.codec, a.sample_rate, a.channels
-                        );
-                    }
-                    let first_audio = probe.audio_tracks.first().cloned();
+            if !probe_sent && let Some(probe) = demuxer.take_probe() {
+                probe_sent = true;
+                if let Some(ref v) = probe.video {
+                    println!(
+                        "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
+                        v.codec, v.width, v.height, v.fps, v.profile
+                    );
+                }
+                for a in &probe.audio_tracks {
+                    println!(
+                        "[srt] Probed audio track {}: {} {}Hz {}ch",
+                        a.track_index, a.codec, a.sample_rate, a.channels
+                    );
+                }
+                let first_audio = probe.audio_tracks.first().cloned();
+                self.engine
+                    .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                    .await;
+                if !probe.audio_tracks.is_empty() {
                     self.engine
-                        .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                        .update_ingest_audio_tracks(&pipeline.id, probe.audio_tracks)
                         .await;
-                    if !probe.audio_tracks.is_empty() {
-                        self.engine
-                            .update_ingest_audio_tracks(&pipeline.id, probe.audio_tracks)
-                            .await;
-                    }
                 }
             }
 
@@ -1324,10 +1330,10 @@ impl SrtServer {
             match ingests.get(pipeline_id) {
                 Some(i) => {
                     let mut audio_tracks = i.audio_tracks.lock().unwrap().clone();
-                    if audio_tracks.is_empty() {
-                        if let Some(audio) = i.audio.clone() {
-                            audio_tracks.push(audio);
-                        }
+                    if audio_tracks.is_empty()
+                        && let Some(audio) = i.audio.clone()
+                    {
+                        audio_tracks.push(audio);
                     }
                     (i.video.clone(), audio_tracks)
                 }
@@ -1341,25 +1347,35 @@ impl SrtServer {
             }
         };
 
-        // Sender thread: reads MPEG-TS from out_queue, sends via SRT
+        // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
+        // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
         let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; 1316];
-            loop {
-                let n = out_queue_send.read(&mut buf);
-                if n == 0 {
-                    break;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut buf = vec![0u8; 1316];
+                loop {
+                    let n = out_queue_send.read(&mut buf);
+                    if n == 0 {
+                        break;
+                    }
+                    let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
+                    if sent < 0 {
+                        break;
+                    }
                 }
-                let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
-                if sent < 0 {
-                    break;
-                }
+            }));
+            if result.is_err() {
+                eprintln!(
+                    "[srt] Play sender thread panicked for pipeline: {}",
+                    pid_log
+                );
+            } else {
+                println!(
+                    "[srt] Play subscriber disconnected for pipeline: {}",
+                    pid_log
+                );
             }
-            println!(
-                "[srt] Play subscriber disconnected for pipeline: {}",
-                pid_log
-            );
             unsafe {
                 srt_close(client_sock);
             }
@@ -1377,34 +1393,58 @@ impl SrtServer {
                     let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
                     nalu_len_size = nls;
                     annexb
-                } else { Vec::new() }
-            } else { Vec::new() }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
         };
         let mut packet_count = 0u64;
+        let mut video_conv_buf = Vec::<u8>::new();
+        let mut audio_conv_buf = Vec::<u8>::new();
+        let mut pull_packets = Vec::with_capacity(32);
 
         loop {
-            match reader.pull() {
-                Ok(Some(pkt)) => {
+            reader.wait_for_data().await;
+            loop {
+                pull_packets.clear();
+                match reader.pull_burst(&mut pull_packets, 32) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                for pkt in &pull_packets {
                     packet_count += 1;
-                    if packet_count <= 5 || packet_count % 500 == 0 {
-                        println!("[srt-play] pipeline={} packet={} type={:?} track={} pts={} dts={} payload_len={}",
-                            pipeline_id, packet_count, pkt.media_type, pkt.track_index, pkt.pts, pkt.dts, pkt.payload.len());
-                    }
-                    let payload = match pkt.media_type {
+                    let payload: &[u8] = match pkt.media_type {
                         MediaType::Video => {
-                            match crate::media::codec::video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
+                            match crate::media::codec::video_for_ts_into(
+                                &pkt.payload,
+                                pkt.format,
+                                &mut nalu_len_size,
+                                &mut sps_pps_cache,
+                                &mut video_conv_buf,
+                            ) {
                                 Some(p) => p,
-                                None => { continue; }
+                                None => continue,
                             }
                         }
                         MediaType::Audio => {
-                            let track = audio_tracks.iter()
+                            let track = audio_tracks
+                                .iter()
                                 .find(|a| a.track_index == pkt.track_index)
                                 .or(audio_tracks.first());
-                            let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
-                            match crate::media::codec::audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                            let (sr, ch) = track
+                                .map(|a| (a.sample_rate, a.channels))
+                                .unwrap_or((48000, 1));
+                            match crate::media::codec::audio_for_ts_into(
+                                &pkt.payload,
+                                pkt.format,
+                                sr,
+                                ch,
+                                &mut audio_conv_buf,
+                            ) {
                                 Some(p) => p,
-                                None => { println!("[srt-play] audio_for_ts returned None"); continue; }
+                                None => continue,
                             }
                         }
                     };
@@ -1429,45 +1469,33 @@ impl SrtServer {
                         pts,
                         dts,
                         pkt.is_keyframe,
-                        &payload,
+                        payload,
                     );
 
                     if !ts_bytes.is_empty() {
                         out_queue.write(ts_bytes);
-                    } else {
-                        if packet_count <= 10 {
-                            println!("[srt-play] EMPTY MUX: pipeline={} packet={} type={:?} track={} payload={}",
-                                pipeline_id, packet_count, pkt.media_type, pkt.track_index, payload.len());
-                        }
                     }
                 }
-                Ok(None) => {
-                    if !self
-                        .engine
-                        .active_ingests
-                        .read()
-                        .await
-                        .contains_key(pipeline_id)
-                    {
-                        println!("[srt-play] Ingest gone for pipeline={}", pipeline_id);
-                        break;
-                    }
-                    println!("[srt-play] No data for pipeline={}, waiting...", pipeline_id);
-                    reader.wait_for_data().await;
-                    println!("[srt-play] Woke up for pipeline={}", pipeline_id);
-                }
-                Err(_) => {
-                    // Overflow — reader was fast-forwarded
-                    println!("[srt-play] Overflow for pipeline={}", pipeline_id);
-                }
+            }
+            // Check if ingest is still alive before waiting again
+            if !self
+                .engine
+                .active_ingests
+                .read()
+                .await
+                .contains_key(pipeline_id)
+            {
+                break;
             }
         }
 
-        println!("[srt-play] Exiting feed loop for pipeline={} (processed {})", pipeline_id, packet_count);
+        println!(
+            "[srt-play] Feed loop exited for pipeline={} (processed {})",
+            pipeline_id, packet_count
+        );
         out_queue.close();
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1559,7 +1587,8 @@ mod tests {
         let raw_video = [0, 0, 1, 0x65, 0xaa, 0xbb];
         let mut nls = 4usize;
         let mut cache = Vec::new();
-        let result = crate::media::codec::video_for_ts(&raw_video, PayloadFormat::Raw, &mut nls, &mut cache);
+        let result =
+            crate::media::codec::video_for_ts(&raw_video, PayloadFormat::Raw, &mut nls, &mut cache);
         assert!(result.is_some());
         assert_eq!(&*result.unwrap(), &raw_video[..]);
     }
@@ -1567,7 +1596,6 @@ mod tests {
     #[test]
     fn audio_for_ts_raw_passthrough_with_adts() {
         let adts_audio = [0xFF, 0xF1, 0x50, 0x80, 0x01, 0x1F, 0xFC, 0x21, 0x10];
-        let mut nls = 4usize;
         // Raw with ADTS sync → borrowed passthrough
         let result = crate::media::codec::audio_for_ts(&adts_audio, PayloadFormat::Raw, 48000, 2);
         assert!(result.is_some());
@@ -1576,15 +1604,25 @@ mod tests {
 
     #[test]
     fn flv_video_seq_skipped_data_converted() {
-        let flv_video_seq = [0x17u8, 0x00, 0x00, 0x00, 0x00, 1, 66, 0, 30, 0xFF, 0xE1, 0, 3, 1, 2, 3, 1, 0, 2, 4, 5];
+        let flv_video_seq = [
+            0x17u8, 0x00, 0x00, 0x00, 0x00, 1, 66, 0, 30, 0xFF, 0xE1, 0, 3, 1, 2, 3, 1, 0, 2, 4, 5,
+        ];
         let flv_audio_seq = [0xaf, 0x00, 0x12, 0x10];
 
         let mut nls = 4usize;
         // Seq headers for audio → None
-        assert!(crate::media::codec::audio_for_ts(&flv_audio_seq, PayloadFormat::Flv, 48000, 2).is_none());
+        assert!(
+            crate::media::codec::audio_for_ts(&flv_audio_seq, PayloadFormat::Flv, 48000, 2)
+                .is_none()
+        );
         // Video seq header → extracts SPS/PPS as Annex B (or None if config too short)
         let mut cache = Vec::new();
-        let _result = crate::media::codec::video_for_ts(&flv_video_seq, PayloadFormat::Flv, &mut nls, &mut cache);
+        let _result = crate::media::codec::video_for_ts(
+            &flv_video_seq,
+            PayloadFormat::Flv,
+            &mut nls,
+            &mut cache,
+        );
         // Just verify no panic; codec tests cover correctness in detail
     }
 
@@ -2212,14 +2250,12 @@ pub async fn start_srt_egress(
             let ingests = engine.active_ingests.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
-                if video.is_none() {
-                    return None;
-                }
+                video.as_ref()?;
                 let mut tracks = i.audio_tracks.lock().unwrap().clone();
-                if tracks.is_empty() {
-                    if let Some(audio) = i.audio.clone() {
-                        tracks.push(audio);
-                    }
+                if tracks.is_empty()
+                    && let Some(audio) = i.audio.clone()
+                {
+                    tracks.push(audio);
                 }
                 Some((video, tracks))
             })
@@ -2238,22 +2274,30 @@ pub async fn start_srt_egress(
         let egresses = engine.active_egresses.read().await;
         egresses.get(&output_id).map(|e| e.bytes_sent.clone())
     };
+    // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
+    // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
     std::thread::spawn(move || {
-        let mut buf = vec![0u8; 1316];
-        loop {
-            let n = out_queue_send.read(&mut buf);
-            if n == 0 {
-                break;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut buf = vec![0u8; 1316];
+            loop {
+                let n = out_queue_send.read(&mut buf);
+                if n == 0 {
+                    break;
+                }
+                let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
+                if sent < 0 {
+                    break;
+                }
+                if let Some(ref counter) = egress_bytes_sent {
+                    counter.fetch_add(sent as u64, Ordering::Relaxed);
+                }
             }
-            let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
-            if sent < 0 {
-                break;
-            }
-            if let Some(ref counter) = egress_bytes_sent {
-                counter.fetch_add(sent as u64, Ordering::Relaxed);
-            }
+        }));
+        if result.is_err() {
+            eprintln!("[srt-egress] Sender thread panicked for {}", oid);
+        } else {
+            println!("[srt-egress] Sender thread finished for {}", oid);
         }
-        println!("[srt-egress] Sender thread finished for {}", oid);
         unsafe {
             srt_close(client_sock);
         }
@@ -2271,11 +2315,20 @@ pub async fn start_srt_egress(
                 let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
                 nalu_len_size = nls;
                 annexb
-            } else { Vec::new() }
-        } else { Vec::new() }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
     };
 
     let mut reader = Reader::new(format!("srt_egress:{}", output_id), ring_buffer);
+    // Per-egress reusable conversion buffers — eliminates per-frame allocation
+    // for Flv→Annex B (source from RTMP ingest) and Raw no-ADTS audio.
+    // Raw video packets (transcoder output, SRT ingest) are already zero-copy.
+    let mut video_conv_buf = Vec::<u8>::new();
+    let mut audio_conv_buf = Vec::<u8>::new();
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
@@ -2283,9 +2336,9 @@ pub async fn start_srt_egress(
                 let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in packets {
-                        let payload = match pkt.media_type {
+                        let payload: &[u8] = match pkt.media_type {
                             MediaType::Video => {
-                                match crate::media::codec::video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache) {
+                                match crate::media::codec::video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -2295,7 +2348,7 @@ pub async fn start_srt_egress(
                                     .find(|a| a.track_index == pkt.track_index)
                                     .or(audio_tracks.first());
                                 let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
-                                match crate::media::codec::audio_for_ts(&pkt.payload, pkt.format, sr, ch) {
+                                match crate::media::codec::audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
                                     Some(p) => p,
                                     None => continue,
                                 }
@@ -2322,7 +2375,7 @@ pub async fn start_srt_egress(
                             pts,
                             dts,
                             pkt.is_keyframe,
-                            &payload,
+                            payload,
                         );
 
                         if !ts_bytes.is_empty() {
