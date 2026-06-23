@@ -426,7 +426,6 @@ fn run_ffmpeg_h264_stage(
                 continue;
             }
             while enc.receive_packet(&mut enc_pkt).is_ok() {
-                let data = enc_pkt.data().unwrap_or(&[]).to_vec();
                 let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
                 // DTS can differ from PTS when B-frames are enabled: the encoder
                 // returns the decode timestamp separately.  Setting dts=pts would
@@ -440,7 +439,7 @@ fn run_ffmpeg_h264_stage(
                     dts: dts_ms,
                     is_keyframe: enc_pkt.is_key(),
                     format: PayloadFormat::Raw,
-                    payload: Bytes::from(data),
+                    payload: Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
                 });
             }
         }
@@ -450,7 +449,6 @@ fn run_ffmpeg_h264_stage(
     if let Some(enc) = encoder.as_mut() {
         let _ = enc.send_eof();
         while enc.receive_packet(&mut enc_pkt).is_ok() {
-            let data = enc_pkt.data().unwrap_or(&[]).to_vec();
             let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
             let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
             let dts_ms = dts_raw * fps_den * 1000 / fps_num;
@@ -461,7 +459,7 @@ fn run_ffmpeg_h264_stage(
                 dts: dts_ms,
                 is_keyframe: enc_pkt.is_key(),
                 format: PayloadFormat::Raw,
-                payload: Bytes::from(data),
+                payload: Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
             });
         }
     }
