@@ -297,6 +297,11 @@ pub struct MediaEngine {
     // OS thread handles registered by spawn sites (transcoder, h264_transcoder, SRT threads).
     // Drained and joined at shutdown to prevent blocking threads from outliving the runtime.
     pub os_threads: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    // Semaphore limiting concurrent SRT sender OS threads (play + egress).
+    // Each sender acquires a permit before spawning and releases it (via OwnedSemaphorePermit
+    // moved into the thread) when the thread exits. Caps virtual address space usage
+    // at ~512 × 8 MB stack ≈ 4 GB instead of unbounded growth at 1 thread / connection.
+    pub srt_sender_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for MediaEngine {
@@ -324,6 +329,7 @@ impl MediaEngine {
             hls_consumers: TokioRwLock::new(HashMap::new()),
             stage_metrics: TokioRwLock::new(HashMap::new()),
             os_threads: std::sync::Mutex::new(Vec::new()),
+            srt_sender_semaphore: Arc::new(tokio::sync::Semaphore::new(512)),
         }
     }
 

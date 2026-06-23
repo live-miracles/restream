@@ -1393,9 +1393,22 @@ impl SrtServer {
 
         // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
         // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
+        // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
+        // try_acquire_owned returns Err if the semaphore is exhausted; in that
+        // case we reject the play connection gracefully rather than spawning a
+        // thread that would push memory/VAS over the limit.
+        let permit = match self.engine.srt_sender_semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("[srt] Sender thread limit reached — rejecting play for {}", pipeline_id);
+                unsafe { srt_close(client_sock); }
+                return;
+            }
+        };
         let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
         let play_sender_handle = std::thread::spawn(move || {
+            let _permit = permit; // dropped when thread exits → releases semaphore slot
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut buf = vec![0u8; 1316];
                 loop {
@@ -1794,6 +1807,42 @@ mod tests {
         assert!(!is_srt_group(42));
         assert!(is_srt_group(SRTGROUP_MASK | 42));
     }
+
+    // --- Regression: issue #7 (Round 5) — Semaphore caps concurrent SRT sender threads ---
+    // Before the fix there was no limit on how many OS threads could be spawned
+    // for SRT play / egress connections. 1 thread per connection × 1000 connections
+    // = 1000 threads = 8+ GB virtual address space.
+    // The semaphore must be exhaustible and must release on drop.
+    #[test]
+    fn srt_sender_semaphore_is_bounded() {
+        use std::sync::Arc;
+        // Create a tiny semaphore (capacity 2) to simulate the cap.
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let _p1 = sem.clone().try_acquire_owned().expect("first permit available");
+        let _p2 = sem.clone().try_acquire_owned().expect("second permit available");
+        // Third acquire must fail when semaphore is exhausted.
+        assert!(
+            sem.clone().try_acquire_owned().is_err(),
+            "semaphore must reject when exhausted"
+        );
+    }
+
+    #[test]
+    fn srt_sender_semaphore_releases_on_drop() {
+        use std::sync::Arc;
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        {
+            let _p = sem.clone().try_acquire_owned().expect("permit available");
+            // permit is held — semaphore exhausted.
+            assert!(sem.clone().try_acquire_owned().is_err(), "should be exhausted");
+        }
+        // After the permit is dropped, the slot must be returned.
+        assert!(
+            sem.clone().try_acquire_owned().is_ok(),
+            "semaphore should release permit on drop"
+        );
+    }
+
 
     #[test]
     fn summarizes_srt_group_member_state() {
@@ -2253,7 +2302,17 @@ pub async fn start_srt_egress(
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
+    // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
+    let permit = match engine.srt_sender_semaphore.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("[srt-egress] Sender thread limit reached — rejecting egress {}", output_id);
+            unsafe { srt_close(client_sock); }
+            return;
+        }
+    };
     let egress_sender_handle = std::thread::spawn(move || {
+        let _permit = permit; // dropped when thread exits → releases semaphore slot
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut buf = vec![0u8; 1316];
             loop {
