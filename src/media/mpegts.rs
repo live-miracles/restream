@@ -114,6 +114,9 @@ pub struct TsDemuxer {
     probe_payloads: Vec<Option<Vec<u8>>>,
     pmt_buf: Vec<u8>,
     pmt_expected: usize,
+    /// Tracks the last seen PMT version_number (bits 5–1 of the version/indicator byte).
+    /// Used to distinguish genuine PMT updates from retransmissions of the same version.
+    pmt_version: Option<u8>,
 }
 
 impl Default for TsDemuxer {
@@ -136,6 +139,7 @@ impl TsDemuxer {
             probe_payloads: Vec::new(),
             pmt_buf: Vec::new(),
             pmt_expected: 0,
+            pmt_version: None,
         }
     }
 
@@ -377,15 +381,10 @@ impl TsDemuxer {
     }
 
     fn parse_pmt(&mut self, payload: &[u8], pusi: bool) {
-        // Only skip reparsing when we already have a fully parsed PMT AND we are
-        // not in the middle of a multi-packet PMT reassembly.
-        // The original `if !self.streams.is_empty() { return; }` guard caused
-        // late-arriving audio PIDs (emitted in a second PMT version by some
-        // encoders) to be silently dropped because it returned unconditionally
-        // on the first non-empty streams check, ignoring PMT version changes.
-        if !self.streams.is_empty() && self.pmt_expected == 0 {
-            return; // Already have a complete PMT; no mid-reassembly partial
-        }
+        // No early-return on non-empty streams: we must process new PUSI packets
+        // to detect PMT version changes (e.g., broadcaster adds an audio track).
+        // Duplicate retransmissions of the same version are filtered below after
+        // the full section is assembled.
 
         if pusi {
             let data = if !payload.is_empty() {
@@ -419,8 +418,30 @@ impl TsDemuxer {
         let end = self.pmt_expected.min(data.len());
 
         if data.len() < 12 {
+            self.pmt_buf.clear();
+            self.pmt_expected = 0;
             return;
         }
+
+        // Check PMT version_number (ISO 13818-1 table syntax: byte 5 bits 5–1).
+        // Skip retransmissions of the same version; reset stream state on change.
+        let incoming_version = (data[5] >> 1) & 0x1F;
+        if self.pmt_version == Some(incoming_version) {
+            self.pmt_buf.clear();
+            self.pmt_expected = 0;
+            return; // Duplicate retransmission — nothing changed
+        }
+        self.pmt_version = Some(incoming_version);
+
+        // Version changed (or first parse) — clear existing stream map so we
+        // rebuild it cleanly from the new PMT.
+        if !self.streams.is_empty() {
+            self.streams.clear();
+            self.pid_to_stream.fill(NO_STREAM);
+            self.audio_track_counter = 0;
+            self.probe_payloads.clear();
+        }
+
         let program_info_len = ((data[10] as usize & 0x0F) << 8) | data[11] as usize;
         let mut pos = 12 + program_info_len;
 
@@ -913,7 +934,7 @@ fn copy_pes_slices(dst: &mut [u8], hdr: &[u8], payload: &[u8], offset: usize, le
 }
 
 fn write_pcr(buf: &mut [u8], ts_90k: i64) {
-    let pcr_base = ts_90k as u64;
+    let pcr_base = ts_90k.max(0) as u64;
     let pcr_ext: u16 = 0;
     buf[0] = (pcr_base >> 25) as u8;
     buf[1] = (pcr_base >> 17) as u8;
@@ -2103,7 +2124,7 @@ mod tests {
         pmt_pkt[3] = 0x10;
         pmt_pkt[4] = 0x00;
         pmt_pkt[5] = 0x02; // table_id = PMT
-        let section_len = 9 + 10 + 4; // 9 fixed + 2 streams × 5 + CRC
+        let section_len = 9 + 10 + 4; // 9 fixed + 2 streams — 5 + CRC
         pmt_pkt[6] = 0xB0;
         pmt_pkt[7] = section_len as u8;
         pmt_pkt[8] = 0x00;
@@ -2152,5 +2173,158 @@ mod tests {
         let meta = probe_audio(StreamKind::AacAdts, 0, &adts);
         assert_eq!(meta.sample_rate, 48000);
         assert_eq!(meta.channels, 1);
+    }
+
+    // --- Helpers shared by PMT version tests ---
+
+    /// Build a 188-byte TS PAT packet pointing to PMT PID 0x1000.
+    fn make_pat_ts_pkt() -> Vec<u8> {
+        let mut pkt = vec![0xFFu8; 188];
+        pkt[0] = 0x47;
+        pkt[1] = 0x40; // PUSI, PID=0x0000
+        pkt[2] = 0x00;
+        pkt[3] = 0x10; // payload-only, CC=0
+        pkt[4] = 0x00; // pointer_field
+        // PAT section
+        pkt[5] = 0x00; // table_id = PAT
+        pkt[6] = 0xB0;
+        pkt[7] = 13; // section_length
+        pkt[8] = 0x00;
+        pkt[9] = 0x01; // TSID = 1
+        pkt[10] = 0xC1; // version=0, current_next=1
+        pkt[11] = 0x00; // section_number
+        pkt[12] = 0x00; // last_section_number
+        // Program 1 -> PMT PID 0x1000
+        pkt[13] = 0x00;
+        pkt[14] = 0x01;
+        pkt[15] = 0xF0; // 0xE0 | (0x1000 >> 8) = 0xF0
+        pkt[16] = 0x00; // 0x1000 & 0xFF
+        let crc = crc32_mpeg2(&pkt[5..17]);
+        pkt[17] = (crc >> 24) as u8;
+        pkt[18] = (crc >> 16) as u8;
+        pkt[19] = (crc >> 8) as u8;
+        pkt[20] = crc as u8;
+        pkt
+    }
+
+    /// Build a 188-byte TS PMT packet at PID 0x1000 with the given version and
+    /// stream list. Each stream is `(stream_type, elementary_pid)`.
+    fn make_pmt_ts_pkt(version: u8, streams: &[(u8, u16)]) -> Vec<u8> {
+        let mut pkt = vec![0xFFu8; 188];
+        pkt[0] = 0x47;
+        pkt[1] = 0x50; // PUSI, PID high (0x1000)
+        pkt[2] = 0x00; // PID low
+        pkt[3] = 0x10; // payload-only, CC=0
+        pkt[4] = 0x00; // pointer_field
+        // PMT section
+        pkt[5] = 0x02; // table_id = PMT
+        let section_len = 9 + (5 * streams.len()) + 4;
+        pkt[6] = 0xB0;
+        pkt[7] = section_len as u8;
+        pkt[8] = 0x00; // program_number high
+        pkt[9] = 0x01; // program_number low
+        // version_number in bits 5..1, current_next_indicator in bit 0
+        pkt[10] = 0xC0 | ((version & 0x1F) << 1) | 0x01;
+        pkt[11] = 0x00; // section_number
+        pkt[12] = 0x00; // last_section_number
+        pkt[13] = 0xE1; // PCR_PID = 0x100
+        pkt[14] = 0x00;
+        pkt[15] = 0xF0; // program_info_length high
+        pkt[16] = 0x00; // program_info_length low (= 0)
+        let mut pos = 17usize;
+        for &(stream_type, pid) in streams {
+            pkt[pos] = stream_type;
+            pkt[pos + 1] = 0xE0 | ((pid >> 8) as u8 & 0x1F);
+            pkt[pos + 2] = (pid & 0xFF) as u8;
+            pkt[pos + 3] = 0xF0; // ES_info_length = 0
+            pkt[pos + 4] = 0x00;
+            pos += 5;
+        }
+        let crc = crc32_mpeg2(&pkt[5..pos]);
+        pkt[pos] = (crc >> 24) as u8;
+        pkt[pos + 1] = (crc >> 16) as u8;
+        pkt[pos + 2] = (crc >> 8) as u8;
+        pkt[pos + 3] = crc as u8;
+        pkt
+    }
+
+    // --- Regression: issue #3 — PMT version tracking ---
+
+    #[test]
+    fn pmt_retransmission_same_version_is_idempotent() {
+        // Regression: the old guard `if !self.streams.is_empty() && pmt_expected == 0 { return }`
+        // was replaced by explicit version tracking. A retransmission of the same
+        // PMT version must NOT rebuild the stream map (no phantom duplicates).
+        let mut data = Vec::new();
+        data.extend_from_slice(&make_pat_ts_pkt());
+        let streams = [(0x1B, 0x100u16), (0x0F, 0x101u16)]; // H.264 + AAC
+        data.extend_from_slice(&make_pmt_ts_pkt(0, &streams));
+
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&data);
+
+        assert_eq!(demuxer.streams.len(), 2, "initial PMT must produce 2 streams");
+        assert_eq!(demuxer.pmt_version, Some(0));
+
+        // Feed the same PMT version again (broadcaster retransmits every ~100ms)
+        let retransmit = make_pmt_ts_pkt(0, &streams);
+        demuxer.feed(&retransmit);
+
+        assert_eq!(
+            demuxer.streams.len(),
+            2,
+            "retransmitting the same PMT version must not rebuild the stream map"
+        );
+        assert_eq!(demuxer.pmt_version, Some(0));
+    }
+
+    #[test]
+    fn pmt_version_change_rebuilds_stream_map() {
+        // Regression: the old code returned early on non-empty streams, silently
+        // dropping genuine PMT version changes (e.g., broadcaster adds audio mid-stream).
+        let mut data = Vec::new();
+        data.extend_from_slice(&make_pat_ts_pkt());
+        // Version 0: video only
+        data.extend_from_slice(&make_pmt_ts_pkt(0, &[(0x1B, 0x100u16)]));
+
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&data);
+
+        assert_eq!(demuxer.streams.len(), 1, "PMT v0 must have 1 stream");
+        assert_eq!(demuxer.pmt_version, Some(0));
+
+        // Version 1: broadcaster added an audio track
+        let v1_pkt = make_pmt_ts_pkt(1, &[(0x1B, 0x100u16), (0x0F, 0x101u16)]);
+        demuxer.feed(&v1_pkt);
+
+        assert_eq!(
+            demuxer.streams.len(),
+            2,
+            "PMT version change must rebuild stream map so new audio PID is parsed"
+        );
+        assert_eq!(demuxer.pmt_version, Some(1));
+        assert_eq!(demuxer.streams[1].kind, StreamKind::AacAdts);
+    }
+
+    // --- Regression: issue #12 — PCR negative guard ---
+
+    #[test]
+    fn write_pcr_clamps_negative_ts_to_zero() {
+        // Regression: before the .max(0) fix, a negative DTS reaching write_pcr
+        // would silently cast to a large u64, producing a nonsensical PCR value
+        // that makes decoders stall or seek unexpectedly.
+        let mut buf_neg = [0u8; 6];
+        let mut buf_zero = [0u8; 6];
+        write_pcr(&mut buf_neg, -1_000_000);
+        write_pcr(&mut buf_zero, 0);
+        assert_eq!(
+            buf_neg, buf_zero,
+            "negative ts_90k must clamp to 0, not wrap to a huge u64 PCR"
+        );
+
+        // Also verify an extreme negative value does not panic.
+        let mut buf_min = [0u8; 6];
+        write_pcr(&mut buf_min, i64::MIN);
+        assert_eq!(buf_min, buf_zero);
     }
 }
