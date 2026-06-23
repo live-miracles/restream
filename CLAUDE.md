@@ -5,6 +5,7 @@
 - Hotpath code must be benchmarked before and after to justify changes to it
 - Before committing bring docs up-to-date
 - Group changes logically and commit incrementally
+- Make sure not to club other agent's changes when stashing or committing
 
 ## Build & Test Commands
 Standard cargo commands (`cargo build`, `cargo test`, `cargo fmt`, `cargo clippy`) work as expected.
