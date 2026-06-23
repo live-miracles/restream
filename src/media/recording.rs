@@ -88,6 +88,10 @@ pub async fn start_recording(
     let mut audio_tracks: Vec<crate::media::engine::AudioMeta> = Vec::new();
     let mut video_conv_buf = Vec::<u8>::new();
     let mut audio_conv_buf = Vec::<u8>::new();
+    // Accumulation buffer: collect all muxed TS bytes for a burst, then
+    // write them in a single queue.write() call (one lock acquisition per
+    // burst instead of one per packet).
+    let mut ts_batch: Vec<u8> = Vec::new();
 
     loop {
         tokio::select! {
@@ -169,8 +173,13 @@ pub async fn start_recording(
                         );
 
                         if !ts_bytes.is_empty() {
-                            queue.write(ts_bytes);
+                            ts_batch.extend_from_slice(ts_bytes);
                         }
+                    }
+                    // One lock acquisition for the whole burst.
+                    if !ts_batch.is_empty() {
+                        queue.write(&ts_batch);
+                        ts_batch.clear();
                     }
                 }
             }

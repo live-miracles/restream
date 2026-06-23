@@ -203,17 +203,36 @@ pub async fn start_external_transcoder_stage(
     };
 
     // ── stderr logger ──────────────────────────────────────────────────────
+    // Stream stderr line-by-line so progress lines are visible immediately.
+    // Cap accumulation at 1 MB to avoid unbounded memory growth at
+    // ~17 MB/hour (60fps × ~80 bytes/line of libx264 progress output).
+    // Excess bytes are discarded; a truncation note is prepended on exit.
+    const STDERR_CAP: usize = 1 << 20; // 1 MB
     let label = format!("{}:{}", pipeline_id, encoding);
     {
         let label = label.clone();
         let mut stderr = stderr;
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
-            let mut all = Vec::new();
+            let mut all: Vec<u8> = Vec::new();
+            let mut truncated = false;
             loop {
                 match stderr.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => all.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        let remaining = STDERR_CAP.saturating_sub(all.len());
+                        if remaining > 0 {
+                            all.extend_from_slice(&chunk[..n.min(remaining)]);
+                        } else if !truncated {
+                            truncated = true;
+                            eprintln!(
+                                "[ext-transcoder] ffmpeg stderr ({}) truncated at 1 MB — \
+                                 further output discarded",
+                                label
+                            );
+                        }
+                    }
                 }
             }
             if !all.is_empty() {
