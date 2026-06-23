@@ -289,9 +289,24 @@ fn serve_embedded(path: &str) -> impl IntoResponse {
         Some("json") => "application/json",
         _ => "application/octet-stream",
     };
-    if let Ok(data) = std::fs::read(format!("public/{}", path)) {
-        return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data).into_response();
+
+    // Disk-first fallback is only active in debug builds (dev hot-reload).
+    // In production the binary's embedded assets are always used, preventing
+    // any filesystem access from this path.
+    //
+    // Path traversal guard: reject any path component that is ".." or starts
+    // with "/" to prevent `public/../../../etc/passwd` style reads even in dev.
+    #[cfg(debug_assertions)]
+    {
+        let safe = !path.split('/').any(|c| c == ".." || c.starts_with('/'));
+        if safe {
+            if let Ok(data) = std::fs::read(format!("public/{}", path)) {
+                return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data)
+                    .into_response();
+            }
+        }
     }
+
     match EmbeddedAssets::get(path) {
         Some(file) => (
             StatusCode::OK,
