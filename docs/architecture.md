@@ -46,6 +46,11 @@ sending:
 Native worker entry points are wrapped with `catch_unwind` where the code needs
 to contain FFmpeg/libsrt failures.
 
+All three SRT OS threads (accept loop, play sender, egress sender) are wrapped in
+`catch_unwind(AssertUnwindSafe(…))` so a panic in libsrt FFI does not crash the
+process. The accept thread logs the panic and stops accepting; the sender threads
+log and close the socket.
+
 ## Thread Inventory
 
 ### Fixed threads (always running)
@@ -662,7 +667,8 @@ worker would stall all tasks on that thread. Explicit `std::thread::spawn`
 keeps the async runtime responsive.
 
 All FFmpeg threads use `catch_unwind(AssertUnwindSafe(…))` so that corrupt
-streams or codec bugs log errors without crashing the process.
+streams or codec bugs log errors without crashing the process. All three SRT
+OS threads (accept, play sender, egress sender) carry the same guard.
 
 ## Legacy MediaMTX Migration
 
@@ -678,19 +684,19 @@ under `old/`. The current Rust binary has no `/metrics` text endpoint.
 
 | File | Lines | Responsibility |
 |---|---:|---|
-| `src/lib.rs` | 500 | App composition and reconciliation |
-| `src/api.rs` | 1,887 | Router, auth, REST/SSE handlers, embedded assets |
-| `src/db.rs` | 776 | SQLite schema and queries |
-| `src/diag.rs` | 987 | Native diagnostics |
-| `src/media/engine.rs` | 1,382 | Active state and health/graph snapshots |
+| `src/lib.rs` | 525 | App composition and reconciliation |
+| `src/api.rs` | 1,946 | Router, auth, REST/SSE handlers, embedded assets |
+| `src/db.rs` | 803 | SQLite schema and queries |
+| `src/diag.rs` | 986 | Native diagnostics |
+| `src/media/engine.rs` | 1,583 | Active state and health/graph snapshots |
 | `src/media/ring_buffer.rs` | 568 | Lock-free packet fan-out |
-| `src/media/mpegts.rs` | 2,065 | Native MPEG-TS demuxer and muxer |
-| `src/media/codec.rs` | 544 | Codec helpers, Annex-B scanning, FLV stripping |
+| `src/media/mpegts.rs` | 2,111 | Native MPEG-TS demuxer and muxer |
+| `src/media/codec.rs` | 798 | Codec helpers, Annex-B scanning, FLV stripping, zero-alloc `_into` variants |
 | `src/media/avio.rs` | 340 | In-memory FFmpeg AVIO and MemoryQueue |
-| `src/media/rtmp.rs` | 1,496 | RTMP server/client |
-| `src/media/srt.rs` | 2,290 | SRT server/client, bonding, stats |
+| `src/media/rtmp.rs` | 1,690 | RTMP server/client (rtmp:// + rtmps://) |
+| `src/media/srt.rs` | 2,387 | SRT server/client, bonding, stats |
 | `src/media/tcp_stats.rs` | 253 | Linux RTMP receiver socket metrics |
-| `src/media/hls.rs` | 285 | In-memory HLS segmenter and store |
-| `src/media/recording.rs` | 212 | Matroska recording |
-| `src/media/transcoder.rs` | 403 | Shared video/audio stages |
-| `src/media/security.rs` | 101 | Ingest rate-limit and IP ban |
+| `src/media/hls.rs` | 338 | In-memory HLS segmenter and store |
+| `src/media/recording.rs` | 228 | Matroska recording |
+| `src/media/transcoder.rs` | 420 | Shared video/audio stages |
+| `src/media/security.rs` | 221 | Ingest rate-limit, IP ban, bounded tracked-IP map |

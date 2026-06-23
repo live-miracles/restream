@@ -46,6 +46,63 @@ improvement in production-shaped measurements.
 | Actual decode/filter/encode transcoder | Missing | Resolution presets configure encoder metadata but currently remux original compressed packets; implement and benchmark the real decoder, scaler/filter graph, encoder, output demux, and ring publication path |
 | Custom AVIO teardown | Fixed in `76d3969` | Production-context benchmarking exposed a custom `AVIOContext` double-close. Contexts now remain owned by their wrappers, which detach `pb` before FFmpeg context destruction; repeated benchmark iterations complete cleanly |
 
+## Per-Frame Allocation Audit (2026-06-23)
+
+Measured allocations on the hot path per video frame (~1080p30, H.264, RTMP
+ingest). "Warm" = after the first few frames when internal buffers have grown to
+steady-state. All counts assume `PayloadFormat::Raw` egress (most common after
+transcoder); FLV egress adds the AVCC→Annex B conversion Vecs.
+
+### Ingest
+
+| Stage | Per-packet allocs | Notes |
+|---|---|---|
+| RTMP socket → `rml_rtmp` | 1 (payload `Bytes`) | Library owns heap; `MediaPacket` borrows the ref |
+| `ring.push(packet)` | 1 (`Arc<MediaPacket>` ~40 B) | Evicts old `Arc` on slot overwrite |
+| **SRT → `TsDemuxer`** | **1 (frame copy)** | **Fixed (2026-06-23): was 3–8 (PES buf regrow)**. `flush_pes` now uses `Bytes::copy_from_slice` + `reset()` so the `Vec` capacity is retained across frames. |
+| `push_batch` to ring | 1 `Arc` per packet | Same as RTMP |
+
+**PES buffer fix detail**: `flush_pes` previously called `std::mem::take(&mut pes.buf)` which transferred the `Vec` to `Bytes::from()` (zero-copy) but left a zero-capacity `Vec` behind. The next frame restarted from capacity 0, triggering 3–8 `realloc` calls (doubling from 0→1→2→4→...→frame_size). For a 200 KB IDR that was ~8 reallocations per frame. The fix: `Bytes::copy_from_slice(&pes.buf)` (one allocation of exactly frame_size bytes) + `pes.reset()` (clears length, **preserves capacity**). Net: same 1 allocation per frame but 0 realloc cascades.
+
+### Egress — per output per video frame
+
+| Consumer | Format | Allocs | Notes |
+|---|---|---|---|
+| RTMP egress | Raw→FLV | 1 large (AVCC copy) + 2 small (NALU position Vecs) | `video_for_rtmp_into` → `annexb_to_avcc_into` → `split_annexb_nalus`. AVCC output is unavoidable (RTMP library needs to own it). 2 small Vecs ~48 B each. |
+| RTMP egress | Flv→FLV | 0 | FLV passthrough: `payload.clone()` = `Arc` refcount only |
+| SRT/HLS egress | Raw | 0 | `video_for_ts_into` returns `&payload` directly (zero-copy). `TsMuxer::output` pre-allocated, reused. |
+| SRT/HLS egress | Flv→Raw | 2 small | `avcc_to_annexb_into` → `split_annexb_nalus`: 2 Vecs ~48 B each. Written into `video_conv_buf` (no extra alloc). |
+| Recording | same as HLS | 2 small or 0 | |
+| H264-transcoder feed | Flv→Raw | 0 | Migrated to `_into` variants (2026-06-23). |
+
+### `annexb_to_avcc` scratch variant
+
+`annexb_to_avcc_with_scratch(data, out, sc_scratch)` eliminates both small Vecs
+by reusing a caller-provided `Vec<(usize,usize)>`. Benchmarked 2026-06-23:
+
+| Input | `two_pass` | `with_scratch` |
+|---|---|---|
+| P-frame 8 KiB, 1 NALU | 2.73 µs | **1.80 µs (+34%)** |
+| P-frame 30 KiB, 3 NALU | 9.83 µs | **8.95 µs (+9%)** |
+| IDR 80 KiB, 1 NALU | **16.98 µs** | 24.07 µs (-42%) |
+
+**Current production choice: `two_pass`** (wins for dominant large IDR case). Re-evaluate if workload shifts to many small NALUs.
+
+### Unbounded allocation risks
+
+| Structure | Bound | Location |
+|---|---|---|
+| `MemoryQueue::VecDeque<u8>` | `bitrate × latency` ≈ 1.5 MB at 50 Mbps/250 ms | `src/media/avio.rs`; 2 per transcoder |
+| `TsMuxer::output: Vec<u8>` | largest TS burst per frame ≈ `frame_size / 1316 × 188` bytes | per consumer; stabilises at IDR size |
+| `PesAccumulator::buf` | `MAX_PES_BUFFER` constant in `mpegts.rs` | per stream per demuxer |
+| `TsDemuxer::remainder` | `TS_PACKET_SIZE` = 188 bytes | per demuxer |
+| `sps_pps_cache: Vec<u8>` | SPS+PPS size ≈ 50 bytes | per consumer |
+| `HLS accumulator: BytesMut` | segment size ≈ bitrate × 6s ≈ 18 MB at 24 Mbps | shared across all HLS outputs per pipeline |
+| `IngestSecurityService` HashMap | `tracked_ip_limit` (default 10 000 entries) | enforced since 2026-06-23 fix |
+
+All structures are bounded. `MemoryQueue` is the largest steady-state allocation
+and is proportional to stream bitrate × transcoder latency.
+
 ## Current Baseline
 
 Existing strengths:
@@ -432,12 +489,16 @@ advantage by avoiding new allocation and registry costs:
 
 ### Egress and Transcoder loop burst consumption — Complete
 
-RTMP egress, SRT egress, and Transcoder loops have been migrated to burst consumption APIs:
-- **RTMP play/egress** (`rtmp.rs`): Uses `pull_burst(&mut packets, 32)` to process up to 32 packets at once.
-- **SRT egress** (`srt.rs`): Uses `pull_burst(&mut packets, 32)` to process up to 32 packets in bursts.
-- **Transcoder worker** (`transcoder.rs`): Feeds input packets to the transcoder pipeline using `pull_burst(&mut packets, 32)`.
+All consumer loops have been migrated to burst consumption APIs and zero-allocation
+codec helpers:
+- **RTMP play/egress** (`rtmp.rs`): `pull_burst` 32; `video_for_rtmp_into` / `audio_for_rtmp_into` with per-egress scratch buffers.
+- **SRT egress** (`srt.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
+- **SRT play subscriber** (`srt.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into`. Previously used single-packet `pull()` with allocating variants.
+- **HLS segmenter** (`hls.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
+- **Recording** (`recording.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
+- **Transcoder worker** (`transcoder.rs`): `pull_burst` 32.
 
-All paths retain proper socket backpressure, low-latency keyframe flushes, and avoid allocations on the hot path by reusing the packet buffer vector across loops.
+All paths reuse the packet buffer vector and codec scratch buffers across loops.
 
 ### Transcoder output
 

@@ -52,6 +52,16 @@ Run the 2-pipeline × 3-output live test against a running application:
 ./test/run-2x3.sh
 ```
 
+For the external-transcoder routing check, use the broader matrix smoke test:
+
+```sh
+./test/run-2x3-matrix.sh
+```
+
+It covers two ingest protocols (RTMP/SRT), three egress protocols (RTMP/SRT/HLS),
+and two encoding modes (passthrough and 720p transcode) while also creating
+multiple same-type outputs so the shared transcoder stage is exercised.
+
 Required tools: `ffmpeg`, `curl`, and `jq`. The script targets native RTMP/SRT
 ingest with six outputs.
 

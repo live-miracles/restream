@@ -10,53 +10,133 @@ For the performance optimization plan and benchmark results, see
 ## Current Shape
 
 ```mermaid
-flowchart LR
-  RTMPI["RTMP ingest"]
-  SRTI["SRT ingest"]
-  FILEI["File ingest"]
+flowchart TD
+    subgraph INGESTS["Ingest"]
+        RI["RTMP ingest\nFLV payload"]
+        SI["SRT ingest\nMPEG-TS"]
+    end
 
-  CHILD["ffmpeg child process\nfile -> FLV/RTMP"]
-  SRTDEMUX["TsDemuxer\nMPEG-TS -> packets (inline)"]
+    subgraph DEMUX["Ingest demux (inline, async)"]
+        RD["RTMP parser\nFlv packets"]
+        SD["TsDemuxer\nRaw packets"]
+    end
 
-  RB["Ring buffer\nMediaPacket payloads"]
+    SR[("source_ring\nSPMC RingBuffer 4096\nMediaPacket · Flv ∣ Raw")]
 
-  TRANS["Optional transcoder\nFFmpeg -> MPEG-TS bytes"]
+    subgraph PASSTHROUGH["Passthrough — encoding = source"]
+        direction TB
+        PT1["Flv · dest=RTMP\nBytes::clone → FLV tag\n→ RTMP socket"]
+        PT2["Flv · dest=SRT/HLS\nvideo_for_ts strip hdr\nTsMuxer → MPEG-TS\n→ SRT socket / HLS store"]
+        PT3["Raw · dest=RTMP\nbuild_avcc_seq_hdr\nvideo_for_rtmp → FLV tag\n→ RTMP socket"]
+        PT4["Raw · dest=SRT/HLS\nTsMuxer → MPEG-TS\n→ SRT socket / HLS store"]
+    end
 
-  RTMPE["RTMP egress\ndirect publish payload"]
-  SRTE["SRT egress\nTsMuxer + srt_send"]
-  HLS["HLS\nTsMuxer (inline) + segment"]
-  REC["Recording\nFFmpeg MKV mux"]
+    subgraph TRANSCODE["Transcoded — encoding = 720p (shared once per preset per pipeline)"]
+        direction TB
+        TIN["video_for_ts\nFlv: strip hdr  ∣  Raw: inject SPS/PPS\nTsMuxer → MPEG-TS"]
+        FSTDIN[/"FFmpeg stdin\npipe"/]
+        FF(["FFmpeg subprocess\nscale=1280:720 · libx264\n─────────────────\nstdin → stdout"])
+        FSTDOUT[/"FFmpeg stdout\npipe"/]
+        TDEM["TsDemuxer\nRaw packets"]
+        OR[("output_ring\nSPMC RingBuffer 4096\nMediaPacket · Raw")]
+        TOUT_R["dest=RTMP\nvideo_for_rtmp → FLV tag\n→ RTMP socket"]
+        TOUT_S["dest=SRT/HLS\nTsMuxer → MPEG-TS\n→ SRT socket / HLS store"]
+        TIN --> FSTDIN --> FF --> FSTDOUT --> TDEM --> OR
+        OR --> TOUT_R
+        OR --> TOUT_S
+    end
 
-  FILEI --> CHILD --> RTMPI
-  RTMPI --> RB
-  SRTI --> SRTDEMUX --> RB
+    RI --> RD --> SR
+    SI --> SD --> SR
 
-  RB --> TRANS --> RTMPE
-  RB --> TRANS --> SRTE
-  RB --> TRANS --> HLS
-  RB --> TRANS --> REC
-
-  RB --> RTMPE
-  RB --> SRTE
-  RB --> HLS
-  RB --> REC
+    SR -->|"Flv · source · RTMP"| PT1
+    SR -->|"Flv · source · SRT/HLS"| PT2
+    SR -->|"Raw · source · RTMP"| PT3
+    SR -->|"Raw · source · SRT/HLS"| PT4
+    SR -->|"any format · 720p"| TIN
 ```
 
-Runtime child processes:
+## Transcoder Stages
 
-- One `ffmpeg` child per running file ingest.
-- No child process for RTMP egress, SRT egress, HLS, recording, or in-process
-  transcoding.
+Every non-passthrough encoding creates a **shared stage**: one process per
+`(pipeline_id, preset)` pair regardless of how many outputs use that preset.
 
-## Muxing Stages
+### Stage graph
+
+```
+source_ring
+    │  [if needs_h264_transcode]  H.265→H.264 stage  (get_or_create_h264_transcoder)
+    │  [if needs_video_transcode] video preset stage  (get_or_create_transcoder)
+    │  [if audio routing suffix]  audio filter stage  (get_or_create_transcoder)
+    ▼
+ring_buf  ◄── all egresses for this (pipeline, encoding) read here
+```
+
+### Passthrough rule
+
+`source` and `custom` encodings **never** enter any transcoder stage.
+The egress reads directly from `source_ring`. This is enforced in the
+reconciler (`src/lib.rs`) before any `get_or_create_transcoder` call.
+
+### Stage-key naming
+
+| Stage | Key format | Example |
+|---|---|---|
+| Video preset | `video:<preset>` | `video:720p` |
+| H.265→H.264 | `hevc_to_h264` | `hevc_to_h264` |
+| Audio filter | `audio:<op>:from:<video_key>` | `audio:atrack:0:from:720p` |
+
+The video-preset key is shared across all compound encodings with the same
+video part (e.g. `720p`, `720p+atrack:0`, `720p+remap:0:1` all use key
+`video:720p`). The audio key embeds the upstream video key to prevent
+cross-contamination between presets.
+
+### External transcoder (default)
+
+```
+source_ring
+    │  (Reader + TsMuxer → MPEG-TS bytes)
+    ▼
+FFmpeg stdin ──► [scale + libx264 + …] ──► FFmpeg stdout (MPEG-TS)
+                                                   │
+                                       TsDemuxer → MediaPackets (Raw)
+                                                   │
+                                             output_ring ◄── shared
+                                                   │
+                              ┌────────────────────┼──────────────┐
+                           RTMP-out1           SRT-out1       HLS-out1
+```
+
+One `ffmpeg` subprocess per `(pipeline, preset)`. FFmpeg reads MPEG-TS from
+stdin and writes transcoded MPEG-TS to `pipe:1` (stdout). A Tokio task reads
+stdout, runs it through `TsDemuxer`, and pushes the resulting `MediaPacket`s
+into `output_ring`.
+
+This is the **default** backend. It is robust because FFmpeg errors are
+isolated to the subprocess and logged to stderr; a crash restarts cleanly on
+the next reconciler cycle.
+
+### Internal transcoder (opt-in)
+
+Set `RESTREAM_USE_INTERNAL_TRANSCODER=1` to use the in-process libavcodec path
+(`src/media/transcoder.rs`). The data flow is identical — the same
+`source_ring → output_ring` contract holds — but uses `MemoryQueue`/`avio`
+callbacks instead of a subprocess pipe.
+
+Prefer the external backend until the Rust FFI layer (`ffmpeg-next`) hardens.
+
+### Muxing stages summary
 
 | Stage | Role |
 |---|---|
-| SRT Ingest | Native `TsDemuxer` demux from MPEG-TS into `MediaPacket`s (inline async) |
-| Transcoder | FFmpeg `CustomInput -> CustomOutput("mpegts")`, then pushes output packets into a ring buffer |
-| SRT Egress | Native `TsMuxer` remux to MPEG-TS (inline in async feed loop) |
-| HLS | Native `TsMuxer` remux to MPEG-TS, then segment in memory (inline async) |
+| SRT Ingest | `TsDemuxer` — demux MPEG-TS into `MediaPacket`s (inline async) |
+| External transcoder | subprocess FFmpeg stdin→stdout; `TsMuxer` writes stdin, `TsDemuxer` reads stdout |
+| Internal transcoder | in-process FFmpeg via `MemoryQueue`+`avio`; `TsMuxer` feeds input, output packets pushed directly to ring |
+| SRT Egress | `TsMuxer` remux to MPEG-TS (inline in async feed loop) |
+| HLS | `TsMuxer` remux to MPEG-TS, then segment in memory (inline async) |
 | Recording | FFmpeg remux to MKV file (OS thread) |
+
+
 
 ## Protocol and Codec Boundaries
 
@@ -70,28 +150,22 @@ Runtime child processes:
 | Audio remap/downmix | Stream selection only; channel-level filtering is open |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
 | HLS upload | Not implemented; HTTP/HTTPS output URL starts local segmenter and ignores destination |
-| RTMPS output | Parser support exists, but reconciler dispatch is not wired |
+| RTMPS output | `rtmps://` URLs accepted by API; reconciler routes to external transcoder (FFmpeg) which handles TLS natively. Source-passthrough also uses FFmpeg path. |
 
 ## Resolution Presets
 
-The configuration and stage-key code recognizes these presets. They are not yet
-working transforms: the transcoder creates encoder/output parameters but then
-writes the original compressed packets without a decode/filter/encode loop.
+The external transcoder stage applies `scale=WxH` and re-encodes with `libx264
+-preset veryfast`. The internal transcoder (when enabled) uses the same preset
+table via `run_ffmpeg_transcoder_stage`.
 
-| Preset | Resolution | Notes |
+| Preset | Resolution | Scale filter |
 |---|---|---|
-| `source` | passthrough | preserves original resolution and frame rate |
-| `720p` | 1280x720 | recognized; transform incomplete |
-| `1080p` | 1920x1080 | recognized; transform incomplete |
-| `2160p` / `4k` | 3840x2160 | recognized; transform incomplete |
-| `vertical-crop` | 1080x1920 | no crop filter yet |
-| `vertical-rotate` | 1080x1920 | no rotate filter yet |
-| `h264` | source resolution | intended H.265→H.264 conversion; incomplete |
-| `custom` | user-specified | stored but treated as passthrough |
+| `source` / `custom` | passthrough | none — never enters transcoder |
+| `480p` | 854×480 | `scale=854:480` |
+| `720p` | 1280×720 | `scale=1280:720` |
+| `1080p` | 1920×1080 | `scale=1920:1080` |
+| `h264` | source resolution | H.265→H.264 only (`get_or_create_h264_transcoder`) |
 
-The encoder time base is inherited from the input stream, but no frame-rate or
-4K60 throughput guarantee exists until the encode loop is implemented and
-benchmarked.
 
 ## H.265 Egress Policy
 
@@ -116,6 +190,42 @@ Enhanced RTMP/HEVC packetization is not implemented.
 | SRT H.264 | Not protocol-correct (raw payload as FLV) | Locally validated | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | SRT H.265 | H.264 conversion incomplete | Passthrough implemented; E2E gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | File | RTMP-shaped via child FFmpeg | Implemented for compatible FLV codecs | Live TsMuxer | Contract broken |
+
+## Minimum Work Per Consumer
+
+All consumers that process packets from a ring buffer avoid per-packet heap
+allocation by using the zero-allocation `_into` variants:
+
+| Consumer | Video conversion | Audio conversion | Burst size |
+|---|---|---|---|
+| RTMP egress | `video_for_rtmp_into` | `audio_for_rtmp_into` | `pull_burst` 32 |
+| SRT egress | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
+| SRT play subscriber | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
+| HLS segmenter | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
+| Recording | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
+| Transcoder feed | `video_for_ts` (Raw→Raw passthrough) | `audio_for_ts` | `pull_burst` 32 |
+
+Scratch buffers (`video_conv_buf`, `audio_conv_buf`) are allocated once at
+consumer startup and reused across packets. For `PayloadFormat::Raw` video, the
+borrowed payload slice is returned directly (zero copy).
+
+## What Is Shared When Multiple Outputs Use the Same Encoding
+
+Stage sharing is keyed by `(pipeline_id, stage_key)`:
+
+```
+2 outputs: encoding="720p"
+  → get_or_create_transcoder("720p")  — returns same Arc<RingBuffer>
+  → 1 transcoder subprocess
+  → 2 independent RTMP egress tasks, each read from the shared ring
+  → per-packet codec work (video_for_rtmp_into) is done independently per egress
+```
+
+The per-packet format conversion (AVCC wrap, ADTS strip) is NOT shared between
+egress tasks. This is intentional: sharing would require synchronization and
+outweighs the ~700 ns per frame conversion cost. What IS shared is the far more
+expensive encode stage (CPU-bound, seconds of latency). This invariant is
+covered by `same_encoding_outputs_share_one_transcoder_stage` in engine tests.
 
 ## Audio Stage Cache
 

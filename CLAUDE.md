@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+# Guidelines
+- Always write correctness tests
+- Hotpath code must be benchmarked before and after to justify changes to it
+- Before committing bring docs up-to-date
+- Group changes logically and commit incrementally
+
 ## Build & Test Commands
 Standard cargo commands (`cargo build`, `cargo test`, `cargo fmt`, `cargo clippy`) work as expected.
 - **Frontend Compile**: `npx tsc -p tsconfig.frontend.json` (Always edit `public/ts/` — never the generated `public/js/`).
