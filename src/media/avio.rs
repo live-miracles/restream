@@ -45,7 +45,7 @@ impl MemoryQueue {
     }
 
     pub fn write(&self, data: &[u8]) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.buf.extend(data.iter().copied());
         self.cvar.notify_all();
     }
@@ -55,7 +55,7 @@ impl MemoryQueue {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut bytes = 0usize;
         for chunk in chunks {
             bytes += chunk.len();
@@ -68,17 +68,17 @@ impl MemoryQueue {
     }
 
     pub fn close(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.closed = true;
         self.cvar.notify_all();
     }
 
     pub fn is_closed(&self) -> bool {
-        self.inner.lock().unwrap().closed
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).closed
     }
 
     pub fn read(&self, target: &mut [u8]) -> usize {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         while inner.buf.is_empty() && !inner.closed {
             inner = self.cvar.wait(inner).unwrap();
         }
@@ -98,7 +98,7 @@ impl MemoryQueue {
     }
 
     pub fn read_nonblocking(&self, target: &mut [u8]) -> usize {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.buf.is_empty() {
             return 0;
         }

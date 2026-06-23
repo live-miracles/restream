@@ -146,7 +146,7 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
         let mut max_lag = 0;
         let mut total_overflows = 0;
         {
-            let mut readers_guard = rb.readers.lock().unwrap();
+            let mut readers_guard = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
             readers_guard.retain(|weak_ref| {
                 if let Some(info) = weak_ref.upgrade() {
                     let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
@@ -637,7 +637,7 @@ async fn check_ring_buffer_health(
         let write_idx = rb.get_write_idx();
         let mut readers_info = vec![];
         {
-            let mut readers_guard = rb.readers.lock().unwrap();
+            let mut readers_guard = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
             readers_guard.retain(|weak_ref| {
                 if let Some(info) = weak_ref.upgrade() {
                     let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
@@ -714,7 +714,7 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
     let mut lines = vec![];
 
     if let Some(ingest) = ingest_opt {
-        let times = ingest.keyframe_times.lock().unwrap();
+        let times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
         if times.len() < 2 {
             lines.push(format!("Keyframes observed: {}", times.len()));
             lines.push("Not enough keyframes to analyze GOP intervals yet.".to_string());
