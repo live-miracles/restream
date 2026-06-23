@@ -225,7 +225,13 @@ pub async fn run_app() {
 
         let outputs = match db::list_outputs(&pool).await {
             Ok(o) => o,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "[reconciler] DB error reading outputs (tick {}): {}",
+                    reconciler_tick, e
+                );
+                continue;
+            }
         };
 
         for output in &outputs {
@@ -498,9 +504,10 @@ pub async fn run_app() {
                         }
                         engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
                         cancel_token.cancelled().await;
-                        engine_c
-                            .remove_hls_persistent_consumer(&pipeline_id_c)
-                            .await;
+                        // remove_hls_persistent_consumer is intentionally called
+                        // in the always-runs cleanup section below (outside the
+                        // catch_unwind) so a panic between add and here cannot
+                        // permanently leak the refcount.
                     }
                     }).catch_unwind().await.is_err();
 
@@ -509,9 +516,22 @@ pub async fn run_app() {
                             output_id_c, pipeline_id_c);
                     }
 
-                    // Cleanup always runs � even after a panic in the egress fn.
+                    // Cleanup always runs — even after a panic in the egress fn.
                     let is_cancelled = cancel_token.is_cancelled();
                     engine_c.unregister_egress(&output_id_c).await;
+                    // Remove the HLS persistent consumer refcount unconditionally
+                    // for HLS outputs. The add happened inside the catch_unwind
+                    // above; by moving the remove here we ensure it runs even
+                    // when the egress future panics after add but before its own
+                    // remove (which was guarded only by a cancellation wait).
+                    if url_c.starts_with("hls://")
+                        || url_c.starts_with("http://")
+                        || url_c.starts_with("https://")
+                    {
+                        engine_c
+                            .remove_hls_persistent_consumer(&pipeline_id_c)
+                            .await;
+                    }
 
                     let end_now = chrono::Utc::now().to_rfc3339();
                     let job_status = if is_cancelled { "stopped" } else { "failed" };
@@ -606,7 +626,13 @@ pub async fn run_app() {
         // Reconcile recordings: auto-start/stop based on enabled flag and ingest state
         let pipelines = match db::list_pipelines(&pool).await {
             Ok(p) => p,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "[reconciler] DB error reading pipelines (tick {}): {}",
+                    reconciler_tick, e
+                );
+                continue;
+            }
         };
         for pipeline in pipelines {
             let has_ingest = engine
