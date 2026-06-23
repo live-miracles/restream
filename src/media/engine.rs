@@ -563,10 +563,9 @@ impl MediaEngine {
 
         if use_internal {
             if encoding.starts_with("video:") {
-                eprintln!(
-                    "[transcoder] WARNING: RESTREAM_USE_INTERNAL_TRANSCODER=1 with video \
-                     preset '{}' — internal backend stream-copies only, does NOT \
-                     scale or re-encode. Use external FFmpeg for real transcoding.",
+                println!(
+                    "[transcoder] Info: RESTREAM_USE_INTERNAL_TRANSCODER=1 with video \
+                     preset '{}' — using in-process decode->scale->encode loop.",
                     encoding
                 );
             }

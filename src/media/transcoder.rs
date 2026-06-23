@@ -254,13 +254,32 @@ pub async fn start_transcoder(
     let pipeline_id_clone = pipeline_id.clone();
     let out_buf = output_buffer.clone();
     let handle = std::thread::spawn(move || {
+        let use_internal = std::env::var("RESTREAM_USE_INTERNAL_TRANSCODER")
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_ffmpeg_transcoder_stage(
-                input_queue_clone,
-                out_buf,
-                &preset_clone,
-                cancel_token_clone,
-            )
+            if use_internal && preset_clone.starts_with("video:") {
+                let video_preset = preset_clone.strip_prefix("video:").unwrap_or(&preset_clone);
+                run_ffmpeg_transcode_with_scale(
+                    input_queue_clone,
+                    out_buf,
+                    video_preset,
+                    cancel_token_clone,
+                )
+            } else {
+                run_ffmpeg_transcoder_stage(
+                    input_queue_clone,
+                    out_buf,
+                    &preset_clone,
+                    cancel_token_clone,
+                )
+            }
         }));
         match result {
             Ok(Err(e)) => eprintln!(
@@ -674,6 +693,262 @@ pub fn run_ffmpeg_transcoder_stage(
     }
     if !batch.is_empty() {
         out_ring.push_batch(batch.drain(..));
+    }
+
+    Ok(())
+}
+
+/// Real decode -> scale -> encode transcoder stage.
+pub fn run_ffmpeg_transcode_with_scale(
+    in_queue: Arc<crate::media::avio::MemoryQueue>,
+    out_ring: Arc<RingBuffer>,
+    video_preset: &str,
+    token: CancellationToken,
+) -> Result<(), &'static str> {
+    use crate::media::avio::CustomInput;
+    use ffmpeg_next::format::Pixel;
+
+    let mut custom = CustomInput::new(&*in_queue)?;
+    let ictx = custom
+        .input
+        .as_mut()
+        .ok_or("Failed to get CustomInput context")?;
+
+    // Identify streams
+    let video_idx = ictx
+        .streams()
+        .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video)
+        .map(|s| s.index())
+        .ok_or("no video stream")?;
+
+    // Build stream metadata (same pattern as h264_transcoder)
+    let mut stream_meta: Vec<Option<(MediaType, u32)>> = Vec::new();
+    let mut audio_track_counter = 0u32;
+    for s in ictx.streams() {
+        match s.parameters().medium() {
+            ffmpeg_next::media::Type::Video => {
+                stream_meta.push(Some((MediaType::Video, 0)));
+            }
+            ffmpeg_next::media::Type::Audio => {
+                stream_meta.push(Some((MediaType::Audio, audio_track_counter)));
+                audio_track_counter += 1;
+            }
+            _ => {
+                stream_meta.push(None);
+            }
+        }
+    }
+
+    let dec_params = ictx.stream(video_idx).ok_or("no video stream")?.parameters();
+    let codec_id = dec_params.id();
+    let dec_ctx = ffmpeg_next::codec::Context::from_parameters(dec_params)
+        .map_err(|_| "decoder context error")?;
+    let mut decoder = dec_ctx.decoder().video().map_err(|_| "decoder open error")?;
+
+    // Look up target dimensions
+    let profile = {
+        let cache = crate::media::profiles::cache().blocking_read();
+        cache
+            .get(video_preset)
+            .or_else(|| cache.get("h264"))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    let target_w = profile.width;
+    let target_h = profile.height;
+    let skip_scaling = target_w == 0;
+
+    let enc_codec = match codec_id {
+        ffmpeg_next::codec::Id::H264 => ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264)
+            .ok_or("no H.264 encoder")?,
+        ffmpeg_next::codec::Id::HEVC => ffmpeg_next::codec::encoder::find_by_name("libx265")
+            .or_else(|| ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::HEVC))
+            .ok_or("no HEVC/H.265 encoder")?,
+        _ => return Err("Unsupported video codec for internal transcoding"),
+    };
+
+    let mut encoder: Option<ffmpeg_next::codec::encoder::video::Encoder> = None;
+    let mut scaler: Option<ffmpeg_next::software::scaling::Context> = None;
+    let mut enc_frame = ffmpeg_next::frame::Video::empty();
+    let mut enc_pkt = ffmpeg_next::Packet::empty();
+    let mut pts_counter: i64 = 0;
+    let mut fps_den: i64 = 1;
+    let mut fps_num: i64 = 30;
+
+    for (stream, pkt) in ictx.packets() {
+        if token.is_cancelled() {
+            break;
+        }
+
+        let idx = stream.index();
+
+        // Audio copy
+        if stream.parameters().medium() == ffmpeg_next::media::Type::Audio {
+            let Some(&Some((media_type, track_index))) = stream_meta.get(idx) else {
+                continue;
+            };
+            let tb = stream.time_base();
+            let pts = pkt.pts().unwrap_or(0);
+            let dts_val = pkt.dts().unwrap_or(pts);
+            let pts_ms = if tb.1 != 0 {
+                (pts as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64
+            } else {
+                pts
+            };
+            let dts_ms = if tb.1 != 0 {
+                (dts_val as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64
+            } else {
+                dts_val
+            };
+            let data = pkt.data().unwrap_or(&[]);
+            out_ring.push(MediaPacket {
+                media_type,
+                track_index,
+                pts: pts_ms,
+                dts: dts_ms,
+                is_keyframe: pkt.is_key(),
+                format: PayloadFormat::Raw,
+                payload: bytes::Bytes::copy_from_slice(data),
+            });
+            continue;
+        }
+
+        if idx != video_idx {
+            continue;
+        }
+
+        if decoder.send_packet(&pkt).is_err() {
+            continue;
+        }
+
+        let mut dec_frame = ffmpeg_next::frame::Video::empty();
+        while decoder.receive_frame(&mut dec_frame).is_ok() {
+            // Lazy encoder + scaler init
+            if encoder.is_none() {
+                let width = decoder.width();
+                let height = decoder.height();
+                let in_fmt = dec_frame.format();
+
+                let out_w = if target_w > 0 { target_w } else { width };
+                let out_h = if target_h > 0 { target_h } else { height };
+
+                let need_scaling = !skip_scaling && (out_w != width || out_h != height) || in_fmt != Pixel::YUV420P;
+                if need_scaling {
+                    let sw = ffmpeg_next::software::scaling::Context::get(
+                        in_fmt,
+                        width,
+                        height,
+                        Pixel::YUV420P,
+                        out_w,
+                        out_h,
+                        ffmpeg_next::software::scaling::Flags::BILINEAR,
+                    ).map_err(|_| "failed to create scaler")?;
+                    scaler = Some(sw);
+                }
+
+                let fr = stream.avg_frame_rate();
+                let (fn_, fd) = if fr.numerator() > 0 && fr.denominator() > 0 {
+                    (fr.numerator(), fr.denominator())
+                } else {
+                    (30, 1)
+                };
+                fps_num = fn_ as i64;
+                fps_den = fd as i64;
+
+                let enc_ctx = unsafe {
+                    let ptr = ffmpeg_next::ffi::avcodec_alloc_context3(
+                        enc_codec.as_ptr() as *mut ffmpeg_next::ffi::AVCodec
+                    );
+                    if ptr.is_null() {
+                        return Err("failed to allocate encoder context");
+                    }
+                    ffmpeg_next::codec::Context::wrap(ptr, None)
+                };
+                let mut enc_video = enc_ctx.encoder().video()
+                    .map_err(|_| "failed to get encoder video interface")?;
+
+                enc_video.set_width(out_w);
+                enc_video.set_height(out_h);
+                enc_video.set_format(Pixel::YUV420P);
+                enc_video.set_time_base(ffmpeg_next::Rational::new(fd, fn_));
+                enc_video.set_frame_rate(Some(ffmpeg_next::Rational::new(fn_, fd)));
+                enc_video.set_gop(profile.gop);
+                enc_video.set_max_b_frames(profile.bframes);
+
+                let bitrate = if profile.bitrate > 0 {
+                    profile.bitrate as usize
+                } else {
+                    (out_w * out_h) as usize * 3
+                };
+                enc_video.set_bit_rate(bitrate);
+                if profile.max_bitrate > 0 {
+                    enc_video.set_max_bit_rate(profile.max_bitrate as usize);
+                }
+
+                let mut opts = ffmpeg_next::Dictionary::new();
+                opts.set("preset", &profile.preset);
+                opts.set("tune", &profile.tune);
+                if profile.bitrate == 0 {
+                    opts.set("crf", &profile.crf.to_string());
+                }
+
+                let opened = enc_video.open_as_with(enc_codec, opts)
+                    .map_err(|_| "failed to open encoder")?;
+                encoder = Some(opened);
+            }
+
+            let enc = encoder.as_mut().unwrap();
+
+            let frame_to_encode = if let Some(ref mut sw) = scaler {
+                if sw.run(&dec_frame, &mut enc_frame).is_err() {
+                    continue;
+                }
+                enc_frame.set_pts(Some(pts_counter));
+                &enc_frame
+            } else {
+                dec_frame.set_pts(Some(pts_counter));
+                &dec_frame
+            };
+            pts_counter += 1;
+
+            if enc.send_frame(frame_to_encode).is_err() {
+                continue;
+            }
+
+            while enc.receive_packet(&mut enc_pkt).is_ok() {
+                let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
+                let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
+                let dts_ms = dts_raw * fps_den * 1000 / fps_num;
+                out_ring.push(MediaPacket {
+                    media_type: MediaType::Video,
+                    track_index: 0,
+                    pts: pts_ms,
+                    dts: dts_ms,
+                    is_keyframe: enc_pkt.is_key(),
+                    format: PayloadFormat::Raw,
+                    payload: bytes::Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+                });
+            }
+        }
+    }
+
+    if let Some(enc) = encoder.as_mut() {
+        let _ = enc.send_eof();
+        while enc.receive_packet(&mut enc_pkt).is_ok() {
+            let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
+            let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
+            let dts_ms = dts_raw * fps_den * 1000 / fps_num;
+            out_ring.push(MediaPacket {
+                media_type: MediaType::Video,
+                track_index: 0,
+                pts: pts_ms,
+                dts: dts_ms,
+                is_keyframe: enc_pkt.is_key(),
+                format: PayloadFormat::Raw,
+                payload: bytes::Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+            });
+        }
     }
 
     Ok(())

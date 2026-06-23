@@ -118,3 +118,85 @@ fn cancelled_token_stops_early() {
     let result = run_ffmpeg_transcoder_stage(input, output.clone(), "source", token);
     assert!(result.is_ok(), "cancelled transcoder should exit cleanly");
 }
+
+#[test]
+fn transcode_with_scale_synthetic_video_only() {
+    use restream::media::transcoder::run_ffmpeg_transcode_with_scale;
+    use restream::media::mpegts::{TsDemuxer, TsMuxer};
+    use restream::media::engine::VideoMeta;
+    use restream::media::ring_buffer::PayloadFormat;
+
+    let fixture = load_fixture();
+
+    // 1. Demux video packets from the fixture
+    let mut demuxer = TsDemuxer::new();
+    demuxer.feed(&fixture);
+    let mut all_packets = Vec::new();
+    demuxer.drain_into(&mut all_packets);
+
+    let video_packets: Vec<_> = all_packets
+        .into_iter()
+        .filter(|p| p.media_type == MediaType::Video)
+        .collect();
+
+    assert!(!video_packets.is_empty(), "Fixture must contain video packets");
+
+    // 2. Mux video-only packets to generate a synthetic video-only MPEG-TS stream
+    let video_meta = VideoMeta {
+        codec: "h264".to_string(),
+        width: 1920,
+        height: 1080,
+        fps: 30.0,
+        bw: None,
+        profile: None,
+        level: None,
+        pixel_format: None,
+    };
+
+    let mut muxer = TsMuxer::new(Some(&video_meta), &[]);
+    let mut synthetic_ts = Vec::new();
+
+    for pkt in video_packets {
+        // Mux packet using its properties
+        let ts_bytes = muxer.mux_packet(
+            MediaType::Video,
+            0,
+            pkt.pts,
+            pkt.dts,
+            pkt.is_keyframe,
+            &pkt.payload,
+        );
+        synthetic_ts.extend_from_slice(ts_bytes);
+    }
+
+    // 3. Write synthetic stream to MemoryQueue
+    let input = Arc::new(MemoryQueue::new());
+    let output = Arc::new(RingBuffer::new(4096));
+    input.write(&synthetic_ts);
+    input.close();
+
+    // 4. Run the decode -> scale -> encode loop with "720p" preset
+    let result = run_ffmpeg_transcode_with_scale(
+        input,
+        output.clone(),
+        "720p",
+        CancellationToken::new(),
+    );
+
+    assert!(result.is_ok(), "run_ffmpeg_transcode_with_scale failed: {:?}", result);
+
+    // 5. Assert output packets arrive and contain only video
+    let mut reader = Reader::new("test_transcode_scale".to_string(), output);
+    let mut output_packets = Vec::new();
+    while let Ok(Some(pkt)) = reader.pull() {
+        output_packets.push(pkt);
+    }
+
+    assert!(!output_packets.is_empty(), "No packets produced by transcode with scale");
+    for pkt in &output_packets {
+        assert_eq!(pkt.media_type, MediaType::Video, "Expected only video packets in output");
+    }
+
+    // The output format should be Raw
+    assert_eq!(output_packets[0].format, PayloadFormat::Raw);
+}
