@@ -718,6 +718,30 @@ fn strip_query(value: &str) -> &str {
     value.split_once('?').map(|(path, _)| path).unwrap_or(value)
 }
 
+/// Decode percent-encoded characters in a URL query parameter value.
+/// Handles `%XX` sequences where XX is a two-digit hex byte value.
+/// Non-UTF8 sequences are passed through as-is.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 fn parse_srt_stream_id(streamid: &str) -> ParsedStreamId {
     let raw = streamid.trim_matches('\0').trim();
     if raw.is_empty() {
@@ -1693,6 +1717,33 @@ mod tests {
         assert!(u.bond_addrs.is_empty());
     }
 
+    // --- Regression: issue #6 (Round 5) — SRT stream ID percent-decode ---
+    // Before the fix, percent-encoded characters in the streamid query parameter
+    // were passed through raw. `publish:live%2Fkey` would be compared against DB
+    // stream keys verbatim, causing silent auth failure.
+    #[test]
+    fn percent_decode_basic() {
+        assert_eq!(percent_decode("publish:live%2Fkey"), "publish:live/key");
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("no_encoding"), "no_encoding");
+        assert_eq!(percent_decode("%41%42%43"), "ABC"); // A=0x41, B=0x42, C=0x43
+    }
+
+    #[test]
+    fn percent_decode_incomplete_sequence_passthrough() {
+        // A truncated %XX at the end should not panic.
+        assert_eq!(percent_decode("foo%2"), "foo%2");
+        assert_eq!(percent_decode("foo%"), "foo%");
+    }
+
+    #[test]
+    fn egress_url_percent_decodes_streamid() {
+        // Percent-encoded slash in streamid must be decoded before use.
+        let u = parse_srt_egress_url("srt://host:9000?streamid=publish%3Alive%2Fmykey");
+        assert_eq!(u.streamid, "publish:live/mykey",
+            "percent-encoded streamid must be decoded in egress URL");
+    }
+
     #[test]
     fn egress_url_parses_bond_addresses() {
         let u = parse_srt_egress_url(
@@ -1940,7 +1991,7 @@ fn parse_srt_egress_url(url: &str) -> SrtEgressUrl {
             let key_val: Vec<&str> = param.splitn(2, '=').collect();
             if key_val.len() == 2 {
                 match key_val[0] {
-                    "streamid" => streamid = key_val[1].to_string(),
+                    "streamid" => streamid = percent_decode(key_val[1]),
                     "bond" => {
                         bond_addrs = key_val[1].split(',').map(|s| s.to_string()).collect();
                     }

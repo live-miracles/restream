@@ -387,7 +387,17 @@ fn parse_rtmp_url(url: &str) -> Option<(String, u16, String, String)> {
     let host_port = &s[..slash_idx];
     let path = &s[slash_idx + 1..];
 
-    let (host, port) = if let Some(colon_idx) = host_port.find(':') {
+    let (host, port) = if host_port.starts_with('[') {
+        // IPv6 literal: [::1]:1935
+        let bracket_end = host_port.find(']')?;
+        let host = host_port[1..bracket_end].to_string();
+        let port = if bracket_end + 1 < host_port.len() {
+            host_port[bracket_end + 2..].parse::<u16>().ok()?
+        } else {
+            1935
+        };
+        (host, port)
+    } else if let Some(colon_idx) = host_port.find(':') {
         let h = &host_port[..colon_idx];
         let p = host_port[colon_idx + 1..].parse::<u16>().ok()?;
         (h.to_string(), p)
@@ -1705,5 +1715,41 @@ mod tests {
 
         // Missing path separator → None (can't split app/key)
         assert!(parse_rtmp_url("rtmp://host/noapp").is_none());
+    }
+
+    // --- Regression: issue #5 (Round 5) — IPv6 RTMP URL parsing ---
+    // Before the fix, `host_port.find(':')` landed inside the IPv6 brackets
+    // (first `:` in `[::1]:1935` is at position 2, inside the brackets),
+    // causing the host to be parsed as `[` and port parsing to fail.
+    #[test]
+    fn parse_rtmp_url_ipv6_literal() {
+        let result = parse_rtmp_url("rtmp://[::1]:1935/live/mykey");
+        assert!(result.is_some(), "IPv6 URL must parse successfully");
+        let (host, port, app, key) = result.unwrap();
+        assert_eq!(host, "::1");
+        assert_eq!(port, 1935);
+        assert_eq!(app, "live");
+        assert_eq!(key, "mykey");
+    }
+
+    #[test]
+    fn parse_rtmp_url_ipv6_default_port() {
+        let result = parse_rtmp_url("rtmp://[2001:db8::1]/live/mykey");
+        assert!(result.is_some(), "IPv6 URL without port must use default 1935");
+        let (host, port, _app, _key) = result.unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, 1935);
+    }
+
+    #[test]
+    fn parse_rtmp_url_ipv4_unchanged() {
+        // Ensure the IPv4 path still works correctly after the IPv6 fix.
+        let result = parse_rtmp_url("rtmp://192.168.1.1:1935/live/key");
+        assert!(result.is_some());
+        let (host, port, app, key) = result.unwrap();
+        assert_eq!(host, "192.168.1.1");
+        assert_eq!(port, 1935);
+        assert_eq!(app, "live");
+        assert_eq!(key, "key");
     }
 }

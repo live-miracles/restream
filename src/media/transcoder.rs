@@ -119,7 +119,7 @@ pub async fn start_audio_router(
                         output_buffer.push((*p).clone());
                         _pushed_count += 1;
                         if !first_push_logged {
-                            eprintln!(
+                            println!(
                                 "[audio-router] first push pipeline={} type={:?} track={} codec_out='{}'",
                                 pipeline_id, p.media_type, p.track_index,
                                 output_buffer.codec_hint_str()
