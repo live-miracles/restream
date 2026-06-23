@@ -17,8 +17,6 @@ sysinfo = "0.30"
 bcrypt = "0.15"
 libc = "0.2"
 nix = { version = "0.27", features = ["socket", "sched", "fs", "feature"] }
-core_affinity = "0.8"
-mimalloc = { version = "0.1", default-features = false }
 futures-util = "0.3"
 home = "=0.5.9"
 scrypt = { version = "0.11", features = ["simple"] }
