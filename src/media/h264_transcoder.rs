@@ -125,12 +125,13 @@ pub async fn start_h264_transcoder(
                     let stream_idx = match pkt.media_type {
                         MediaType::Video => 0,
                         MediaType::Audio => {
-                            let vo = 1;
-                            audio_tracks
+                            match audio_tracks
                                 .iter()
                                 .position(|a| a.track_index == pkt.track_index)
-                                .map(|i| i + vo)
-                                .unwrap_or(0)
+                            {
+                                Some(i) => i + 1,
+                                None => continue, // unknown track — skip to avoid DTS corruption
+                            }
                         }
                     };
 
