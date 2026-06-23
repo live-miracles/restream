@@ -61,7 +61,7 @@ command -v jq       >/dev/null 2>&1 || { echo "jq not found"       >&2; exit 1; 
 
 start_restream() {
   local pids
-  pids=$(ps -eo pid=,args= | awk '/[t]arget\/release\/restream/{print $1}' || true)
+  pids=$(ps -eo pid=,comm= | awk '$2 == "restream" {print $1}' || true)
   if [[ -n "$pids" ]]; then kill $pids 2>/dev/null || true; sleep 2; fi
   rm -f "$ROOT"/data.db{,-shm,-wal} "$ROOT"/restream.db{,-shm,-wal}
   : > "$RESTREAM_LOG"
@@ -73,10 +73,24 @@ start_restream() {
   fail "restream did not start"
 }
 
+# Wait for restream's SRT server to be accepting connections.
+# The HTTP /healthz comes up before SRT is fully listening; publishers that
+# start immediately after healthz can miss the SRT accept loop.
+wait_srt_ready() {
+  for i in $(seq 1 10); do
+    if timeout 1 bash -c "echo '' | nc -u -q1 127.0.0.1 ${RESTREAM_SRT}" 2>/dev/null \
+       || nc -z 127.0.0.1 "${RESTREAM_SRT}" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 0  # best-effort; SRT UDP may not respond to nc probes, proceed anyway
+}
+
 start_mediamtx() {
   pkill -f 'mediamtx ' 2>/dev/null || true; sleep 1
   cat > "$WORK_DIR/mediamtx.yml" <<YML
-logLevel: warn
+logLevel: info
 rtmp: yes
 rtmpAddress: :${MTX_RTMP}
 srt: yes
@@ -162,7 +176,7 @@ run_config() {
     sleep 3
     start_mediamtx
     start_restream
-    rm -f "$COOKIE_JAR" 2>/dev/null || true
+    wait_srt_ready 2>/dev/null || true
     COOKIE_JAR=$(mktemp)
     api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
   fi
@@ -181,7 +195,7 @@ run_config() {
 
   local codec_args=()
   if [[ "$ingest_codec" == "h265" ]]; then
-    codec_args=( -c:v libx265 -preset ultrafast -x265-params "log-level=none" )
+    codec_args=( -c:v libx265 -preset ultrafast -tune zerolatency -x265-params "log-level=none" )
   else
     codec_args=( -c:v libx264 -preset ultrafast -tune zerolatency )
   fi
@@ -208,7 +222,7 @@ run_config() {
     -f lavfi -i 'testsrc2=size=1920x1080:rate=30' \
     "${audio_inputs[@]}" \
     "${codec_args[@]}" "${map_args[@]}" \
-    -b:v 4M -c:a aac -b:a 64k \
+    -b:v 1.5M -c:a aac -b:a 64k \
     "${fmt_args[@]}" >/dev/null 2>&1 &
   PUB_PID=$!
 
@@ -324,8 +338,8 @@ COOKIE_JAR=$(mktemp)
 api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
 
 run_config "h264-rtmp"       rtmp h264 0
-run_config "h264-srt"        srt  h264 0
 run_config "h265-srt"        srt  h265 0
+run_config "h264-srt"        srt  h264 0
 run_config "h264-srt-multi"  srt  h264 1
 run_config "h265-srt-multi"  srt  h265 1
 

@@ -20,6 +20,7 @@ old/
 log/
 *.log
 *.pid
+scale.csv
 
 # Runtime SQLite databases
 *.db
