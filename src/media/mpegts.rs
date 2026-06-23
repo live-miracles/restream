@@ -158,6 +158,19 @@ impl TsDemuxer {
                 self.remainder.extend_from_slice(&buf[leftover..]);
             }
         }
+        // Safety cap: remainder must never exceed TS_PACKET_SIZE-1 bytes.
+        // feed_slice guarantees the unprocessed tail is < TS_PACKET_SIZE under
+        // normal operation (it processes every complete 188-byte block it can).
+        // This explicit cap prevents accumulation in edge cases — e.g. when
+        // find_ts_sync optimistically accepts a 0x47 byte near the end of a
+        // short chunk but the next chunk also starts with 0x47, causing the
+        // buffer to grow one byte per call before the 188-byte threshold is
+        // reached and the block is processed or discarded.
+        const MAX_REMAINDER: usize = TS_PACKET_SIZE - 1;
+        if self.remainder.len() > MAX_REMAINDER {
+            let excess = self.remainder.len() - MAX_REMAINDER;
+            self.remainder.drain(..excess);
+        }
     }
 
     /// Process complete TS packets from a slice. Returns the offset of unconsumed bytes.
@@ -2326,5 +2339,27 @@ mod tests {
         let mut buf_min = [0u8; 6];
         write_pcr(&mut buf_min, i64::MIN);
         assert_eq!(buf_min, buf_zero);
+    }
+
+    // --- Regression: issue #6 (Round 3) — TsDemuxer remainder length cap ---
+    // Before the MAX_REMAINDER guard, feeding a stream of single-byte 0x47
+    // chunks would cause remainder to grow by 1 byte on every call — O(n)
+    // memory growth per byte of input, i.e. O(n²) overall processing cost
+    // for a corrupt / adversarial stream.  After the fix the remainder must
+    // never exceed TS_PACKET_SIZE - 1 = 187 bytes.
+    #[test]
+    fn feed_remainder_capped_on_corrupt_stream() {
+        let mut dem = TsDemuxer::new();
+        // Feed 500 isolated 0x47 bytes (each looks like a TS sync byte but is
+        // never followed by 187 more bytes, so no packet can complete).
+        for _ in 0..500 {
+            dem.feed(&[0x47]);
+        }
+        assert!(
+            dem.remainder.len() <= TS_PACKET_SIZE - 1,
+            "remainder must be capped at TS_PACKET_SIZE-1 ({}) but was {}",
+            TS_PACKET_SIZE - 1,
+            dem.remainder.len()
+        );
     }
 }
