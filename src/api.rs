@@ -12,6 +12,8 @@ use axum::{
 };
 use axum::extract::DefaultBodyLimit;
 use tower_http::cors::{CorsLayer, AllowOrigin};
+use tower_http::set_header::SetResponseHeaderLayer;
+use axum::http::HeaderValue;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -291,6 +293,19 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB global cap
+        // Security headers: applied to all responses from this router.
+        // X-Content-Type-Options prevents MIME-sniffing attacks where a
+        // browser executes a response as a different type than declared.
+        // X-Frame-Options blocks the dashboard from being embedded in a
+        // cross-origin <iframe> (clickjacking).
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("SAMEORIGIN"),
+        ))
         // HLS sub-router: allow any origin so browser-based players (hls.js,
         // Video.js) on a different origin can fetch playlists and segments.
         // Merged last so the CORS layer only applies to /hls/ and /preview/hls/.
@@ -953,6 +968,24 @@ async fn pipelines_delete_handler(
             state.engine.unregister_egress(&output.id).await;
         }
     }
+
+    // Kill any file-ingest FFmpeg subprocesses that push into this pipeline's
+    // stream key.  Without this, the subprocess keeps running and retrying
+    // RTMP pushes even after the pipeline row is gone.
+    if let Ok(pipeline) = db::get_pipeline(&state.db, &id).await {
+        if let Some(pipeline) = pipeline {
+            if let Ok(ingests) = db::list_ingests(&state.db).await {
+                let mut children = state.engine.file_ingest_children.write().await;
+                for ingest in ingests.iter().filter(|i| i.stream_key == pipeline.stream_key) {
+                    if let Some(mut child) = children.remove(&ingest.id) {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
+            }
+        }
+    }
+
     // Remove the pipeline record first so any racing ingest reconnect
     // finds no pipeline to publish into (closes the TOCTOU window between
     // unregister_ingest and remove_pipeline where an orphaned ring buffer
@@ -1374,6 +1407,8 @@ async fn ingests_delete_handler(
     let mut children = state.engine.file_ingest_children.write().await;
     if let Some(mut child) = children.remove(&id) {
         let _ = child.kill().await;
+        // Reap the child so it does not linger as a zombie process.
+        let _ = child.wait().await;
     }
     drop(children);
 
@@ -1507,6 +1542,8 @@ async fn ingests_stop_handler(
     let mut children = state.engine.file_ingest_children.write().await;
     if let Some(mut child) = children.remove(&id) {
         let _ = child.kill().await;
+        // Reap the child so it does not linger as a zombie process.
+        let _ = child.wait().await;
     }
 
     Json(serde_json::json!({

@@ -1047,3 +1047,71 @@ async fn delete_output_cancels_egress() {
     // Egress cancellation token should be cancelled
     assert!(token.is_cancelled(), "deleting output should cancel egress");
 }
+
+// --- Regression: Round 6 #2 — Security headers ---
+
+#[tokio::test]
+async fn security_headers_present_on_api_response() {
+    // Every API response must carry X-Content-Type-Options and X-Frame-Options
+    // to defend against MIME-sniffing and clickjacking (Round 6 finding #2).
+    let (app, _) = test_app().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("x-content-type-options").map(|v| v.as_bytes()),
+        Some(b"nosniff" as &[u8]),
+        "X-Content-Type-Options: nosniff must be present"
+    );
+    assert_eq!(
+        resp.headers().get("x-frame-options").map(|v| v.as_bytes()),
+        Some(b"SAMEORIGIN" as &[u8]),
+        "X-Frame-Options: SAMEORIGIN must be present"
+    );
+}
+
+// --- Regression: Round 6 #7 — HLS consumer refcount ---
+
+#[tokio::test]
+async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
+    // add_hls_persistent_consumer(+1) must be matched by remove(-1).
+    // This test exercises the engine methods directly to confirm the counter
+    // returns to zero, guarding against underflow or permanent leak.
+    let engine = Arc::new(MediaEngine::new());
+    use tokio_util::sync::CancellationToken;
+    use restream::media::engine::HlsConsumers;
+
+    let token = CancellationToken::new();
+    {
+        let mut stores = engine.hls_consumers.write().await;
+        stores.insert("pipe1".to_string(), HlsConsumers::new(token.clone()));
+    }
+
+    engine.add_hls_persistent_consumer("pipe1").await;
+    engine.add_hls_persistent_consumer("pipe1").await;
+    {
+        let consumers = engine.hls_consumers.read().await;
+        assert_eq!(
+            consumers["pipe1"].persistent.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "count should be 2 after two adds"
+        );
+    }
+    engine.remove_hls_persistent_consumer("pipe1").await;
+    engine.remove_hls_persistent_consumer("pipe1").await;
+    {
+        let consumers = engine.hls_consumers.read().await;
+        assert_eq!(
+            consumers["pipe1"].persistent.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "count should be 0 after balanced removes"
+        );
+    }
+}
