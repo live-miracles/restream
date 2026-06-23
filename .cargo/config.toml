@@ -1,0 +1,4 @@
+# mold is ~10× faster than ld for linking. All profiles benefit.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

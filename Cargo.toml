@@ -78,6 +78,38 @@ harness = false
 name = "srt_ingest_latency"
 harness = false
 
+[[bench]]
+name = "codec_conversions"
+harness = false
+
+[profile.dev]
+incremental = true
+codegen-units = 16
+debug = 1
+# Avoid packaging DWARF into a single blob — unpacked is cheaper to write and
+# the linker (mold) doesn't need to open it during linking.
+split-debuginfo = "unpacked"
+
+# Compile every dependency at opt-level 2 so they are fast to execute (and stay
+# cached across rebuilds). Our own crate stays at opt-level 0 for maximum
+# incremental compile speed — only changed translation units are recompiled.
+[profile.dev.package."*"]
+opt-level = 2
+
+# bench-dev: runs Criterion at full optimization without fat-LTO.
+# Use:  cargo bench --bench <name> --profile bench-dev
+# Much faster to build than the default `bench` profile (which inherits release
+# and uses fat LTO + 1 codegen unit). Accuracy is equivalent for relative
+# comparisons; absolute ns values may differ ≤5% from full release.
+[profile.bench-dev]
+inherits = "dev"
+opt-level = 3
+lto = "thin"
+incremental = true
+# Keep debug symbols so flamegraphs and perf work without a separate build.
+debug = 1
+split-debuginfo = "unpacked"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
