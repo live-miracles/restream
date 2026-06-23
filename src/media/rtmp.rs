@@ -1236,7 +1236,10 @@ pub async fn start_rtmp_egress(
 
     let mut is_publishing = false;
     let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
-    let mut raw_seq_header_sent = false;
+    // Track the last SPS bytes we sent so we can re-send the AVCC decoder
+    // config record when the encoder changes resolution or bitrate mid-stream.
+    // None = no sequence header sent yet.
+    let mut last_sent_sps: Option<Vec<u8>> = None;
     // Per-egress reusable conversion buffers — avoids per-frame Vec allocation.
     // Each task owns its own buffer; no sharing, no contention with transcoder.
     let mut video_buf = Vec::<u8>::new();
@@ -1325,15 +1328,67 @@ pub async fn start_rtmp_egress(
                         let payload = if packet.format == PayloadFormat::Raw {
                             match packet.media_type {
                                 MediaType::Video => {
-                                    // Send sequence header before first keyframe
-                                    if packet.is_keyframe && !raw_seq_header_sent
-                                        && let Some(seq_hdr) = codec::build_avcc_sequence_header(&packet.payload) {
-                                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
-                                                session.publish_video_data(seq_hdr, RtmpTimestamp::new(0), true)
-                                                && socket.write_all(&p.bytes).await.is_err() { return; }
-                                            raw_seq_header_sent = true;
+                                    // Guard: Raw path is H.264-only.  H.265 packets
+                                    // must be converted by hevc_to_h264 before reaching
+                                    // RTMP egress.  If they arrive here the stage graph
+                                    // was set up before the codec probe completed; drop
+                                    // and warn until a keyframe with a proper H.264 SPS
+                                    // arrives.
+                                    if packet.payload.len() >= 2 {
+                                        // H.265 two-byte NAL header: bits[9:15] = nal_unit_type.
+                                        // H.264 one-byte NAL header: bits[0:4] = nal_unit_type.
+                                        // Detect HEVC by checking for VPS (type 32) or
+                                        // SPS (type 33) in the first NALU — types that cannot
+                                        // appear in H.264 streams.
+                                        let first_nalu_type_h265 =
+                                            (packet.payload[0] >> 1) & 0x3F;
+                                        if matches!(first_nalu_type_h265, 32..=34) {
+                                            eprintln!(
+                                                "[rtmp-egress] H.265 packet on Raw RTMP path \
+                                                 for output {} — dropping until hevc_to_h264 \
+                                                 stage is ready",
+                                                output_id
+                                            );
+                                            continue;
                                         }
-                                    if !codec::video_for_rtmp_into(&packet.payload, packet.is_keyframe, &mut video_buf) {
+                                    }
+                                    // On each keyframe, check whether the SPS has changed
+                                    // (encoder resolution/bitrate switch) and (re-)send the
+                                    // AVCC decoder configuration record before the IDR.
+                                    if packet.is_keyframe {
+                                        let nalus = codec::split_annexb_nalus(&packet.payload);
+                                        let new_sps: Option<Vec<u8>> = nalus
+                                            .iter()
+                                            .find(|n| !n.is_empty() && (n[0] & 0x1F) == 7)
+                                            .map(|n| n.to_vec());
+                                        let sps_changed = match (&last_sent_sps, &new_sps) {
+                                            (None, Some(_)) => true,
+                                            (Some(old), Some(new)) => old != new,
+                                            _ => false,
+                                        };
+                                        if sps_changed {
+                                            if let Some(seq_hdr) =
+                                                codec::build_avcc_sequence_header(&packet.payload)
+                                            {
+                                                if let Ok(ClientSessionResult::OutboundResponse(
+                                                    p,
+                                                )) = session.publish_video_data(
+                                                    seq_hdr,
+                                                    RtmpTimestamp::new(0),
+                                                    true,
+                                                ) && socket.write_all(&p.bytes).await.is_err()
+                                                {
+                                                    return;
+                                                }
+                                                last_sent_sps = new_sps;
+                                            }
+                                        }
+                                    }
+                                    if !codec::video_for_rtmp_into(
+                                        &packet.payload,
+                                        packet.is_keyframe,
+                                        &mut video_buf,
+                                    ) {
                                         continue;
                                     }
                                     Bytes::copy_from_slice(&video_buf)
