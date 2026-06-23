@@ -31,6 +31,7 @@ pub mod runtime_info;
 pub mod types;
 
 use crate::media::engine::MediaEngine;
+use futures_util::FutureExt as _;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -342,6 +343,46 @@ pub async fn run_app() {
                 let last_failed_c = last_failed.clone();
 
                 tokio::spawn(async move {
+                    // Unsupported URL: reject immediately before the panic-safe
+                    // block so its early `return` exits the entire spawn task.
+                    let is_supported = url_c.starts_with("rtmp://")
+                        || url_c.starts_with("rtmps://")
+                        || url_c.starts_with("srt://")
+                        || url_c.starts_with("hls://")
+                        || url_c.starts_with("http://")
+                        || url_c.starts_with("https://");
+                    if !is_supported {
+                        let end_now = chrono::Utc::now().to_rfc3339();
+                        let _ = db::update_job(
+                            &pool_c,
+                            &job_id,
+                            None,
+                            Some("failed"),
+                            Some(&end_now),
+                            Some(0),
+                            None,
+                        )
+                        .await;
+                        let _ = db::append_job_log(
+                            &pool_c,
+                            Some(&job_id),
+                            Some(&pipeline_id_c),
+                            Some(&output_id_c),
+                            "lifecycle.error",
+                            None,
+                            &end_now,
+                            &format!("[lifecycle] Unsupported URL scheme: {}", url_c),
+                        )
+                        .await;
+                        engine_c.unregister_egress(&output_id_c).await;
+                        last_failed_c.lock().await.insert(output_id_c, Instant::now());
+                        return;
+                    }
+
+                    // Wrap the egress call in catch_unwind so a panic does not
+                    // prevent the cleanup path below (unregister_egress, job-
+                    // status update) from running.
+                    let panicked = std::panic::AssertUnwindSafe(async {
                     if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
                         crate::media::rtmp::start_rtmp_egress(
                             output_id_c.clone(),
@@ -392,40 +433,15 @@ pub async fn run_app() {
                         engine_c
                             .remove_hls_persistent_consumer(&pipeline_id_c)
                             .await;
-                    } else {
-                        // Unsupported URL scheme fallback rejection.
-                        let end_now = chrono::Utc::now().to_rfc3339();
-                        let _ = db::update_job(
-                            &pool_c,
-                            &job_id,
-                            None,
-                            Some("failed"),
-                            Some(&end_now),
-                            Some(0),
-                            None,
-                        )
-                        .await;
-                        let _ = db::append_job_log(
-                            &pool_c,
-                            Some(&job_id),
-                            Some(&pipeline_id_c),
-                            Some(&output_id_c),
-                            "lifecycle.error",
-                            None,
-                            &end_now,
-                            &format!("[lifecycle] Unsupported URL scheme: {}", url_c),
-                        )
-                        .await;
+                    }
+                    }).catch_unwind().await.is_err();
 
-                        engine_c.unregister_egress(&output_id_c).await;
-                        last_failed_c
-                            .lock()
-                            .await
-                            .insert(output_id_c, Instant::now());
-                        return;
+                    if panicked {
+                        eprintln!("[egress] Panic in egress task for output {} (pipeline {})",
+                            output_id_c, pipeline_id_c);
                     }
 
-                    // On terminate, clean up and register failure if cancelled without operator intent
+                    // Cleanup always runs � even after a panic in the egress fn.
                     let is_cancelled = cancel_token.is_cancelled();
                     engine_c.unregister_egress(&output_id_c).await;
 
