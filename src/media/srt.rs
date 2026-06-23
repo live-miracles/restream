@@ -981,6 +981,17 @@ impl SrtServer {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(SRTSOCKET, sockaddr_in)>();
 
+        // RAII guard: close server_sock when run() returns (normal exit, task
+        // cancellation, or panic).  Closing the socket interrupts srt_accept()
+        // in the accept thread, which then exits via the tx.send() failure path.
+        struct SrtSockGuard(SRTSOCKET);
+        impl Drop for SrtSockGuard {
+            fn drop(&mut self) {
+                unsafe { srt_close(self.0); }
+            }
+        }
+        let _server_sock_guard = SrtSockGuard(server_sock);
+
         // Blocking accept thread — srt_accept in sync mode blocks until a connection arrives.
         // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
         std::thread::spawn(move || {
@@ -1452,11 +1463,13 @@ impl SrtServer {
                         MediaType::Video => 0,
                         MediaType::Audio => {
                             let video_offset = video_meta.is_some() as usize;
-                            audio_tracks
+                            match audio_tracks
                                 .iter()
                                 .position(|a| a.track_index == pkt.track_index)
-                                .map(|i| i + video_offset)
-                                .unwrap_or(0)
+                            {
+                                Some(i) => i + video_offset,
+                                None => continue, // unknown track — skip to avoid DTS corruption
+                            }
                         }
                     };
 
@@ -2254,11 +2267,13 @@ pub async fn start_srt_egress(
                             MediaType::Video => 0,
                             MediaType::Audio => {
                                 let video_offset = video_meta.is_some() as usize;
-                                audio_tracks
+                                match audio_tracks
                                     .iter()
                                     .position(|a| a.track_index == pkt.track_index)
-                                    .map(|i| i + video_offset)
-                                    .unwrap_or(0)
+                                {
+                                    Some(i) => i + video_offset,
+                                    None => continue, // unknown track — skip to avoid DTS corruption
+                                }
                             }
                         };
 
