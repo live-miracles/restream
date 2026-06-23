@@ -80,10 +80,6 @@ pub async fn run_app() {
     // Elevate limits for high fd count (500+ egress streams)
     set_rlimit();
 
-    // Extract embedded FFmpeg binary to temp directory
-    // (optimized for startup: decompress once, load from disk thereafter)
-    let _ = ffmpeg_extract::ensure_ffmpeg_extracted();
-
     // Initialize database
     let db_url = "sqlite:data.db?mode=rwc";
     let pool = SqlitePool::connect(db_url)

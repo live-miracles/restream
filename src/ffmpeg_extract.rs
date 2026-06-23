@@ -56,7 +56,10 @@ pub fn ensure_ffmpeg_extracted() -> PathBuf {
         ffmpeg_path.display()
     );
 
-    // Cache path
+    // Safe: called before the tokio runtime spawns any threads (see main.rs).
+    // POSIX requires single-threaded context for setenv; the call site
+    // guarantees this by running before Runtime::build().
+    #[allow(unused_unsafe)]
     unsafe {
         std::env::set_var("FFMPEG_BIN_PATH", &ffmpeg_path);
     }
