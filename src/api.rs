@@ -746,11 +746,20 @@ async fn config_patch_handler(
         }
     }
 
-    if let Some(ref profiles) = payload.transcode_profiles
-        && let Err(e) = crate::media::profiles::save_to_db(&state.db, profiles).await
-    {
-        eprintln!("[api] Failed to save transcode profiles: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save profiles").into_response();
+    if let Some(ref profiles) = payload.transcode_profiles {
+        for (name, profile) in profiles {
+            if let Err(err) = profile.validate() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid profile '{}': {}", name, err),
+                )
+                    .into_response();
+            }
+        }
+        if let Err(e) = crate::media::profiles::save_to_db(&state.db, profiles).await {
+            eprintln!("[api] Failed to save transcode profiles: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save profiles").into_response();
+        }
     }
 
     let server_name = db::get_meta(&state.db, "server_name")

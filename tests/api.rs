@@ -1138,3 +1138,49 @@ async fn media_delete_path_traversal_blocked() {
         .unwrap();
     assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
 }
+
+// --- Round 7 #4: transcode profile field validation ---
+#[tokio::test]
+async fn config_patch_invalid_transcode_profile_rejected() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Patch with an invalid preset
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(r#"{"transcodeProfiles":{"h264":{"preset":"garbage","tune":"zerolatency","crf":23}}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Patch with an invalid tune
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(r#"{"transcodeProfiles":{"h264":{"preset":"ultrafast","tune":"badtune","crf":23}}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Patch with an invalid CRF
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(r#"{"transcodeProfiles":{"h264":{"preset":"ultrafast","tune":"zerolatency","crf":100}}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

@@ -105,6 +105,23 @@ impl Default for TranscodeProfile {
     }
 }
 
+impl TranscodeProfile {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let valid_presets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"];
+        if !valid_presets.contains(&self.preset.as_str()) {
+            return Err("preset must be one of: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow, placebo");
+        }
+        let valid_tunes = ["", "film", "animation", "grain", "stillimage", "psnr", "ssim", "fastdecode", "zerolatency"];
+        if !valid_tunes.contains(&self.tune.as_str()) {
+            return Err("tune must be one of: film, animation, grain, stillimage, psnr, ssim, fastdecode, zerolatency, or empty");
+        }
+        if !(0..=51).contains(&self.crf) {
+            return Err("crf must be between 0 and 51");
+        }
+        Ok(())
+    }
+}
+
 /// All profiles, keyed by name.
 pub type TranscodeProfiles = HashMap<String, TranscodeProfile>;
 
