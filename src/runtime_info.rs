@@ -84,7 +84,7 @@ fn rust_components() -> Vec<Value> {
             let purl = format!("pkg:cargo/{name}@{version}");
             let licenses = dependency["license"]
                 .as_str()
-                .map(|expression| license(expression))
+                .map(license)
                 .unwrap_or_else(|| json!([{ "license": { "name": "NOASSERTION" } }]));
             json!({
                 "type": "library",

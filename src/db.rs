@@ -48,6 +48,12 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
         .execute(pool)
         .await?;
 
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_stream_key_unique ON pipelines(stream_key);"
+    )
+    .execute(pool)
+    .await?;
+
     // Jobs
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS jobs (
@@ -139,6 +145,15 @@ pub async fn create_pipeline(
     input_source: Option<&str>,
     encoding: Option<&str>,
 ) -> Result<Pipeline, sqlx::Error> {
+    let exists =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pipelines WHERE stream_key = ?")
+            .bind(stream_key)
+            .fetch_one(pool)
+            .await?;
+    if exists > 0 {
+        return Err(sqlx::Error::Protocol("duplicate stream key".into()));
+    }
+
     sqlx::query(
         "INSERT INTO pipelines (id, name, stream_key, input_source, encoding) VALUES (?, ?, ?, ?, ?)"
     )
@@ -180,6 +195,17 @@ pub async fn update_pipeline(
     input_source: Option<&str>,
     encoding: Option<&str>,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
+    let duplicate = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pipelines WHERE stream_key = ? AND id != ?",
+    )
+    .bind(stream_key)
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    if duplicate > 0 {
+        return Err(sqlx::Error::Protocol("duplicate stream key".into()));
+    }
+
     let result = sqlx::query(
         "UPDATE pipelines SET name = ?, stream_key = ?, input_source = ?, encoding = ? WHERE id = ?"
     )
@@ -437,6 +463,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
 
 /* JobLog Operations */
 
+#[allow(clippy::too_many_arguments)]
 pub async fn append_job_log(
     pool: &SqlitePool,
     job_id: Option<&str>,
@@ -503,14 +530,14 @@ pub async fn list_job_logs_by_output_filtered(
         clauses.push("ts < ?".to_string());
     }
 
-    if let Some(ref prefixes) = filters.prefixes {
-        if !prefixes.is_empty() {
-            let mut prefix_clauses = vec![];
-            for _ in prefixes {
-                prefix_clauses.push("message LIKE ?".to_string());
-            }
-            clauses.push(format!("({})", prefix_clauses.join(" OR ")));
+    if let Some(ref prefixes) = filters.prefixes
+        && !prefixes.is_empty()
+    {
+        let mut prefix_clauses = vec![];
+        for _ in prefixes {
+            prefix_clauses.push("message LIKE ?".to_string());
         }
+        clauses.push(format!("({})", prefix_clauses.join(" OR ")));
     }
 
     query_str.push_str(" WHERE ");

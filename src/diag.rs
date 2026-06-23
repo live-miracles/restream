@@ -130,7 +130,7 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
 
     if let Some(rb) = pipeline_rb {
         let (fill, cap) = rb.fill_and_capacity();
-        let fill_pct = if cap > 0 { fill * 100 / cap } else { 0 };
+        let fill_pct = (fill * 100).checked_div(cap).unwrap_or(0);
         lines.push(format!(
             "Ring buffer: {}/{} slots filled ({}%)",
             fill, cap, fill_pct
@@ -154,7 +154,9 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
                     if lag > max_lag {
                         max_lag = lag;
                     }
-                    total_overflows += info.overflow_count.load(std::sync::atomic::Ordering::Relaxed);
+                    total_overflows += info
+                        .overflow_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     true
                 } else {
                     false
@@ -199,11 +201,7 @@ async fn check_system_resources(idx: u32) -> DiagResult {
     let cpu_pct: f32 = sys.global_cpu_info().cpu_usage();
     let total_mem = sys.total_memory();
     let used_mem = sys.used_memory();
-    let mem_pct = if total_mem > 0 {
-        used_mem * 100 / total_mem
-    } else {
-        0
-    };
+    let mem_pct = (used_mem * 100).checked_div(total_mem).unwrap_or(0);
 
     let disks = Disks::new_with_refreshed_list();
     let (total_disk, used_disk) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
@@ -212,11 +210,7 @@ async fn check_system_resources(idx: u32) -> DiagResult {
             u + (d.total_space() - d.available_space()),
         )
     });
-    let disk_pct = if total_disk > 0 {
-        used_disk * 100 / total_disk
-    } else {
-        0
-    };
+    let disk_pct = (used_disk * 100).checked_div(total_disk).unwrap_or(0);
 
     let mut issues = vec![];
     let mut lines = vec![];
@@ -387,7 +381,7 @@ async fn check_publisher_transport(
     if let Some(ingest) = ingest_opt {
         let q = &ingest.quality;
         if probe_protocol == "srt" {
-            lines.push(format!("Protocol: SRT"));
+            lines.push("Protocol: SRT".to_string());
             if q.srt_bonded == Some(true) {
                 let members = q.srt_group_member_count.unwrap_or(0);
                 let connected = q.srt_group_connected_members.unwrap_or(0);
@@ -634,11 +628,11 @@ async fn check_ring_buffer_health(
 
     if let Some(rb) = rb_opt {
         let (fill, cap) = rb.fill_and_capacity();
-        let fill_pct = if cap > 0 { fill * 100 / cap } else { 0 };
+        let fill_pct = (fill * 100).checked_div(cap).unwrap_or(0);
         lines.push(format!("Capacity: {} slots", cap));
         lines.push(format!("Filled: {} slots ({}%)", fill, fill_pct));
-        lines.push(format!("Compact packet slots: yes"));
-        lines.push(format!("Frame size: variable (media packets)"));
+        lines.push("Compact packet slots: yes".to_string());
+        lines.push("Frame size: variable (media packets)".to_string());
 
         let write_idx = rb.get_write_idx();
         let mut readers_info = vec![];
@@ -648,7 +642,9 @@ async fn check_ring_buffer_health(
                 if let Some(info) = weak_ref.upgrade() {
                     let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
                     let lag = write_idx.saturating_sub(r_idx);
-                    let overflow = info.overflow_count.load(std::sync::atomic::Ordering::Relaxed);
+                    let overflow = info
+                        .overflow_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     readers_info.push((info.name.clone(), lag, overflow));
                     true
                 } else {
@@ -660,7 +656,10 @@ async fn check_ring_buffer_health(
         if !readers_info.is_empty() {
             lines.push("Active readers:".to_string());
             for (name, lag, overflow) in &readers_info {
-                lines.push(format!("  - {}: lag={} slots, overflows={}", name, lag, overflow));
+                lines.push(format!(
+                    "  - {}: lag={} slots, overflows={}",
+                    name, lag, overflow
+                ));
                 if *lag > (cap * 8 / 10) {
                     issues.push(format!(
                         "Reader {} is severely lagging ({} / {} slots). Possible network congestion or performance bottleneck.",

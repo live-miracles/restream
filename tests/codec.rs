@@ -5,8 +5,8 @@
 //! called in SRT/HLS egress and the transcoder feeder), not a hand-rolled copy.
 
 use restream::media::codec::{
-    audio_for_rtmp, audio_for_ts, avcc_to_annexb, build_adts_header,
-    build_avcc_sequence_header, parse_avcc_config, strip_adts, video_for_rtmp, video_for_ts,
+    audio_for_rtmp, audio_for_ts, avcc_to_annexb, build_adts_header, build_avcc_sequence_header,
+    parse_avcc_config, strip_adts, video_for_rtmp, video_for_ts,
 };
 use restream::media::engine::{AudioMeta, VideoMeta};
 use restream::media::mpegts::TsMuxer;
@@ -36,15 +36,15 @@ fn make_flv_video_seq_header(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     // [frame_type|codec=0x17][packet_type=0][ct0,ct1,ct2=0][AVCDecoderConfigurationRecord]
     let mut buf = vec![0x17, 0x00, 0x00, 0x00, 0x00];
     // AVCDecoderConfigurationRecord
-    buf.push(1);          // version
-    buf.push(sps[1]);     // profile
-    buf.push(sps[2]);     // compat
-    buf.push(sps[3]);     // level
-    buf.push(0xFF);       // len_size_minus1 = 3 → 4 bytes
-    buf.push(0xE1);       // num_sps = 1
+    buf.push(1); // version
+    buf.push(sps[1]); // profile
+    buf.push(sps[2]); // compat
+    buf.push(sps[3]); // level
+    buf.push(0xFF); // len_size_minus1 = 3 → 4 bytes
+    buf.push(0xE1); // num_sps = 1
     buf.extend_from_slice(&(sps.len() as u16).to_be_bytes());
     buf.extend_from_slice(sps);
-    buf.push(1);          // num_pps
+    buf.push(1); // num_pps
     buf.extend_from_slice(&(pps.len() as u16).to_be_bytes());
     buf.extend_from_slice(pps);
     buf
@@ -100,7 +100,11 @@ fn flv_seq_header_caches_sps_pps_and_returns_none() {
     assert_eq!(nls, 4);
     // cache should now contain SPS/PPS as Annex B
     assert!(!cache.is_empty(), "SPS/PPS should be cached");
-    assert_eq!(&cache[..4], &[0, 0, 0, 1], "cache starts with Annex B start code");
+    assert_eq!(
+        &cache[..4],
+        &[0, 0, 0, 1],
+        "cache starts with Annex B start code"
+    );
     assert_eq!(cache[4] & 0x1F, 7, "first cached NALU should be SPS");
 }
 
@@ -248,15 +252,26 @@ fn flv_video_through_ts_muxer_produces_valid_ts() {
     // Feed sequence header — should cache SPS/PPS and return None
     let seq = make_flv_video_seq_header(SPS, PPS);
     let seq_result = video_for_ts(&seq, PayloadFormat::Flv, &mut nls, &mut cache);
-    assert!(seq_result.is_none(), "seq header should be cached, not emitted");
+    assert!(
+        seq_result.is_none(),
+        "seq header should be cached, not emitted"
+    );
     assert!(!cache.is_empty(), "SPS/PPS should be cached");
 
     // Feed an IDR frame — should include SPS/PPS inline + IDR Annex B
     let flv_idr = make_flv_video_data(IDR_NALU, true, nls);
     let idr_annexb = video_for_ts(&flv_idr, PayloadFormat::Flv, &mut nls, &mut cache).unwrap();
     // Should start with SPS start code (from cached SPS/PPS prepended before IDR)
-    assert_eq!(&idr_annexb[..4], &[0, 0, 0, 1], "should start with Annex B start code");
-    assert_eq!(idr_annexb[4] & 0x1F, 7, "first NALU should be SPS (from cache)");
+    assert_eq!(
+        &idr_annexb[..4],
+        &[0, 0, 0, 1],
+        "should start with Annex B start code"
+    );
+    assert_eq!(
+        idr_annexb[4] & 0x1F,
+        7,
+        "first NALU should be SPS (from cache)"
+    );
     let ts = muxer.mux_packet(MediaType::Video, 0, 0, 0, true, &idr_annexb);
     // Check MPEG-TS sync byte
     if !ts.is_empty() {
@@ -292,7 +307,10 @@ fn avcc_config_extracts_correct_nalu_len_size() {
     let (nls, annexb) = parse_avcc_config(&seq[5..]);
     assert_eq!(nls, 4);
     assert!(!annexb.is_empty());
-    assert_eq!(annexb[4], SPS[0], "first NALU after start code should be SPS");
+    assert_eq!(
+        annexb[4], SPS[0],
+        "first NALU after start code should be SPS"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +321,11 @@ fn avcc_config_extracts_correct_nalu_len_size() {
 fn strip_adts_removes_exactly_7_bytes_for_no_crc() {
     let raw = &[0xDE, 0xAD, 0xBE, 0xEF];
     let adts = build_adts_header(raw.len(), 44100, 1);
-    assert_eq!(adts[1] & 0x01, 1, "no-CRC bit should be set → 7-byte header");
+    assert_eq!(
+        adts[1] & 0x01,
+        1,
+        "no-CRC bit should be set → 7-byte header"
+    );
     let mut with_adts = adts.to_vec();
     with_adts.extend_from_slice(raw);
     assert_eq!(strip_adts(&with_adts), raw);
