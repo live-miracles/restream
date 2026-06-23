@@ -294,6 +294,9 @@ pub struct MediaEngine {
     pub hls_consumers: TokioRwLock<HashMap<String, HlsConsumers>>,
     // Per-stage processing metrics keyed by "<pipeline_id>:<stage_name>"
     pub stage_metrics: TokioRwLock<HashMap<String, Arc<StageMetrics>>>,
+    // OS thread handles registered by spawn sites (transcoder, h264_transcoder, SRT threads).
+    // Drained and joined at shutdown to prevent blocking threads from outliving the runtime.
+    pub os_threads: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Default for MediaEngine {
@@ -320,7 +323,22 @@ impl MediaEngine {
             srt_listener_stats: Arc::new(ListenerSocketStats::default()),
             hls_consumers: TokioRwLock::new(HashMap::new()),
             stage_metrics: TokioRwLock::new(HashMap::new()),
+            os_threads: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register an OS thread JoinHandle so it can be joined at shutdown.
+    /// Already-finished handles are pruned opportunistically to prevent unbounded accumulation
+    /// in long-running servers with many short-lived per-connection threads.
+    pub fn register_os_thread(&self, handle: std::thread::JoinHandle<()>) {
+        let mut guards = self.os_threads.lock().unwrap_or_else(|e| e.into_inner());
+        guards.retain(|h| !h.is_finished());
+        guards.push(handle);
+    }
+
+    /// Drain all registered OS thread handles for joining at shutdown.
+    pub fn drain_os_thread_handles(&self) -> Vec<std::thread::JoinHandle<()>> {
+        self.os_threads.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
     }
 
     pub async fn get_or_create_stage_metrics(

@@ -247,9 +247,9 @@ pub async fn run_app() {
                 //
                 // Stage graph:
                 //   source_ring
-                //     │  [if needs_h264_transcode]  H.265→H.264 shared stage
-                //     │  [if needs_video_transcode] video preset shared stage
+                //     │  [if video preset]          video:preset shared stage
                 //     │  [if audio routing suffix]  audio filter shared stage
+                //     │  [if RTMP + H.265 ingest]   hevc_to_h264:from:<upstream>
                 //     ↓
                 //   ring_buf   ←── egress reads from here
                 //
@@ -691,6 +691,21 @@ pub async fn run_app() {
 
     // Give all tasks a moment to run their cleanup paths before we close the DB.
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Join all registered OS threads (FFmpeg transcoders, SRT accept/sender threads).
+    // By now cancellation tokens have fired and MemoryQueues are being closed, so
+    // most threads should exit within milliseconds.  spawn_blocking lets us join
+    // without blocking the tokio thread-pool.
+    let handles = engine.drain_os_thread_handles();
+    if !handles.is_empty() {
+        tokio::task::spawn_blocking(move || {
+            for h in handles {
+                let _ = h.join(); // returns Err only if the thread panicked; already logged
+            }
+        })
+        .await
+        .ok();
+    }
 
     // Close the SQLite pool so WAL is checkpointed into the main DB file.
     // Must be called after all DB-writing tasks have been cancelled above.

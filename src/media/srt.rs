@@ -994,7 +994,7 @@ impl SrtServer {
 
         // Blocking accept thread — srt_accept in sync mode blocks until a connection arrives.
         // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
-        std::thread::spawn(move || {
+        let accept_handle = std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
                     let mut client_sin = sockaddr_in {
@@ -1023,6 +1023,7 @@ impl SrtServer {
                 eprintln!("[srt] Accept thread panicked — ingest listener is down");
             }
         });
+        self.engine.register_os_thread(accept_handle);
 
         while let Some((client_sock, client_addr)) = rx.recv().await {
             let self_clone = self.clone();
@@ -1361,7 +1362,7 @@ impl SrtServer {
         // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
         let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
-        std::thread::spawn(move || {
+        let play_sender_handle = std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut buf = vec![0u8; 1316];
                 loop {
@@ -1390,6 +1391,7 @@ impl SrtServer {
                 srt_close(client_sock);
             }
         });
+        self.engine.register_os_thread(play_sender_handle);
 
         // Feed loop: read from RingBuffer, mux inline, write to sender queue
         let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
@@ -2163,7 +2165,7 @@ pub async fn start_srt_egress(
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
-    std::thread::spawn(move || {
+    let egress_sender_handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut buf = vec![0u8; 1316];
             loop {
@@ -2192,6 +2194,7 @@ pub async fn start_srt_egress(
             srt_close(client_sock);
         }
     });
+    engine.register_os_thread(egress_sender_handle);
 
     // Feed loop: read from RingBuffer, mux inline, write to sender queue
     // If the ring carries a transcoder-output codec (e.g. H.264 from a 720p or

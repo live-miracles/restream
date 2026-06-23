@@ -210,7 +210,7 @@ pub async fn start_transcoder(
     let cancel_on_exit = cancel_token.clone();
     let pipeline_id_clone = pipeline_id.clone();
     let out_buf = output_buffer.clone();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_ffmpeg_transcoder_stage(
                 input_queue_clone,
@@ -232,6 +232,7 @@ pub async fn start_transcoder(
         }
         cancel_on_exit.cancel();
     });
+    engine.register_os_thread(handle);
 
     // Forward source RingBuffer packets to input_queue, muxed as MPEG-TS
     let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);

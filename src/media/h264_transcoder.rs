@@ -66,7 +66,7 @@ pub async fn start_h264_transcoder(
     let cancel_clone = cancel_token.clone();
     let cancel_on_exit = cancel_token.clone();
     let pid = pipeline_id.clone();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_ffmpeg_h264_stage(iq_clone, out_clone, cancel_clone, &pid)
         }));
@@ -75,6 +75,7 @@ pub async fn start_h264_transcoder(
         }
         cancel_on_exit.cancel();
     });
+    engine.register_os_thread(handle);
 
     // Forward source RingBuffer packets to MemoryQueue, muxed as MPEG-TS
     let mut muxer = crate::media::mpegts::TsMuxer::new(Some(&video_meta), &audio_tracks);
