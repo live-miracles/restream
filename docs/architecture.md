@@ -63,7 +63,7 @@ can restart the stage on the next tick.
 | Thread | Type | Spawned at | Purpose |
 |---|---|---|---|
 | Tokio runtime workers | OS threads | `#[tokio::main]` | Async task scheduling, epoll I/O polling |
-| SRT accept loop | `std::thread` | `srt.rs` `SrtServer::run` | Blocks on `srt_accept()`, sends sockets via mpsc |
+| SRT accept loop | `std::thread` | `srt.rs` `SrtServer::run` | Blocks on `srt_accept()`, sends sockets via bounded `mpsc::channel(1024)` |
 | SRT socket monitor | tokio task | `srt.rs` `SrtServer::run` | Polls `/proc/net/udp` every 1s for buffer occupancy |
 | Reconciler | tokio task | `lib.rs` `run_app` | 1-second tick: reconciles output desired vs active state |
 | RTMP listener | tokio task | `lib.rs` `run_app` | Accepts TCP connections on port 1935 |
@@ -79,7 +79,7 @@ Tokio worker count = `num_cpus` (tokio default, not configurable).
 | RTMP egress handler | tokio task | 1 per RTMP output | Output lifetime |
 | SRT ingest handler | tokio task | 1 per SRT publisher | SRT session; inline TsDemuxer |
 | SRT egress feed+mux | tokio task | 1 per SRT output | Inline TsMuxer in async feed loop |
-| SRT egress sender | `std::thread` | 1 per SRT output | Blocks on `srt_send()` |
+| SRT egress sender | `std::thread` | 1 per SRT output, capped at 512 combined (play + egress) by `srt_sender_semaphore` | Blocks on `srt_send()`; connection is rejected gracefully when cap is reached |
 | HLS segmenter | tokio task | 1 per active HLS pipeline | Inline TsMuxer + in-memory segment store |
 | Ext transcoder stdin feeder | tokio task | 1 per `(pipeline, video_preset)` | source_ring → TsMuxer → FFmpeg stdin |
 | Ext transcoder stdout reader | tokio task | 1 per `(pipeline, video_preset)` | FFmpeg stdout → TsDemuxer → output_ring |
@@ -98,7 +98,8 @@ Tokio worker count = `num_cpus` (tokio default, not configurable).
 total_os_threads =
     num_cpus                                    # tokio workers (fixed)
   + 1                                           # SRT accept loop (fixed)
-  + N_srt_egress × 1                            # sender per SRT output
+  + min(N_srt_play + N_srt_egress, 512) × 1    # sender per SRT play subscriber or egress output
+                                                #   capped at 512 by srt_sender_semaphore
   + N_hevc_to_h264_pipelines × 1               # libavcodec H.265→H.264 stage
   + N_int_video_stages × 1                     # libavcodec encode (internal backend only)
   + N_recordings × 1                           # MKV muxer per active recording
@@ -589,7 +590,7 @@ The egress reads directly from the source RingBuffer.
 
 | Boundary | Mechanism | Blocking? |
 |---|---|---|
-| SRT accept → tokio handler | `mpsc::channel` | No (async recv) |
+| SRT accept → tokio handler | `mpsc::channel(1024)` (bounded) | No (async recv) |
 | Ingest handler → source RingBuffer | `push_batch()` (`ArcSwap` + `Release`) | No (lock-free) |
 | Source ring → transcode feeder | `tokio::sync::Notify` + Acquire | No (async wait) |
 | Feeder → transcoder | `MemoryQueue` (Mutex + Condvar) | Yes (Condvar wait) |

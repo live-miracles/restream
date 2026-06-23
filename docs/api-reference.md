@@ -5,6 +5,22 @@ Base URL: `http://localhost:3030`
 JSON uses camelCase. Unless noted otherwise, routes require the `session` cookie
 returned by login.
 
+## Request Limits
+
+| Limit | Value |
+|---|---|
+| Maximum request body | 4 MiB |
+| `name` / `serverName` / `label` fields | 256 bytes |
+| `url` / output URL fields | 2048 bytes |
+| `encoding` string | 512 bytes |
+| `streamKey` | 256 bytes |
+| `ffmpegArgs` (custom encoding) | 4096 bytes |
+| `password` | 1024 bytes |
+
+Requests exceeding the body limit receive `413 Payload Too Large`. Fields
+exceeding the per-field limits receive `400 Bad Request` with a descriptive
+message.
+
 ## Authentication
 
 | Method | Route | Purpose |
@@ -406,3 +422,7 @@ Responses:
 - `400`: invalid segment filename
 
 These routes are currently unauthenticated.
+
+All HLS routes respond with `Access-Control-Allow-Origin: *` and allow `GET`,
+`OPTIONS`, `Content-Type`, and `Range` so browser-based players on other
+origins can pull segments and playlists without CORS preflight errors.

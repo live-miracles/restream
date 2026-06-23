@@ -47,7 +47,21 @@ field.
 | Recording enabled | Stored per pipeline as `recording_enabled:<pipelineId>` |
 
 Sessions are persisted in SQLite and reloaded at startup. Expired sessions are
-pruned during initialization.
+pruned during initialization and then once per hour while the server is running
+(reconciler tick 3600).
+
+## SQLite Performance Settings
+
+The following PRAGMAs are applied at startup after WAL mode is enabled:
+
+| PRAGMA | Value | Effect |
+|---|---|---|
+| `synchronous` | `NORMAL` | fsync only at WAL checkpoints; safe with WAL |
+| `busy_timeout` | 5000 ms | Retry on locked database before returning SQLITE_BUSY |
+| `journal_size_limit` | 64 MiB | Caps WAL file growth; excess is reclaimed at checkpoint |
+| `cache_size` | -16384 (16 MiB) | Page cache kept in process memory |
+| `temp_store` | `MEMORY` | Temporary tables and indices use memory, not disk |
+| `mmap_size` | 128 MiB | Read pages via memory-mapped I/O on supported platforms |
 
 ## Ingest URLs
 
@@ -78,8 +92,8 @@ Supported routing behavior:
 
 | URL | Runtime behavior |
 |---|---|
-| `rtmp://...` | Native RTMP egress |
-| `srt://...` | Native SRT MPEG-TS egress |
+| `rtmp://...` | Native RTMP egress; IPv6 addresses in bracket notation (`[::1]`) are supported |
+| `srt://...` | Native SRT MPEG-TS egress; percent-encoded characters in the `streamid` query parameter are decoded automatically |
 | `hls://...`, `http://...`, `https://...` | Starts the pipeline's local in-memory HLS segmenter |
 
 Any other prefix is rejected during validation. The target URL for HLS routing is not used for HTTP HLS upload; the target host is ignored after the protocol decision.
@@ -164,6 +178,10 @@ The in-memory HLS store is served at:
 The older `/preview/hls/...` paths are compatibility aliases. Live generation
 uses the native inline `TsMuxer`; one shared segmenter per pipeline serves
 browser previews and HLS-type outputs.
+
+These routes respond with `Access-Control-Allow-Origin: *` so browser-based
+players on other origins can pull playlists and segments without CORS preflight
+errors.
 
 These routes are currently unauthenticated. Before exposing them publicly, add
 signed URLs or short-lived bearer tokens covering both playlists and segments,
