@@ -11,6 +11,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use axum::extract::DefaultBodyLimit;
+use tower_http::cors::{CorsLayer, AllowOrigin};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -283,24 +284,38 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/status/sbom", get(status_sbom_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
-        .route("/hls/:pipeline_id", get(hls_playlist_handler))
-        .route("/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
-        .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
+        // HLS routes are registered with CORS headers in the merged sub-router below.
         // Deprecated compatibility aliases. New clients should use /hls/.
-        .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
-        .route(
-            "/preview/hls/:pipeline_id/index.m3u8",
-            get(hls_playlist_handler),
-        )
-        .route(
-            "/preview/hls/:pipeline_id/:segment",
-            get(hls_segment_handler),
-        )
         .route("/health", get(health_get_handler))
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB global cap
+        // HLS sub-router: allow any origin so browser-based players (hls.js,
+        // Video.js) on a different origin can fetch playlists and segments.
+        // Merged last so the CORS layer only applies to /hls/ and /preview/hls/.
+        .merge(
+            Router::new()
+                .route("/hls/:pipeline_id", get(hls_playlist_handler))
+                .route("/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
+                .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
+                .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
+                .route("/preview/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
+                .route("/preview/hls/:pipeline_id/:segment", get(hls_segment_handler))
+                .layer(
+                    CorsLayer::new()
+                        .allow_origin(AllowOrigin::any())
+                        .allow_methods([
+                            axum::http::Method::GET,
+                            axum::http::Method::OPTIONS,
+                        ])
+                        .allow_headers([
+                            header::CONTENT_TYPE,
+                            header::RANGE,
+                        ]),
+                )
+                .with_state(state.clone()),
+        )
         .with_state(state)
 }
 
