@@ -307,10 +307,10 @@ async fn login_get_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if state.is_authenticated(&token).await {
-            return Redirect::to("/").into_response();
-        }
+    if let Some(token) = get_session_token_from_headers(&headers)
+        && state.is_authenticated(&token).await
+    {
+        return Redirect::to("/").into_response();
     }
     serve_embedded("login.html").into_response()
 }
@@ -579,10 +579,14 @@ async fn config_get_handler(
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
 
+    // Transcode profiles from runtime cache
+    let transcode_profiles = crate::media::profiles::cache().read().await.clone();
+
     Json(serde_json::json!({
         "serverName": server_name,
         "ingestHost": ingest_host,
         "ingestSecurity": sec,
+        "transcodeProfiles": transcode_profiles,
         "pipelines": pipelines,
         "outputs": outputs,
         "jobs": jobs
@@ -596,6 +600,7 @@ struct ConfigPatchPayload {
     server_name: Option<String>,
     ingest_host: Option<String>,
     ingest_security: Option<IngestSecurityConfig>,
+    transcode_profiles: Option<crate::media::profiles::TranscodeProfiles>,
 }
 
 async fn config_patch_handler(
@@ -622,10 +627,10 @@ async fn config_patch_handler(
         let _ = db::set_meta(&state.db, "server_name", name).await;
     }
 
-    if let Some(ref host) = payload.ingest_host {
-        if db::set_ingest_host(&state.db, host).await.is_err() {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    if let Some(ref host) = payload.ingest_host
+        && db::set_ingest_host(&state.db, host).await.is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     if let Some(ref sec) = payload.ingest_security {
@@ -633,6 +638,13 @@ async fn config_patch_handler(
         if let Ok(raw_json) = serde_json::to_string(sec) {
             let _ = db::set_meta(&state.db, INGEST_SECURITY_CONFIG_META_KEY, &raw_json).await;
         }
+    }
+
+    if let Some(ref profiles) = payload.transcode_profiles
+        && let Err(e) = crate::media::profiles::save_to_db(&state.db, profiles).await
+    {
+        eprintln!("[api] Failed to save transcode profiles: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save profiles").into_response();
     }
 
     let server_name = db::get_meta(&state.db, "server_name")
@@ -644,11 +656,13 @@ async fn config_patch_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let sec = state.security.get_config();
+    let transcode_profiles = crate::media::profiles::cache().read().await.clone();
 
     Json(serde_json::json!({
         "serverName": server_name,
         "ingestHost": ingest_host,
-        "ingestSecurity": sec
+        "ingestSecurity": sec,
+        "transcodeProfiles": transcode_profiles
     }))
     .into_response()
 }
@@ -721,6 +735,16 @@ async fn pipelines_post_handler(
         }
     };
 
+    if let Ok(active_pipelines) = db::list_pipelines(&state.db).await
+        && active_pipelines.iter().any(|p| p.stream_key == stream_key)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "A pipeline with this stream key already exists"})),
+        )
+            .into_response();
+    }
+
     let id = format!("pipeline_{}", to_hex(&rand::random::<[u8; 8]>()));
 
     match db::create_pipeline(
@@ -738,7 +762,17 @@ async fn pipelines_post_handler(
             Json(serde_json::json!({"message": "Pipeline created", "pipeline": pipeline})),
         )
             .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(err) => {
+            if err.to_string().contains("duplicate stream key") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "A pipeline with this stream key already exists"})),
+                )
+                    .into_response()
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
     }
 }
 
@@ -765,6 +799,18 @@ async fn pipelines_update_handler(
     let input_source = payload.input_source.or(existing.input_source);
     let encoding = payload.encoding.or(existing.encoding);
 
+    if let Ok(active_pipelines) = db::list_pipelines(&state.db).await
+        && active_pipelines
+            .iter()
+            .any(|p| p.id != id && p.stream_key == stream_key)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "A pipeline with this stream key already exists"})),
+        )
+            .into_response();
+    }
+
     match db::update_pipeline(
         &state.db,
         &id,
@@ -778,6 +824,17 @@ async fn pipelines_update_handler(
         Ok(Some(updated)) => {
             Json(serde_json::json!({"message": "Pipeline updated", "pipeline": updated}))
                 .into_response()
+        }
+        Err(err) => {
+            if err.to_string().contains("duplicate stream key") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "A pipeline with this stream key already exists"})),
+                )
+                    .into_response()
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -803,6 +860,12 @@ async fn pipelines_delete_handler(
         }
     }
     state.engine.unregister_ingest(&id).await;
+    // Free the source ring buffer, all transcoder stage ring buffers, and the
+    // HLS segmenter+store.  Without these calls the engine maps would retain
+    // Arc<RingBuffer> references after the pipeline record is gone from the DB.
+    state.engine.cleanup_pipeline_stages(&id).await;
+    state.engine.shutdown_hls_segmenter(&id).await;
+    state.engine.remove_pipeline(&id).await;
 
     match db::delete_pipeline(&state.db, &id).await {
         Ok(true) => {
@@ -835,6 +898,7 @@ async fn outputs_create_handler(
 
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
+        && !url.starts_with("rtmps://")
         && !url.starts_with("srt://")
         && !url.starts_with("hls://")
         && !url.starts_with("http://")
@@ -843,7 +907,7 @@ async fn outputs_create_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid URL scheme. Supported schemes are rtmp://, srt://, hls://, http://, and https://"
+                "error": "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://"
             })),
         )
             .into_response();
@@ -887,6 +951,7 @@ async fn outputs_update_handler(
 
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
+        && !url.starts_with("rtmps://")
         && !url.starts_with("srt://")
         && !url.starts_with("hls://")
         && !url.starts_with("http://")
@@ -895,7 +960,7 @@ async fn outputs_update_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid URL scheme. Supported schemes are rtmp://, srt://, hls://, http://, and https://"
+                "error": "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://"
             })),
         )
             .into_response();
@@ -1420,26 +1485,26 @@ async fn media_list_handler(
     if let Ok(mut entries) = tokio::fs::read_dir("media").await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov") {
-                if let Ok(metadata) = entry.metadata().await {
-                    let modified = metadata
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .and_then(|d| chrono::DateTime::from_timestamp_millis(d.as_millis() as i64))
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_default();
+            if (name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov"))
+                && let Ok(metadata) = entry.metadata().await
+            {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|d| chrono::DateTime::from_timestamp_millis(d.as_millis() as i64))
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default();
 
-                    let ingests = db::list_ingests_for_filename(&state.db, &name)
-                        .await
-                        .unwrap_or_default();
-                    files.push(serde_json::json!({
-                        "name": name,
-                        "size": metadata.len(),
-                        "modifiedAt": modified,
-                        "ingestCount": ingests.len()
-                    }));
-                }
+                let ingests = db::list_ingests_for_filename(&state.db, &name)
+                    .await
+                    .unwrap_or_default();
+                files.push(serde_json::json!({
+                    "name": name,
+                    "size": metadata.len(),
+                    "modifiedAt": modified,
+                    "ingestCount": ingests.len()
+                }));
             }
         }
     }
@@ -1674,17 +1739,17 @@ async fn pipeline_diagnostics_sse_handler(
         }
     };
 
-    if let Some(requested_protocol) = query.probe {
-        if requested_protocol != probe_protocol {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Probe protocol must match active ingest protocol ({})",
-                    probe_protocol
-                ),
-            )
-                .into_response();
-        }
+    if let Some(requested_protocol) = query.probe
+        && requested_protocol != probe_protocol
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Probe protocol must match active ingest protocol ({})",
+                probe_protocol
+            ),
+        )
+            .into_response();
     }
     let engine = state.engine.clone();
 

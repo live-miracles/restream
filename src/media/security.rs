@@ -32,6 +32,10 @@ impl IngestSecurityService {
         }
     }
 
+    fn is_loopback_ip(ip: &str) -> bool {
+        ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
+    }
+
     pub fn update_config(&self, new_config: IngestSecurityConfig) {
         if let Ok(mut config) = self.config.write() {
             *config = new_config;
@@ -46,6 +50,10 @@ impl IngestSecurityService {
     }
 
     pub fn is_ip_banned(&self, ip: &str) -> Option<Duration> {
+        if Self::is_loopback_ip(ip) {
+            return None;
+        }
+
         let mut state = self.state.write().ok()?;
         let record = state.get_mut(ip)?;
         let now = Instant::now();
@@ -66,12 +74,22 @@ impl IngestSecurityService {
     }
 
     pub fn record_failure(&self, ip: &str) -> bool {
+        if Self::is_loopback_ip(ip) {
+            return false;
+        }
+
         let mut state = match self.state.write() {
             Ok(s) => s,
             Err(_) => return false,
         };
 
         let now = Instant::now();
+        let config = self.get_config();
+
+        // Enforce the tracked-IP limit before inserting a new entry.
+        let limit = config.tracked_ip_limit.max(1) as usize;
+        Self::evict_oldest_if_needed(&mut state, limit.saturating_sub(1));
+
         let record = state
             .entry(ip.to_string())
             .or_insert_with(|| FailureRecord {
@@ -81,7 +99,6 @@ impl IngestSecurityService {
 
         record.failures.push(now);
 
-        let config = self.get_config();
         let window = Duration::from_millis(config.failure_window_ms as u64);
         record.failures.retain(|&t| now.duration_since(t) < window);
 
@@ -93,9 +110,112 @@ impl IngestSecurityService {
         }
     }
 
+    /// Evict the oldest entries when the map is over the tracked-IP limit.
+    /// Keeps memory bounded under a sustained flood of distinct IPs.
+    fn evict_oldest_if_needed(state: &mut HashMap<String, FailureRecord>, limit: usize) {
+        if state.len() <= limit {
+            return;
+        }
+        // Remove IPs whose ban has expired and have no recent failures first,
+        // then fall back to arbitrary removal if still over limit.
+        let now = Instant::now();
+        state.retain(|_, r| {
+            let expired_ban = r.banned_until.is_none_or(|t| t <= now);
+            let has_failures = !r.failures.is_empty();
+            !expired_ban || has_failures
+        });
+        // Hard cap: if still over limit, drop excess entries arbitrarily.
+        if state.len() > limit {
+            let excess = state.len() - limit;
+            let keys: Vec<String> = state.keys().take(excess).cloned().collect();
+            for k in keys {
+                state.remove(&k);
+            }
+        }
+    }
+
     pub fn record_success(&self, ip: &str) {
+        if Self::is_loopback_ip(ip) {
+            return;
+        }
+
         if let Ok(mut state) = self.state.write() {
             state.remove(ip);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_ips_are_not_rate_limited() {
+        let service = IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG);
+
+        assert!(service.is_ip_banned("127.0.0.1").is_none());
+        assert!(!service.record_failure("127.0.0.1"));
+        assert!(service.is_ip_banned("127.0.0.1").is_none());
+        service.record_success("127.0.0.1");
+    }
+
+    #[test]
+    fn ip_is_banned_after_failure_limit() {
+        let cfg = IngestSecurityConfig {
+            failure_limit: 3,
+            failure_window_ms: 60_000,
+            ban_ms: 10_000,
+            tracked_ip_limit: 1000,
+        };
+        let svc = IngestSecurityService::new(cfg);
+        let ip = "1.2.3.4";
+
+        assert!(!svc.record_failure(ip)); // 1
+        assert!(!svc.record_failure(ip)); // 2
+        assert!(svc.record_failure(ip)); // 3 → banned
+        assert!(svc.is_ip_banned(ip).is_some(), "IP should be banned");
+    }
+
+    #[test]
+    fn record_success_clears_failure_state() {
+        let cfg = IngestSecurityConfig {
+            failure_limit: 3,
+            failure_window_ms: 60_000,
+            ban_ms: 10_000,
+            tracked_ip_limit: 1000,
+        };
+        let svc = IngestSecurityService::new(cfg);
+        let ip = "5.6.7.8";
+
+        svc.record_failure(ip);
+        svc.record_failure(ip);
+        svc.record_success(ip); // should clear state
+        // After success, two more failures should not ban (below limit)
+        assert!(!svc.record_failure(ip));
+        assert!(!svc.record_failure(ip));
+        assert!(svc.is_ip_banned(ip).is_none());
+    }
+
+    #[test]
+    fn tracked_ip_limit_is_enforced() {
+        let cfg = IngestSecurityConfig {
+            failure_limit: 100,
+            failure_window_ms: 60_000,
+            ban_ms: 60_000,
+            tracked_ip_limit: 5, // very small limit
+        };
+        let svc = IngestSecurityService::new(cfg);
+
+        // Insert 10 distinct IPs — the map must not exceed the limit
+        for i in 0..10u8 {
+            svc.record_failure(&format!("10.0.0.{i}"));
+        }
+
+        let state = svc.state.read().unwrap();
+        assert!(
+            state.len() <= 5,
+            "tracked IP map must not exceed limit, got {}",
+            state.len()
+        );
     }
 }

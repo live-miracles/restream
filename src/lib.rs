@@ -109,6 +109,7 @@ pub async fn run_app() {
     ));
     let sessions = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
     crate::api::initialize_auth(&pool, &sessions).await;
+    crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
 
     let ports = ServerPorts::from_env();
@@ -183,10 +184,10 @@ pub async fn run_app() {
             if output.desired_state == "running" && !is_active {
                 // Check backoff if it failed recently
                 let mut lf = last_failed.lock().await;
-                if let Some(&failed_at) = lf.get(&output.id) {
-                    if failed_at.elapsed() < Duration::from_secs(5) {
-                        continue; // Wait for backoff
-                    }
+                if let Some(&failed_at) = lf.get(&output.id)
+                    && failed_at.elapsed() < Duration::from_secs(5)
+                {
+                    continue; // Wait for backoff
                 }
                 lf.remove(&output.id);
                 drop(lf);
@@ -199,23 +200,31 @@ pub async fn run_app() {
                 // Get source pipeline ring buffer
                 let source_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
 
-                // Two-stage transcoding: video transcode (shared) → audio filter (if needed)
+                // ── Ring-buffer routing ────────────────────────────────────────────
                 //
-                // Stage 1 (video): keyed on video preset only.
-                //   720p, 720p+atrack:0,1, 720p+remap:0:1 all share one 720p encoder.
-                //   All audio streams are carried through (passthrough).
+                // Passthrough (source/custom): read directly from source_ring.
+                // Transcoded  (e.g. 720p):     route through a shared transcoder
+                //   stage that produces its own output_ring.  All egresses for the
+                //   same (pipeline, preset) share one stage process and one ring.
                 //
-                // Stage 2 (audio): keyed on video_preset + audio_routing.
-                //   Cheap remux that copies video and selects/filters audio.
-                //   Key includes upstream video preset to prevent cross-contamination:
-                //   720p+atrack:0 and 1080p+atrack:0 must NOT share an audio stage.
+                // Stage graph:
+                //   source_ring
+                //     │  [if needs_h264_transcode]  H.265→H.264 shared stage
+                //     │  [if needs_video_transcode] video preset shared stage
+                //     │  [if audio routing suffix]  audio filter shared stage
+                //     ↓
+                //   ring_buf   ←── egress reads from here
                 //
-                // See docs/media-pipeline.md for rationale.
+                // Transcoder backend: external by default (subprocess FFmpeg,
+                // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
+                // in-process libavcodec path.  See docs/media-pipeline.md.
                 let encoding = output.encoding.clone();
                 let video_preset = encoding.split('+').next().unwrap_or("source");
                 let audio_part = encoding.split('+').nth(1);
 
-                // Standard RTMP does not support H.265 — auto-transcode to H.264
+                let is_passthrough =
+                    video_preset.is_empty() || video_preset == "source" || video_preset == "custom";
+
                 let is_rtmp =
                     output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
                 let ingest_is_hevc = {
@@ -226,40 +235,48 @@ pub async fn run_app() {
                         .map(|v| v.codec == "hevc" || v.codec == "h265")
                         .unwrap_or(false)
                 };
-                let needs_h264_transcode = is_rtmp
-                    && ingest_is_hevc
-                    && (video_preset == "source" || video_preset.is_empty());
+                // RTMP does not carry H.265 natively; auto-transcode to H.264.
+                let needs_h264_transcode = is_rtmp && ingest_is_hevc;
+                let needs_video_transcode = !is_passthrough;
 
-                // Standard RTMP does not support H.265 — inline H.265→H.264 transcoding
-                // happens inside start_rtmp_egress. Don't create a shared transcoder
-                // for this case (it would add a wasteful mux→demux cycle for zero gain).
-                let needs_video_transcode = !needs_h264_transcode
-                    && !video_preset.is_empty()
-                    && video_preset != "source"
-                    && video_preset != "custom";
+                // Stage 1: optional H.265→H.264 base (RTMP only)
+                let h264_base_buf = if needs_h264_transcode {
+                    Some(
+                        engine
+                            .get_or_create_h264_transcoder(&output.pipeline_id, source_buf.clone())
+                            .await,
+                    )
+                } else {
+                    None
+                };
 
-                // Stage 1: shared video transcode (or passthrough)
-                let video_stage_key = if needs_h264_transcode {
+                let video_source = h264_base_buf.as_ref().unwrap_or(&source_buf).clone();
+
+                let video_stage_key = if needs_h264_transcode && !needs_video_transcode {
                     "h264"
                 } else if needs_video_transcode {
                     video_preset
                 } else {
                     "source"
                 };
+
+                // Stage 2: shared video transcode (or passthrough)
                 let video_buf = if needs_video_transcode {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
                             &format!("video:{}", video_preset),
-                            source_buf.clone(),
+                            video_source,
                         )
                         .await
+                } else if let Some(buf) = h264_base_buf {
+                    buf
                 } else {
                     source_buf
                 };
 
-                // Stage 2: audio filter (reads from video stage output)
-                // Key includes upstream: "audio:atrack:0:from:720p" not just "atrack:0"
+                // Stage 3: optional audio filter (keyed on video stage to prevent
+                // cross-contamination between presets)
                 let ring_buf = if let Some(audio) = audio_part {
                     if !audio.is_empty() {
                         let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
@@ -289,6 +306,8 @@ pub async fn run_app() {
                     &now_str,
                 )
                 .await;
+
+                let engine_c = engine.clone();
                 let _ = db::append_job_log(
                     &pool,
                     Some(&job_id),
@@ -301,8 +320,11 @@ pub async fn run_app() {
                 )
                 .await;
 
-                // Spawn the specific egress client
-                let engine_c = engine.clone();
+                // Spawn the specific egress client.
+                // ring_buf already points to the correct ring:
+                //   • passthrough  → source_ring
+                //   • transcoded   → shared transcoder stage output_ring
+                // The egress client is protocol-agnostic w.r.t. this choice.
                 let output_id_c = output.id.clone();
                 let pipeline_id_c = output.pipeline_id.clone();
                 let url_c = output.url.clone();
@@ -310,7 +332,7 @@ pub async fn run_app() {
                 let last_failed_c = last_failed.clone();
 
                 tokio::spawn(async move {
-                    if url_c.starts_with("rtmp://") {
+                    if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
                         crate::media::rtmp::start_rtmp_egress(
                             output_id_c.clone(),
                             pipeline_id_c.clone(),
@@ -330,7 +352,10 @@ pub async fn run_app() {
                             cancel_token.clone(),
                         )
                         .await;
-                    } else if url_c.starts_with("hls://") || url_c.starts_with("http://") || url_c.starts_with("https://") {
+                    } else if url_c.starts_with("hls://")
+                        || url_c.starts_with("http://")
+                        || url_c.starts_with("https://")
+                    {
                         // HLS egress: use the shared segmenter, register as persistent consumer
                         let (store, already_running) =
                             engine_c.ensure_hls_segmenter(&pipeline_id_c).await;

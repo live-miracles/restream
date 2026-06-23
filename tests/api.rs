@@ -210,6 +210,86 @@ async fn pipeline_crud_via_api() {
 // --- Output CRUD via API ---
 
 #[tokio::test]
+async fn duplicate_stream_keys_are_rejected() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(&pool, "p1", "P1", "unique-key", None, None)
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"P2","streamKey":"unique-key"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"P2","streamKey":"unique-key-2"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines/p1",
+            &cookie,
+            Some(r#"{"name":"P1","streamKey":"unique-key-2"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn rtmps_output_is_accepted_by_api() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(&pool, "p_rtmps", "P", "key_rtmps", None, None)
+        .await
+        .unwrap();
+
+    // rtmps:// must be accepted (used by Facebook, YouTube, etc.)
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines/p_rtmps/outputs",
+            &cookie,
+            Some(r#"{"name":"FB","url":"rtmps://live-api-s.facebook.com:443/rtmp/test","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "rtmps:// output should be accepted"
+    );
+
+    // Verify roundtrip
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["output"]["url"],
+        "rtmps://live-api-s.facebook.com:443/rtmp/test"
+    );
+}
+
+#[tokio::test]
 async fn output_crud_via_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
@@ -884,7 +964,11 @@ async fn health_shows_registered_egress() {
     let out = body_json(resp).await;
     let oid = out["output"]["id"].as_str().unwrap().to_string();
 
-    // Register an egress in the engine (simulates reconciler start)
+    // Register an ingest + egress in the engine (simulates reconciler start with active publisher)
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13081", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
     engine
         .register_egress(&oid, &pid, "rtmp://dest/live/k")
         .await;

@@ -22,12 +22,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
-use bytes::Bytes;
+fn log_rss(label: &str, output_id: &str) {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            if let Some(val) = line.strip_prefix("VmRSS:") {
+                let rss_kb = val.trim().trim_end_matches(" kB").trim();
+                eprintln!("[mem] {label} output={output_id} rss={rss_kb} kB");
+                return;
+            }
+        }
+    }
+}
+
 use crate::media::codec;
 use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
 use crate::media::tcp_stats::collect_rtmp_receiver_stats;
+use bytes::Bytes;
 
 struct RtmpIngestHandle {
     pipeline_id: String,
@@ -80,11 +92,12 @@ fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
                 let num_sps = (avc_config[5] & 0x1F) as usize;
                 if num_sps > 0 && avc_config.len() > 8 {
                     let sps_len = ((avc_config[6] as usize) << 8) | (avc_config[7] as usize);
-                    if avc_config.len() >= 8 + sps_len && sps_len > 1 {
-                        if let Some((w, h)) = parse_sps_resolution(&avc_config[8..8 + sps_len]) {
-                            meta.width = w;
-                            meta.height = h;
-                        }
+                    if avc_config.len() >= 8 + sps_len
+                        && sps_len > 1
+                        && let Some((w, h)) = parse_sps_resolution(&avc_config[8..8 + sps_len])
+                    {
+                        meta.width = w;
+                        meta.height = h;
                     }
                 }
             }
@@ -207,8 +220,7 @@ fn parse_sps_resolution(sps_nalu: &[u8]) -> Option<(u32, u32)> {
     };
 
     let width = (pic_width + 1) * 16 - crop_left * 2 - crop_right * 2;
-    let height =
-        (2 - frame_mbs_only as u32) * (pic_height + 1) * 16 - crop_top * 2 - crop_bottom * 2;
+    let height = (2 - frame_mbs_only) * (pic_height + 1) * 16 - crop_top * 2 - crop_bottom * 2;
 
     Some((width, height))
 }
@@ -649,6 +661,7 @@ struct ProbeState {
     audio_done: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_session_results(
     session: &mut ServerSession,
     results: Vec<ServerSessionResult>,
@@ -694,7 +707,7 @@ async fn handle_session_results(
                         mode: _,
                     } => {
                         // Rate limit security check
-                        if let Some(_) = security.is_ip_banned(client_ip) {
+                        if security.is_ip_banned(client_ip).is_some() {
                             let _ = session.reject_request(
                                 request_id,
                                 "NetStream.Publish.BadName",
@@ -817,23 +830,19 @@ async fn handle_session_results(
                             }
 
                             // Probe video metadata from sequence header (first config packet)
-                            if !probe.video_done {
-                                if let Some(meta) = parse_flv_video_meta(&data) {
-                                    if meta.width > 0 {
-                                        probe.video_done = true;
-                                    }
-                                    println!(
-                                        "[rtmp] Probed video: {} {}x{} profile={:?} level={:?}",
-                                        meta.codec,
-                                        meta.width,
-                                        meta.height,
-                                        meta.profile,
-                                        meta.level
-                                    );
-                                    engine
-                                        .update_ingest_meta(pipeline_id, Some(meta), None, None)
-                                        .await;
+                            if !probe.video_done
+                                && let Some(meta) = parse_flv_video_meta(&data)
+                            {
+                                if meta.width > 0 {
+                                    probe.video_done = true;
                                 }
+                                println!(
+                                    "[rtmp] Probed video: {} {}x{} profile={:?} level={:?}",
+                                    meta.codec, meta.width, meta.height, meta.profile, meta.level
+                                );
+                                engine
+                                    .update_ingest_meta(pipeline_id, Some(meta), None, None)
+                                    .await;
                             }
 
                             let packet = MediaPacket {
@@ -885,7 +894,12 @@ async fn handle_session_results(
                                         meta.codec, meta.sample_rate, meta.channels
                                     );
                                     engine
-                                        .update_ingest_meta(pipeline_id, None, Some(meta.clone()), None)
+                                        .update_ingest_meta(
+                                            pipeline_id,
+                                            None,
+                                            Some(meta.clone()),
+                                            None,
+                                        )
                                         .await;
                                     engine
                                         .update_ingest_audio_tracks(pipeline_id, vec![meta])
@@ -969,30 +983,31 @@ async fn handle_session_results(
 
                         // Send cached sequence headers so the player can initialize decoders
                         let (video_sh, audio_sh) = engine.get_sequence_headers(&pipeline.id).await;
-                        if let Some(vsh) = video_sh {
-                            if let Ok(pkt) = session.send_video_data(
+                        if let Some(vsh) = video_sh
+                            && let Ok(pkt) = session.send_video_data(
                                 stream_id,
                                 vsh,
                                 RtmpTimestamp::new(0),
                                 false,
-                            ) {
-                                let _ = socket.write_all(&pkt.bytes).await;
-                            }
+                            )
+                        {
+                            let _ = socket.write_all(&pkt.bytes).await;
                         }
-                        if let Some(ash) = audio_sh {
-                            if let Ok(pkt) = session.send_audio_data(
+                        if let Some(ash) = audio_sh
+                            && let Ok(pkt) = session.send_audio_data(
                                 stream_id,
                                 ash,
                                 RtmpTimestamp::new(0),
                                 false,
-                            ) {
-                                let _ = socket.write_all(&pkt.bytes).await;
-                            }
+                            )
+                        {
+                            let _ = socket.write_all(&pkt.bytes).await;
                         }
 
                         // Feed loop: read from RingBuffer and send RTMP data
                         let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
-                        let mut reader = Reader::new(format!("rtmp_play:{}", pipeline.id), ring_buf);
+                        let mut reader =
+                            Reader::new(format!("rtmp_play:{}", pipeline.id), ring_buf);
 
                         loop {
                             match reader.pull() {
@@ -1062,149 +1077,6 @@ async fn handle_session_results(
 /// Reads H.265 MPEG-TS from `in_queue`, decodes with FFmpeg's HEVC decoder,
 /// re-encodes to H.264 Annex B, and sends `(annexb, is_keyframe, pts_ms)` via
 /// `out_tx`. Runs on a dedicated OS thread (FFmpeg codec calls block).
-fn run_hevc_to_h264_transcoder(
-    in_queue: Arc<crate::media::avio::MemoryQueue>,
-    out_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, bool, i64)>,
-    cancel: CancellationToken,
-) {
-    use crate::media::avio::CustomInput;
-    use ffmpeg_next::{codec, format::Pixel, frame, software};
-
-    let mut custom = match CustomInput::new(&*in_queue) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("[rtmp-h265-tc] custom input failed: {e}"); return; }
-    };
-    let ictx = match custom.input.as_mut() {
-        Some(i) => i,
-        None => return,
-    };
-
-    let video_idx = match ictx.streams()
-        .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video)
-        .map(|s| s.index())
-    {
-        Some(i) => i,
-        None => { eprintln!("[rtmp-h265-tc] no video stream found"); return; }
-    };
-
-    let dec_params = ictx.stream(video_idx).unwrap().parameters();
-    let dec_ctx = match codec::Context::from_parameters(dec_params) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("[rtmp-h265-tc] decoder context: {e}"); return; }
-    };
-    let mut decoder = match dec_ctx.decoder().video() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("[rtmp-h265-tc] decoder open: {e}"); return; }
-    };
-
-    let enc_codec = match codec::encoder::find(codec::Id::H264) {
-        Some(c) => c,
-        None => { eprintln!("[rtmp-h265-tc] no H.264 encoder found"); return; }
-    };
-
-    // Encoder and scaler are initialized lazily on the first decoded frame
-    // so we know width/height/pixel format from the decoder.
-    let mut encoder: Option<codec::encoder::video::Encoder> = None;
-    let mut scaler: Option<software::scaling::Context> = None;
-    let mut enc_frame = frame::Video::empty();
-    let mut enc_pkt = ffmpeg_next::Packet::empty();
-    let mut pts_counter: i64 = 0;  // frame counter (increments by 1 per frame)
-    let mut fps_den_stored: i64 = 1;
-    let mut fps_num_stored: i64 = 30; // updated after encoder opens
-
-    for (stream, pkt) in ictx.packets() {
-        if cancel.is_cancelled() { break; }
-        if stream.index() != video_idx { continue; }
-
-        if decoder.send_packet(&pkt).is_err() { continue; }
-
-        let mut dec_frame = frame::Video::empty();
-        while decoder.receive_frame(&mut dec_frame).is_ok() {
-            // Lazy encoder + scaler init on first decoded frame
-            if encoder.is_none() {
-                let width  = decoder.width();
-                let height = decoder.height();
-                let in_fmt = dec_frame.format();
-
-                let sw = match software::scaling::Context::get(
-                    in_fmt, width, height,
-                    Pixel::YUV420P, width, height,
-                    software::scaling::Flags::BILINEAR,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => { eprintln!("[rtmp-h265-tc] scaler: {e}"); return; }
-                };
-
-                // Derive frame rate before opening the encoder (x264 requires it)
-                let fr = stream.avg_frame_rate();
-                let (fps_num, fps_den) = if fr.numerator() > 0 && fr.denominator() > 0 {
-                    (fr.numerator(), fr.denominator())
-                } else {
-                    (30, 1) // fallback 30fps
-                };
-                fps_num_stored = fps_num as i64;
-                fps_den_stored = fps_den as i64;
-
-                let enc_ctx = codec::Context::new();
-                let mut enc_video = match enc_ctx.encoder().video() {
-                    Ok(e) => e,
-                    Err(e) => { eprintln!("[rtmp-h265-tc] encoder ctx: {e}"); return; }
-                };
-
-                // time_base = 1/fps so x264 derives a sensible frame rate
-                enc_video.set_width(width);
-                enc_video.set_height(height);
-                enc_video.set_format(Pixel::YUV420P);
-                enc_video.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
-                enc_video.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
-                enc_video.set_bit_rate(2_500_000);
-                enc_video.set_max_bit_rate(2_500_000);
-                enc_video.set_tolerance(2_500_000);
-                enc_video.set_gop(60);
-                enc_video.set_max_b_frames(0);
-                enc_video.set_global_quality(-1);
-                enc_video.set_qmin(10);
-                enc_video.set_qmax(51);
-
-                let opened = match enc_video.open_as(enc_codec) {
-                    Ok(e) => e,
-                    Err(e) => { eprintln!("[rtmp-h265-tc] encoder open: {e}"); return; }
-                };
-
-                scaler  = Some(sw);
-                encoder = Some(opened);
-            }
-
-            let enc = encoder.as_mut().unwrap();
-            let sw  = scaler.as_mut().unwrap();
-
-            if sw.run(&dec_frame, &mut enc_frame).is_err() { continue; }
-            enc_frame.set_pts(Some(pts_counter));
-            pts_counter += 1;
-
-            if enc.send_frame(&enc_frame).is_err() { continue; }
-            while enc.receive_packet(&mut enc_pkt).is_ok() {
-                let data   = enc_pkt.data().unwrap_or(&[]).to_vec();
-                let is_key = enc_pkt.is_key();
-                // pts in frame units → ms: frame * fps_den * 1000 / fps_num
-                let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den_stored * 1000 / fps_num_stored;
-                if out_tx.send((data, is_key, pts_ms)).is_err() { return; }
-            }
-        }
-    }
-
-    // Flush remaining encoder output
-    if let Some(enc) = encoder.as_mut() {
-        let _ = enc.send_eof();
-        while enc.receive_packet(&mut enc_pkt).is_ok() {
-            let data   = enc_pkt.data().unwrap_or(&[]).to_vec();
-            let is_key = enc_pkt.is_key();
-            let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den_stored * 1000 / fps_num_stored;
-            let _ = out_tx.send((data, is_key, pts_ms));
-        }
-    }
-}
-
 /// RTMP Egress Client
 pub async fn start_rtmp_egress(
     output_id: String,
@@ -1214,6 +1086,7 @@ pub async fn start_rtmp_egress(
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
+    log_rss("egress_start", &output_id);
     let parsed = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
@@ -1271,14 +1144,12 @@ pub async fn start_rtmp_egress(
                 };
                 match handshake.process_bytes(&buffer[..n]) {
                     Ok(HandshakeProcessResult::InProgress { response_bytes }) => {
-                        if !response_bytes.is_empty() {
-                            if socket.write_all(&response_bytes).await.is_err() { return; }
-                        }
+                        if !response_bytes.is_empty()
+                            && socket.write_all(&response_bytes).await.is_err() { return; }
                     }
                     Ok(HandshakeProcessResult::Completed { response_bytes, remaining_bytes }) => {
-                        if !response_bytes.is_empty() {
-                            if socket.write_all(&response_bytes).await.is_err() { return; }
-                        }
+                        if !response_bytes.is_empty()
+                            && socket.write_all(&response_bytes).await.is_err() { return; }
                         remaining = remaining_bytes;
                         handshake_completed = true;
                     }
@@ -1300,10 +1171,10 @@ pub async fn start_rtmp_egress(
     };
 
     for res in initial_results {
-        if let ClientSessionResult::OutboundResponse(pkt) = res {
-            if socket.write_all(&pkt.bytes).await.is_err() {
-                return;
-            }
+        if let ClientSessionResult::OutboundResponse(pkt) = res
+            && socket.write_all(&pkt.bytes).await.is_err()
+        {
+            return;
         }
     }
 
@@ -1334,75 +1205,14 @@ pub async fn start_rtmp_egress(
         egresses.get(&output_id).map(|e| e.bytes_sent.clone())
     };
 
-    // H.265 detection via ingest metadata probe. The probe arrives asynchronously
-    // from the SRT/RTMP ingest loop, so we wait briefly (up to 5s) for it.
-    let is_h265 = 'probe: {
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let ingests = engine.active_ingests.read().await;
-            let meta = ingests
-                .get(&pipeline_id)
-                .and_then(|i| i.video.as_ref());
-            match meta {
-                Some(v) if v.codec == "hevc" => break 'probe true,
-                Some(_) => break 'probe false,
-                None => {} // no metadata yet — wait and retry
-            }
-            drop(ingests);
-            if Instant::now() >= deadline {
-                eprintln!("[rtmp-egress] Timed out waiting for ingest video metadata on pipeline {pipeline_id}, assuming H.264");
-                break 'probe false;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-    };
-
-    // H.265 transcoder infrastructure (only active when is_h265).
-    // We mux H.265 ring-buffer packets into a MemoryQueue as MPEG-TS so that
-    // the FFmpeg-based transcoder can demux, decode, re-encode, and return
-    // H.264 Annex B packets via a tokio channel.
-    let h265_in_queue: Option<Arc<crate::media::avio::MemoryQueue>>;
-    let mut h264_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, bool, i64)>>;
-    let mut h265_ts_muxer: Option<crate::media::mpegts::TsMuxer>;
-    let mut h265_dts_enforcer: Option<crate::media::ring_buffer::DtsEnforcer>;
-    let mut h264_seq_sent = false;
-    let mut h265_nalu_len = 4usize;
-    let mut h265_sps_cache: Vec<u8> = Vec::new();
-
-    if is_h265 {
-        println!("[rtmp-egress] H.265 source on pipeline {pipeline_id}: transcoding to H.264 for RTMP");
-        let iq = Arc::new(crate::media::avio::MemoryQueue::new());
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, bool, i64)>();
-        let iq_clone = iq.clone();
-        let cancel_clone = cancel_token.clone();
-        std::thread::spawn(move || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_hevc_to_h264_transcoder(iq_clone, tx, cancel_clone);
-            }));
-        });
-
-        // Build a video-only TsMuxer for the H.265 input stream
-        let video_meta = {
-            let ingests = engine.active_ingests.read().await;
-            ingests.get(&pipeline_id).and_then(|i| i.video.clone())
-        };
-        let mux = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &[]);
-        let dts = crate::media::ring_buffer::DtsEnforcer::new(1);
-
-        h265_in_queue    = Some(iq);
-        h264_rx          = Some(rx);
-        h265_ts_muxer    = Some(mux);
-        h265_dts_enforcer = Some(dts);
-    } else {
-        h265_in_queue    = None;
-        h264_rx          = None;
-        h265_ts_muxer    = None;
-        h265_dts_enforcer = None;
-    }
-
     let mut is_publishing = false;
     let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
     let mut raw_seq_header_sent = false;
+    // Per-egress reusable conversion buffers — avoids per-frame Vec allocation.
+    // Each task owns its own buffer; no sharing, no contention with transcoder.
+    let mut video_buf = Vec::<u8>::new();
+    let mut audio_buf = Vec::<u8>::new();
+    log_rss("egress_reader_created", &output_id);
 
     loop {
         tokio::select! {
@@ -1440,13 +1250,10 @@ pub async fn start_rtmp_egress(
                                     // For H.265 ingests, video_sh is None (only RTMP ingest
                                     // caches FLV seq headers), so this is a no-op for H.265.
                                     let (video_sh, mut audio_sh) = engine.get_sequence_headers(&pipeline_id).await;
-                                    if let Some(vsh) = video_sh {
-                                        if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                    if let Some(vsh) = video_sh
+                                        && let Ok(ClientSessionResult::OutboundResponse(p)) =
                                             session.publish_video_data(vsh, RtmpTimestamp::new(0), true)
-                                        {
-                                            if socket.write_all(&p.bytes).await.is_err() { return; }
-                                        }
-                                    }
+                                            && socket.write_all(&p.bytes).await.is_err() { return; }
                                     // Synthesize AAC sequence header from audio meta if not cached
                                     if audio_sh.is_none() {
                                         let ingests = engine.active_ingests.read().await;
@@ -1460,13 +1267,10 @@ pub async fn start_rtmp_egress(
                                             }
                                         }
                                     }
-                                    if let Some(ash) = audio_sh {
-                                        if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                    if let Some(ash) = audio_sh
+                                        && let Ok(ClientSessionResult::OutboundResponse(p)) =
                                             session.publish_audio_data(ash, RtmpTimestamp::new(0), false)
-                                        {
-                                            if socket.write_all(&p.bytes).await.is_err() { return; }
-                                        }
-                                    }
+                                            && socket.write_all(&p.bytes).await.is_err() { return; }
                                     is_publishing = true;
                                 }
                                 ClientSessionEvent::ConnectionRequestRejected { description } => {
@@ -1485,31 +1289,6 @@ pub async fn start_rtmp_egress(
                 let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for packet in packets {
-                        // H.265 video: mux to MPEG-TS and hand off to the transcoder thread.
-                        // The resulting H.264 packets arrive on the h264_rx branch below.
-                        if is_h265 && packet.media_type == MediaType::Video {
-                            if let (Some(mux), Some(dts), Some(iq)) = (
-                                &mut h265_ts_muxer,
-                                &mut h265_dts_enforcer,
-                                &h265_in_queue,
-                            ) {
-                                if let Some(payload) = crate::media::codec::video_for_ts(
-                                    &packet.payload,
-                                    packet.format,
-                                    &mut h265_nalu_len,
-                                    &mut h265_sps_cache,
-                                ) {
-                                    let (pts, dts_val) = dts.enforce(0, packet.pts, packet.dts);
-                                    let ts_bytes = mux.mux_packet(
-                                        crate::media::ring_buffer::MediaType::Video,
-                                        0, pts, dts_val, packet.is_keyframe, &payload,
-                                    );
-                                    iq.write(&ts_bytes);
-                                }
-                            }
-                            continue;
-                        }
-
                         let ts = match packet.media_type {
                             MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
                             MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
@@ -1518,23 +1297,21 @@ pub async fn start_rtmp_egress(
                             match packet.media_type {
                                 MediaType::Video => {
                                     // Send sequence header before first keyframe
-                                    if packet.is_keyframe && !raw_seq_header_sent {
-                                        if let Some(seq_hdr) = codec::build_avcc_sequence_header(&packet.payload) {
+                                    if packet.is_keyframe && !raw_seq_header_sent
+                                        && let Some(seq_hdr) = codec::build_avcc_sequence_header(&packet.payload) {
                                             if let Ok(ClientSessionResult::OutboundResponse(p)) =
                                                 session.publish_video_data(seq_hdr, RtmpTimestamp::new(0), true)
-                                            {
-                                                if socket.write_all(&p.bytes).await.is_err() { return; }
-                                            }
+                                                && socket.write_all(&p.bytes).await.is_err() { return; }
                                             raw_seq_header_sent = true;
                                         }
+                                    if !codec::video_for_rtmp_into(&packet.payload, packet.is_keyframe, &mut video_buf) {
+                                        continue;
                                     }
-                                    match codec::video_for_rtmp(&packet.payload, packet.is_keyframe) {
-                                        Some(v) => Bytes::from(v),
-                                        None => continue,
-                                    }
+                                    Bytes::copy_from_slice(&video_buf)
                                 }
                                 MediaType::Audio => {
-                                    Bytes::from(codec::audio_for_rtmp(&packet.payload))
+                                    codec::audio_for_rtmp_into(&packet.payload, &mut audio_buf);
+                                    Bytes::copy_from_slice(&audio_buf)
                                 }
                             }
                         } else {
@@ -1562,45 +1339,7 @@ pub async fn start_rtmp_egress(
                     }
                 }
             }
-            // H.264 packets from the HEVC→H.264 transcoder (only active for H.265 ingests)
-            h264_res = async {
-                match h264_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None     => std::future::pending().await,
-                }
-            }, if is_publishing => {
-                if let Some((h264_data, is_kf, pts_ms)) = h264_res {
-                    // Send FLV sequence header before the first H.264 IDR frame
-                    if is_kf && !h264_seq_sent {
-                        if let Some(seq_hdr) = codec::build_avcc_sequence_header(&h264_data) {
-                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
-                                session.publish_video_data(seq_hdr, RtmpTimestamp::new(0), true)
-                            {
-                                if socket.write_all(&p.bytes).await.is_err() { return; }
-                            }
-                            h264_seq_sent = true;
-                        }
-                    }
-                    if h264_seq_sent {
-                        if let Some(flv) = codec::video_for_rtmp(&h264_data, is_kf) {
-                            let ts = RtmpTimestamp::new(pts_ms.max(0) as u32);
-                            if let Ok(ClientSessionResult::OutboundResponse(p)) =
-                                session.publish_video_data(Bytes::from(flv), ts, is_kf)
-                            {
-                                if socket.write_all(&p.bytes).await.is_err() { return; }
-                                if let Some(ref counter) = egress_bytes_sent {
-                                    counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
-    }
-    // Drain the H.265 transcoder queue so its thread can exit cleanly
-    if let Some(iq) = &h265_in_queue {
-        iq.close();
     }
 }
 
@@ -1766,9 +1505,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             loop {
                 let ingests = engine_clone.active_ingests.read().await;
-                let meta = ingests
-                    .get(&pipeline_id)
-                    .and_then(|i| i.video.as_ref());
+                let meta = ingests.get(&pipeline_id).and_then(|i| i.video.as_ref());
                 match meta {
                     Some(v) if v.codec == "hevc" => break 'probe true,
                     Some(_) => break 'probe false,
@@ -1913,5 +1650,41 @@ mod tests {
 
         let mut r = BitReader::new(&[0b00100000]); // 00100 → code_num=3
         assert_eq!(r.read_exp_golomb(), Some(3));
+    }
+
+    #[test]
+    fn parse_rtmp_url_standard_forms() {
+        // Default port
+        let (h, p, app, key) = parse_rtmp_url("rtmp://a.example.com/live/mykey").unwrap();
+        assert_eq!(h, "a.example.com");
+        assert_eq!(p, 1935);
+        assert_eq!(app, "live");
+        assert_eq!(key, "mykey");
+
+        // Explicit port
+        let (h, p, app, key) = parse_rtmp_url("rtmp://a.example.com:19350/stream/abc").unwrap();
+        assert_eq!(h, "a.example.com");
+        assert_eq!(p, 19350);
+        assert_eq!(app, "stream");
+        assert_eq!(key, "abc");
+
+        // rtmps:// (TLS) — same parsing, different default port behaviour (still 1935 if omitted)
+        let (h, p, app, key) =
+            parse_rtmp_url("rtmps://live-api-s.facebook.com:443/rtmp/FB-STREAM-KEY").unwrap();
+        assert_eq!(h, "live-api-s.facebook.com");
+        assert_eq!(p, 443);
+        assert_eq!(app, "rtmp");
+        assert_eq!(key, "FB-STREAM-KEY");
+
+        // Stream key containing slashes is NOT split — key gets everything after first slash in path
+        let (_, _, app, key) = parse_rtmp_url("rtmp://host/app/key/subpart").unwrap();
+        assert_eq!(app, "app");
+        assert_eq!(key, "key/subpart");
+
+        // Unrecognised scheme → None
+        assert!(parse_rtmp_url("https://host/live/key").is_none());
+
+        // Missing path separator → None (can't split app/key)
+        assert!(parse_rtmp_url("rtmp://host/noapp").is_none());
     }
 }
