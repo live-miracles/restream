@@ -9,7 +9,7 @@ PREFIX="$BUILD_ROOT/prefix"
 STAMPS="$BUILD_ROOT/stamps"
 
 SRT_VERSION="${SRT_VERSION:-v1.5.5}"
-FFMPEG_VERSION="${FFMPEG_VERSION:-n6.1.5}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
 X264_COMMIT="${X264_COMMIT:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
 
 mkdir -p "$TOOLS" "$SOURCES" "$PREFIX" "$STAMPS"
@@ -93,6 +93,17 @@ write_stamp() {
     printf '%s\n' "$value" >"$stamp"
 }
 
+# ─ Microarchitecture/Optimization Level ──────────────────────────────────────
+# By default, compiles with x86-64-v3 (AVX2 baseline) for wide compatibility in releases.
+# You can override this by setting the RESTREAM_MARCH environment variable, e.g.:
+#   RESTREAM_MARCH=native ./scripts/setup-static-build.sh
+#
+MARCH="${RESTREAM_MARCH:-x86-64-v3}"
+
+# These flags apply to all C/C++ dependencies (SRT, x264, FFmpeg):
+OPT_CFLAGS="-O3 -march=$MARCH"
+OPT_CXXFLAGS="-O3 -march=$MARCH"
+
 SRT_FINGERPRINT="$(
     {
         git -C "$SOURCES/srt" rev-parse HEAD
@@ -100,6 +111,8 @@ SRT_FINGERPRINT="$(
         cmake --version | head -n 1
         pkg-config --modversion openssl
         printf '%s\n' \
+            "CFLAGS=$OPT_CFLAGS" \
+            "CXXFLAGS=$OPT_CXXFLAGS" \
             "-DCMAKE_BUILD_TYPE=Release" \
             "-DCMAKE_INSTALL_PREFIX=$PREFIX" \
             "-DENABLE_BONDING=ON" \
@@ -117,6 +130,8 @@ if ! stamp_matches "$SRT_STAMP" "$SRT_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libsrt.a" ]]; then
     cmake -S "$SOURCES/srt" -B "$BUILD_ROOT/srt-build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="$OPT_CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$OPT_CXXFLAGS" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DENABLE_BONDING=ON \
         -DENABLE_SHARED=OFF \
@@ -151,6 +166,7 @@ X264_FINGERPRINT="$(
         cc --version | head -n 1
         nasm -v
         printf '%s\n' \
+            "CFLAGS=$OPT_CFLAGS" \
             "--prefix=$PREFIX" \
             --enable-static \
             --enable-pic \
@@ -162,7 +178,7 @@ X264_STAMP="$STAMPS/x264"
 if ! stamp_matches "$X264_STAMP" "$X264_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libx264.a" ]]; then
     pushd "$SOURCES/x264" >/dev/null
-    ./configure \
+    CFLAGS="$OPT_CFLAGS" ./configure \
         --prefix="$PREFIX" \
         --enable-static \
         --enable-pic \
@@ -181,7 +197,10 @@ FFMPEG_FINGERPRINT="$(
         git -C "$SOURCES/ffmpeg" rev-parse HEAD
         cc --version | head -n 1
         nasm -v
-        printf '%s\n' "$X264_FINGERPRINT" \
+        printf '%s\n' \
+            "CFLAGS=$OPT_CFLAGS" \
+            "CXXFLAGS=$OPT_CXXFLAGS" \
+            "$X264_FINGERPRINT" \
             "--prefix=$PREFIX" \
             --pkg-config-flags=--static \
             --enable-static \
@@ -215,7 +234,7 @@ FFMPEG_STAMP="$STAMPS/ffmpeg"
 if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libavcodec.a" ]]; then
     pushd "$SOURCES/ffmpeg" >/dev/null
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure \
+    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$OPT_CFLAGS" CXXFLAGS="$OPT_CXXFLAGS" ./configure \
         --prefix="$PREFIX" \
         --pkg-config-flags=--static \
         --enable-static \
@@ -227,6 +246,8 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --disable-autodetect \
         --disable-network \
         --enable-x86asm \
+        --extra-cflags="$OPT_CFLAGS" \
+        --extra-cxxflags="$OPT_CXXFLAGS" \
         --disable-everything \
         --enable-gpl \
         --enable-libx264 \
@@ -255,6 +276,67 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
     write_stamp "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT"
 else
     echo "Using cached FFmpeg build."
+fi
+
+# ─ Standalone ffmpeg binary for embedding (public/bin/ffmpeg) ────────────────
+# The external transcoder spawns this as a subprocess. It must match the same
+# FFmpeg version as the static libraries above so protocol/codec feature sets
+# are consistent. Built in a separate directory to avoid disturbing the library
+# build.  Strip the result to keep the embedded binary small.
+FFMPEG_BIN_STAMP="$STAMPS/ffmpeg-${FFMPEG_VERSION}-built"
+FFMPEG_BIN_DEST="$ROOT/public/bin/ffmpeg"
+FFMPEG_BIN_BDIR="$BUILD_ROOT/ffmpeg-standalone-build"
+
+if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
+    [[ ! -x "$FFMPEG_BIN_DEST" ]]; then
+    echo "Building standalone ffmpeg $FFMPEG_VERSION binary..."
+    mkdir -p "$FFMPEG_BIN_BDIR"
+    pushd "$FFMPEG_BIN_BDIR" > /dev/null
+
+    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$OPT_CFLAGS" CXXFLAGS="$OPT_CXXFLAGS" \
+    "$SOURCES/ffmpeg/configure" \
+        --prefix="$FFMPEG_BIN_BDIR/out" \
+        --pkg-config-flags=--static \
+        --enable-static \
+        --disable-shared \
+        --enable-pic \
+        --disable-ffprobe \
+        --disable-ffplay \
+        --disable-doc \
+        --disable-debug \
+        --disable-autodetect \
+        --disable-network \
+        --enable-x86asm \
+        --extra-cflags="$OPT_CFLAGS -I$PREFIX/include" \
+        --extra-ldflags="-static -L$PREFIX/lib" \
+        --disable-everything \
+        --enable-gpl \
+        --enable-libx264 \
+        --enable-avcodec \
+        --enable-avformat \
+        --enable-avfilter \
+        --enable-swscale \
+        --enable-swresample \
+        --enable-protocol=pipe \
+        --enable-demuxer=mpegts,matroska,mov \
+        --enable-muxer=mpegts,matroska \
+        --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
+        --enable-encoder=aac,libx264 \
+        --enable-parser=h264,hevc,aac,ac3 \
+        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
+        --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
+
+    make -j"${BUILD_JOBS:-$(nproc)}" ffmpeg_g
+    strip -s ffmpeg_g -o ffmpeg_stripped
+    mkdir -p "$(dirname "$FFMPEG_BIN_DEST")"
+    cp ffmpeg_stripped "$FFMPEG_BIN_DEST"
+    chmod +x "$FFMPEG_BIN_DEST"
+    popd > /dev/null
+
+    write_stamp "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT"
+    echo "Standalone ffmpeg installed to $FFMPEG_BIN_DEST"
+else
+    echo "Using cached standalone ffmpeg build ($FFMPEG_BIN_DEST)."
 fi
 
 CAPABILITIES="$PREFIX/bin/restream-ffmpeg-capabilities"
