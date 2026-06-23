@@ -298,11 +298,18 @@ fn serve_embedded(path: &str) -> impl IntoResponse {
     // with "/" to prevent `public/../../../etc/passwd` style reads even in dev.
     #[cfg(debug_assertions)]
     {
-        let safe = !path.split('/').any(|c| c == ".." || c.starts_with('/'));
-        if safe {
-            if let Ok(data) = std::fs::read(format!("public/{}", path)) {
-                return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data)
-                    .into_response();
+        // Use canonicalize to resolve symlinks and ".." before the prefix
+        // check — this is the only traversal guard that is actually correct.
+        let public_root = match std::fs::canonicalize("public") {
+            Ok(p) => p,
+            Err(_) => std::path::PathBuf::new(),
+        };
+        if let Ok(candidate) = std::fs::canonicalize(format!("public/{}", path)) {
+            if candidate.starts_with(&public_root) {
+                if let Ok(data) = std::fs::read(&candidate) {
+                    return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data)
+                        .into_response();
+                }
             }
         }
     }
@@ -897,13 +904,17 @@ async fn pipelines_delete_handler(
             state.engine.unregister_egress(&output.id).await;
         }
     }
+    // Remove the pipeline record first so any racing ingest reconnect
+    // finds no pipeline to publish into (closes the TOCTOU window between
+    // unregister_ingest and remove_pipeline where an orphaned ring buffer
+    // could be registered).
+    state.engine.remove_pipeline(&id).await;
     state.engine.unregister_ingest(&id).await;
     // Free the source ring buffer, all transcoder stage ring buffers, and the
     // HLS segmenter+store.  Without these calls the engine maps would retain
     // Arc<RingBuffer> references after the pipeline record is gone from the DB.
     state.engine.cleanup_pipeline_stages(&id).await;
     state.engine.shutdown_hls_segmenter(&id).await;
-    state.engine.remove_pipeline(&id).await;
 
     match db::delete_pipeline(&state.db, &id).await {
         Ok(true) => {
