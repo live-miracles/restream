@@ -1115,3 +1115,26 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
         );
     }
 }
+
+// --- Round 7 #1: media delete path traversal guard ---
+#[tokio::test]
+async fn media_delete_path_traversal_blocked() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Test a normal non-existent file: should return NOT_FOUND (404)
+    let resp = app
+        .clone()
+        .oneshot(auth_req("DELETE", "/api/media/nonexistent.mp4", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Test path traversal attempt: should return BAD_REQUEST (400) or NOT_FOUND (404)
+    let resp = app
+        .clone()
+        .oneshot(auth_req("DELETE", "/api/media/..%2f..%2fetc%2fpasswd", &cookie, None))
+        .await
+        .unwrap();
+    assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
+}

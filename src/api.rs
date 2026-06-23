@@ -1683,8 +1683,21 @@ async fn media_delete_handler(
             .into_response();
     }
 
+    let _ = std::fs::create_dir_all("media");
+    let media_root = match std::fs::canonicalize("media") {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response(),
+    };
     let path = std::path::Path::new("media").join(&filename);
-    match tokio::fs::remove_file(path).await {
+    let canonical_path = match std::fs::canonicalize(&path) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+    };
+    if !canonical_path.starts_with(&media_root) {
+        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
+    }
+
+    match tokio::fs::remove_file(canonical_path).await {
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
