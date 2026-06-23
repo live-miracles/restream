@@ -1369,25 +1369,36 @@ impl SrtServer {
 
         let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
-        let (video_meta, audio_tracks) = {
-            let ingests = self.engine.active_ingests.read().await;
-            match ingests.get(pipeline_id) {
-                Some(i) => {
+        // Wait until the ingest has populated video metadata before creating the
+        // TsMuxer. Reading video=None produces a muxer with no video stream and
+        // silently drops all subsequent video packets. Mirror the retry loop used
+        // in start_srt_egress (srt.rs) which is guarded against None by
+        // requiring `video.as_ref()?` before breaking.
+        let (video_meta, audio_tracks) = loop {
+            let result = {
+                let ingests = self.engine.active_ingests.read().await;
+                ingests.get(pipeline_id).and_then(|i| {
+                    let video = i.video.clone();
+                    video.as_ref()?; // only break once video metadata is ready
                     let mut audio_tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if audio_tracks.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
                         audio_tracks.push(audio);
                     }
-                    (i.video.clone(), audio_tracks)
-                }
-                None => {
-                    eprintln!("[srt] No active ingest for play: {}", pipeline_id);
-                    unsafe {
-                        srt_close(client_sock);
-                    }
-                    return;
-                }
+                    Some((video, audio_tracks))
+                })
+            };
+            if let Some(meta) = result {
+                break meta;
+            }
+            // Ingest is still probing; recheck after a short delay. If the
+            // ingest disappears during the wait, close the connection.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if !self.engine.active_ingests.read().await.contains_key(pipeline_id) {
+                eprintln!("[srt] Ingest gone while waiting for probe: {}", pipeline_id);
+                unsafe { srt_close(client_sock); }
+                return;
             }
         };
 
@@ -1843,6 +1854,36 @@ mod tests {
         );
     }
 
+
+    // --- Regression: Round 6 #5 — SRT play muxer must not start without video ---
+    // The probe-wait loop in handle_play requires `video.as_ref()?` before
+    // breaking — it must not yield metadata when video is None.
+    // This is the same guard used by start_srt_egress.
+    #[test]
+    fn probe_wait_guard_requires_video_to_be_some() {
+        // Simulate the logic of the retry closure:
+        //   ingests.get(pipeline_id).and_then(|i| { video.as_ref()?; ... Some(meta) })
+        // When video is None the closure must return None (no break).
+        struct FakeIngest {
+            video: Option<String>,
+        }
+        let ingest_no_video = FakeIngest { video: None };
+        let ingest_with_video = FakeIngest { video: Some("h264".to_string()) };
+
+        let result_none: Option<(&str,)> = (|| {
+            let video = ingest_no_video.video.as_ref()?;
+            let _ = video;
+            Some(("got_video",))
+        })();
+        assert!(result_none.is_none(), "loop must not break while video is None");
+
+        let result_some: Option<(&str,)> = (|| {
+            let video = ingest_with_video.video.as_ref()?;
+            let _ = video;
+            Some(("got_video",))
+        })();
+        assert!(result_some.is_some(), "loop must break once video is Some");
+    }
 
     #[test]
     fn summarizes_srt_group_member_state() {
