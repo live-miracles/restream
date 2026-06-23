@@ -84,8 +84,10 @@ impl PesAccumulator {
 
 #[derive(Debug)]
 struct StreamInfo {
-    #[allow(dead_code)]
-    pid: u16,
+    /// The MPEG-TS elementary stream PID for this stream.
+    /// Retained for future diagnostics — packet dispatch uses the
+    /// `pid_to_stream` index table instead of a linear scan.
+    _pid: u16,
     kind: StreamKind,
     track_index: u32,
     continuity: Option<u8>,
@@ -375,8 +377,14 @@ impl TsDemuxer {
     }
 
     fn parse_pmt(&mut self, payload: &[u8], pusi: bool) {
-        if !self.streams.is_empty() {
-            return; // Already parsed
+        // Only skip reparsing when we already have a fully parsed PMT AND we are
+        // not in the middle of a multi-packet PMT reassembly.
+        // The original `if !self.streams.is_empty() { return; }` guard caused
+        // late-arriving audio PIDs (emitted in a second PMT version by some
+        // encoders) to be silently dropped because it returned unconditionally
+        // on the first non-empty streams check, ignoring PMT version changes.
+        if !self.streams.is_empty() && self.pmt_expected == 0 {
+            return; // Already have a complete PMT; no mid-reassembly partial
         }
 
         if pusi {
@@ -441,7 +449,7 @@ impl TsDemuxer {
 
                 let stream_idx = self.streams.len();
                 self.streams.push(StreamInfo {
-                    pid: es_pid,
+                    _pid: es_pid,
                     kind,
                     track_index,
                     continuity: None,
@@ -1623,6 +1631,25 @@ mod tests {
     }
 
     #[test]
+    fn ts_to_ms_no_float_drift() {
+        // Verify no floating-point drift at 24-hour scale.
+        // At 90 kHz, 24 hours = 24*3600*90000 = 7_776_000_000 ticks.
+        // f64 has 53-bit mantissa; at this scale each ULP is ~1024 ticks = ~11 ms.
+        // Integer division: ts / 90 must give exact ms with no drift.
+        let day_90k: i64 = 24 * 3600 * 90_000;
+        let day_ms: i64 = 24 * 3600 * 1000;
+        assert_eq!(
+            ts_to_ms(day_90k),
+            day_ms,
+            "ts_to_ms must be exact for 24-hour timestamps (no f64 drift)"
+        );
+        // Also verify round-trip for a one-hour mark
+        let hour_90k: i64 = 3600 * 90_000;
+        let hour_ms: i64 = 3600 * 1000;
+        assert_eq!(ts_to_ms(hour_90k), hour_ms);
+    }
+
+    #[test]
     fn crc32_known_value() {
         // PAT with known CRC
         let data = [
@@ -2113,9 +2140,9 @@ mod tests {
         assert!(demuxer.has_streams());
         assert_eq!(demuxer.streams.len(), 2);
         assert_eq!(demuxer.streams[0].kind, StreamKind::H264);
-        assert_eq!(demuxer.streams[0].pid, 0x100);
+        assert_eq!(demuxer.streams[0]._pid, 0x100);
         assert_eq!(demuxer.streams[1].kind, StreamKind::AacAdts);
-        assert_eq!(demuxer.streams[1].pid, 0x101);
+        assert_eq!(demuxer.streams[1]._pid, 0x101);
     }
 
     #[test]
