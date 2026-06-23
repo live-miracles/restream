@@ -35,7 +35,7 @@ fn log_rss(label: &str, output_id: &str) {
 }
 
 use crate::media::codec;
-use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, VideoMeta};
+use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, StageMetrics, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
 use crate::media::tcp_stats::collect_rtmp_receiver_stats;
@@ -45,6 +45,7 @@ struct RtmpIngestHandle {
     pipeline_id: String,
     ring: Arc<RingBuffer>,
     bytes_received: Arc<AtomicU64>,
+    ingest_metrics: Arc<StageMetrics>,
 }
 
 fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
@@ -774,20 +775,22 @@ async fn handle_session_results(
                             return Err("Pipeline already has an active publisher");
                         };
                         let ring = engine.get_or_create_pipeline(&pipeline.id).await;
-                        let bytes_received = {
+                        let (bytes_received, ingest_metrics) = {
                             let ingests = engine.active_ingests.read().await;
-                            ingests
-                                .get(&pipeline.id)
-                                .map(|ingest| ingest.bytes_received.clone())
+                            ingests.get(&pipeline.id).map(|ingest| {
+                                (ingest.bytes_received.clone(), ingest.metrics.clone())
+                            }).unzip()
                         };
                         let Some(bytes_received) = bytes_received else {
                             engine.unregister_ingest(&pipeline.id).await;
                             return Err("Active ingest disappeared during registration");
                         };
+                        let ingest_metrics = ingest_metrics.unwrap_or_default();
                         *active_ingest = Some(RtmpIngestHandle {
                             pipeline_id: pipeline.id.clone(),
                             ring,
                             bytes_received,
+                            ingest_metrics,
                         });
 
                         // Success! Accept publish request
@@ -828,6 +831,7 @@ async fn handle_session_results(
                             active
                                 .bytes_received
                                 .fetch_add(data.len() as u64, Ordering::Relaxed);
+                            active.ingest_metrics.record_in(data.len() as u64);
 
                             let is_keyframe = if data.is_empty() {
                                 false
@@ -888,6 +892,7 @@ async fn handle_session_results(
                             active
                                 .bytes_received
                                 .fetch_add(data.len() as u64, Ordering::Relaxed);
+                            active.ingest_metrics.record_in(data.len() as u64);
 
                             // Cache audio sequence header for play subscribers
                             if data.len() >= 2 && (data[0] >> 4) == 10 && data[1] == 0 {
@@ -1229,9 +1234,9 @@ pub async fn start_rtmp_egress(
         }
     }
 
-    let egress_bytes_sent = {
+    let (egress_bytes_sent, egress_metrics) = {
         let egresses = engine.active_egresses.read().await;
-        egresses.get(&output_id).map(|e| e.bytes_sent.clone())
+        egresses.get(&output_id).map(|e| (e.bytes_sent.clone(), e.metrics.clone())).unzip()
     };
 
     let mut is_publishing = false;
@@ -1414,6 +1419,9 @@ pub async fn start_rtmp_egress(
                                 if socket.write_all(&p.bytes).await.is_err() { return; }
                                 if let Some(ref counter) = egress_bytes_sent {
                                     counter.fetch_add(p.bytes.len() as u64, Ordering::Relaxed);
+                                }
+                                if let Some(ref m) = egress_metrics {
+                                    m.record_out(p.bytes.len() as u64);
                                 }
                             }
                             _ => {
