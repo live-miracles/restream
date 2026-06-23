@@ -536,6 +536,7 @@ fn bench_mpegts_mux(c: &mut Criterion) {
                     channels: a.channels,
                     channel_layout: None,
                     track_index: a.track_index,
+                    profile: None,
                 })
                 .collect()
         })

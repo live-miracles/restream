@@ -293,6 +293,26 @@ impl Reader {
         }
     }
 
+    pub fn new_live(name: String, buffer: Arc<RingBuffer>) -> Self {
+        let current_write = buffer.get_write_idx();
+        let info = Arc::new(ReaderInfo {
+            name,
+            read_idx: AtomicUsize::new(current_write),
+            overflow_count: AtomicUsize::new(0),
+        });
+
+        {
+            let mut r = buffer.readers.lock().unwrap();
+            r.push(Arc::downgrade(&info));
+        }
+
+        Self {
+            buffer,
+            info,
+            read_idx: current_write,
+        }
+    }
+
     pub fn pull(&mut self) -> Result<Option<Arc<MediaPacket>>, &'static str> {
         let write_idx = self.buffer.get_write_idx();
 

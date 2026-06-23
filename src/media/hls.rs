@@ -130,6 +130,7 @@ pub async fn start_hls_segmenter(
     let mut packets = Vec::with_capacity(32);
     let mut muxer: Option<(TsMuxer, Vec<crate::media::engine::AudioMeta>)> = None;
     let mut dts_enforcer: Option<DtsEnforcer> = None;
+    let mut has_video = false;
     let mut nalu_len_size: usize = 4;
     // Pre-populate SPS/PPS cache from the engine's stored FLV sequence header.
     // This handles the case where the HLS task starts after the seq header has
@@ -212,6 +213,7 @@ pub async fn start_hls_segmenter(
                                     }
                                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                 };
+                                has_video = video.is_some();
                                 let m = TsMuxer::new(video.as_ref(), &audio_tracks);
                                 let num_streams = video.is_some() as usize + audio_tracks.len();
                                 dts_enforcer = Some(DtsEnforcer::new(num_streams));
@@ -246,7 +248,7 @@ pub async fn start_hls_segmenter(
                             MediaType::Audio => tracks
                                 .iter()
                                 .position(|a| a.track_index == packet.track_index)
-                                .map(|i| i + (tracks.is_empty() as usize))
+                                .map(|i| i + (has_video as usize))
                                 .unwrap_or(0),
                         };
                         let (pts, dts) = dts_enforcer

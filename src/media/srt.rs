@@ -1810,6 +1810,21 @@ mod tests {
             assert!(drops < u64::MAX);
         }
     }
+
+    #[tokio::test]
+    async fn start_srt_egress_handles_invalid_streamid_without_panic() {
+        let ring_buffer = Arc::new(RingBuffer::new(16));
+        let engine = Arc::new(crate::media::engine::MediaEngine::new());
+        let cancel_token = CancellationToken::new();
+        start_srt_egress(
+            "out-id".to_string(),
+            "pipe-id".to_string(),
+            "srt://127.0.0.1:12345?streamid=publish:live/\x00mykey".to_string(),
+            ring_buffer,
+            engine,
+            cancel_token,
+        ).await;
+    }
 }
 
 impl Drop for SrtServer {
@@ -2115,7 +2130,14 @@ pub async fn start_srt_egress(
         }
 
         if !streamid.is_empty() {
-            let streamid_c = std::ffi::CString::new(streamid.as_str()).unwrap();
+            let streamid_c = match std::ffi::CString::new(streamid.as_str()) {
+                Ok(c) => c,
+                Err(_) => {
+                    eprintln!("[srt-egress] Stream ID contains null bytes");
+                    unsafe { srt_close(client_sock); }
+                    return;
+                }
+            };
             // Set streamid on the group via per-member config
             let config = unsafe { srt_create_config() };
             if !config.is_null() {
@@ -2378,7 +2400,7 @@ pub async fn start_srt_egress(
         }
     };
 
-    let mut reader = Reader::new(format!("srt_egress:{}", output_id), ring_buffer);
+    let mut reader = Reader::new_live(format!("srt_egress:{}", output_id), ring_buffer);
     // Per-egress reusable conversion buffers — eliminates per-frame allocation
     // for Flv→Annex B (source from RTMP ingest) and Raw no-ADTS audio.
     // Raw video packets (transcoder output, SRT ingest) are already zero-copy.

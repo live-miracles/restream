@@ -131,6 +131,7 @@ fn bench_hls_mux_cost(c: &mut Criterion) {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            profile: None,
         };
 
         // Mux only (no segment storage) — isolates TsMuxer cost
@@ -221,6 +222,7 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            profile: None,
         };
 
         // Measure steady-state memory: fill 10 segments (60s window)

@@ -1,4 +1,4 @@
-logLevel: warn
+logLevel: info
 rtmp: yes
 rtmpAddress: :1936
 srt: yes

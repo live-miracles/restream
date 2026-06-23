@@ -236,6 +236,7 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
         channels: 2,
         channel_layout: None,
         track_index: 0,
+        profile: None,
     };
 
     let idr_payload = vec![0x00, 0x00, 0x00, 0x01, 0x65]

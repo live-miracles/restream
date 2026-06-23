@@ -67,6 +67,7 @@ pub async fn start_recording(
     // Lazily initialized when first packet arrives
     let mut muxer: Option<TsMuxer> = None;
     let mut dts_enforcer: Option<DtsEnforcer> = None;
+    let mut has_video = false;
     let mut nalu_len_size: usize = 4;
     let mut sps_pps_cache: Vec<u8> = {
         let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
@@ -103,6 +104,7 @@ pub async fn start_recording(
                             let ingests = engine.active_ingests.read().await;
                             if let Some(ingest) = ingests.get(&pipeline_id) {
                                 let video = ingest.video.as_ref();
+                                has_video = video.is_some();
                                 let tracks = ingest.audio_tracks.lock().unwrap().clone();
                                 let num_streams = video.is_some() as usize + tracks.len();
                                 muxer = Some(TsMuxer::new(video, &tracks));
@@ -142,7 +144,7 @@ pub async fn start_recording(
                         let stream_idx = match pkt.media_type {
                             MediaType::Video => 0,
                             MediaType::Audio => {
-                                let video_offset = 1;
+                                let video_offset = has_video as usize;
                                 audio_tracks
                                     .iter()
                                     .position(|a| a.track_index == pkt.track_index)
@@ -189,7 +191,7 @@ pub async fn start_recording(
 fn run_mkv_muxer(
     queue: Arc<crate::media::avio::MemoryQueue>,
     file_path: &str,
-    token: CancellationToken,
+    _token: CancellationToken,
 ) -> Result<(), &'static str> {
     use std::io::Write;
 
@@ -202,11 +204,7 @@ fn run_mkv_muxer(
     while !done {
         let n = queue.read(&mut buf);
         if n == 0 {
-            if token.is_cancelled() {
-                done = true;
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            done = true;
         } else {
             file.write_all(&buf[..n])
                 .map_err(|_| "Recording: Failed to write")?;
@@ -225,4 +223,26 @@ fn run_mkv_muxer(
 
     file.flush().map_err(|_| "Recording: Failed to flush")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::avio::MemoryQueue;
+    use tokio_util::sync::CancellationToken;
+    use std::sync::Arc;
+
+    #[test]
+    fn run_mkv_muxer_exits_on_closed_queue() {
+        let queue = Arc::new(MemoryQueue::new());
+        queue.close();
+        let token = CancellationToken::new();
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_leak.ts");
+        let path_str = file_path.to_string_lossy().to_string();
+
+        let res = run_mkv_muxer(queue, &path_str, token);
+        assert!(res.is_ok());
+        let _ = std::fs::remove_file(file_path);
+    }
 }
