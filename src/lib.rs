@@ -654,16 +654,46 @@ pub async fn run_app() {
     }
 
     // ── Graceful shutdown cleanup ────────────────────────────────────────────
-    // Cancel all active egress tasks and wait briefly for them to finish their
-    // cleanup paths (unregister_egress, job-status update).
-    println!("[shutdown] Cancelling all active egress tasks...");
+    // Cancel ALL active tasks (egress, ingest, recording) and shut down HLS
+    // segmenters.  Previously only egress tokens were cancelled, leaving ingest
+    // OS threads, recording FFmpeg threads, and HLS segmenters alive until the
+    // runtime forcibly dropped them.
+    println!("[shutdown] Cancelling all active tasks...");
     {
-        let tokens = engine.egress_cancel_tokens.read().await;
-        for token in tokens.values() {
+        let egress = engine.egress_cancel_tokens.read().await;
+        for token in egress.values() {
             token.cancel();
         }
     }
-    // Give egress tasks a moment to run their cleanup paths.
+    {
+        let ingests = engine.ingest_cancel_tokens.read().await;
+        for token in ingests.values() {
+            token.cancel();
+        }
+    }
+    {
+        let recs = engine.recording_cancel_tokens.read().await;
+        for token in recs.values() {
+            token.cancel();
+        }
+    }
+    // Shut down all HLS segmenters (stops their internal tasks/timers).
+    let hls_ids: Vec<String> = engine
+        .hls_consumers
+        .read()
+        .await
+        .keys()
+        .cloned()
+        .collect();
+    for pid in hls_ids {
+        engine.shutdown_hls_segmenter(&pid).await;
+    }
+
+    // Give all tasks a moment to run their cleanup paths before we close the DB.
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Close the SQLite pool so WAL is checkpointed into the main DB file.
+    // Must be called after all DB-writing tasks have been cancelled above.
+    pool.close().await;
     println!("[shutdown] Done");
 }
