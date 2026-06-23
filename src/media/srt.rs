@@ -979,7 +979,12 @@ impl SrtServer {
             monitor_listener_socket(port, listener_stats).await;
         });
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(SRTSOCKET, sockaddr_in)>();
+        // Bounded channel between the blocking accept thread and the tokio task.
+        // Capacity of 1024 means at most 1024 accepted-but-unprocessed sockets
+        // queue up before the accept thread blocks. This limits memory growth
+        // under a connection-flood attack without rejecting valid clients under
+        // normal load (tokio processes items as fast as it can).
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(SRTSOCKET, sockaddr_in)>(1024);
 
         // RAII guard: close server_sock when run() returns (normal exit, task
         // cancellation, or panic).  Closing the socket interrupts srt_accept()
@@ -1011,7 +1016,11 @@ impl SrtServer {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     }
-                    if tx.send((client_sock, client_sin)).is_err() {
+                    // blocking_send: the accept thread is a std::thread so it
+                    // can block here when the channel is full. This creates
+                    // natural backpressure — the accept thread pauses while
+                    // tokio drains the queue, preventing unbounded growth.
+                    if tx.blocking_send((client_sock, client_sin)).is_err() {
                         unsafe {
                             srt_close(client_sock);
                         }
