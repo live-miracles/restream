@@ -291,11 +291,13 @@ pub async fn start_transcoder(
                             MediaType::Video => 0,
                             MediaType::Audio => {
                                 let video_offset = video_meta.is_some() as usize;
-                                audio_tracks
+                                match audio_tracks
                                     .iter()
                                     .position(|a| a.track_index == pkt.track_index)
-                                    .map(|i| i + video_offset)
-                                    .unwrap_or(0)
+                                {
+                                    Some(i) => i + video_offset,
+                                    None => continue, // unknown track — skip to avoid DTS corruption
+                                }
                             }
                         };
 

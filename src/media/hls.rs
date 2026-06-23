@@ -62,14 +62,14 @@ impl HlsStore {
     }
 
     pub fn clear(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.segments.clear();
         inner.next_index = 0;
         inner.target_duration = TARGET_DURATION_SECS;
     }
 
     pub fn push_segment(&self, duration: f64, data: Bytes) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let index = inner.next_index;
         inner.next_index += 1;
         if duration > inner.target_duration {
@@ -86,7 +86,7 @@ impl HlsStore {
     }
 
     pub fn get_playlist(&self) -> Option<String> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.segments.is_empty() {
             return None;
         }
@@ -107,7 +107,7 @@ impl HlsStore {
     }
 
     pub fn get_segment(&self, index: u64) -> Option<Bytes> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner
             .segments
             .iter()
@@ -200,7 +200,7 @@ pub async fn start_hls_segmenter(
                                         ingests.get(&pipeline_id).and_then(|i| {
                                             let video = i.video.clone();
                                             video.as_ref()?;
-                                            let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                                            let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                                             if tracks.is_empty()
                                                 && let Some(audio) = i.audio.clone() {
                                                     tracks.push(audio);
@@ -245,11 +245,13 @@ pub async fn start_hls_segmenter(
                         let t0 = Instant::now();
                         let stream_idx = match packet.media_type {
                             MediaType::Video => 0,
-                            MediaType::Audio => tracks
+                            MediaType::Audio => match tracks
                                 .iter()
                                 .position(|a| a.track_index == packet.track_index)
-                                .map(|i| i + (has_video as usize))
-                                .unwrap_or(0),
+                            {
+                                Some(i) => i + (has_video as usize),
+                                None => continue, // unknown track — skip to avoid DTS corruption
+                            },
                         };
                         let (pts, dts) = dts_enforcer
                             .as_mut()

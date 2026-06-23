@@ -684,6 +684,35 @@ mod tests {
         assert_eq!(e.enforce(5, 100, 100), (100, 100));
     }
 
+    #[test]
+    fn dts_enforcer_stream_idx_collision_corrupts_video_dts() {
+        // Regression for issue #2: before the fix, audio packets with an
+        // unknown track_index were routed to stream_idx=0 via `.unwrap_or(0)`,
+        // aliasing into the video DTS slot. This test documents the corruption
+        // pattern. The fix is `None => continue` in all pipeline mux loops so
+        // unknown-track audio packets are dropped instead of aliased.
+        let mut e = DtsEnforcer::new(2); // stream 0 = video, stream 1 = audio
+
+        // Normal video frame.
+        assert_eq!(e.enforce(0, 100, 100), (100, 100));
+
+        // Simulate the OLD bug: an audio packet with unknown track_index is
+        // incorrectly routed to stream_idx=0 (video's slot) and carries a
+        // large DTS, advancing video's monotonic counter to 300.
+        assert_eq!(e.enforce(0, 300, 300), (300, 300));
+
+        // Next genuine video frame at dts=200 is now bumped to 301 instead of
+        // passing through at 200, breaking A/V sync. With `None => continue`
+        // the audio packet is skipped so the video counter stays at 100 and
+        // dts=200 passes through correctly.
+        let (_, corrupted) = e.enforce(0, 200, 200);
+        assert_eq!(
+            corrupted, 301,
+            "aliasing audio to stream_idx=0 bumps video DTS past the actual \
+             video timestamp, demonstrating the corruption fixed by None=>continue"
+        );
+    }
+
     // -- Reader::drop lifecycle --
 
     #[test]

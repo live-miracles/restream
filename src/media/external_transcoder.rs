@@ -15,7 +15,7 @@
 //!                                                       │
 //!                                           (TsDemuxer → MediaPackets)
 //!                                                       │
-//!                                                 output_ring  ◄── shared
+//!                                                 output_ring  ─── shared
 //!                                                       │
 //!                                    ┌─────────────────┼──────────────────┐
 //!                                RTMP-out1          SRT-out1          HLS-out1
@@ -357,11 +357,13 @@ pub async fn start_external_transcoder_stage(
                         MediaType::Video => 0,
                         MediaType::Audio => {
                             let vo = has_video as usize;
-                            audio_tracks
+                            match audio_tracks
                                 .iter()
                                 .position(|a| a.track_index == pkt.track_index)
-                                .map(|i| i + vo)
-                                .unwrap_or(0)
+                            {
+                                Some(i) => i + vo,
+                                None => continue, // unknown track — skip to avoid DTS corruption
+                            }
                         }
                     };
 
