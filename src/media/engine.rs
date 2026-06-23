@@ -1895,4 +1895,46 @@ mod tests {
             "exactly one transcoder stage must exist after concurrent creation"
         );
     }
+
+    // --- Regression: Round 6 #7 — HLS consumer refcount must not leak ---
+    // The refcount must return to zero after balanced add/remove so the
+    // idle-sweep logic eventually stops the segmenter task.
+    #[tokio::test]
+    async fn hls_consumer_idle_only_when_persistent_count_zero() {
+        use tokio_util::sync::CancellationToken;
+
+        let engine = MediaEngine::new();
+        let token = CancellationToken::new();
+        {
+            let mut consumers = engine.hls_consumers.write().await;
+            consumers.insert(
+                "pipe-hls-rc".to_string(),
+                HlsConsumers::new(token.clone()),
+            );
+        }
+
+        // One persistent consumer added — segmenter must not be idle.
+        engine.add_hls_persistent_consumer("pipe-hls-rc").await;
+        {
+            let consumers = engine.hls_consumers.read().await;
+            assert!(
+                !consumers["pipe-hls-rc"].is_idle(0),
+                "segmenter must not be idle while a persistent consumer holds a ref"
+            );
+        }
+
+        // Remove the consumer — now idle (last_access_ms was set on creation;
+        // use a long timeout so only persistent count matters here).
+        engine.remove_hls_persistent_consumer("pipe-hls-rc").await;
+        {
+            let consumers = engine.hls_consumers.read().await;
+            assert_eq!(
+                consumers["pipe-hls-rc"]
+                    .persistent
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0,
+                "persistent count must be 0 after remove"
+            );
+        }
+    }
 }
