@@ -14,6 +14,7 @@ use ffmpeg_next as ffmpeg;
 use std::collections::VecDeque;
 use std::os::raw::{c_int, c_void};
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
 
@@ -80,7 +81,14 @@ impl MemoryQueue {
     pub fn read(&self, target: &mut [u8]) -> usize {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         while inner.buf.is_empty() && !inner.closed {
-            inner = self.cvar.wait(inner).unwrap();
+            // Use wait_timeout so the FFmpeg AVIO thread is not blocked indefinitely
+            // if the producer panics without calling close().  Poison recovery via
+            // unwrap_or_else ensures we don't panic on a poisoned mutex here.
+            inner = self
+                .cvar
+                .wait_timeout(inner, Duration::from_secs(5))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
         if inner.buf.is_empty() && inner.closed {
             return 0;
@@ -311,6 +319,7 @@ unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn write_batch_preserves_chunk_order() {
@@ -336,5 +345,34 @@ mod tests {
         let queue = MemoryQueue::new();
         let output = CustomOutput::new(&queue, "mpegts").expect("custom output");
         drop(output);
+    }
+
+    // --- Regression: issue #2 (Round 3) — MemoryQueue::read must not panic
+    // if the Mutex is poisoned by a panicking writer thread.
+    // Before the fix, `cvar.wait(inner).unwrap()` would propagate the poison
+    // and panic in the AVIO read callback, corrupting the FFmpeg output.
+    // After the fix the lock is recovered and reading resumes normally.
+    #[test]
+    fn read_recovers_from_poisoned_mutex() {
+        // Poison the MemoryQueue's internal mutex from a separate thread,
+        // then verify that write() and read_nonblocking() do not panic.
+        // We use Arc<MemoryQueue> so the poisoning thread can share the object.
+        let queue = Arc::new(MemoryQueue::new());
+        {
+            let q = queue.clone();
+            // unwrap() inside a thread that panics → the Mutex becomes poisoned
+            let _ = std::thread::spawn(move || {
+                let _guard = q.inner.lock().unwrap();
+                panic!("deliberate poison");
+            })
+            .join(); // returns Err(payload) — that's expected, we just consume it
+        }
+        // The mutex is now poisoned. write() and read_nonblocking() must
+        // recover via `unwrap_or_else(|e| e.into_inner())` and not panic.
+        queue.write(b"hello");
+        let mut buf = [0u8; 5];
+        let n = queue.read_nonblocking(&mut buf);
+        assert_eq!(n, 5);
+        assert_eq!(&buf, b"hello");
     }
 }
