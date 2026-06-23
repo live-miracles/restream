@@ -1014,54 +1014,63 @@ async fn handle_session_results(
                             let _ = socket.write_all(&pkt.bytes).await;
                         }
 
-                        // Feed loop: read from RingBuffer and send RTMP data
+                        // Feed loop: read from RingBuffer and send RTMP data.
+                        // Use pull_burst() to batch up to 32 packets per iteration
+                        // instead of pull() which acquires the write_idx atomic once
+                        // per packet (~170 acquisitions/sec at 170 pkts/sec vs ~5/sec).
                         let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
                         let mut reader =
                             Reader::new(format!("rtmp_play:{}", pipeline.id), ring_buf);
+                        let mut burst = Vec::with_capacity(32);
 
-                        loop {
-                            match reader.pull() {
-                                Ok(Some(pkt)) => {
-                                    let ts = match pkt.media_type {
-                                        MediaType::Video => {
-                                            RtmpTimestamp::new(pkt.dts.max(0) as u32)
-                                        }
-                                        MediaType::Audio => {
-                                            RtmpTimestamp::new(pkt.pts.max(0) as u32)
-                                        }
-                                    };
-                                    let result = match pkt.media_type {
-                                        MediaType::Video => session.send_video_data(
-                                            stream_id,
-                                            pkt.payload.clone(),
-                                            ts,
-                                            !pkt.is_keyframe,
-                                        ),
-                                        MediaType::Audio => session.send_audio_data(
-                                            stream_id,
-                                            pkt.payload.clone(),
-                                            ts,
-                                            false,
-                                        ),
-                                    };
-                                    match result {
-                                        Ok(packet) => {
-                                            if socket.write_all(&packet.bytes).await.is_err() {
-                                                println!(
-                                                    "[rtmp] Play subscriber disconnected for pipeline: {}",
-                                                    pipeline.id
-                                                );
-                                                return Err("Play subscriber disconnected");
-                                            }
-                                        }
-                                        Err(_) => break,
-                                    }
-                                }
-                                Ok(None) => {
+                        'play: loop {
+                            burst.clear();
+                            match reader.pull_burst(&mut burst, 32) {
+                                Ok(0) => {
                                     reader.wait_for_data().await;
+                                    continue;
                                 }
                                 Err(_) => {
-                                    // Overflow — reader was fast-forwarded, continue
+                                    // Overflow — reader was fast-forwarded; continue from new pos
+                                    continue;
+                                }
+                                Ok(_) => {}
+                            }
+
+                            for pkt in &burst {
+                                let ts = match pkt.media_type {
+                                    MediaType::Video => {
+                                        RtmpTimestamp::new(pkt.dts.max(0) as u32)
+                                    }
+                                    MediaType::Audio => {
+                                        RtmpTimestamp::new(pkt.pts.max(0) as u32)
+                                    }
+                                };
+                                let result = match pkt.media_type {
+                                    MediaType::Video => session.send_video_data(
+                                        stream_id,
+                                        pkt.payload.clone(),
+                                        ts,
+                                        !pkt.is_keyframe,
+                                    ),
+                                    MediaType::Audio => session.send_audio_data(
+                                        stream_id,
+                                        pkt.payload.clone(),
+                                        ts,
+                                        false,
+                                    ),
+                                };
+                                match result {
+                                    Ok(packet) => {
+                                        if socket.write_all(&packet.bytes).await.is_err() {
+                                            println!(
+                                                "[rtmp] Play subscriber disconnected for pipeline: {}",
+                                                pipeline.id
+                                            );
+                                            return Err("Play subscriber disconnected");
+                                        }
+                                    }
+                                    Err(_) => break 'play,
                                 }
                             }
                         }
