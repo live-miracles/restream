@@ -201,7 +201,7 @@ pub async fn start_external_transcoder_stage(
             let ingests = engine.active_ingests.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone()?;
-                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if tracks.is_empty()
                     && let Some(a) = i.audio.clone()
                 {

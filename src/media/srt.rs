@@ -1329,7 +1329,7 @@ impl SrtServer {
             let ingests = self.engine.active_ingests.read().await;
             match ingests.get(pipeline_id) {
                 Some(i) => {
-                    let mut audio_tracks = i.audio_tracks.lock().unwrap().clone();
+                    let mut audio_tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if audio_tracks.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
@@ -2307,7 +2307,7 @@ pub async fn start_srt_egress(
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
                 video.as_ref()?;
-                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if tracks.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {

@@ -398,21 +398,24 @@ impl MediaEngine {
         input_codec_override: Option<&str>,
     ) -> Arc<RingBuffer> {
         let key = format!("{}:{}", pipeline_id, encoding);
-        {
-            let buffers = self.transcoder_buffers.read().await;
-            if let Some((rb, token)) = buffers.get(&key)
-                && !token.is_cancelled()
-            {
+
+        // Use a single write-lock acquisition to atomically check-and-insert.
+        // The previous read-lock-then-write-lock pattern had a TOCTOU window:
+        // two concurrent callers could both see the key absent, then both create
+        // a ring buffer and spawn a transcoder task — the second insert would
+        // overwrite the first, leaving an orphaned transcoder eating CPU/memory.
+        let mut buffers = self.transcoder_buffers.write().await;
+        if let Some((rb, token)) = buffers.get(&key) {
+            if !token.is_cancelled() {
                 return rb.clone();
             }
+            // Cancelled stage — fall through and replace it
         }
 
         let output_buf = Arc::new(RingBuffer::new(4096));
         let cancel = CancellationToken::new();
-        {
-            let mut buffers = self.transcoder_buffers.write().await;
-            buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
-        }
+        buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
+        drop(buffers); // release write lock before spawning
 
         // Set codec_hint SYNCHRONOUSLY before spawning — downstream stages
         // (e.g. audio routers, SRT egress warmup) may query it before the
@@ -537,11 +540,11 @@ impl MediaEngine {
         source_buffer: Arc<RingBuffer>,
     ) -> Arc<RingBuffer> {
         let key = format!("{}:hevc_to_h264", pipeline_id);
-        {
-            let buffers = self.transcoder_buffers.read().await;
-            if let Some((rb, token)) = buffers.get(&key)
-                && !token.is_cancelled()
-            {
+
+        // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
+        let mut buffers = self.transcoder_buffers.write().await;
+        if let Some((rb, token)) = buffers.get(&key) {
+            if !token.is_cancelled() {
                 return rb.clone();
             }
         }
@@ -551,10 +554,8 @@ impl MediaEngine {
         // can initialize their TsMuxer / PMT with the correct codec.
         output_buf.set_codec_hint("h264");
         let cancel = CancellationToken::new();
-        {
-            let mut buffers = self.transcoder_buffers.write().await;
-            buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
-        }
+        buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
+        drop(buffers); // release write lock before spawning
 
         println!(
             "[h264-tc] Spawning shared H.265→H.264 transcoder for pipeline {}",
@@ -738,7 +739,7 @@ impl MediaEngine {
     pub async fn record_keyframe(&self, pipeline_id: &str, pts: i64) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            let mut times = ingest.keyframe_times.lock().unwrap();
+            let mut times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
             times.push(pts);
             if times.len() > 30 {
                 times.remove(0);
@@ -793,9 +794,9 @@ impl MediaEngine {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             if is_video {
-                *ingest.video_sequence_header.lock().unwrap() = Some(data);
+                *ingest.video_sequence_header.lock().unwrap_or_else(|e| e.into_inner()) = Some(data);
             } else {
-                *ingest.audio_sequence_header.lock().unwrap() = Some(data);
+                *ingest.audio_sequence_header.lock().unwrap_or_else(|e| e.into_inner()) = Some(data);
             }
         }
     }
@@ -806,8 +807,8 @@ impl MediaEngine {
     ) -> (Option<bytes::Bytes>, Option<bytes::Bytes>) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            let video = ingest.video_sequence_header.lock().unwrap().clone();
-            let audio = ingest.audio_sequence_header.lock().unwrap().clone();
+            let video = ingest.video_sequence_header.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let audio = ingest.audio_sequence_header.lock().unwrap_or_else(|e| e.into_inner()).clone();
             (video, audio)
         } else {
             (None, None)
@@ -818,7 +819,7 @@ impl MediaEngine {
     pub async fn update_ingest_audio_tracks(&self, pipeline_id: &str, tracks: Vec<AudioMeta>) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            *ingest.audio_tracks.lock().unwrap() = tracks;
+            *ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()) = tracks;
         }
     }
 
@@ -836,7 +837,7 @@ impl MediaEngine {
         };
 
         let audio_tracks: Vec<serde_json::Value> = {
-            let tracks = ingest.audio_tracks.lock().unwrap();
+            let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
             if tracks.is_empty() {
                 ingest
                     .audio
@@ -852,7 +853,7 @@ impl MediaEngine {
         };
 
         let gop = {
-            let times = ingest.keyframe_times.lock().unwrap();
+            let times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
             if times.len() >= 2 {
                 let intervals: Vec<f64> = times
                     .windows(2)
@@ -1072,7 +1073,7 @@ impl MediaEngine {
                     // Compute instantaneous bitrate from byte delta
                     let bitrate_kbps = {
                         let prev = egress.prev_bytes_sent.load(Ordering::Relaxed);
-                        let mut prev_time = egress.prev_sample_time.lock().unwrap();
+                        let mut prev_time = egress.prev_sample_time.lock().unwrap_or_else(|e| e.into_inner());
                         let elapsed = prev_time.elapsed().as_secs_f64();
 
                         if elapsed > 0.5 && bytes_sent > prev {
@@ -1080,10 +1081,10 @@ impl MediaEngine {
                             let rate = (delta as f64 * 8.0) / (elapsed * 1000.0);
                             egress.prev_bytes_sent.store(bytes_sent, Ordering::Relaxed);
                             *prev_time = Instant::now();
-                            *egress.bitrate_kbps.lock().unwrap() = Some(rate);
+                            *egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()) = Some(rate);
                             Some(rate)
                         } else {
-                            *egress.bitrate_kbps.lock().unwrap()
+                            *egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner())
                         }
                     };
 
@@ -1312,7 +1313,7 @@ impl MediaEngine {
                         "status": e.status,
                         "targetUrl": e.target_url,
                         "totalSize": bytes,
-                        "bitrateKbps": *e.bitrate_kbps.lock().unwrap(),
+                        "bitrateKbps": *e.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()),
                         "startedAt": e.started_at,
                     })
                 }),

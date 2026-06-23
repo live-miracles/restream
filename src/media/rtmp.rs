@@ -1268,7 +1268,7 @@ pub async fn start_rtmp_egress(
                                     if audio_sh.is_none() {
                                         let ingests = engine.active_ingests.read().await;
                                         if let Some(ingest) = ingests.get(&pipeline_id) {
-                                            let tracks = ingest.audio_tracks.lock().unwrap();
+                                            let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
                                             if let Some(track) = tracks.first() {
                                                 audio_sh = Some(codec::build_aac_sequence_header(
                                                     track.sample_rate,

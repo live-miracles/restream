@@ -356,7 +356,15 @@ async fn login_post_handler(
         }
     };
 
-    if !verify_password(&password, &stored_hash) {
+    // scrypt is CPU-bound (~120 ms at N=2^14). Calling it on the async
+    // executor thread would block all other tasks during that window,
+    // enabling a trivial DoS via concurrent login requests. spawn_blocking
+    // offloads the work to a dedicated thread pool.
+    let verified = tokio::task::spawn_blocking(move || verify_password(&password, &stored_hash))
+        .await
+        .unwrap_or(false);
+
+    if !verified {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Incorrect password"})),
@@ -447,7 +455,13 @@ async fn change_password_handler(
         }
     };
 
-    if !verify_password(&current_password, &stored_hash) {
+    // Offload scrypt verification to blocking thread pool (same rationale as login handler).
+    let verified =
+        tokio::task::spawn_blocking(move || verify_password(&current_password, &stored_hash))
+            .await
+            .unwrap_or(false);
+
+    if !verified {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "Current password is incorrect"})),
@@ -455,7 +469,16 @@ async fn change_password_handler(
             .into_response();
     }
 
-    let new_hash = hash_password(&new_password);
+    let new_hash = tokio::task::spawn_blocking(move || hash_password(&new_password))
+        .await
+        .unwrap_or_default();
+    if new_hash.is_empty() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to hash new password",
+        )
+            .into_response();
+    }
     if db::set_meta(&state.db, PASSWORD_META_KEY, &new_hash)
         .await
         .is_err()

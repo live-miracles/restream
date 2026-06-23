@@ -105,7 +105,7 @@ pub async fn start_recording(
                             if let Some(ingest) = ingests.get(&pipeline_id) {
                                 let video = ingest.video.as_ref();
                                 has_video = video.is_some();
-                                let tracks = ingest.audio_tracks.lock().unwrap().clone();
+                                let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                                 let num_streams = video.is_some() as usize + tracks.len();
                                 muxer = Some(TsMuxer::new(video, &tracks));
                                 dts_enforcer = Some(DtsEnforcer::new(num_streams));

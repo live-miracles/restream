@@ -282,7 +282,7 @@ impl Reader {
         });
 
         {
-            let mut r = buffer.readers.lock().unwrap();
+            let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
             r.push(Arc::downgrade(&info));
         }
 
@@ -302,7 +302,7 @@ impl Reader {
         });
 
         {
-            let mut r = buffer.readers.lock().unwrap();
+            let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
             r.push(Arc::downgrade(&info));
         }
 
@@ -680,18 +680,18 @@ mod tests {
     fn reader_drop_removes_entry_from_readers_list() {
         let rb = Arc::new(RingBuffer::new(16));
 
-        assert_eq!(rb.readers.lock().unwrap().len(), 0);
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
 
         let r1 = Reader::new("r1".into(), rb.clone());
         let r2 = Reader::new("r2".into(), rb.clone());
-        assert_eq!(rb.readers.lock().unwrap().len(), 2);
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
 
         drop(r1);
         // After drop, our entry is removed and no stale Weak remains.
-        assert_eq!(rb.readers.lock().unwrap().len(), 1);
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
 
         drop(r2);
-        assert_eq!(rb.readers.lock().unwrap().len(), 0);
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
     }
 
     #[test]
@@ -706,17 +706,17 @@ mod tests {
                 read_idx: AtomicUsize::new(0),
                 overflow_count: AtomicUsize::new(0),
             });
-            rb.readers.lock().unwrap().push(Arc::downgrade(&ephemeral));
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&ephemeral));
             // ephemeral drops here → Weak becomes stale
         }
-        assert_eq!(rb.readers.lock().unwrap().len(), 1); // stale entry present
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 1); // stale entry present
 
         let r = Reader::new("live".into(), rb.clone());
-        assert_eq!(rb.readers.lock().unwrap().len(), 2); // stale + live
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 2); // stale + live
 
         drop(r);
         // drop() removes our entry AND prunes the stale one.
-        assert_eq!(rb.readers.lock().unwrap().len(), 0);
+        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
     }
 
     #[test]

@@ -395,6 +395,11 @@ pub fn annexb_to_avcc_into(data: &[u8], out: &mut Vec<u8>) {
 /// large single-NALU IDR frames (clearing+repopulating `sc_scratch` dominates).
 /// The production `annexb_to_avcc_into` uses `two_pass`. Switch to `with_scratch`
 /// only if the workload profile shifts to many small NALUs per frame.
+fn get_start_code_finder() -> &'static memchr::memmem::Finder<'static> {
+    static FINDER: std::sync::OnceLock<memchr::memmem::Finder<'static>> = std::sync::OnceLock::new();
+    FINDER.get_or_init(|| memchr::memmem::Finder::new(&[0u8, 0, 1]))
+}
+
 pub fn annexb_to_avcc_with_scratch(
     data: &[u8],
     out: &mut Vec<u8>,
@@ -402,7 +407,7 @@ pub fn annexb_to_avcc_with_scratch(
 ) {
     // Populate start-code spans into the scratch buffer, clearing first.
     sc_scratch.clear();
-    let finder = memchr::memmem::Finder::new(&[0u8, 0, 1]);
+    let finder = get_start_code_finder();
     for idx in finder.find_iter(data) {
         let mut start = idx;
         while start > 0 && data[start - 1] == 0 {
@@ -435,7 +440,7 @@ pub fn annexb_to_avcc_with_scratch(
 /// Returns a list of `(start_index, end_index)` spans of the start codes themselves.
 pub fn find_annexb_start_codes(data: &[u8]) -> Vec<(usize, usize)> {
     let mut matches = Vec::new();
-    let finder = memchr::memmem::Finder::new(&[0, 0, 1]);
+    let finder = get_start_code_finder();
     for idx in finder.find_iter(data) {
         let mut start = idx;
         while start > 0 && data[start - 1] == 0 {

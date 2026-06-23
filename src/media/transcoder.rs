@@ -185,7 +185,7 @@ pub async fn start_transcoder(
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
                 video.as_ref()?;
-                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if tracks.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {

@@ -916,9 +916,11 @@ fn write_pcr(buf: &mut [u8], ts_90k: i64) {
 }
 
 fn ts_to_ms(ts_90k: i64) -> i64 {
-    // Exact: ts * 1000 / 90000 = ts / 90
-    // Use f64 to match existing FFmpeg demuxer behavior
-    (ts_90k as f64 * 1000.0 / 90000.0) as i64
+    // Exact integer arithmetic: 90kHz → ms is ts / 90 (= ts * 1000 / 90000).
+    // Using f64 would introduce up to ~45 ms of accumulated drift over a 24-hour
+    // stream because f64 has only 53-bit mantissa precision and ts_90k grows to
+    // ~7.8e12 for a day-long stream, losing sub-90-tick resolution.
+    ts_90k / 90
 }
 
 fn ms_to_ts(ms: i64) -> i64 {

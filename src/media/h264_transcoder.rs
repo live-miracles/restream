@@ -43,7 +43,7 @@ pub async fn start_h264_transcoder(
                 if video.codec != "hevc" && video.codec != "h265" {
                     return None;
                 }
-                let mut tracks = i.audio_tracks.lock().unwrap().clone();
+                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if tracks.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {
@@ -417,11 +417,16 @@ fn run_ffmpeg_h264_stage(
             while enc.receive_packet(&mut enc_pkt).is_ok() {
                 let data = enc_pkt.data().unwrap_or(&[]).to_vec();
                 let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
+                // DTS can differ from PTS when B-frames are enabled: the encoder
+                // returns the decode timestamp separately.  Setting dts=pts would
+                // break B-frame reordering in downstream muxers (TS, MP4).
+                let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
+                let dts_ms = dts_raw * fps_den * 1000 / fps_num;
                 out_ring.push(MediaPacket {
                     media_type: MediaType::Video,
                     track_index: 0,
                     pts: pts_ms,
-                    dts: pts_ms,
+                    dts: dts_ms,
                     is_keyframe: enc_pkt.is_key(),
                     format: PayloadFormat::Raw,
                     payload: Bytes::from(data),
@@ -436,11 +441,13 @@ fn run_ffmpeg_h264_stage(
         while enc.receive_packet(&mut enc_pkt).is_ok() {
             let data = enc_pkt.data().unwrap_or(&[]).to_vec();
             let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
+            let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
+            let dts_ms = dts_raw * fps_den * 1000 / fps_num;
             out_ring.push(MediaPacket {
                 media_type: MediaType::Video,
                 track_index: 0,
                 pts: pts_ms,
-                dts: pts_ms,
+                dts: dts_ms,
                 is_keyframe: enc_pkt.is_key(),
                 format: PayloadFormat::Raw,
                 payload: Bytes::from(data),
