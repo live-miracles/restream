@@ -376,6 +376,7 @@ async fn egress_correctness() -> Result<Value, String> {
     let _srt_egress = tokio::spawn(start_srt_egress(
         "out-srt".to_string(),
         "pipe-src".to_string(),
+        "source".to_string(),
         srt_egress_url.clone(),
         source_ring,
         engine.clone(),
@@ -1729,6 +1730,7 @@ async fn matrix_correctness() -> Result<Value, String> {
         tokio::spawn(start_srt_egress(
             format!("out-srt-{src_pipe}"),
             src_pipe.to_string(),
+            "source".to_string(),
             srt_egress_url,
             target_ring.clone(),
             engine.clone(),
