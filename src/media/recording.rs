@@ -50,7 +50,9 @@ pub async fn start_recording(
     let queue_clone = queue.clone();
     let file_path_clone = file_path.clone();
     let cancel_token_clone = cancel_token.clone();
-    std::thread::spawn(move || {
+    // Store the JoinHandle so we can join the thread on exit and detect panics.
+    // Dropping the handle detaches the thread silently — any crash becomes invisible.
+    let muxer_handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_mkv_muxer(queue_clone, &file_path_clone, cancel_token_clone)
         }));
@@ -174,6 +176,13 @@ pub async fn start_recording(
     }
 
     queue.close();
+
+    // Join the muxer thread to ensure the file is fully flushed before we
+    // check the duration and potentially delete it.  Joining also surfaces
+    // any panic that escaped catch_unwind (shouldn't happen, but be explicit).
+    if let Err(e) = muxer_handle.join() {
+        eprintln!("[recording] MKV muxer thread join failed for {}: {:?}", filename, e);
+    }
 
     let duration = started_at.elapsed();
     println!(
