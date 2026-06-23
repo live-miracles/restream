@@ -33,6 +33,10 @@ Static pages/assets are served without an auth gate; protected API handlers
 enforce the cookie themselves. `/health`, `/healthz`, HLS pull routes, and
 `/audio-caps` are also public.
 
+All responses include `X-Content-Type-Options: nosniff` and
+`X-Frame-Options: SAMEORIGIN` security headers. These are applied globally by
+a `SetResponseHeaderLayer` on the main router.
+
 ## Configuration and Discovery
 
 ### `GET /config`
@@ -126,9 +130,10 @@ built-in key is selected.
 `inputSource` and pipeline-level `encoding` are persisted but are not used to
 pull remote media or transform the active native ingest path.
 
-Deletion cancels configured output tasks and the active ingest before removing
-the pipeline row. Shared transcoder, HLS, and recording cleanup still follows
-their existing task lifecycle.
+Deletion cancels configured output tasks, the active ingest, and any
+file-ingest FFmpeg subprocesses whose `streamKey` matches the pipeline's
+stream key before removing the pipeline row. Shared transcoder, HLS, and
+recording cleanup still follows their existing task lifecycle.
 
 ## Outputs
 
@@ -243,6 +248,8 @@ ID already has a tracked child. The list endpoint currently reports
 `running: false` for every row; it does not consult the child map. Natural child
 exit is not reaped from the map, so a later start can remain stuck at `409`.
 Deleting an ingest definition terminates its running child process if one exists.
+Both stop and delete kill the child and call `wait()` to reap it immediately so
+no zombie processes remain.
 
 ## Media Files
 

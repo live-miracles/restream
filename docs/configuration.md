@@ -125,6 +125,11 @@ selection is complete; channel filtering/encoding remains open.
 
 ## SRT Socket Policy
 
+Both SRT play (subscriber) and SRT egress connections wait up to 200 ms per
+poll for the ingest probe to complete before creating the MPEG-TS muxer.
+If no video metadata is available the server polls every 200 ms; if the ingest
+disappears during the wait the connection is closed gracefully.
+
 The runtime calls its high-bitrate helper for the SRT listener and single-link
 egress sockets:
 
@@ -177,7 +182,10 @@ The in-memory HLS store is served at:
 
 The older `/preview/hls/...` paths are compatibility aliases. Live generation
 uses the native inline `TsMuxer`; one shared segmenter per pipeline serves
-browser previews and HLS-type outputs.
+browser previews and HLS-type outputs. The segmenter is kept alive while at
+least one persistent HLS output is active; its reference count is adjusted
+correctly even when an HLS egress task panics (refcount is decremented in
+an always-runs cleanup path outside the panic-catching closure).
 
 These routes respond with `Access-Control-Allow-Origin: *` so browser-based
 players on other origins can pull playlists and segments without CORS preflight

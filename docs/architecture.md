@@ -65,7 +65,7 @@ can restart the stage on the next tick.
 | Tokio runtime workers | OS threads | `#[tokio::main]` | Async task scheduling, epoll I/O polling |
 | SRT accept loop | `std::thread` | `srt.rs` `SrtServer::run` | Blocks on `srt_accept()`, sends sockets via bounded `mpsc::channel(1024)` |
 | SRT socket monitor | tokio task | `srt.rs` `SrtServer::run` | Polls `/proc/net/udp` every 1s for buffer occupancy |
-| Reconciler | tokio task | `lib.rs` `run_app` | 1-second tick: reconciles output desired vs active state |
+| Reconciler | tokio task | `lib.rs` `run_app` | 1-second tick: reconciles output desired vs active state; logs DB errors to stderr instead of silently skipping |
 | RTMP listener | tokio task | `lib.rs` `run_app` | Accepts TCP connections on port 1935 |
 | Web server (Axum) | tokio task | `lib.rs` `run_app` | HTTP on :3030, REST API + SSE health |
 
