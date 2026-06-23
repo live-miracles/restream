@@ -1844,9 +1844,28 @@ mod tests {
 
 impl Drop for SrtServer {
     fn drop(&mut self) {
-        unsafe {
-            srt_cleanup();
-        }
+        // srt_cleanup() is intentionally NOT called here.
+        //
+        // SrtServer is Arc-owned by a tokio task that may be dropped during
+        // runtime shutdown, at which point SRT egress sender OS threads may
+        // still hold open SRTSOCKET handles.  Calling srt_cleanup() while live
+        // sockets exist violates the libsrt API contract and can produce SIGSEGV
+        // or assertion failures inside libsrt.
+        //
+        // Instead, call crate::media::srt::teardown_srt() explicitly from
+        // run_app() AFTER all OS threads have been joined (and therefore all
+        // SRT sockets have been closed via srt_close() in their cleanup paths).
+    }
+}
+
+/// Call srt_cleanup() to release libsrt global state.
+///
+/// Must be called AFTER all SRT sockets (server + egress) are closed and
+/// their OS threads have been joined.  run_app() calls this at the very end
+/// of the graceful-shutdown sequence, after drain_os_thread_handles().
+pub fn teardown_srt() {
+    unsafe {
+        srt_cleanup();
     }
 }
 

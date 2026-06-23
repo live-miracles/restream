@@ -710,5 +710,10 @@ pub async fn run_app() {
     // Close the SQLite pool so WAL is checkpointed into the main DB file.
     // Must be called after all DB-writing tasks have been cancelled above.
     pool.close().await;
+
+    // Tear down libsrt global state AFTER all SRT sockets are closed.
+    // This must come after join_os_threads() above, which guarantees all
+    // SRT sender threads have exited and called srt_close() on their sockets.
+    crate::media::srt::teardown_srt();
     println!("[shutdown] Done");
 }
