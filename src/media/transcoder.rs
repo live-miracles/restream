@@ -65,6 +65,9 @@ pub async fn start_audio_router(
     );
     let mut _pushed_count: u64 = 0;
     let mut first_push_logged = false;
+    // Pre-allocated output batch — reused across bursts so the Vec capacity
+    // is retained (no re-allocation on the hot path after the first burst).
+    let mut out_batch: Vec<MediaPacket> = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -114,10 +117,6 @@ pub async fn start_audio_router(
                         }
                     };
                     if let Some(p) = out {
-                        // pull_burst returns Arc<MediaPacket>; push takes MediaPacket.
-                        // Bytes payload is Arc-backed so clone is a refcount bump.
-                        output_buffer.push((*p).clone());
-                        _pushed_count += 1;
                         if !first_push_logged {
                             println!(
                                 "[audio-router] first push pipeline={} type={:?} track={} codec_out='{}'",
@@ -126,7 +125,14 @@ pub async fn start_audio_router(
                             );
                             first_push_logged = true;
                         }
+                        // pull_burst returns Arc<MediaPacket>; clone is a refcount bump.
+                        out_batch.push((*p).clone());
+                        _pushed_count += 1;
                     }
+                }
+                // One write-index store + one Notify for the entire burst.
+                if !out_batch.is_empty() {
+                    output_buffer.push_batch(out_batch.drain(..));
                 }
             }
         }
