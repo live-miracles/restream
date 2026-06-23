@@ -910,9 +910,13 @@ pub async fn run_diagnostics(
 
     macro_rules! run_check {
         ($idx:expr, $name:expr, $desc:expr, $check:expr) => {{
-            let _ = tx.send(running_event($idx, $name, $desc)).await;
+            if tx.send(running_event($idx, $name, $desc)).await.is_err() {
+                return;
+            }
             let result = $check.await;
-            let _ = tx.send(result_event(&result)).await;
+            if tx.send(result_event(&result)).await.is_err() {
+                return;
+            }
         }};
     }
 
@@ -983,4 +987,21 @@ pub async fn run_diagnostics(
     let _ = tx
         .send(sse_event("done", &json!({ "totalDurationMs": total_ms })))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::engine::MediaEngine;
+
+    #[tokio::test]
+    async fn test_run_diagnostics_early_exit_on_disconnect() {
+        let engine = Arc::new(MediaEngine::new());
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+        drop(rx);
+
+        let start = Instant::now();
+        run_diagnostics(engine, "pipe-test".to_string(), "rtmp".to_string(), tx).await;
+        assert!(start.elapsed().as_millis() < 100);
+    }
 }
