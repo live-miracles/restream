@@ -30,26 +30,31 @@ Publisher
 Tokio tasks handle:
 
 - Axum HTTP
-- RTMP connections
+- RTMP ingest and egress
 - SRT connection coordination and ingest (inline native MPEG-TS demux)
+- SRT egress feed and mux (inline TsMuxer)
 - HLS segmenting and store (inline native MPEG-TS mux)
-- output reconciliation
-- egress lifecycle
+- Output reconciliation and egress lifecycle
+- External transcoder: stdin feeder + stdout TsDemuxer task + stderr logger task
+- Audio-routing stages (`atrack:`, `remap:`): pure packet-filter tokio tasks
 
-Dedicated OS threads handle blocking/native FFmpeg work or dedicated egress
-sending:
+Dedicated OS threads (`std::thread::spawn`) handle blocking FFmpeg or blocking
+libsrt calls:
 
+- SRT accept loop (blocks on `srt_accept()`)
 - SRT egress sender (blocks on `srt_send()`)
-- Matroska recording (FFmpeg MKV mux)
-- transcoding (FFmpeg decode + encode via MemoryQueue)
+- Internal transcoder video stage (`RESTREAM_USE_INTERNAL_TRANSCODER=1`): libavcodec decode+encode via MemoryQueue
+- `hevc_to_h264` stage: libavcodec H.265→H.264 in-process, one OS thread per pipeline with H.265 RTMP output
+- Matroska recording (FFmpeg MKV mux via MemoryQueue)
 
-Native worker entry points are wrapped with `catch_unwind` where the code needs
-to contain FFmpeg/libsrt failures.
+The **external transcoder** (default) runs `ffmpeg` as a child subprocess — it does
+**not** spawn an OS thread inside the parent. Per stage it uses three tokio tasks
+(stdin feeder, stdout TsDemuxer, stderr logger) and one `Command::spawn` child.
 
-All three SRT OS threads (accept loop, play sender, egress sender) are wrapped in
-`catch_unwind(AssertUnwindSafe(…))` so a panic in libsrt FFI does not crash the
-process. The accept thread logs the panic and stops accepting; the sender threads
-log and close the socket.
+All `std::thread::spawn` entry points are wrapped in `catch_unwind(AssertUnwindSafe(…))`
+so FFmpeg or libsrt panics do not crash the process. SRT accept/sender threads log
+the panic and stop; transcoder threads cancel their stage token so the reconciler
+can restart the stage on the next tick.
 
 ## Thread Inventory
 
@@ -66,43 +71,63 @@ log and close the socket.
 
 Tokio worker count = `num_cpus` (tokio default, not configurable).
 
-### Per-connection / per-output threads
+### Per-connection / per-output threads and tasks
 
-| Thread | Type | Count | Lifetime |
+| Thread / task | Type | Count | Lifetime |
 |---|---|---|---|
 | RTMP ingest handler | tokio task | 1 per RTMP publisher | TCP connection lifetime |
 | RTMP egress handler | tokio task | 1 per RTMP output | Output lifetime |
-| SRT ingest handler | tokio task | 1 per SRT publisher | SRT session; inline native TsDemuxer |
+| SRT ingest handler | tokio task | 1 per SRT publisher | SRT session; inline TsDemuxer |
 | SRT egress feed+mux | tokio task | 1 per SRT output | Inline TsMuxer in async feed loop |
 | SRT egress sender | `std::thread` | 1 per SRT output | Blocks on `srt_send()` |
-| HLS segmenter | tokio task | 1 per HLS pipeline | Inline TsMuxer + segment accumulator |
-| Transcoder stage | `std::thread` | 1 per unique (pipeline, preset) | FFmpeg demux → direct RingBuffer push |
-| Recording muxer | `std::thread` | 1 per active recording | MKV mux via FFmpeg |
+| HLS segmenter | tokio task | 1 per active HLS pipeline | Inline TsMuxer + in-memory segment store |
+| Ext transcoder stdin feeder | tokio task | 1 per `(pipeline, video_preset)` | source_ring → TsMuxer → FFmpeg stdin |
+| Ext transcoder stdout reader | tokio task | 1 per `(pipeline, video_preset)` | FFmpeg stdout → TsDemuxer → output_ring |
+| Ext transcoder stderr logger | tokio task | 1 per `(pipeline, video_preset)` | Drains and logs FFmpeg stderr |
+| Ext FFmpeg subprocess | child process | 1 per `(pipeline, video_preset)` | Lives while stage is active |
+| Int transcoder OS thread | `std::thread` | 1 per `(pipeline, video_preset)` when `RESTREAM_USE_INTERNAL_TRANSCODER=1` | libavcodec decode+encode via MemoryQueue |
+| `hevc_to_h264` OS thread | `std::thread` | 1 per pipeline with H.265 → RTMP output | libavcodec H.265→H.264 in-process |
+| `hevc_to_h264` feeder task | tokio task | 1 per pipeline with H.265 → RTMP output | source_ring → TsMuxer → MemoryQueue |
+| Audio-routing stage | tokio task | 1 per `(pipeline, audio_key)` | Pure SelectTracks / Remap filter; no OS thread |
+| Recording feeder | tokio task | 1 per active recording | source_ring → MemoryQueue |
+| Recording muxer | `std::thread` | 1 per active recording | MemoryQueue → FFmpeg MKV mux |
 
-### Thread count formula
+### OS thread count formula
 
 ```
 total_os_threads =
-    num_cpus                           # tokio workers (fixed)
-  + 1                                  # SRT accept loop (fixed)
-  + N_srt_egress × 1                   # sender per SRT output
-  + N_unique_presets × 1               # transcoder stage per preset
-  + N_recordings × 1                   # MKV muxer per active recording
+    num_cpus                                    # tokio workers (fixed)
+  + 1                                           # SRT accept loop (fixed)
+  + N_srt_egress × 1                            # sender per SRT output
+  + N_hevc_to_h264_pipelines × 1               # libavcodec H.265→H.264 stage
+  + N_int_video_stages × 1                     # libavcodec encode (internal backend only)
+  + N_recordings × 1                           # MKV muxer per active recording
 ```
 
-Tokio tasks (RTMP ingest/egress, SRT ingest/egress feed, HLS, recording feeder)
-multiplex onto the fixed worker pool and do not spawn additional OS threads.
+The following do **not** add OS threads:
+- Tokio tasks (RTMP ingest/egress, SRT ingest/egress feed, HLS, recording feeder)
+- External transcoder subprocess (child process, not a thread in the parent)
+- Audio-routing stages (`atrack:`, `remap:`) — pure tokio task packet filters
 
-### Example: 1 SRT ingest, 3 SRT egress, 720p transcode, recording active
+### Example: 1 SRT ingest (H.264), 3 SRT egress, 720p transcode (ext), no recording
 
 ```
 num_cpus (e.g. 8)    tokio workers
 + 1                  SRT accept loop
-+ 3                  3 × sender
-+ 1                  transcoder stage
++ 3                  3 × SRT egress sender
+─────
+12 OS threads        (ext FFmpeg subprocess is a child process, not counted here)
+```
+
+### Example: 1 SRT ingest (H.265), 3 RTMP egress (source), 720p transcode, recording active
+
+```
+num_cpus (e.g. 8)    tokio workers
++ 1                  SRT accept loop
++ 1                  hevc_to_h264 OS thread  (H.265 → RTMP source needs it)
 + 1                  recording MKV muxer
 ─────
-14 OS threads total
+11 OS threads        + 1 ext FFmpeg child process (video:720p)
 ```
 
 ### Example: 1 RTMP ingest, 3 RTMP egress, no transcoding

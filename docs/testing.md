@@ -65,6 +65,49 @@ multiple same-type outputs so the shared transcoder stage is exercised.
 Required tools: `ffmpeg`, `curl`, and `jq`. The script targets native RTMP/SRT
 ingest with six outputs.
 
+### Mixed Scale Test
+
+```sh
+N_PER_GROUP=25 ./test/run-mixed-scale-test.sh
+```
+
+Exercises the five ingest configurations that cover every combination of codec
+and protocol used in production, each fanned out to `4×N_PER_GROUP` mixed outputs
+(RTMP-src + RTMP-720p + SRT-src + SRT-720p):
+
+| Config | Ingest | Codec | Audio tracks |
+|---|---|---|---|
+| `h264-rtmp` | RTMP | H.264 | 1 |
+| `h265-srt` | SRT | H.265 | 1 |
+| `h264-srt` | SRT | H.264 | 1 |
+| `h264-srt-multi` | SRT | H.264 | 2 |
+| `h265-srt-multi` | SRT | H.265 | 2 |
+
+After each config it prints RSS delta, per-output overhead, and the count of
+external FFmpeg subprocesses. Expected results (see
+[media-pipeline.md § Scale Test Pipeline Paths](media-pipeline.md#scale-test-pipeline-paths)):
+
+| Config | `ext_ffmpeg#` | Int OS threads |
+|---|:---:|:---:|
+| `h264-rtmp` | 1 | 0 |
+| `h264-srt` | 1 | 0 |
+| `h265-srt` | 1 | 1 |
+| `h264-srt-multi` | 1 | 0 |
+| `h265-srt-multi` | 1 | 1 |
+
+Set `ISOLATE=1` to restart restream and mediamtx between configs so each
+baseline is clean. Requires `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, and `jq`.
+
+### 8-Config Structured Scale Test
+
+```sh
+N_OUTPUTS=10 ./test/run-scale-test.sh
+```
+
+Sweeps eight ingest×output×encoding combinations (RTMP/SRT ingest × RTMP/SRT
+output × source/720p encoding) and records RSS + FFmpeg subprocess counts as
+outputs are added one by one. Useful for spotting per-output memory growth.
+
 ### Media Validation
 
 ```sh
