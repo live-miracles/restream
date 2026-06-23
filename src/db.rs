@@ -15,6 +15,42 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
         .execute(pool)
         .await?;
 
+    // Performance tuning: reduce fsync overhead, bound WAL growth, improve
+    // read throughput and reduce busy-wait contention on concurrent access.
+    //
+    // synchronous=NORMAL: skip the extra sync on each WAL frame; the database
+    // is still crash-safe (the WAL guarantees durability) but ~50% faster on
+    // write-heavy workloads.
+    sqlx::query("PRAGMA synchronous = NORMAL;")
+        .execute(pool)
+        .await?;
+    // busy_timeout: retry for up to 5 s instead of immediately returning
+    // SQLITE_BUSY when another writer holds the WAL write lock. Prevents
+    // spurious DB errors under bursty concurrent writes.
+    sqlx::query("PRAGMA busy_timeout = 5000;")
+        .execute(pool)
+        .await?;
+    // journal_size_limit: cap the WAL file at 64 MB. Without this the WAL
+    // can grow to gigabytes on a busy instance before the next checkpoint.
+    sqlx::query("PRAGMA journal_size_limit = 67108864;")
+        .execute(pool)
+        .await?;
+    // cache_size: allow up to 16 MB of page cache per connection (default 2 MB).
+    // Reduces read I/O for repeated queries against the same table pages.
+    sqlx::query("PRAGMA cache_size = -16384;") // negative = KiB
+        .execute(pool)
+        .await?;
+    // temp_store=MEMORY: write temporary tables/indices to memory rather than
+    // disk, speeding up complex queries with ORDER BY or GROUP BY.
+    sqlx::query("PRAGMA temp_store = MEMORY;")
+        .execute(pool)
+        .await?;
+    // mmap_size: use memory-mapped I/O for up to 128 MB of the database file.
+    // Reduces syscall overhead for sequential read scans (e.g., job history).
+    sqlx::query("PRAGMA mmap_size = 134217728;")
+        .execute(pool)
+        .await?;
+
     // Pipelines
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS pipelines (
