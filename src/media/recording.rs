@@ -1,6 +1,12 @@
 //! MPEG-TS recording writer — writes live pipeline data to timestamped `.ts` files.
 //! Architecture: `RingBuffer` → `TsMuxer` → `MemoryQueue` → raw TS byte writer on OS thread.
 //! Auto-deletes recordings shorter than 5 seconds (transient connection artifacts).
+//!
+//! # Note on Container Format
+//! The output is raw MPEG-TS (`.ts`), not Matroska/MKV. MPEG-TS is directly seekable
+//! and playable by most media players and HLS-based workflows. A future upgrade to a
+//! real container (e.g., MP4 with FFmpeg `avformat`) would require an avformat mux
+//! context and is tracked as a roadmap item.
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::MediaEngine;
@@ -258,7 +264,7 @@ mod tests {
         queue.close();
         let token = CancellationToken::new();
         let temp_dir = std::env::temp_dir();
-        let file_path = temp_dir.join("test_leak.ts");
+        let file_path = temp_dir.join("test_recording.ts");
         let path_str = file_path.to_string_lossy().to_string();
 
         let res = run_ts_writer(queue, &path_str, token);

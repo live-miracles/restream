@@ -1182,6 +1182,14 @@ impl SrtServer {
             return;
         };
 
+        // Cache a clone of the keyframe_times Arc so we can lock it directly
+        // without an async registry lookup (active_ingests.read().await +
+        // HashMap::get()) on every IDR frame in the ingest hot loop.
+        let cached_keyframe_times = {
+            let ingests = self.engine.active_ingests.read().await;
+            ingests.get(&pipeline.id).map(|i| i.keyframe_times.clone())
+        };
+
         // Pure-Rust MPEG-TS demuxer — no FFmpeg thread or MemoryQueue needed
         let mut demuxer = crate::media::mpegts::TsDemuxer::new();
         let mut packets = Vec::with_capacity(16);
@@ -1277,7 +1285,13 @@ impl SrtServer {
                     if pkt.media_type == crate::media::ring_buffer::MediaType::Video
                         && pkt.is_keyframe
                     {
-                        self.engine.record_keyframe(&pipeline.id, pkt.pts).await;
+                        if let Some(ref kf_times) = cached_keyframe_times {
+                            let mut times = kf_times.lock().unwrap_or_else(|e| e.into_inner());
+                            times.push(pkt.pts);
+                            if times.len() > 30 {
+                                times.remove(0);
+                            }
+                        }
                     }
                 }
                 ring_buffer.push_batch(packets.drain(..));

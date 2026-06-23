@@ -239,7 +239,7 @@ pub struct ActiveIngest {
     pub audio: Option<AudioMeta>,
     pub audio_tracks: std::sync::Mutex<Vec<AudioMeta>>,
     pub quality: PublisherQuality,
-    pub keyframe_times: std::sync::Mutex<Vec<i64>>,
+    pub keyframe_times: Arc<std::sync::Mutex<Vec<i64>>>,
     /// Cached FLV sequence headers for RTMP play subscribers (video config + audio config)
     pub video_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
     pub audio_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
@@ -704,7 +704,7 @@ impl MediaEngine {
                 audio: None,
                 audio_tracks: std::sync::Mutex::new(Vec::new()),
                 quality: PublisherQuality::default(),
-                keyframe_times: std::sync::Mutex::new(Vec::new()),
+                keyframe_times: Arc::new(std::sync::Mutex::new(Vec::new())),
                 video_sequence_header: std::sync::Mutex::new(None),
                 audio_sequence_header: std::sync::Mutex::new(None),
             },
@@ -1944,5 +1944,87 @@ mod tests {
                 "persistent count must be 0 after remove"
             );
         }
+    }
+
+    // --- H.265 routing correctness tests ---
+
+    #[tokio::test]
+    async fn hevc_input_video_preset_ring_tagged_hevc() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("p-hevc").await;
+        let ring = engine
+            .get_or_create_transcoder("p-hevc", "video:720p", source, Some("hevc"))
+            .await;
+        assert_eq!(
+            ring.codec_hint_str(),
+            "hevc",
+            "video:720p stage fed with H.265 must be tagged 'hevc'"
+        );
+    }
+
+    #[tokio::test]
+    async fn h264_input_video_preset_ring_tagged_h264() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("p-h264").await;
+        let ring = engine
+            .get_or_create_transcoder("p-h264", "video:720p", source, None)
+            .await;
+        assert_eq!(
+            ring.codec_hint_str(),
+            "h264",
+            "video:720p stage without codec override must default to 'h264'"
+        );
+    }
+
+    #[tokio::test]
+    async fn h264_transcoder_different_upstreams_are_independent_stages() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("p-dual").await;
+
+        let from_source = engine
+            .get_or_create_h264_transcoder("p-dual", "source", source.clone())
+            .await;
+        let from_720 = engine
+            .get_or_create_h264_transcoder("p-dual", "video:720p", source.clone())
+            .await;
+
+        assert!(
+            !Arc::ptr_eq(&from_source, &from_720),
+            "hevc_to_h264 stages keyed by different upstreams must be independent"
+        );
+    }
+
+    #[tokio::test]
+    async fn h264_transcoder_same_upstream_is_shared() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("p-shared-h264").await;
+
+        let ring1 = engine
+            .get_or_create_h264_transcoder("p-shared-h264", "video:720p", source.clone())
+            .await;
+        let ring2 = engine
+            .get_or_create_h264_transcoder("p-shared-h264", "video:720p", source.clone())
+            .await;
+
+        assert!(
+            Arc::ptr_eq(&ring1, &ring2),
+            "hevc_to_h264 stage for the same upstream must be reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn h264_transcoder_output_ring_tagged_h264() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("p-h264-tag").await;
+
+        let ring = engine
+            .get_or_create_h264_transcoder("p-h264-tag", "source", source)
+            .await;
+
+        assert_eq!(
+            ring.codec_hint_str(),
+            "h264",
+            "hevc_to_h264 output ring must always be tagged 'h264'"
+        );
     }
 }

@@ -35,7 +35,7 @@ flowchart TD
         direction TB
         TIN["video_for_ts\nFlv: strip hdr  ∣  Raw: inject SPS/PPS\nTsMuxer → MPEG-TS"]
         FSTDIN[/"FFmpeg stdin\npipe"/]
-        FF(["FFmpeg subprocess\nscale=1280:720 · libx264\n─────────────────\nstdin → stdout"])
+        FF(["FFmpeg subprocess\nscale=1280:720 · libx265/libx264\n─────────────────\nstdin → stdout"])
         FSTDOUT[/"FFmpeg stdout\npipe"/]
         TDEM["TsDemuxer\nRaw packets"]
         OR[("output_ring\nSPMC RingBuffer 4096\nMediaPacket · Raw")]
@@ -65,12 +65,18 @@ Every non-passthrough encoding creates a **shared stage**: one process per
 
 ```
 source_ring
-    │  [if needs_h264_transcode]  H.265→H.264 stage  (get_or_create_h264_transcoder)
-    │  [if needs_video_transcode] video preset stage  (get_or_create_transcoder)
-    │  [if audio routing suffix]  audio filter stage  (get_or_create_transcoder)
+    │  [if video preset]            video preset stage  (get_or_create_transcoder)
+    │  [if audio routing suffix]    audio filter stage  (get_or_create_transcoder)
+    │  [if RTMP + H.265 ingest]     hevc_to_h264 stage  (get_or_create_h264_transcoder)
     ▼
 ring_buf  ◄── all egresses for this (pipeline, encoding) read here
 ```
+
+The `hevc_to_h264` stage is the **last** stage in the chain, applied only for
+RTMP outputs when the ingest is H.265. SRT outputs receive native H.265 from the
+preset ring without any additional conversion. RTMP and SRT outputs sharing the
+same preset (e.g. both 720p) share the `video:720p` stage — only the final RTMP
+edge gets a `hevc_to_h264` stage appended.
 
 ### Passthrough rule
 
@@ -83,8 +89,16 @@ reconciler (`src/lib.rs`) before any `get_or_create_transcoder` call.
 | Stage | Key format | Example |
 |---|---|---|
 | Video preset | `video:<preset>` | `video:720p` |
-| H.265→H.264 | `hevc_to_h264` | `hevc_to_h264` |
+| H.265→H.264 | `hevc_to_h264:from:<upstream_key>` | `hevc_to_h264:from:source`, `hevc_to_h264:from:720p` |
 | Audio filter | `audio:<op>:from:<video_key>` | `audio:atrack:0:from:720p` |
+
+The `upstream_key` in the `hevc_to_h264` key encodes what ring feeds the
+converter: `source` for passthrough RTMP, the preset name (e.g. `720p`) for
+transcoded RTMP without audio routing, or the full audio key (e.g.
+`audio:atrack:0:from:720p`) for transcoded RTMP with audio routing. This allows
+RTMP-passthrough and RTMP-720p converters to be **independent stages** (each
+runs its own libavcodec thread) while all RTMP egresses on the same encoding
+**share** one converter.
 
 The video-preset key is shared across all compound encodings with the same
 video part (e.g. `720p`, `720p+atrack:0`, `720p+remap:0:1` all use key
@@ -97,7 +111,7 @@ cross-contamination between presets.
 source_ring
     │  (Reader + TsMuxer → MPEG-TS bytes)
     ▼
-FFmpeg stdin ──► [scale + libx264 + …] ──► FFmpeg stdout (MPEG-TS)
+FFmpeg stdin ──► [scale + libx265/libx264 + …] ──► FFmpeg stdout (MPEG-TS)
                                                    │
                                        TsDemuxer → MediaPackets (Raw)
                                                    │
@@ -125,8 +139,8 @@ callbacks instead of a subprocess pipe.
 
 **Current limitation:** `run_ffmpeg_transcoder_stage` demuxes the MPEG-TS and
 copies compressed video packets directly to the output ring. It does not run
-any decode/scale/encode loop. The `scale=WxH` filter and libx264 re-encode only
-happen in the external backend. Until the internal transcoder gains a proper
+any decode/scale/encode loop. The `scale=WxH` filter and codec re-encode (libx265
+for H.265 input, libx264 for H.264 input) only happen in the external backend. Until the internal transcoder gains a proper
 avcodec decode→filter→encode chain, `RESTREAM_USE_INTERNAL_TRANSCODER=1` will
 produce an unscaled copy of the source codec, not a resized H.264 output.
 
@@ -142,7 +156,7 @@ development of the in-process pipeline (lower latency, avfilter integration).
 | Internal transcoder | in-process FFmpeg via `MemoryQueue`+`avio`; `TsMuxer` feeds input, output packets pushed directly to ring |
 | SRT Egress | `TsMuxer` remux to MPEG-TS (inline in async feed loop) |
 | HLS | `TsMuxer` remux to MPEG-TS, then segment in memory (inline async) |
-| Recording | FFmpeg remux to MKV file (OS thread) |
+| Recording | Raw MPEG-TS write to `.ts` file via `MemoryQueue` (OS thread) |
 
 
 
@@ -162,9 +176,10 @@ development of the in-process pipeline (lower latency, avfilter integration).
 
 ## Resolution Presets
 
-The external transcoder stage applies `scale=WxH` and re-encodes with `libx264
--preset veryfast`. The internal transcoder (when enabled) uses the same preset
-table via `run_ffmpeg_transcoder_stage`.
+The external transcoder stage applies `scale=WxH` and re-encodes preserving the
+input codec: `libx265 -preset veryfast` for H.265 input, `libx264 -preset
+veryfast` for H.264 input. The internal transcoder (when enabled) uses the same
+preset table via `run_ffmpeg_transcoder_stage`.
 
 | Preset | Resolution | Scale filter |
 |---|---|---|
@@ -172,7 +187,6 @@ table via `run_ffmpeg_transcoder_stage`.
 | `480p` | 854×480 | `scale=854:480` |
 | `720p` | 1280×720 | `scale=1280:720` |
 | `1080p` | 1920×1080 | `scale=1920:1080` |
-| `h264` | source resolution | H.265→H.264 only (`get_or_create_h264_transcoder`) |
 
 
 ## H.265 Egress Policy
@@ -181,10 +195,10 @@ Standard RTMP (non-Enhanced) does not carry H.265. The reconciler enforces:
 
 | Egress protocol | H.265 input | Behavior |
 |---|---|---|
-| RTMP | H.265 source | `hevc_to_h264` stage inserted; full libavcodec H.265 decode → H.264 encode — **working** |
-| RTMP | H.265 + video preset | `hevc_to_h264` feeds ext FFmpeg preset stage; outputs H.264 — **working** |
+| RTMP | H.265 source | `hevc_to_h264:from:source` stage inserted; full libavcodec H.265→H.264 — **working** |
+| RTMP | H.265 + video preset | `video:preset` runs first (H.265 output, shared); `hevc_to_h264:from:<preset>` converts after — H.264 to RTMP — **working** |
 | SRT | H.265 source | Passthrough (MPEG-TS carries HEVC natively) — **working** |
-| SRT | H.265 + video preset | Ext FFmpeg decodes H.265 and re-encodes H.264; H.265 *output* from a preset is not implemented (ext transcoder always uses libx264) |
+| SRT | H.265 + video preset | `video:preset` with libx265 → H.265 720p output; same ring shared with RTMP — **working** |
 | HLS | H.265 source | Passthrough via TsMuxer; not E2E verified |
 
 Enhanced RTMP/HEVC packetization is not implemented.
@@ -280,40 +294,44 @@ ingest types.
 
 ### h265-srt — H.265 SRT ingest
 
-Standard RTMP cannot carry H.265. The reconciler auto-inserts the
-`hevc_to_h264` internal stage for every RTMP output (source or 720p).
-SRT outputs receive H.265 natively from MPEG-TS.
+Standard RTMP cannot carry H.265. The reconciler inserts a `hevc_to_h264`
+stage **after** any video-preset transcoding, keyed by the upstream stage so
+RTMP-passthrough and RTMP-720p each get an independent converter. SRT outputs
+receive native H.265. The `video:720p` stage is shared between RTMP and SRT.
 
 ```
 SRT ingest
   → TsDemuxer (inline async)
   → source_ring [Raw, H.265 + AAC]
 
-RTMP-src  (reconciler: needs_h264_transcode = true, is_passthrough = true)
+RTMP-src  (reconciler: needs_rtmp_h264_conv = true, is_passthrough = true)
   source_ring ──► TsMuxer → MPEG-TS
     ──► MemoryQueue → [int OS thread] libavcodec H.265 decode → H.264 encode
-    ──► TsDemuxer → h264_ring [Raw, H.264 + AAC]
-  h264_ring ──► video_for_rtmp → FLV tag → RTMP socket
+    ──► TsDemuxer → h264_src_ring [Raw, H.264 + AAC]  (key: hevc_to_h264:from:source)
+  h264_src_ring ──► video_for_rtmp → FLV tag → RTMP socket
 
-SRT-src  (reconciler: needs_h264_transcode = false, is_passthrough = true)
+SRT-src  (reconciler: needs_rtmp_h264_conv = false, is_passthrough = true)
   source_ring ──► TsMuxer → MPEG-TS → SRT socket  (HEVC in MPEG-TS, no conversion)
 
-RTMP-720p  (needs_h264_transcode = true, needs_video_transcode = true)
-  source_ring → hevc_to_h264 (shared stage) → h264_ring
-  h264_ring ──► TsMuxer → MPEG-TS → FFmpeg stdin
-    ──► [FFmpeg subprocess] scale=1280:720, libx264
-    ──► FFmpeg stdout → TsDemuxer → output_ring [Raw, H.264 + AAC]
-  output_ring ──► video_for_rtmp → FLV tag → RTMP socket
+720p outputs  (shared ext FFmpeg subprocess; RTMP and SRT share the preset ring)
+  source_ring
+    ──► [Raw] inject SPS/PPS from cache → TsMuxer → MPEG-TS → FFmpeg stdin
+    ──► [FFmpeg subprocess] scale=1280:720, libx265   ← H.265 in → H.265 out
+    ──► FFmpeg stdout → TsDemuxer → output_ring [Raw, H.265 720p + AAC]
 
-SRT-720p  (needs_h264_transcode = false, needs_video_transcode = true)
-  The video:720p stage key is shared across all output types.
-  In the scale test output order (RTMP before SRT), the stage was created
-  with h264_ring as input; SRT-720p reuses the same output_ring.
-  output_ring ──► TsMuxer → MPEG-TS → SRT socket
+SRT-720p  (needs_rtmp_h264_conv = false)
+  output_ring ──► TsMuxer → MPEG-TS → SRT socket  (H.265 720p, no conversion)
+
+RTMP-720p  (needs_rtmp_h264_conv = true)
+  output_ring ──► TsMuxer → MPEG-TS
+    ──► MemoryQueue → [int OS thread] libavcodec H.265 decode → H.264 encode
+    ──► TsDemuxer → h264_720p_ring [Raw, H.264 720p + AAC]  (key: hevc_to_h264:from:720p)
+  h264_720p_ring ──► video_for_rtmp → FLV tag → RTMP socket
 ```
 
-**Stages spawned:** 1 int OS thread (`hevc_to_h264`, libavcodec in-process) +
-1 ext FFmpeg subprocess (`video:720p` reading from h264_ring).
+**Stages spawned:** 1 int OS thread (`hevc_to_h264:from:source`) +
+1 ext FFmpeg subprocess (`video:720p`, libx265 encoder) +
+1 int OS thread (`hevc_to_h264:from:720p`).
 
 ---
 
@@ -353,7 +371,8 @@ Audio-routing stages are pure packet filters — no OS threads, no FFmpeg.
 
 ### h265-srt-multi — H.265 SRT ingest, 2 audio tracks
 
-Combines H.265→H.264 conversion with multi-audio track routing.
+Combines H.265→H.264 conversion (post-preset, RTMP only) with multi-audio
+track routing.
 
 ```
 SRT ingest
@@ -362,20 +381,27 @@ SRT ingest
 
 RTMP-src / SRT-src: identical to h265-srt source paths above.
 
+720p preset  (shared ext FFmpeg subprocess)
+  source_ring
+    ──► [FFmpeg subprocess] scale=1280:720, libx265
+    ──► output_ring [Raw, H.265 720p + track0 + track1]
+
 RTMP-720p  encoding = "720p+atrack:0"
-  source_ring → hevc_to_h264 (int OS thread, shared) → h264_ring [H.264 + both tracks]
-  h264_ring → video:720p ext FFmpeg (shared) → output_ring [H.264 + both tracks]
-  output_ring → audio:atrack:0:from:720p (tokio task) → audio0_ring
-  audio0_ring ──► video_for_rtmp → FLV tag → RTMP socket
+  output_ring → audio:atrack:0:from:720p (tokio task) → audio0_ring [H.265 720p + track0]
+  audio0_ring ──► TsMuxer → MPEG-TS
+    ──► MemoryQueue → [int OS thread] libavcodec H.265 decode → H.264 encode
+    ──► TsDemuxer → h264_audio0_ring  (key: hevc_to_h264:from:audio:atrack:0:from:720p)
+  h264_audio0_ring ──► video_for_rtmp → FLV tag → RTMP socket
 
 SRT-720p  encoding = "720p+atrack:0,1"
-  output_ring (same shared video:720p ring)
   output_ring → audio:atrack:0,1:from:720p (tokio task) → audio01_ring
   audio01_ring ──► TsMuxer → MPEG-TS → SRT socket
 ```
 
-**Stages spawned:** 1 int OS thread (`hevc_to_h264`) + 1 ext FFmpeg subprocess
-(`video:720p`) + 2 audio-routing tokio tasks.
+**Stages spawned:** 1 int OS thread (`hevc_to_h264:from:source`, for RTMP-src) +
+1 ext FFmpeg subprocess (`video:720p`, libx265) +
+2 audio-routing tokio tasks +
+1 int OS thread (`hevc_to_h264:from:audio:atrack:0:from:720p`, for RTMP-720p).
 
 ---
 
@@ -389,9 +415,15 @@ a second subprocess.
 |---|:---:|:---:|:---:|
 | `h264-rtmp` | 1 (`video:720p`) | 0 | 0 |
 | `h264-srt` | 1 (`video:720p`) | 0 | 0 |
-| `h265-srt` | 1 (`video:720p`) | 1 (`hevc_to_h264`) | 0 |
+| `h265-srt` | 1 (`video:720p`) | 2 (`hevc_to_h264:from:source` + `hevc_to_h264:from:720p`) | 0 |
 | `h264-srt-multi` | 1 (`video:720p`) | 0 | 2 |
-| `h265-srt-multi` | 1 (`video:720p`) | 1 (`hevc_to_h264`) | 2 |
+| `h265-srt-multi` | 1 (`video:720p`) | 2 (`hevc_to_h264:from:source` + `hevc_to_h264:from:audio:…`) | 2 |
+
+> **Why 2 OS threads for H.265 configs?** RTMP-passthrough and RTMP-720p feed
+> different upstream rings into `hevc_to_h264`, so the reconciler creates a
+> separate stage for each (keyed by upstream). Each stage runs its own
+> libavcodec thread. If the config has no RTMP-passthrough outputs, only 1
+> thread is needed.
 
 The `ext_ffmpeg#` column in scale test output matches "Ext FFmpeg subprocesses".
 In-process RSS growth (restream parent) correlates with "Int OS threads" — each
@@ -421,7 +453,7 @@ covered by `same_encoding_outputs_share_one_transcoder_stage` in engine tests.
 
 Bitrate scaling and load tests of the pipeline configurations at 1.5M, 4.0M, and 8.0M verified the following sharing footprints:
 * **External Transcoder Subprocess (Shared):** The CPU-bound H.264 transcoding runs in an external `ffmpeg` subprocess. The memory footprint of this child process remains fixed at **~422 MB to 431 MB** regardless of ingest bitrate (from 1.5M to 8.0M), as frames and scale filters are allocated statically on startup. Only one subprocess is spawned per unique `(pipeline_id, preset)`.
-* **In-Process Transcoding (Shared):** In-process video transcoding (such as H.265 `hevc_to_h264` conversion) runs inside the Restream parent process using FFmpeg C-FFI bindings. This is shared across all downstream outputs requesting the same preset. It scales CPU usage (consuming **67% to 83%** of a core) and adds a **~130 MB to 180 MB** RSS overhead directly to the parent process.
+* **In-Process Transcoding (Shared per upstream key):** In-process H.265→H.264 conversion (`hevc_to_h264`) runs inside the Restream parent process using FFmpeg C-FFI bindings. Stages are keyed by `(pipeline, upstream)` — all RTMP egresses on the same encoding share one converter, but RTMP-passthrough (`from:source`) and RTMP-720p (`from:720p`) are **separate** stages. Each stage consumes **67% to 83%** of a core and adds **~130 MB to 180 MB** RSS to the parent process. Configs with both passthrough and preset RTMP outputs can therefore have 2 such stages.
 * **Egress Senders (Not Shared):** Each downstream egress stream (RTMP/SRT) runs as an independent Tokio task. Each task does its own lightweight packet formatting (e.g. `video_for_rtmp_into` or `video_for_ts_into`) and network socket writes. The resource overhead per output is extremely lightweight, scaling at **~350 KB to 1 MB** RSS delta per output with negligible CPU usage.
 
 ## Audio Stage Cache
@@ -600,7 +632,8 @@ blockers or hardening work:
 
 - **Transcoder**: configures encoder parameters but copies compressed packets;
   no decode/filter/encode loop.
-- **Recording**: packet-payload-to-`CustomInput` contract needs repair.
+- **Recording**: packet-payload-to-`CustomInput` contract needs repair. ~~Implemented as raw MPEG-TS write; no FFmpeg dependency.~~
+- **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
 - **HLS upload**: HTTP/HTTPS URLs start local segmenter and ignore destination.
 - **Custom encoding**: API persists value; reconciler treats `custom` as
   passthrough.
@@ -609,6 +642,5 @@ blockers or hardening work:
   (protocol-incorrect).
 - **File ingest**: list endpoint reports `running: false` placeholder; exited
   children are not reaped.
-- **Ring buffer**: no per-reader lag, overflow, or queue-residency metrics
-  exposed.
-- **MemoryQueue**: no depth, high-water mark, or blocked time exposed.
+- **Ring buffer**: `Reader::lag()` method added (packets behind write cursor); overflow counter exposed via `Reader.info.overflow_count`. Per-reader queue-residency time not yet tracked.
+- **MemoryQueue**: `len()` method added to observe current buffer depth. High-water mark and blocked-time metrics not yet exposed.

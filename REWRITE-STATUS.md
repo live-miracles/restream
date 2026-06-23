@@ -75,7 +75,7 @@ Publisher
   -> per-pipeline RingBuffer
   -> native RTMP/SRT egress
   -> in-memory HLS scaffolding
-  -> Matroska recording scaffolding
+  -> MPEG-TS recording
   -> shared transform-stage scaffolding
 
 Axum dashboard/API -> SQLite
@@ -160,7 +160,7 @@ The labels below distinguish implementation from proof.
 | `remap` / `downmix` | Partial | Select streams; no channel-level `pan`/mix filter |
 | HLS store and HTTP pull routes | Implemented | Playlist/window and route tests |
 | Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
-| Matroska recording | **Unproven / structurally suspect** | Same packet-payload-to-`CustomInput` contract as HLS |
+| MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
 | HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URL starts local segmenter and ignores destination |
 | Custom encoding arguments | **Not applied** | API persists value; reconciler treats `custom` as passthrough |
 | RTMPS output | **Not wired** | URL parser accepts RTMPS, reconciler dispatches only `rtmp://` |

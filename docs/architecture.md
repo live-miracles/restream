@@ -17,7 +17,7 @@ Publisher
 |                     +-> RTMP egress                               |
 |                     +-> SRT MPEG-TS egress                        |
 |                     +-> HLS segmenter (inline TsMuxer)            |
-|                     +-> Matroska recorder scaffold                |
+|                     +-> MPEG-TS recorder                         |
 |                     `-> transform scaffold -> RingBuffer -> egress|
 |                                                                   |
 | Axum dashboard/API -> SQLite                                      |
@@ -44,8 +44,8 @@ libsrt calls:
 - SRT accept loop (blocks on `srt_accept()`)
 - SRT egress sender (blocks on `srt_send()`)
 - Internal transcoder video stage (`RESTREAM_USE_INTERNAL_TRANSCODER=1`): libavcodec decode+encode via MemoryQueue
-- `hevc_to_h264` stage: libavcodec H.265→H.264 in-process, one OS thread per pipeline with H.265 RTMP output
-- Matroska recording (FFmpeg MKV mux via MemoryQueue)
+- `hevc_to_h264` stage: libavcodec H.265→H.264 in-process, one OS thread per unique RTMP encoding with H.265 ingest (keyed `hevc_to_h264:from:<upstream>`)
+- MPEG-TS recording (raw TS write via MemoryQueue)
 
 The **external transcoder** (default) runs `ffmpeg` as a child subprocess — it does
 **not** spawn an OS thread inside the parent. Per stage it uses three tokio tasks
@@ -86,11 +86,11 @@ Tokio worker count = `num_cpus` (tokio default, not configurable).
 | Ext transcoder stderr logger | tokio task | 1 per `(pipeline, video_preset)` | Drains and logs FFmpeg stderr |
 | Ext FFmpeg subprocess | child process | 1 per `(pipeline, video_preset)` | Lives while stage is active |
 | Int transcoder OS thread | `std::thread` | 1 per `(pipeline, video_preset)` when `RESTREAM_USE_INTERNAL_TRANSCODER=1` | libavcodec decode+encode via MemoryQueue |
-| `hevc_to_h264` OS thread | `std::thread` | 1 per pipeline with H.265 → RTMP output | libavcodec H.265→H.264 in-process |
-| `hevc_to_h264` feeder task | tokio task | 1 per pipeline with H.265 → RTMP output | source_ring → TsMuxer → MemoryQueue |
+| `hevc_to_h264` OS thread | `std::thread` | 1 per unique RTMP encoding with H.265 ingest | libavcodec H.265→H.264 in-process; keyed `hevc_to_h264:from:<upstream>` |
+| `hevc_to_h264` feeder task | tokio task | 1 per unique RTMP encoding with H.265 ingest | upstream ring (source or preset output) → TsMuxer → MemoryQueue |
 | Audio-routing stage | tokio task | 1 per `(pipeline, audio_key)` | Pure SelectTracks / Remap filter; no OS thread |
 | Recording feeder | tokio task | 1 per active recording | source_ring → MemoryQueue |
-| Recording muxer | `std::thread` | 1 per active recording | MemoryQueue → FFmpeg MKV mux |
+| Recording writer | `std::thread` | 1 per active recording | MemoryQueue → raw MPEG-TS file write |
 
 ### OS thread count formula
 
@@ -102,7 +102,7 @@ total_os_threads =
                                                 #   capped at 512 by srt_sender_semaphore
   + N_hevc_to_h264_pipelines × 1               # libavcodec H.265→H.264 stage
   + N_int_video_stages × 1                     # libavcodec encode (internal backend only)
-  + N_recordings × 1                           # MKV muxer per active recording
+  + N_recordings × 1                           # TS writer per active recording
 ```
 
 The following do **not** add OS threads:
@@ -125,7 +125,7 @@ num_cpus (e.g. 8)    tokio workers
 ```
 num_cpus (e.g. 8)    tokio workers
 + 1                  SRT accept loop
-+ 1                  hevc_to_h264 OS thread  (H.265 → RTMP source needs it)
++ 1                  hevc_to_h264:from:source OS thread  (RTMP-src passthrough)
 + 1                  recording MKV muxer
 ─────
 11 OS threads        + 1 ext FFmpeg child process (video:720p)
