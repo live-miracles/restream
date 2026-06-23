@@ -214,6 +214,8 @@ pub struct AudioMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_layout: Option<String>,
     pub track_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// Publisher connection info.
@@ -339,6 +341,34 @@ impl MediaEngine {
         self.stage_metrics.write().await.remove(&key);
     }
 
+    pub async fn is_file_ingest_running(&self, id: &str) -> bool {
+        let mut children = self.file_ingest_children.write().await;
+        if let Some(child) = children.get_mut(id) {
+            match child.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    children.remove(id);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    pub async fn reap_file_ingests(&self) {
+        let mut children = self.file_ingest_children.write().await;
+        children.retain(|id, child| {
+            match child.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    println!("[engine] File ingest child process {} has exited/stopped", id);
+                    false
+                }
+            }
+        });
+    }
+
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
         let mut pipelines = self.pipelines.write().await;
         if let Some(rb) = pipelines.get(pipeline_id) {
@@ -362,6 +392,10 @@ impl MediaEngine {
         pipeline_id: &str,
         encoding: &str,
         source_buffer: Arc<RingBuffer>,
+        // When the source_buffer is a transcoded ring whose codec differs from the
+        // original ingest (e.g. hevc_to_h264 → video:720p), pass the actual codec
+        // of the packets in source_buffer so the TsMuxer gets the right PMT.
+        input_codec_override: Option<&str>,
     ) -> Arc<RingBuffer> {
         let key = format!("{}:{}", pipeline_id, encoding);
         {
@@ -380,6 +414,24 @@ impl MediaEngine {
             buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         }
 
+        // Set codec_hint SYNCHRONOUSLY before spawning — downstream stages
+        // (e.g. audio routers, SRT egress warmup) may query it before the
+        // spawned task runs.
+        // • video:* stages: always re-encode with libx264 → always "h264"
+        // • audio:* stages: passthrough → inherit hint from source_buffer
+        if encoding.starts_with("video:") {
+            // External transcoder always uses libx264; internal transcoder also
+            // outputs H.264 for video presets.  Override wins if supplied.
+            output_buf.set_codec_hint(input_codec_override.unwrap_or("h264"));
+        } else if let Some(oc) = input_codec_override {
+            output_buf.set_codec_hint(oc);
+        } else {
+            let hint = source_buffer.codec_hint_str();
+            if !hint.is_empty() {
+                output_buf.set_codec_hint(hint);
+            }
+        }
+
         println!(
             "[transcoder] Spawning stage: pipeline={} encoding={}",
             pipeline_id, encoding
@@ -389,6 +441,7 @@ impl MediaEngine {
         let enc = encoding.to_string();
         let ob = output_buf.clone();
         let self_clone = self.clone();
+        let codec_override = input_codec_override.map(String::from);
 
         // ── Backend dispatch ───────────────────────────────────────────────
         // audio: stages (atrack, remap): pure packet filter — no mux/demux,
@@ -466,6 +519,7 @@ impl MediaEngine {
                     ob,
                     self_clone,
                     cancel,
+                    codec_override,
                 )
                 .await;
             });
@@ -493,6 +547,9 @@ impl MediaEngine {
         }
 
         let output_buf = Arc::new(RingBuffer::new(4096));
+        // hevc_to_h264 stage always produces H.264 — tag the ring so consumers
+        // can initialize their TsMuxer / PMT with the correct codec.
+        output_buf.set_codec_hint("h264");
         let cancel = CancellationToken::new();
         {
             let mut buffers = self.transcoder_buffers.write().await;
@@ -553,6 +610,19 @@ impl MediaEngine {
         // Cancel all still-running stages then remove every entry for this pipeline.
         buffers.retain(|key, (_rb, token)| {
             if key.starts_with(&prefix) {
+                token.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    pub async fn sweep_unused_transcoder_stages(&self, active_keys: &std::collections::HashSet<String>) {
+        let mut buffers = self.transcoder_buffers.write().await;
+        buffers.retain(|key, (_rb, token)| {
+            if !active_keys.contains(key) {
+                println!("[engine] Sweeping unused transcoder stage: {}", key);
                 token.cancel();
                 false
             } else {
@@ -926,11 +996,30 @@ impl MediaEngine {
         let egresses = self.active_egresses.read().await;
         let rec_tokens = self.recording_cancel_tokens.read().await;
         let hls_consumers = self.hls_consumers.read().await;
+        let pipelines = self.pipelines.read().await;
 
         let mut pipelines_json = serde_json::Map::new();
 
         for pipeline_id in pipeline_ids {
             let ingest_opt = ingests.get(pipeline_id.as_str());
+            let pipeline_rb = pipelines.get(pipeline_id.as_str());
+            let readers_count = if let Some(rb) = pipeline_rb {
+                if let Ok(mut r) = rb.readers.lock() {
+                    r.retain(|w| w.upgrade().is_some());
+                    r.len()
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let mut total_bytes_sent = 0u64;
+            for (_, egress) in egresses.iter() {
+                if egress.pipeline_id == *pipeline_id {
+                    total_bytes_sent += egress.bytes_sent.load(Ordering::Relaxed);
+                }
+            }
 
             let input_json = if let Some(ingest) = ingest_opt {
                 let elapsed_secs = ingest.start_time.elapsed().as_secs_f64();
@@ -955,8 +1044,8 @@ impl MediaEngine {
                     "status": "on",
                     "publishStartedAt": publish_started_at,
                     "bytesReceived": bytes_received,
-                    "bytesSent": 0,
-                    "readers": 0,
+                    "bytesSent": total_bytes_sent,
+                    "readers": readers_count,
                     "bitrateKbps": bitrate_kbps,
                     "video": ingest.video,
                     "audio": ingest.audio,
@@ -967,8 +1056,8 @@ impl MediaEngine {
                 serde_json::json!({
                     "status": "off",
                     "bytesReceived": 0,
-                    "bytesSent": 0,
-                    "readers": 0,
+                    "bytesSent": total_bytes_sent,
+                    "readers": readers_count,
                     "publisher": null,
                     "unexpectedReaders": { "count": 0 }
                 })
@@ -1577,13 +1666,13 @@ mod tests {
         let source = engine.get_or_create_pipeline("pipe-share").await;
 
         let a = engine
-            .get_or_create_transcoder("pipe-share", "video:720p", source.clone())
+            .get_or_create_transcoder("pipe-share", "video:720p", source.clone(), None)
             .await;
         let b = engine
-            .get_or_create_transcoder("pipe-share", "video:720p", source.clone())
+            .get_or_create_transcoder("pipe-share", "video:720p", source.clone(), None)
             .await;
         let c = engine
-            .get_or_create_transcoder("pipe-share", "video:1080p", source.clone())
+            .get_or_create_transcoder("pipe-share", "video:1080p", source.clone(), None)
             .await;
 
         assert!(
@@ -1604,23 +1693,23 @@ mod tests {
         let source = engine.get_or_create_pipeline("pipe-audio").await;
 
         let v720 = engine
-            .get_or_create_transcoder("pipe-audio", "video:720p", source.clone())
+            .get_or_create_transcoder("pipe-audio", "video:720p", source.clone(), None)
             .await;
         let v1080 = engine
-            .get_or_create_transcoder("pipe-audio", "video:1080p", source.clone())
+            .get_or_create_transcoder("pipe-audio", "video:1080p", source.clone(), None)
             .await;
 
         // Audio stage keys as produced by the reconciler:
         // "audio:atrack:0:from:720p" for 720p outputs
         // "audio:atrack:0:from:1080p" for 1080p outputs
         let a720 = engine
-            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720.clone())
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720.clone(), None)
             .await;
         let a1080 = engine
-            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:1080p", v1080.clone())
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:1080p", v1080.clone(), None)
             .await;
         let a720_again = engine
-            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720)
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720, None)
             .await;
 
         assert!(
@@ -1643,13 +1732,13 @@ mod tests {
         let other = engine.get_or_create_pipeline("pipe-keep").await;
 
         let s1 = engine
-            .get_or_create_transcoder("pipe-del", "video:720p", source.clone())
+            .get_or_create_transcoder("pipe-del", "video:720p", source.clone(), None)
             .await;
         let s2 = engine
-            .get_or_create_transcoder("pipe-del", "video:1080p", source.clone())
+            .get_or_create_transcoder("pipe-del", "video:1080p", source.clone(), None)
             .await;
         let other_stage = engine
-            .get_or_create_transcoder("pipe-keep", "video:720p", other)
+            .get_or_create_transcoder("pipe-keep", "video:720p", other, None)
             .await;
 
         // Stages are alive before cleanup
@@ -1699,5 +1788,29 @@ mod tests {
             weak.upgrade().is_none(),
             "ring buffer should be freed after remove_pipeline"
         );
+    }
+
+    #[tokio::test]
+    async fn sweep_unused_transcoder_stages_removes_only_unused() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-sweep").await;
+
+        let s1 = engine
+            .get_or_create_transcoder("pipe-sweep", "video:720p", source.clone(), None)
+            .await;
+        let s2 = engine
+            .get_or_create_transcoder("pipe-sweep", "video:1080p", source.clone(), None)
+            .await;
+
+        let mut active = std::collections::HashSet::new();
+        active.insert("pipe-sweep:video:720p".to_string());
+
+        engine.sweep_unused_transcoder_stages(&active).await;
+
+        let stages = engine.active_transcoder_stages("pipe-sweep").await;
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].0, "video:720p");
+        // s2 was swept and cancelled
+        let _ = (s1, s2);
     }
 }

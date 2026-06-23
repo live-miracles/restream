@@ -185,10 +185,66 @@ function renderStatsColumn(selectedPipe: string | null): void {
 
             if (isActive) {
                 const video = p.input.video || {};
-                videoCodec = formatCodecName(video.codec) || '--';
-                videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';
+                const [videoPreset, audioRouting] = o.encoding.split('+');
+
+                if (videoPreset === '720p') {
+                    videoSize = '1280x720';
+                    videoCodec = 'H.264';
+                } else if (videoPreset === '1080p') {
+                    videoSize = '1920x1080';
+                    videoCodec = 'H.264';
+                } else if (videoPreset === '2160p' || videoPreset === '4k') {
+                    videoSize = '3840x2160';
+                    videoCodec = 'H.264';
+                } else if (videoPreset === '480p') {
+                    videoSize = '854x480';
+                    videoCodec = 'H.264';
+                } else {
+                    videoCodec = formatCodecName(video.codec) || '--';
+                    videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';
+                }
                 videoFps = video.fps != null ? String(video.fps) : '--';
-                outTracks = p.input.audioTracks || [];
+
+                let audioRoutingPart = audioRouting || '';
+                if (!audioRoutingPart && (videoPreset.startsWith('atrack:') || videoPreset.startsWith('downmix:') || videoPreset.startsWith('remap:'))) {
+                    audioRoutingPart = videoPreset;
+                }
+
+                if (audioRoutingPart) {
+                    const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(audioRoutingPart);
+                    const downmixMatch = /^downmix:(\d+)$/.exec(audioRoutingPart);
+                    const remapMatch = /^remap:(\d+):(\d+)(?::(\d+))?$/.exec(audioRoutingPart);
+
+                    if (atrackMatch) {
+                        const trackIndexes = atrackMatch[1].split(',').map(Number);
+                        outTracks = trackIndexes
+                            .map((idx) => p.input.audioTracks[idx])
+                            .filter(Boolean);
+                    } else if (downmixMatch) {
+                        const idx = Number(downmixMatch[1]);
+                        const origTrack = p.input.audioTracks[idx];
+                        if (origTrack) {
+                            outTracks = [{
+                                ...origTrack,
+                                channels: 2,
+                            }];
+                        }
+                    } else if (remapMatch) {
+                        let trackIdx = 0;
+                        if (remapMatch[3] !== undefined) {
+                            trackIdx = Number(remapMatch[1]);
+                        }
+                        const origTrack = p.input.audioTracks[trackIdx];
+                        if (origTrack) {
+                            outTracks = [{
+                                ...origTrack,
+                                channels: 2,
+                            }];
+                        }
+                    }
+                } else {
+                    outTracks = p.input.audioTracks.length > 0 ? [p.input.audioTracks[0]] : [];
+                }
             }
 
             const rowCount = Math.max(outTracks.length, 1);

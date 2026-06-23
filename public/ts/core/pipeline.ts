@@ -68,11 +68,18 @@ function parsePipelinesInfo(
         const inputVideo: VideoTrack | null = rawInputVideo ? { ...rawInputVideo } : null;
         const rawInputAudio = healthByPipeline[p.id]?.input?.audio || null;
         const rawInputAudioTracks = healthByPipeline[p.id]?.input?.audioTracks || [];
+        const mapAudioTrack = (track: any): AudioTrack => ({
+            index: track.index !== undefined ? track.index : track.trackIndex,
+            codec: track.codec,
+            channels: track.channels,
+            sample_rate: track.sampleRate !== undefined ? track.sampleRate : track.sample_rate,
+            profile: track.profile,
+        });
         const inputAudioTracks: AudioTrack[] =
             rawInputAudioTracks.length > 0
-                ? rawInputAudioTracks.map((track) => ({ ...track }))
+                ? rawInputAudioTracks.map(mapAudioTrack)
                 : rawInputAudio
-                  ? [{ ...rawInputAudio }]
+                  ? [mapAudioTrack(rawInputAudio)]
                   : [];
         const inputKbps = computeKbps(throughputState.inputBytes, p.id, inputBytesReceived, nowMs);
 

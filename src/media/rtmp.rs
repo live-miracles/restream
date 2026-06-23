@@ -325,12 +325,22 @@ fn parse_flv_audio_meta(data: &[u8]) -> Option<AudioMeta> {
         channels,
         channel_layout: Some(if channels == 1 { "mono" } else { "stereo" }.to_string()),
         track_index: 0,
+        profile: None,
     };
 
     // AAC AudioSpecificConfig gives actual sample rate/channels
     if format_id == 10 && data.len() > 2 && data[1] == 0 {
         let asc = &data[2..];
         if asc.len() >= 2 {
+            let audio_object_type = asc[0] >> 3;
+            meta.profile = match audio_object_type {
+                1 => Some("Main".to_string()),
+                2 => Some("LC".to_string()),
+                3 => Some("SSR".to_string()),
+                4 => Some("LTP".to_string()),
+                5 => Some("SBR".to_string()),
+                _ => Some(format!("AAC Profile {}", audio_object_type)),
+            };
             let freq_idx = ((asc[0] & 0x07) << 1) | (asc[1] >> 7);
             let ch_config = (asc[1] >> 3) & 0x0F;
             let aac_rates: &[u32] = &[

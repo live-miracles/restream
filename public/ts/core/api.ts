@@ -453,6 +453,4 @@ export {
     logout,
     changePassword,
     getProcessingGraph,
-    type TranscodeProfile,
-    type TranscodeProfiles,
 };

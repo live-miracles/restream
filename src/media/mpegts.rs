@@ -981,11 +981,20 @@ fn probe_audio(kind: StreamKind, track_index: u32, pes_payload: &[u8]) -> AudioM
         channels: 0,
         channel_layout: None,
         track_index,
+        profile: None,
     };
 
     if kind == StreamKind::AacAdts && pes_payload.len() >= 7 {
         // ADTS header parsing
         if pes_payload[0] == 0xFF && (pes_payload[1] & 0xF0) == 0xF0 {
+            let profile_idx = (pes_payload[2] >> 6) as usize;
+            meta.profile = match profile_idx {
+                0 => Some("Main".to_string()),
+                1 => Some("LC".to_string()),
+                2 => Some("SSR".to_string()),
+                3 => Some("LTP/Reserved".to_string()),
+                _ => None,
+            };
             let sample_rate_idx = ((pes_payload[2] >> 2) & 0x0F) as usize;
             let channel_config = ((pes_payload[2] & 0x01) << 2) | ((pes_payload[3] >> 6) & 0x03);
 
@@ -1876,6 +1885,7 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            profile: None,
         };
 
         let mut muxer = TsMuxer::new(Some(&video), &[audio]);
@@ -1912,6 +1922,7 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            profile: None,
         };
 
         let mut muxer = TsMuxer::new(Some(&video), &[audio]);
