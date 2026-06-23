@@ -271,7 +271,12 @@ fn bench_fanout_delivery(c: &mut Criterion) {
                             let chunk = remaining.min(4) as usize;
                             let ring = Arc::new(RingBuffer::new(chunk * burst + 1));
                             let mut consumers = (0..readers)
-                                .map(|i| Reader::new(format!("bench_data_path_multi_{}", i), ring.clone()))
+                                .map(|i| {
+                                    Reader::new(
+                                        format!("bench_data_path_multi_{}", i),
+                                        ring.clone(),
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             for _ in 0..chunk * burst {
                                 ring.push(packet(sequence, &payload));

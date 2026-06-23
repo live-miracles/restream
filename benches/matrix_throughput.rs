@@ -1,11 +1,11 @@
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::engine::{AudioMeta, MediaEngine, VideoMeta};
 use restream::media::mpegts::TsMuxer;
 use restream::media::ring_buffer::{
     DtsEnforcer, MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer,
 };
-use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::transcoder::start_transcoder;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -224,7 +224,8 @@ async fn run_matrix_iteration(
 
     if let Some((store, cancel, segmenter)) = hls_segmenter {
         if trans {
-            let mut trans_reader = Reader::new("bench_trans_reader".to_string(), target_ring.clone());
+            let mut trans_reader =
+                Reader::new("bench_trans_reader".to_string(), target_ring.clone());
             let mut trans_pulled = 0;
             let start = Instant::now();
             while trans_pulled < NUM_PACKETS && start.elapsed() < Duration::from_millis(2000) {
@@ -255,12 +256,20 @@ async fn run_matrix_iteration(
         while pulled < NUM_PACKETS && start.elapsed() < Duration::from_millis(2000) {
             if let Ok(Some(pkt)) = reader.pull() {
                 let payload = match pkt.media_type {
-                    MediaType::Video => video_for_ts(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache),
+                    MediaType::Video => video_for_ts(
+                        &pkt.payload,
+                        pkt.format,
+                        &mut nalu_len_size,
+                        &mut sps_pps_cache,
+                    ),
                     MediaType::Audio => {
-                        let track = audio_tracks.iter()
+                        let track = audio_tracks
+                            .iter()
                             .find(|a| a.track_index == pkt.track_index)
                             .or(audio_tracks.first());
-                        let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
+                        let (sr, ch) = track
+                            .map(|a| (a.sample_rate, a.channels))
+                            .unwrap_or((48000, 1));
                         audio_for_ts(&pkt.payload, pkt.format, sr, ch)
                     }
                 };
