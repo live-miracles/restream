@@ -21,7 +21,6 @@
 //! These values accommodate 4K 60fps H.264 streams at 50 Mbps peak with
 //! headroom for retransmission bursts on lossy links.
 
-use bytes::Bytes;
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::Arc;
@@ -30,8 +29,8 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::MediaEngine;
-use crate::media::engine::{AudioMeta, PublisherQuality, VideoMeta};
-use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
+use crate::media::engine::PublisherQuality;
+use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
 
 // Raw SRT Types & FFI Bindings
 pub type SRTSOCKET = c_int;
@@ -1500,6 +1499,7 @@ impl SrtServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::ring_buffer::PayloadFormat;
 
     #[test]
     fn parses_srt_stream_ids_from_common_tools() {
@@ -1835,189 +1835,6 @@ impl Drop for SrtServer {
     }
 }
 
-#[allow(dead_code)]
-struct DemuxProbe {
-    video: Option<VideoMeta>,
-    audio_tracks: Vec<AudioMeta>,
-}
-
-#[allow(dead_code)]
-fn run_ffmpeg_demuxer(
-    queue: Arc<crate::media::avio::MemoryQueue>,
-    ring_buf: Arc<RingBuffer>,
-    token: CancellationToken,
-    probe_tx: std::sync::mpsc::Sender<DemuxProbe>,
-) -> Result<(), &'static str> {
-    use crate::media::avio::CustomInput;
-
-    let mut custom_input = CustomInput::new(&*queue)?;
-    let ictx = custom_input
-        .input
-        .as_mut()
-        .ok_or("Failed to get CustomInput context")?;
-
-    // Extract stream metadata before reading packets
-    let mut video_meta = None;
-    let mut audio_metas = Vec::new();
-
-    let mut stream_map: Vec<(Option<MediaType>, u32)> = Vec::new();
-    let mut audio_track = 0u32;
-    for s in ictx.streams() {
-        let params = s.parameters();
-        match params.medium() {
-            ffmpeg_next::media::Type::Video => {
-                if video_meta.is_none() {
-                    let codec_id = unsafe { (*params.as_ptr()).codec_id };
-                    let codec_name = unsafe {
-                        let desc = ffmpeg_next::ffi::avcodec_descriptor_get(codec_id);
-                        if desc.is_null() {
-                            "unknown".to_string()
-                        } else {
-                            std::ffi::CStr::from_ptr((*desc).name)
-                                .to_string_lossy()
-                                .to_string()
-                        }
-                    };
-                    let width = unsafe { (*params.as_ptr()).width } as u32;
-                    let height = unsafe { (*params.as_ptr()).height } as u32;
-                    let r_fr = s.rate();
-                    let fps = if r_fr.1 > 0 {
-                        r_fr.0 as f64 / r_fr.1 as f64
-                    } else {
-                        0.0
-                    };
-                    let profile = unsafe {
-                        let p = (*params.as_ptr()).profile;
-                        if p >= 0 {
-                            let name = ffmpeg_next::ffi::avcodec_profile_name(codec_id, p);
-                            if !name.is_null() {
-                                Some(std::ffi::CStr::from_ptr(name).to_string_lossy().to_string())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    let level = unsafe {
-                        let l = (*params.as_ptr()).level;
-                        if l >= 0 {
-                            Some(format!("{}.{}", l / 10, l % 10))
-                        } else {
-                            None
-                        }
-                    };
-                    video_meta = Some(VideoMeta {
-                        codec: codec_name,
-                        width,
-                        height,
-                        fps,
-                        bw: None,
-                        profile,
-                        level,
-                        pixel_format: None,
-                    });
-                    stream_map.push((Some(MediaType::Video), 0));
-                } else {
-                    // The current pipeline contract carries one video program.
-                    // Never merge packets from a second video PID into it.
-                    stream_map.push((None, 0));
-                }
-            }
-            ffmpeg_next::media::Type::Audio => {
-                let codec_id = unsafe { (*params.as_ptr()).codec_id };
-                let codec_name = unsafe {
-                    let desc = ffmpeg_next::ffi::avcodec_descriptor_get(codec_id);
-                    if desc.is_null() {
-                        "unknown".to_string()
-                    } else {
-                        std::ffi::CStr::from_ptr((*desc).name)
-                            .to_string_lossy()
-                            .to_string()
-                    }
-                };
-                let sample_rate = unsafe { (*params.as_ptr()).sample_rate } as u32;
-                let ch = unsafe { (*params.as_ptr()).ch_layout.nb_channels } as u32;
-                let profile = unsafe {
-                    let p = (*params.as_ptr()).profile;
-                    if p != ffmpeg_next::ffi::FF_PROFILE_UNKNOWN {
-                        let name = ffmpeg_next::ffi::avcodec_profile_name(codec_id, p);
-                        if !name.is_null() {
-                            Some(std::ffi::CStr::from_ptr(name).to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                };
-                audio_metas.push(AudioMeta {
-                    codec: codec_name,
-                    sample_rate,
-                    channels: ch,
-                    channel_layout: None,
-                    track_index: audio_track,
-                    profile,
-                });
-                stream_map.push((Some(MediaType::Audio), audio_track));
-                audio_track += 1;
-            }
-            _ => stream_map.push((None, 0)),
-        }
-    }
-
-    // Report probed metadata
-    if video_meta.is_some() || !audio_metas.is_empty() {
-        if let Some(ref v) = video_meta {
-            println!(
-                "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
-                v.codec, v.width, v.height, v.fps, v.profile
-            );
-        }
-        for a in &audio_metas {
-            println!(
-                "[srt] Probed audio track {}: {} {}Hz {}ch",
-                a.track_index, a.codec, a.sample_rate, a.channels
-            );
-        }
-        let _ = probe_tx.send(DemuxProbe {
-            video: video_meta,
-            audio_tracks: audio_metas,
-        });
-    }
-    drop(probe_tx);
-
-    let packets_to_push = ictx.packets().filter_map(|(stream, packet)| {
-        if token.is_cancelled() {
-            return None;
-        }
-
-        let (media_type, track_index) =
-            stream_map.get(stream.index()).copied().unwrap_or((None, 0));
-
-        let mt = media_type?;
-        let pts = packet.pts().unwrap_or(0);
-        let dts = packet.dts().unwrap_or(0);
-
-        let time_base = stream.time_base();
-        let pts_ms = (pts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
-        let dts_ms = (dts as f64 * time_base.0 as f64 / time_base.1 as f64 * 1000.0) as i64;
-
-        Some(MediaPacket {
-            media_type: mt,
-            track_index,
-            pts: pts_ms,
-            dts: dts_ms,
-            is_keyframe: packet.is_key(),
-            format: PayloadFormat::Raw,
-            payload: Bytes::copy_from_slice(packet.data().unwrap_or(&[])),
-        })
-    });
-
-    ring_buf.push_batch(packets_to_push);
-
-    Ok(())
-}
 
 async fn resolve_host(host_port: &str) -> Option<SocketAddr> {
     match host_port.parse::<SocketAddr>() {
@@ -2222,6 +2039,7 @@ pub async fn start_srt_egress(
             all_addrs.len(),
             target_url
         );
+        srt_set_highbitrate_opts(client_sock);
         srt_log_effective_opts(client_sock, "egress-bonded");
     } else {
         // Single connection (original path)
