@@ -123,7 +123,15 @@ Set `RESTREAM_USE_INTERNAL_TRANSCODER=1` to use the in-process libavcodec path
 `source_ring → output_ring` contract holds — but uses `MemoryQueue`/`avio`
 callbacks instead of a subprocess pipe.
 
-Prefer the external backend until the Rust FFI layer (`ffmpeg-next`) hardens.
+**Current limitation:** `run_ffmpeg_transcoder_stage` demuxes the MPEG-TS and
+copies compressed video packets directly to the output ring. It does not run
+any decode/scale/encode loop. The `scale=WxH` filter and libx264 re-encode only
+happen in the external backend. Until the internal transcoder gains a proper
+avcodec decode→filter→encode chain, `RESTREAM_USE_INTERNAL_TRANSCODER=1` will
+produce an unscaled copy of the source codec, not a resized H.264 output.
+
+Prefer the external backend. The internal path is retained for future
+development of the in-process pipeline (lower latency, avfilter integration).
 
 ### Muxing stages summary
 

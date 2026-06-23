@@ -50,9 +50,11 @@ use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 /// Input  : MPEG-TS read from stdin (`-i -`)
 /// Output : MPEG-TS written to stdout (`pipe:1`)
 ///
-/// The returned args contain no destination URL; the caller reads stdout and
-/// feeds the packets into `output_ring` for all consumers to share.
-pub fn build_stage_ffmpeg_args(preset: &str) -> Vec<String> {
+/// `input_codec` selects the video encoder: `"hevc"` / `"h265"` → `libx265`,
+/// anything else → `libx264`.  Pass the ingest codec so that H.265 sources
+/// transcode to H.265 output (preserving codec across the preset stage)
+/// and H.264 sources transcode to H.264 output.
+pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
     // Strip the internal stage-key prefix ("video:720p" → "720p")
     let encoding = preset.strip_prefix("video:").unwrap_or(preset);
 
@@ -85,9 +87,16 @@ pub fn build_stage_ffmpeg_args(preset: &str) -> Vec<String> {
     if is_passthrough {
         args.extend(["-c:v".to_string(), "copy".to_string()]);
     } else {
+        // Preserve codec: H.265 source → libx265 (H.265 720p out),
+        //                 H.264 source → libx264 (H.264 720p out).
+        let encoder = if matches!(input_codec, "hevc" | "h265") {
+            "libx265"
+        } else {
+            "libx264"
+        };
         args.extend([
             "-c:v".to_string(),
-            "libx264".to_string(),
+            encoder.to_string(),
             "-preset".to_string(),
             "veryfast".to_string(),
         ]);
@@ -132,12 +141,14 @@ pub async fn start_external_transcoder_stage(
     output_buffer: Arc<RingBuffer>,
     engine: Arc<crate::media::engine::MediaEngine>,
     cancel: CancellationToken,
-    // Override the video codec used in the TsMuxer PMT.
-    // Required when input_buffer is a transcoded ring whose codec differs from
-    // the original ingest (e.g. hevc_to_h264 output → video:720p stage).
+    // Override the video codec used in the TsMuxer PMT, and selects the
+    // encoder in build_stage_ffmpeg_args.  Pass "hevc" when the source ring
+    // carries H.265 so the stage spawns libx265 and tags its output ring
+    // correctly.  None defaults to H.264 (libx264).
     input_codec_override: Option<String>,
 ) {
-    let args = build_stage_ffmpeg_args(&encoding);
+    let input_codec = input_codec_override.as_deref().unwrap_or("h264");
+    let args = build_stage_ffmpeg_args(&encoding, input_codec);
     println!(
         "[ext-transcoder] stage start  pipeline={} encoding={}",
         pipeline_id, encoding
@@ -255,8 +266,12 @@ pub async fn start_external_transcoder_stage(
     };
 
     // ── stdout task: demux MPEG-TS → output_ring ───────────────────────────
-    // Mark output_ring as H.264: build_stage_ffmpeg_args always uses libx264.
-    output_buffer.set_codec_hint("h264");
+    // Codec hint is set synchronously by get_or_create_transcoder before this
+    // task is spawned (OnceLock — set_codec_hint below is a no-op).
+    // Keep it here as a defensive fallback in case the stage is ever called
+    // outside the engine (e.g., tests).
+    let output_codec = if matches!(input_codec, "hevc" | "h265") { "hevc" } else { "h264" };
+    output_buffer.set_codec_hint(output_codec);
     {
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
@@ -407,7 +422,7 @@ mod tests {
 
     #[test]
     fn stage_args_720p_reads_stdin_writes_stdout() {
-        let args = build_stage_ffmpeg_args("720p");
+        let args = build_stage_ffmpeg_args("720p", "h264");
         // reads from stdin
         assert!(args.iter().any(|a| a == "-i"));
         let i_pos = args.iter().position(|a| a == "-i").unwrap();
@@ -424,8 +439,18 @@ mod tests {
     }
 
     #[test]
+    fn stage_args_720p_hevc_uses_libx265() {
+        for codec in &["hevc", "h265"] {
+            let args = build_stage_ffmpeg_args("720p", codec);
+            let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+            assert_eq!(args[cv_pos + 1], "libx265", "codec={codec}");
+            assert!(args.last() == Some(&"pipe:1".to_string()));
+        }
+    }
+
+    #[test]
     fn stage_args_source_copies_video() {
-        let args = build_stage_ffmpeg_args("source");
+        let args = build_stage_ffmpeg_args("source", "h264");
         let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[cv_pos + 1], "copy");
         // no scale filter
@@ -436,15 +461,15 @@ mod tests {
     #[test]
     fn stage_args_video_prefix_stripped() {
         // "video:720p" (internal stage-key format) must produce same args as "720p"
-        let a = build_stage_ffmpeg_args("video:720p");
-        let b = build_stage_ffmpeg_args("720p");
+        let a = build_stage_ffmpeg_args("video:720p", "h264");
+        let b = build_stage_ffmpeg_args("720p", "h264");
         assert_eq!(a, b);
     }
 
     #[test]
     fn stage_args_audio_is_always_copied() {
         for preset in &["720p", "1080p", "source"] {
-            let args = build_stage_ffmpeg_args(preset);
+            let args = build_stage_ffmpeg_args(preset, "h264");
             let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[ca_pos + 1], "copy", "preset={preset}");
         }

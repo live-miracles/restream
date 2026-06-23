@@ -151,8 +151,9 @@ The labels below distinguish implementation from proof.
 | SRT H.264/AAC ingest/read/egress | Implemented, prior local validation | Unit tests plus prior live read/egress evidence |
 | SRT ingest to RTMP egress | **Not protocol-correct** | RTMP egress forwards raw demuxed codec payload as though it were FLV media payload |
 | SRT H.265 passthrough | Implemented, needs full E2E matrix | Codec mapping is tested; decode/probe combinations remain a release gate |
-| RTMP output from H.265 source | **Not functionally complete** | Reconciler inserts `h264`, but the transcoder does not decode/encode packets |
-| 720p/1080p/2160p transforms | **Not functionally complete** | Encoder parameters are created, then compressed input packets are copied unchanged |
+| RTMP output from H.265 source | **Implemented** | `hevc_to_h264` stage (`h264_transcoder.rs`) does full libavcodec H.265 decode → H.264 encode; audio passthrough. Verified by `h265-srt` and `h265-srt-multi` scale tests |
+| 720p/1080p/2160p transforms via external transcoder (default) | **Implemented** | Subprocess `ffmpeg -vf scale=WxH -c:v libx264`; working and tested |
+| 720p/1080p/2160p transforms via internal transcoder (`RESTREAM_USE_INTERNAL_TRANSCODER=1`) | **Not functionally complete** | `run_ffmpeg_transcoder_stage` demuxes MPEG-TS and copies compressed packets to the output ring without decode, scale filter, or encode |
 | Vertical crop/rotate | **Not implemented** | Only output dimensions are selected; no scale/crop/rotate filter runs |
 | Multi-track SRT audio ingest | Implemented | Demux maps all audio streams with track indices |
 | `atrack` | Implemented at stream-selection level | Parser tests |

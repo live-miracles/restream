@@ -629,7 +629,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
 
     let source_ring = engine.get_or_create_pipeline("pipe-hevc-src").await;
     let h264_ring = engine
-        .get_or_create_h264_transcoder("pipe-hevc-src", source_ring)
+        .get_or_create_h264_transcoder("pipe-hevc-src", "source", source_ring)
         .await;
     let rtmp_sink_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-hevc-sink");
 
@@ -796,7 +796,7 @@ async fn hevc_load_test() -> Result<Value, String> {
     // Create shared H.264 transcoder
     let source_ring = engine.get_or_create_pipeline("pipe-hevc-load").await;
     let _h264_ring = engine
-        .get_or_create_h264_transcoder("pipe-hevc-load", source_ring)
+        .get_or_create_h264_transcoder("pipe-hevc-load", "source", source_ring)
         .await;
     tokio::time::sleep(Duration::from_secs(3)).await; // let first keyframe through encoder
 

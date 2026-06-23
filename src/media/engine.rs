@@ -423,8 +423,10 @@ impl MediaEngine {
         // • video:* stages: always re-encode with libx264 → always "h264"
         // • audio:* stages: passthrough → inherit hint from source_buffer
         if encoding.starts_with("video:") {
-            // External transcoder always uses libx264; internal transcoder also
-            // outputs H.264 for video presets.  Override wins if supplied.
+            // Preserve the input codec: H.265 source → H.265 output, H.264 → H.264.
+            // input_codec_override carries the ingest codec ("hevc" or "h264") so
+            // the ring is tagged correctly for downstream audio stages and egress.
+            // Falls back to "h264" when no override is provided (H.264 ingest).
             output_buf.set_codec_hint(input_codec_override.unwrap_or("h264"));
         } else if let Some(oc) = input_codec_override {
             output_buf.set_codec_hint(oc);
@@ -532,14 +534,17 @@ impl MediaEngine {
     }
 
     /// Get or create a shared H.265→H.264 transcoder stage for a pipeline.
-    /// Keyed by `"<pipeline_id>:hevc_to_h264"`. All RTMP egresses on the
-    /// same source pipeline share this stage's output ring buffer.
+    ///
+    /// Keyed by `"<pipeline_id>:hevc_to_h264:from:<upstream_stage_key>"` so that
+    /// RTMP-passthrough (`from:source`) and RTMP-720p (`from:720p`) stages are
+    /// independent and all RTMP egresses on the same preset share one converter.
     pub async fn get_or_create_h264_transcoder(
         self: &Arc<Self>,
         pipeline_id: &str,
+        upstream_stage_key: &str,
         source_buffer: Arc<RingBuffer>,
     ) -> Arc<RingBuffer> {
-        let key = format!("{}:hevc_to_h264", pipeline_id);
+        let key = format!("{}:hevc_to_h264:from:{}", pipeline_id, upstream_stage_key);
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
