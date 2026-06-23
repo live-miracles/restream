@@ -117,18 +117,28 @@ impl IngestSecurityService {
             return;
         }
         // Remove IPs whose ban has expired and have no recent failures first,
-        // then fall back to arbitrary removal if still over limit.
+        // then fall back to evicting by oldest most-recent-failure to keep the map bounded.
         let now = Instant::now();
         state.retain(|_, r| {
             let expired_ban = r.banned_until.is_none_or(|t| t <= now);
             let has_failures = !r.failures.is_empty();
             !expired_ban || has_failures
         });
-        // Hard cap: if still over limit, drop excess entries arbitrarily.
+        // Hard cap: if still over limit, evict by oldest most-recent-failure so
+        // actively-attacking IPs (with recent failures) are retained, not dropped.
+        // HashMap's arbitrary iteration order would otherwise evict random entries,
+        // potentially letting an attacker clear their own record by flooding from
+        // many IPs.
         if state.len() > limit {
             let excess = state.len() - limit;
-            let keys: Vec<String> = state.keys().take(excess).cloned().collect();
-            for k in keys {
+            // Sort by the oldest failure in the record (earliest = least active)
+            let mut entries: Vec<(&String, &FailureRecord)> = state.iter().collect();
+            entries.sort_by_key(|(_, r)| {
+                r.failures.iter().copied().min().unwrap_or(now)
+            });
+            let keys_to_remove: Vec<String> =
+                entries.iter().take(excess).map(|(k, _)| (*k).clone()).collect();
+            for k in keys_to_remove {
                 state.remove(&k);
             }
         }
