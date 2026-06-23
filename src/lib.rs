@@ -164,11 +164,47 @@ pub async fn run_app() {
         srt_server.run(srt_port).await;
     });
 
+    // ── Graceful shutdown ────────────────────────────────────────────────────
+    // A single CancellationToken is shared between the signal watcher and the
+    // reconciler loop.  On Ctrl+C or SIGTERM the token fires and the reconciler
+    // loop breaks, after which we cancel all active egress tasks and exit.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    {
+        let shutdown_c = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    res = tokio::signal::ctrl_c() => {
+                        if let Err(e) = res { eprintln!("[shutdown] Ctrl+C error: {e}"); }
+                    }
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                if let Err(e) = tokio::signal::ctrl_c().await {
+                    eprintln!("[shutdown] Ctrl+C error: {e}");
+                }
+            }
+            println!("[shutdown] Signal received — stopping reconciler");
+            shutdown_c.cancel();
+        });
+    }
+
     // Run reconciliation loop
     let last_failed: Arc<TokioMutex<HashMap<String, Instant>>> =
         Arc::new(TokioMutex::new(HashMap::new()));
     loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Wait 1 second OR until a shutdown signal fires — whichever is first.
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
 
         let outputs = match db::list_outputs(&pool).await {
             Ok(o) => o,
@@ -237,68 +273,83 @@ pub async fn run_app() {
                         .map(|v| v.codec == "hevc" || v.codec == "h265")
                         .unwrap_or(false)
                 };
-                // RTMP does not carry H.265 natively; auto-transcode to H.264.
-                let needs_h264_transcode = is_rtmp && ingest_is_hevc;
+                // Stage graph (new design — H.265→H.264 conversion at the output
+                // edge, not up-front):
+                //
+                //   source_ring (H.265 or H.264)
+                //     │  [Stage 1, if preset] video:NNNp   ← preserves input codec
+                //     │  [Stage 2, if audio]  audio filter ← shared by RTMP + SRT
+                //     │  [Stage 3, RTMP only] hevc_to_h264 ← keyed by upstream
+                //     ↓
+                //   ring_buf  ←── egress reads from here
+                //
+                // SRT outputs receive native H.265 at the target resolution.
+                // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
+                // applied after the video+audio stages, avoiding a redundant
+                // source-resolution encode pass.
                 let needs_video_transcode = !is_passthrough;
+                // H.265→H.264 is only needed at the RTMP output edge.
+                let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
+                // Pass the ingest codec as override so the video:preset ring is
+                // tagged with the correct codec hint for downstream audio stages
+                // and egress writers (source ring has no hint; active_ingests is
+                // the authoritative source).
+                let ingest_codec_override = if ingest_is_hevc { Some("hevc") } else { None };
 
-                // Stage 1: optional H.265→H.264 base (RTMP only)
-                let h264_base_buf = if needs_h264_transcode {
-                    Some(
-                        engine
-                            .get_or_create_h264_transcoder(&output.pipeline_id, source_buf.clone())
-                            .await,
-                    )
-                } else {
-                    None
-                };
-
-                let video_source = h264_base_buf.as_ref().unwrap_or(&source_buf).clone();
-
-                let video_stage_key = if needs_h264_transcode && !needs_video_transcode {
-                    "h264"
-                } else if needs_video_transcode {
-                    video_preset
-                } else {
-                    "source"
-                };
-
-                // Stage 2: shared video transcode (or passthrough)
-                // When h264_base_buf is the upstream (H.265→H.264 conversion),
-                // override the codec hint so the external transcoder initialises
-                // the TsMuxer with "h264" PMT stream_type, not the original "hevc".
-                let video_codec_hint = if needs_h264_transcode && needs_video_transcode {
-                    Some("h264")
-                } else {
-                    None
-                };
+                // Stage 1: video transcode from source ring (H.265 flows through
+                // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
+                // the input_codec_override passed into the stage).
+                let video_stage_key = if needs_video_transcode { video_preset } else { "source" };
                 let video_buf = if needs_video_transcode {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
                             &format!("video:{}", video_preset),
-                            video_source,
-                            video_codec_hint,
+                            source_buf.clone(),
+                            ingest_codec_override,
                         )
                         .await
-                } else if let Some(buf) = h264_base_buf {
-                    buf
                 } else {
-                    source_buf
+                    source_buf.clone()
                 };
 
-                // Stage 3: optional audio filter (keyed on video stage to prevent
-                // cross-contamination between presets)
-                let ring_buf = if let Some(audio) = audio_part {
+                // Stage 2: optional audio filter (keyed on video stage to prevent
+                // cross-contamination between presets). Shared between RTMP and SRT
+                // egresses on the same preset.
+                let (pre_h264_buf, last_stage_key) = if let Some(audio) = audio_part {
                     if !audio.is_empty() {
                         let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
-                        engine
-                            .get_or_create_transcoder(&output.pipeline_id, &audio_key, video_buf, None)
-                            .await
+                        let buf = engine
+                            .get_or_create_transcoder(
+                                &output.pipeline_id,
+                                &audio_key,
+                                video_buf.clone(),
+                                None,
+                            )
+                            .await;
+                        (buf, audio_key)
                     } else {
-                        video_buf
+                        (video_buf.clone(), video_stage_key.to_string())
                     }
                 } else {
-                    video_buf
+                    (video_buf.clone(), video_stage_key.to_string())
+                };
+
+                // Stage 3: H.265→H.264 conversion for RTMP only (applied after
+                // audio routing so the converter sees the selected audio tracks).
+                // Keyed by last_stage_key so RTMP-passthrough and RTMP-720p each
+                // get their own converter, and all RTMP egresses on the same preset
+                // share it.
+                let ring_buf = if needs_rtmp_h264_conv {
+                    engine
+                        .get_or_create_h264_transcoder(
+                            &output.pipeline_id,
+                            &last_stage_key,
+                            pre_h264_buf,
+                        )
+                        .await
+                } else {
+                    pre_h264_buf
                 };
 
                 // Register egress and get token
@@ -505,28 +556,30 @@ pub async fn run_app() {
                     let audio_part = encoding.split('+').nth(1);
 
                     let is_passthrough = video_preset.is_empty() || video_preset == "source" || video_preset == "custom";
-                    let needs_h264_transcode = is_rtmp && ingest_is_hevc;
                     let needs_video_transcode = !is_passthrough;
+                    let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
 
-                    let video_stage_key = if needs_h264_transcode && !needs_video_transcode {
-                        "h264"
-                    } else if needs_video_transcode {
-                        video_preset
-                    } else {
-                        "source"
-                    };
+                    let video_stage_key = if needs_video_transcode { video_preset } else { "source" };
 
-                    if needs_h264_transcode {
-                        needed_stages.insert(format!("{}:hevc_to_h264", output.pipeline_id));
-                    }
                     if needs_video_transcode {
                         needed_stages.insert(format!("{}:video:{}", output.pipeline_id, video_preset));
                     }
-                    if let Some(audio) = audio_part {
+                    let last_stage_key = if let Some(audio) = audio_part {
                         if !audio.is_empty() {
                             let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
                             needed_stages.insert(format!("{}:{}", output.pipeline_id, audio_key));
+                            audio_key.to_string()
+                        } else {
+                            video_stage_key.to_string()
                         }
+                    } else {
+                        video_stage_key.to_string()
+                    };
+                    if needs_rtmp_h264_conv {
+                        needed_stages.insert(format!(
+                            "{}:hevc_to_h264:from:{}",
+                            output.pipeline_id, last_stage_key
+                        ));
                     }
                 }
             }
@@ -599,4 +652,18 @@ pub async fn run_app() {
         // Periodically reap exited file-ingest subprocesses
         engine.reap_file_ingests().await;
     }
+
+    // ── Graceful shutdown cleanup ────────────────────────────────────────────
+    // Cancel all active egress tasks and wait briefly for them to finish their
+    // cleanup paths (unregister_egress, job-status update).
+    println!("[shutdown] Cancelling all active egress tasks...");
+    {
+        let tokens = engine.egress_cancel_tokens.read().await;
+        for token in tokens.values() {
+            token.cancel();
+        }
+    }
+    // Give egress tasks a moment to run their cleanup paths.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("[shutdown] Done");
 }
