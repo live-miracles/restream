@@ -78,6 +78,19 @@ impl MemoryQueue {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).closed
     }
 
+    /// Current number of buffered bytes awaiting consumption.
+    ///
+    /// Useful for detecting producer/consumer imbalance (e.g., a slow FFmpeg
+    /// thread unable to keep pace with ingest). Values consistently above a few
+    /// megabytes indicate the downstream stage is falling behind.
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn read(&self, target: &mut [u8]) -> usize {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         while inner.buf.is_empty() && !inner.closed {

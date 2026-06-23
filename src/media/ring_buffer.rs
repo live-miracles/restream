@@ -415,6 +415,15 @@ impl Reader {
             notify.notified().await;
         }
     }
+
+    /// Number of slots this reader is behind the write cursor.
+    ///
+    /// Zero means fully caught up; values approaching `capacity` (4096) mean
+    /// the reader is at risk of overflow. Useful as a health metric for slow
+    /// egress consumers.
+    pub fn lag(&self) -> usize {
+        self.buffer.get_write_idx().saturating_sub(self.read_idx)
+    }
 }
 
 /// Per-stream DTS monotonicity enforcer for MPEG-TS muxing.

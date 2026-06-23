@@ -1,4 +1,4 @@
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use restream::media::avio::MemoryQueue;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -74,5 +74,58 @@ fn bench_avio_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_avio_throughput);
+/// Cost of `MemoryQueue::len()` — one Mutex lock/unlock + `VecDeque::len()`.
+/// Both variants target < 50 ns; a value near the lock round-trip time (~20 ns)
+/// confirms the call adds negligible overhead to any monitoring loop.
+fn bench_memory_queue_len(c: &mut Criterion) {
+    let mut group = c.benchmark_group("memory_queue/len");
+
+    group.bench_function("empty", |b| {
+        let q = MemoryQueue::new();
+        b.iter(|| black_box(q.len()))
+    });
+
+    group.bench_function("loaded_64k", |b| {
+        let q = MemoryQueue::new();
+        q.write(&vec![0u8; 65_536]);
+        b.iter(|| black_box(q.len()))
+    });
+
+    group.finish();
+}
+
+/// Compares `write_batch` throughput for a single 1316-byte MPEG-TS packet
+/// with and without a subsequent `len()` call.  Quantifies the cost of polling
+/// queue depth on every write (worst-case diagnostic overhead).
+fn bench_write_batch_overhead(c: &mut Criterion) {
+    let mut group = c.benchmark_group("memory_queue/write_batch");
+    group.throughput(Throughput::Bytes(1316));
+
+    let chunk = vec![0u8; 1316];
+
+    group.bench_function("without_len", |b| {
+        let c = chunk.clone();
+        b.iter_batched(
+            MemoryQueue::new,
+            |q| black_box(q.write_batch([c.as_slice()])),
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("with_len", |b| {
+        let c = chunk.clone();
+        b.iter_batched(
+            MemoryQueue::new,
+            |q| {
+                black_box(q.write_batch([c.as_slice()]));
+                black_box(q.len())
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_avio_throughput, bench_memory_queue_len, bench_write_batch_overhead);
 criterion_main!(benches);

@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
 use restream::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -128,10 +130,63 @@ fn benchmark_pull_burst(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure the overhead of `Reader::lag()` — one `Acquire` atomic load plus one
+/// `saturating_sub`.  The call must be safe on hot paths; target latency < 5 ns.
+fn benchmark_reader_lag(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ring_buffer/lag");
+
+    let pkt = make_packet(1316);
+
+    // lag = 0: reader is at the write cursor (fully caught up).
+    group.bench_function("caught_up", |b| {
+        let buf = Arc::new(RingBuffer::new(4096));
+        let reader = Reader::new("bench_lag_caught_up".to_string(), buf.clone());
+        b.iter(|| black_box(reader.lag()))
+    });
+
+    // lag = 1024: reader is 1024 slots behind, typical mid-burst scenario.
+    // Create reader on empty buffer (read_idx = 0) then push 1024 packets so
+    // write_idx = 1024 and lag() = 1024 throughout the measurement.
+    group.bench_function("1024_behind", |b| {
+        let buf = Arc::new(RingBuffer::new(4096));
+        let reader = Reader::new("bench_lag_behind".to_string(), buf.clone());
+        for _ in 0..1024 {
+            buf.push(pkt.clone());
+        }
+        b.iter(|| black_box(reader.lag()))
+    });
+
+    // Validate that calling lag() after every pull_burst(32) does not regress
+    // overall consumer throughput.  Use iter_batched so setup (pre-fill 32 packets)
+    // is excluded from measurement; each iter measures one pull_burst(32) + lag().
+    // Compare to `ring_buffer/consumer/pull_burst/32` to quantify overhead.
+    group.bench_function("pull_burst_32_then_lag", |b| {
+        b.iter_batched(
+            || {
+                let buf = Arc::new(RingBuffer::new(4096));
+                let reader = Reader::new("bench_lag_pull".to_string(), buf.clone());
+                for _ in 0..32 {
+                    buf.push(pkt.clone());
+                }
+                (reader, Vec::with_capacity(32))
+            },
+            |(mut reader, mut out)| {
+                out.clear();
+                black_box(reader.pull_burst(&mut out, 32).ok());
+                black_box(reader.lag())
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
     benchmark_pull_burst,
+    benchmark_reader_lag,
     // Run concurrency bench last so 500 threads don't noise-up the pure benchmarks.
     benchmark_ring_buffer_concurrency,
 );
