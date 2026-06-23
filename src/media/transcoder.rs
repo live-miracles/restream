@@ -7,6 +7,7 @@
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
+use crate::media::engine::AudioMeta;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -78,15 +79,16 @@ pub async fn start_audio_router(
                 }
                 for pkt in packets {
                     let out = match &routing {
-                        AudioRouting::Passthrough => Some(pkt),
+                        AudioRouting::Passthrough => Some((*pkt).clone()),
 
                         AudioRouting::SelectTracks(tracks) => {
                             match pkt.media_type {
-                                MediaType::Video => Some(pkt),
+                                MediaType::Video => Some((*pkt).clone()),
                                 MediaType::Audio => {
-                                    // track_index is 0-based from TsDemuxer
-                                    if tracks.contains(&(pkt.track_index as usize)) {
-                                        Some(pkt)
+                                    if let Some(pos) = tracks.iter().position(|&t| t == pkt.track_index as usize) {
+                                        let mut new_pkt = (*pkt).clone();
+                                        new_pkt.track_index = pos as u32;
+                                        Some(new_pkt)
                                     } else {
                                         None // drop this track
                                     }
@@ -96,15 +98,12 @@ pub async fn start_audio_router(
 
                         AudioRouting::Remap { left, right, track } => {
                             match pkt.media_type {
-                                MediaType::Video => Some(pkt),
+                                MediaType::Video => Some((*pkt).clone()),
                                 MediaType::Audio if pkt.track_index as usize == *track => {
-                                    // Re-label this track. The MPEG-TS muxer downstream
-                                    // will assign PMT entries by track_index order.
-                                    // left/right are channel positions within the frame;
-                                    // for ADTS-wrapped AAC the frame is already packed
-                                    // and we just rename the stream.
                                     let _ = (left, right); // channel remap needs DSP
-                                    Some(pkt)
+                                    let mut new_pkt = (*pkt).clone();
+                                    new_pkt.track_index = 0;
+                                    Some(new_pkt)
                                 }
                                 MediaType::Audio => None,
                             }
@@ -113,7 +112,7 @@ pub async fn start_audio_router(
                         AudioRouting::Downmix(_) => {
                             // Downmix requires decode→mix→encode; not handled here.
                             // get_or_create_transcoder routes Downmix to the FFmpeg path.
-                            Some(pkt)
+                            Some((*pkt).clone())
                         }
                     };
                     if let Some(p) = out {
@@ -125,8 +124,7 @@ pub async fn start_audio_router(
                             );
                             first_push_logged = true;
                         }
-                        // pull_burst returns Arc<MediaPacket>; clone is a refcount bump.
-                        out_batch.push((*p).clone());
+                        out_batch.push(p);
                         _pushed_count += 1;
                     }
                 }
@@ -171,6 +169,45 @@ pub fn parse_audio_routing(encoding: &str) -> AudioRouting {
     }
 
     AudioRouting::Passthrough
+}
+
+pub fn apply_audio_routing(routing: &AudioRouting, input_tracks: &[AudioMeta]) -> Vec<AudioMeta> {
+    match routing {
+        AudioRouting::Passthrough => input_tracks.to_vec(),
+        AudioRouting::SelectTracks(tracks) => {
+            let mut out = Vec::new();
+            let mut out_idx = 0;
+            for (i, track) in input_tracks.iter().enumerate() {
+                if tracks.contains(&i) {
+                    let mut t = track.clone();
+                    t.track_index = out_idx;
+                    out.push(t);
+                    out_idx += 1;
+                }
+            }
+            out
+        }
+        AudioRouting::Remap { track, .. } => {
+            if let Some(t) = input_tracks.get(*track) {
+                let mut out_track = t.clone();
+                out_track.track_index = 0;
+                vec![out_track]
+            } else {
+                Vec::new()
+            }
+        }
+        AudioRouting::Downmix(track) => {
+            if let Some(t) = input_tracks.get(*track) {
+                let mut out_track = t.clone();
+                out_track.track_index = 0;
+                out_track.channels = 2;
+                out_track.channel_layout = Some("stereo".to_string());
+                vec![out_track]
+            } else {
+                Vec::new()
+            }
+        }
+    }
 }
 
 pub async fn start_transcoder(
@@ -438,6 +475,96 @@ mod tests {
             let expected = format!("{}:video:{}", pipeline, vp);
             assert_eq!(video_key, expected);
         }
+    }
+
+    #[test]
+    fn test_apply_audio_routing_reindexes() {
+        let input_tracks = vec![
+            AudioMeta {
+                codec: "aac".to_string(),
+                channels: 2,
+                sample_rate: 48000,
+                track_index: 0,
+                channel_layout: None,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".to_string(),
+                channels: 2,
+                sample_rate: 48000,
+                track_index: 1,
+                channel_layout: None,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".to_string(),
+                channels: 2,
+                sample_rate: 48000,
+                track_index: 2,
+                channel_layout: None,
+                profile: None,
+            },
+        ];
+
+        let routing = AudioRouting::SelectTracks(vec![2]);
+        let output_tracks = apply_audio_routing(&routing, &input_tracks);
+        assert_eq!(output_tracks.len(), 1);
+        assert_eq!(output_tracks[0].track_index, 0); // re-indexed from 2 to 0
+    }
+
+    #[tokio::test]
+    async fn test_audio_router_reindexes_packets() {
+        let source_ring = Arc::new(RingBuffer::new(16));
+        let out_ring = Arc::new(RingBuffer::new(16));
+        let cancel = CancellationToken::new();
+
+        // Start audio router
+        let routing = AudioRouting::SelectTracks(vec![2]);
+        let handle = tokio::spawn(start_audio_router(
+            "pipe-id".to_string(),
+            routing,
+            source_ring.clone(),
+            out_ring.clone(),
+            cancel.clone(),
+        ));
+
+        // Push some source packets
+        source_ring.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 0,
+            dts: 0,
+            is_keyframe: true,
+            format: PayloadFormat::Raw,
+            payload: bytes::Bytes::from_static(&[1, 2, 3]),
+        });
+        source_ring.push(MediaPacket {
+            media_type: MediaType::Audio,
+            track_index: 2, // track 2
+            pts: 10,
+            dts: 10,
+            is_keyframe: false,
+            format: PayloadFormat::Raw,
+            payload: bytes::Bytes::from_static(&[4, 5, 6]),
+        });
+
+        // Let the router process
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        cancel.cancel();
+        let _ = handle.await;
+
+        // Verify output packets
+        let mut reader = Reader::new("test_router".to_string(), out_ring);
+        let mut out_pkts = Vec::new();
+        while let Ok(Some(pkt)) = reader.pull() {
+            out_pkts.push(pkt);
+        }
+
+        // Should contain video packet and audio packet
+        assert_eq!(out_pkts.len(), 2);
+        assert_eq!(out_pkts[0].media_type, MediaType::Video);
+        assert_eq!(out_pkts[1].media_type, MediaType::Audio);
+        assert_eq!(out_pkts[1].track_index, 0); // re-indexed to 0
     }
 }
 
