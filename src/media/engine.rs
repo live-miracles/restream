@@ -1814,4 +1814,56 @@ mod tests {
         // s2 was swept and cancelled
         let _ = (s1, s2);
     }
+
+    #[tokio::test]
+    async fn concurrent_get_or_create_transcoder_yields_single_stage() {
+        // Bug #4 regression: the old read-lock-then-write-lock TOCTOU window
+        // allowed concurrent callers to both see "key absent" and both insert,
+        // spawning two transcoder tasks writing to different ring buffers.
+        // After the fix, all concurrent callers must receive the SAME Arc<RingBuffer>.
+        use std::sync::Arc as StdArc;
+        use tokio::sync::Barrier;
+        use tokio::task::JoinSet;
+
+        let engine = StdArc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-concurrent").await;
+
+        // Synchronize 16 tasks to all call get_or_create_transcoder simultaneously
+        let barrier = StdArc::new(Barrier::new(16));
+        let mut join_set = JoinSet::new();
+
+        for _ in 0..16 {
+            let e = engine.clone();
+            let s = source.clone();
+            let b = barrier.clone();
+            join_set.spawn(async move {
+                b.wait().await;
+                e.get_or_create_transcoder("pipe-concurrent", "video:720p", s, None)
+                    .await
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(r) = join_set.join_next().await {
+            results.push(r.unwrap());
+        }
+
+        // All returned Arc<RingBuffer>s must point to the SAME allocation
+        let first_ptr = StdArc::as_ptr(&results[0]);
+        for rb in &results[1..] {
+            assert_eq!(
+                StdArc::as_ptr(rb),
+                first_ptr,
+                "concurrent callers must receive the same RingBuffer Arc (no duplicate stages)"
+            );
+        }
+
+        // Exactly one stage must exist in the map
+        let stages = engine.active_transcoder_stages("pipe-concurrent").await;
+        assert_eq!(
+            stages.len(),
+            1,
+            "exactly one transcoder stage must exist after concurrent creation"
+        );
+    }
 }
