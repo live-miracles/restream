@@ -95,7 +95,9 @@ impl StageMetrics {
 pub struct HlsConsumers {
     /// Number of persistent consumers (HLS egress outputs).
     pub persistent: AtomicU64,
-    /// Epoch millis of the last playlist/segment fetch (transient consumer heartbeat).
+    /// Monotonic reference time.
+    pub reference_instant: Instant,
+    /// Monotonic elapsed millis since reference_instant for the last access.
     pub last_access_ms: AtomicU64,
     /// Cancel token for the segmenter task.
     pub cancel_token: CancellationToken,
@@ -105,20 +107,18 @@ impl HlsConsumers {
     pub fn new(cancel_token: CancellationToken) -> Self {
         Self {
             persistent: AtomicU64::new(0),
-            last_access_ms: AtomicU64::new(Self::now_ms()),
+            reference_instant: Instant::now(),
+            last_access_ms: AtomicU64::new(0),
             cancel_token,
         }
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+    fn now_ms(&self) -> u64 {
+        self.reference_instant.elapsed().as_millis() as u64
     }
 
     pub fn touch(&self) {
-        self.last_access_ms.store(Self::now_ms(), Ordering::Relaxed);
+        self.last_access_ms.store(self.now_ms(), Ordering::Relaxed);
     }
 
     pub fn add_persistent(&self) {
@@ -135,7 +135,7 @@ impl HlsConsumers {
             return false;
         }
         let last = self.last_access_ms.load(Ordering::Relaxed);
-        let now = Self::now_ms();
+        let now = self.now_ms();
         now.saturating_sub(last) >= timeout_ms
     }
 }
@@ -1445,6 +1445,22 @@ impl MediaEngine {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_hls_consumers_monotonic_idle() {
+        let cancel = CancellationToken::new();
+        let hc = HlsConsumers::new(cancel);
+        assert!(!hc.is_idle(60000));
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        hc.touch();
+        let last = hc.last_access_ms.load(Ordering::Relaxed);
+        assert!(last > 0);
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+        assert!(!hc.is_idle(60000));
+        assert!(hc.is_idle(10));
+    }
 
     #[tokio::test]
     async fn rejects_a_second_independent_publisher_for_the_same_pipeline() {
