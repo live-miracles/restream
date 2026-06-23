@@ -183,6 +183,22 @@
 
           <div class="divider my-0"></div>
 
+          <!-- Transcode Profiles -->
+          <div class="space-y-3">
+            <div class="flex flex-wrap items-baseline gap-3">
+              <span class="shrink-0 text-sm font-medium">Transcode Profiles</span>
+              <span class="text-sm opacity-70">Encoder settings per profile name. Used for H.265→H.264 and resolution presets. Changes apply to new transcoder spawns.</span>
+            </div>
+            <div id="transcode-profiles-list" class="space-y-3"></div>
+            <div class="flex items-center gap-3">
+              <button class="btn btn-accent btn-sm" onclick="saveTranscodeProfiles()">Save Profiles</button>
+              <button class="btn btn-ghost btn-sm" onclick="addTranscodeProfile()">+ Add Profile</button>
+              <span id="transcode-profiles-saved" class="text-success hidden text-sm">Saved</span>
+            </div>
+          </div>
+
+          <div class="divider my-0"></div>
+
           <!-- Custom Encoding -->
           <div class="space-y-2">
             <div class="flex flex-wrap items-baseline gap-3">

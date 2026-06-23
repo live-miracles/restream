@@ -4,6 +4,8 @@ import {
     saveIngestHost,
     saveIngestSecurity,
     saveCustomEncoding,
+    saveTranscodeProfiles,
+    addTranscodeProfile,
     loadMediaFiles,
     loadIngests,
     openAddIngestForm,
@@ -31,6 +33,8 @@ window.saveServerName = saveServerName;
 window.saveIngestHost = saveIngestHost;
 window.saveIngestSecurity = saveIngestSecurity;
 window.saveCustomEncoding = saveCustomEncoding;
+window.saveTranscodeProfiles = saveTranscodeProfiles;
+window.addTranscodeProfile = addTranscodeProfile;
 window.openAddIngestForm = openAddIngestForm;
 window.closeAddIngestForm = closeAddIngestForm;
 window.saveIngest = saveIngest;

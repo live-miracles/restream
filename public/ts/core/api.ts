@@ -274,19 +274,36 @@ async function getPipelineHistory(
     );
 }
 
+export interface TranscodeProfile {
+    preset: string;
+    tune: string;
+    crf: number;
+    gop: number;
+    bframes: number;
+    bitrate: number;
+    maxBitrate: number;
+    width: number;
+    height: number;
+}
+
+export type TranscodeProfiles = Record<string, TranscodeProfile>;
+
 async function patchConfig(body: {
     serverName?: string;
     ingestHost?: string;
     ingestSecurity?: Partial<IngestSecurityConfig>;
+    transcodeProfiles?: TranscodeProfiles;
 }): Promise<{
     serverName: string;
     ingestHost: string;
     ingestSecurity: IngestSecurityConfig;
+    transcodeProfiles?: TranscodeProfiles;
 } | null> {
     return apiRequest<{
         serverName: string;
         ingestHost: string;
         ingestSecurity: IngestSecurityConfig;
+        transcodeProfiles?: TranscodeProfiles;
     }>('/config', { method: 'PATCH', body });
 }
 
@@ -436,4 +453,6 @@ export {
     logout,
     changePassword,
     getProcessingGraph,
+    type TranscodeProfile,
+    type TranscodeProfiles,
 };

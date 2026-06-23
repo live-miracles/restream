@@ -13,6 +13,8 @@ import {
     logout,
     changePassword,
     type IngestConfig,
+    type TranscodeProfile,
+    type TranscodeProfiles,
 } from '../core/api.js';
 import { showErrorAlert, formatMaskedStreamKey } from '../core/utils.js';
 import { state } from '../core/state.js';
@@ -26,6 +28,7 @@ export async function loadSettings(): Promise<void> {
     const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
     if (hostInput) hostInput.value = state.config?.ingestHost || '';
     populateIngestSecuritySettings();
+    loadTranscodeProfiles();
 
     const enc = await getCustomEncoding();
     if (enc) {
@@ -396,4 +399,94 @@ export async function saveCustomEncoding(): Promise<void> {
     const ffmpegArgs = argsInput?.value?.trim() ?? '';
     const result = await updateCustomEncoding(ffmpegArgs);
     if (result !== null) showSavedFeedback('custom-enc-saved');
+}
+
+// ── Transcode Profiles ─────────────────────────────────
+
+const PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'];
+const TUNE_OPTIONS = ['zerolatency', 'fastdecode', 'film', 'animation', 'grain', 'stillimage', 'psnr', 'ssim'];
+
+function renderProfileRow(name: string, profile: TranscodeProfile): string {
+    const presetOpts = PRESET_OPTIONS.map((p) => `<option value="${p}" ${profile.preset === p ? 'selected' : ''}>${p}</option>`).join('');
+    const tuneOpts = TUNE_OPTIONS.map((t) => `<option value="${t}" ${profile.tune === t ? 'selected' : ''}>${t}</option>`).join('');
+    return `
+        <div class="bg-base-100 px-3 py-2 shadow rounded-box space-y-2" data-profile-name="${name}">
+            <div class="flex items-center gap-2">
+                <input type="text" class="input input-sm font-mono w-32 js-profile-name" value="${name}" placeholder="profile name" />
+                <span class="text-sm opacity-70">preset</span>
+                <select class="select select-sm js-profile-preset">${presetOpts}</select>
+                <span class="text-sm opacity-70">tune</span>
+                <select class="select select-sm js-profile-tune">${tuneOpts}</select>
+                <button class="btn btn-xs btn-error btn-outline js-profile-delete" data-name="${name}">&times;</button>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 text-sm">
+                <label class="flex items-center gap-1">CRF <input type="number" class="input input-xs w-16 js-profile-crf" value="${profile.crf}" min="0" max="51" /></label>
+                <label class="flex items-center gap-1">GOP <input type="number" class="input input-xs w-16 js-profile-gop" value="${profile.gop}" min="1" /></label>
+                <label class="flex items-center gap-1">B-frames <input type="number" class="input input-xs w-16 js-profile-bframes" value="${profile.bframes}" min="0" /></label>
+                <label class="flex items-center gap-1">Bitrate <input type="number" class="input input-xs w-24 js-profile-bitrate" value="${profile.bitrate}" placeholder="0=CRF" /></label>
+                <label class="flex items-center gap-1">MaxBitrate <input type="number" class="input input-xs w-24 js-profile-maxbitrate" value="${profile.maxBitrate}" placeholder="0=none" /></label>
+                <label class="flex items-center gap-1">W <input type="number" class="input input-xs w-16 js-profile-width" value="${profile.width}" placeholder="0=src" /></label>
+                <label class="flex items-center gap-1">H <input type="number" class="input input-xs w-16 js-profile-height" value="${profile.height}" placeholder="0=src" /></label>
+            </div>
+        </div>`;
+}
+
+export function loadTranscodeProfiles(): void {
+    const list = document.getElementById('transcode-profiles-list');
+    if (!list) return;
+    const profiles = state.config?.transcodeProfiles ?? {};
+    const entries = Object.entries(profiles);
+    if (entries.length === 0) {
+        list.innerHTML = '<p class="text-sm opacity-70">No profiles configured. Using built-in defaults (ultrafast, zerolatency, CRF 23).</p>';
+        return;
+    }
+    list.innerHTML = entries.map(([name, p]) => renderProfileRow(name, p)).join('');
+    list.querySelectorAll<HTMLButtonElement>('.js-profile-delete').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const row = btn.closest('[data-profile-name]');
+            if (row) row.remove();
+        });
+    });
+}
+
+export function addTranscodeProfile(): void {
+    const list = document.getElementById('transcode-profiles-list');
+    if (!list) return;
+    const div = document.createElement('div');
+    div.innerHTML = renderProfileRow('new_profile', {
+        preset: 'ultrafast', tune: 'zerolatency', crf: 23, gop: 60, bframes: 0,
+        bitrate: 0, maxBitrate: 0, width: 0, height: 0,
+    });
+    const row = div.firstElementChild as HTMLElement | null;
+    if (row) {
+        list.appendChild(row);
+        row.querySelector<HTMLButtonElement>('.js-profile-delete')?.addEventListener('click', () => row.remove());
+    }
+}
+
+export async function saveTranscodeProfiles(): Promise<void> {
+    const list = document.getElementById('transcode-profiles-list');
+    if (!list) return;
+    const profiles: TranscodeProfiles = {};
+    list.querySelectorAll<HTMLElement>('[data-profile-name]').forEach((row) => {
+        const name = (row.querySelector('.js-profile-name') as HTMLInputElement)?.value?.trim();
+        if (!name) return;
+        profiles[name] = {
+            preset: (row.querySelector('.js-profile-preset') as HTMLSelectElement)?.value || 'ultrafast',
+            tune: (row.querySelector('.js-profile-tune') as HTMLSelectElement)?.value || 'zerolatency',
+            crf: Number((row.querySelector('.js-profile-crf') as HTMLInputElement)?.value) || 23,
+            gop: Number((row.querySelector('.js-profile-gop') as HTMLInputElement)?.value) || 60,
+            bframes: Number((row.querySelector('.js-profile-bframes') as HTMLInputElement)?.value) || 0,
+            bitrate: Number((row.querySelector('.js-profile-bitrate') as HTMLInputElement)?.value) || 0,
+            maxBitrate: Number((row.querySelector('.js-profile-maxbitrate') as HTMLInputElement)?.value) || 0,
+            width: Number((row.querySelector('.js-profile-width') as HTMLInputElement)?.value) || 0,
+            height: Number((row.querySelector('.js-profile-height') as HTMLInputElement)?.value) || 0,
+        };
+    });
+    const result = await patchConfig({ transcodeProfiles: profiles });
+    if (result) {
+        state.config = { ...state.config, transcodeProfiles: result.transcodeProfiles };
+        loadTranscodeProfiles();
+        showSavedFeedback('transcode-profiles-saved');
+    }
 }

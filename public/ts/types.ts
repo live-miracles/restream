@@ -107,9 +107,22 @@ export interface ConfigData {
     serverName?: string;
     ingestHost?: string;
     ingestSecurity?: IngestSecurityConfig;
+    transcodeProfiles?: Record<string, TranscodeProfileEntry>;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];
     jobs: Job[];
+}
+
+export interface TranscodeProfileEntry {
+    preset: string;
+    tune: string;
+    crf: number;
+    gop: number;
+    bframes: number;
+    bitrate: number;
+    maxBitrate: number;
+    width: number;
+    height: number;
 }
 
 export interface IngestSecurityConfig {

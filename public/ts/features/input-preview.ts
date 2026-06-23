@@ -1,77 +1,10 @@
-import type {
-    HlsConstructor,
-    HlsInstance,
-    HlsAudioTrack,
-    HlsErrorData,
-    PreviewVideoElement,
-} from '../global.js';
 import { formatChannelCount, formatCodecName } from '../core/utils.js';
 import type { AudioTrack, PipelineView } from '../types.js';
 import { withBasePath } from '../core/base-path.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
-const HLS_RUNTIME_URL = withBasePath('/vendor/hls.min.js');
 
-let hlsRuntimePromise: Promise<HlsConstructor> | null = null;
-
-function canUseNativeHls(video: HTMLVideoElement | null): boolean {
-    return Boolean(
-        video?.canPlayType('application/vnd.apple.mpegurl') ||
-        video?.canPlayType('application/x-mpegURL'),
-    );
-}
-
-function destroyPreviewController(video: PreviewVideoElement): void {
-    if (!video?._previewHls) return;
-    video._previewHls.destroy();
-    delete video._previewHls;
-}
-
-function loadHlsRuntime(): Promise<HlsConstructor> {
-    if (window.Hls) return Promise.resolve(window.Hls);
-    if (hlsRuntimePromise) return hlsRuntimePromise;
-
-    hlsRuntimePromise = new Promise<HlsConstructor>((resolve, reject) => {
-        const existingScript = document.querySelector<HTMLScriptElement>(
-            'script[data-role="hls-runtime"]',
-        );
-
-        function handleLoad(): void {
-            if (window.Hls) {
-                resolve(window.Hls);
-                return;
-            }
-            reject(new Error('hls.js loaded without exporting a global Hls object'));
-        }
-
-        function handleError(): void {
-            reject(new Error('Failed to load hls.js runtime'));
-        }
-
-        if (existingScript) {
-            if (window.Hls) {
-                handleLoad();
-            } else {
-                existingScript.addEventListener('load', handleLoad, { once: true });
-                existingScript.addEventListener('error', handleError, { once: true });
-            }
-            return;
-        }
-
-        const script = document.createElement('script');
-        script.src = HLS_RUNTIME_URL;
-        script.async = true;
-        script.dataset.role = 'hls-runtime';
-        script.addEventListener('load', handleLoad, { once: true });
-        script.addEventListener('error', handleError, { once: true });
-        document.head.appendChild(script);
-    }).catch((err: unknown) => {
-        hlsRuntimePromise = null;
-        throw err;
-    });
-
-    return hlsRuntimePromise;
-}
+const hlsInstances = new WeakMap<HTMLVideoElement, Hls>();
 
 function buildInputPreviewUrl(pipelineId: string): string {
     return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/index.m3u8`);
@@ -101,29 +34,36 @@ function getPreviewAudioMetadata(pipe: PipelineView, position: number): AudioTra
 function buildPreviewAudioDetail(
     pipe: PipelineView,
     position: number,
-    hlsTrack: HlsAudioTrack,
+    nativeTrack: PreviewAudioTrack,
 ): string {
     const metadata = getPreviewAudioMetadata(pipe, position);
     const detailParts = [
         formatCodecName(metadata?.codec),
         metadata?.channels ? formatChannelCount(metadata.channels) : null,
         formatPreviewSampleRate(metadata?.sample_rate),
-        getFriendlyAudioTrackName(hlsTrack.name),
+        getFriendlyAudioTrackName(nativeTrack.label),
     ].filter(Boolean);
 
     return detailParts.join(' / ') || 'Audio track';
 }
 
+function destroyHls(video: HTMLVideoElement): void {
+    const hls = hlsInstances.get(video);
+    if (hls) {
+        hls.destroy();
+        hlsInstances.delete(video);
+    }
+}
+
 export function clearInputPreview(playerElem: HTMLElement | null): void {
     if (!playerElem) return;
-    const existingVideo = playerElem.querySelector<PreviewVideoElement>(
+    const existingVideo = playerElem.querySelector<HTMLVideoElement>(
         INPUT_PREVIEW_VIDEO_SELECTOR,
     );
     if (existingVideo) {
         existingVideo.dataset.previewDisposed = 'true';
-        existingVideo._previewCleanup?.();
-        destroyPreviewController(existingVideo);
         existingVideo.pause();
+        destroyHls(existingVideo);
         existingVideo.removeAttribute('src');
         existingVideo.load();
     }
@@ -162,7 +102,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     shell.style.background = 'var(--fallback-b3, oklch(var(--b3)/1))';
     shell.style.aspectRatio = '16 / 9';
 
-    const video = document.createElement('video') as PreviewVideoElement;
+    const video = document.createElement('video');
     video.dataset.role = 'input-preview-video';
     video.style.width = '100%';
     video.style.height = '100%';
@@ -214,51 +154,57 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         audioPickerButton.setAttribute('aria-expanded', 'false');
     }
 
-    function updateAudioTrackPicker(hls: HlsInstance): void {
-        const tracks: HlsAudioTrack[] = hls.audioTracks || [];
+    function buildAudioTrackPicker(tracks: PreviewAudioTrackList): void {
         if (tracks.length <= 1) {
             audioPicker.style.display = 'none';
             closeAudioTrackPicker();
             return;
         }
 
-        const selectedTrack = tracks.find((track) => track.id === hls.audioTrack) || tracks[0];
-        const selectedIndex = Math.max(0, tracks.indexOf(selectedTrack));
+        let enabledIndex = -1;
+        for (let i = 0; i < tracks.length; i++) {
+            if (tracks[i].enabled) { enabledIndex = i; break; }
+        }
+        const selectedIndex = Math.max(0, enabledIndex);
         audioPickerButton.textContent = `Audio: Track ${selectedIndex + 1}`;
         audioPickerMenu.replaceChildren();
 
-        tracks.forEach((track, index) => {
+        for (let i = 0; i < tracks.length; i++) {
+            const track = tracks[i];
             const item = document.createElement('button');
             item.type = 'button';
             item.className =
                 'flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left hover:bg-base-200';
             item.setAttribute('role', 'option');
-            item.setAttribute('aria-selected', track.id === hls.audioTrack ? 'true' : 'false');
+            item.setAttribute('aria-selected', track.enabled ? 'true' : 'false');
 
             const selectedMark = document.createElement('span');
             selectedMark.className = 'w-4 shrink-0 text-center text-primary';
-            selectedMark.textContent = track.id === hls.audioTrack ? '>' : '';
+            selectedMark.textContent = track.enabled ? '>' : '';
 
             const text = document.createElement('span');
             text.className = 'min-w-0';
 
             const title = document.createElement('span');
             title.className = 'block font-semibold';
-            title.textContent = `Track ${index + 1}`;
+            title.textContent = `Track ${i + 1}`;
 
             const detail = document.createElement('span');
             detail.className = 'block truncate opacity-70';
-            detail.textContent = buildPreviewAudioDetail(pipe, index, track);
+            detail.textContent = buildPreviewAudioDetail(pipe, i, track);
 
             text.append(title, detail);
             item.append(selectedMark, text);
             item.onclick = () => {
-                hls.audioTrack = track.id;
-                updateAudioTrackPicker(hls);
+                for (let j = 0; j < tracks.length; j++) {
+                    tracks[j].enabled = false;
+                }
+                track.enabled = true;
+                buildAudioTrackPicker(tracks);
                 closeAudioTrackPicker();
             };
             audioPickerMenu.appendChild(item);
-        });
+        }
 
         audioPicker.style.display = '';
     }
@@ -275,19 +221,11 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     });
 
     function handleAudioPickerDocumentClick(): void {
-        if (video.dataset.previewDisposed === 'true') {
-            video._previewCleanup?.();
-            return;
-        }
+        if (video.dataset.previewDisposed === 'true') return;
         closeAudioTrackPicker();
     }
 
     document.addEventListener('click', handleAudioPickerDocumentClick);
-    video._previewCleanup = () => {
-        document.removeEventListener('click', handleAudioPickerDocumentClick);
-        closeAudioTrackPicker();
-        delete video._previewCleanup;
-    };
 
     const spinner = document.createElement('span');
     spinner.style.cssText =
@@ -344,7 +282,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         previewStarted = false;
         video.dataset.previewLoaded = 'false';
         video.controls = false;
-        destroyPreviewController(video);
+        destroyHls(video);
         video.removeAttribute('src');
         video.load();
         audioPicker.style.display = 'none';
@@ -353,69 +291,65 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         setOverlayButtonState({ buttonText: 'Play preview', buttonDisabled: false });
     };
 
-    const bindHlsController = async (): Promise<void> => {
-        let Hls: HlsConstructor | null = null;
-        let hlsRuntimeError: unknown = null;
+    function setupHlsJsPlayback(): void {
+        const hls = new window.Hls({
+            startLevel: -1,
+        });
+        hlsInstances.set(video, hls);
 
-        try {
-            Hls = await loadHlsRuntime();
-        } catch (err) {
-            hlsRuntimeError = err;
-        }
+        hls.loadSource(previewSrc);
+        hls.attachMedia(video);
 
-        if (video.dataset.previewDisposed === 'true') return;
-
-        if (Hls?.isSupported?.()) {
-            const hls: HlsInstance = new Hls({ enableWorker: true, lowLatencyMode: false });
-            video._previewHls = hls;
-
-            hls.on(Hls.Events.ERROR, (...args: unknown[]) => {
-                const data = args[1] as HlsErrorData | undefined;
-                if (video.dataset.previewDisposed === 'true') return;
-                if (!data?.fatal) return;
-
-                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                    hls.startLoad();
-                    return;
-                }
-
-                if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                    hls.recoverMediaError();
-                    return;
-                }
-
-                resetPreviewLoadState();
-            });
-
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                updateAudioTrackPicker(hls);
-                attemptPlayback();
-            });
-
-            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-                updateAudioTrackPicker(hls);
-            });
-
-            hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, () => {
-                updateAudioTrackPicker(hls);
-            });
-
-            hls.loadSource(previewSrc);
-            hls.attachMedia(video);
-            return;
-        }
-
-        if (canUseNativeHls(video)) {
-            video.src = previewSrc;
-            video.load();
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+            if (video.dataset.previewDisposed === 'true') return;
             attemptPlayback();
-            return;
-        }
+        });
 
-        throw (
-            hlsRuntimeError || new Error('This browser does not support dashboard preview playback')
-        );
-    };
+        hls.on(window.Hls.Events.AUDIO_TRACKS_UPDATED, (_event: unknown, data: { audioTracks: Array<{ id: number; name: string; lang?: string }> }) => {
+            if (video.dataset.previewDisposed === 'true') return;
+            if (!data?.audioTracks?.length) return;
+
+            const fakeTrackList: PreviewAudioTrackList = {
+                length: data.audioTracks.length,
+                onaddtrack: null,
+                onchange: null,
+                onremovetrack: null,
+            };
+            for (let i = 0; i < data.audioTracks.length; i++) {
+                const t = data.audioTracks[i];
+                fakeTrackList[i] = {
+                    id: String(t.id),
+                    kind: 'main',
+                    label: t.name || `Track ${i + 1}`,
+                    language: t.lang || '',
+                    enabled: hls.audioTrack === t.id,
+                };
+            }
+            buildAudioTrackPicker(fakeTrackList);
+        });
+
+        hls.on(window.Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; response?: { code?: number } }) => {
+            if (video.dataset.previewDisposed === 'true') return;
+            if (data.fatal) {
+                resetPreviewLoadState();
+            }
+        });
+    }
+
+    function setupNativeHlsPlayback(): void {
+        video.src = previewSrc;
+        video.load();
+
+        video.addEventListener('loadedmetadata', () => {
+            if (video.dataset.previewDisposed === 'true') return;
+            if (video.audioTracks) {
+                buildAudioTrackPicker(video.audioTracks);
+                video.audioTracks.onaddtrack = () => buildAudioTrackPicker(video.audioTracks);
+                video.audioTracks.onchange = () => buildAudioTrackPicker(video.audioTracks);
+            }
+            attemptPlayback();
+        });
+    }
 
     const primePreviewSource = async (): Promise<void> => {
         if (video.dataset.previewLoaded === 'true') return;
@@ -425,12 +359,21 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         setOverlayVisible(true);
         setOverlayButtonState({ buttonText: 'Loading...', buttonDisabled: true });
 
-        try {
-            await bindHlsController();
-        } catch (err) {
-            console.warn('Preview playback failed to initialize', err);
-            resetPreviewLoadState();
+        if (window.Hls && window.Hls.isSupported()) {
+            setupHlsJsPlayback();
+            return;
         }
+
+        const canNative = Boolean(
+            video.canPlayType('application/vnd.apple.mpegurl') ||
+            video.canPlayType('application/x-mpegURL'),
+        );
+        if (canNative) {
+            setupNativeHlsPlayback();
+            return;
+        }
+
+        setOverlayButtonState({ buttonText: 'HLS not supported', buttonDisabled: false });
     };
 
     loadBtn.addEventListener('click', primePreviewSource);
@@ -446,7 +389,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     );
     video.addEventListener('error', () => {
         if (video.dataset.previewDisposed === 'true') return;
-        if (video._previewHls || previewStarted) return;
+        if (previewStarted) return;
         resetPreviewLoadState();
     });
 
