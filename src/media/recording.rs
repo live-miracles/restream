@@ -1,5 +1,5 @@
-//! MKV recording muxer — writes live pipeline data to timestamped `.mkv` files.
-//! Architecture: `RingBuffer` → `TsMuxer` → `MemoryQueue` → FFmpeg muxer on OS thread.
+//! MPEG-TS recording writer — writes live pipeline data to timestamped `.ts` files.
+//! Architecture: `RingBuffer` → `TsMuxer` → `MemoryQueue` → raw TS byte writer on OS thread.
 //! Auto-deletes recordings shorter than 5 seconds (transient connection artifacts).
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
@@ -54,11 +54,11 @@ pub async fn start_recording(
     // Dropping the handle detaches the thread silently — any crash becomes invisible.
     let muxer_handle = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_mkv_muxer(queue_clone, &file_path_clone, cancel_token_clone)
+            run_ts_writer(queue_clone, &file_path_clone, cancel_token_clone)
         }));
         match result {
-            Ok(Err(e)) => eprintln!("[recording] MKV muxer failed: {:?}", e),
-            Err(_) => eprintln!("[recording] MKV muxer panicked"),
+            Ok(Err(e)) => eprintln!("[recording] TS writer failed: {:?}", e),
+            Err(_) => eprintln!("[recording] TS writer panicked"),
             _ => {}
         }
     });
@@ -208,7 +208,7 @@ pub async fn start_recording(
     }
 }
 
-fn run_mkv_muxer(
+fn run_ts_writer(
     queue: Arc<crate::media::avio::MemoryQueue>,
     file_path: &str,
     _token: CancellationToken,
@@ -253,7 +253,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn run_mkv_muxer_exits_on_closed_queue() {
+    fn run_ts_writer_exits_on_closed_queue() {
         let queue = Arc::new(MemoryQueue::new());
         queue.close();
         let token = CancellationToken::new();
@@ -261,7 +261,7 @@ mod tests {
         let file_path = temp_dir.join("test_leak.ts");
         let path_str = file_path.to_string_lossy().to_string();
 
-        let res = run_mkv_muxer(queue, &path_str, token);
+        let res = run_ts_writer(queue, &path_str, token);
         assert!(res.is_ok());
         let _ = std::fs::remove_file(file_path);
     }
