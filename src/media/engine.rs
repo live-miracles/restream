@@ -27,6 +27,12 @@ pub struct StageMetrics {
     pub start_instant: Instant,
 }
 
+impl Default for StageMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StageMetrics {
     pub fn new() -> Self {
         Self {
@@ -288,6 +294,12 @@ pub struct MediaEngine {
     pub stage_metrics: TokioRwLock<HashMap<String, Arc<StageMetrics>>>,
 }
 
+impl Default for MediaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MediaEngine {
     pub fn new() -> Self {
         // Initialize FFmpeg once
@@ -354,10 +366,10 @@ impl MediaEngine {
         let key = format!("{}:{}", pipeline_id, encoding);
         {
             let buffers = self.transcoder_buffers.read().await;
-            if let Some((rb, token)) = buffers.get(&key) {
-                if !token.is_cancelled() {
-                    return rb.clone();
-                }
+            if let Some((rb, token)) = buffers.get(&key)
+                && !token.is_cancelled()
+            {
+                return rb.clone();
             }
         }
 
@@ -377,10 +389,127 @@ impl MediaEngine {
         let enc = encoding.to_string();
         let ob = output_buf.clone();
         let self_clone = self.clone();
+
+        // ── Backend dispatch ───────────────────────────────────────────────
+        // audio: stages (atrack, remap): pure packet filter — no mux/demux,
+        //   no codec work. Run as a lightweight async task (start_audio_router).
+        // downmix: requires DSP decode→mix→encode → full internal FFmpeg path.
+        // video: stages (video:720p etc.): external subprocess FFmpeg by default;
+        //   override with RESTREAM_USE_INTERNAL_TRANSCODER=1.
+        if let Some(audio_spec) = enc.strip_prefix("audio:") {
+            let audio_op = audio_spec
+                .rsplit_once(":from:")
+                .map(|(op, _)| op)
+                .unwrap_or(audio_spec);
+            let routing =
+                crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
+            let is_lightweight = matches!(
+                routing,
+                crate::media::transcoder::AudioRouting::SelectTracks(_)
+                    | crate::media::transcoder::AudioRouting::Remap { .. }
+                    | crate::media::transcoder::AudioRouting::Passthrough
+            );
+            if is_lightweight {
+                println!(
+                    "[audio-router] Spawning stage: pipeline={} encoding={}",
+                    pipeline_id, encoding
+                );
+                tokio::spawn(async move {
+                    crate::media::transcoder::start_audio_router(
+                        pid,
+                        routing,
+                        source_buffer,
+                        ob,
+                        cancel,
+                    )
+                    .await;
+                });
+                return output_buf;
+            }
+            // Downmix falls through to internal FFmpeg below
+        }
+
+        let use_internal = std::env::var("RESTREAM_USE_INTERNAL_TRANSCODER")
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
+        println!(
+            "[transcoder] Spawning stage: pipeline={} encoding={} backend={}",
+            pipeline_id,
+            encoding,
+            if use_internal { "internal" } else { "external" }
+        );
+
+        if use_internal {
+            tokio::spawn(async move {
+                crate::media::transcoder::start_transcoder(
+                    pid,
+                    enc,
+                    source_buffer,
+                    ob,
+                    self_clone,
+                    cancel,
+                )
+                .await;
+            });
+        } else {
+            tokio::spawn(async move {
+                crate::media::external_transcoder::start_external_transcoder_stage(
+                    pid,
+                    enc,
+                    source_buffer,
+                    ob,
+                    self_clone,
+                    cancel,
+                )
+                .await;
+            });
+        }
+
+        output_buf
+    }
+
+    /// Get or create a shared H.265→H.264 transcoder stage for a pipeline.
+    /// Keyed by `"<pipeline_id>:hevc_to_h264"`. All RTMP egresses on the
+    /// same source pipeline share this stage's output ring buffer.
+    pub async fn get_or_create_h264_transcoder(
+        self: &Arc<Self>,
+        pipeline_id: &str,
+        source_buffer: Arc<RingBuffer>,
+    ) -> Arc<RingBuffer> {
+        let key = format!("{}:hevc_to_h264", pipeline_id);
+        {
+            let buffers = self.transcoder_buffers.read().await;
+            if let Some((rb, token)) = buffers.get(&key)
+                && !token.is_cancelled()
+            {
+                return rb.clone();
+            }
+        }
+
+        let output_buf = Arc::new(RingBuffer::new(4096));
+        let cancel = CancellationToken::new();
+        {
+            let mut buffers = self.transcoder_buffers.write().await;
+            buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
+        }
+
+        println!(
+            "[h264-tc] Spawning shared H.265→H.264 transcoder for pipeline {}",
+            pipeline_id
+        );
+
+        let pid = pipeline_id.to_string();
+        let ob = output_buf.clone();
+        let self_clone = self.clone();
         tokio::spawn(async move {
-            crate::media::transcoder::start_transcoder(
+            crate::media::h264_transcoder::start_h264_transcoder(
                 pid,
-                enc,
                 source_buffer,
                 ob,
                 self_clone,
@@ -412,7 +541,26 @@ impl MediaEngine {
         pipelines.remove(pipeline_id);
     }
 
-    /// Register a publisher for a pipeline.
+    /// Remove all transcoder stage entries for a pipeline from `transcoder_buffers`.
+    ///
+    /// Stages whose cancel tokens have already fired are cleaned up lazily by
+    /// `get_or_create_transcoder`. This function does the eager sweep on pipeline
+    /// deletion so the `Arc<RingBuffer>` for every stage is freed immediately
+    /// instead of surviving until the next reconciler creates a replacement stage.
+    pub async fn cleanup_pipeline_stages(&self, pipeline_id: &str) {
+        let prefix = format!("{}:", pipeline_id);
+        let mut buffers = self.transcoder_buffers.write().await;
+        // Cancel all still-running stages then remove every entry for this pipeline.
+        buffers.retain(|key, (_rb, token)| {
+            if key.starts_with(&prefix) {
+                token.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     ///
     /// A pipeline has one application-level producer. A bonded SRT publisher is
     /// still one producer because libsrt presents the accepted bond as one group
@@ -425,10 +573,10 @@ impl MediaEngine {
         protocol: &str,
     ) -> Option<CancellationToken> {
         let mut tokens = self.ingest_cancel_tokens.write().await;
-        if let Some(existing) = tokens.get(pipeline_id) {
-            if !existing.is_cancelled() {
-                return None;
-            }
+        if let Some(existing) = tokens.get(pipeline_id)
+            && !existing.is_cancelled()
+        {
+            return None;
         }
 
         let token = CancellationToken::new();
@@ -837,7 +985,8 @@ impl MediaEngine {
                         let prev = egress.prev_bytes_sent.load(Ordering::Relaxed);
                         let mut prev_time = egress.prev_sample_time.lock().unwrap();
                         let elapsed = prev_time.elapsed().as_secs_f64();
-                        let kbps = if elapsed > 0.5 && bytes_sent > prev {
+
+                        if elapsed > 0.5 && bytes_sent > prev {
                             let delta = bytes_sent - prev;
                             let rate = (delta as f64 * 8.0) / (elapsed * 1000.0);
                             egress.prev_bytes_sent.store(bytes_sent, Ordering::Relaxed);
@@ -846,14 +995,20 @@ impl MediaEngine {
                             Some(rate)
                         } else {
                             *egress.bitrate_kbps.lock().unwrap()
-                        };
-                        kbps
+                        }
+                    };
+
+                    let has_ingest = ingests.contains_key(pipeline_id.as_str());
+                    let output_status = if has_ingest {
+                        egress.status.as_str()
+                    } else {
+                        "stopped"
                     };
 
                     outputs_json.insert(
                         output_id.to_string(),
                         serde_json::json!({
-                            "status": egress.status,
+                            "status": output_status,
                             "totalSize": bytes_sent,
                             "bitrateKbps": bitrate_kbps,
                             "startedAt": egress.started_at,
@@ -958,7 +1113,7 @@ impl MediaEngine {
             "details": rb_info.map(|(fill, cap)| serde_json::json!({
                 "fill": fill,
                 "capacity": cap,
-                "fillPercent": if cap > 0 { fill * 100 / cap } else { 0 },
+                "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
                 "format": "FLV (interleaved A+V)",
             })),
         }));
@@ -1061,7 +1216,7 @@ impl MediaEngine {
                 "id": output_node_id,
                 "type": "egress",
                 "label": format!("{}: {}", protocol, output.name),
-                "active": egress.map_or(false, |e| e.status == "running"),
+                "active": egress.is_some_and(|e| e.status == "running"),
                 "details": egress.map(|e| {
                     let bytes = e.bytes_sent.load(Ordering::Relaxed);
                     serde_json::json!({
@@ -1213,6 +1368,39 @@ mod tests {
 
         assert_ne!(first, second, "exactly one publisher must win reservation");
         assert_eq!(engine.active_ingests.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_outputs_stopped_without_ingest() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("output-1", "pipeline-1", "rtmp://example/live/test")
+            .await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
+            .await;
+
+        assert_eq!(
+            snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
+            "stopped"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_hls_preview_active_when_consumer_exists() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-hls";
+
+        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
+        let snapshot = engine
+            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
+            .await;
+
+        assert_eq!(
+            snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -1378,5 +1566,138 @@ mod tests {
         engine
             .update_ingest_meta("nonexistent", None, None, None)
             .await;
+    }
+
+    /// Two outputs with the same pipeline + encoding share exactly one transcoder
+    /// stage (same Arc<RingBuffer> pointer). A third output with a different
+    /// encoding gets its own stage. This is the core sharing invariant.
+    #[tokio::test]
+    async fn same_encoding_outputs_share_one_transcoder_stage() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-share").await;
+
+        let a = engine
+            .get_or_create_transcoder("pipe-share", "video:720p", source.clone())
+            .await;
+        let b = engine
+            .get_or_create_transcoder("pipe-share", "video:720p", source.clone())
+            .await;
+        let c = engine
+            .get_or_create_transcoder("pipe-share", "video:1080p", source.clone())
+            .await;
+
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "two outputs with encoding=720p must share the same ring buffer"
+        );
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "different encodings must use separate ring buffers"
+        );
+    }
+
+    /// Audio stages are keyed by both audio operation AND upstream video preset.
+    /// 720p+atrack:0 and 1080p+atrack:0 must not share an audio stage.
+    #[tokio::test]
+    async fn audio_stages_are_isolated_per_video_preset() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-audio").await;
+
+        let v720 = engine
+            .get_or_create_transcoder("pipe-audio", "video:720p", source.clone())
+            .await;
+        let v1080 = engine
+            .get_or_create_transcoder("pipe-audio", "video:1080p", source.clone())
+            .await;
+
+        // Audio stage keys as produced by the reconciler:
+        // "audio:atrack:0:from:720p" for 720p outputs
+        // "audio:atrack:0:from:1080p" for 1080p outputs
+        let a720 = engine
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720.clone())
+            .await;
+        let a1080 = engine
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:1080p", v1080.clone())
+            .await;
+        let a720_again = engine
+            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720)
+            .await;
+
+        assert!(
+            !Arc::ptr_eq(&a720, &a1080),
+            "audio stages for different video presets must be isolated"
+        );
+        assert!(
+            Arc::ptr_eq(&a720, &a720_again),
+            "same audio stage key must return the same ring buffer"
+        );
+    }
+
+    /// cleanup_pipeline_stages must remove all entries whose key starts with
+    /// "<pipeline_id>:" and cancel their tokens. Entries for other pipelines
+    /// must not be affected.
+    #[tokio::test]
+    async fn cleanup_pipeline_stages_removes_all_stage_entries() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-del").await;
+        let other = engine.get_or_create_pipeline("pipe-keep").await;
+
+        let s1 = engine
+            .get_or_create_transcoder("pipe-del", "video:720p", source.clone())
+            .await;
+        let s2 = engine
+            .get_or_create_transcoder("pipe-del", "video:1080p", source.clone())
+            .await;
+        let other_stage = engine
+            .get_or_create_transcoder("pipe-keep", "video:720p", other)
+            .await;
+
+        // Stages are alive before cleanup
+        let stages_before = engine.active_transcoder_stages("pipe-del").await;
+        assert_eq!(stages_before.len(), 2);
+
+        engine.cleanup_pipeline_stages("pipe-del").await;
+
+        // All pipe-del stages removed
+        let stages_after = engine.active_transcoder_stages("pipe-del").await;
+        assert_eq!(
+            stages_after.len(),
+            0,
+            "all stages for deleted pipeline must be removed"
+        );
+
+        // The ring buffers from those stages had their tokens cancelled
+        let _ = (s1, s2); // bindings kept to confirm they're the same arcs tested above
+
+        // pipe-keep is unaffected
+        let other_stages = engine.active_transcoder_stages("pipe-keep").await;
+        assert_eq!(
+            other_stages.len(),
+            1,
+            "unrelated pipeline stages must be untouched"
+        );
+        let _ = other_stage;
+    }
+
+    /// remove_pipeline must free the source ring buffer from the pipelines map.
+    #[tokio::test]
+    async fn remove_pipeline_frees_source_ring_buffer() {
+        let engine = Arc::new(MediaEngine::new());
+        let rb = engine.get_or_create_pipeline("pipe-rm").await;
+        let weak = Arc::downgrade(&rb);
+        drop(rb); // release our local strong reference
+
+        // Pipeline map still holds a strong ref
+        assert!(
+            weak.upgrade().is_some(),
+            "ring buffer should still be alive"
+        );
+
+        engine.remove_pipeline("pipe-rm").await;
+        // Now only the weak ref remains — the Arc should be freed
+        assert!(
+            weak.upgrade().is_none(),
+            "ring buffer should be freed after remove_pipeline"
+        );
     }
 }

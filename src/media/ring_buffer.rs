@@ -201,6 +201,21 @@ pub struct Reader {
     read_idx: usize,
 }
 
+impl Drop for Reader {
+    fn drop(&mut self) {
+        // Remove our entry and any other stale Weak refs from the ring's reader
+        // list.  Called while self.info still has strong_count = 1 (our field),
+        // so we use Arc::ptr_eq to identify our slot; entries where upgrade()
+        // returns None are also pruned.
+        if let Ok(mut readers) = self.buffer.readers.lock() {
+            readers.retain(|w| match w.upgrade() {
+                Some(info) => !Arc::ptr_eq(&info, &self.info),
+                None => false,
+            });
+        }
+    }
+}
+
 impl Reader {
     pub fn new(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
@@ -320,10 +335,10 @@ impl DtsEnforcer {
     /// Returns the corrected (pts, dts) pair.
     pub fn enforce(&mut self, stream_idx: usize, pts: i64, dts: i64) -> (i64, i64) {
         let mut dts = dts;
-        if let Some(prev) = self.last_dts.get(stream_idx) {
-            if dts <= *prev {
-                dts = *prev + 1;
-            }
+        if let Some(prev) = self.last_dts.get(stream_idx)
+            && dts <= *prev
+        {
+            dts = *prev + 1;
         }
         let pts = if pts < dts { dts } else { pts };
         if let Some(slot) = self.last_dts.get_mut(stream_idx) {
@@ -564,5 +579,50 @@ mod tests {
         let mut e = DtsEnforcer::new(1);
         // Stream index 5 is out of bounds — passes through unchanged
         assert_eq!(e.enforce(5, 100, 100), (100, 100));
+    }
+
+    // -- Reader::drop lifecycle --
+
+    #[test]
+    fn reader_drop_removes_entry_from_readers_list() {
+        let rb = Arc::new(RingBuffer::new(16));
+
+        assert_eq!(rb.readers.lock().unwrap().len(), 0);
+
+        let r1 = Reader::new("r1".into(), rb.clone());
+        let r2 = Reader::new("r2".into(), rb.clone());
+        assert_eq!(rb.readers.lock().unwrap().len(), 2);
+
+        drop(r1);
+        // After drop, our entry is removed and no stale Weak remains.
+        assert_eq!(rb.readers.lock().unwrap().len(), 1);
+
+        drop(r2);
+        assert_eq!(rb.readers.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn reader_drop_also_prunes_other_stale_weaks() {
+        // Simulate a stale Weak that was left behind (e.g. from a previous bug)
+        // by manually inserting one, then verifying drop cleans it.
+        let rb = Arc::new(RingBuffer::new(16));
+        {
+            // Insert a Weak that immediately becomes stale.
+            let ephemeral = Arc::new(ReaderInfo {
+                name: "stale".into(),
+                read_idx: AtomicUsize::new(0),
+                overflow_count: AtomicUsize::new(0),
+            });
+            rb.readers.lock().unwrap().push(Arc::downgrade(&ephemeral));
+            // ephemeral drops here → Weak becomes stale
+        }
+        assert_eq!(rb.readers.lock().unwrap().len(), 1); // stale entry present
+
+        let r = Reader::new("live".into(), rb.clone());
+        assert_eq!(rb.readers.lock().unwrap().len(), 2); // stale + live
+
+        drop(r);
+        // drop() removes our entry AND prunes the stale one.
+        assert_eq!(rb.readers.lock().unwrap().len(), 0);
     }
 }
