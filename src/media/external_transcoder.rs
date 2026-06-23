@@ -299,6 +299,7 @@ pub async fn start_external_transcoder_stage(
         tokio::spawn(async move {
             let mut demuxer = TsDemuxer::new();
             let mut buf = vec![0u8; 65536];
+            let mut pkts = Vec::new();
             loop {
                 tokio::select! {
                     _ = cancel_out.cancelled() => break,
@@ -309,11 +310,8 @@ pub async fn start_external_transcoder_stage(
                         }
                         Ok(n) => {
                             demuxer.feed(&buf[..n]);
-                            let mut pkts = Vec::new();
                             demuxer.drain_into(&mut pkts);
-                            for pkt in pkts {
-                                out_ring.push(pkt);
-                            }
+                            out_ring.push_batch(pkts.drain(..));
                         }
                     }
                 }

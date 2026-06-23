@@ -497,6 +497,7 @@ pub fn run_ffmpeg_transcoder_stage(
         }
     }
 
+    let mut batch: Vec<MediaPacket> = Vec::with_capacity(32);
     for (stream, packet) in ictx.packets() {
         if token.is_cancelled() {
             break;
@@ -522,7 +523,7 @@ pub fn run_ffmpeg_transcoder_stage(
         };
         let data = packet.data().unwrap_or(&[]);
 
-        out_ring.push(MediaPacket {
+        batch.push(MediaPacket {
             media_type,
             track_index,
             pts: pts_ms,
@@ -531,6 +532,12 @@ pub fn run_ffmpeg_transcoder_stage(
             format: PayloadFormat::Raw,
             payload: bytes::Bytes::copy_from_slice(data),
         });
+        if batch.len() >= 32 {
+            out_ring.push_batch(batch.drain(..));
+        }
+    }
+    if !batch.is_empty() {
+        out_ring.push_batch(batch.drain(..));
     }
 
     Ok(())
