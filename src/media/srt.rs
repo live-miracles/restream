@@ -20,6 +20,30 @@
 //! 32768-packet flow control window (vs. default 8192), unlimited max bandwidth.
 //! These values accommodate 4K 60fps H.264 streams at 50 Mbps peak with
 //! headroom for retransmission bursts on lossy links.
+//!
+//! # libsrt FFI safety contract
+//!
+//! All unsafe blocks in this file call into libsrt's C API. Every call site
+//! upholds these invariants:
+//!
+//! 1. `srt_startup()` is called once before any other SRT function.
+//! 2. `srt_cleanup()` is called once after all sockets are closed.
+//! 3. Every `srt_create_socket()` is balanced by exactly one `srt_close()`.
+//!    `SrtSockGuard` provides RAII cleanup for the listener; ingest/egress
+//!    sockets are closed on all error and success paths.
+//! 4. `srt_setsockopt`/`srt_getsockopt` receive correctly-sized option values
+//!    with valid pointers to live stack variables.
+//! 5. `srt_send`/`srt_recv` buffers are valid, sized `Vec<u8>` with matching
+//!    capacity arguments.
+//! 6. `srt_epoll_*` functions are used in matched create/add/remove/release
+//!    pairs; the epoll instance outlives all registered sockets.
+//! 7. `CStr::from_ptr(srt_getlasterror_str())` returns a thread-local static
+//!    string valid until the next SRT call on the same thread.
+//! 8. `std::mem::zeroed()` initializes FFI structs (`SrtSocketGroupData`,
+//!    `SrtTraceBStats`, `sockaddr_storage`) before the kernel/lib fills them.
+//! 9. `srt_bistats` receives a pointer to a correctly-sized `SrtTraceBStats`.
+//! 10. Raw pointer writes to `sockaddr` fields target correctly-typed pointers
+//!     obtained from a `sockaddr_storage` cast, with the family field set first.
 
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -170,6 +194,12 @@ pub struct SrtSocketGroupData {
     pub token: c_int,
 }
 
+// SAFETY: FFI declarations for the libsrt C library. All function signatures
+// are verified against the libsrt public API (srt.h). The library is loaded
+// at link time (dynamic or static) and is guaranteed to be present when
+// srt_startup() succeeds during SrtServer::new(). None of these functions
+// have Rust-side invariants beyond correct argument types, which are
+// enforced by the Rust type system at each call site.
 unsafe extern "C" {
     pub fn srt_getversion() -> u32;
     pub fn srt_startup() -> c_int;
@@ -259,6 +289,8 @@ unsafe extern "C" {
 }
 
 pub fn linked_srt_version() -> String {
+    // SAFETY: srt_getversion returns a u32 with no side effects. Safe to
+    // call at any time after srt_startup() (called during server init).
     let version = unsafe { srt_getversion() };
     format!(
         "{}.{}.{}",
@@ -302,6 +334,8 @@ const DESIRED_LOSSMAXTTL: i32 = 256;
 
 fn enable_srt_group_connect(listener: SRTSOCKET) -> Result<(), String> {
     let group_connect: c_int = 1;
+    // SAFETY: srt_setsockflag sets an option on a valid SRT socket. The
+    // `group_connect` pointer and size are correctly typed.
     let result = unsafe {
         srt_setsockflag(
             listener,
@@ -313,6 +347,8 @@ fn enable_srt_group_connect(listener: SRTSOCKET) -> Result<(), String> {
     if result >= 0 {
         Ok(())
     } else {
+        // SAFETY: srt_getlasterror_str returns a NUL-terminated thread-local
+        // static string valid until the next SRT call on this thread.
         let error = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
         Err(error.to_string_lossy().into_owned())
     }
@@ -367,6 +403,9 @@ fn check_sysctl_limits() {
 /// 5. **Loss max TTL** (`SRTO_LOSSMAXTTL`): reorder tolerance before
 ///    declaring loss. Default 0 = auto. Set 256 packets (~54ms at 50 Mbps)
 ///    to handle jitter without premature NACK storms.
+// SAFETY: All srt_setsockopt calls use correctly-sized stack-allocated
+// option values with valid SRT socket handles. The UDP/SRT buffer sizes,
+// flow control window, and latency values are within platform limits.
 fn srt_set_highbitrate_opts(sock: SRTSOCKET) {
     unsafe {
         // Latency: dejitter + retransmit window (4×RTT + 2×jitter)
@@ -441,6 +480,9 @@ fn srt_set_highbitrate_opts(sock: SRTSOCKET) {
     }
 }
 
+// SAFETY: srt_getsockopt reads integer option values from a valid SRT
+// socket into correctly-sized stack variables. All options are benign
+// diagnostic reads with no side effects on the socket.
 fn srt_log_effective_opts(sock: SRTSOCKET, label: &str) {
     unsafe {
         let mut udp_snd = 0i32;
@@ -588,6 +630,10 @@ fn srt_group_summary(group: SRTSOCKET) -> Option<SrtGroupSummary> {
     // Ingest bonds are normally two links. Keep ample room so this call stays
     // allocation-only and does not need to guess at libsrt's resize semantics.
     const MAX_GROUP_MEMBERS: usize = 64;
+    // SAFETY: std::mem::zeroed() for C structs is valid when the struct
+    // has no invalid bit patterns (all-zero is a valid SrtSocketGroupData).
+    // srt_group_data fills the array through a raw pointer; members is
+    // correctly sized and aligned.
     let mut members: Vec<SrtSocketGroupData> = (0..MAX_GROUP_MEMBERS)
         .map(|_| unsafe { std::mem::zeroed() })
         .collect();
@@ -915,6 +961,9 @@ pub struct SrtServer {
 
 impl SrtServer {
     pub fn new(db: sqlx::SqlitePool, engine: Arc<MediaEngine>) -> Self {
+        // SAFETY: srt_startup must be called once before any other SRT
+        // function. This is the only call site, at server construction time,
+        // enforced by the singleton SrtServer pattern.
         unsafe {
             srt_startup();
         }
@@ -923,12 +972,17 @@ impl SrtServer {
     }
 
     pub async fn run(self: Arc<Self>, port: u16) {
+        // SAFETY: srt_create_socket returns a valid SRT socket handle or -1
+        // on error. The socket is closed via SrtSockGuard on drop or
+        // explicitly on bind/listen failure below. Balanced by srt_close.
         let server_sock = unsafe { srt_create_socket() };
         if server_sock < 0 {
             eprintln!("[srt] Failed to create socket");
             return;
         }
 
+        // SAFETY: Sets SRTT_LIVE transmission type on a valid listener
+        // socket. The option value is a stack-allocated c_int.
         unsafe {
             let live_mode: c_int = SRTT_LIVE;
             srt_setsockopt(
@@ -972,6 +1026,9 @@ impl SrtServer {
         };
 
         let sin = to_sockaddr_in(addr);
+        // SAFETY: srt_bind binds a valid server socket to the given
+        // sockaddr_in. The sockaddr struct is stack-allocated and correctly
+        // sized. On failure the socket is closed explicitly.
         let bind_res = unsafe {
             srt_bind(
                 server_sock,
@@ -981,15 +1038,20 @@ impl SrtServer {
         };
         if bind_res < 0 {
             eprintln!("[srt] Bind failed");
+            // SAFETY: server_sock is a valid socket not yet closed.
             unsafe {
                 srt_close(server_sock);
             }
             return;
         }
 
+        // SAFETY: srt_listen starts listening on a bound socket. Backlog 1024
+        // is a common value for high-throughput servers. On failure the socket
+        // is closed explicitly.
         let listen_res = unsafe { srt_listen(server_sock, 1024) };
         if listen_res < 0 {
             eprintln!("[srt] Listen failed");
+            // SAFETY: Valid socket, not yet closed.
             unsafe {
                 srt_close(server_sock);
             }
@@ -1014,9 +1076,17 @@ impl SrtServer {
         // RAII guard: close server_sock when run() returns (normal exit, task
         // cancellation, or panic).  Closing the socket interrupts srt_accept()
         // in the accept thread, which then exits via the tx.send() failure path.
+        // SAFETY: SrtSockGuard is an RAII guard that closes the server
+        // socket on drop. The socket was created by srt_create_socket()
+        // above and has not been closed elsewhere. srt_close is idempotent
+        // for invalid handles but the guard is only constructed for valid
+        // sockets.
         struct SrtSockGuard(SRTSOCKET);
         impl Drop for SrtSockGuard {
             fn drop(&mut self) {
+                // SAFETY: The guard owns a socket created by
+                // srt_create_socket(). srt_close is called exactly once
+                // per socket via this RAII drop.
                 unsafe {
                     srt_close(self.0);
                 }
@@ -1036,8 +1106,14 @@ impl SrtServer {
                         sin_zero: [0; 8],
                     };
                     let mut len = std::mem::size_of::<sockaddr_in>() as c_int;
+                    // SAFETY: srt_accept blocks until a connection arrives.
+                    // Called from a dedicated std::thread (not tokio), so
+                    // blocking is acceptable. server_sock is valid; client_sin
+                    // and len are correctly sized.
                     let client_sock = unsafe { srt_accept(server_sock, &mut client_sin, &mut len) };
                     if client_sock < 0 {
+                        // SAFETY: srt_getlasterror_str returns a thread-local
+                        // static string valid until the next SRT call.
                         let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
                         eprintln!("[srt] Accept error: {}", err.to_string_lossy());
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1048,6 +1124,9 @@ impl SrtServer {
                     // natural backpressure — the accept thread pauses while
                     // tokio drains the queue, preventing unbounded growth.
                     if tx.blocking_send((client_sock, client_sin)).is_err() {
+                        // SAFETY: client_sock was just accepted and has not
+                        // been closed. Channel closure means the server is
+                        // shutting down — clean up the accepted socket.
                         unsafe {
                             srt_close(client_sock);
                         }
@@ -1077,6 +1156,9 @@ impl SrtServer {
         // Read streamid
         let mut streamid_buf = [0u8; 512];
         let mut optlen = streamid_buf.len() as c_int;
+        // SAFETY: srt_getsockopt reads the STREAMID from a valid client
+        // socket. streamid_buf is a 512-byte stack buffer; optlen is
+        // initialized to the buffer size and updated with the actual length.
         let res = unsafe {
             srt_getsockopt(
                 client_sock,
@@ -1120,6 +1202,7 @@ impl SrtServer {
             Ok(Some(p)) => p,
             _ => {
                 eprintln!("[srt] Unauthorized connection for stream key: {}", stream_key);
+                // SAFETY: client_sock is a valid accepted socket not yet closed.
                 unsafe { srt_close(client_sock); }
                 return;
             }
@@ -1147,6 +1230,7 @@ impl SrtServer {
                 "[srt] Rejecting duplicate publisher for pipeline {}",
                 pipeline.id
             );
+            // SAFETY: Valid socket, not yet closed elsewhere.
             unsafe { srt_close(client_sock) };
             return;
         };
@@ -1182,6 +1266,7 @@ impl SrtServer {
                 "[srt] Ingest vanished before receive loop for pipeline {}",
                 pipeline.id
             );
+            // SAFETY: Valid socket, clean up on early return.
             unsafe { srt_close(client_sock) };
             return;
         };
@@ -1201,6 +1286,8 @@ impl SrtServer {
 
         // Set non-blocking mode so srt_recv returns immediately with EAGAIN
         // instead of blocking the tokio runtime thread
+        // SAFETY: Sets non-blocking mode on a valid client socket. The zero
+        // value and sizeof(c_int) are correct for SRTO_RCVSYN.
         let zero: c_int = 0;
         unsafe {
             srt_setsockopt(
@@ -1212,16 +1299,24 @@ impl SrtServer {
             );
         }
 
-        // Create SRT epoll instance for zero-CPU wait when no data
+        // SAFETY: srt_epoll_create creates a new epoll instance. The handle
+        // is valid or negative on error. Closed via srt_epoll_release on
+        // disconnect.
         let eid = unsafe { srt_epoll_create() };
         if eid < 0 {
             eprintln!("[srt] Failed to create epoll instance");
+            // SAFETY: Valid socket, clean up on epoll failure.
             unsafe { srt_close(client_sock) };
             return;
         }
         let epoll_events = SRT_EPOLL_IN as c_int;
+        // SAFETY: srt_epoll_add_usock registers client_sock with the epoll
+        // instance. eid and client_sock are valid handles. epoll_events
+        // pointer references a live stack variable.
         if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
             eprintln!("[srt] Failed to add socket to epoll");
+            // SAFETY: eid and client_sock are valid handles. Clean up in
+            // reverse creation order: release epoll, then close socket.
             unsafe {
                 srt_epoll_release(eid);
                 srt_close(client_sock)
@@ -1239,6 +1334,11 @@ impl SrtServer {
                 break;
             }
 
+            // SAFETY: srt_recv/srt_recvmsg2 reads from a valid
+            // non-blocking SRT socket into `buf`, which is a correctly
+            // sized Vec<u8>. The msghdr argument for srt_recvmsg2 is NULL
+            // (we don't need per-message metadata). Returns bytes read or
+            // -1 on error (EAGAIN in non-blocking mode).
             let n = unsafe {
                 if is_group {
                     srt_recvmsg2(
@@ -1260,6 +1360,11 @@ impl SrtServer {
                 // Use srt_epoll_wait in spawn_blocking (blocks OS thread, not
                 // tokio runtime) so we wake instantly on data arrival instead
                 // of polling with a timer sleep.
+                // SAFETY: srt_epoll_wait blocks the OS thread until
+                // data arrives or timeout. NULL pointers for write-fd and
+                // lwfd/wfds sets are valid (we only wait for read-ready).
+                // Called from spawn_blocking so the tokio runtime is
+                // not blocked.
                 let _ = tokio::task::spawn_blocking(move || {
                     let mut read_ready = [SRTSOCKET::default(); 1];
                     let mut rnum = 1i32;
@@ -1362,6 +1467,10 @@ impl SrtServer {
 
         println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
+        // SAFETY: eid and client_sock are valid handles. Release epoll
+        // first (must not reference client_sock after close), then close
+        // the client socket. Both are owned by this function and not
+        // shared elsewhere.
         unsafe {
             srt_epoll_release(eid);
             srt_close(client_sock);
@@ -1378,6 +1487,7 @@ impl SrtServer {
             .contains_key(pipeline_id)
         {
             eprintln!("[srt] No active ingest for play: {}", pipeline_id);
+            // SAFETY: client_sock is a valid accepted socket not yet closed.
             unsafe {
                 srt_close(client_sock);
             }
@@ -1405,6 +1515,7 @@ impl SrtServer {
                     "[srt] Sender thread limit reached — rejecting play for {}",
                     pipeline_id
                 );
+                // SAFETY: Valid socket, clean up on capacity rejection.
                 unsafe {
                     srt_close(client_sock);
                 }
@@ -1422,6 +1533,9 @@ impl SrtServer {
                     if n == 0 {
                         break;
                     }
+                    // SAFETY: srt_send transmits data over a valid SRT
+                    // socket. buf is a correctly sized Vec<u8>; n is the
+                    // number of bytes read from MemoryQueue (≤ buf.len()).
                     let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
                     if sent < 0 {
                         break;
@@ -1439,6 +1553,9 @@ impl SrtServer {
                     pid_log
                 );
             }
+            // SAFETY: client_sock was created during handle_client and
+            // passed to this thread. It is closed exactly once here after
+            // the sender loop exits (either normal disconnect or error).
             unsafe {
                 srt_close(client_sock);
             }
@@ -2185,6 +2302,9 @@ impl Drop for SrtServer {
 /// Must be called AFTER all SRT sockets (server + egress) are closed and
 /// their OS threads have been joined.  run_app() calls this at the very end
 /// of the graceful-shutdown sequence, after drain_os_thread_handles().
+// SAFETY: srt_cleanup must be called after all SRT sockets are closed
+// and all OS threads using libsrt have been joined. run_app() enforces
+// this by calling teardown_srt() as the final step of graceful shutdown.
 pub fn teardown_srt() {
     unsafe {
         srt_cleanup();
@@ -2202,10 +2322,18 @@ async fn resolve_host(host_port: &str) -> Option<SocketAddr> {
 }
 
 fn to_libc_sockaddr(addr: SocketAddr) -> (libc::sockaddr_storage, c_int) {
+    // SAFETY: zeroed() is valid for sockaddr_storage (all-zero is a
+    // valid uninitialized socket address). Raw pointer writes through
+    // a correctly-typed pointer (sockaddr_in or sockaddr_in6) cast
+    // from the storage reference. The family field is set first to
+    // identify the variant before any other field is written.
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     match addr {
         SocketAddr::V4(v4) => {
             let sin = &mut storage as *mut _ as *mut libc::sockaddr_in;
+            // SAFETY: sin is a valid pointer to the storage buffer cast
+            // to the correct sockaddr_in variant. The struct is zero-
+            // initialized above; we write all required fields.
             unsafe {
                 (*sin).sin_family = libc::AF_INET as libc::sa_family_t;
                 (*sin).sin_port = v4.port().to_be();
@@ -2215,6 +2343,9 @@ fn to_libc_sockaddr(addr: SocketAddr) -> (libc::sockaddr_storage, c_int) {
         }
         SocketAddr::V6(v6) => {
             let sin6 = &mut storage as *mut _ as *mut libc::sockaddr_in6;
+            // SAFETY: sin6 is a valid pointer to the storage buffer.
+            // AF_INET6 is set first to identify the variant; subsequent
+            // fields (port, addr) are written to the correct variant.
             unsafe {
                 (*sin6).sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 (*sin6).sin6_port = v6.port().to_be();
@@ -2486,6 +2617,9 @@ pub async fn start_srt_egress(
 
     if use_bonding {
         // Create a bonding group (backup mode: one active, failover to next)
+        // SAFETY: srt_create_group creates a bonding group socket.
+        // SRT_GTYPE_BACKUP configures active/passive failover mode.
+        // The returned handle is closed on all exit paths below.
         client_sock = unsafe { srt_create_group(SRT_GTYPE_BACKUP) };
         if client_sock < 0 {
             eprintln!("[srt-egress] Failed to create bonding group");
@@ -2497,13 +2631,17 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("[srt-egress] Stream ID contains null bytes");
+                    // SAFETY: Valid group socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
                     }
                     return;
                 }
             };
-            // Set streamid on the group via per-member config
+            // SAFETY: srt_create_config allocates a per-member config.
+            // srt_config_add writes the streamid into that config.
+            // Ownership transfers to SRT on successful srt_connect_group;
+            // on failure config is freed via srt_delete_config below.
             let config = unsafe { srt_create_config() };
             if !config.is_null() {
                 unsafe {
@@ -2519,6 +2657,9 @@ pub async fn start_srt_egress(
             let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
             for (i, &peer_addr) in all_addrs.iter().enumerate() {
                 let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                // SAFETY: srt_prepare_endpoint creates a group member
+                // descriptor from a sockaddr. The peer_storage is
+                // stack-allocated and valid for this call.
                 let mut member = unsafe {
                     srt_prepare_endpoint(
                         std::ptr::null(),
@@ -2533,15 +2674,23 @@ pub async fn start_srt_egress(
                 members.push(member);
             }
 
+            // SAFETY: srt_connect_group opens all member connections.
+            // members is a correctly sized Vec of SrtGroupMemberConfig.
+            // On failure, client_sock and config are cleaned up.
             let conn_res = unsafe {
                 srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
             };
             if conn_res < 0 {
+                // SAFETY: srt_getlasterror_str returns a thread-local
+                // static string valid until the next SRT call.
                 let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
                 eprintln!(
                     "[srt-egress] Bonded connection failed: {}",
                     err.to_string_lossy()
                 );
+                // SAFETY: Clean up group socket and per-member config
+                // on connection failure. Order: close socket, then
+                // free config (config must not outlive the socket).
                 unsafe {
                     srt_close(client_sock);
                     if !config.is_null() {
@@ -2555,6 +2704,8 @@ pub async fn start_srt_egress(
             let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
             for (i, &peer_addr) in all_addrs.iter().enumerate() {
                 let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                // SAFETY: srt_prepare_endpoint with NULL source and
+                // stack-allocated sockaddr.
                 let mut member = unsafe {
                     srt_prepare_endpoint(
                         std::ptr::null(),
@@ -2566,15 +2717,19 @@ pub async fn start_srt_egress(
                 members.push(member);
             }
 
+            // SAFETY: Connect group without streamid config.
+            // Members array is valid; members.len() is correct.
             let conn_res = unsafe {
                 srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
             };
             if conn_res < 0 {
+                // SAFETY: srt_getlasterror_str is valid until next SRT call.
                 let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
                 eprintln!(
                     "[srt-egress] Bonded connection failed: {}",
                     err.to_string_lossy()
                 );
+                // SAFETY: Clean up socket on connection failure.
                 unsafe {
                     srt_close(client_sock);
                 }
@@ -2590,6 +2745,9 @@ pub async fn start_srt_egress(
         srt_set_highbitrate_opts(client_sock);
         srt_log_effective_opts(client_sock, "egress-bonded");
     } else {
+        // SAFETY: srt_create_socket creates a new SRT socket handle.
+        // The returned handle is closed on all exit paths below
+        // (connection failure, cancel, sender exit).
         // Single connection (original path)
         client_sock = unsafe { srt_create_socket() };
         if client_sock < 0 {
@@ -2603,12 +2761,15 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("[srt-egress] Invalid stream ID (contains null byte)");
+                    // SAFETY: Valid socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
                     }
                     return;
                 }
             };
+            // SAFETY: Sets SRTO_STREAMID on a valid socket with a
+            // correctly-sized NUL-terminated C string.
             unsafe {
                 srt_setsockopt(
                     client_sock,
@@ -2634,6 +2795,7 @@ pub async fn start_srt_egress(
             );
             tokio::select! {
                 _ = cancel_token.cancelled() => {
+                    // SAFETY: Valid socket, cancelling before connect.
                     unsafe { srt_close(client_sock); }
                     return;
                 }
@@ -2641,6 +2803,8 @@ pub async fn start_srt_egress(
             }
         }
 
+        // SAFETY: srt_connect opens a connection to the target address.
+        // sin is a correctly-sized sockaddr_in; client_sock is valid.
         let conn_res = unsafe {
             srt_connect(
                 client_sock,
@@ -2650,6 +2814,7 @@ pub async fn start_srt_egress(
         };
         if conn_res < 0 {
             eprintln!("[srt-egress] Connection failed to {}", target_url);
+            // SAFETY: Valid socket, clean up on connection failure.
             unsafe {
                 srt_close(client_sock);
             }
@@ -2686,6 +2851,7 @@ pub async fn start_srt_egress(
                 "[srt-egress] Sender thread limit reached — rejecting egress {}",
                 output_id
             );
+            // SAFETY: Valid socket, clean up on capacity rejection.
             unsafe {
                 srt_close(client_sock);
             }
@@ -2701,8 +2867,12 @@ pub async fn start_srt_egress(
                 if n == 0 {
                     break;
                 }
+                // SAFETY: srt_send transmits data over a valid connected
+                // SRT socket. buf is correctly sized; n ≤ buf.len().
                 let sent = unsafe { srt_send(client_sock, buf.as_ptr(), n as c_int) };
                 if sent < 0 {
+                    // SAFETY: srt_getlasterror_str returns a thread-local
+                    // static string for error diagnostics.
                     let err_str = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) }
                         .to_string_lossy();
                     eprintln!("[srt-egress] srt_send failed for {}: {}", oid, err_str);
@@ -2721,6 +2891,9 @@ pub async fn start_srt_egress(
         } else {
             println!("[srt-egress] Sender thread finished for {}", oid);
         }
+        // SAFETY: client_sock was created/connected in start_srt_egress
+        // and passed to this sender thread. Closed exactly once here
+        // after the sender loop exits.
         unsafe {
             srt_close(client_sock);
         }
