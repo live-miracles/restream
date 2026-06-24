@@ -1274,6 +1274,32 @@ fn skip_scaling_list(reader: &mut BitReader, size: usize) {
     }
 }
 
+/// Skip H.265 scaling_list_data() per ITU-T H.265 §7.3.4.
+/// Four sizeId dimensions (0..4), each with 6 matrixId entries
+/// (step 3 for sizeId==3). Predicted entries consume 1 ue(v);
+/// explicitly-coded entries consume 1 se(v) dc (sizeId>1) + coefNum se(v) values.
+fn skip_h265_scaling_list_data(reader: &mut BitReader) {
+    for size_id in 0..4u32 {
+        let step = if size_id == 3 { 3 } else { 1 };
+        let mut matrix_id = 0u32;
+        while matrix_id < 6 {
+            let pred_mode = reader.read_bits(1);
+            if pred_mode == 0 {
+                reader.read_ue();
+            } else {
+                let coef_num = std::cmp::min(64, 1u32 << (4 + (size_id << 1)));
+                if size_id > 1 {
+                    reader.read_se();
+                }
+                for _ in 0..coef_num {
+                    reader.read_se();
+                }
+            }
+            matrix_id += step;
+        }
+    }
+}
+
 // --- H.265 NAL unit scanning ---
 
 fn h265_is_keyframe(payload: &[u8]) -> bool {
@@ -1426,7 +1452,7 @@ fn parse_h265_sps(sps: &[u8], meta: &mut VideoMeta) {
     if scaling_list_enabled == 1 {
         let scaling_list_data_present = reader.read_bits(1);
         if scaling_list_data_present == 1 {
-            return; // too complex to skip reliably
+            skip_h265_scaling_list_data(&mut reader);
         }
     }
 
@@ -1443,16 +1469,28 @@ fn parse_h265_sps(sps: &[u8], meta: &mut VideoMeta) {
     }
 
     let num_short_term_rps = reader.read_ue();
-    // Skip short-term RPS — complex variable-length structure
+    let mut num_delta_pocs = Vec::with_capacity(num_short_term_rps as usize);
     for i in 0..num_short_term_rps {
-        let inter_ref_pic_set = if i > 0 { reader.read_bits(1) } else { 0 };
-        if inter_ref_pic_set == 1 {
-            if i == num_short_term_rps {
-                reader.read_ue(); // delta_idx_minus1
-            }
+        let inter_pred = if i > 0 { reader.read_bits(1) } else { 0 };
+        if inter_pred == 1 {
+            // delta_idx_minus1 is not present in SPS context (stRpsIdx < num_short_term_rps)
             reader.skip(1); // delta_rps_sign
             reader.read_ue(); // abs_delta_rps_minus1
-            return; // inter-prediction RPS is too complex to walk generically
+            // RefRpsIdx = i - 1 (delta_idx_minus1 defaults to 0 in SPS)
+            let count = num_delta_pocs[(i - 1) as usize];
+            let mut this_count = 0u32;
+            for _ in 0..=count {
+                let used = reader.read_bits(1);
+                if used == 0 {
+                    let use_delta = reader.read_bits(1);
+                    if use_delta == 1 {
+                        this_count += 1;
+                    }
+                } else {
+                    this_count += 1;
+                }
+            }
+            num_delta_pocs.push(this_count);
         } else {
             let num_negative = reader.read_ue();
             let num_positive = reader.read_ue();
@@ -1464,6 +1502,7 @@ fn parse_h265_sps(sps: &[u8], meta: &mut VideoMeta) {
                 reader.read_ue(); // delta_poc_s1_minus1
                 reader.skip(1); // used_by_curr_pic_s1_flag
             }
+            num_delta_pocs.push(num_negative + num_positive);
         }
     }
 
