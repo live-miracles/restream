@@ -238,7 +238,7 @@ pub struct ActiveIngest {
     pub remote_addr: Option<String>,
     pub video: Option<VideoMeta>,
     pub audio: Option<AudioMeta>,
-    pub audio_tracks: std::sync::Mutex<Vec<AudioMeta>>,
+    pub audio_tracks: std::sync::Mutex<std::sync::Arc<Vec<AudioMeta>>>,
     pub quality: PublisherQuality,
     pub keyframe_times: Arc<std::sync::Mutex<Vec<i64>>>,
     /// Cached FLV sequence headers for RTMP play subscribers (video config + audio config)
@@ -472,23 +472,20 @@ impl MediaEngine {
 
         // Set audio_tracks metadata
         let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
-            tracks.to_vec()
+            std::sync::Arc::new(tracks.to_vec())
         } else {
             let ingests = self.active_ingests.read().await;
             ingests
                 .get(pipeline_id)
                 .map(|i| {
-                    let mut tracks = i
-                        .audio_tracks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone();
-                    if tracks.is_empty()
+                    let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                    if lock.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
-                        tracks.push(audio);
+                        std::sync::Arc::new(vec![audio])
+                    } else {
+                        std::sync::Arc::clone(&lock)
                     }
-                    tracks
                 })
                 .unwrap_or_default()
         };
@@ -503,7 +500,7 @@ impl MediaEngine {
                 crate::media::transcoder::parse_audio_routing(&format!("source+{}", audio_op));
             crate::media::transcoder::apply_audio_routing(&routing, &input_tracks)
         } else {
-            input_tracks
+            (*input_tracks).clone()
         };
         output_buf.set_audio_tracks(output_tracks);
 
@@ -638,27 +635,24 @@ impl MediaEngine {
 
         // Inherit audio tracks from source_buffer
         let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
-            tracks.to_vec()
+            std::sync::Arc::new(tracks.to_vec())
         } else {
             let ingests = self.active_ingests.read().await;
             ingests
                 .get(pipeline_id)
                 .map(|i| {
-                    let mut tracks = i
-                        .audio_tracks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone();
-                    if tracks.is_empty()
+                    let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                    if lock.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
-                        tracks.push(audio);
+                        std::sync::Arc::new(vec![audio])
+                    } else {
+                        std::sync::Arc::clone(&lock)
                     }
-                    tracks
                 })
                 .unwrap_or_default()
         };
-        output_buf.set_audio_tracks(input_tracks);
+        output_buf.set_audio_tracks((*input_tracks).clone());
         let cancel = CancellationToken::new();
         buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         drop(buffers); // release write lock before spawning
@@ -824,7 +818,7 @@ impl MediaEngine {
                 remote_addr: None,
                 video: None,
                 audio: None,
-                audio_tracks: std::sync::Mutex::new(Vec::new()),
+                audio_tracks: std::sync::Mutex::new(std::sync::Arc::new(Vec::new())),
                 quality: PublisherQuality::default(),
                 keyframe_times: Arc::new(std::sync::Mutex::new(Vec::new())),
                 video_sequence_header: std::sync::Mutex::new(None),
@@ -998,7 +992,7 @@ impl MediaEngine {
             *ingest
                 .audio_tracks
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = tracks;
+                .unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(tracks);
         }
     }
 

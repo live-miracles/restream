@@ -58,16 +58,14 @@ pub async fn start_h264_transcoder(
                 if video.codec != "hevc" && video.codec != "h265" {
                     return None;
                 }
-                let mut tracks = i
-                    .audio_tracks
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if tracks.is_empty()
+                let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                let tracks = if lock.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {
-                    tracks.push(audio);
-                }
+                    std::sync::Arc::new(vec![audio])
+                } else {
+                    std::sync::Arc::clone(&lock)
+                };
                 Some((video, tracks))
             })
         };
@@ -434,7 +432,9 @@ fn run_ffmpeg_h264_stage(
                 encoder = Some(opened);
             }
 
-            let Some(enc) = encoder.as_mut() else { continue };
+            let Some(enc) = encoder.as_mut() else {
+                continue;
+            };
             let Some(sw) = scaler.as_mut() else { continue };
 
             if sw.run(&dec_frame, &mut enc_frame).is_err() {

@@ -243,16 +243,14 @@ pub async fn start_transcoder(
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
                 video.as_ref()?;
-                let mut tracks = i
-                    .audio_tracks
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if tracks.is_empty()
+                let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                let tracks = if lock.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {
-                    tracks.push(audio);
-                }
+                    std::sync::Arc::new(vec![audio])
+                } else {
+                    std::sync::Arc::clone(&lock)
+                };
                 Some((video, tracks))
             })
         };
@@ -931,7 +929,9 @@ pub fn run_ffmpeg_transcode_with_scale(
                 encoder = Some(opened);
             }
 
-            let Some(enc) = encoder.as_mut() else { continue };
+            let Some(enc) = encoder.as_mut() else {
+                continue;
+            };
 
             let frame_to_encode = if let Some(ref mut sw) = scaler {
                 if sw.run(&dec_frame, &mut enc_frame).is_err() {

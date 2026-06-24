@@ -266,16 +266,14 @@ pub async fn start_external_transcoder_stage(
             let ingests = engine.active_ingests.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone()?;
-                let mut tracks = i
-                    .audio_tracks
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if tracks.is_empty()
+                let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                let tracks = if lock.is_empty()
                     && let Some(a) = i.audio.clone()
                 {
-                    tracks.push(a);
-                }
+                    std::sync::Arc::new(vec![a])
+                } else {
+                    std::sync::Arc::clone(&lock)
+                };
                 Some((video, tracks))
             })
         };

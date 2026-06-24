@@ -2280,16 +2280,14 @@ pub fn start_shared_ts_muxer(
                 ingests.get(&pipeline_id_str).and_then(|i| {
                     let video = i.video.clone();
                     video.as_ref()?;
-                    let mut tracks = i
-                        .audio_tracks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone();
-                    if tracks.is_empty()
+                    let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                    let tracks = if lock.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
-                        tracks.push(audio);
-                    }
+                        std::sync::Arc::new(vec![audio])
+                    } else {
+                        std::sync::Arc::clone(&lock)
+                    };
                     Some((video, tracks))
                 })
             };

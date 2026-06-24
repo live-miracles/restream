@@ -91,7 +91,8 @@ pub async fn start_recording(
             Vec::new()
         }
     };
-    let mut audio_tracks: Vec<crate::media::engine::AudioMeta> = Vec::new();
+    let mut audio_tracks: std::sync::Arc<Vec<crate::media::engine::AudioMeta>> =
+        std::sync::Arc::new(Vec::new());
     let mut video_conv_buf = Vec::<u8>::new();
     let mut audio_conv_buf = Vec::<u8>::new();
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
