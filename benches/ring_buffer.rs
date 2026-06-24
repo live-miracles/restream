@@ -254,12 +254,71 @@ fn benchmark_vec_capacity(c: &mut Criterion) {
     group.finish();
 }
 
+/// Vec allocation reuse: creating a fresh Vec inside each burst iteration
+/// vs declaring outside the loop and reusing via drain().  Measured across
+/// 100 burst cycles — the outer-declaration should retain the capacity
+/// after the first burst and avoid the heap allocation on all subsequent
+/// cycles.
+fn benchmark_vec_loop_reuse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vec_loop_reuse");
+
+    let payload = Bytes::from(vec![0u8; 1316]);
+    group.throughput(Throughput::Elements(100));
+
+    // Fresh Vec each iteration (current pattern in rtmp/transcoder)
+    group.bench_function("alloc_every_iter", |b| {
+        b.iter(|| {
+            for _ in 0..100 {
+                let mut v: Vec<(Bytes, bool)> = Vec::with_capacity(32);
+                for i in 0..32 {
+                    v.push((payload.clone(), i == 0));
+                }
+                black_box(&v);
+            }
+        })
+    });
+
+    // Vec declared outside, reused with drain()
+    group.bench_function("reuse_with_drain", |b| {
+        b.iter_batched(
+            || Vec::<(Bytes, bool)>::with_capacity(32),
+            |mut v| {
+                for _ in 0..100 {
+                    for i in 0..32 {
+                        v.push((payload.clone(), i == 0));
+                    }
+                    black_box(&v);
+                    v.clear();
+                }
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // Vec declared inside, used with drain (keeps allocation within iter)
+    group.bench_function("alloc_every_iter_drain", |b| {
+        b.iter(|| {
+            let mut v: Vec<(Bytes, bool)> = Vec::with_capacity(32);
+            for _ in 0..100 {
+                for i in 0..32 {
+                    v.push((payload.clone(), i == 0));
+                }
+                black_box(&v);
+                v.clear();
+            }
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
     benchmark_pull_burst,
     benchmark_reader_lag,
     benchmark_vec_capacity,
+    benchmark_vec_loop_reuse,
     // Run concurrency bench last so 500 threads don't noise-up the pure benchmarks.
     benchmark_ring_buffer_concurrency,
 );

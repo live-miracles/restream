@@ -81,18 +81,18 @@ pub async fn start_audio_router(
     );
     let mut _pushed_count: u64 = 0;
     let mut first_push_logged = false;
-    // Pre-allocated output batch — reused across bursts so the Vec capacity
+    // Pre-allocated batches — reused across bursts so the Vec capacity
     // is retained (no re-allocation on the hot path after the first burst).
     let mut out_batch: Vec<MediaPacket> = Vec::with_capacity(32);
+    let mut packets: Vec<std::sync::Arc<MediaPacket>> = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = reader.wait_for_data() => {
-                let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_err() {
                     continue;
                 }
-                for pkt in packets {
+                for pkt in packets.drain(..) {
                     let out = match &routing {
                         AudioRouting::Passthrough => Some((*pkt).clone()),
 

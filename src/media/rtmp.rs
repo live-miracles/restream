@@ -1258,6 +1258,10 @@ pub async fn start_rtmp_egress(
     let mut audio_buf = Vec::<u8>::new();
     log_rss("egress_reader_created", &output_id);
 
+    // Pre-allocated burst buffer — declared outside the loop so capacity
+    // is retained across bursts instead of re-allocating per burst.
+    let mut packets: Vec<Arc<MediaPacket>> = Vec::with_capacity(32);
+
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -1330,9 +1334,8 @@ pub async fn start_rtmp_egress(
             }
             // Write packets from ring buffer when publishing is active
             _ = reader.wait_for_data(), if is_publishing => {
-                let mut packets = Vec::with_capacity(32);
                 if reader.pull_burst(&mut packets, 32).is_ok() {
-                    for packet in packets {
+                    for packet in packets.drain(..) {
                         let ts = match packet.media_type {
                             MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
                             MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
