@@ -3,6 +3,10 @@ use std::ffi::{CStr, c_char, c_int};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
+// SAFETY: OpenSSL_version is a well-defined C function with a stable ABI.
+// The kind parameter (OPENSSL_VERSION = 0) requests the full version string.
+// The returned pointer is valid for the lifetime of the OpenSSL library
+// (loaded at process start and never unloaded).
 unsafe extern "C" {
     fn OpenSSL_version(kind: c_int) -> *const c_char;
 }
@@ -15,6 +19,9 @@ fn c_string(pointer: *const c_char) -> String {
     if pointer.is_null() {
         return "unknown".to_string();
     }
+    // SAFETY: Caller guarantees pointer is either null or a valid
+    // NUL-terminated C string obtained from a C library (OpenSSL, FFmpeg,
+    // or glibc). The null case is checked above.
     unsafe { CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned()
@@ -107,6 +114,9 @@ fn rust_components() -> Vec<Value> {
 }
 
 fn ffmpeg_components() -> (Vec<Value>, String, String) {
+    // SAFETY: avcodec_configuration and avcodec_license are FFmpeg C API
+    // functions that return NUL-terminated static strings valid for the
+    // process lifetime. No ownership transfer; caller must not free.
     let configuration = c_string(unsafe { ffmpeg_next::ffi::avcodec_configuration() });
     let license_text = c_string(unsafe { ffmpeg_next::ffi::avcodec_license() });
     let license_expression = if license_text.to_ascii_lowercase().contains("gpl") {
@@ -121,6 +131,9 @@ fn ffmpeg_components() -> (Vec<Value>, String, String) {
         ]
     };
 
+    // SAFETY: All ffmpeg_next::ffi::*_version() functions are FFmpeg C API
+    // calls that return a u32 version integer. No pointer arguments, no
+    // memory allocation; they are pure functions callable from any context.
     let components = unsafe {
         vec![
             native_component(
@@ -173,11 +186,15 @@ fn ffmpeg_components() -> (Vec<Value>, String, String) {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn libc_component() -> Option<Value> {
+    // SAFETY: gnu_get_libc_version is a glibc extension returning a
+    // NUL-terminated static string. The returned pointer is valid for
+    // the process lifetime. Only compiled on linux+gnu targets.
     unsafe extern "C" {
         fn gnu_get_libc_version() -> *const c_char;
     }
     Some(native_component(
         "glibc",
+        // SAFETY: gnu_get_libc_version returns a valid static string pointer.
         c_string(unsafe { gnu_get_libc_version() }),
         "LGPL-2.1-or-later",
         "runtime API",
@@ -199,6 +216,9 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
         .fetch_one(db)
         .await
         .unwrap_or_else(|_| "unknown".to_string());
+    // SAFETY: OpenSSL_version(OPENSSL_VERSION) returns a NUL-terminated
+    // static string owned by the OpenSSL library, valid for the process
+    // lifetime. No deallocation required.
     let openssl_version = c_string(unsafe { OpenSSL_version(OPENSSL_VERSION) });
     let srt_version = crate::media::srt::linked_srt_version();
     let x264_version = env!("RESTREAM_BUILD_X264_VERSION").to_string();
@@ -336,6 +356,8 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
         "components": components
     });
 
+    // SAFETY: av_version_info returns a NUL-terminated static string
+    // owned by FFmpeg, valid for the process lifetime.
     let ffmpeg_version = c_string(unsafe { ffmpeg_next::ffi::av_version_info() });
     let status = json!({
         "restream": {

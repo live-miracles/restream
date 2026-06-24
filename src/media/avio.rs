@@ -206,6 +206,13 @@ pub struct CustomInput {
 }
 
 impl CustomInput {
+    // SAFETY: This function builds an FFmpeg custom I/O context with
+    // callbacks that read from a MemoryQueue. The `queue` pointer must
+    // outlive the CustomInput (guaranteed by the caller holding an Arc).
+    // av_malloc/av_free manage the I/O buffer; avio_alloc_context takes
+    // ownership of the buffer. On error paths, all allocated resources
+    // are freed before returning. read_packet_cb is the only active
+    // callback; seek and write are None (input is read-only).
     pub fn new(queue: *const MemoryQueue) -> Result<Self, &'static str> {
         unsafe {
             let buffer = ffmpeg::ffi::av_malloc(AVIO_BUFFER_SIZE) as *mut u8;
@@ -278,6 +285,12 @@ impl CustomInput {
 
 impl Drop for CustomInput {
     fn drop(&mut self) {
+        // SAFETY: Detaches the custom AVIO context from the AVFormatContext
+        // before avformat_close_input runs (which would try to free the AVIO
+        // buffer we own). Then frees the AVIO buffer and context via FFmpeg's
+        // allocator (av_freep for the buffer, avio_context_free for the ctx).
+        // The raw pointers were allocated by av_malloc/avio_alloc_context in
+        // CustomInput::new and have not been freed elsewhere.
         unsafe {
             if let Some(mut input) = self.input.take() {
                 // `ffmpeg-next` owns the AVFormatContext, but this wrapper owns
@@ -300,6 +313,11 @@ pub struct CustomOutput {
 }
 
 impl CustomOutput {
+    // SAFETY: Builds an FFmpeg custom output I/O context with write_packet_cb
+    // writing into a MemoryQueue. The `queue` pointer must outlive the
+    // CustomOutput (caller holds an Arc). av_malloc/av_free manage the I/O
+    // buffer. read and seek callbacks are None (output is write-only). On
+    // all error paths, allocated resources are freed before returning.
     pub fn new(queue: *const MemoryQueue, format_name: &str) -> Result<Self, &'static str> {
         unsafe {
             let buffer = ffmpeg::ffi::av_malloc(AVIO_BUFFER_SIZE) as *mut u8;
@@ -359,11 +377,15 @@ impl CustomOutput {
 
 impl Drop for CustomOutput {
     fn drop(&mut self) {
+        // SAFETY: Detaches the custom AVIO context before avformat_close_input
+        // runs (which would try to close the AVIO we own). Then frees the AVIO
+        // buffer via av_freep and the context via avio_context_free. Pointers
+        // were allocated in CustomOutput::new and not freed elsewhere.
+        // ffmpeg-next's output destructor unconditionally calls avio_close(pb)
+        // on the AVIO context pointer, so we NULL it first to prevent
+        // double-free.
         unsafe {
             if let Some(mut output) = self.output.take() {
-                // `ffmpeg-next`'s output destructor unconditionally calls
-                // avio_close(pb). Detach our custom AVIOContext so it is not
-                // closed there and then freed a second time below.
                 (*output.as_mut_ptr()).pb = std::ptr::null_mut();
                 drop(output);
             }
@@ -375,6 +397,12 @@ impl Drop for CustomOutput {
     }
 }
 
+// SAFETY: FFmpeg AVIO read callback. `opaque` is a `*const MemoryQueue`
+// set during avio_alloc_context. `buf` and `buf_size` are provided by
+// FFmpeg's internal I/O layer. The MemoryQueue is alive for the lifetime
+// of the AVIO context (both managed by the enclosing CustomInput).
+// `from_raw_parts_mut` is valid because FFmpeg guarantees `buf` points
+// to `buf_size` writable bytes.
 unsafe extern "C" fn read_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let queue = unsafe { &*(opaque as *const MemoryQueue) };
     let target = unsafe { std::slice::from_raw_parts_mut(buf, buf_size as usize) };
@@ -386,6 +414,11 @@ unsafe extern "C" fn read_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size:
     }
 }
 
+// SAFETY: FFmpeg AVIO write callback. `opaque` is a `*const MemoryQueue`
+// set during avio_alloc_context. `buf` contains `buf_size` readable bytes
+// of data to write. The MemoryQueue is alive for the AVIO context lifetime.
+// `from_raw_parts` is valid because FFmpeg guarantees `buf` is `buf_size`
+// readable bytes.
 unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let queue = unsafe { &*(opaque as *const MemoryQueue) };
     let slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };

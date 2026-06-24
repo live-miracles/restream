@@ -64,6 +64,10 @@ impl ServerPorts {
 }
 
 fn set_rlimit() {
+    // SAFETY: setrlimit is a POSIX system call. The rlimit struct is stack-
+    // allocated with valid values; no pointer aliasing concerns. Called once
+    // at startup before any file descriptors are opened, so raising the limit
+    // cannot interfere with other operations.
     unsafe {
         let limit = libc::rlimit {
             rlim_cur: 65536,

@@ -376,6 +376,13 @@ fn run_ffmpeg_h264_stage(
                 // Allocate encoder context with the H.264 codec so codec_id
                 // and codec_type are set correctly (avcodec_alloc_context3
                 // with NULL leaves them unset, causing open to fail).
+                // SAFETY: avcodec_alloc_context3 is an FFmpeg allocation
+                // function. The `enc_codec` pointer was obtained from
+                // avcodec_find_encoder_by_name (a valid codec descriptor
+                // valid for the process lifetime). The returned AVCodecContext
+                // pointer is either null (allocation failure, handled) or
+                // a valid heap allocation owned by the caller.
+                // Context::wrap takes ownership and manages deallocation.
                 let enc_ctx = unsafe {
                     let ptr = ffmpeg_next::ffi::avcodec_alloc_context3(
                         enc_codec.as_ptr() as *mut ffmpeg_next::ffi::AVCodec

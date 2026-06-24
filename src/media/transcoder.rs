@@ -884,6 +884,11 @@ pub fn run_ffmpeg_transcode_with_scale(
                 fps_num = fn_ as i64;
                 fps_den = fd as i64;
 
+                // SAFETY: avcodec_alloc_context3 allocates an FFmpeg
+                // AVCodecContext. The `enc_codec` pointer was obtained from
+                // avcodec_find_encoder_by_name and is valid for the process
+                // lifetime. The returned pointer is either null (handled) or
+                // a valid heap allocation. Context::wrap takes ownership.
                 let enc_ctx = unsafe {
                     let ptr = ffmpeg_next::ffi::avcodec_alloc_context3(
                         enc_codec.as_ptr() as *mut ffmpeg_next::ffi::AVCodec

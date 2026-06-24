@@ -479,6 +479,11 @@ async fn handle_rtmp_client(
         use std::os::unix::io::AsRawFd;
         let fd = socket.as_raw_fd();
         let size: libc::c_int = 8 * 1024 * 1024;
+        // SAFETY: setsockopt is a POSIX socket API. The file descriptor
+        // `fd` is a valid socket from tokio's TcpStream. `size` is a
+        // stack-allocated c_int with a known-safe value (8 MiB). The
+        // pointer cast is valid because c_void is the canonical opaque
+        // pointer for setsockopt's option-value argument.
         unsafe {
             libc::setsockopt(
                 fd,

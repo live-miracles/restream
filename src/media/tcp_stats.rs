@@ -137,6 +137,11 @@ pub fn collect_rtmp_receiver_stats(socket: &tokio::net::TcpStream) -> io::Result
     let fd = socket.as_raw_fd();
     let mut info = LinuxTcpInfo::default();
     let mut info_len = std::mem::size_of::<LinuxTcpInfo>() as libc::socklen_t;
+    // SAFETY: getsockopt TCP_INFO fills a LinuxTcpInfo struct. `fd` is a
+    // valid socket from tokio. `info` is a stack-allocated default-zeroed
+    // struct of the correct size for the TCP_INFO option. `info_len` is
+    // correctly initialized to sizeof(LinuxTcpInfo) and may be updated
+    // by the kernel to the actual bytes written.
     let result = unsafe {
         libc::getsockopt(
             fd,
@@ -153,6 +158,11 @@ pub fn collect_rtmp_receiver_stats(socket: &tokio::net::TcpStream) -> io::Result
     let mut stats = stats_from_tcp_info(&info, info_len as usize);
     let mut memory = [0u32; 9];
     let mut memory_len = std::mem::size_of_val(&memory) as libc::socklen_t;
+    // SAFETY: getsockopt SO_MEMINFO reads socket memory buffer usage.
+    // `fd` is a valid socket. `memory` is a stack-allocated [u32; 9] array
+    // correctly sized for the SO_MEMINFO option. `memory_len` is initialized
+    // to the array byte size. The raw pointer cast is valid for any aligned
+    // byte buffer.
     let memory_result = unsafe {
         libc::getsockopt(
             fd,
