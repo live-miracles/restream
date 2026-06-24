@@ -226,7 +226,7 @@ pub async fn start_hls_segmenter(
                                 let num_streams = video.is_some() as usize + audio_tracks.len();
                                 dts_enforcer = Some(DtsEnforcer::new(num_streams));
                                 muxer = Some((m, audio_tracks));
-                                let (m, t) = muxer.as_mut().unwrap();
+                                let (m, t) = muxer.as_mut().expect("muxer just initialized");
                                 (m, t)
                             }
                         };

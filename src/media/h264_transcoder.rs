@@ -434,8 +434,8 @@ fn run_ffmpeg_h264_stage(
                 encoder = Some(opened);
             }
 
-            let enc = encoder.as_mut().unwrap();
-            let sw = scaler.as_mut().unwrap();
+            let Some(enc) = encoder.as_mut() else { continue };
+            let Some(sw) = scaler.as_mut() else { continue };
 
             if sw.run(&dec_frame, &mut enc_frame).is_err() {
                 continue;

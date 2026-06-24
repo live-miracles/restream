@@ -931,7 +931,7 @@ pub fn run_ffmpeg_transcode_with_scale(
                 encoder = Some(opened);
             }
 
-            let enc = encoder.as_mut().unwrap();
+            let Some(enc) = encoder.as_mut() else { continue };
 
             let frame_to_encode = if let Some(ref mut sw) = scaler {
                 if sw.run(&dec_frame, &mut enc_frame).is_err() {
