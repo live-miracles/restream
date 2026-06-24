@@ -492,8 +492,7 @@ advantage by avoiding new allocation and registry costs:
 All consumer loops have been migrated to burst consumption APIs and zero-allocation
 codec helpers:
 - **RTMP play/egress** (`rtmp.rs`): `pull_burst` 32; `video_for_rtmp_into` / `audio_for_rtmp_into` with per-egress scratch buffers.
-- **SRT egress** (`srt.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
-- **SRT play subscriber** (`srt.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into`. Previously used single-packet `pull()` with allocating variants.
+- **SRT egress / play subscriber** (`srt.rs`): consume pre-muxed 1316-byte TS chunks in bursts from `TsChunkRing` directly, bypassing per-connection conversions and redundant `TsMuxer` instances.
 - **HLS segmenter** (`hls.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
 - **Recording** (`recording.rs`): `pull_burst` 32; `video_for_ts_into` / `audio_for_ts_into` with scratch buffers.
 - **Transcoder worker** (`transcoder.rs`): `pull_burst` 32.
@@ -512,24 +511,20 @@ The transcoder output demuxer copies every FFmpeg packet with
   anonymous byte chunks;
 - benchmark allocation count and copied bytes per output media packet.
 
-### Native packaging and shared stages
+### Native packaging and shared stages — Complete
 
-HLS now uses one shared native `TsMuxer` segmenter per source pipeline. Browser
-preview requests keep it alive through access heartbeats, persistent HLS
-outputs hold a reference, and the reconciler removes idle segmenters after 60
-seconds. SRT output still uses per-output FFmpeg muxing. The intended broader
-high-performance shape is:
+Both HLS and SRT now utilize shared native packaging stages:
+- **HLS:** Uses one shared native `TsMuxer` segmenter per source pipeline. Browser preview requests keep it alive through access heartbeats, persistent HLS outputs hold a reference, and the reconciler removes idle segmenters after 60 seconds.
+- **SRT Egress and Play:** Share a single native `TsMuxer` task per pipeline+preset which feeds a shared `TsChunkRing` (SPMC lock-free package ring). Individual client loops consume pre-muxed 1316-byte packets directly from `TsChunkReader` and write to their bounded `MemoryQueue` buffers. This satisfies the high-performance shape:
 
 ```text
 canonical packet burst
   -> one native MPEG-TS package stage per final media shape
-  -> immutable 1316-byte package ring
-  -> many destination senders
+  -> immutable 1316-byte package ring (TsChunkRing)
+  -> many destination senders (SRT play and egress loops)
 ```
 
-Before adoption, validate native output against `ffprobe`, H.264/H.265 fixtures,
-multi-track AAC, PCR/PTS/DTS ordering, continuity counters, PAT/PMT cadence, and
-the existing end-to-end protocol gates.
+This design has been validated against `ffprobe` correctness checks, multi-track AAC, PCR/PTS/DTS monotone ordering, PAT/PMT cadence, and our end-to-end correctness protocol gates.
 
 The HLS cost benchmark currently reports:
 

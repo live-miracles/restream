@@ -152,7 +152,7 @@ most battle-tested path for production deployments.
 | SRT Ingest | `TsDemuxer` — demux MPEG-TS into `MediaPacket`s (inline async) |
 | External transcoder | subprocess FFmpeg stdin→stdout; `TsMuxer` writes stdin, `TsDemuxer` reads stdout |
 | Internal transcoder | in-process FFmpeg via `MemoryQueue`+`avio`; `TsMuxer` feeds input, output packets pushed directly to ring |
-| SRT Egress | `TsMuxer` remux to MPEG-TS (inline in async feed loop) |
+| SRT Egress | Shared `TsMuxer` task per unique `(pipeline, preset)` feeding a shared `TsChunkRing` (SPMC lock-free package ring) |
 | HLS | `TsMuxer` remux to MPEG-TS, then segment in memory (inline async) |
 | Recording | Raw MPEG-TS write to `.ts` file via `MemoryQueue` (OS thread) |
 
@@ -220,8 +220,8 @@ allocation by using the zero-allocation `_into` variants:
 | Consumer | Video conversion | Audio conversion | Burst size |
 |---|---|---|---|
 | RTMP egress | `video_for_rtmp_into` | `audio_for_rtmp_into` | `pull_burst` 32 |
-| SRT egress | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
-| SRT play subscriber | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
+| SRT egress | None (Shared `TsMuxer`) | None (Shared `TsMuxer`) | `pull_burst` 32 (`TsChunkReader`) |
+| SRT play subscriber | None (Shared `TsMuxer`) | None (Shared `TsMuxer`) | `pull_burst` 32 (`TsChunkReader`) |
 | HLS segmenter | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
 | Recording | `video_for_ts_into` | `audio_for_ts_into` | `pull_burst` 32 |
 | Transcoder feed | `video_for_ts` (Raw→Raw passthrough) | `audio_for_ts` | `pull_burst` 32 |

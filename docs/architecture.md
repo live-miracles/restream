@@ -78,7 +78,8 @@ Tokio worker count = `num_cpus` (tokio default, not configurable).
 | RTMP ingest handler | tokio task | 1 per RTMP publisher | TCP connection lifetime |
 | RTMP egress handler | tokio task | 1 per RTMP output | Output lifetime |
 | SRT ingest handler | tokio task | 1 per SRT publisher | SRT session; inline TsDemuxer |
-| SRT egress feed+mux | tokio task | 1 per SRT output | Inline TsMuxer in async feed loop |
+| SRT shared egress muxer | tokio task | 1 per unique `(pipeline, preset)` | Shared `TsMuxer` task that feeds the SPMC `TsChunkRing` |
+| SRT egress connection feeder | tokio task | 1 per SRT output | Drains `TsChunkRing` and writes to the connection's `MemoryQueue` |
 | SRT egress sender | `std::thread` | 1 per SRT output, capped at 512 combined (play + egress) by `srt_sender_semaphore` | Blocks on `srt_send()`; connection is rejected gracefully when cap is reached |
 | HLS segmenter | tokio task | 1 per active HLS pipeline | Inline TsMuxer + in-memory segment store |
 | Ext transcoder stdin feeder | tokio task | 1 per `(pipeline, video_preset)` | source_ring → TsMuxer → FFmpeg stdin |
@@ -391,14 +392,20 @@ synchronization boundary.
  ╔════════════╪═══════════════════════════════════════════════════╗
  ║  TOKIO     ▼                                                   ║
  ║  ┌──────────────────────────────────────────────────────────┐  ║
- ║  │ Task: SRT egress handler                                  │  ║
- ║  │                                                          │  ║
+ ║  │ Task: Shared SRT Muxer (1 per pipeline + preset)         │  ║
  ║  │  reader.wait_for_data().await                            │  ║
  ║  │  while reader.pull_burst():                              │  ║
  ║  │    video/audio_payload_for_mux() (strip FLV if needed)   │  ║
  ║  │    dts_enforcer.enforce()                                │  ║
- ║  │    TsMuxer::mux_packet() (inline, ~0.6µs/pkt)           │  ║
- ║  │    → out_queue.write(ts_bytes)                           │  ║
+ ║  │    TsMuxer::mux_packet() (inline, ~0.6µs/pkt)            │  ║
+ ║  │    ts_ring.push()                                        │  ║
+ ║  └────────────────────────────┬─────────────────────────────┘  ║
+ ║                               │ (Lock-free SPMC)               ║
+ ║                               ▼                                ║
+ ║  ┌──────────────────────────────────────────────────────────┐  ║
+ ║  │ Task: SRT egress handler (1 per output connection)       │  ║
+ ║  │  ts_reader.pull_burst()                                  │  ║
+ ║  │  → out_queue.write(ts_batch).await                       │  ║
  ║  └────────────────────────────┬─────────────────────────────┘  ║
  ╚═══════════════════════════════╪════════════════════════════════╝
                                  │
