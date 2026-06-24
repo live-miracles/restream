@@ -1969,8 +1969,27 @@ async fn pipeline_diagnostics_sse_handler(
     }
     let engine = state.engine.clone();
 
+    // Acquire per-pipeline semaphore to prevent concurrent diagnostics on the same pipeline
+    let sem = {
+        let mut map = engine.diag_semaphores.write().await;
+        map.entry(pipeline_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
+    };
+    let permit = match sem.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "A diagnostic is already running for this pipeline",
+            )
+                .into_response();
+        }
+    };
+
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     tokio::spawn(async move {
+        let _permit = permit;
         diag::run_diagnostics(engine, pipeline_id, probe_protocol, tx).await;
     });
 
