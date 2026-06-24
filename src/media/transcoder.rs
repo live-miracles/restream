@@ -417,6 +417,202 @@ pub async fn start_transcoder(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use crate::media::engine::{AudioMeta, VideoMeta};
+    use crate::media::mpegts::{TsDemuxer, TsMuxer};
+    use crate::media::ring_buffer::PayloadFormat;
+    use crate::media::transcoder::run_ffmpeg_transcode_with_scale;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    // --- parse_audio_routing tests ---
+
+    #[test]
+    fn routing_passthrough_for_plain_video_preset() {
+        assert!(matches!(
+            parse_audio_routing("720p"),
+            AudioRouting::Passthrough
+        ));
+        assert!(matches!(
+            parse_audio_routing("source"),
+            AudioRouting::Passthrough
+        ));
+        assert!(matches!(
+            parse_audio_routing("1080p"),
+            AudioRouting::Passthrough
+        ));
+    }
+
+    #[test]
+    fn routing_select_tracks_single() {
+        let routing = parse_audio_routing("720p+atrack:0");
+        assert!(matches!(routing, AudioRouting::SelectTracks(ref t) if t == &[0]));
+    }
+
+    #[test]
+    fn routing_select_tracks_multiple() {
+        let routing = parse_audio_routing("source+atrack:0,2,5");
+        assert!(matches!(routing, AudioRouting::SelectTracks(ref t) if t == &[0, 2, 5]));
+    }
+
+    #[test]
+    fn routing_select_tracks_invalid_falls_back_to_passthrough() {
+        // Non-numeric track index
+        assert!(matches!(
+            parse_audio_routing("720p+atrack:abc"),
+            AudioRouting::Passthrough
+        ));
+        // Empty track list after colon
+        assert!(matches!(
+            parse_audio_routing("720p+atrack:"),
+            AudioRouting::Passthrough
+        ));
+    }
+
+    #[test]
+    fn routing_remap_two_channel() {
+        let routing = parse_audio_routing("720p+remap:0:1");
+        assert!(matches!(
+            routing,
+            AudioRouting::Remap {
+                left: 0,
+                right: 1,
+                track: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn routing_remap_with_track_index() {
+        let routing = parse_audio_routing("source+remap:0:1:3");
+        assert!(matches!(
+            routing,
+            AudioRouting::Remap {
+                left: 0,
+                right: 1,
+                track: 3
+            }
+        ));
+    }
+
+    #[test]
+    fn routing_remap_default_fallback() {
+        // Single part (no right channel) returns Passthrough since parse requires
+        // at least 2 parts to produce Remap
+        let routing = parse_audio_routing("720p+remap:0");
+        assert!(matches!(routing, AudioRouting::Passthrough));
+    }
+
+    #[test]
+    fn routing_downmix_single_track() {
+        let routing = parse_audio_routing("source+downmix:0");
+        assert!(matches!(routing, AudioRouting::Downmix(0)));
+        let routing = parse_audio_routing("720p+downmix:3");
+        assert!(matches!(routing, AudioRouting::Downmix(3)));
+    }
+
+    #[test]
+    fn routing_downmix_invalid_falls_back_to_passthrough() {
+        assert!(matches!(
+            parse_audio_routing("720p+downmix:abc"),
+            AudioRouting::Passthrough
+        ));
+        assert!(matches!(
+            parse_audio_routing("720p+downmix:"),
+            AudioRouting::Passthrough
+        ));
+    }
+
+    #[test]
+    fn routing_atrack_standalone() {
+        // atrack: without a video preset prefix
+        let routing = parse_audio_routing("atrack:0,1");
+        assert!(matches!(routing, AudioRouting::SelectTracks(ref t) if t == &[0, 1]));
+    }
+
+    #[test]
+    fn routing_remap_standalone() {
+        let routing = parse_audio_routing("remap:0:1");
+        assert!(matches!(
+            routing,
+            AudioRouting::Remap {
+                left: 0,
+                right: 1,
+                track: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn routing_downmix_standalone() {
+        let routing = parse_audio_routing("downmix:0");
+        assert!(matches!(routing, AudioRouting::Downmix(0)));
+    }
+
+    // --- apply_audio_routing tests ---
+
+    #[test]
+    fn apply_routing_passthrough_preserves_all_tracks() {
+        let tracks = vec![
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 0,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 44100,
+                channels: 1,
+                channel_layout: None,
+                track_index: 1,
+                profile: None,
+            },
+        ];
+        let result = apply_audio_routing(&AudioRouting::Passthrough, &tracks);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].track_index, 0);
+        assert_eq!(result[1].track_index, 1);
+    }
+
+    #[test]
+    fn apply_routing_select_tracks_filters_and_reindexes() {
+        let tracks = vec![
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 0,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 44100,
+                channels: 1,
+                channel_layout: None,
+                track_index: 1,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 32000,
+                channels: 1,
+                channel_layout: None,
+                track_index: 2,
+                profile: None,
+            },
+        ];
+        // Select tracks 0 and 2
+        let routing = AudioRouting::SelectTracks(vec![0, 2]);
+        let result = apply_audio_routing(&routing, &tracks);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].track_index, 0); // re-indexed: track 0 → index 0
+        assert_eq!(result[1].track_index, 1); // re-indexed: track 2 → index 1
+        assert_eq!(result[0].sample_rate, 48000);
+        assert_eq!(result[1].sample_rate, 32000);
+    }
 
     #[test]
     fn parse_passthrough() {

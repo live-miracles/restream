@@ -897,4 +897,209 @@ mod tests {
             "sc scratch should not shrink"
         );
     }
+
+    // --- Edge-case tests ---
+
+    #[test]
+    fn parse_avcc_config_truncated_input() {
+        assert_eq!(parse_avcc_config(&[]), (4, Vec::new()));
+        assert_eq!(parse_avcc_config(&[1, 66, 0, 30]), (4, Vec::new()));
+        // nalu_len_size = 4, num_sps = 1, but no SPS length bytes
+        assert_eq!(
+            parse_avcc_config(&[1, 66, 0, 30, 0xFF, 0xE1]),
+            (4, Vec::new())
+        );
+    }
+
+    #[test]
+    fn parse_avcc_config_zero_sps_pps() {
+        let config = [1, 66, 0, 30, 0xFF, 0x00, 0x00];
+        let (nls, annexb) = parse_avcc_config(&config);
+        assert_eq!(nls, 4);
+        assert!(annexb.is_empty());
+    }
+
+    #[test]
+    fn build_adts_header_all_sample_rates() {
+        let rates = [
+            (96000, 0),
+            (88200, 1),
+            (64000, 2),
+            (48000, 3),
+            (44100, 4),
+            (32000, 5),
+            (24000, 6),
+            (22050, 7),
+            (16000, 8),
+            (12000, 9),
+            (11025, 10),
+            (8000, 11),
+        ];
+        for (rate, expected_freq_idx) in rates {
+            let hdr = build_adts_header(100, rate, 2);
+            let actual = (hdr[2] >> 2) & 0x0F;
+            assert_eq!(
+                actual, expected_freq_idx,
+                "ADTS freq index mismatch for {rate}Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn build_adts_header_unknown_rate_defaults_to_48k() {
+        let hdr = build_adts_header(100, 99999, 2);
+        assert_eq!((hdr[2] >> 2) & 0x0F, 3); // defaults to 48000
+    }
+
+    #[test]
+    fn build_adts_header_channels_clamped_to_7() {
+        let hdr = build_adts_header(100, 48000, 8);
+        assert_eq!((hdr[2] & 0x01) << 2 | (hdr[3] >> 6), 7);
+    }
+
+    #[test]
+    fn strip_adts_crc_variant() {
+        let raw = [0xDE, 0xAD, 0xBE];
+        // ADTS with CRC: bit 0 of byte 1 = 0 → 9-byte header
+        let mut adts = vec![0xFF, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        adts.extend_from_slice(&raw);
+        let stripped = strip_adts(&adts);
+        assert_eq!(stripped, &raw[..]);
+    }
+
+    #[test]
+    fn video_for_ts_flv_too_short_payload() {
+        let mut nls = 4;
+        let mut cache = Vec::new();
+        assert!(video_for_ts(&[0x17, 1, 0, 0], PayloadFormat::Flv, &mut nls, &mut cache).is_none());
+    }
+
+    #[test]
+    fn video_for_ts_flv_sequence_header_returns_none() {
+        let mut nls = 4;
+        let mut cache = Vec::new();
+        // FLV video tag: frame_type=1(keyframe), codec=7(AVC), packet_type=0(seq hdr)
+        // AVCC config: version=1, profile=66, compat=0, level=30, nalu_len=4, num_sps=0
+        let flv_seq = [
+            0x17, 0x00, 0x00, 0x00, 0x00, // FLV header
+            0x01, 0x42, 0x00, 0x1E, 0xFF, 0x00, // AVCC config (8+ bytes)
+            0x00, // num_pps=0
+        ];
+        assert!(video_for_ts(&flv_seq, PayloadFormat::Flv, &mut nls, &mut cache).is_none());
+        // nal_size may be updated
+        assert_eq!(nls, 4);
+    }
+
+    #[test]
+    fn video_for_ts_raw_empty_returns_none() {
+        let mut nls = 4;
+        let mut cache = Vec::new();
+        assert!(video_for_ts(&[], PayloadFormat::Raw, &mut nls, &mut cache).is_none());
+    }
+
+    #[test]
+    fn audio_for_ts_flv_config_packet_returns_none() {
+        // packet_type 0 (AAC sequence header) — should be dropped
+        assert!(audio_for_ts(&[0xAF, 0x00, 0x12, 0x10], PayloadFormat::Flv, 48000, 2).is_none());
+    }
+
+    #[test]
+    fn audio_for_ts_flv_too_short_returns_none() {
+        assert!(audio_for_ts(&[0xAF], PayloadFormat::Flv, 48000, 2).is_none());
+        assert!(audio_for_ts(&[0xAF, 0x01], PayloadFormat::Flv, 48000, 2).is_none());
+    }
+
+    #[test]
+    fn video_for_ts_into_reuses_buffer() {
+        let mut nls = 4;
+        let mut sps_pps = Vec::new();
+        let mut buf = vec![0xDE, 0xAD]; // pre-existing content
+        // Raw passthrough — should not touch buf
+        let result = video_for_ts_into(
+            &[0, 0, 0, 1, 0x41, 0xBB],
+            PayloadFormat::Raw,
+            &mut nls,
+            &mut sps_pps,
+            &mut buf,
+        );
+        assert!(result.is_some());
+        // buf is not cleared for Raw
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn audio_for_ts_into_reuses_buffer() {
+        let mut buf = vec![0xDE];
+        let result = audio_for_ts_into(
+            &[0xAF, 0x01, 0xDE, 0xAD],
+            PayloadFormat::Flv,
+            48000,
+            2,
+            &mut buf,
+        );
+        assert!(result.is_some());
+        // buf was cleared and repopulated with ADTS + raw AAC
+        assert!(has_adts_sync(&buf));
+    }
+
+    #[test]
+    fn find_annexb_start_codes_no_match_returns_empty() {
+        // No 00 00 01 pattern
+        let data = [0x41, 0x42, 0x43, 0x44, 0x45];
+        assert!(find_annexb_start_codes(&data).is_empty());
+    }
+
+    #[test]
+    fn split_annexb_nalus_empty_input() {
+        assert!(split_annexb_nalus(&[]).is_empty());
+    }
+
+    #[test]
+    fn split_annexb_nalus_no_start_code_returns_empty() {
+        assert!(split_annexb_nalus(&[0x41, 0x42, 0x43]).is_empty());
+    }
+
+    #[test]
+    fn build_avcc_sequence_header_insufficient_sps() {
+        let annexb = [0, 0, 0, 1, 0x67, 0x42]; // SPS with only 2 bytes (need 4+)
+        assert!(build_avcc_sequence_header(&annexb).is_none());
+    }
+
+    #[test]
+    fn build_avcc_sequence_header_no_pps_still_works() {
+        // Only SPS, no PPS — should still produce output
+        let annexb = [0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E, 0xAB];
+        let hdr = build_avcc_sequence_header(&annexb);
+        assert!(hdr.is_some());
+    }
+
+    #[test]
+    fn video_for_rtmp_into_reuses_buffer() {
+        let annexb = [0, 0, 0, 1, 0x65, 0x88, 0x80, 0x40];
+        let mut buf = vec![0xDE, 0xAD]; // pre-existing
+        assert!(video_for_rtmp_into(&annexb, true, &mut buf));
+        // buf was cleared, FLV header + AVCC written
+        assert_eq!(buf[0], 0x17);
+        assert_eq!(buf[1], 1);
+    }
+
+    #[test]
+    fn audio_for_rtmp_into_reuses_buffer() {
+        let raw = [0xDE, 0xAD, 0xBE, 0xEF];
+        let mut buf = vec![0x01, 0x02]; // pre-existing
+        audio_for_rtmp_into(&raw, &mut buf);
+        // buf was cleared, FLV header + raw AAC written
+        assert_eq!(buf[0], 0xAF);
+        assert_eq!(buf[1], 0x01);
+        assert_eq!(&buf[2..], &raw);
+    }
+
+    #[test]
+    fn audio_for_rtmp_no_adts_passthrough() {
+        let raw = [0xDE, 0xAD, 0xBE, 0xEF];
+        let result = audio_for_rtmp(&raw);
+        assert_eq!(result[0], 0xAF);
+        assert_eq!(result[1], 0x01);
+        assert_eq!(&result[2..], &raw);
+    }
 }

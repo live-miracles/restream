@@ -418,4 +418,55 @@ mod tests {
         assert!(store.get_segment(1).is_some());
         assert!(store.get_segment(2).is_some());
     }
+
+    #[test]
+    fn playlist_exact_extinf_format() {
+        let store = HlsStore::new();
+        store.push_segment(2.25, Bytes::new());
+        let playlist = store.get_playlist().unwrap();
+        assert!(playlist.contains("#EXTINF:2.250,"));
+        assert!(playlist.contains("seg0.ts"));
+    }
+
+    #[test]
+    fn get_segment_returns_none_before_first_index() {
+        let store = HlsStore::new();
+        // Start at index 5
+        for _ in 0..5 {
+            store.push_segment(2.0, Bytes::new());
+        }
+        // Clear sets next_index=0, so push 2 more starting at index 0
+        store.clear();
+        store.push_segment(1.0, Bytes::from_static(b"a"));
+        store.push_segment(1.0, Bytes::from_static(b"b"));
+        // Now get_segment(5) should be None since it was cleared
+        assert!(store.get_segment(5).is_none());
+        // And get_segment(0) should exist
+        assert!(store.get_segment(0).is_some());
+    }
+
+    #[test]
+    fn media_sequence_advances_after_eviction() {
+        let store = HlsStore::new();
+        // Fill beyond MAX_SEGMENTS to trigger eviction
+        for _ in 0..(MAX_SEGMENTS as u64 + 5) {
+            store.push_segment(2.0, Bytes::new());
+        }
+        let playlist = store.get_playlist().unwrap();
+        assert!(playlist.contains("#EXT-X-MEDIA-SEQUENCE:5"));
+        // Oldest segment should be gone
+        assert!(store.get_segment(0).is_none());
+    }
+
+    #[test]
+    fn playlist_range_covers_entire_window() {
+        let store = HlsStore::new();
+        let n = MAX_SEGMENTS as u64;
+        for _ in 0..n {
+            store.push_segment(2.0, Bytes::new());
+        }
+        let playlist = store.get_playlist().unwrap();
+        assert!(playlist.contains("seg0.ts"));
+        assert!(playlist.contains(&format!("seg{}.ts", n - 1)));
+    }
 }

@@ -2473,4 +2473,35 @@ mod tests {
             "in-flight PES buffer must be preserved after PMT version change for same PID"
         );
     }
+
+    #[test]
+    fn crc32_empty_data() {
+        assert_eq!(crc32_mpeg2(&[]), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn crc32_known_vector() {
+        // CRC-32/MPEG-2 of "123456789" (classic check value)
+        let data = b"123456789";
+        assert_eq!(crc32_mpeg2(data), 0x0376_E6E7);
+    }
+
+    #[test]
+    fn crc32_idempotent_across_calls() {
+        let data = b"hello world";
+        let a = crc32_mpeg2(data);
+        let b = crc32_mpeg2(data);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn write_pcr_zero_ts() {
+        let mut buf = [0xFFu8; 6];
+        write_pcr(&mut buf, 0);
+        // PCR at zero: base=0, extension=0, with the PCR marker bits set
+        assert_eq!(buf[0], 0x00);
+        assert_eq!(buf[1], 0x00);
+        assert_eq!(buf[2], 0x00);
+        assert_eq!(buf[3], 0x00);
+    }
 }

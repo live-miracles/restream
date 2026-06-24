@@ -2212,4 +2212,68 @@ mod tests {
             MAX_NAME_LEN
         );
     }
+
+    #[test]
+    fn to_hex_output() {
+        assert_eq!(to_hex(&[]), "");
+        assert_eq!(to_hex(&[0x00]), "00");
+        assert_eq!(to_hex(&[0xFF]), "ff");
+        assert_eq!(to_hex(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
+    }
+
+    #[test]
+    fn get_session_token_finds_cookie() {
+        use axum::http::header;
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, "session=abc123token".parse().unwrap());
+        assert_eq!(
+            get_session_token_from_headers(&headers).as_deref(),
+            Some("abc123token")
+        );
+    }
+
+    #[test]
+    fn get_session_token_skips_other_cookies() {
+        use axum::http::header;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            "other=value; session=mytoken; foo=bar".parse().unwrap(),
+        );
+        assert_eq!(
+            get_session_token_from_headers(&headers).as_deref(),
+            Some("mytoken")
+        );
+    }
+
+    #[test]
+    fn get_session_token_no_cookie_header() {
+        let headers = HeaderMap::new();
+        assert!(get_session_token_from_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn get_session_token_wrong_cookie_name() {
+        use axum::http::header;
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, "wrong=somevalue".parse().unwrap());
+        assert!(get_session_token_from_headers(&headers).is_none());
+    }
+
+    #[test]
+    fn make_session_cookie_format() {
+        let cookie = make_session_cookie("token123", 3600);
+        assert!(cookie.contains("session=token123"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("Max-Age=3600"));
+        assert!(cookie.contains("SameSite=Strict"));
+    }
+
+    #[test]
+    fn clear_session_cookie_expires_immediately() {
+        let cookie = clear_session_cookie();
+        assert!(cookie.contains("session="));
+        assert!(cookie.contains("Max-Age=0"));
+        assert!(cookie.contains("HttpOnly"));
+    }
 }
