@@ -11,6 +11,21 @@ use crate::media::engine::AudioMeta;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// Zero-copy wrapper: holds an `ffmpeg_next::Packet` so `bytes::Bytes::from_owner`
+/// can serve the encoded/demuxed buffer to ring-buffer readers without a `memcpy`.
+///
+/// Drop calls `av_packet_unref`, decrementing the AVBufferRef refcount. The data
+/// remains valid until every downstream `Bytes` clone is released.
+///
+/// `ffmpeg_next::Packet` is `unsafe impl Send + Sync`, satisfying `from_owner`'s bounds.
+struct OwnedFfmpegPacket(ffmpeg_next::Packet);
+impl AsRef<[u8]> for OwnedFfmpegPacket {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.data().unwrap_or(&[])
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AudioRouting {
     /// Pass all audio streams through unchanged
@@ -676,16 +691,16 @@ pub fn run_ffmpeg_transcoder_stage(
         } else {
             dts
         };
-        let data = packet.data().unwrap_or(&[]);
+        let is_keyframe = packet.is_key();
 
         batch.push(MediaPacket {
             media_type,
             track_index,
             pts: pts_ms,
             dts: dts_ms,
-            is_keyframe: packet.is_key(),
+            is_keyframe,
             format: PayloadFormat::Raw,
-            payload: bytes::Bytes::copy_from_slice(data),
+            payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(packet)),
         });
         if batch.len() >= 32 {
             out_ring.push_batch(batch.drain(..));
@@ -801,15 +816,15 @@ pub fn run_ffmpeg_transcode_with_scale(
             } else {
                 dts_val
             };
-            let data = pkt.data().unwrap_or(&[]);
+            let is_keyframe = pkt.is_key();
             out_ring.push(MediaPacket {
                 media_type,
                 track_index,
                 pts: pts_ms,
                 dts: dts_ms,
-                is_keyframe: pkt.is_key(),
+                is_keyframe,
                 format: PayloadFormat::Raw,
-                payload: bytes::Bytes::copy_from_slice(data),
+                payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(pkt)),
             });
             continue;
         }
@@ -920,6 +935,8 @@ pub fn run_ffmpeg_transcode_with_scale(
                 let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
                 let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
                 let dts_ms = dts_raw * fps_den * 1000 / fps_num;
+                // enc_pkt is reused across iterations; clone() calls av_packet_ref (refcount
+                // bump only, no data copy) so the ring buffer holds the AVBufferRef alive.
                 out_ring.push(MediaPacket {
                     media_type: MediaType::Video,
                     track_index: 0,
@@ -927,7 +944,7 @@ pub fn run_ffmpeg_transcode_with_scale(
                     dts: dts_ms,
                     is_keyframe: enc_pkt.is_key(),
                     format: PayloadFormat::Raw,
-                    payload: bytes::Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+                    payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
                 });
             }
         }
@@ -946,7 +963,7 @@ pub fn run_ffmpeg_transcode_with_scale(
                 dts: dts_ms,
                 is_keyframe: enc_pkt.is_key(),
                 format: PayloadFormat::Raw,
-                payload: bytes::Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+                payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
             });
         }
     }

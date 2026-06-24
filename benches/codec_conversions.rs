@@ -7,12 +7,14 @@
 //!   video_for_rtmp  — Ring buffer → RTMP egress (alloc + AVCC wrap)
 //!   audio_for_ts    — Raw AAC: ADTS passthrough + ADTS synthesis
 //!   audio_for_rtmp  — ADTS strip + FLV 2-byte header
+//!   packet_to_bytes — copy_from_slice vs Bytes::from_owner for encoded output packets
 //!
 //! Sizes are chosen to match real-world 1080p H.264 streams:
 //!   IDR frame  ≈ 80–200 KiB (single NALU after split_annexb)
 //!   P-frame    ≈ 8–30 KiB   (1–4 NALUs)
 //!   Audio AAC  ≈ 200–400 B  (one frame)
 
+use bytes::Bytes;
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
@@ -21,6 +23,18 @@ use restream::media::codec::{
     video_for_rtmp, video_for_ts,
 };
 use restream::media::ring_buffer::PayloadFormat;
+
+// ---------------------------------------------------------------------------
+// OwnedVec: local stand-in for OwnedFfmpegPacket in codec/packet_to_bytes bench.
+// The real implementation wraps `ffmpeg_next::Packet`; the overhead pattern is
+// identical — one Box<dyn> allocation replacing one alloc + memcpy.
+// ---------------------------------------------------------------------------
+struct OwnedVec(Vec<u8>);
+impl AsRef<[u8]> for OwnedVec {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Test data helpers
@@ -284,6 +298,63 @@ fn bench_audio_for_rtmp(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// packet_to_bytes  (transcoder output: copy_from_slice vs Bytes::from_owner)
+// ---------------------------------------------------------------------------
+
+/// Benchmark `Bytes::copy_from_slice` (current) vs `Bytes::from_owner` (proposed)
+/// for wrapping FFmpeg encoded output packets into ring-buffer payloads.
+///
+/// `OwnedVec` stands in for `OwnedFfmpegPacket(ffmpeg_next::Packet)`. The
+/// allocation pattern is identical: one `Box<dyn>` in `from_owner` replaces
+/// one `alloc + memcpy` in `copy_from_slice`. For video I-frames (80–200 KB)
+/// the saving is substantial; for audio (~200 B) it is negligible.
+fn bench_packet_to_bytes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("codec/packet_to_bytes");
+
+    // Real encoded frame sizes at 1080p30 H.264 ~3 Mbps:
+    //   audio AAC   ≈ 200 B  (1 frame / 23 ms)
+    //   P-frame     ≈ 8 KB   (inter, no keyframe)
+    //   I-frame     ≈ 80 KB  (IDR, ~3× per second)
+    //   large IDR   ≈ 200 KB (scene change / initial)
+    let sizes: &[(usize, &str)] = &[
+        (200, "200B_audio"),
+        (8 * 1024, "8KB_pframe"),
+        (80 * 1024, "80KB_iframe"),
+        (200 * 1024, "200KB_iframe"),
+    ];
+
+    for &(size, label) in sizes {
+        let data = vec![0xBBu8; size];
+        group.throughput(Throughput::Bytes(size as u64));
+
+        // Baseline: alloc a new buffer + memcpy (current approach in all 7 sites)
+        group.bench_with_input(
+            BenchmarkId::new("copy_from_slice", label),
+            &data,
+            |b, data| b.iter(|| black_box(Bytes::copy_from_slice(data))),
+        );
+
+        // Proposed: move ownership into a Box<dyn>, zero memcpy.
+        // In production, `OwnedVec` is replaced by `OwnedFfmpegPacket(packet)` where
+        // `packet` is already owned (demux loop) or by `OwnedFfmpegPacket(enc_pkt.clone())`
+        // where `.clone()` calls `av_packet_ref()` — a refcount bump, not a data copy.
+        group.bench_with_input(
+            BenchmarkId::new("from_owner", label),
+            &size,
+            |b, &size| {
+                b.iter_batched(
+                    || vec![0xBBu8; size],
+                    |v| black_box(Bytes::from_owner(OwnedVec(v))),
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_avcc_to_annexb,
@@ -292,5 +363,6 @@ criterion_group!(
     bench_video_for_rtmp,
     bench_audio_for_ts,
     bench_audio_for_rtmp,
+    bench_packet_to_bytes,
 );
 criterion_main!(benches);

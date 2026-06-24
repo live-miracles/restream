@@ -19,6 +19,21 @@ use tokio_util::sync::CancellationToken;
 use crate::media::avio::MemoryQueue;
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 
+/// Zero-copy wrapper: holds an `ffmpeg_next::Packet` so `Bytes::from_owner`
+/// can serve the encoded/demuxed buffer to ring-buffer readers without a `memcpy`.
+///
+/// Drop calls `av_packet_unref`, decrementing the AVBufferRef refcount. The data
+/// remains valid until every downstream `Bytes` clone is released.
+///
+/// `ffmpeg_next::Packet` is `unsafe impl Send + Sync`, satisfying `from_owner`'s bounds.
+struct OwnedFfmpegPacket(ffmpeg_next::Packet);
+impl AsRef<[u8]> for OwnedFfmpegPacket {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.data().unwrap_or(&[])
+    }
+}
+
 /// Tokio task entry point for the shared H.265→H.264 transcoder.
 ///
 /// 1. Waits for ingest metadata (video + audio tracks).
@@ -282,15 +297,15 @@ fn run_ffmpeg_h264_stage(
             } else {
                 dts_val
             };
-            let data = pkt.data().unwrap_or(&[]);
+            let is_keyframe = pkt.is_key();
             out_ring.push(MediaPacket {
                 media_type,
                 track_index,
                 pts: pts_ms,
                 dts: dts_ms,
-                is_keyframe: pkt.is_key(),
+                is_keyframe,
                 format: PayloadFormat::Raw,
-                payload: Bytes::copy_from_slice(data),
+                payload: Bytes::from_owner(OwnedFfmpegPacket(pkt)),
             });
             continue;
         }
@@ -434,6 +449,8 @@ fn run_ffmpeg_h264_stage(
                 // break B-frame reordering in downstream muxers (TS, MP4).
                 let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
                 let dts_ms = dts_raw * fps_den * 1000 / fps_num;
+                // enc_pkt is reused across iterations; clone() calls av_packet_ref (refcount
+                // bump only, no data copy) so the ring buffer holds the AVBufferRef alive.
                 out_ring.push(MediaPacket {
                     media_type: MediaType::Video,
                     track_index: 0,
@@ -441,7 +458,7 @@ fn run_ffmpeg_h264_stage(
                     dts: dts_ms,
                     is_keyframe: enc_pkt.is_key(),
                     format: PayloadFormat::Raw,
-                    payload: Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+                    payload: Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
                 });
             }
         }
@@ -461,7 +478,7 @@ fn run_ffmpeg_h264_stage(
                 dts: dts_ms,
                 is_keyframe: enc_pkt.is_key(),
                 format: PayloadFormat::Raw,
-                payload: Bytes::copy_from_slice(enc_pkt.data().unwrap_or(&[])),
+                payload: Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
             });
         }
     }
