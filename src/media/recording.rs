@@ -184,7 +184,7 @@ pub async fn start_recording(
                     }
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {
-                        queue.write(&ts_batch);
+                        queue.write(&ts_batch).await;
                         ts_batch.clear();
                     }
                 }

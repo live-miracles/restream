@@ -15,14 +15,15 @@ fn bench_avio_throughput(c: &mut Criterion) {
 
     // Benchmark Custom MemoryQueue
     group.bench_function("memory_queue_throughput", |b| {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         b.iter(|| {
             let queue = Arc::new(MemoryQueue::new());
             let q_clone = queue.clone();
             let p_clone = payload.clone();
 
-            let writer = thread::spawn(move || {
+            let writer = runtime.spawn(async move {
                 for _ in 0..iterations {
-                    q_clone.write(&p_clone);
+                    q_clone.write(&p_clone).await;
                 }
                 q_clone.close();
             });
@@ -37,7 +38,9 @@ fn bench_avio_throughput(c: &mut Criterion) {
                 bytes_read += n;
             }
 
-            let _ = writer.join();
+            runtime.block_on(async {
+                let _ = writer.await;
+            });
         })
     });
 
@@ -79,6 +82,7 @@ fn bench_avio_throughput(c: &mut Criterion) {
 /// confirms the call adds negligible overhead to any monitoring loop.
 fn bench_memory_queue_len(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_queue/len");
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
 
     group.bench_function("empty", |b| {
         let q = MemoryQueue::new();
@@ -87,7 +91,7 @@ fn bench_memory_queue_len(c: &mut Criterion) {
 
     group.bench_function("loaded_64k", |b| {
         let q = MemoryQueue::new();
-        q.write(&vec![0u8; 65_536]);
+        runtime.block_on(q.write(&vec![0u8; 65_536]));
         b.iter(|| black_box(q.len()))
     });
 
@@ -102,12 +106,15 @@ fn bench_write_batch_overhead(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(1316));
 
     let chunk = vec![0u8; 1316];
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
 
     group.bench_function("without_len", |b| {
         let c = chunk.clone();
         b.iter_batched(
             MemoryQueue::new,
-            |q| black_box(q.write_batch([c.as_slice()])),
+            |q| {
+                let _ = runtime.block_on(q.write_batch([c.as_slice()]));
+            },
             BatchSize::SmallInput,
         )
     });
@@ -117,7 +124,7 @@ fn bench_write_batch_overhead(c: &mut Criterion) {
         b.iter_batched(
             MemoryQueue::new,
             |q| {
-                black_box(q.write_batch([c.as_slice()]));
+                let _ = runtime.block_on(q.write_batch([c.as_slice()]));
                 black_box(q.len())
             },
             BatchSize::SmallInput,

@@ -92,7 +92,7 @@ by reusing a caller-provided `Vec<(usize,usize)>`. Benchmarked 2026-06-23:
 
 | Structure | Bound | Location |
 |---|---|---|
-| `MemoryQueue::VecDeque<u8>` | `bitrate × latency` ≈ 1.5 MB at 50 Mbps/250 ms | `src/media/avio.rs`; 2 per transcoder |
+| `MemoryQueue::VecDeque<u8>` | Bounded to 2 MB (steady-state ≈ 1.5 MB at 50 Mbps/250 ms) | `src/media/avio.rs`; 2 per transcoder |
 | `TsMuxer::output: Vec<u8>` | largest TS burst per frame ≈ `frame_size / 1316 × 188` bytes | per consumer; stabilises at IDR size |
 | `PesAccumulator::buf` | `MAX_PES_BUFFER` constant in `mpegts.rs` | per stream per demuxer |
 | `TsDemuxer::remainder` | `TS_PACKET_SIZE` = 188 bytes | per demuxer |

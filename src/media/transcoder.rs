@@ -400,7 +400,7 @@ pub async fn start_transcoder(
                     }
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {
-                        input_queue.write(&ts_batch);
+                        input_queue.write(&ts_batch).await;
                         ts_batch.clear();
                     }
                 }

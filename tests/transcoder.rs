@@ -23,7 +23,10 @@ fn run_stage(
 ) {
     let input = Arc::new(MemoryQueue::new());
     let output = Arc::new(RingBuffer::new(4096));
-    input.write(fixture);
+    {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(input.write(fixture));
+    }
     input.close();
 
     let result =
@@ -109,7 +112,10 @@ fn cancelled_token_stops_early() {
     let fixture = load_fixture();
     let input = Arc::new(MemoryQueue::new());
     let output = Arc::new(RingBuffer::new(4096));
-    input.write(&fixture);
+    {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(input.write(&fixture));
+    }
     input.close();
 
     let token = CancellationToken::new();
@@ -172,7 +178,10 @@ fn transcode_with_scale_synthetic_video_only() {
     // 3. Write synthetic stream to MemoryQueue
     let input = Arc::new(MemoryQueue::new());
     let output = Arc::new(RingBuffer::new(4096));
-    input.write(&synthetic_ts);
+    {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(input.write(&synthetic_ts));
+    }
     input.close();
 
     // 4. Run the decode -> scale -> encode loop with "720p" preset

@@ -1458,7 +1458,7 @@ impl SrtServer {
                 }
                 // One lock acquisition for the whole burst.
                 if !ts_batch.is_empty() {
-                    out_queue.write(&ts_batch);
+                    out_queue.write(&ts_batch).await;
                     ts_batch.clear();
                 }
             }
@@ -2673,7 +2673,7 @@ pub async fn start_srt_egress(
                     }
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {
-                        out_queue.write(&ts_batch);
+                        out_queue.write(&ts_batch).await;
                         ts_batch.clear();
                     }
                 }

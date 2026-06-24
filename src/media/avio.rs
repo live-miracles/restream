@@ -15,12 +15,15 @@ use std::collections::VecDeque;
 use std::os::raw::{c_int, c_void};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
 
 pub struct MemoryQueue {
     inner: Mutex<MemoryQueueInner>,
     cvar: Condvar,
+    space_available: Notify,
+    capacity: usize,
 }
 
 struct MemoryQueueInner {
@@ -36,29 +39,67 @@ impl Default for MemoryQueue {
 
 impl MemoryQueue {
     pub fn new() -> Self {
+        Self::new_with_capacity(2 * 1024 * 1024)
+    }
+
+    pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             inner: Mutex::new(MemoryQueueInner {
                 buf: VecDeque::new(),
                 closed: false,
             }),
             cvar: Condvar::new(),
+            space_available: Notify::new(),
+            capacity,
         }
     }
 
-    pub fn write(&self, data: &[u8]) {
+    pub async fn write(&self, data: &[u8]) {
+        loop {
+            {
+                let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.closed || inner.buf.len() < self.capacity {
+                    break;
+                }
+            }
+            self.space_available.notified().await;
+        }
+
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed {
+            return;
+        }
         inner.buf.extend(data.iter().copied());
         self.cvar.notify_all();
     }
 
     /// Append multiple chunks while taking the queue lock and notifying once.
-    pub fn write_batch<'a, I>(&self, chunks: I) -> usize
+    pub async fn write_batch<'a, I>(&self, chunks: I) -> usize
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
+        let chunks_vec: Vec<&[u8]> = chunks.into_iter().collect();
+        let total_bytes: usize = chunks_vec.iter().map(|c| c.len()).sum();
+        if total_bytes == 0 {
+            return 0;
+        }
+
+        loop {
+            {
+                let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.closed || inner.buf.len() < self.capacity {
+                    break;
+                }
+            }
+            self.space_available.notified().await;
+        }
+
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed {
+            return 0;
+        }
         let mut bytes = 0usize;
-        for chunk in chunks {
+        for chunk in chunks_vec {
             bytes += chunk.len();
             inner.buf.extend(chunk.iter().copied());
         }
@@ -68,10 +109,20 @@ impl MemoryQueue {
         bytes
     }
 
+    pub fn write_sync(&self, data: &[u8]) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed {
+            return;
+        }
+        inner.buf.extend(data.iter().copied());
+        self.cvar.notify_all();
+    }
+
     pub fn close(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.closed = true;
         self.cvar.notify_all();
+        self.space_available.notify_waiters();
     }
 
     pub fn is_closed(&self) -> bool {
@@ -115,6 +166,11 @@ impl MemoryQueue {
             target[front.len()..to_read].copy_from_slice(&back[..to_read - front.len()]);
         }
         inner.buf.drain(..to_read);
+
+        if inner.buf.len() < self.capacity {
+            self.space_available.notify_waiters();
+        }
+
         to_read
     }
 
@@ -132,6 +188,11 @@ impl MemoryQueue {
             target[front.len()..to_read].copy_from_slice(&back[..to_read - front.len()]);
         }
         inner.buf.drain(..to_read);
+
+        if inner.buf.len() < self.capacity {
+            self.space_available.notify_waiters();
+        }
+
         to_read
     }
 }
@@ -325,7 +386,7 @@ unsafe extern "C" fn read_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size:
 unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let queue = unsafe { &*(opaque as *const MemoryQueue) };
     let slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
-    queue.write(slice);
+    queue.write_sync(slice);
     buf_size
 }
 
@@ -334,20 +395,20 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    #[test]
-    fn write_batch_preserves_chunk_order() {
+    #[tokio::test]
+    async fn write_batch_preserves_chunk_order() {
         let queue = MemoryQueue::new();
-        assert_eq!(queue.write_batch([b"abc".as_slice(), b"def".as_slice()]), 6);
+        assert_eq!(queue.write_batch([b"abc".as_slice(), b"def".as_slice()]).await, 6);
 
         let mut output = [0u8; 6];
         assert_eq!(queue.read(&mut output), output.len());
         assert_eq!(&output, b"abcdef");
     }
 
-    #[test]
-    fn empty_write_batch_does_not_add_data() {
+    #[tokio::test]
+    async fn empty_write_batch_does_not_add_data() {
         let queue = MemoryQueue::new();
-        assert_eq!(queue.write_batch(std::iter::empty()), 0);
+        assert_eq!(queue.write_batch(std::iter::empty()).await, 0);
         let mut output = [0u8; 1];
         assert_eq!(queue.read_nonblocking(&mut output), 0);
     }
@@ -365,8 +426,8 @@ mod tests {
     // Before the fix, `cvar.wait(inner).unwrap()` would propagate the poison
     // and panic in the AVIO read callback, corrupting the FFmpeg output.
     // After the fix the lock is recovered and reading resumes normally.
-    #[test]
-    fn read_recovers_from_poisoned_mutex() {
+    #[tokio::test]
+    async fn read_recovers_from_poisoned_mutex() {
         // Poison the MemoryQueue's internal mutex from a separate thread,
         // then verify that write() and read_nonblocking() do not panic.
         // We use Arc<MemoryQueue> so the poisoning thread can share the object.
@@ -382,7 +443,7 @@ mod tests {
         }
         // The mutex is now poisoned. write() and read_nonblocking() must
         // recover via `unwrap_or_else(|e| e.into_inner())` and not panic.
-        queue.write(b"hello");
+        queue.write(b"hello").await;
         let mut buf = [0u8; 5];
         let n = queue.read_nonblocking(&mut buf);
         assert_eq!(n, 5);

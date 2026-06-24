@@ -468,7 +468,7 @@ using different presets from cross-contaminating.
 |---|---|---|---|
 | RingBuffer capacity | 4096 slots | ~24s at 170 pkt/s (4K60). Overflow fast-forwards to most recent keyframe | `engine.rs` |
 | AVIO buffer | 32 KB | FFmpeg internal read/write chunk | `avio.rs` |
-| MemoryQueue | Unbounded `VecDeque<u8>` | Backpressure is structural: consumer blocks on `read()` | `avio.rs` |
+| MemoryQueue | Bounded `VecDeque<u8>` (2 MB) | Backpressure is structural: writer yields on full, consumer blocks on empty `read()` | `avio.rs` |
 | HLS segment accumulator | 8 MB initial | 4K60 H.264 segment at 6s can reach 12 MB; grows if needed | `hls.rs` |
 | HLS MAX_SEGMENTS | 10 | ~60s sliding window. 10 × 8 MB = 80 MB worst case per pipeline at 4K | `hls.rs` |
 | HLS TARGET_DURATION | 6s | MIN_SEGMENT (1s) prevents micro-segments from keyframe bursts | `hls.rs` |
