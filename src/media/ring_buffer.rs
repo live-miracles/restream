@@ -222,11 +222,7 @@ impl RingBuffer {
                     has_readers = true;
                 }
             }
-            if has_readers {
-                min_idx
-            } else {
-                write_idx
-            }
+            if has_readers { min_idx } else { write_idx }
         } else {
             write_idx
         }
@@ -351,7 +347,8 @@ impl Reader {
 
         let packet = self.buffer.read_at(self.read_idx);
         let post_write_idx = self.buffer.get_write_idx();
-        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity {
+        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity
+        {
             let new_idx = self.buffer.fast_forward(post_write_idx);
             self.read_idx = new_idx;
             self.info.read_idx.store(new_idx, Ordering::Relaxed);
@@ -399,7 +396,8 @@ impl Reader {
         }
 
         let post_write_idx = self.buffer.get_write_idx();
-        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity {
+        if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity
+        {
             output.truncate(start_len);
             self.read_idx = self.buffer.fast_forward(post_write_idx);
             self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
@@ -739,18 +737,30 @@ mod tests {
     fn reader_drop_removes_entry_from_readers_list() {
         let rb = Arc::new(RingBuffer::new(16));
 
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            0
+        );
 
         let r1 = Reader::new("r1".into(), rb.clone());
         let r2 = Reader::new("r2".into(), rb.clone());
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            2
+        );
 
         drop(r1);
         // After drop, our entry is removed and no stale Weak remains.
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1
+        );
 
         drop(r2);
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            0
+        );
     }
 
     #[test]
@@ -765,17 +775,29 @@ mod tests {
                 read_idx: AtomicUsize::new(0),
                 overflow_count: AtomicUsize::new(0),
             });
-            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::downgrade(&ephemeral));
+            rb.readers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(Arc::downgrade(&ephemeral));
             // ephemeral drops here → Weak becomes stale
         }
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 1); // stale entry present
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1
+        ); // stale entry present
 
         let r = Reader::new("live".into(), rb.clone());
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 2); // stale + live
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            2
+        ); // stale + live
 
         drop(r);
         // drop() removes our entry AND prunes the stale one.
-        assert_eq!(rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(), 0);
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            0
+        );
     }
 
     #[test]

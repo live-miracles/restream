@@ -621,7 +621,11 @@ fn bench_burst_mux_write(c: &mut Criterion) {
     let burst: usize = 32;
     let packets: Vec<MediaPacket> = (0..burst)
         .map(|i| MediaPacket {
-            media_type: if i % 5 == 0 { MediaType::Audio } else { MediaType::Video },
+            media_type: if i % 5 == 0 {
+                MediaType::Audio
+            } else {
+                MediaType::Video
+            },
             track_index: 0,
             pts: i as i64 * 33,
             dts: i as i64 * 33,
@@ -650,8 +654,12 @@ fn bench_burst_mux_write(c: &mut Criterion) {
             for _ in 0..iterations {
                 for pkt in &packets {
                     let ts = muxer.mux_packet(
-                        pkt.media_type, pkt.track_index,
-                        pkt.pts, pkt.dts, pkt.is_keyframe, &pkt.payload,
+                        pkt.media_type,
+                        pkt.track_index,
+                        pkt.pts,
+                        pkt.dts,
+                        pkt.is_keyframe,
+                        &pkt.payload,
                     );
                     if !ts.is_empty() {
                         q.write(ts);
@@ -682,8 +690,12 @@ fn bench_burst_mux_write(c: &mut Criterion) {
             for _ in 0..iterations {
                 for pkt in &packets {
                     let ts = muxer.mux_packet(
-                        pkt.media_type, pkt.track_index,
-                        pkt.pts, pkt.dts, pkt.is_keyframe, &pkt.payload,
+                        pkt.media_type,
+                        pkt.track_index,
+                        pkt.pts,
+                        pkt.dts,
+                        pkt.is_keyframe,
+                        &pkt.payload,
                     );
                     if !ts.is_empty() {
                         ts_batch.extend_from_slice(ts);
@@ -802,13 +814,13 @@ fn bench_keyframe_record(c: &mut Criterion) {
     // a standalone Arc<Mutex<Vec<i64>>> representing the same cost as a direct
     // lock on a cached field — valid regardless of whether keyframe_times is
     // Arc-wrapped in the engine struct (which Fix #3 changes).
-    let cached_kf_times = std::sync::Arc::new(
-        std::sync::Mutex::new(Vec::<i64>::new())
-    );
+    let cached_kf_times = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
     // Populate it the same way the engine does.
     runtime.block_on(async {
         let ingests = engine.active_ingests.read().await;
-        let times = ingests["kf-bench"].keyframe_times.lock()
+        let times = ingests["kf-bench"]
+            .keyframe_times
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = times.len(); // warm up
     });

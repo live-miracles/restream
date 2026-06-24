@@ -135,7 +135,11 @@ impl MemoryQueue {
     /// thread unable to keep pace with ingest). Values consistently above a few
     /// megabytes indicate the downstream stage is falling behind.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).buf.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .buf
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -398,7 +402,12 @@ mod tests {
     #[tokio::test]
     async fn write_batch_preserves_chunk_order() {
         let queue = MemoryQueue::new();
-        assert_eq!(queue.write_batch([b"abc".as_slice(), b"def".as_slice()]).await, 6);
+        assert_eq!(
+            queue
+                .write_batch([b"abc".as_slice(), b"def".as_slice()])
+                .await,
+            6
+        );
 
         let mut output = [0u8; 6];
         assert_eq!(queue.read(&mut output), output.len());

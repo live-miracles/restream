@@ -127,10 +127,10 @@ fn cancelled_token_stops_early() {
 
 #[test]
 fn transcode_with_scale_synthetic_video_only() {
-    use restream::media::transcoder::run_ffmpeg_transcode_with_scale;
-    use restream::media::mpegts::{TsDemuxer, TsMuxer};
     use restream::media::engine::VideoMeta;
+    use restream::media::mpegts::{TsDemuxer, TsMuxer};
     use restream::media::ring_buffer::PayloadFormat;
+    use restream::media::transcoder::run_ffmpeg_transcode_with_scale;
 
     let fixture = load_fixture();
 
@@ -145,7 +145,10 @@ fn transcode_with_scale_synthetic_video_only() {
         .filter(|p| p.media_type == MediaType::Video)
         .collect();
 
-    assert!(!video_packets.is_empty(), "Fixture must contain video packets");
+    assert!(
+        !video_packets.is_empty(),
+        "Fixture must contain video packets"
+    );
 
     // 2. Mux video-only packets to generate a synthetic video-only MPEG-TS stream
     let video_meta = VideoMeta {
@@ -185,14 +188,14 @@ fn transcode_with_scale_synthetic_video_only() {
     input.close();
 
     // 4. Run the decode -> scale -> encode loop with "720p" preset
-    let result = run_ffmpeg_transcode_with_scale(
-        input,
-        output.clone(),
-        "720p",
-        CancellationToken::new(),
-    );
+    let result =
+        run_ffmpeg_transcode_with_scale(input, output.clone(), "720p", CancellationToken::new());
 
-    assert!(result.is_ok(), "run_ffmpeg_transcode_with_scale failed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "run_ffmpeg_transcode_with_scale failed: {:?}",
+        result
+    );
 
     // 5. Assert output packets arrive and contain only video
     let mut reader = Reader::new("test_transcode_scale".to_string(), output);
@@ -201,9 +204,16 @@ fn transcode_with_scale_synthetic_video_only() {
         output_packets.push(pkt);
     }
 
-    assert!(!output_packets.is_empty(), "No packets produced by transcode with scale");
+    assert!(
+        !output_packets.is_empty(),
+        "No packets produced by transcode with scale"
+    );
     for pkt in &output_packets {
-        assert_eq!(pkt.media_type, MediaType::Video, "Expected only video packets in output");
+        assert_eq!(
+            pkt.media_type,
+            MediaType::Video,
+            "Expected only video packets in output"
+        );
     }
 
     // The output format should be Raw

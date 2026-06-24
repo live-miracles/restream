@@ -339,17 +339,13 @@ fn bench_packet_to_bytes(c: &mut Criterion) {
         // In production, `OwnedVec` is replaced by `OwnedFfmpegPacket(packet)` where
         // `packet` is already owned (demux loop) or by `OwnedFfmpegPacket(enc_pkt.clone())`
         // where `.clone()` calls `av_packet_ref()` — a refcount bump, not a data copy.
-        group.bench_with_input(
-            BenchmarkId::new("from_owner", label),
-            &size,
-            |b, &size| {
-                b.iter_batched(
-                    || vec![0xBBu8; size],
-                    |v| black_box(Bytes::from_owner(OwnedVec(v))),
-                    BatchSize::SmallInput,
-                )
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("from_owner", label), &size, |b, &size| {
+            b.iter_batched(
+                || vec![0xBBu8; size],
+                |v| black_box(Bytes::from_owner(OwnedVec(v))),
+                BatchSize::SmallInput,
+            )
+        });
     }
 
     group.finish();

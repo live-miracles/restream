@@ -777,9 +777,12 @@ async fn handle_session_results(
                         let ring = engine.get_or_create_pipeline(&pipeline.id).await;
                         let (bytes_received, ingest_metrics) = {
                             let ingests = engine.active_ingests.read().await;
-                            ingests.get(&pipeline.id).map(|ingest| {
-                                (ingest.bytes_received.clone(), ingest.metrics.clone())
-                            }).unzip()
+                            ingests
+                                .get(&pipeline.id)
+                                .map(|ingest| {
+                                    (ingest.bytes_received.clone(), ingest.metrics.clone())
+                                })
+                                .unzip()
                         };
                         let Some(bytes_received) = bytes_received else {
                             engine.unregister_ingest(&pipeline.id).await;
@@ -1054,12 +1057,8 @@ async fn handle_session_results(
 
                             for pkt in &burst {
                                 let ts = match pkt.media_type {
-                                    MediaType::Video => {
-                                        RtmpTimestamp::new(pkt.dts.max(0) as u32)
-                                    }
-                                    MediaType::Audio => {
-                                        RtmpTimestamp::new(pkt.pts.max(0) as u32)
-                                    }
+                                    MediaType::Video => RtmpTimestamp::new(pkt.dts.max(0) as u32),
+                                    MediaType::Audio => RtmpTimestamp::new(pkt.pts.max(0) as u32),
                                 };
                                 let result = match pkt.media_type {
                                     MediaType::Video => session.send_video_data(
@@ -1236,7 +1235,10 @@ pub async fn start_rtmp_egress(
 
     let (egress_bytes_sent, egress_metrics) = {
         let egresses = engine.active_egresses.read().await;
-        egresses.get(&output_id).map(|e| (e.bytes_sent.clone(), e.metrics.clone())).unzip()
+        egresses
+            .get(&output_id)
+            .map(|e| (e.bytes_sent.clone(), e.metrics.clone()))
+            .unzip()
     };
 
     let mut is_publishing = false;
@@ -1371,22 +1373,21 @@ pub async fn start_rtmp_egress(
                                             (Some(old), Some(new)) => old != new,
                                             _ => false,
                                         };
-                                        if sps_changed {
-                                            if let Some(seq_hdr) =
+                                        if sps_changed
+                                            && let Some(seq_hdr) =
                                                 codec::build_avcc_sequence_header(&packet.payload)
+                                        {
+                                            if let Ok(ClientSessionResult::OutboundResponse(
+                                                p,
+                                            )) = session.publish_video_data(
+                                                seq_hdr,
+                                                RtmpTimestamp::new(0),
+                                                true,
+                                            ) && socket.write_all(&p.bytes).await.is_err()
                                             {
-                                                if let Ok(ClientSessionResult::OutboundResponse(
-                                                    p,
-                                                )) = session.publish_video_data(
-                                                    seq_hdr,
-                                                    RtmpTimestamp::new(0),
-                                                    true,
-                                                ) && socket.write_all(&p.bytes).await.is_err()
-                                                {
-                                                    return;
-                                                }
-                                                last_sent_sps = new_sps;
+                                                return;
                                             }
+                                            last_sent_sps = new_sps;
                                         }
                                     }
                                     if !codec::video_for_rtmp_into(
@@ -1798,7 +1799,10 @@ mod tests {
     #[test]
     fn parse_rtmp_url_ipv6_default_port() {
         let result = parse_rtmp_url("rtmp://[2001:db8::1]/live/mykey");
-        assert!(result.is_some(), "IPv6 URL without port must use default 1935");
+        assert!(
+            result.is_some(),
+            "IPv6 URL without port must use default 1935"
+        );
         let (host, port, _app, _key) = result.unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, 1935);

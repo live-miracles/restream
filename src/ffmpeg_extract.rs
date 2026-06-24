@@ -9,7 +9,7 @@ use crate::api::EmbeddedAssets;
 use std::path::PathBuf;
 
 /// Extract embedded FFmpeg binary to temp directory and return its path.
-/// 
+///
 /// On first call, this writes the embedded `public/bin/ffmpeg` to
 /// `/tmp/restream-ffmpeg-<timestamp>`, makes it executable, and caches
 /// the path in FFMPEG_BIN_PATH environment variable.
@@ -29,12 +29,8 @@ pub fn ensure_ffmpeg_extracted() -> PathBuf {
         .expect("Embedded FFmpeg binary not found in public/bin/ffmpeg");
 
     // Create temp directory
-    let temp_dir = std::env::temp_dir().join(format!(
-        "restream-ffmpeg-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&temp_dir)
-        .expect("Failed to create temp ffmpeg directory");
+    let temp_dir = std::env::temp_dir().join(format!("restream-ffmpeg-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).expect("Failed to create temp ffmpeg directory");
 
     let ffmpeg_path = temp_dir.join("ffmpeg");
 
@@ -47,8 +43,7 @@ pub fn ensure_ffmpeg_extracted() -> PathBuf {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(&ffmpeg_path, perms)
-            .expect("Failed to make FFmpeg executable");
+        std::fs::set_permissions(&ffmpeg_path, perms).expect("Failed to make FFmpeg executable");
     }
 
     println!(

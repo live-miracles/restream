@@ -133,11 +133,12 @@ impl IngestSecurityService {
             let excess = state.len() - limit;
             // Sort by the oldest failure in the record (earliest = least active)
             let mut entries: Vec<(&String, &FailureRecord)> = state.iter().collect();
-            entries.sort_by_key(|(_, r)| {
-                r.failures.iter().copied().min().unwrap_or(now)
-            });
-            let keys_to_remove: Vec<String> =
-                entries.iter().take(excess).map(|(k, _)| (*k).clone()).collect();
+            entries.sort_by_key(|(_, r)| r.failures.iter().copied().min().unwrap_or(now));
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .take(excess)
+                .map(|(k, _)| (*k).clone())
+                .collect();
             for k in keys_to_remove {
                 state.remove(&k);
             }

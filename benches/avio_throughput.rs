@@ -134,5 +134,10 @@ fn bench_write_batch_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_avio_throughput, bench_memory_queue_len, bench_write_batch_overhead);
+criterion_group!(
+    benches,
+    bench_avio_throughput,
+    bench_memory_queue_len,
+    bench_write_batch_overhead
+);
 criterion_main!(benches);

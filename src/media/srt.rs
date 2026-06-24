@@ -30,8 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::{MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
-use crate::media::ts_chunk_ring::{TsChunkRing, TsChunkReader};
-
+use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
 
 // Raw SRT Types & FFI Bindings
 pub type SRTSOCKET = c_int;
@@ -727,15 +726,16 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
                 (bytes[i + 1] as char).to_digit(16),
                 (bytes[i + 2] as char).to_digit(16),
-            ) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -1017,7 +1017,9 @@ impl SrtServer {
         struct SrtSockGuard(SRTSOCKET);
         impl Drop for SrtSockGuard {
             fn drop(&mut self) {
-                unsafe { srt_close(self.0); }
+                unsafe {
+                    srt_close(self.0);
+                }
             }
         }
         let _server_sock_guard = SrtSockGuard(server_sock);
@@ -1170,9 +1172,9 @@ impl SrtServer {
 
         let (bytes_received, ingest_metrics) = {
             let ingests = self.engine.active_ingests.read().await;
-            let opt = ingests.get(&pipeline.id).map(|ingest| {
-                (ingest.bytes_received.clone(), ingest.metrics.clone())
-            });
+            let opt = ingests
+                .get(&pipeline.id)
+                .map(|ingest| (ingest.bytes_received.clone(), ingest.metrics.clone()));
             opt.unzip()
         };
         let Some(bytes_received) = bytes_received else {
@@ -1286,13 +1288,12 @@ impl SrtServer {
                 for pkt in &packets {
                     if pkt.media_type == crate::media::ring_buffer::MediaType::Video
                         && pkt.is_keyframe
+                        && let Some(ref kf_times) = cached_keyframe_times
                     {
-                        if let Some(ref kf_times) = cached_keyframe_times {
-                            let mut times = kf_times.lock().unwrap_or_else(|e| e.into_inner());
-                            times.push(pkt.pts);
-                            if times.len() > 30 {
-                                times.remove(0);
-                            }
+                        let mut times = kf_times.lock().unwrap_or_else(|e| e.into_inner());
+                        times.push(pkt.pts);
+                        if times.len() > 30 {
+                            times.remove(0);
                         }
                     }
                 }
@@ -1400,8 +1401,13 @@ impl SrtServer {
         let permit = match self.engine.srt_sender_semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                eprintln!("[srt] Sender thread limit reached — rejecting play for {}", pipeline_id);
-                unsafe { srt_close(client_sock); }
+                eprintln!(
+                    "[srt] Sender thread limit reached — rejecting play for {}",
+                    pipeline_id
+                );
+                unsafe {
+                    srt_close(client_sock);
+                }
                 return;
             }
         };
@@ -1474,10 +1480,7 @@ impl SrtServer {
             }
         }
 
-        println!(
-            "[srt-play] Feed loop exited for pipeline={}",
-            pipeline_id
-        );
+        println!("[srt-play] Feed loop exited for pipeline={}", pipeline_id);
         out_queue.close();
     }
 }
@@ -1485,8 +1488,8 @@ impl SrtServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::ring_buffer::PayloadFormat;
     use crate::media::engine::VideoMeta;
+    use crate::media::ring_buffer::PayloadFormat;
 
     #[test]
     fn parses_srt_stream_ids_from_common_tools() {
@@ -1670,8 +1673,10 @@ mod tests {
     fn egress_url_percent_decodes_streamid() {
         // Percent-encoded slash in streamid must be decoded before use.
         let u = parse_srt_egress_url("srt://host:9000?streamid=publish%3Alive%2Fmykey");
-        assert_eq!(u.streamid, "publish:live/mykey",
-            "percent-encoded streamid must be decoded in egress URL");
+        assert_eq!(
+            u.streamid, "publish:live/mykey",
+            "percent-encoded streamid must be decoded in egress URL"
+        );
     }
 
     #[test]
@@ -1735,8 +1740,14 @@ mod tests {
         use std::sync::Arc;
         // Create a tiny semaphore (capacity 2) to simulate the cap.
         let sem = Arc::new(tokio::sync::Semaphore::new(2));
-        let _p1 = sem.clone().try_acquire_owned().expect("first permit available");
-        let _p2 = sem.clone().try_acquire_owned().expect("second permit available");
+        let _p1 = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("first permit available");
+        let _p2 = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("second permit available");
         // Third acquire must fail when semaphore is exhausted.
         assert!(
             sem.clone().try_acquire_owned().is_err(),
@@ -1751,7 +1762,10 @@ mod tests {
         {
             let _p = sem.clone().try_acquire_owned().expect("permit available");
             // permit is held — semaphore exhausted.
-            assert!(sem.clone().try_acquire_owned().is_err(), "should be exhausted");
+            assert!(
+                sem.clone().try_acquire_owned().is_err(),
+                "should be exhausted"
+            );
         }
         // After the permit is dropped, the slot must be returned.
         assert!(
@@ -1759,7 +1773,6 @@ mod tests {
             "semaphore should release permit on drop"
         );
     }
-
 
     // --- Regression: Round 6 #5 — SRT play muxer must not start without video ---
     // The probe-wait loop in handle_play requires `video.as_ref()?` before
@@ -1774,14 +1787,19 @@ mod tests {
             video: Option<String>,
         }
         let ingest_no_video = FakeIngest { video: None };
-        let ingest_with_video = FakeIngest { video: Some("h264".to_string()) };
+        let ingest_with_video = FakeIngest {
+            video: Some("h264".to_string()),
+        };
 
         let result_none: Option<(&str,)> = (|| {
             let video = ingest_no_video.video.as_ref()?;
             let _ = video;
             Some(("got_video",))
         })();
-        assert!(result_none.is_none(), "loop must not break while video is None");
+        assert!(
+            result_none.is_none(),
+            "loop must not break while video is None"
+        );
 
         let result_some: Option<(&str,)> = (|| {
             let video = ingest_with_video.video.as_ref()?;
@@ -1904,7 +1922,8 @@ mod tests {
             ring_buffer,
             engine,
             cancel_token,
-        ).await;
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1914,22 +1933,36 @@ mod tests {
         let source_ring = engine.get_or_create_pipeline(pipeline_id).await;
 
         // Register active ingest so start_shared_ts_muxer can proceed
-        let cancel_ingest = engine.try_register_ingest(pipeline_id, "key", "srt").await.unwrap();
+        let cancel_ingest = engine
+            .try_register_ingest(pipeline_id, "key", "srt")
+            .await
+            .unwrap();
         // Set metadata
-        engine.update_ingest_meta(pipeline_id, Some(VideoMeta {
-            codec: "h264".to_string(),
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
-            bw: None,
-            profile: None,
-            level: None,
-            pixel_format: None,
-        }), None, None).await;
+        engine
+            .update_ingest_meta(
+                pipeline_id,
+                Some(VideoMeta {
+                    codec: "h264".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    fps: 30.0,
+                    bw: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                None,
+                None,
+            )
+            .await;
 
         // Create multiple stages or the same stage
-        let stage1 = engine.get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring.clone()).await;
-        let stage2 = engine.get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring.clone()).await;
+        let stage1 = engine
+            .get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring.clone())
+            .await;
+        let stage2 = engine
+            .get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring.clone())
+            .await;
 
         // Verify it is the exact same instance (same pointer)
         assert!(Arc::ptr_eq(&stage1, &stage2));
@@ -1996,7 +2029,11 @@ mod tests {
         for i in 0..n_packets {
             let is_video = i % 3 != 0;
             let is_keyframe = is_video && (i % 90 == 0);
-            let media_type = if is_video { MediaType::Video } else { MediaType::Audio };
+            let media_type = if is_video {
+                MediaType::Video
+            } else {
+                MediaType::Audio
+            };
             let size = if is_video {
                 if is_keyframe { 100_000 } else { 10_000 }
             } else {
@@ -2023,7 +2060,10 @@ mod tests {
             let video_meta_clone = video_meta.clone();
             let audio_tracks_clone = audio_tracks.clone();
             let handle = tokio::spawn(async move {
-                let mut muxer = crate::media::mpegts::TsMuxer::new(Some(&video_meta_clone), &audio_tracks_clone);
+                let mut muxer = crate::media::mpegts::TsMuxer::new(
+                    Some(&video_meta_clone),
+                    &audio_tracks_clone,
+                );
                 let mut bytes_written = 0u64;
                 for pkt in &packets_clone {
                     let ts_bytes = muxer.mux_packet(
@@ -2087,7 +2127,8 @@ mod tests {
         let video_meta_clone = video_meta.clone();
         let audio_tracks_clone = audio_tracks.clone();
         let muxer_handle = tokio::spawn(async move {
-            let mut muxer = crate::media::mpegts::TsMuxer::new(Some(&video_meta_clone), &audio_tracks_clone);
+            let mut muxer =
+                crate::media::mpegts::TsMuxer::new(Some(&video_meta_clone), &audio_tracks_clone);
             for pkt in &packets_clone {
                 let ts_bytes = muxer.mux_packet(
                     pkt.media_type,
@@ -2122,6 +2163,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 impl Drop for SrtServer {
     fn drop(&mut self) {
         // srt_cleanup() is intentionally NOT called here.
@@ -2148,7 +2190,6 @@ pub fn teardown_srt() {
         srt_cleanup();
     }
 }
-
 
 async fn resolve_host(host_port: &str) -> Option<SocketAddr> {
     match host_port.parse::<SocketAddr>() {
@@ -2239,7 +2280,11 @@ pub fn start_shared_ts_muxer(
                 ingests.get(&pipeline_id_str).and_then(|i| {
                     let video = i.video.clone();
                     video.as_ref()?;
-                    let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let mut tracks = i
+                        .audio_tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
                     if tracks.is_empty()
                         && let Some(audio) = i.audio.clone()
                     {
@@ -2252,8 +2297,16 @@ pub fn start_shared_ts_muxer(
                 break meta;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if !engine.active_ingests.read().await.contains_key(&pipeline_id_str) {
-                eprintln!("[srt-shared-muxer] Ingest gone while waiting for probe: {}", pipeline_id_str);
+            if !engine
+                .active_ingests
+                .read()
+                .await
+                .contains_key(&pipeline_id_str)
+            {
+                eprintln!(
+                    "[srt-shared-muxer] Ingest gone while waiting for probe: {}",
+                    pipeline_id_str
+                );
                 return;
             }
         };
@@ -2268,14 +2321,17 @@ pub fn start_shared_ts_muxer(
                     ingest_codec, ring_codec
                 );
                 let mut vm = video_meta.clone();
-                if let Some(ref mut v) = vm { v.codec = ring_codec.to_string(); }
+                if let Some(ref mut v) = vm {
+                    v.codec = ring_codec.to_string();
+                }
                 vm
             } else {
                 video_meta.clone()
             }
         };
 
-        let mut muxer = crate::media::mpegts::TsMuxer::new(muxer_video_meta.as_ref(), &audio_tracks);
+        let mut muxer =
+            crate::media::mpegts::TsMuxer::new(muxer_video_meta.as_ref(), &audio_tracks);
         let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
         let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
         let mut nalu_len_size: usize = 4;
@@ -2294,7 +2350,10 @@ pub fn start_shared_ts_muxer(
             }
         };
 
-        let mut reader = Reader::new(format!("ts_shared_muxer:{}", pipeline_id_str), source_ring.clone());
+        let mut reader = Reader::new(
+            format!("ts_shared_muxer:{}", pipeline_id_str),
+            source_ring.clone(),
+        );
         let mut video_conv_buf = Vec::<u8>::new();
         let mut audio_conv_buf = Vec::<u8>::new();
         let mut ts_batch = Vec::new();
@@ -2378,7 +2437,12 @@ pub fn start_shared_ts_muxer(
                     }
                 }
             }
-            if !engine.active_ingests.read().await.contains_key(&pipeline_id_str) {
+            if !engine
+                .active_ingests
+                .read()
+                .await
+                .contains_key(&pipeline_id_str)
+            {
                 break;
             }
         }
@@ -2435,7 +2499,9 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("[srt-egress] Stream ID contains null bytes");
-                    unsafe { srt_close(client_sock); }
+                    unsafe {
+                        srt_close(client_sock);
+                    }
                     return;
                 }
             };
@@ -2607,7 +2673,10 @@ pub async fn start_srt_egress(
     let oid = output_id.clone();
     let (egress_bytes_sent, egress_metrics) = {
         let egresses = engine.active_egresses.read().await;
-        egresses.get(&output_id).map(|e| (e.bytes_sent.clone(), e.metrics.clone())).unzip()
+        egresses
+            .get(&output_id)
+            .map(|e| (e.bytes_sent.clone(), e.metrics.clone()))
+            .unzip()
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
@@ -2615,8 +2684,13 @@ pub async fn start_srt_egress(
     let permit = match engine.srt_sender_semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
-            eprintln!("[srt-egress] Sender thread limit reached — rejecting egress {}", output_id);
-            unsafe { srt_close(client_sock); }
+            eprintln!(
+                "[srt-egress] Sender thread limit reached — rejecting egress {}",
+                output_id
+            );
+            unsafe {
+                srt_close(client_sock);
+            }
             return;
         }
     };

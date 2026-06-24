@@ -58,7 +58,11 @@ pub async fn start_h264_transcoder(
                 if video.codec != "hevc" && video.codec != "h265" {
                     return None;
                 }
-                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut tracks = i
+                    .audio_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 if tracks.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {

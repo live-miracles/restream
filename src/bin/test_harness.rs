@@ -1381,13 +1381,19 @@ async fn network_load(connections: usize, duration: Duration) -> Result<Value, S
             track_index: 0,
             pts: frame as i64 * 33,
             dts: frame as i64 * 33,
-            is_keyframe: frame % 60 == 0,
+            is_keyframe: frame.is_multiple_of(60),
             format: PayloadFormat::Flv,
             payload: Bytes::from(
-                [if frame % 60 == 0 { 0x17 } else { 0x27 }, 0x01, 0, 0, 0]
-                    .into_iter()
-                    .chain(payload.iter().copied())
-                    .collect::<Vec<_>>(),
+                [
+                    if frame.is_multiple_of(60) { 0x17 } else { 0x27 },
+                    0x01,
+                    0,
+                    0,
+                    0,
+                ]
+                .into_iter()
+                .chain(payload.iter().copied())
+                .collect::<Vec<_>>(),
             ),
         });
         ring.push(MediaPacket {
@@ -1855,7 +1861,7 @@ async fn matrix_correctness() -> Result<Value, String> {
 
         match ffprobe(&read_url).await {
             Ok(probe) => {
-                if let Err(e) = assert_media_only(&probe, &sink) {
+                if let Err(e) = assert_media_only(&probe, sink) {
                     results["passed"] = json!(false);
                     results[sink] = json!({ "passed": false, "error": e });
                 } else {

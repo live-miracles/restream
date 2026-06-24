@@ -714,7 +714,10 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
     let mut lines = vec![];
 
     if let Some(ingest) = ingest_opt {
-        let times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
+        let times = ingest
+            .keyframe_times
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if times.len() < 2 {
             lines.push(format!("Keyframes observed: {}", times.len()));
             lines.push("Not enough keyframes to analyze GOP intervals yet.".to_string());

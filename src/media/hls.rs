@@ -197,10 +197,10 @@ pub async fn start_hls_segmenter(
                                     }
                                     if let Some(tracks) = ring_buffer.audio_tracks() {
                                         let ingests = engine.active_ingests.read().await;
-                                        if let Some(i) = ingests.get(&pipeline_id) {
-                                            if let Some(video) = i.video.clone() {
-                                                break (Some(video), tracks.to_vec());
-                                            }
+                                        if let Some(i) = ingests.get(&pipeline_id)
+                                            && let Some(video) = i.video.clone()
+                                        {
+                                            break (Some(video), tracks.to_vec());
                                         }
                                     }
                                     let result = {

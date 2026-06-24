@@ -59,8 +59,8 @@ fn av_sync_no_cross_stream_coupling() {
 #[test]
 fn av_sync_no_cross_stream_coupling_reverse() {
     let mut e = DtsEnforcer::new(2);
-    e.enforce(0, 0, 0);  // video t=0
-    e.enforce(1, 0, 0);  // audio t=0
+    e.enforce(0, 0, 0); // video t=0
+    e.enforce(1, 0, 0); // audio t=0
 
     // Audio collision → bump
     let (_, a_bumped) = e.enforce(1, 0, 0);
@@ -84,8 +84,8 @@ fn av_sync_no_cross_stream_coupling_reverse() {
 ///   - Final |video_pts − audio_pts| ≤ one video frame interval
 fn run_48h_drift_test(video_fps: u64, audio_hz: u64) {
     // Integer-ms frame intervals matching our ring-buffer representation.
-    let video_ms = 1000 / video_fps;               // e.g. 33ms@30fps, 16ms@60fps
-    let audio_ms = 1024 * 1000 / audio_hz;         // 21ms@48kHz, 23ms@44.1kHz
+    let video_ms = 1000 / video_fps; // e.g. 33ms@30fps, 16ms@60fps
+    let audio_ms = 1024 * 1000 / audio_hz; // 21ms@48kHz, 23ms@44.1kHz
     let duration_ms: u64 = 48 * 3600 * 1000; // 172_800_000
 
     let mut e = DtsEnforcer::new(2); // 0 = video, 1 = audio

@@ -176,10 +176,9 @@ pub async fn run_app() {
         tokio::spawn(async move {
             #[cfg(unix)]
             {
-                let mut sigterm = tokio::signal::unix::signal(
-                    tokio::signal::unix::SignalKind::terminate(),
-                )
-                .expect("Failed to install SIGTERM handler");
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("Failed to install SIGTERM handler");
                 tokio::select! {
                     res = tokio::signal::ctrl_c() => {
                         if let Err(e) = res { eprintln!("[shutdown] Ctrl+C error: {e}"); }
@@ -214,13 +213,16 @@ pub async fn run_app() {
         // Removes in-memory sessions whose DB token has expired (older than
         // 30 days). Prevents the HashSet and sessions table from growing
         // indefinitely across months of uptime.
-        if reconciler_tick % 3600 == 0 {
+        if reconciler_tick.is_multiple_of(3600) {
             // DB prune
             let _ = db::prune_expired_sessions(&pool, 30 * 24 * 60 * 60 * 1000).await;
             // In-memory prune: remove tokens that no longer exist in DB.
             let live_tokens = db::list_sessions(&pool).await.unwrap_or_default();
             let live_set: std::collections::HashSet<String> = live_tokens.into_iter().collect();
-            sessions_for_reconciler.write().await.retain(|t| live_set.contains(t));
+            sessions_for_reconciler
+                .write()
+                .await
+                .retain(|t| live_set.contains(t));
         }
 
         let outputs = match db::list_outputs(&pool).await {
@@ -342,7 +344,11 @@ pub async fn run_app() {
                 // Stage 1: video transcode from source ring (H.265 flows through
                 // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
                 // the input_codec_override passed into the stage).
-                let video_stage_key = if needs_video_transcode { video_preset } else { "source" };
+                let video_stage_key = if needs_video_transcode {
+                    video_preset
+                } else {
+                    "source"
+                };
                 let video_buf = if needs_video_transcode {
                     engine
                         .get_or_create_transcoder(
@@ -482,64 +488,69 @@ pub async fn run_app() {
                     // prevent the cleanup path below (unregister_egress, job-
                     // status update) from running.
                     let panicked = std::panic::AssertUnwindSafe(async {
-                    if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
-                        crate::media::rtmp::start_rtmp_egress(
-                            output_id_c.clone(),
-                            pipeline_id_c.clone(),
-                            url_c.clone(),
-                            ring_buf,
-                            engine_c.clone(),
-                            cancel_token.clone(),
-                        )
-                        .await;
-                    } else if url_c.starts_with("srt://") {
-                        crate::media::srt::start_srt_egress(
-                            output_id_c.clone(),
-                            pipeline_id_c.clone(),
-                            encoding_c,
-                            url_c.clone(),
-                            ring_buf,
-                            engine_c.clone(),
-                            cancel_token.clone(),
-                        )
-                        .await;
-                    } else if url_c.starts_with("hls://")
-                        || url_c.starts_with("http://")
-                        || url_c.starts_with("https://")
-                    {
-                        // HLS egress: use the shared segmenter, register as persistent consumer
-                        let (store, already_running) =
-                            engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
-                        if !already_running {
-                            let hls_cancel =
-                                engine_c.get_hls_cancel_token(&pipeline_id_c).await.unwrap();
-                            let eng2 = engine_c.clone();
-                            let pid2 = pipeline_id_c.clone();
-                            let rb2 = ring_buf.clone();
-                            tokio::spawn(async move {
-                                crate::media::hls::start_hls_segmenter(
-                                    pid2.clone(),
-                                    store,
-                                    rb2,
-                                    eng2.clone(),
-                                    hls_cancel,
-                                )
-                                .await;
-                                eng2.shutdown_hls_segmenter(&pid2).await;
-                            });
+                        if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
+                            crate::media::rtmp::start_rtmp_egress(
+                                output_id_c.clone(),
+                                pipeline_id_c.clone(),
+                                url_c.clone(),
+                                ring_buf,
+                                engine_c.clone(),
+                                cancel_token.clone(),
+                            )
+                            .await;
+                        } else if url_c.starts_with("srt://") {
+                            crate::media::srt::start_srt_egress(
+                                output_id_c.clone(),
+                                pipeline_id_c.clone(),
+                                encoding_c,
+                                url_c.clone(),
+                                ring_buf,
+                                engine_c.clone(),
+                                cancel_token.clone(),
+                            )
+                            .await;
+                        } else if url_c.starts_with("hls://")
+                            || url_c.starts_with("http://")
+                            || url_c.starts_with("https://")
+                        {
+                            // HLS egress: use the shared segmenter, register as persistent consumer
+                            let (store, already_running) =
+                                engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
+                            if !already_running {
+                                let hls_cancel =
+                                    engine_c.get_hls_cancel_token(&pipeline_id_c).await.unwrap();
+                                let eng2 = engine_c.clone();
+                                let pid2 = pipeline_id_c.clone();
+                                let rb2 = ring_buf.clone();
+                                tokio::spawn(async move {
+                                    crate::media::hls::start_hls_segmenter(
+                                        pid2.clone(),
+                                        store,
+                                        rb2,
+                                        eng2.clone(),
+                                        hls_cancel,
+                                    )
+                                    .await;
+                                    eng2.shutdown_hls_segmenter(&pid2).await;
+                                });
+                            }
+                            engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
+                            cancel_token.cancelled().await;
+                            // remove_hls_persistent_consumer is intentionally called
+                            // in the always-runs cleanup section below (outside the
+                            // catch_unwind) so a panic between add and here cannot
+                            // permanently leak the refcount.
                         }
-                        engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
-                        cancel_token.cancelled().await;
-                        // remove_hls_persistent_consumer is intentionally called
-                        // in the always-runs cleanup section below (outside the
-                        // catch_unwind) so a panic between add and here cannot
-                        // permanently leak the refcount.
-                    }
-                    }).catch_unwind().await.is_err();
+                    })
+                    .catch_unwind()
+                    .await
+                    .is_err();
 
                     if panicked {
-                        eprintln!("[egress] Panic in egress task for output {} (pipeline {})",
-                            output_id_c, pipeline_id_c);
+                        eprintln!(
+                            "[egress] Panic in egress task for output {} (pipeline {})",
+                            output_id_c, pipeline_id_c
+                        );
                     }
 
                     // Cleanup always runs — even after a panic in the egress fn.
@@ -606,7 +617,8 @@ pub async fn run_app() {
             for output in &outputs {
                 let is_active = egress_tokens.contains_key(&output.id);
                 if is_active || output.desired_state == "running" {
-                    let is_rtmp = output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
+                    let is_rtmp =
+                        output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
                     let ingest_is_hevc = ingests
                         .get(&output.pipeline_id)
                         .and_then(|i| i.video.as_ref())
@@ -617,14 +629,21 @@ pub async fn run_app() {
                     let video_preset = encoding.split('+').next().unwrap_or("source");
                     let audio_part = encoding.split('+').nth(1);
 
-                    let is_passthrough = video_preset.is_empty() || video_preset == "source" || video_preset == "custom";
+                    let is_passthrough = video_preset.is_empty()
+                        || video_preset == "source"
+                        || video_preset == "custom";
                     let needs_video_transcode = !is_passthrough;
                     let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
 
-                    let video_stage_key = if needs_video_transcode { video_preset } else { "source" };
+                    let video_stage_key = if needs_video_transcode {
+                        video_preset
+                    } else {
+                        "source"
+                    };
 
                     if needs_video_transcode {
-                        needed_stages.insert(format!("{}:video:{}", output.pipeline_id, video_preset));
+                        needed_stages
+                            .insert(format!("{}:video:{}", output.pipeline_id, video_preset));
                     }
                     let last_stage_key = if let Some(audio) = audio_part {
                         if !audio.is_empty() {
@@ -747,13 +766,7 @@ pub async fn run_app() {
         }
     }
     // Shut down all HLS segmenters (stops their internal tasks/timers).
-    let hls_ids: Vec<String> = engine
-        .hls_consumers
-        .read()
-        .await
-        .keys()
-        .cloned()
-        .collect();
+    let hls_ids: Vec<String> = engine.hls_consumers.read().await.keys().cloned().collect();
     for pid in hls_ids {
         engine.shutdown_hls_segmenter(&pid).await;
     }

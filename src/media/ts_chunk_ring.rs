@@ -1,7 +1,7 @@
-use crate::media::ring_buffer::{RingBuffer, Reader, MediaPacket, MediaType, PayloadFormat};
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use bytes::Bytes;
 
 /// A thin wrapper around Arc<RingBuffer> where packets hold pre-muxed MPEG-TS chunks.
 pub struct TsChunkRing {
@@ -34,15 +34,17 @@ impl TsChunkRing {
     where
         I: IntoIterator<Item = (Bytes, bool)>,
     {
-        let packets = payloads.into_iter().map(|(payload, is_keyframe)| MediaPacket {
-            media_type: MediaType::Video,
-            track_index: 0,
-            pts: 0,
-            dts: 0,
-            is_keyframe,
-            format: PayloadFormat::Raw,
-            payload,
-        });
+        let packets = payloads
+            .into_iter()
+            .map(|(payload, is_keyframe)| MediaPacket {
+                media_type: MediaType::Video,
+                track_index: 0,
+                pts: 0,
+                dts: 0,
+                is_keyframe,
+                format: PayloadFormat::Raw,
+                payload,
+            });
         self.ring.push_batch(packets)
     }
 }
@@ -103,7 +105,13 @@ mod tests {
         let payloads1: Vec<&[u8]> = out1.iter().map(|p| &*p.payload).collect();
         let payloads2: Vec<&[u8]> = out2.iter().map(|p| &*p.payload).collect();
 
-        assert_eq!(payloads1, vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]);
-        assert_eq!(payloads2, vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]);
+        assert_eq!(
+            payloads1,
+            vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]
+        );
+        assert_eq!(
+            payloads2,
+            vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]
+        );
     }
 }

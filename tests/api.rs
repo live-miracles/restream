@@ -1066,7 +1066,9 @@ async fn security_headers_present_on_api_response() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
-        resp.headers().get("x-content-type-options").map(|v| v.as_bytes()),
+        resp.headers()
+            .get("x-content-type-options")
+            .map(|v| v.as_bytes()),
         Some(b"nosniff" as &[u8]),
         "X-Content-Type-Options: nosniff must be present"
     );
@@ -1085,8 +1087,8 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
     // This test exercises the engine methods directly to confirm the counter
     // returns to zero, guarding against underflow or permanent leak.
     let engine = Arc::new(MediaEngine::new());
-    use tokio_util::sync::CancellationToken;
     use restream::media::engine::HlsConsumers;
+    use tokio_util::sync::CancellationToken;
 
     let token = CancellationToken::new();
     {
@@ -1099,7 +1101,9 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
     {
         let consumers = engine.hls_consumers.read().await;
         assert_eq!(
-            consumers["pipe1"].persistent.load(std::sync::atomic::Ordering::Relaxed),
+            consumers["pipe1"]
+                .persistent
+                .load(std::sync::atomic::Ordering::Relaxed),
             2,
             "count should be 2 after two adds"
         );
@@ -1109,7 +1113,9 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
     {
         let consumers = engine.hls_consumers.read().await;
         assert_eq!(
-            consumers["pipe1"].persistent.load(std::sync::atomic::Ordering::Relaxed),
+            consumers["pipe1"]
+                .persistent
+                .load(std::sync::atomic::Ordering::Relaxed),
             0,
             "count should be 0 after balanced removes"
         );
@@ -1125,7 +1131,12 @@ async fn media_delete_path_traversal_blocked() {
     // Test a normal non-existent file: should return NOT_FOUND (404)
     let resp = app
         .clone()
-        .oneshot(auth_req("DELETE", "/api/media/nonexistent.mp4", &cookie, None))
+        .oneshot(auth_req(
+            "DELETE",
+            "/api/media/nonexistent.mp4",
+            &cookie,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1133,7 +1144,12 @@ async fn media_delete_path_traversal_blocked() {
     // Test path traversal attempt: should return BAD_REQUEST (400) or NOT_FOUND (404)
     let resp = app
         .clone()
-        .oneshot(auth_req("DELETE", "/api/media/..%2f..%2fetc%2fpasswd", &cookie, None))
+        .oneshot(auth_req(
+            "DELETE",
+            "/api/media/..%2f..%2fetc%2fpasswd",
+            &cookie,
+            None,
+        ))
         .await
         .unwrap();
     assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);

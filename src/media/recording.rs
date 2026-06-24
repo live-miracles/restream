@@ -198,7 +198,10 @@ pub async fn start_recording(
     // check the duration and potentially delete it.  Joining also surfaces
     // any panic that escaped catch_unwind (shouldn't happen, but be explicit).
     if let Err(e) = muxer_handle.join() {
-        eprintln!("[recording] MKV muxer thread join failed for {}: {:?}", filename, e);
+        eprintln!(
+            "[recording] MKV muxer thread join failed for {}: {:?}",
+            filename, e
+        );
     }
 
     let duration = started_at.elapsed();
@@ -255,8 +258,8 @@ fn run_ts_writer(
 mod tests {
     use super::*;
     use crate::media::avio::MemoryQueue;
-    use tokio_util::sync::CancellationToken;
     use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn run_ts_writer_exits_on_closed_queue() {

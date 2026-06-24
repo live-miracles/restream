@@ -453,11 +453,8 @@ impl TsDemuxer {
         // lost mid-decode, which would cause a video glitch/audio pop until the
         // next IDR.  PIDs that disappear are simply dropped.  New PIDs get a
         // fresh accumulator.
-        let mut old_pes: std::collections::HashMap<u16, PesAccumulator> = self
-            .streams
-            .drain(..)
-            .map(|s| (s._pid, s.pes))
-            .collect();
+        let mut old_pes: std::collections::HashMap<u16, PesAccumulator> =
+            self.streams.drain(..).map(|s| (s._pid, s.pes)).collect();
         self.pid_to_stream.fill(NO_STREAM);
         self.audio_track_counter = 0;
         self.probe_payloads.clear();
@@ -987,7 +984,7 @@ fn crc32_mpeg2(data: &[u8]) -> u32 {
     static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
     let table = TABLE.get_or_init(|| {
         let mut table = [0u32; 256];
-        for i in 0..256 {
+        for (i, entry) in table.iter_mut().enumerate() {
             let mut crc = (i as u32) << 24;
             for _ in 0..8 {
                 if crc & 0x8000_0000 != 0 {
@@ -996,7 +993,7 @@ fn crc32_mpeg2(data: &[u8]) -> u32 {
                     crc <<= 1;
                 }
             }
-            table[i] = crc;
+            *entry = crc;
         }
         table
     });
@@ -1749,7 +1746,11 @@ mod tests {
                 let data: Vec<u8> = (0..size).map(|_| next_random_byte()).collect();
                 let ref_val = reference_crc(&data);
                 let table_val = crc32_mpeg2(&data);
-                assert_eq!(table_val, ref_val, "Failed equivalence test at size {}", size);
+                assert_eq!(
+                    table_val, ref_val,
+                    "Failed equivalence test at size {}",
+                    size
+                );
             }
         }
     }
@@ -2315,7 +2316,11 @@ mod tests {
         let mut demuxer = TsDemuxer::new();
         demuxer.feed(&data);
 
-        assert_eq!(demuxer.streams.len(), 2, "initial PMT must produce 2 streams");
+        assert_eq!(
+            demuxer.streams.len(),
+            2,
+            "initial PMT must produce 2 streams"
+        );
         assert_eq!(demuxer.pmt_version, Some(0));
 
         // Feed the same PMT version again (broadcaster retransmits every ~100ms)
@@ -2395,7 +2400,7 @@ mod tests {
             dem.feed(&[0x47]);
         }
         assert!(
-            dem.remainder.len() <= TS_PACKET_SIZE - 1,
+            dem.remainder.len() < TS_PACKET_SIZE,
             "remainder must be capped at TS_PACKET_SIZE-1 ({}) but was {}",
             TS_PACKET_SIZE - 1,
             dem.remainder.len()
@@ -2447,18 +2452,24 @@ mod tests {
         // Verify the PES buffer has data
         assert_eq!(demuxer.streams.len(), 1);
         let buf_before = demuxer.streams[0].pes.buf.clone();
-        assert!(!buf_before.is_empty(), "PES buf must have partial frame data");
+        assert!(
+            !buf_before.is_empty(),
+            "PES buf must have partial frame data"
+        );
 
         // Now the broadcaster sends a PMT version change for the same PID
         // (e.g., only the language descriptor changed).
         let v1_pkt = make_pmt_ts_pkt(1, &[(0x1B, 0x100u16)]);
         demuxer.feed(&v1_pkt);
 
-        assert_eq!(demuxer.streams.len(), 1, "stream map should still have 1 stream");
+        assert_eq!(
+            demuxer.streams.len(),
+            1,
+            "stream map should still have 1 stream"
+        );
         assert_eq!(demuxer.pmt_version, Some(1));
         assert_eq!(
-            demuxer.streams[0].pes.buf,
-            buf_before,
+            demuxer.streams[0].pes.buf, buf_before,
             "in-flight PES buffer must be preserved after PMT version change for same PID"
         );
     }

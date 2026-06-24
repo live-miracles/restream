@@ -6,8 +6,8 @@
 //! are parsed to select/remap audio streams.
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
-use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::engine::AudioMeta;
+use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -243,7 +243,11 @@ pub async fn start_transcoder(
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
                 video.as_ref()?;
-                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut tracks = i
+                    .audio_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 if tracks.is_empty()
                     && let Some(audio) = i.audio.clone()
                 {
@@ -412,6 +416,7 @@ pub async fn start_transcoder(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -754,11 +759,17 @@ pub fn run_ffmpeg_transcode_with_scale(
         }
     }
 
-    let dec_params = ictx.stream(video_idx).ok_or("no video stream")?.parameters();
+    let dec_params = ictx
+        .stream(video_idx)
+        .ok_or("no video stream")?
+        .parameters();
     let codec_id = dec_params.id();
     let dec_ctx = ffmpeg_next::codec::Context::from_parameters(dec_params)
         .map_err(|_| "decoder context error")?;
-    let mut decoder = dec_ctx.decoder().video().map_err(|_| "decoder open error")?;
+    let mut decoder = dec_ctx
+        .decoder()
+        .video()
+        .map_err(|_| "decoder open error")?;
 
     // Look up target dimensions
     let profile = {
@@ -775,8 +786,10 @@ pub fn run_ffmpeg_transcode_with_scale(
     let skip_scaling = target_w == 0;
 
     let enc_codec = match codec_id {
-        ffmpeg_next::codec::Id::H264 => ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264)
-            .ok_or("no H.264 encoder")?,
+        ffmpeg_next::codec::Id::H264 => {
+            ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264)
+                .ok_or("no H.264 encoder")?
+        }
         ffmpeg_next::codec::Id::HEVC => ffmpeg_next::codec::encoder::find_by_name("libx265")
             .or_else(|| ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::HEVC))
             .ok_or("no HEVC/H.265 encoder")?,
@@ -848,7 +861,8 @@ pub fn run_ffmpeg_transcode_with_scale(
                 let out_w = if target_w > 0 { target_w } else { width };
                 let out_h = if target_h > 0 { target_h } else { height };
 
-                let need_scaling = !skip_scaling && (out_w != width || out_h != height) || in_fmt != Pixel::YUV420P;
+                let need_scaling = !skip_scaling && (out_w != width || out_h != height)
+                    || in_fmt != Pixel::YUV420P;
                 if need_scaling {
                     let sw = ffmpeg_next::software::scaling::Context::get(
                         in_fmt,
@@ -858,7 +872,8 @@ pub fn run_ffmpeg_transcode_with_scale(
                         out_w,
                         out_h,
                         ffmpeg_next::software::scaling::Flags::BILINEAR,
-                    ).map_err(|_| "failed to create scaler")?;
+                    )
+                    .map_err(|_| "failed to create scaler")?;
                     scaler = Some(sw);
                 }
 
@@ -880,7 +895,9 @@ pub fn run_ffmpeg_transcode_with_scale(
                     }
                     ffmpeg_next::codec::Context::wrap(ptr, None)
                 };
-                let mut enc_video = enc_ctx.encoder().video()
+                let mut enc_video = enc_ctx
+                    .encoder()
+                    .video()
                     .map_err(|_| "failed to get encoder video interface")?;
 
                 enc_video.set_width(out_w);
@@ -908,7 +925,8 @@ pub fn run_ffmpeg_transcode_with_scale(
                     opts.set("crf", &profile.crf.to_string());
                 }
 
-                let opened = enc_video.open_as_with(enc_codec, opts)
+                let opened = enc_video
+                    .open_as_with(enc_codec, opts)
                     .map_err(|_| "failed to open encoder")?;
                 encoder = Some(opened);
             }

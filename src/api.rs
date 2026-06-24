@@ -3,6 +3,8 @@
 //! Static assets are compiled into the binary via `rust-embed` and served with
 //! disk-first fallback for development hot-reload.
 
+use axum::extract::DefaultBodyLimit;
+use axum::http::HeaderValue;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -10,10 +12,6 @@ use axum::{
     response::{IntoResponse, Redirect},
     routing::{delete, get, post, put},
 };
-use axum::extract::DefaultBodyLimit;
-use tower_http::cors::{CorsLayer, AllowOrigin};
-use tower_http::set_header::SetResponseHeaderLayer;
-use axum::http::HeaderValue;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -21,6 +19,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use sysinfo::{Disks, Networks, System};
 use tokio::sync::RwLock as TokioRwLock;
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::db;
 use crate::diag;
@@ -315,19 +315,19 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                 .route("/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
                 .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
                 .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
-                .route("/preview/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
-                .route("/preview/hls/:pipeline_id/:segment", get(hls_segment_handler))
+                .route(
+                    "/preview/hls/:pipeline_id/index.m3u8",
+                    get(hls_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/:segment",
+                    get(hls_segment_handler),
+                )
                 .layer(
                     CorsLayer::new()
                         .allow_origin(AllowOrigin::any())
-                        .allow_methods([
-                            axum::http::Method::GET,
-                            axum::http::Method::OPTIONS,
-                        ])
-                        .allow_headers([
-                            header::CONTENT_TYPE,
-                            header::RANGE,
-                        ]),
+                        .allow_methods([axum::http::Method::GET, axum::http::Method::OPTIONS])
+                        .allow_headers([header::CONTENT_TYPE, header::RANGE]),
                 )
                 .with_state(state.clone()),
         )
@@ -362,13 +362,11 @@ fn serve_embedded(path: &str) -> impl IntoResponse {
             Ok(p) => p,
             Err(_) => std::path::PathBuf::new(),
         };
-        if let Ok(candidate) = std::fs::canonicalize(format!("public/{}", path)) {
-            if candidate.starts_with(&public_root) {
-                if let Ok(data) = std::fs::read(&candidate) {
-                    return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data)
-                        .into_response();
-                }
-            }
+        if let Ok(candidate) = std::fs::canonicalize(format!("public/{}", path))
+            && candidate.starts_with(&public_root)
+            && let Ok(data) = std::fs::read(&candidate)
+        {
+            return (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], data).into_response();
         }
     }
 
@@ -425,7 +423,9 @@ async fn login_post_handler(
     Json(payload): Json<LoginPayload>,
 ) -> impl IntoResponse {
     let password = payload.password.unwrap_or_default();
-    if let Some(r) = check_field_len("password", &password, MAX_PASSWORD_LEN) { return r; }
+    if let Some(r) = check_field_len("password", &password, MAX_PASSWORD_LEN) {
+        return r;
+    }
     let stored_hash = match db::get_meta(&state.db, PASSWORD_META_KEY).await {
         Ok(Some(hash)) => hash,
         _ => {
@@ -518,8 +518,12 @@ async fn change_password_handler(
 
     let current_password = payload.current_password.unwrap_or_default();
     let new_password = payload.new_password.unwrap_or_default();
-    if let Some(r) = check_field_len("current_password", &current_password, MAX_PASSWORD_LEN) { return r; }
-    if let Some(r) = check_field_len("new_password", &new_password, MAX_PASSWORD_LEN) { return r; }
+    if let Some(r) = check_field_len("current_password", &current_password, MAX_PASSWORD_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("new_password", &new_password, MAX_PASSWORD_LEN) {
+        return r;
+    }
 
     if new_password.is_empty() {
         return (
@@ -824,9 +828,19 @@ async fn pipelines_post_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
-    if let Some(ref k) = payload.stream_key { if let Some(r) = check_field_len("stream_key", k, MAX_STREAM_KEY_LEN) { return r; } }
-    if let Some(ref e) = payload.encoding { if let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN) { return r; } }
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(ref k) = payload.stream_key
+        && let Some(r) = check_field_len("stream_key", k, MAX_STREAM_KEY_LEN)
+    {
+        return r;
+    }
+    if let Some(ref e) = payload.encoding
+        && let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN)
+    {
+        return r;
+    }
     if payload.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -983,16 +997,17 @@ async fn pipelines_delete_handler(
     // Kill any file-ingest FFmpeg subprocesses that push into this pipeline's
     // stream key.  Without this, the subprocess keeps running and retrying
     // RTMP pushes even after the pipeline row is gone.
-    if let Ok(pipeline) = db::get_pipeline(&state.db, &id).await {
-        if let Some(pipeline) = pipeline {
-            if let Ok(ingests) = db::list_ingests(&state.db).await {
-                let mut children = state.engine.file_ingest_children.write().await;
-                for ingest in ingests.iter().filter(|i| i.stream_key == pipeline.stream_key) {
-                    if let Some(mut child) = children.remove(&ingest.id) {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                    }
-                }
+    if let Ok(Some(pipeline)) = db::get_pipeline(&state.db, &id).await
+        && let Ok(ingests) = db::list_ingests(&state.db).await
+    {
+        let mut children = state.engine.file_ingest_children.write().await;
+        for ingest in ingests
+            .iter()
+            .filter(|i| i.stream_key == pipeline.stream_key)
+        {
+            if let Some(mut child) = children.remove(&ingest.id) {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
             }
         }
     }
@@ -1038,9 +1053,15 @@ async fn outputs_create_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
-    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) { return r; }
-    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) { return r; }
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
+        return r;
+    }
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
         && !url.starts_with("rtmps://")
@@ -1094,9 +1115,15 @@ async fn outputs_update_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) { return r; }
-    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) { return r; }
-    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) { return r; }
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("url", &payload.url, MAX_URL_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
+        return r;
+    }
     let url = payload.url.trim();
     if !url.starts_with("rtmp://")
         && !url.starts_with("rtmps://")
@@ -1275,7 +1302,9 @@ async fn custom_encoding_put(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(r) = check_field_len("ffmpeg_args", &payload.ffmpeg_args, MAX_FFMPEG_ARGS_LEN) { return r; }
+    if let Some(r) = check_field_len("ffmpeg_args", &payload.ffmpeg_args, MAX_FFMPEG_ARGS_LEN) {
+        return r;
+    }
     let _ = db::set_meta(&state.db, "custom_encoding", &payload.ffmpeg_args).await;
     Json(serde_json::json!({ "ffmpegArgs": payload.ffmpeg_args })).into_response()
 }
@@ -1330,9 +1359,17 @@ async fn ingests_post_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) { return r; }
-    if let Some(r) = check_field_len("stream_key", &payload.stream_key, MAX_STREAM_KEY_LEN) { return r; }
-    if let Some(ref s) = payload.start_time { if let Some(r) = check_field_len("start_time", s, 64) { return r; } }
+    if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(r) = check_field_len("stream_key", &payload.stream_key, MAX_STREAM_KEY_LEN) {
+        return r;
+    }
+    if let Some(ref s) = payload.start_time
+        && let Some(r) = check_field_len("start_time", s, 64)
+    {
+        return r;
+    }
     let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
@@ -1374,7 +1411,11 @@ async fn ingests_update_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Some(ref s) = payload.start_time { if let Some(r) = check_field_len("start_time", s, 64) { return r; } }
+    if let Some(ref s) = payload.start_time
+        && let Some(r) = check_field_len("start_time", s, 64)
+    {
+        return r;
+    }
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
 
@@ -1699,7 +1740,9 @@ async fn media_delete_handler(
     let _ = std::fs::create_dir_all("media");
     let media_root = match std::fs::canonicalize("media") {
         Ok(p) => p,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response();
+        }
     };
     let path = std::path::Path::new("media").join(&filename);
     let canonical_path = match std::fs::canonicalize(&path) {
@@ -2139,22 +2182,34 @@ mod tests {
     #[test]
     fn check_field_len_rejects_over_limit() {
         let over = "x".repeat(MAX_NAME_LEN + 1);
-        assert!(check_field_len("name", &over, MAX_NAME_LEN).is_some(),
-            "name over {} bytes must be rejected", MAX_NAME_LEN);
+        assert!(
+            check_field_len("name", &over, MAX_NAME_LEN).is_some(),
+            "name over {} bytes must be rejected",
+            MAX_NAME_LEN
+        );
 
         let over_url = "u".repeat(MAX_URL_LEN + 1);
-        assert!(check_field_len("url", &over_url, MAX_URL_LEN).is_some(),
-            "url over {} bytes must be rejected", MAX_URL_LEN);
+        assert!(
+            check_field_len("url", &over_url, MAX_URL_LEN).is_some(),
+            "url over {} bytes must be rejected",
+            MAX_URL_LEN
+        );
 
         let over_args = "a".repeat(MAX_FFMPEG_ARGS_LEN + 1);
-        assert!(check_field_len("ffmpeg_args", &over_args, MAX_FFMPEG_ARGS_LEN).is_some(),
-            "ffmpeg_args over {} bytes must be rejected", MAX_FFMPEG_ARGS_LEN);
+        assert!(
+            check_field_len("ffmpeg_args", &over_args, MAX_FFMPEG_ARGS_LEN).is_some(),
+            "ffmpeg_args over {} bytes must be rejected",
+            MAX_FFMPEG_ARGS_LEN
+        );
     }
 
     #[test]
     fn check_field_len_accepts_exactly_at_limit() {
         let exact = "x".repeat(MAX_NAME_LEN);
-        assert!(check_field_len("name", &exact, MAX_NAME_LEN).is_none(),
-            "exactly {} bytes must be accepted", MAX_NAME_LEN);
+        assert!(
+            check_field_len("name", &exact, MAX_NAME_LEN).is_none(),
+            "exactly {} bytes must be accepted",
+            MAX_NAME_LEN
+        );
     }
 }

@@ -396,7 +396,8 @@ pub fn annexb_to_avcc_into(data: &[u8], out: &mut Vec<u8>) {
 /// The production `annexb_to_avcc_into` uses `two_pass`. Switch to `with_scratch`
 /// only if the workload profile shifts to many small NALUs per frame.
 fn get_start_code_finder() -> &'static memchr::memmem::Finder<'static> {
-    static FINDER: std::sync::OnceLock<memchr::memmem::Finder<'static>> = std::sync::OnceLock::new();
+    static FINDER: std::sync::OnceLock<memchr::memmem::Finder<'static>> =
+        std::sync::OnceLock::new();
     FINDER.get_or_init(|| memchr::memmem::Finder::new(&[0u8, 0, 1]))
 }
 

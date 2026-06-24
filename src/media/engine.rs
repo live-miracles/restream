@@ -15,7 +15,6 @@ use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
 
-
 /// Lock-free counters for one processing stage.
 /// Updated atomically on the hot path; read by `/graph` for operator visibility.
 #[derive(Debug)]
@@ -349,7 +348,11 @@ impl MediaEngine {
 
     /// Drain all registered OS thread handles for joining at shutdown.
     pub fn drain_os_thread_handles(&self) -> Vec<std::thread::JoinHandle<()>> {
-        self.os_threads.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
+        self.os_threads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
     }
 
     pub async fn get_or_create_stage_metrics(
@@ -387,13 +390,14 @@ impl MediaEngine {
 
     pub async fn reap_file_ingests(&self) {
         let mut children = self.file_ingest_children.write().await;
-        children.retain(|id, child| {
-            match child.try_wait() {
-                Ok(None) => true,
-                _ => {
-                    println!("[engine] File ingest child process {} has exited/stopped", id);
-                    false
-                }
+        children.retain(|id, child| match child.try_wait() {
+            Ok(None) => true,
+            _ => {
+                println!(
+                    "[engine] File ingest child process {} has exited/stopped",
+                    id
+                );
+                false
             }
         });
     }
@@ -434,12 +438,12 @@ impl MediaEngine {
         // a ring buffer and spawn a transcoder task — the second insert would
         // overwrite the first, leaving an orphaned transcoder eating CPU/memory.
         let mut buffers = self.transcoder_buffers.write().await;
-        if let Some((rb, token)) = buffers.get(&key) {
-            if !token.is_cancelled() {
-                return rb.clone();
-            }
-            // Cancelled stage — fall through and replace it
+        if let Some((rb, token)) = buffers.get(&key)
+            && !token.is_cancelled()
+        {
+            return rb.clone();
         }
+        // Cancelled stage — fall through and replace it
 
         let output_buf = Arc::new(RingBuffer::new(4096));
         let cancel = CancellationToken::new();
@@ -471,10 +475,17 @@ impl MediaEngine {
             tracks.to_vec()
         } else {
             let ingests = self.active_ingests.read().await;
-            ingests.get(pipeline_id)
+            ingests
+                .get(pipeline_id)
                 .map(|i| {
-                    let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if tracks.is_empty() && let Some(audio) = i.audio.clone() {
+                    let mut tracks = i
+                        .audio_tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if tracks.is_empty()
+                        && let Some(audio) = i.audio.clone()
+                    {
                         tracks.push(audio);
                     }
                     tracks
@@ -488,7 +499,8 @@ impl MediaEngine {
                 .rsplit_once(":from:")
                 .map(|(op, _)| op)
                 .unwrap_or(audio_spec);
-            let routing = crate::media::transcoder::parse_audio_routing(&format!("source+{}", audio_op));
+            let routing =
+                crate::media::transcoder::parse_audio_routing(&format!("source+{}", audio_op));
             crate::media::transcoder::apply_audio_routing(&routing, &input_tracks)
         } else {
             input_tracks
@@ -613,10 +625,10 @@ impl MediaEngine {
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
-        if let Some((rb, token)) = buffers.get(&key) {
-            if !token.is_cancelled() {
-                return rb.clone();
-            }
+        if let Some((rb, token)) = buffers.get(&key)
+            && !token.is_cancelled()
+        {
+            return rb.clone();
         }
 
         let output_buf = Arc::new(RingBuffer::new(4096));
@@ -629,10 +641,17 @@ impl MediaEngine {
             tracks.to_vec()
         } else {
             let ingests = self.active_ingests.read().await;
-            ingests.get(pipeline_id)
+            ingests
+                .get(pipeline_id)
                 .map(|i| {
-                    let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if tracks.is_empty() && let Some(audio) = i.audio.clone() {
+                    let mut tracks = i
+                        .audio_tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    if tracks.is_empty()
+                        && let Some(audio) = i.audio.clone()
+                    {
                         tracks.push(audio);
                     }
                     tracks
@@ -706,7 +725,10 @@ impl MediaEngine {
         });
     }
 
-    pub async fn sweep_unused_transcoder_stages(&self, active_keys: &std::collections::HashSet<String>) {
+    pub async fn sweep_unused_transcoder_stages(
+        &self,
+        active_keys: &std::collections::HashSet<String>,
+    ) {
         let mut buffers = self.transcoder_buffers.write().await;
         buffers.retain(|key, (_rb, token)| {
             if !active_keys.contains(key) {
@@ -728,10 +750,10 @@ impl MediaEngine {
         let key = format!("{}:{}", pipeline_id, stage_key);
 
         let mut stages = self.ts_muxer_stages.write().await;
-        if let Some(stage) = stages.get(&key) {
-            if !stage.cancel.is_cancelled() {
-                return stage.clone();
-            }
+        if let Some(stage) = stages.get(&key)
+            && !stage.cancel.is_cancelled()
+        {
+            return stage.clone();
         }
 
         let cancel = CancellationToken::new();
@@ -768,7 +790,6 @@ impl MediaEngine {
             }
         });
     }
-
 
     ///
     /// A pipeline has one application-level producer. A bonded SRT publisher is
@@ -877,7 +898,10 @@ impl MediaEngine {
     pub async fn record_keyframe(&self, pipeline_id: &str, pts: i64) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            let mut times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
+            let mut times = ingest
+                .keyframe_times
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             times.push(pts);
             if times.len() > 30 {
                 times.remove(0);
@@ -932,9 +956,15 @@ impl MediaEngine {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             if is_video {
-                *ingest.video_sequence_header.lock().unwrap_or_else(|e| e.into_inner()) = Some(data);
+                *ingest
+                    .video_sequence_header
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(data);
             } else {
-                *ingest.audio_sequence_header.lock().unwrap_or_else(|e| e.into_inner()) = Some(data);
+                *ingest
+                    .audio_sequence_header
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(data);
             }
         }
     }
@@ -945,8 +975,16 @@ impl MediaEngine {
     ) -> (Option<bytes::Bytes>, Option<bytes::Bytes>) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            let video = ingest.video_sequence_header.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let audio = ingest.audio_sequence_header.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let video = ingest
+                .video_sequence_header
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let audio = ingest
+                .audio_sequence_header
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             (video, audio)
         } else {
             (None, None)
@@ -957,7 +995,10 @@ impl MediaEngine {
     pub async fn update_ingest_audio_tracks(&self, pipeline_id: &str, tracks: Vec<AudioMeta>) {
         let ingests = self.active_ingests.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
-            *ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()) = tracks;
+            *ingest
+                .audio_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = tracks;
         }
     }
 
@@ -975,7 +1016,10 @@ impl MediaEngine {
         };
 
         let audio_tracks: Vec<serde_json::Value> = {
-            let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+            let tracks = ingest
+                .audio_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if tracks.is_empty() {
                 ingest
                     .audio
@@ -991,7 +1035,10 @@ impl MediaEngine {
         };
 
         let gop = {
-            let times = ingest.keyframe_times.lock().unwrap_or_else(|e| e.into_inner());
+            let times = ingest
+                .keyframe_times
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if times.len() >= 2 {
                 let intervals: Vec<f64> = times
                     .windows(2)
@@ -1211,7 +1258,10 @@ impl MediaEngine {
                     // Compute instantaneous bitrate from byte delta
                     let bitrate_kbps = {
                         let prev = egress.prev_bytes_sent.load(Ordering::Relaxed);
-                        let mut prev_time = egress.prev_sample_time.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut prev_time = egress
+                            .prev_sample_time
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         let elapsed = prev_time.elapsed().as_secs_f64();
 
                         if elapsed > 0.5 && bytes_sent > prev {
@@ -1219,10 +1269,16 @@ impl MediaEngine {
                             let rate = (delta as f64 * 8.0) / (elapsed * 1000.0);
                             egress.prev_bytes_sent.store(bytes_sent, Ordering::Relaxed);
                             *prev_time = Instant::now();
-                            *egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()) = Some(rate);
+                            *egress
+                                .bitrate_kbps
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(rate);
                             Some(rate)
                         } else {
-                            *egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner())
+                            *egress
+                                .bitrate_kbps
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
                         }
                     };
 
@@ -1552,12 +1608,12 @@ mod tests {
         let cancel = CancellationToken::new();
         let hc = HlsConsumers::new(cancel);
         assert!(!hc.is_idle(60000));
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
         hc.touch();
         let last = hc.last_access_ms.load(Ordering::Relaxed);
         assert!(last > 0);
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
         assert!(!hc.is_idle(60000));
         assert!(hc.is_idle(10));
@@ -1861,7 +1917,12 @@ mod tests {
             .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720.clone(), None)
             .await;
         let a1080 = engine
-            .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:1080p", v1080.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-audio",
+                "audio:atrack:0:from:1080p",
+                v1080.clone(),
+                None,
+            )
             .await;
         let a720_again = engine
             .get_or_create_transcoder("pipe-audio", "audio:atrack:0:from:720p", v720, None)
@@ -2032,10 +2093,7 @@ mod tests {
         let token = CancellationToken::new();
         {
             let mut consumers = engine.hls_consumers.write().await;
-            consumers.insert(
-                "pipe-hls-rc".to_string(),
-                HlsConsumers::new(token.clone()),
-            );
+            consumers.insert("pipe-hls-rc".to_string(), HlsConsumers::new(token.clone()));
         }
 
         // One persistent consumer added — segmenter must not be idle.

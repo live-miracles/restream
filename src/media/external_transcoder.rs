@@ -177,7 +177,10 @@ pub async fn start_external_transcoder_stage(
     let mut stdin = match child.stdin.take() {
         Some(s) => s,
         None => {
-            eprintln!("[ext-transcoder] ffmpeg stdin unavailable ({}:{})", pipeline_id, encoding);
+            eprintln!(
+                "[ext-transcoder] ffmpeg stdin unavailable ({}:{})",
+                pipeline_id, encoding
+            );
             cancel.cancel();
             return;
         }
@@ -185,7 +188,10 @@ pub async fn start_external_transcoder_stage(
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
-            eprintln!("[ext-transcoder] ffmpeg stdout unavailable ({}:{})", pipeline_id, encoding);
+            eprintln!(
+                "[ext-transcoder] ffmpeg stdout unavailable ({}:{})",
+                pipeline_id, encoding
+            );
             cancel.cancel();
             return;
         }
@@ -193,7 +199,10 @@ pub async fn start_external_transcoder_stage(
     let stderr = match child.stderr.take() {
         Some(s) => s,
         None => {
-            eprintln!("[ext-transcoder] ffmpeg stderr unavailable ({}:{})", pipeline_id, encoding);
+            eprintln!(
+                "[ext-transcoder] ffmpeg stderr unavailable ({}:{})",
+                pipeline_id, encoding
+            );
             // Non-fatal — stderr is just for logging
             // Create a dummy stderr reader that never produces data
             // by continuing without it
@@ -257,7 +266,11 @@ pub async fn start_external_transcoder_stage(
             let ingests = engine.active_ingests.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone()?;
-                let mut tracks = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut tracks = i
+                    .audio_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 if tracks.is_empty()
                     && let Some(a) = i.audio.clone()
                 {
@@ -289,7 +302,11 @@ pub async fn start_external_transcoder_stage(
     // task is spawned (OnceLock — set_codec_hint below is a no-op).
     // Keep it here as a defensive fallback in case the stage is ever called
     // outside the engine (e.g., tests).
-    let output_codec = if matches!(input_codec, "hevc" | "h265") { "hevc" } else { "h264" };
+    let output_codec = if matches!(input_codec, "hevc" | "h265") {
+        "hevc"
+    } else {
+        "h264"
+    };
     output_buffer.set_codec_hint(output_codec);
     {
         let out_ring = output_buffer.clone();
