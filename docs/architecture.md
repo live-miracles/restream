@@ -142,8 +142,8 @@ num_cpus (e.g. 8)    tokio workers
 
 ## Core affinity
 
-`core_affinity = "0.8"` is declared in Cargo.toml but **never called**. All
-threads use the kernel's default scheduler with no CPU pinning.
+No CPU pinning is configured. All threads use the kernel's default scheduler.
+There is currently no active `core_affinity` wiring.
 
 ## Packet Flow
 

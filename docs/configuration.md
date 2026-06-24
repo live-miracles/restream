@@ -9,6 +9,7 @@ The Rust runtime currently has a small configuration surface. Listener ports can
 | Dashboard/API listener | `0.0.0.0:3030` | `RESTREAM_HTTP_PORT` (port only) |
 | RTMP listener | `0.0.0.0:1935` | `RESTREAM_RTMP_PORT` |
 | SRT listener | `0.0.0.0:10080` | `RESTREAM_SRT_PORT` |
+| Transcoder backend | External FFmpeg subprocess | `RESTREAM_USE_INTERNAL_TRANSCODER` (`1`/`true`/`yes`/`on` to enable in-process backend) |
 | SQLite database | `data.db` | *None* |
 | Media directory | `media/` | *None* |
 | File-ingest executable | `ffmpeg` from `PATH` | *None* |
@@ -116,9 +117,11 @@ source+downmix:1
 
 Recognized video presets are `source`, `720p`, `1080p`, `2160p`/`4k`,
 `vertical-crop`, `vertical-rotate`, and the internal `h264` conversion preset.
-Only source passthrough is currently trustworthy: the transcoder configures
-encoder/output metadata but does not decode, filter, and encode the compressed
-packets. `custom` is accepted but also behaves as passthrough.
+`source` is passthrough and bypasses the video transcoder. For non-source video
+presets, the default backend is an external FFmpeg subprocess that performs
+decode/scale/encode. When `RESTREAM_USE_INTERNAL_TRANSCODER=1`, the in-process
+backend performs decode/scale/encode for video presets (audio streams are copied).
+`custom` remains configuration-only passthrough today.
 
 Audio routing parsers accept `atrack`, `remap`, and `downmix`. Only stream-level
 selection is complete; channel filtering/encoding remains open.

@@ -80,6 +80,15 @@ Updates any supplied setting:
 
 An empty `serverName` returns `400`.
 
+When `transcodeProfiles` are included in `PATCH /config`, each profile is
+validated before saving:
+
+- `preset` must be one of: `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`, `slower`, `veryslow`, `placebo`
+- `tune` must be empty or one of: `film`, `animation`, `grain`, `stillimage`, `psnr`, `ssim`, `fastdecode`, `zerolatency`
+- `crf` must be in `0..=51`
+
+Invalid values return `400 Bad Request` with a descriptive error.
+
 ### `GET /stream-keys`
 
 Returns 20 built-in keys and native ingest URLs:
@@ -256,9 +265,12 @@ no zombie processes remain.
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/media` | List `.mkv`, `.mp4`, and `.mov` files in `media/` |
-| `DELETE` | `/api/media/:filename` | Delete an unreferenced file |
+| `DELETE` | `/api/media/:filename` | Delete an unreferenced file under `media/` |
 
 Deletion returns `409` when a configured file ingest references the filename.
+Deletion canonicalizes both the `media/` root and the requested target path.
+Requests that resolve outside `media/` (path traversal) return `400`.
+Missing files return `404`.
 
 ## Custom Encoding
 
