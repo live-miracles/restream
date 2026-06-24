@@ -336,7 +336,7 @@ synchronization boundary.
  ║  │ Task: SRT ingest handler                                 │       ║
  ║  │                                                          │       ║
  ║  │  loop:                                                   │       ║
- ║  │    srt_recv(sock) (non-blocking + 1ms sleep on EAGAIN)   │       ║
+ ║  │    srt_recv(sock) (non-blocking + long-lived epoll waiter)│       ║
  ║  │    demuxer.feed(buf)           ← inline TsDemuxer        │       ║
  ║  │    demuxer.drain_into(&mut packets)                      │       ║
  ║  │    ring_buffer.push_batch(&packets)                      │       ║

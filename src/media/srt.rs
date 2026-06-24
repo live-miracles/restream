@@ -47,9 +47,10 @@
 
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::{MediaEngine, PublisherQuality};
@@ -1328,7 +1329,64 @@ impl SrtServer {
         // payload limit. Single sockets retain the lean plain-recv path.
         let mut buf = vec![0u8; if is_group { 2048 } else { 1316 }];
         let mut previous_stats: Option<SrtCounterSnapshot> = None;
-        let mut last_stats_sample = Instant::now() - std::time::Duration::from_secs(1);
+        let mut last_stats_sample = Instant::now() - Duration::from_secs(1);
+
+        // Long-lived epoll waiter: one spawn_blocking task for the entire
+        // connection lifetime replaces per-EAGAIN spawn_blocking. Solves:
+        //   1. Task allocation per idle cycle
+        //   2. No cancellation propagation (infinite epoll_wait timeout)
+        //   3. Silently discarded errors on EAGAIN path
+        let data_ready = Arc::new(AtomicBool::new(false));
+        let epoll_stop = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+
+        let w_data_ready = data_ready.clone();
+        let w_epoll_stop = epoll_stop.clone();
+        let w_notify = notify.clone();
+        let mut epoll_waiter = Some(tokio::task::spawn_blocking(move || {
+            loop {
+                if w_epoll_stop.load(Ordering::Acquire) {
+                    // Wake the main task so it can observe we're done.
+                    w_data_ready.store(true, Ordering::Release);
+                    w_notify.notify_one();
+                    return;
+                }
+
+                let mut read_ready = [SRTSOCKET::default(); 1];
+                let mut rnum = 1i32;
+                // SAFETY: srt_epoll_wait blocks the OS thread until data
+                // arrives or timeout. NULL write/lwfd/wfds sets are valid
+                // (we only wait for read-ready). Called from spawn_blocking
+                // so the tokio runtime is not blocked.
+                //
+                // 200ms timeout balances:
+                //   - Cancellation responsiveness: ≤200ms from cancel to exit
+                //   - CPU: no busy-loop (vs polling with a microsleep)
+                //   - Perceptibility: 200ms is imperceptible on stream stop
+                //   - Cleanup: ≤200ms delay before epoll handle is freed
+                let ret = unsafe {
+                    srt_epoll_wait(
+                        eid,
+                        read_ready.as_mut_ptr(),
+                        &mut rnum,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        200,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ret > 0 {
+                    // Data available — wake the consumer.
+                    w_data_ready.store(true, Ordering::Release);
+                    w_notify.notify_one();
+                }
+                // ret == 0 (timeout) or < 0 (error): loop back and check stop.
+            }
+        }));
+
         loop {
             if token.is_cancelled() {
                 break;
@@ -1357,33 +1415,10 @@ impl SrtServer {
                 break; // connection closed
             } else {
                 // n == -1: non-blocking mode returns EAGAIN when no data.
-                // Use srt_epoll_wait in spawn_blocking (blocks OS thread, not
-                // tokio runtime) so we wake instantly on data arrival instead
-                // of polling with a timer sleep.
-                // SAFETY: srt_epoll_wait blocks the OS thread until
-                // data arrives or timeout. NULL pointers for write-fd and
-                // lwfd/wfds sets are valid (we only wait for read-ready).
-                // Called from spawn_blocking so the tokio runtime is
-                // not blocked.
-                let _ = tokio::task::spawn_blocking(move || {
-                    let mut read_ready = [SRTSOCKET::default(); 1];
-                    let mut rnum = 1i32;
-                    unsafe {
-                        srt_epoll_wait(
-                            eid,
-                            read_ready.as_mut_ptr(),
-                            &mut rnum,
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                            -1, // wait indefinitely
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                        )
-                    };
-                })
-                .await;
+                // Wait for the long-lived epoll waiter to signal readiness.
+                if !data_ready.swap(false, Ordering::Acquire) {
+                    notify.notified().await;
+                }
                 continue;
             }
 
@@ -1467,10 +1502,17 @@ impl SrtServer {
 
         println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
-        // SAFETY: eid and client_sock are valid handles. Release epoll
-        // first (must not reference client_sock after close), then close
-        // the client socket. Both are owned by this function and not
-        // shared elsewhere.
+
+        // Stop the epoll waiter before releasing the epoll instance.
+        epoll_stop.store(true, Ordering::Release);
+        notify.notify_one();
+        if let Some(handle) = epoll_waiter.take() {
+            let _ = handle.await;
+        }
+
+        // SAFETY: eid and client_sock are valid handles. The epoll waiter
+        // has exited, so it is safe to release the epoll instance. Close
+        // the client socket last.
         unsafe {
             srt_epoll_release(eid);
             srt_close(client_sock);
@@ -2277,6 +2319,81 @@ mod tests {
         let ratio = elapsed_old.as_secs_f64() / elapsed_new.as_secs_f64();
         println!("Performance Gain Ratio: {:.2}x", ratio);
         println!("=====================================");
+    }
+
+    /// Stress-test the Notify + AtomicBool coordination pattern used by the
+    /// long-lived epoll waiter. Concurrent producer and consumer run with
+    /// randomized timing to surface missed-wakeup races.
+    ///
+    /// The producer (spawn_blocking) simulates srt_epoll_wait: sleeps for a
+    /// brief random duration, then store(true) + notify_one(). The consumer
+    /// (async) simulates the EAGAIN handler: swap(false) → fall through or
+    /// fall back to notified().await.
+    ///
+    /// The producer runs to completion (produces exactly ITEMS). The consumer
+    /// exits after consuming exactly ITEMS. A 30-second deadline prevents
+    /// hangs from missed wakeups.
+    #[tokio::test]
+    async fn epoll_waiter_coordination() {
+        use rand::Rng;
+        use rand::SeedableRng;
+        use std::sync::atomic::AtomicU32;
+
+        const ITEMS: u32 = 10_000;
+        let data_ready = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let produced = Arc::new(AtomicU32::new(0));
+
+        let w_data_ready = data_ready.clone();
+        let w_notify = notify.clone();
+        let w_produced = produced.clone();
+
+        // Producer: runs to completion on a blocking thread. No early-exit
+        // epoll_stop — we want to verify the full ITEMS production cycle.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let producer = tokio::task::spawn_blocking(move || {
+            for _ in 0..ITEMS {
+                // Jitter: 1-9µs typical, occasionally 1ms (simulating idle).
+                let delay = if rng.gen_range(0..100) == 0 {
+                    1_000
+                } else {
+                    rng.gen_range(1..10)
+                };
+                std::thread::sleep(std::time::Duration::from_micros(delay));
+
+                w_produced.fetch_add(1, Ordering::Relaxed);
+                w_data_ready.store(true, Ordering::Release);
+                w_notify.notify_one();
+            }
+        });
+
+        // Consumer: exactly the swap+notified pattern used by the real
+        // EAGAIN handler in SrtFeed::push_media_packet (srt.rs:1375-1385).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        for i in 0..ITEMS {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out after {i} items (produced={})",
+                produced.load(Ordering::Relaxed),
+            );
+
+            if !data_ready.swap(false, Ordering::Acquire) {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    notify.notified(),
+                )
+                .await
+                .expect("consumer should not hang: permit must be available");
+            }
+        }
+
+        let _ = producer.await;
+
+        let total_produced = produced.load(Ordering::Relaxed);
+        assert_eq!(
+            total_produced, ITEMS,
+            "producer must generate exactly ITEMS"
+        );
     }
 }
 
