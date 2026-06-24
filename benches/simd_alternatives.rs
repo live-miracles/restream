@@ -6,7 +6,7 @@
 //!   - `wide`:   fixed-width SIMD types with compile-time dispatch
 //!   - `std`:    copy_from_slice / iter::position (libc memcpy / scalar baseline)
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use memchr::memchr;
 
 // --- pulp: runtime-dispatched byte search ---
@@ -281,10 +281,71 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
     group.finish();
 }
 
+fn crc32_mpeg2_bit_at_a_time(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= (byte as u32) << 24;
+        for _ in 0..8 {
+            if crc & 0x8000_0000 != 0 {
+                crc = (crc << 1) ^ 0x04C1_1DB7;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
+fn crc32_mpeg2_table_driven(data: &[u8]) -> u32 {
+    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut table = [0u32; 256];
+        for i in 0..256 {
+            let mut crc = (i as u32) << 24;
+            for _ in 0..8 {
+                if crc & 0x8000_0000 != 0 {
+                    crc = (crc << 1) ^ 0x04C1_1DB7;
+                } else {
+                    crc <<= 1;
+                }
+            }
+            table[i] = crc;
+        }
+        table
+    });
+
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        let idx = (((crc >> 24) ^ (byte as u32)) & 0xFF) as usize;
+        crc = (crc << 8) ^ table[idx];
+    }
+    crc
+}
+
+fn bench_crc32_alternatives(c: &mut Criterion) {
+    let mut group = c.benchmark_group("crc32_mpeg2_alternatives");
+
+    for &size in &[12usize, 188, 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        let data = vec![0xABu8; size];
+
+        group.bench_with_input(BenchmarkId::new("bit_at_a_time", size), &data, |b, d| {
+            b.iter(|| black_box(crc32_mpeg2_bit_at_a_time(d)))
+        });
+
+        group.bench_with_input(BenchmarkId::new("table_driven", size), &data, |b, d| {
+            b.iter(|| black_box(crc32_mpeg2_table_driven(d)))
+        });
+    }
+
+    group.finish();
+}
+
 fn benches(c: &mut Criterion) {
     bench_sync_byte_alternatives(c);
     bench_memcpy_alternatives(c);
     bench_ts_mux_inhouse(c);
+    bench_crc32_alternatives(c);
 }
 
 criterion_group!(alt_benches, benches);
