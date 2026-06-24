@@ -86,6 +86,7 @@ When modifying any code in [src/media/](src/media/), follow the pipeline design 
 - Emit only media streams: one video + intended audio tracks. Reject subtitles, private data, unknown stream types. The MPEG-TS remuxer must not guess codecs for unknown PIDs.
 - SRT stream IDs: strip query parameters before database lookup. Accept all standard forms (`publish:live/<key>`, `#!::r=live/<key>,m=publish`, bare `<key>`, etc.).
 - Bonded SRT: two independent sockets with matching StreamID are **not** a bond — reject as duplicate publishers. Only libsrt group connections (via `SRTO_GROUPCONNECT`) create bonds.
+- A/V sync: every mux consumer must call `DtsEnforcer::enforce()` with `stream_idx` 0=video, 1…=audio by position in `audio_tracks` (not by `track_index` value). Never apply wall-clock offsets to ring-buffer timestamps. Regression test: `cargo test av_sync` (covers 48h drift-free, cross-stream isolation, RTMP wrap boundary).
 
 ### MemoryQueue / AVIO
 - `MemoryQueue` (Mutex + Condvar) connects tokio tasks to blocking FFmpeg threads. Use `write_batch()` to amortize lock acquisition.
