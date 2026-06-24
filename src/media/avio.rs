@@ -76,10 +76,9 @@ impl MemoryQueue {
     /// Append multiple chunks while taking the queue lock and notifying once.
     pub async fn write_batch<'a, I>(&self, chunks: I) -> usize
     where
-        I: IntoIterator<Item = &'a [u8]>,
+        I: IntoIterator<Item = &'a [u8]> + Clone,
     {
-        let chunks_vec: Vec<&[u8]> = chunks.into_iter().collect();
-        let total_bytes: usize = chunks_vec.iter().map(|c| c.len()).sum();
+        let total_bytes: usize = chunks.clone().into_iter().map(|c| c.len()).sum();
         if total_bytes == 0 {
             return 0;
         }
@@ -99,7 +98,7 @@ impl MemoryQueue {
             return 0;
         }
         let mut bytes = 0usize;
-        for chunk in chunks_vec {
+        for chunk in chunks {
             bytes += chunk.len();
             inner.buf.extend(chunk.iter().copied());
         }
