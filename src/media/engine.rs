@@ -305,6 +305,8 @@ pub struct MediaEngine {
     pub srt_sender_semaphore: Arc<tokio::sync::Semaphore>,
     // Shared TS muxer stages
     pub ts_muxer_stages: TokioRwLock<HashMap<String, Arc<TsChunkRing>>>,
+    // Per-pipeline semaphore preventing concurrent diagnostic runs on the same pipeline
+    pub diag_semaphores: TokioRwLock<HashMap<String, Arc<tokio::sync::Semaphore>>>,
 }
 
 impl Default for MediaEngine {
@@ -334,6 +336,7 @@ impl MediaEngine {
             os_threads: std::sync::Mutex::new(Vec::new()),
             srt_sender_semaphore: Arc::new(tokio::sync::Semaphore::new(512)),
             ts_muxer_stages: TokioRwLock::new(HashMap::new()),
+            diag_semaphores: TokioRwLock::new(HashMap::new()),
         }
     }
 
@@ -772,8 +775,7 @@ impl MediaEngine {
                 false
             };
 
-            // Safeguard: if strong_count > 1, some task still holds the Arc reference
-            let in_use = has_readers || Arc::strong_count(stage) > 1;
+            let in_use = has_readers;
 
             if !in_use {
                 println!("[engine] Sweeping unused TS muxer stage: {}", key);
@@ -2278,5 +2280,75 @@ mod tests {
         drop(guard);
         drop(cloned);
         assert_eq!(Arc::strong_count(&tracks), 2); // tracks + mtx inner
+    }
+
+    // ── diag concurrency semaphore ──────────────────────────────────
+
+    #[tokio::test]
+    async fn diag_semaphore_prevents_concurrent_runs_on_same_pipeline() {
+        let engine = MediaEngine::new();
+        let pipeline = "diag-concurrency";
+
+        let sem = {
+            let mut map = engine.diag_semaphores.write().await;
+            map.entry(pipeline.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+                .clone()
+        };
+
+        let permit1 = sem.clone().try_acquire_owned();
+        assert!(permit1.is_ok(), "first acquire must succeed");
+
+        let permit2 = sem.clone().try_acquire_owned();
+        assert!(permit2.is_err(), "second concurrent acquire must fail");
+
+        let sem_other = {
+            let mut map = engine.diag_semaphores.write().await;
+            map.entry("other-pipeline".to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+                .clone()
+        };
+        assert!(
+            sem_other.try_acquire_owned().is_ok(),
+            "different pipeline must succeed"
+        );
+
+        drop(permit1);
+        assert!(
+            sem.try_acquire_owned().is_ok(),
+            "acquire must succeed after previous permit dropped"
+        );
+    }
+
+    // ── sweep_unused_stages reader tracking ─────────────────────────
+
+    #[tokio::test]
+    async fn sweep_unused_stages_retains_active_readers() {
+        let engine = MediaEngine::new();
+        let key = "pipeline:stage-sweep".to_string();
+        let cancel = CancellationToken::new();
+        let stage = Arc::new(TsChunkRing::new(16, cancel));
+
+        let _reader =
+            crate::media::ring_buffer::Reader::new("sweep-test".to_string(), stage.ring.clone());
+
+        engine
+            .ts_muxer_stages
+            .write()
+            .await
+            .insert(key.clone(), stage);
+
+        engine.sweep_unused_stages().await;
+        assert!(
+            engine.ts_muxer_stages.read().await.contains_key(&key),
+            "stage with active reader must be retained"
+        );
+
+        drop(_reader);
+        engine.sweep_unused_stages().await;
+        assert!(
+            !engine.ts_muxer_stages.read().await.contains_key(&key),
+            "stage without readers must be removed"
+        );
     }
 }
