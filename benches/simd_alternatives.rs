@@ -336,6 +336,12 @@ fn bench_crc32_alternatives(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("table_driven", size), &data, |b, d| {
             b.iter(|| black_box(crc32_mpeg2_table_driven(d)))
         });
+
+        // crc-fast (PCLMULQDQ) was benchmarked here during evaluation:
+        //   188 B: 40.6 ns (4.31 GiB/s, 11.7× vs table)
+        //   1024 B: 66.5 ns (14.3 GiB/s, 40.7× vs table)
+        //   12 B: 25.8 ns (444 MiB/s, 0.4× vs table ← SIMD overhead dominates)
+        // We chose table-driven for zero dependencies and faster tiny-input perf.
     }
 
     group.finish();

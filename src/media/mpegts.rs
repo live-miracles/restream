@@ -981,6 +981,10 @@ fn ms_to_ts(ms: i64) -> i64 {
 // --- CRC-32/MPEG-2 ---
 
 fn crc32_mpeg2(data: &[u8]) -> u32 {
+    // Benchmarked crc-fast (PCLMULQDQ) vs table-driven: at our workload sizes
+    // (12-22 bytes, once per ~100ms), crc-fast is 2.5× slower due to SIMD
+    // dispatch overhead. Table-driven is zero-dependency, faster at these sizes,
+    // and more than sufficient for production. See benches/simd_alternatives.rs.
     static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
     let table = TABLE.get_or_init(|| {
         let mut table = [0u32; 256];
