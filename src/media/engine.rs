@@ -2196,4 +2196,87 @@ mod tests {
             "hevc_to_h264 output ring must always be tagged 'h264'"
         );
     }
+
+    // ── audio_tracks Arc<Vec<AudioMeta>> semantics ────────────────────
+
+    #[test]
+    fn arc_audio_tracks_clone_is_shallow_refcount_bump() {
+        use std::sync::Arc;
+        let tracks = vec![
+            AudioMeta {
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                track_index: 0,
+                profile: None,
+                channel_layout: None,
+            },
+            AudioMeta {
+                codec: "opus".into(),
+                sample_rate: 48000,
+                channels: 6,
+                track_index: 1,
+                profile: None,
+                channel_layout: None,
+            },
+        ];
+        let arc = Arc::new(tracks);
+
+        let c1 = Arc::clone(&arc);
+        let c2 = Arc::clone(&arc);
+        assert_eq!(Arc::as_ptr(&arc), Arc::as_ptr(&c1));
+        assert_eq!(Arc::as_ptr(&arc), Arc::as_ptr(&c2));
+        assert_eq!(Arc::strong_count(&arc), 3);
+        assert_eq!(arc.len(), 2);
+        assert_eq!(c1[0].codec, "aac");
+        assert_eq!(c2[1].channels, 6);
+    }
+
+    #[test]
+    fn arc_audio_tracks_deref_works_for_iteration() {
+        use std::sync::Arc;
+        let tracks = vec![AudioMeta {
+            codec: "aac".into(),
+            sample_rate: 44100,
+            channels: 1,
+            track_index: 0,
+            profile: None,
+            channel_layout: None,
+        }];
+        let arc = Arc::new(tracks);
+        assert_eq!(arc.iter().next().unwrap().sample_rate, 44100);
+        assert_eq!(arc.first().unwrap().codec, "aac");
+        assert_eq!(arc.len(), 1);
+    }
+
+    #[test]
+    fn arc_audio_tracks_default_is_empty() {
+        use std::sync::Arc;
+        let arc: Arc<Vec<AudioMeta>> = Arc::default();
+        assert!(arc.is_empty());
+        assert_eq!(arc.len(), 0);
+    }
+
+    #[test]
+    fn arc_audio_tracks_mutex_wraps_correctly() {
+        use std::sync::{Arc, Mutex};
+        let tracks = Arc::new(vec![AudioMeta {
+            codec: "aac".into(),
+            sample_rate: 48000,
+            channels: 2,
+            track_index: 0,
+            profile: None,
+            channel_layout: None,
+        }]);
+        let mtx = Mutex::new(Arc::clone(&tracks));
+
+        // Clone under lock gives an Arc clone, not a deep Vec copy
+        let guard = mtx.lock().unwrap();
+        let cloned = guard.clone(); // Arc clone
+        assert_eq!(Arc::as_ptr(&tracks), Arc::as_ptr(&cloned));
+        assert_eq!(Arc::strong_count(&tracks), 3); // tracks + mtx inner + cloned
+        drop(guard);
+        drop(cloned);
+        assert_eq!(Arc::strong_count(&tracks), 2); // tracks + mtx inner
+    }
 }

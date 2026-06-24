@@ -182,11 +182,84 @@ fn benchmark_reader_lag(c: &mut Criterion) {
     group.finish();
 }
 
+/// Vec pre-allocation: Vec::new() vs Vec::with_capacity() for burst-sized
+/// collections.  Our hot paths produce batches of (Bytes, bool) tuples (up
+/// to 32) and byte buffers (up to 65536 bytes of muxed TS).  Pre-allocating
+/// eliminates 3-5 reallocations on the first few bursts.
+fn benchmark_vec_capacity(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vec_capacity");
+
+    let payload = Bytes::from(vec![0u8; 1316]);
+    let burst = 32usize;
+
+    // (Bytes, bool) tuple batch — TsChunkRing consumers
+    group.bench_with_input(
+        BenchmarkId::new("tuple_push_new", burst),
+        &burst,
+        |b, &n| {
+            b.iter(|| {
+                let mut v: Vec<(Bytes, bool)> = Vec::new();
+                for i in 0..n {
+                    v.push((payload.clone(), i == 0));
+                }
+                black_box(v.clear());
+            })
+        },
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("tuple_push_with_capacity", burst),
+        &burst,
+        |b, &n| {
+            b.iter(|| {
+                let mut v: Vec<(Bytes, bool)> = Vec::with_capacity(n);
+                for i in 0..n {
+                    v.push((payload.clone(), i == 0));
+                }
+                black_box(v.clear());
+            })
+        },
+    );
+
+    // u8 byte buffer — TS muxing hot loops
+    let byte_cap = 65536usize;
+    group.throughput(Throughput::Bytes(byte_cap as u64));
+
+    group.bench_with_input(
+        BenchmarkId::new("byte_extend_new", byte_cap),
+        &byte_cap,
+        |b, _| {
+            b.iter(|| {
+                let mut v: Vec<u8> = Vec::new();
+                v.extend_from_slice(&vec![0x47u8; 1316]);
+                black_box(&v);
+                v.clear();
+            })
+        },
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("byte_extend_with_capacity", byte_cap),
+        &byte_cap,
+        |b, _| {
+            b.iter(|| {
+                let mut v: Vec<u8> = Vec::with_capacity(65536);
+                v.extend_from_slice(&vec![0x47u8; 1316]);
+                black_box(&v);
+                v.clear();
+            })
+        },
+    );
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
     benchmark_pull_burst,
     benchmark_reader_lag,
+    benchmark_vec_capacity,
     // Run concurrency bench last so 500 threads don't noise-up the pure benchmarks.
     benchmark_ring_buffer_concurrency,
 );

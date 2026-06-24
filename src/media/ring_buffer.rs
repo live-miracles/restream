@@ -900,4 +900,50 @@ mod tests {
         let ff = rb.fast_forward(write_idx);
         assert_eq!(ff, 0, "fast_forward should return the keyframe at slot 0");
     }
+
+    // ── Vec pre-allocation correctness ───────────────────────────────
+
+    #[test]
+    fn vec_with_capacity_retains_capacity_after_clear() {
+        let cap = 65536;
+        let mut v: Vec<u8> = Vec::with_capacity(cap);
+        assert!(v.capacity() >= cap);
+        v.extend_from_slice(&[0x47u8; 1000]);
+        assert!(!v.is_empty());
+        assert!(v.capacity() >= cap);
+        v.clear();
+        assert!(v.is_empty());
+        assert!(v.capacity() >= cap);
+    }
+
+    #[test]
+    fn vec_with_capacity_retains_capacity_after_drain() {
+        let cap = 32;
+        let mut v: Vec<(usize, bool)> = Vec::with_capacity(cap);
+        for i in 0..10 {
+            v.push((i, i == 0));
+        }
+        let cap_before = v.capacity();
+        let _drained: Vec<_> = v.drain(..).collect();
+        assert!(v.is_empty());
+        assert_eq!(v.capacity(), cap_before);
+    }
+
+    #[test]
+    fn vec_new_has_zero_capacity() {
+        let v: Vec<u8> = Vec::new();
+        assert_eq!(v.capacity(), 0);
+    }
+
+    #[test]
+    fn vec_with_capacity_reuses_allocation_across_cycles() {
+        let cap = 65536;
+        let mut v: Vec<u8> = Vec::with_capacity(cap);
+        let alloc_id = v.as_ptr() as usize;
+        for _ in 0..3 {
+            v.extend_from_slice(&[0x47u8; 1000]);
+            v.clear();
+            assert_eq!(v.as_ptr() as usize, alloc_id);
+        }
+    }
 }
