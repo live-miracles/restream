@@ -485,7 +485,9 @@ async fn logout_handler(
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         state.sessions.write().await.remove(&token);
-        let _ = db::delete_session(&state.db, &token).await;
+        if let Err(e) = db::delete_session(&state.db, &token).await {
+            eprintln!("[logout] Failed to delete session from DB: {}", e);
+        }
     }
     let cookie = clear_session_cookie();
     (
@@ -1330,6 +1332,7 @@ async fn ingests_post_handler(
 
     if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) { return r; }
     if let Some(r) = check_field_len("stream_key", &payload.stream_key, MAX_STREAM_KEY_LEN) { return r; }
+    if let Some(ref s) = payload.start_time { if let Some(r) = check_field_len("start_time", s, 64) { return r; } }
     let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
@@ -1371,6 +1374,7 @@ async fn ingests_update_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(ref s) = payload.start_time { if let Some(r) = check_field_len("start_time", s, 64) { return r; } }
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
 

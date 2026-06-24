@@ -1184,3 +1184,113 @@ async fn config_patch_invalid_transcode_profile_rejected() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// --- Ingest start_time validation tests ---
+
+#[tokio::test]
+async fn ingest_create_start_time_too_long_rejected() {
+    let (app, _pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let long_start = "0".repeat(65);
+    let body = serde_json::json!({
+        "filename": "clip.mp4",
+        "streamKey": "testkey01",
+        "startTime": long_start,
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/ingests",
+            &cookie,
+            Some(&body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ingest_create_start_time_valid_accepted() {
+    let (app, _pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let body = serde_json::json!({
+        "filename": "clip.mp4",
+        "streamKey": "testkey02",
+        "startTime": "00:01:30",
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/ingests",
+            &cookie,
+            Some(&body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn ingest_update_start_time_too_long_rejected() {
+    let (app, _pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Create ingest first
+    let create_body = serde_json::json!({
+        "filename": "clip.mp4",
+        "streamKey": "testkey03",
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/ingests",
+            &cookie,
+            Some(&create_body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let ingest_id = json["id"].as_str().unwrap().to_string();
+
+    let long_start = "1".repeat(65);
+    let update_body = serde_json::json!({
+        "filename": "clip.mp4",
+        "streamKey": "testkey03",
+        "startTime": long_start,
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PUT",
+            &format!("/api/ingests/{}", ingest_id),
+            &cookie,
+            Some(&update_body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// --- Reconciler backoff unit test ---
+
+#[test]
+fn reconciler_exponential_backoff_values() {
+    // Verify the backoff formula: min(5 * 2^retries, 300) seconds
+    // retries=1 → 10s, retries=2 → 20s, retries=3 → 40s, retries=4 → 80s,
+    // retries=5 → 160s, retries=6 → 320 → capped at 300s
+    let backoff = |retries: u32| -> u64 { (5u64 << retries.min(6)).min(300) };
+    assert_eq!(backoff(1), 10);
+    assert_eq!(backoff(2), 20);
+    assert_eq!(backoff(3), 40);
+    assert_eq!(backoff(4), 80);
+    assert_eq!(backoff(5), 160);
+    assert_eq!(backoff(6), 300); // 5*64=320 capped to 300
+    assert_eq!(backoff(7), 300); // min(6) saturates
+    assert_eq!(backoff(10), 300);
+}

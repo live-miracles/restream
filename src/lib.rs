@@ -162,7 +162,7 @@ pub async fn run_app() {
         engine.clone(),
     ));
     let srt_port = ports.srt;
-    tokio::spawn(async move {
+    let srt_handle = tokio::spawn(async move {
         srt_server.run(srt_port).await;
     });
 
@@ -199,7 +199,7 @@ pub async fn run_app() {
     }
 
     // Run reconciliation loop
-    let last_failed: Arc<TokioMutex<HashMap<String, Instant>>> =
+    let last_failed: Arc<TokioMutex<HashMap<String, (Instant, u32)>>> =
         Arc::new(TokioMutex::new(HashMap::new()));
     let mut reconciler_tick: u64 = 0;
     loop {
@@ -243,12 +243,32 @@ pub async fn run_app() {
             let now_str = chrono::Utc::now().to_rfc3339();
 
             if output.desired_state == "running" && !is_active {
-                // Check backoff if it failed recently
+                // Check backoff / max-retries for recently-failed outputs
                 let mut lf = last_failed.lock().await;
-                if let Some(&failed_at) = lf.get(&output.id)
-                    && failed_at.elapsed() < Duration::from_secs(5)
-                {
-                    continue; // Wait for backoff
+                if let Some(&(failed_at, retries)) = lf.get(&output.id) {
+                    const MAX_RETRIES: u32 = 10;
+                    const MAX_BACKOFF_SECS: u64 = 300;
+                    if retries >= MAX_RETRIES {
+                        lf.remove(&output.id);
+                        drop(lf);
+                        eprintln!(
+                            "[reconciler] Output {} ({}) exceeded {} retries — marking failed",
+                            output.name, output.id, MAX_RETRIES
+                        );
+                        let _ = db::set_output_desired_state(
+                            &pool,
+                            &output.pipeline_id,
+                            &output.id,
+                            "failed",
+                        )
+                        .await;
+                        continue;
+                    }
+                    let backoff_secs = (5u64 << retries.min(6)).min(MAX_BACKOFF_SECS);
+                    if failed_at.elapsed() < Duration::from_secs(backoff_secs) {
+                        drop(lf);
+                        continue; // Wait for backoff
+                    }
                 }
                 lf.remove(&output.id);
                 drop(lf);
@@ -450,7 +470,11 @@ pub async fn run_app() {
                         )
                         .await;
                         engine_c.unregister_egress(&output_id_c).await;
-                        last_failed_c.lock().await.insert(output_id_c, Instant::now());
+                        {
+                            let mut lf = last_failed_c.lock().await;
+                            let retries = lf.get(&output_id_c).map(|(_, r)| r + 1).unwrap_or(1);
+                            lf.insert(output_id_c, (Instant::now(), retries));
+                        }
                         return;
                     }
 
@@ -560,10 +584,9 @@ pub async fn run_app() {
                     .await;
 
                     if !is_cancelled {
-                        last_failed_c
-                            .lock()
-                            .await
-                            .insert(output_id_c, Instant::now());
+                        let mut lf = last_failed_c.lock().await;
+                        let retries = lf.get(&output_id_c).map(|(_, r)| r + 1).unwrap_or(1);
+                        lf.insert(output_id_c, (Instant::now(), retries));
                     }
                 });
             } else if output.desired_state == "stopped" && is_active {
@@ -756,6 +779,11 @@ pub async fn run_app() {
     // Close the SQLite pool so WAL is checkpointed into the main DB file.
     // Must be called after all DB-writing tasks have been cancelled above.
     pool.close().await;
+
+    // Await the SRT server task: dropping tx (via drain_os_thread_handles above)
+    // unblocks run()'s accept loop; waiting here ensures _server_sock_guard Drop
+    // fires and srt_close(server_sock) completes before srt_cleanup() below.
+    let _ = srt_handle.await;
 
     // Tear down libsrt global state AFTER all SRT sockets are closed.
     // This must come after join_os_threads() above, which guarantees all
