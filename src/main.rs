@@ -4,10 +4,10 @@
 
 fn main() {
     // Extract embedded FFmpeg binary synchronously BEFORE the async runtime
-    // spawns any threads. std::env::set_var is not safe to call from a
-    // multi-threaded context; doing it here guarantees single-threaded
-    // execution and eliminates the race between env-var write and
-    // transcoder-stage spawning.
+    // spawns any threads. Must be called before ffmpeg_bin_path() consumers
+    // run — this guarantees single-threaded initialization of the OnceLock
+    // and eliminates any race between cached-path write and transcoder-stage
+    // spawning.
     restream::ffmpeg_extract::ensure_ffmpeg_extracted();
 
     tokio::runtime::Builder::new_multi_thread()

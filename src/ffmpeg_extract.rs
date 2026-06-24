@@ -1,44 +1,79 @@
 //! Extract embedded FFmpeg binary to temp directory on startup.
 //!
-//! This module extracts the embedded FFmpeg binary (via rust-embed) to a
-//! temporary directory on startup, then updates FFMPEG_BIN_PATH so the
-//! external transcoder can use it. This achieves single-binary deployment
-//! while keeping RSS baseline low (binary decompressed and freed after extract).
+//! If the `FFMPEG_BIN_PATH` environment variable is set before startup the
+//! embedded binary is **not** extracted — the provided path is used directly.
+//! Set it to a system FFmpeg (e.g. `/usr/bin/ffmpeg`) to skip the temp-dir
+//! extraction entirely, keeping RSS baseline low.
+//!
+//! When the env var is absent the embedded binary (via `rust-embed`) is written
+//! to `/tmp/restream-ffmpeg/ffmpeg`, made executable, and the parent temp
+//! directory is cleaned up on shutdown.
+//!
+//! The resolved path is cached in a [`OnceLock`] and served via [`ffmpeg_bin_path`]
+//! so the external transcoder and other consumers don't need environment variables.
 
 use crate::api::EmbeddedAssets;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Extract embedded FFmpeg binary to temp directory and return its path.
+static FFMPEG_BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Resolve the FFmpeg binary path, extracting the embedded one only if needed.
 ///
-/// On first call, this writes the embedded `public/bin/ffmpeg` to
-/// `/tmp/restream-ffmpeg-<timestamp>`, makes it executable, and caches
-/// the path in FFMPEG_BIN_PATH environment variable.
+/// If `FFMPEG_BIN_PATH` is set in the environment the provided path is used
+/// as-is. Otherwise the embedded `public/bin/ffmpeg` is extracted to a per-PID
+/// temp directory, made executable, and cached.
 ///
-/// Subsequent calls use the cached path.
-pub fn ensure_ffmpeg_extracted() -> PathBuf {
-    // Check if already extracted
-    if let Ok(cached) = std::env::var("FFMPEG_BIN_PATH") {
-        let path = PathBuf::from(&cached);
-        if path.exists() && path.is_file() {
-            return path;
-        }
+/// Subsequent calls return the cached path immediately.
+///
+/// Must be called before any consumer calls [`ffmpeg_bin_path`].
+pub fn ensure_ffmpeg_extracted() -> &'static Path {
+    if let Some(cached) = FFMPEG_BIN_PATH.get() {
+        return cached;
     }
 
-    // Extract embedded FFmpeg
+    let path = if let Ok(user_path) = std::env::var("FFMPEG_BIN_PATH") {
+        let path = PathBuf::from(&user_path);
+        if path.exists() && path.is_file() {
+            println!(
+                "[startup] FFMPEG_BIN_PATH is set — using external FFmpeg: {}",
+                path.display()
+            );
+            path
+        } else {
+            eprintln!(
+                "[startup] FFMPEG_BIN_PATH='{}' is set but the file does not exist; \
+                 extracting embedded FFmpeg instead",
+                user_path
+            );
+            extract_embedded()
+        }
+    } else {
+        extract_embedded()
+    };
+
+    FFMPEG_BIN_PATH.set(path).expect("race initializing FFMPEG_BIN_PATH");
+    FFMPEG_BIN_PATH.get().unwrap()
+}
+
+/// Extract the embedded FFmpeg binary to a per-PID temp directory.
+fn extract_embedded() -> PathBuf {
     let ffmpeg_data = EmbeddedAssets::get("bin/ffmpeg")
         .expect("Embedded FFmpeg binary not found in public/bin/ffmpeg");
 
-    // Create temp directory
-    let temp_dir = std::env::temp_dir().join(format!("restream-ffmpeg-{}", std::process::id()));
+    // Fixed temp directory (no PID suffix) so crash loops don't leak orphaned
+    // copies. Clean up any leftover from a previous crash at startup.
+    let temp_dir = std::env::temp_dir().join("restream-ffmpeg");
+    let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("Failed to create temp ffmpeg directory");
 
     let ffmpeg_path = temp_dir.join("ffmpeg");
 
-    // Write binary
+    // Write binary from embedded data.
     std::fs::write(&ffmpeg_path, ffmpeg_data.data.as_ref())
         .expect("Failed to write extracted FFmpeg binary");
 
-    // Make executable
+    // Make executable.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -51,22 +86,27 @@ pub fn ensure_ffmpeg_extracted() -> PathBuf {
         ffmpeg_path.display()
     );
 
-    // Safe: called before the tokio runtime spawns any threads (see main.rs).
-    // POSIX requires single-threaded context for setenv; the call site
-    // guarantees this by running before Runtime::build().
-    #[allow(unused_unsafe)]
-    unsafe {
-        std::env::set_var("FFMPEG_BIN_PATH", &ffmpeg_path);
-    }
-
     ffmpeg_path
 }
 
-/// Cleanup temp FFmpeg directory on shutdown.
+/// Return the resolved FFmpeg binary path.
+///
+/// # Panics
+/// Panics if [`ensure_ffmpeg_extracted`] has not been called first.
+pub fn ffmpeg_bin_path() -> &'static Path {
+    FFMPEG_BIN_PATH
+        .get()
+        .expect("ensure_ffmpeg_extracted() must be called before ffmpeg_bin_path()")
+}
+
+/// Remove the temp FFmpeg directory on shutdown.
+///
+/// This is a no-op when the user supplied `FFMPEG_BIN_PATH` before startup
+/// (since the path won't be under the `restream-ffmpeg` temp directory).
 pub fn cleanup_ffmpeg() {
-    if let Ok(cached) = std::env::var("FFMPEG_BIN_PATH") {
-        let path = PathBuf::from(&cached);
-        if let Some(parent) = path.parent() {
+    if let Some(path) = FFMPEG_BIN_PATH.get() {
+        let parent = path.parent().unwrap();
+        if parent.file_name().map_or(false, |n| n == "restream-ffmpeg") {
             let _ = std::fs::remove_dir_all(parent);
         }
     }

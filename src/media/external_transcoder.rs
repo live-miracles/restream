@@ -154,8 +154,8 @@ pub async fn start_external_transcoder_stage(
         pipeline_id, encoding
     );
 
-    let ffmpeg_bin = std::env::var("FFMPEG_BIN_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
-    let mut child = match Command::new(&ffmpeg_bin)
+    let ffmpeg_bin = crate::ffmpeg_extract::ffmpeg_bin_path();
+    let mut child = match Command::new(ffmpeg_bin)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
