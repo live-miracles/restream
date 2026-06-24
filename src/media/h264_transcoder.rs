@@ -108,7 +108,7 @@ pub async fn start_h264_transcoder(
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single queue.write() call (one lock acquisition per
     // burst instead of one per packet).
-    let mut ts_batch: Vec<u8> = Vec::new();
+    let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
 
     loop {
         tokio::select! {

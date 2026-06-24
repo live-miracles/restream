@@ -1447,7 +1447,7 @@ impl SrtServer {
 
         let mut reader = TsChunkReader::new(format!("srt_play:{}", pipeline_id), &shared_muxer);
         let mut pull_packets = Vec::with_capacity(32);
-        let mut ts_batch: Vec<u8> = Vec::new();
+        let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
 
         loop {
             reader.wait_for_data().await;
@@ -2356,7 +2356,7 @@ pub fn start_shared_ts_muxer(
         );
         let mut video_conv_buf = Vec::<u8>::new();
         let mut audio_conv_buf = Vec::<u8>::new();
-        let mut ts_batch = Vec::new();
+        let mut ts_batch = Vec::with_capacity(32);
         let mut pull_packets = Vec::with_capacity(32);
 
         loop {
@@ -2733,7 +2733,7 @@ pub async fn start_srt_egress(
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single out_queue.write() call (one lock acquisition
     // per burst instead of one per packet).
-    let mut ts_batch: Vec<u8> = Vec::new();
+    let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
