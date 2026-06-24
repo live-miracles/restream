@@ -490,4 +490,89 @@ mod tests {
         assert_eq!(n, 5);
         assert_eq!(&buf, b"hello");
     }
+
+    #[tokio::test]
+    async fn write_after_close_is_noop() {
+        let queue = MemoryQueue::new();
+        queue.close();
+        queue.write(b"should not appear").await;
+        let mut buf = [0u8; 16];
+        assert_eq!(queue.read_nonblocking(&mut buf), 0);
+    }
+
+    #[tokio::test]
+    async fn write_batch_after_close_returns_zero() {
+        let queue = MemoryQueue::new();
+        queue.close();
+        assert_eq!(queue.write_batch([b"data" as &[u8]]).await, 0);
+    }
+
+    #[test]
+    fn read_nonblocking_empty_returns_zero() {
+        let queue = MemoryQueue::new();
+        let mut buf = [0u8; 16];
+        assert_eq!(queue.read_nonblocking(&mut buf), 0);
+    }
+
+    #[test]
+    fn read_returns_zero_on_closed_empty() {
+        let queue = MemoryQueue::new();
+        queue.close();
+        let mut buf = [0u8; 16];
+        assert_eq!(queue.read(&mut buf), 0);
+    }
+
+    #[test]
+    fn len_and_is_empty_reflect_buffered_bytes() {
+        let queue = MemoryQueue::new();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        queue.write_sync(b"hello");
+        assert!(!queue.is_empty());
+        assert_eq!(queue.len(), 5);
+        let mut buf = [0u8; 3];
+        queue.read_nonblocking(&mut buf);
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn is_closed_reflects_state() {
+        let queue = MemoryQueue::new();
+        assert!(!queue.is_closed());
+        queue.close();
+        assert!(queue.is_closed());
+    }
+
+    #[tokio::test]
+    async fn write_respects_capacity() {
+        let queue = Arc::new(MemoryQueue::new_with_capacity(5));
+        queue.write(b"hello").await; // 5 bytes — exactly at capacity
+        let q = queue.clone();
+        let handle = tokio::spawn(async move {
+            q.write(b"blocked").await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "write should still be blocked at capacity"
+        );
+        let mut buf = [0u8; 5];
+        queue.read_nonblocking(&mut buf);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_wakes_on_write() {
+        let queue = Arc::new(MemoryQueue::new());
+        let q = queue.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            q.write_sync(b"wakeup");
+        });
+        let mut buf = [0u8; 6];
+        let n = queue.read(&mut buf);
+        assert_eq!(n, 6);
+        assert_eq!(&buf, b"wakeup");
+        handle.join().unwrap();
+    }
 }

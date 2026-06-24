@@ -339,4 +339,112 @@ mod tests {
         assert_eq!(p.bframes, 0); // defaulted
         assert_eq!(p.gop, 60); // defaulted
     }
+
+    #[test]
+    fn validate_all_valid_presets_pass() {
+        for preset in [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo",
+        ] {
+            let p = TranscodeProfile {
+                preset: preset.into(),
+                ..Default::default()
+            };
+            assert!(p.validate().is_ok(), "preset '{preset}' should be valid");
+        }
+    }
+
+    #[test]
+    fn validate_invalid_preset_rejected() {
+        let p = TranscodeProfile {
+            preset: "bogus".into(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn validate_invalid_tune_rejected() {
+        let p = TranscodeProfile {
+            tune: "bogus".into(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn validate_empty_tune_passes() {
+        let p = TranscodeProfile {
+            tune: String::new(),
+            ..Default::default()
+        };
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_crf_boundaries() {
+        assert!(
+            TranscodeProfile {
+                crf: 0,
+                ..Default::default()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            TranscodeProfile {
+                crf: 51,
+                ..Default::default()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            TranscodeProfile {
+                crf: -1,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            TranscodeProfile {
+                crf: 52,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_default_passes() {
+        assert!(TranscodeProfile::default().validate().is_ok());
+    }
+
+    #[test]
+    fn builtin_720p_has_correct_dimensions() {
+        let profiles = built_in_defaults();
+        let p = &profiles["720p"];
+        assert_eq!(p.width, 1280);
+        assert_eq!(p.height, 720);
+    }
+
+    #[test]
+    fn builtin_h264_is_passthrough() {
+        let profiles = built_in_defaults();
+        let p = &profiles["h264"];
+        assert_eq!(p.width, 0);
+        assert_eq!(p.height, 0);
+        assert_eq!(p.preset, "ultrafast");
+        assert_eq!(p.tune, "zerolatency");
+    }
 }

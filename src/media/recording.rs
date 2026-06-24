@@ -275,4 +275,71 @@ mod tests {
         assert!(res.is_ok());
         let _ = std::fs::remove_file(file_path);
     }
+
+    #[test]
+    fn sanitize_name_replaces_path_chars() {
+        assert_eq!(
+            sanitize_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+    }
+
+    #[test]
+    fn sanitize_name_preserves_alphanumeric_and_dashes() {
+        assert_eq!(sanitize_name("My-Pipeline_v2"), "My-Pipeline_v2");
+    }
+
+    #[test]
+    fn sanitize_name_empty_string() {
+        assert_eq!(sanitize_name(""), "");
+    }
+
+    #[test]
+    fn build_filename_has_ts_extension() {
+        let name = build_filename("test-pipe");
+        assert!(name.ends_with(".ts"));
+    }
+
+    #[test]
+    fn build_filename_contains_sanitized_name() {
+        let name = build_filename("My Pipe?");
+        assert!(
+            name.contains("My Pipe_"),
+            "expected sanitized name in: {name}"
+        );
+    }
+
+    #[test]
+    fn ts_writer_writes_data_to_file() {
+        let queue = Arc::new(MemoryQueue::new());
+        let token = CancellationToken::new();
+        let temp = std::env::temp_dir().join("test_write.ts");
+        let path = temp.to_string_lossy().to_string();
+        queue.write_sync(b"hello world");
+        queue.close();
+        let res = run_ts_writer(queue, &path, token);
+        assert!(res.is_ok());
+        let content = std::fs::read(&temp).unwrap();
+        assert_eq!(content, b"hello world");
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn ts_writer_empty_closed_queue_creates_empty_file() {
+        let queue = Arc::new(MemoryQueue::new());
+        queue.close();
+        let token = CancellationToken::new();
+        let temp = std::env::temp_dir().join("test_empty.ts");
+        let path = temp.to_string_lossy().to_string();
+        assert!(run_ts_writer(queue, &path, token).is_ok());
+        assert_eq!(std::fs::read(&temp).unwrap().len(), 0);
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn ts_writer_fails_on_invalid_path() {
+        let queue = Arc::new(MemoryQueue::new());
+        let token = CancellationToken::new();
+        assert!(run_ts_writer(queue, "/nonexistent_dir/should/fail.ts", token).is_err());
+    }
 }

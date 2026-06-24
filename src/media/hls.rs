@@ -352,4 +352,70 @@ mod tests {
         assert!(store.get_segment(3).is_some());
         assert!(store.get_segment(13).is_some());
     }
+
+    #[test]
+    fn clear_resets_segments_and_index() {
+        let store = HlsStore::new();
+        store.push_segment(2.0, Bytes::from_static(b"data"));
+        store.clear();
+        assert!(store.get_playlist().is_none());
+        assert!(store.get_segment(0).is_none());
+    }
+
+    #[test]
+    fn empty_store_playlist_returns_none() {
+        assert!(HlsStore::new().get_playlist().is_none());
+    }
+
+    #[test]
+    fn get_segment_nonexistent_returns_none() {
+        let store = HlsStore::new();
+        store.push_segment(2.0, Bytes::from_static(b"data"));
+        assert!(store.get_segment(999).is_none());
+    }
+
+    #[test]
+    fn get_segment_finds_by_exact_index() {
+        let store = HlsStore::new();
+        store.push_segment(2.0, Bytes::from_static(b"first"));
+        store.push_segment(3.0, Bytes::from_static(b"second"));
+        assert_eq!(store.get_segment(1).as_deref(), Some(b"second".as_slice()));
+    }
+
+    #[test]
+    fn target_duration_never_decreases() {
+        let store = HlsStore::new();
+        store.push_segment(8.0, Bytes::from_static(b"long"));
+        store.push_segment(2.0, Bytes::from_static(b"short"));
+        let playlist = store.get_playlist().unwrap();
+        assert!(playlist.contains("#EXT-X-TARGETDURATION:8"));
+        assert!(!playlist.contains("#EXT-X-TARGETDURATION:2"));
+    }
+
+    #[test]
+    fn exact_max_segments_does_not_evict_first() {
+        let store = HlsStore::new();
+        for i in 0..MAX_SEGMENTS as u64 {
+            store.push_segment(2.0, Bytes::from(i.to_be_bytes().to_vec()));
+        }
+        assert!(store.get_segment(0).is_some());
+    }
+
+    #[test]
+    fn new_store_has_empty_initial_state() {
+        let store = HlsStore::new();
+        assert!(store.get_playlist().is_none());
+        assert!(store.get_segment(0).is_none());
+    }
+
+    #[test]
+    fn push_segment_assigns_sequential_indices() {
+        let store = HlsStore::new();
+        store.push_segment(1.0, Bytes::from_static(b"a"));
+        store.push_segment(1.0, Bytes::from_static(b"b"));
+        store.push_segment(1.0, Bytes::from_static(b"c"));
+        assert!(store.get_segment(0).is_some());
+        assert!(store.get_segment(1).is_some());
+        assert!(store.get_segment(2).is_some());
+    }
 }
