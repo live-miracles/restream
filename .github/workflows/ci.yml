@@ -6,50 +6,162 @@ on:
       - master
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
 jobs:
   format:
     name: Format check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+      - name: Rust format check
+        run: cargo fmt --all --check
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npm run format:check
+      - name: TypeScript compile check
+        run: npx tsc -p tsconfig.json --noEmit
 
-  unit:
-    name: Unit tests
+  lint:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci
-      - run: npm run test:routes
-      - run: npm run test:normalization
+          components: clippy
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
+            libsrt-openssl-dev libssl-dev pkg-config clang
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: clippy-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: clippy-${{ runner.os }}-
+      - name: Rust clippy (strict for lib)
+        run: cargo clippy --lib -- -D warnings
+      - name: Rust clippy (warn only for all targets)
+        run: cargo clippy --workspace --all-targets
+
+  test:
+    name: Unit & integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
+            libsrt-openssl-dev libssl-dev pkg-config clang
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: test-${{ runner.os }}-
+      - name: Rust tests
+        run: cargo test --workspace
+
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: llvm-tools-preview
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
+            libsrt-openssl-dev libssl-dev pkg-config clang
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: coverage-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: coverage-${{ runner.os }}-
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.lcov
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Coverage summary
+        run: |
+          echo "=== Coverage summary ==="
+          cargo llvm-cov report --summary-only 2>/dev/null || true
 
   integration:
-    name: Integration test (2x3)
+    name: Integration test (2x3 matrix)
     runs-on: ubuntu-latest
-    needs: unit
+    needs: test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
+            libsrt-openssl-dev libssl-dev pkg-config clang \
+            jq curl
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-
-      - name: Cache FFmpeg binary
-        id: cache-ffmpeg
+      - name: Cache cargo
         uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: integration-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: integration-${{ runner.os }}-
+
+      - name: Download FFmpeg binary
+        uses: actions/cache@v4
+        id: cache-ffmpeg
         with:
           path: bin/ffmpeg
           key: ffmpeg-7.1-${{ runner.arch }}
-
       - name: Download FFmpeg
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
@@ -67,19 +179,17 @@ jobs:
           mkdir -p bin/ffmpeg
           cp "$TMP"/ffmpeg-*/bin/ffmpeg "$TMP"/ffmpeg-*/bin/ffprobe bin/ffmpeg/
           rm -rf "$TMP"
-
       - name: Add FFmpeg to PATH
         run: |
           chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
           echo "$GITHUB_WORKSPACE/bin/ffmpeg" >> "$GITHUB_PATH"
 
-      - name: Cache MediaMTX binary
-        id: cache-mediamtx
+      - name: Download MediaMTX
         uses: actions/cache@v4
+        id: cache-mediamtx
         with:
           path: bin/mediamtx
           key: mediamtx-1.17.1-${{ runner.arch }}
-
       - name: Download MediaMTX
         if: steps.cache-mediamtx.outputs.cache-hit != 'true'
         run: |
@@ -93,18 +203,17 @@ jobs:
           URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/${FILE}"
           mkdir -p bin/mediamtx
           curl -fsSL "$URL" | tar -xz -C bin/mediamtx
-
       - name: Ensure MediaMTX is executable
         run: chmod +x bin/mediamtx/mediamtx
 
-      - run: npm ci
-      - run: npm run build:backend
+      - name: Build release binary
+        run: cargo build --release
 
       - name: Start MediaMTX
         run: bin/mediamtx/mediamtx &
 
       - name: Start app
-        run: npm start &
+        run: ./target/release/restream &
 
       - name: Wait for app to be ready
         run: |
@@ -119,7 +228,7 @@ jobs:
           exit 1
 
       - name: Run 2x3 integration test
-        run: npm run test:integration
+        run: ./test/run-2x3.sh
 
       - name: Upload test logs on failure
         if: failure()
@@ -127,4 +236,60 @@ jobs:
         with:
           name: integration-test-logs
           path: test/artifacts/logs/
+          if-no-files-found: ignore
+
+  playwright:
+    name: HLS player E2E
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
+            libsrt-openssl-dev libssl-dev pkg-config clang
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: playwright-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: playwright-${{ runner.os }}-
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+      - name: Build release binary
+        run: cargo build --release
+      - name: Start app
+        run: ./target/release/restream &
+      - name: Wait for app
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:3030/healthz; then
+              echo "App is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "App did not become ready" >&2
+          exit 1
+      - name: Run Playwright tests
+        run: npx playwright test
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: test-results/
           if-no-files-found: ignore

@@ -52,5 +52,8 @@ public/output.css
 data.db
 /media/
 
+# Coverage output
+coverage.lcov
+
 # Nodejs
 node_modules

@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "build:frontend": "npx tsc -p tsconfig.json",
+    "format:check": "npx tsc -p tsconfig.json --noEmit",
+    "test:e2e": "npx playwright test"
+  },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
     "typescript": "^6.0.3"
