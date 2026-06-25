@@ -12,6 +12,7 @@
 #   ramp        8 ingest×egress×encoding configs, outputs added one-by-one, per-step RSS/CPU snapshots
 #   mixed-scale 4 configs (h264-srt anchor: HLS+smoke+lifecycle; h265-srt: TC_SPAWNS; multi-audio ×2)
 #   bonding     SRT broadcast+backup bonding (requires static build)
+#   burst-verify closed-GOP RTMP/SRT matrix that verifies graph burst reader stats
 #
 # Common env overrides (all modes):
 #   RESTREAM_BIN   path to restream binary (default: target/release/restream)
@@ -874,9 +875,21 @@ run_burst_verify() {
   )
 
   local pass=0 fail_count=0
+  local selected_count=0
 
   for cfg_line in "${CONFIGS[@]}"; do
     read -r cfg proto codec res fps gop multi_audio <<< "$cfg_line"
+    if [[ -n "${BURST_CONFIGS:-}" ]]; then
+      local selected=0 wanted
+      for wanted in ${BURST_CONFIGS}; do
+        if [[ "$cfg" == "$wanted" ]]; then
+          selected=1
+          break
+        fi
+      done
+      [[ "$selected" == "1" ]] || continue
+    fi
+    selected_count=$(( selected_count + 1 ))
 
     echo ""
     echo "── ${cfg}: ${proto} ${codec} ${res} ${fps}fps GOP=${gop} audio=$([[ $multi_audio == 1 ]] && echo 2 || echo 1) ──"
@@ -987,6 +1000,10 @@ run_burst_verify() {
     # Let restream drain before next config (avoids port reuse races)
     sleep 3
   done
+
+  if [[ "$selected_count" -eq 0 ]]; then
+    fail "burst-verify: BURST_CONFIGS matched no configs"
+  fi
 
   echo ""
   echo "══════════════════════════════════════════════════════════════════════════"

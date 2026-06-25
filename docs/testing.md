@@ -152,6 +152,20 @@ member closes.
 Note: `bonding` runs on the host network (random ports) so it is exempt from
 the netns wrapper even without `--host`.
 
+### `burst-verify` — Closed-GOP reader telemetry matrix
+
+```sh
+./test/run-integration.sh burst-verify
+```
+
+Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
+frame rates, and single/dual-audio variants. Each case starts a source output,
+waits for ingest, samples `/pipelines/:id/graph`, and fails if active ring
+readers do not report positive `burstCount` and `avgBurstSize` telemetry.
+
+Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
+space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"`).
+
 ## Validation Results: June 20, 2026
 
 Environment: WSL2, 20 logical CPUs, 7.6 GiB RAM, 2 GiB swap.
@@ -321,6 +335,7 @@ Currently checked in:
 test/run-integration.sh ramp
 test/run-integration.sh mixed-scale
 test/run-integration.sh bonding
+test/run-integration.sh burst-verify
 test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
