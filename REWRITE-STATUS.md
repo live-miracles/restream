@@ -77,6 +77,16 @@ The 2×3 live script exists and targets native RTMP/SRT ingest with six outputs.
 The checked-in `test/artifacts/latest/` files are local evidence, not a
 replacement for a clean reproducible CI run.
 
+A focused aggregate-matrix smoke on June 25, 2026 also passed:
+
+- `./test/run-protocol-matrix.sh --run-id protocol-smoke-20260625T141347Z
+  --fast --continue-on-fail --only-modes hls-put,bframe-rtmp`
+- aggregate manifest: `test/artifacts/protocol-smoke-20260625T141347Z/manifest.json`
+- `hls-put`: playlist and TS segment uploaded via HTTP PUT, probed as
+  1280×720, then recovered after dummy sink restart
+- `bframe-rtmp`: 63/151 probed video packets had `PTS > DTS`, and DTS stayed
+  monotone
+
 ## Runtime Architecture
 
 ```text
