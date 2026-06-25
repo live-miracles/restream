@@ -669,6 +669,7 @@ impl MediaEngine {
         let pid = pipeline_id.to_string();
         let ob = output_buf.clone();
         let self_clone = self.clone();
+        let stage_storage_key = key.clone();
         tokio::spawn(async move {
             crate::media::h264_transcoder::start_h264_transcoder(
                 pid,
@@ -676,6 +677,7 @@ impl MediaEngine {
                 ob,
                 self_clone,
                 cancel,
+                stage_storage_key,
             )
             .await;
         });

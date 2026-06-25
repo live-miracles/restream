@@ -269,6 +269,13 @@ pub async fn start_external_transcoder_stage(
         }
     };
 
+    // ── stage metrics ─────────────────────────────────────────────────────
+    // Fetch (or create) the shared Arc<StageMetrics> for this stage so the
+    // graph endpoint can report live throughput without extra I/O.
+    let stage_metrics = engine
+        .get_or_create_stage_metrics(&pipeline_id, &encoding)
+        .await;
+
     // ── stderr logger ──────────────────────────────────────────────────────
     // Stream stderr line-by-line so progress lines are visible immediately.
     // Cap accumulation at 1 MB to avoid unbounded memory growth at
@@ -368,6 +375,7 @@ pub async fn start_external_transcoder_stage(
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
         let label_out = label.clone();
+        let out_metrics = stage_metrics.clone();
         let mut stdout = stdout;
         tokio::spawn(async move {
             let mut demuxer = TsDemuxer::new();
@@ -384,6 +392,9 @@ pub async fn start_external_transcoder_stage(
                         Ok(n) => {
                             demuxer.feed(&buf[..n]);
                             demuxer.drain_into(&mut pkts);
+                            for pkt in &pkts {
+                                out_metrics.record_out(pkt.payload.len() as u64);
+                            }
                             out_ring.push_batch(pkts.drain(..));
                         }
                     }
@@ -433,6 +444,7 @@ pub async fn start_external_transcoder_stage(
                     continue;
                 }
                 for pkt in packets {
+                    let in_bytes = pkt.payload.len() as u64;
                     let payload: &[u8] = match pkt.media_type {
                         MediaType::Video => match video_for_ts_into(
                             &pkt.payload,
@@ -481,12 +493,15 @@ pub async fn start_external_transcoder_stage(
                         pkt.is_keyframe,
                         payload,
                     );
-                    if !ts.is_empty() && stdin.write_all(ts).await.is_err() {
-                        eprintln!(
-                            "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
-                            pipeline_id, encoding
-                        );
-                        break 'outer;
+                    if !ts.is_empty() {
+                        if stdin.write_all(ts).await.is_err() {
+                            eprintln!(
+                                "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
+                                pipeline_id, encoding
+                            );
+                            break 'outer;
+                        }
+                        stage_metrics.record_in(in_bytes);
                     }
                 }
             }
@@ -497,6 +512,10 @@ pub async fn start_external_transcoder_stage(
     let _ = child.kill().await;
     let _ = child.wait().await;
     cancel.cancel();
+
+    engine
+        .remove_stage_metrics(&pipeline_id, &encoding)
+        .await;
 
     println!(
         "[ext-transcoder] stage exit   pipeline={} encoding={}",

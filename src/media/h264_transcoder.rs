@@ -45,6 +45,8 @@ pub async fn start_h264_transcoder(
     output_buffer: Arc<RingBuffer>,
     engine: Arc<crate::media::engine::MediaEngine>,
     cancel_token: CancellationToken,
+    // Full storage key "{pipeline}:{kind}", e.g. "pipe:hevc_to_h264:from:720p".
+    stage_storage_key: String,
 ) {
     // Wait for ingest metadata before starting
     let (video_meta, audio_tracks) = loop {
@@ -74,6 +76,15 @@ pub async fn start_h264_transcoder(
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
+
+    // Stage metrics: strip the "{pipeline_id}:" prefix to get the stage name.
+    let stage_name = stage_storage_key
+        .split_once(':')
+        .map(|(_, s)| s)
+        .unwrap_or(&stage_storage_key);
+    let stage_metrics = engine
+        .get_or_create_stage_metrics(&pipeline_id, stage_name)
+        .await;
 
     let input_queue = Arc::new(MemoryQueue::new());
 
@@ -122,6 +133,7 @@ pub async fn start_h264_transcoder(
                     continue;
                 }
                 for pkt in &packets {
+                    let in_bytes = pkt.payload.len() as u64;
                     let payload: &[u8] = match pkt.media_type {
                         MediaType::Video => {
                             match crate::media::codec::video_for_ts_into(
@@ -169,6 +181,7 @@ pub async fn start_h264_transcoder(
                     );
                     if !ts_bytes.is_empty() {
                         ts_batch.extend_from_slice(ts_bytes);
+                        stage_metrics.record_in(in_bytes);
                     }
                 }
                 // One lock acquisition for the whole burst.
@@ -180,6 +193,9 @@ pub async fn start_h264_transcoder(
     }
 
     input_queue.close();
+    engine
+        .remove_stage_metrics(&pipeline_id, stage_name)
+        .await;
 }
 
 /// Blocking FFmpeg decode→encode loop, runs on a dedicated OS thread.
