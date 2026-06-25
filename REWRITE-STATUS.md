@@ -141,6 +141,26 @@ dual-audio coverage. Next continuation point: migrate the larger `ramp` or
 `mixed-scale` runner in smaller Rust-owned subcommands, starting with one
 configuration family and preserving the existing artifact layout.
 
+`ramp` has started that larger-runner migration. The public
+`test/run-integration.sh ramp` mode now delegates the RTMP-ingest to
+RTMP-output family (`rtmp-rtmp-src` and `rtmp-rtmp-720p`) to
+`cargo run --bin test_harness -- ramp-family`, while the shell wrapper keeps
+the manifest, namespace setup, summary table, and legacy bash coverage for the
+remaining six configs. The Rust subcommand is still black-box coverage: it
+starts the production `restream` binary plus MediaMTX, logs in through the HTTP
+API, creates pipelines/outputs, snapshots `scale.csv`, appends `summary.txt`,
+and performs the first/last output spot checks. A focused fast wrapper run
+passed on June 25, 2026 with
+`WORK_DIR=test/artifacts/ramp-rust-family-fast`,
+`RAMP_CONFIG_CLEANUP_SECS=1`, and `./test/run-integration.sh --fast ramp`;
+the artifacts contain all eight summary rows, with the first two produced by
+Rust. A focused aggregate preflight also passed with
+`./test/run-protocol-matrix.sh --run-id ramp-rust-family-preflight
+--preflight-only --continue-on-fail --only-modes ramp`. Next continuation
+point: move the next `ramp` family, preferably RTMP-ingest to SRT-output
+(`rtmp-srt-src` and `rtmp-srt-720p`), into `ramp-family` while preserving the
+shared `scale.csv` and `summary.txt` formats.
+
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z

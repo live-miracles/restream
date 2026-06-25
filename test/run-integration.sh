@@ -247,6 +247,7 @@ emit_preflight() {
   local json="$1"
   printf '%s\n' "$json"
   [[ -n "$ASSERTION_LOG" ]] && printf '%s\n' "$json" >> "$ASSERTION_LOG"
+  return 0
 }
 
 fail_assertion() {
@@ -286,6 +287,7 @@ resume_allows() {
 mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
+    ramp)         printf '%s\n' cargo ffmpeg ffprobe curl jq mediamtx ;;
     burst-verify) printf '%s\n' cargo ffmpeg jq ;;
     hls-put)      printf '%s\n' cargo ffmpeg ffprobe jq ;;
     bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
@@ -710,10 +712,21 @@ run_ramp() {
   SCALE_LOG="${WORK_DIR}/scale.csv"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
   init_run_artifacts
-  check_deps ffmpeg ffprobe curl jq mediamtx
+  check_deps cargo ffmpeg ffprobe curl jq mediamtx
 
   printf "config,step,label,cpu_pct,rss_kb,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb\n" > "$SCALE_LOG"
   : > "$SUMMARY_LOG"
+
+  if [[ "${RAMP_RUST_FAMILY:-rtmp-rtmp}" != "0" ]]; then
+    echo "  [rust] ramp-family: RTMP ingest → RTMP outputs"
+    TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    SCALE_LOG="$SCALE_LOG" \
+    SUMMARY_LOG="$SUMMARY_LOG" \
+    RAMP_FAMILY_CONFIGS="${RAMP_FAMILY_CONFIGS:-rtmp-rtmp-src rtmp-rtmp-720p}" \
+    cargo run --quiet --bin test_harness -- ramp-family \
+      >"${WORK_DIR}/ramp-family.log" 2>&1 \
+      || { tail -120 "${WORK_DIR}/ramp-family.log" >&2 || true; fail "Rust ramp-family harness failed"; }
+  fi
 
   start_restream
   start_mediamtx
@@ -815,8 +828,10 @@ run_ramp() {
     sleep 8
   }
 
-  run_scale_config "rtmp-rtmp-src"  rtmp rtmp source
-  run_scale_config "rtmp-rtmp-720p" rtmp rtmp 720p
+  if [[ "${RAMP_RUST_FAMILY:-rtmp-rtmp}" == "0" ]]; then
+    run_scale_config "rtmp-rtmp-src"  rtmp rtmp source
+    run_scale_config "rtmp-rtmp-720p" rtmp rtmp 720p
+  fi
   run_scale_config "rtmp-srt-src"   rtmp srt  source
   run_scale_config "rtmp-srt-720p"  rtmp srt  720p
   run_scale_config "srt-rtmp-src"   srt  rtmp source

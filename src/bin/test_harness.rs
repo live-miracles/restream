@@ -54,6 +54,7 @@ async fn run() -> Result<(), String> {
         "hls-put" => hls_put_correctness().await,
         "burst-verify" => burst_verify_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
+        "ramp-family" => ramp_family_correctness().await,
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
@@ -80,7 +81,7 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, matrix, \
+              correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, ramp-family, matrix, \
               matrix-in-memory, egress, correctness-hevc-rtmp, correctness-hevc-srt, \
               hevc-load, in-process, network, or all"
         )),
@@ -119,6 +120,729 @@ fn env_secs(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+#[derive(Clone, Copy)]
+struct RampConfig {
+    name: &'static str,
+    ingest_proto: &'static str,
+    out_proto: &'static str,
+    encoding: &'static str,
+}
+
+struct RampEnv {
+    work_dir: PathBuf,
+    scale_log: PathBuf,
+    summary_log: PathBuf,
+    restream_log: PathBuf,
+    mediamtx_log: PathBuf,
+    mediamtx_config: PathBuf,
+    restream_bin: PathBuf,
+    restream_db_path: PathBuf,
+    restream_http: u16,
+    restream_rtmp: u16,
+    restream_srt: u16,
+    mtx_rtmp: u16,
+    mtx_srt: u16,
+    mtx_api: u16,
+    n_outputs: usize,
+    snap_every: usize,
+    snapshot_sleep: Duration,
+    cleanup_sleep: Duration,
+}
+
+impl RampEnv {
+    fn from_env() -> Self {
+        let work_dir = std::env::var_os("WORK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("test/artifacts/ramp"));
+        Self {
+            scale_log: std::env::var_os("SCALE_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("scale.csv")),
+            summary_log: std::env::var_os("SUMMARY_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("summary.txt")),
+            restream_log: std::env::var_os("RAMP_RESTREAM_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("restream.log")),
+            mediamtx_log: std::env::var_os("RAMP_MEDIAMTX_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("mediamtx.log")),
+            mediamtx_config: std::env::var_os("RAMP_MEDIAMTX_CONFIG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("mediamtx.yml")),
+            restream_bin: std::env::var_os("RESTREAM_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data.db")),
+            restream_http: env_u16("RESTREAM_HTTP", 3030),
+            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
+            restream_srt: env_u16("RESTREAM_SRT", 10080),
+            mtx_rtmp: env_u16("MTX_RTMP", 1936),
+            mtx_srt: env_u16("MTX_SRT", 8891),
+            mtx_api: env_u16("MTX_API", 9997),
+            n_outputs: env_usize("N_OUTPUTS", 10),
+            snap_every: env_usize("SNAP_EVERY", 1).max(1),
+            snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
+            cleanup_sleep: Duration::from_secs(env_secs("RAMP_CONFIG_CLEANUP_SECS", 8)),
+            work_dir,
+        }
+    }
+}
+
+struct RampApi {
+    client: reqwest::Client,
+    base_url: String,
+    cookie: Option<String>,
+}
+
+impl RampApi {
+    fn new(http_port: u16) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: format!("http://127.0.0.1:{http_port}"),
+            cookie: None,
+        }
+    }
+
+    async fn login(&mut self) -> Result<(), String> {
+        let response = self
+            .client
+            .post(format!("{}/api/auth/login", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(r#"{"password":"admin"}"#)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("login failed with HTTP {}", response.status()));
+        }
+        self.cookie = response
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::to_string);
+        if self.cookie.is_none() {
+            return Err("login response did not include a session cookie".to_string());
+        }
+        Ok(())
+    }
+
+    async fn get_json(&self, path: &str) -> Result<Value, String> {
+        let mut request = self.client.get(format!("{}{}", self.base_url, path));
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        json_response(request).await
+    }
+
+    async fn post_json(&self, path: &str, body: Value) -> Result<Value, String> {
+        let mut request = self
+            .client
+            .post(format!("{}{}", self.base_url, path))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string());
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        json_response(request).await
+    }
+}
+
+async fn json_response(request: reqwest::RequestBuilder) -> Result<Value, String> {
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "HTTP {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ));
+    }
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+fn env_u16(name: &str, default: u16) -> u16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+async fn ramp_family_correctness() -> Result<Value, String> {
+    let env = RampEnv::from_env();
+    if env.n_outputs == 0 {
+        return Err("N_OUTPUTS must be greater than zero".to_string());
+    }
+    std::fs::create_dir_all(&env.work_dir).map_err(|e| e.to_string())?;
+    ensure_ramp_artifacts(&env)?;
+
+    let configs = selected_ramp_configs();
+    if configs.is_empty() {
+        return Err("RAMP_FAMILY_CONFIGS selected no ramp-family configs".to_string());
+    }
+
+    let mut mediamtx = start_ramp_mediamtx(&env).await?;
+    let mut restream = start_ramp_restream(&env).await?;
+    let mut api = RampApi::new(env.restream_http);
+    api.login().await?;
+
+    let mut case_results = Vec::with_capacity(configs.len());
+    for config in configs {
+        case_results.push(run_ramp_config(config, &env, &api, restream.id().unwrap_or(0)).await?);
+    }
+
+    stop_child(&mut restream).await;
+    stop_child(&mut mediamtx).await;
+
+    Ok(json!({
+        "passed": true,
+        "mode": "ramp-family",
+        "configs": case_results,
+        "artifacts": {
+            "scaleCsv": env.scale_log,
+            "summary": env.summary_log,
+            "restreamLog": env.restream_log,
+            "mediamtxLog": env.mediamtx_log,
+        }
+    }))
+}
+
+fn selected_ramp_configs() -> Vec<RampConfig> {
+    const DEFAULTS: &[RampConfig] = &[
+        RampConfig {
+            name: "rtmp-rtmp-src",
+            ingest_proto: "rtmp",
+            out_proto: "rtmp",
+            encoding: "source",
+        },
+        RampConfig {
+            name: "rtmp-rtmp-720p",
+            ingest_proto: "rtmp",
+            out_proto: "rtmp",
+            encoding: "720p",
+        },
+    ];
+    let allow = std::env::var("RAMP_FAMILY_CONFIGS").ok().map(|value| {
+        value
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    });
+    DEFAULTS
+        .iter()
+        .copied()
+        .filter(|config| {
+            allow
+                .as_ref()
+                .is_none_or(|items| items.iter().any(|item| item == config.name))
+        })
+        .collect()
+}
+
+fn ensure_ramp_artifacts(env: &RampEnv) -> Result<(), String> {
+    if !env.scale_log.exists() {
+        std::fs::write(
+            &env.scale_log,
+            "config,step,label,cpu_pct,rss_kb,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb\n",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if !env.summary_log.exists() {
+        std::fs::write(&env.summary_log, "").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn start_ramp_restream(env: &RampEnv) -> Result<Child, String> {
+    if !env.restream_bin.exists() {
+        return Err(format!(
+            "restream binary not found at {}",
+            env.restream_bin.display()
+        ));
+    }
+    cleanup_ramp_db(&env.restream_db_path);
+    let log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
+    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
+    let mut child = Command::new(&env.restream_bin)
+        .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
+        .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
+        .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
+        .env(
+            "RESTREAM_DB_PATH",
+            env.restream_db_path.to_string_lossy().to_string(),
+        )
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr_log))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/healthz", env.restream_http),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut child).await;
+        return Err(format!("restream did not become ready: {err}"));
+    }
+    Ok(child)
+}
+
+fn cleanup_ramp_db(path: &Path) {
+    let path_string = path.to_string_lossy();
+    let db_path = path_string
+        .strip_prefix("sqlite:")
+        .unwrap_or(path_string.as_ref())
+        .split('?')
+        .next()
+        .unwrap_or("data.db");
+    let db_path = PathBuf::from(db_path);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+}
+
+async fn start_ramp_mediamtx(env: &RampEnv) -> Result<Child, String> {
+    std::fs::write(
+        &env.mediamtx_config,
+        format!(
+            "logLevel: warn\nrtmp: yes\nrtmpAddress: :{}\nrtmpEncryption: \"no\"\nrtsp: no\nsrt: yes\nsrtAddress: :{}\nhls: no\nwebrtc: no\napi: yes\napiAddress: :{}\nmetrics: no\npaths:\n  all:\n",
+            env.mtx_rtmp, env.mtx_srt, env.mtx_api
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let log = std::fs::File::create(&env.mediamtx_log).map_err(|e| e.to_string())?;
+    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
+    let mut child = Command::new("mediamtx")
+        .arg(&env.mediamtx_config)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr_log))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/v3/paths/list", env.mtx_api),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut child).await;
+        return Err(format!("mediamtx did not become ready: {err}"));
+    }
+    Ok(child)
+}
+
+async fn wait_for_http_ok(url: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let client = reqwest::Client::new();
+    loop {
+        if let Ok(response) = client.get(url).send().await
+            && response.status().is_success()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for {url}"));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn run_ramp_config(
+    config: RampConfig,
+    env: &RampEnv,
+    api: &RampApi,
+    restream_pid: u32,
+) -> Result<Value, String> {
+    println!(
+        "\n[ramp-family] {} {} ingest -> {} {} x{} outputs",
+        config.name, config.ingest_proto, config.out_proto, config.encoding, env.n_outputs
+    );
+    let stream_key = format!("sk-{}", config.name);
+    let pipeline = api
+        .post_json(
+            "/pipelines",
+            json!({"name": config.name, "streamKey": stream_key}),
+        )
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create response missing pipeline.id")?
+        .to_string();
+
+    let mut publisher = spawn_ramp_publisher(config, env, &stream_key).await?;
+    wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let baseline_snapshot = snapshot_ramp(env, restream_pid, config.name, 0, "baseline").await?;
+    let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
+
+    let mut output_ids = Vec::with_capacity(env.n_outputs);
+    for n in 1..=env.n_outputs {
+        let url = match config.out_proto {
+            "rtmp" => format!("rtmp://127.0.0.1:{}/live/{}-{n}", env.mtx_rtmp, config.name),
+            "srt" => format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{}-{n}",
+                env.mtx_srt, config.name
+            ),
+            other => return Err(format!("unsupported ramp output protocol {other}")),
+        };
+        let output = api
+            .post_json(
+                &format!("/pipelines/{pipeline_id}/outputs"),
+                json!({"name": format!("out{n}"), "url": url, "encoding": config.encoding}),
+            )
+            .await?;
+        let output_id = output["output"]["id"]
+            .as_str()
+            .ok_or("output create response missing output.id")?
+            .to_string();
+        api.post_json(
+            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+            Value::Null,
+        )
+        .await?;
+        output_ids.push(output_id);
+        if n == 1 || n % env.snap_every == 0 {
+            snapshot_ramp(env, restream_pid, config.name, n, &format!("out{n}")).await?;
+        }
+    }
+
+    let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
+    let ffmpeg = ffmpeg_pipe1_stats().await;
+    let rss_delta = rss_final.saturating_sub(rss_baseline);
+    let per_output = rss_delta / env.n_outputs as u64;
+    append_line(
+        &env.summary_log,
+        &format!(
+            "{},rss_delta_kb={},per_output_kb={},ffmpeg_n={},ffmpeg_rss_kb={}\n",
+            config.name, rss_delta, per_output, ffmpeg.count, ffmpeg.rss_kb
+        ),
+    )?;
+
+    let expected = if config.encoding == "source" {
+        "1920x1080"
+    } else {
+        "1280x720"
+    };
+    let first_url = read_url(config, env, 1);
+    let last_url = read_url(config, env, env.n_outputs);
+    let first_dims = check_ramp_stream("out1", &first_url, expected, 10).await;
+    let last_dims =
+        check_ramp_stream(&format!("out{}", env.n_outputs), &last_url, expected, 10).await;
+
+    stop_child(&mut publisher).await;
+    for output_id in &output_ids {
+        let _ = api
+            .post_json(
+                &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+                Value::Null,
+            )
+            .await;
+    }
+    tokio::time::sleep(env.cleanup_sleep).await;
+
+    Ok(json!({
+        "config": config.name,
+        "pipelineId": pipeline_id,
+        "outputs": output_ids.len(),
+        "baseline": baseline_snapshot,
+        "rssDeltaKb": rss_delta,
+        "perOutputKb": per_output,
+        "ffmpegCount": ffmpeg.count,
+        "ffmpegRssKb": ffmpeg.rss_kb,
+        "spotChecks": {
+            "first": {"expected": expected, "got": first_dims},
+            "last": {"expected": expected, "got": last_dims},
+        }
+    }))
+}
+
+async fn spawn_ramp_publisher(
+    config: RampConfig,
+    env: &RampEnv,
+    stream_key: &str,
+) -> Result<Child, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=1920x1080:rate=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=stereo",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-b:v",
+        "4M",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+    ]);
+    match config.ingest_proto {
+        "rtmp" => {
+            cmd.args(["-f", "flv"]).arg(format!(
+                "rtmp://127.0.0.1:{}/live/{stream_key}",
+                env.restream_rtmp
+            ));
+        }
+        "srt" => {
+            cmd.args(["-f", "mpegts"]).arg(format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
+                env.restream_srt
+            ));
+        }
+        other => return Err(format!("unsupported ramp ingest protocol {other}")),
+    }
+    cmd.stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    cmd.spawn().map_err(|e| e.to_string())
+}
+
+async fn wait_for_api_input_live(
+    api: &RampApi,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(health) = api.get_json("/health").await
+            && health["pipelines"][pipeline_id]["input"]["status"] == "on"
+            && health["pipelines"][pipeline_id]["input"]["bytesReceived"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: ingest did not go live within {}s",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+struct RampSnapshot {
+    cpu_pct: String,
+    rss_kb: u64,
+    ffmpeg_count: u64,
+    ffmpeg_rss_kb: u64,
+}
+
+async fn snapshot_ramp(
+    env: &RampEnv,
+    restream_pid: u32,
+    config: &str,
+    step: usize,
+    label: &str,
+) -> Result<Value, String> {
+    if !env.snapshot_sleep.is_zero() {
+        tokio::time::sleep(env.snapshot_sleep).await;
+    }
+    let ffmpeg = ffmpeg_pipe1_stats().await;
+    let snapshot = RampSnapshot {
+        cpu_pct: process_cpu_pct(restream_pid)
+            .await
+            .unwrap_or_else(|| "0".to_string()),
+        rss_kb: process_rss_kb(restream_pid).await.unwrap_or(0),
+        ffmpeg_count: ffmpeg.count,
+        ffmpeg_rss_kb: ffmpeg.rss_kb,
+    };
+    let total = snapshot.rss_kb + snapshot.ffmpeg_rss_kb;
+    append_line(
+        &env.scale_log,
+        &format!(
+            "{config},{step},\"{label}\",{},{},{},{},{}\n",
+            snapshot.cpu_pct, snapshot.rss_kb, snapshot.ffmpeg_count, snapshot.ffmpeg_rss_kb, total
+        ),
+    )?;
+    println!(
+        "  {step:<4} {label:<20} cpu={} rss={} KB ffmpeg#={} ffmpeg_rss={} KB total={} KB",
+        snapshot.cpu_pct, snapshot.rss_kb, snapshot.ffmpeg_count, snapshot.ffmpeg_rss_kb, total
+    );
+    Ok(json!({
+        "step": step,
+        "label": label,
+        "cpuPct": snapshot.cpu_pct,
+        "rssKb": snapshot.rss_kb,
+        "ffmpegCount": snapshot.ffmpeg_count,
+        "ffmpegRssKb": snapshot.ffmpeg_rss_kb,
+        "totalRssKb": total,
+    }))
+}
+
+fn append_line(path: &Path, line: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Copy)]
+struct FfmpegStats {
+    count: u64,
+    rss_kb: u64,
+}
+
+async fn ffmpeg_pipe1_stats() -> FfmpegStats {
+    let output = Command::new("ps").arg("aux").output().await;
+    let Ok(output) = output else {
+        return FfmpegStats {
+            count: 0,
+            rss_kb: 0,
+        };
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut count = 0;
+    let mut rss_kb = 0;
+    for line in text.lines() {
+        if line.contains("ffmpeg") && line.contains("pipe:1") {
+            count += 1;
+            rss_kb += line
+                .split_whitespace()
+                .nth(5)
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+    FfmpegStats { count, rss_kb }
+}
+
+async fn process_cpu_pct(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "%cpu="])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some(if value.is_empty() {
+        "0".to_string()
+    } else {
+        value
+    })
+}
+
+async fn process_rss_kb(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "rss="])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn read_url(config: RampConfig, env: &RampEnv, output_index: usize) -> String {
+    match config.out_proto {
+        "rtmp" => format!(
+            "rtmp://127.0.0.1:{}/live/{}-{output_index}",
+            env.mtx_rtmp, config.name
+        ),
+        "srt" => format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{}-{output_index}&timeout=30000000",
+            env.mtx_srt, config.name
+        ),
+        _ => String::new(),
+    }
+}
+
+async fn check_ramp_stream(
+    label: &str,
+    url: &str,
+    expected: &str,
+    retries: usize,
+) -> Option<String> {
+    let mut last = None;
+    for _ in 0..retries {
+        if let Ok(dimensions) = probe_dims_ramp(url).await {
+            if dimensions == expected {
+                println!("  ok   {label:<45} -> {dimensions}");
+                return Some(dimensions);
+            }
+            if !dimensions.is_empty() {
+                last = Some(dimensions);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    println!(
+        "  FAIL {label:<45} expected={expected} got={}",
+        last.as_deref().unwrap_or("none")
+    );
+    last
+}
+
+async fn probe_dims_ramp(url: &str) -> Result<String, String> {
+    let child = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-probesize",
+            "10000000",
+            "-analyzeduration",
+            "10000000",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            url,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+        .await
+        .map_err(|_| format!("ffprobe timed out: {url}"))?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!("ffprobe failed: {url}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .replace(',', "x"))
 }
 
 async fn correctness() -> Result<Value, String> {
