@@ -401,6 +401,18 @@ test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
 
+Aggregate release-evidence wrapper:
+
+```sh
+./test/run-protocol-matrix.sh --run-id <run-id>
+```
+
+This creates `test/artifacts/<run-id>/manifest.json`, runs preflight plus each
+checked-in integration mode in a per-mode subdirectory, and records one JSONL
+result per mode in `test/artifacts/<run-id>/results.jsonl`. Pass `--fast` for a
+quick agent loop, `--only-modes hls-put,bframe-rtmp` while iterating on a subset,
+or `--continue-on-fail` when collecting failure artifacts for every mode.
+
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
 `PASS` or `FAIL` with timestamps, git head, network mode, and primary artifact
