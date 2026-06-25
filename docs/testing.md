@@ -78,6 +78,10 @@ Common runner flags:
 | `--baseline <path>` | Compare `mixed-scale` RSS summary against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
 | `--save-baseline <path>` | Save the current `mixed-scale` RSS summary as a baseline CSV. |
 
+The runner kills only processes it starts. Set `ALLOW_GLOBAL_PROCESS_CLEANUP=1`
+only when you explicitly want the legacy host-wide `restream`/`mediamtx`
+cleanup before a run.
+
 Typical quick agent loop:
 
 ```sh

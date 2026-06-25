@@ -23,6 +23,7 @@
 #   RESTREAM_HTTP/RTMP/SRT  port overrides
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
 #   HLS_PUT_PORT            dummy HLS PUT sink port (default: 8990)
+#   ALLOW_GLOBAL_PROCESS_CLEANUP=1 opt into legacy host-wide restream/mediamtx cleanup
 #
 # Each mode writes WORK_DIR/manifest.json with RUNNING → PASS/FAIL status.
 #
@@ -417,6 +418,7 @@ check_deps() {
 }
 
 cleanup_restream_procs() {
+  [[ "${ALLOW_GLOBAL_PROCESS_CLEANUP:-0}" == "1" ]] || return 0
   local pids
   pids=$(ps -eo pid=,comm= | awk '$2 == "restream" {print $1}' || true)
   [[ -n "$pids" ]] && { kill -9 $pids 2>/dev/null || true; sleep 3; }
@@ -458,7 +460,10 @@ start_restream() {
 start_mediamtx() {
   local hls_enabled="${MTX_HLS_ENABLED:-no}"
   local log_level="${MTX_LOG_LEVEL:-warn}"
-  pkill -f 'mediamtx ' 2>/dev/null || true; sleep 1
+  if [[ "${ALLOW_GLOBAL_PROCESS_CLEANUP:-0}" == "1" ]]; then
+    pkill -f 'mediamtx ' 2>/dev/null || true
+    sleep 1
+  fi
   {
     cat <<YML
 logLevel: ${log_level}
