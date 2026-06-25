@@ -528,9 +528,9 @@ impl MediaEngine {
         let codec_override = input_codec_override.map(String::from);
 
         // ── Backend dispatch ───────────────────────────────────────────────
-        // audio: stages (atrack, remap): pure packet filter — no mux/demux,
-        //   no codec work. Run as a lightweight async task (start_audio_router).
-        // downmix: requires DSP decode→mix→encode → full internal FFmpeg path.
+        // atrack audio stages are pure packet filters — no mux/demux, no codec
+        // work. Remap/downmix require DSP decode→filter→encode and run through
+        // the FFmpeg stage backend.
         // video: stages (video:720p etc.): external subprocess FFmpeg by default;
         //   override with RESTREAM_USE_INTERNAL_TRANSCODER=1.
         let backend_policy = BackendPolicy::from_env();
@@ -554,7 +554,7 @@ impl MediaEngine {
                 });
                 return output_buf;
             }
-            // Downmix falls through to internal FFmpeg below
+            // Channel-level DSP routes fall through to the selected FFmpeg backend.
         }
 
         let backend = backend_policy.select_backend(&stage_kind);

@@ -161,7 +161,7 @@ The labels below distinguish implementation from proof.
 | Vertical crop/rotate | **Not implemented** | Only output dimensions are selected; no scale/crop/rotate filter runs |
 | Multi-track SRT audio ingest | Implemented | Demux maps all audio streams with track indices |
 | `atrack` | Implemented at stream-selection level | Parser tests |
-| `remap` / `downmix` | Partial | Select streams; no channel-level `pan`/mix filter |
+| `remap` / `downmix` | Implemented for default runtime | Audio DSP routes use the external FFmpeg stage with `pan`/stereo resample filters; `atrack` remains a packet-only selector |
 | HLS store and HTTP pull routes | Implemented | Playlist/window, route, and segmenter shutdown cleanup tests |
 | Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
 | MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
@@ -256,7 +256,9 @@ See `docs/api-reference.md` for the executable route surface.
 11. ~~Apply custom encoding configuration or mark it unavailable in the UI~~
    — done by removing `custom` from the output modal and rejecting custom
    output encodings in API create/update.
-12. Implement channel-level audio remap/downmix semantics.
+12. ~~Implement channel-level audio remap/downmix semantics~~ — done for the
+   default runtime path; remap/downmix audio stages route through external
+   FFmpeg filters and re-encode stereo AAC.
 13. ~~Decide whether RTMPS is supported and wire TLS egress if required~~
    — done; RTMPS output wraps the client stream in Rustls before the RTMP
    handshake.

@@ -169,7 +169,7 @@ most battle-tested path for production deployments.
 | SRT H.265 | Codec mapping implemented; full E2E matrix remains a gate |
 | RTMP H.265 | Enhanced RTMP ingest (H.265 arriving over RTMP) is not implemented. RTMP *egress* with H.265 source works: `hevc_to_h264` stage does full libavcodec decode→encode |
 | Multi-track audio | SRT ingest preserves audio track indices |
-| Audio remap/downmix | Stream selection only; channel-level filtering is open |
+| Audio remap/downmix | Channel-level DSP routes use an external FFmpeg audio stage (`pan` for remap, stereo resample for downmix); `atrack` remains packet-only |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
 | HLS upload | Implemented; HTTP/HTTPS output URLs PUT new segments plus playlist to the target |
 | RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress with Rustls wrapping before the RTMP handshake |
@@ -464,6 +464,11 @@ Output reconciliation splits compound encodings into a video stage and an audio
 stage. Audio stages are keyed by the upstream stage identity as well as the
 audio operation (e.g. `audio:atrack:0:from:video:720p`), preventing outputs
 using different presets from cross-contaminating.
+
+`atrack` stages run in the lightweight packet router and only select/reindex
+audio tracks. `remap` and `downmix` stages run through the external FFmpeg
+stage, copy video, filter one selected audio track to stereo AAC, and then feed
+the normal MPEG-TS demux back into the shared output ring.
 
 ## Buffer Sizing (4K 60fps Target)
 

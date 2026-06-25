@@ -44,11 +44,11 @@ pub enum AudioRouting {
 
 /// Lightweight audio routing stage — no FFmpeg, no MPEG-TS round-trip.
 ///
-/// Handles `SelectTracks` and `Remap` by filtering/re-indexing `MediaPacket`s
-/// in a tight async loop. Packets are `Arc<Bytes>` so no payload copy occurs.
+/// Handles `SelectTracks` by filtering/re-indexing `MediaPacket`s in a tight
+/// async loop. Packets are `Arc<Bytes>` so no payload copy occurs.
 ///
-/// `Downmix` is not handled here (requires DSP decode/encode) and falls back
-/// to the full internal FFmpeg transcoder path.
+/// `Remap` and `Downmix` require DSP decode/filter/encode and are routed to
+/// the FFmpeg backend by `BackendPolicy`.
 pub async fn start_audio_router(
     pipeline_id: String,
     routing: AudioRouting,

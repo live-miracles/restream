@@ -39,7 +39,7 @@ impl BackendPolicy {
                 if is_lightweight_audio_route(&routing) {
                     StageBackend::AudioRouter
                 } else {
-                    StageBackend::InternalFfmpeg
+                    StageBackend::ExternalFfmpeg
                 }
             }
             StageKind::VideoPreset { .. } if self.use_internal_transcoder => {
@@ -55,7 +55,7 @@ impl BackendPolicy {
 pub fn is_lightweight_audio_route(routing: &AudioRouting) -> bool {
     matches!(
         routing,
-        AudioRouting::SelectTracks(_) | AudioRouting::Remap { .. } | AudioRouting::Passthrough
+        AudioRouting::SelectTracks(_) | AudioRouting::Passthrough
     )
 }
 
@@ -74,13 +74,23 @@ mod tests {
     }
 
     #[test]
-    fn selects_internal_ffmpeg_for_downmix_audio_routes() {
+    fn selects_external_ffmpeg_for_downmix_audio_routes() {
         let policy = BackendPolicy {
             use_internal_transcoder: false,
         };
         let stage = StageKind::audio_route("downmix:0", StageKind::source());
 
-        assert_eq!(policy.select_backend(&stage), StageBackend::InternalFfmpeg);
+        assert_eq!(policy.select_backend(&stage), StageBackend::ExternalFfmpeg);
+    }
+
+    #[test]
+    fn selects_external_ffmpeg_for_channel_remap_routes() {
+        let policy = BackendPolicy {
+            use_internal_transcoder: false,
+        };
+        let stage = StageKind::audio_route("remap:0:1", StageKind::source());
+
+        assert_eq!(policy.select_backend(&stage), StageBackend::ExternalFfmpeg);
     }
 
     #[test]

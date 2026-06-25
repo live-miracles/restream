@@ -4,10 +4,16 @@
 //! transcoder demuxes it and pushes MediaPackets to the output RingBuffer.
 
 use restream::media::avio::MemoryQueue;
+use restream::media::external_transcoder::build_stage_ffmpeg_args;
+use restream::media::mpegts::TsDemuxer;
 use restream::media::ring_buffer::{MediaType, Reader, RingBuffer};
 use restream::media::transcoder::run_ffmpeg_transcoder_stage;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+static FFMPEG_EXTRACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn load_fixture() -> Vec<u8> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/artifacts/test-h264.ts");
@@ -39,6 +45,47 @@ fn run_stage(
     }
 
     (packets, result.is_ok())
+}
+
+fn run_external_stage_args(
+    fixture: &[u8],
+    preset: &str,
+) -> Vec<restream::media::ring_buffer::MediaPacket> {
+    let ffmpeg = {
+        let _guard = FFMPEG_EXTRACT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        restream::ffmpeg_extract::ensure_ffmpeg_extracted()
+    };
+    let args = build_stage_ffmpeg_args(preset, "h264");
+    let mut child = Command::new(ffmpeg)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("ffmpeg stdin")
+        .write_all(fixture)
+        .expect("write fixture to ffmpeg");
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("wait ffmpeg");
+    assert!(
+        output.status.success(),
+        "ffmpeg stage failed for {preset}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut demuxer = TsDemuxer::new();
+    demuxer.feed(&output.stdout);
+    let mut packets = Vec::new();
+    demuxer.drain_into(&mut packets);
+    packets
 }
 
 #[test]
@@ -104,6 +151,36 @@ fn audio_routing_atrack_filters_correctly() {
     assert_eq!(
         audio_count2, 0,
         "atrack:5 should exclude all audio (only 1 track in fixture)"
+    );
+}
+
+#[test]
+fn external_audio_remap_filter_produces_stereo_audio() {
+    let fixture = load_fixture();
+    let packets = run_external_stage_args(&fixture, "audio:remap:1:0:0:from:source");
+
+    assert!(
+        packets.iter().any(|p| p.media_type == MediaType::Audio),
+        "remap filter should produce audio packets"
+    );
+    assert!(
+        packets.iter().any(|p| p.media_type == MediaType::Video),
+        "remap stage should copy video packets"
+    );
+}
+
+#[test]
+fn external_audio_downmix_filter_produces_stereo_audio() {
+    let fixture = load_fixture();
+    let packets = run_external_stage_args(&fixture, "audio:downmix:0:from:source");
+
+    assert!(
+        packets.iter().any(|p| p.media_type == MediaType::Audio),
+        "downmix filter should produce audio packets"
+    );
+    assert!(
+        packets.iter().any(|p| p.media_type == MediaType::Video),
+        "downmix stage should copy video packets"
     );
 }
 

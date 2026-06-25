@@ -43,6 +43,7 @@ use tokio_util::sync::CancellationToken;
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::mpegts::{TsDemuxer, TsMuxer};
 use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
+use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 
 // ── FFmpeg arg builders ────────────────────────────────────────────────────
 
@@ -56,8 +57,15 @@ use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 /// transcode to H.265 output (preserving codec across the preset stage)
 /// and H.264 sources transcode to H.264 output.
 pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
-    // Strip the internal stage-key prefix ("video:720p" → "720p")
-    let encoding = preset.strip_prefix("video:").unwrap_or(preset);
+    // Strip the internal stage-key prefix ("video:720p" → "720p").
+    // Audio stages receive the selected upstream video ring, so they copy video
+    // while applying any channel-level audio filter.
+    let encoding = if preset.starts_with("audio:") {
+        "source"
+    } else {
+        preset.strip_prefix("video:").unwrap_or(preset)
+    };
+    let audio_routing = stage_audio_routing(preset);
 
     let mut args = vec![
         "-nostdin".to_string(),
@@ -68,11 +76,16 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
         "mpegts".to_string(),
         "-i".to_string(),
         "pipe:0".to_string(),
-        "-map".to_string(),
-        "0:v:0".to_string(),
-        "-map".to_string(),
-        "0:a?".to_string(),
     ];
+
+    if let Some(filter) = audio_filter_complex(&audio_routing) {
+        args.extend(["-filter_complex".to_string(), filter]);
+        args.extend(["-map".to_string(), "0:v:0?".to_string()]);
+        args.extend(["-map".to_string(), "[aout]".to_string()]);
+    } else {
+        args.extend(["-map".to_string(), "0:v:0".to_string()]);
+        args.extend(["-map".to_string(), "0:a?".to_string()]);
+    }
 
     // ── video filter (scaling) ────────────────────────────────────────────
     // Named presets. Custom profiles with explicit width/height can extend this.
@@ -103,15 +116,56 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
         ]);
     }
 
-    // ── audio: always copy at this stage ─────────────────────────────────
-    // Audio routing (atrack:/remap:/downmix:) is handled by a downstream
-    // audio-filter stage, not here.
-    args.extend(["-c:a".to_string(), "copy".to_string()]);
+    // ── audio ────────────────────────────────────────────────────────────
+    // atrack selection stays in the zero-copy audio router. Channel-level
+    // remap/downmix stages arrive here and must decode/filter/re-encode audio.
+    if audio_routing.is_some() {
+        args.extend([
+            "-c:a".to_string(),
+            "aac".to_string(),
+            "-b:a".to_string(),
+            "160k".to_string(),
+            "-ac".to_string(),
+            "2".to_string(),
+        ]);
+    } else {
+        args.extend(["-c:a".to_string(), "copy".to_string()]);
+    }
 
     // ── output: MPEG-TS to stdout ─────────────────────────────────────────
     args.extend(["-f".to_string(), "mpegts".to_string(), "pipe:1".to_string()]);
 
     args
+}
+
+fn stage_audio_routing(preset: &str) -> Option<AudioRouting> {
+    let operation = preset
+        .strip_prefix("audio:")
+        .and_then(|rest| rest.rsplit_once(":from:").map(|(op, _)| op))
+        .map(str::to_string);
+
+    let routing = if let Some(operation) = operation {
+        parse_audio_routing(&format!("source+{operation}"))
+    } else {
+        parse_audio_routing(preset)
+    };
+
+    match routing {
+        AudioRouting::Remap { .. } | AudioRouting::Downmix(_) => Some(routing),
+        _ => None,
+    }
+}
+
+fn audio_filter_complex(routing: &Option<AudioRouting>) -> Option<String> {
+    match routing {
+        Some(AudioRouting::Remap { left, right, track }) => Some(format!(
+            "[0:a:{track}]pan=stereo|c0=c{left}|c1=c{right}[aout]"
+        )),
+        Some(AudioRouting::Downmix(track)) => {
+            Some(format!("[0:a:{track}]aresample=out_chlayout=stereo[aout]"))
+        }
+        _ => None,
+    }
 }
 
 // ── Shared stage entry point ───────────────────────────────────────────────
@@ -503,12 +557,53 @@ mod tests {
     }
 
     #[test]
-    fn stage_args_audio_is_always_copied() {
+    fn stage_args_non_dsp_audio_is_copied() {
         for preset in &["720p", "1080p", "source"] {
             let args = build_stage_ffmpeg_args(preset, "h264");
             let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[ca_pos + 1], "copy", "preset={preset}");
         }
+    }
+
+    #[test]
+    fn stage_args_remap_uses_pan_filter_and_audio_encode() {
+        let args = build_stage_ffmpeg_args("audio:remap:1:0:2:from:720p", "h264");
+
+        let filter_pos = args.iter().position(|a| a == "-filter_complex").unwrap();
+        assert_eq!(args[filter_pos + 1], "[0:a:2]pan=stereo|c0=c1|c1=c0[aout]");
+        assert!(args.windows(2).any(|w| w == ["-map", "0:v:0?"]));
+        assert!(args.windows(2).any(|w| w == ["-map", "[aout]"]));
+        let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[ca_pos + 1], "aac");
+        assert!(args.windows(2).any(|w| w == ["-ac", "2"]));
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
+    }
+
+    #[test]
+    fn stage_args_downmix_uses_stereo_resample_filter() {
+        let args = build_stage_ffmpeg_args("audio:downmix:1:from:source", "h264");
+
+        let filter_pos = args.iter().position(|a| a == "-filter_complex").unwrap();
+        assert_eq!(
+            args[filter_pos + 1],
+            "[0:a:1]aresample=out_chlayout=stereo[aout]"
+        );
+        let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[ca_pos + 1], "aac");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
+    }
+
+    #[test]
+    fn stage_args_atrack_stays_packet_copy() {
+        let args = build_stage_ffmpeg_args("audio:atrack:0:from:720p", "h264");
+
+        assert!(!args.iter().any(|a| a == "-filter_complex"));
+        let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[ca_pos + 1], "copy");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
     }
 
     // H4: verify that kill() + wait() on a child that has no stdin piped
