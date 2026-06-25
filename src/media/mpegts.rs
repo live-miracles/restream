@@ -11,6 +11,10 @@ const PES_START_CODE: [u8; 3] = [0x00, 0x00, 0x01];
 const MAX_PES_BUFFER: usize = 512 * 1024;
 const PID_COUNT: usize = 1 << 13;
 const NO_STREAM: u16 = u16::MAX;
+/// Sentinel meaning "continuity counter not yet observed". Valid CC values are 0–15.
+const CC_UNSET: u8 = u8::MAX;
+/// Sentinel meaning "no PMT version parsed yet". Valid PMT version_number values are 0–31.
+const PMT_VER_UNSET: u8 = u8::MAX;
 
 // MPEG-TS stream type constants
 const STREAM_TYPE_H264: u8 = 0x1B;
@@ -90,7 +94,7 @@ struct StreamInfo {
     _pid: u16,
     kind: StreamKind,
     track_index: u32,
-    continuity: Option<u8>,
+    continuity: u8, // CC_UNSET (u8::MAX) = not yet seen; valid CC values are 0–15
     pes: PesAccumulator,
 }
 
@@ -114,9 +118,9 @@ pub struct TsDemuxer {
     probe_payloads: Vec<Option<Vec<u8>>>,
     pmt_buf: Vec<u8>,
     pmt_expected: usize,
-    /// Tracks the last seen PMT version_number (bits 5–1 of the version/indicator byte).
-    /// Used to distinguish genuine PMT updates from retransmissions of the same version.
-    pmt_version: Option<u8>,
+    /// Last seen PMT version_number (bits 5–1 of the version/indicator byte).
+    /// PMT_VER_UNSET (u8::MAX) means no PMT seen yet; valid values are 0–31.
+    pmt_version: u8,
 }
 
 impl Default for TsDemuxer {
@@ -139,7 +143,7 @@ impl TsDemuxer {
             probe_payloads: Vec::new(),
             pmt_buf: Vec::new(),
             pmt_expected: 0,
-            pmt_version: None,
+            pmt_version: PMT_VER_UNSET,
         }
     }
 
@@ -268,7 +272,7 @@ impl TsDemuxer {
         let stream_idx = stream_idx as usize;
 
         // Continuity check (just track it, don't drop packets)
-        self.streams[stream_idx].continuity = Some(continuity_counter);
+        self.streams[stream_idx].continuity = continuity_counter;
 
         if payload_unit_start {
             // Flush previous PES before starting new one
@@ -439,12 +443,12 @@ impl TsDemuxer {
         // Check PMT version_number (ISO 13818-1 table syntax: byte 5 bits 5–1).
         // Skip retransmissions of the same version; reset stream state on change.
         let incoming_version = (data[5] >> 1) & 0x1F;
-        if self.pmt_version == Some(incoming_version) {
+        if self.pmt_version == incoming_version {
             self.pmt_buf.clear();
             self.pmt_expected = 0;
             return; // Duplicate retransmission — nothing changed
         }
-        self.pmt_version = Some(incoming_version);
+        self.pmt_version = incoming_version;
 
         // Version changed (or first parse) — rebuild the stream map from the new PMT.
         //
@@ -495,7 +499,7 @@ impl TsDemuxer {
                     _pid: es_pid,
                     kind,
                     track_index,
-                    continuity: None,
+                    continuity: CC_UNSET,
                     pes,
                 });
                 self.pid_to_stream[es_pid as usize] = stream_idx as u16;
@@ -981,32 +985,39 @@ fn ms_to_ts(ms: i64) -> i64 {
 
 // --- CRC-32/MPEG-2 ---
 
-fn crc32_mpeg2(data: &[u8]) -> u32 {
-    // Benchmarked crc-fast (PCLMULQDQ) vs table-driven: at our workload sizes
-    // (12-22 bytes, once per ~100ms), crc-fast is 2.5× slower due to SIMD
-    // dispatch overhead. Table-driven is zero-dependency, faster at these sizes,
-    // and more than sufficient for production. See benches/simd_alternatives.rs.
-    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut table = [0u32; 256];
-        for (i, entry) in table.iter_mut().enumerate() {
-            let mut crc = (i as u32) << 24;
-            for _ in 0..8 {
-                if crc & 0x8000_0000 != 0 {
-                    crc = (crc << 1) ^ 0x04C1_1DB7;
-                } else {
-                    crc <<= 1;
-                }
+// Benchmarked crc-fast (PCLMULQDQ) vs table-driven: at our workload sizes
+// (12-22 bytes, once per ~100ms), crc-fast is 2.5× slower due to SIMD dispatch
+// overhead. Table-driven is zero-dependency, faster at these sizes, and more than
+// sufficient for production. See benches/simd_alternatives.rs.
+//
+// All operations used in the table computation (`<<`, `^`, conditionals) are
+// valid in `const fn`, so the table is computed at compile time and placed in
+// the binary's read-only data segment — no OnceLock, no runtime init, no atomic.
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut crc = (i as u32) << 24;
+        let mut j = 0u32;
+        while j < 8 {
+            if crc & 0x8000_0000 != 0 {
+                crc = (crc << 1) ^ 0x04C1_1DB7;
+            } else {
+                crc <<= 1;
             }
-            *entry = crc;
+            j += 1;
         }
-        table
-    });
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
 
+fn crc32_mpeg2(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in data {
         let idx = (((crc >> 24) ^ (byte as u32)) & 0xFF) as usize;
-        crc = (crc << 8) ^ table[idx];
+        crc = (crc << 8) ^ CRC32_TABLE[idx];
     }
     crc
 }
@@ -2367,7 +2378,7 @@ mod tests {
             2,
             "initial PMT must produce 2 streams"
         );
-        assert_eq!(demuxer.pmt_version, Some(0));
+        assert_eq!(demuxer.pmt_version, 0);
 
         // Feed the same PMT version again (broadcaster retransmits every ~100ms)
         let retransmit = make_pmt_ts_pkt(0, &streams);
@@ -2378,7 +2389,7 @@ mod tests {
             2,
             "retransmitting the same PMT version must not rebuild the stream map"
         );
-        assert_eq!(demuxer.pmt_version, Some(0));
+        assert_eq!(demuxer.pmt_version, 0);
     }
 
     #[test]
@@ -2394,7 +2405,7 @@ mod tests {
         demuxer.feed(&data);
 
         assert_eq!(demuxer.streams.len(), 1, "PMT v0 must have 1 stream");
-        assert_eq!(demuxer.pmt_version, Some(0));
+        assert_eq!(demuxer.pmt_version, 0);
 
         // Version 1: broadcaster added an audio track
         let v1_pkt = make_pmt_ts_pkt(1, &[(0x1B, 0x100u16), (0x0F, 0x101u16)]);
@@ -2405,7 +2416,7 @@ mod tests {
             2,
             "PMT version change must rebuild stream map so new audio PID is parsed"
         );
-        assert_eq!(demuxer.pmt_version, Some(1));
+        assert_eq!(demuxer.pmt_version, 1);
         assert_eq!(demuxer.streams[1].kind, StreamKind::AacAdts);
     }
 
@@ -2513,7 +2524,7 @@ mod tests {
             1,
             "stream map should still have 1 stream"
         );
-        assert_eq!(demuxer.pmt_version, Some(1));
+        assert_eq!(demuxer.pmt_version, 1);
         assert_eq!(
             demuxer.streams[0].pes.buf, buf_before,
             "in-flight PES buffer must be preserved after PMT version change for same PID"
@@ -2549,5 +2560,141 @@ mod tests {
         assert_eq!(buf[1], 0x00);
         assert_eq!(buf[2], 0x00);
         assert_eq!(buf[3], 0x00);
+    }
+
+    // --- const CRC32_TABLE correctness ---
+
+    #[test]
+    fn crc32_table_is_compile_time_const() {
+        // The const table and a freshly-computed runtime table must agree for all 256 entries.
+        let runtime_table: [u32; 256] = {
+            let mut t = [0u32; 256];
+            for (i, entry) in t.iter_mut().enumerate() {
+                let mut crc = (i as u32) << 24;
+                for _ in 0..8 {
+                    if crc & 0x8000_0000 != 0 {
+                        crc = (crc << 1) ^ 0x04C1_1DB7;
+                    } else {
+                        crc <<= 1;
+                    }
+                }
+                *entry = crc;
+            }
+            t
+        };
+        assert_eq!(
+            CRC32_TABLE, runtime_table,
+            "compile-time CRC32_TABLE must match a freshly-computed runtime table"
+        );
+    }
+
+    // --- Sentinel u8 for continuity counter and PMT version ---
+
+    #[test]
+    fn continuity_sentinel_is_not_a_valid_cc_value() {
+        // Valid continuity counter values are 0–15 (4-bit field in TS header).
+        assert_eq!(CC_UNSET, u8::MAX, "CC_UNSET must be u8::MAX");
+        assert!(CC_UNSET > 15, "CC_UNSET must be out of the valid 0–15 range");
+    }
+
+    #[test]
+    fn pmt_version_sentinel_is_not_a_valid_version() {
+        // Valid PMT version_number values are 0–31 (5-bit field in PMT header).
+        assert_eq!(PMT_VER_UNSET, u8::MAX, "PMT_VER_UNSET must be u8::MAX");
+        assert!(PMT_VER_UNSET > 31, "PMT_VER_UNSET must be out of the valid 0–31 range");
+    }
+
+    #[test]
+    fn new_demuxer_pmt_version_is_unset() {
+        let dem = TsDemuxer::new();
+        assert_eq!(
+            dem.pmt_version, PMT_VER_UNSET,
+            "freshly constructed TsDemuxer must report PMT_VER_UNSET before any PMT is seen"
+        );
+    }
+
+    #[test]
+    fn new_stream_continuity_is_unset() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&make_pat_ts_pkt());
+        data.extend_from_slice(&make_pmt_ts_pkt(0, &[(0x1B, 0x100u16)]));
+
+        let mut dem = TsDemuxer::new();
+        dem.feed(&data);
+
+        assert_eq!(
+            dem.streams.len(),
+            1,
+            "PMT must add one video stream"
+        );
+        assert_eq!(
+            dem.streams[0].continuity, CC_UNSET,
+            "new stream continuity must be CC_UNSET before first TS packet arrives"
+        );
+    }
+
+    // --- find_ts_sync / ts_sync_candidate_is_valid direct tests ---
+
+    #[test]
+    fn find_ts_sync_empty_returns_zero_length() {
+        assert_eq!(find_ts_sync(&[]), 0);
+    }
+
+    #[test]
+    fn find_ts_sync_no_sync_byte_returns_len() {
+        let data = vec![0x00u8; 200];
+        assert_eq!(find_ts_sync(&data), data.len());
+    }
+
+    #[test]
+    fn find_ts_sync_sync_at_offset_zero_accepted() {
+        // One packet followed by non-0x47 — optimistic accept at offset 0
+        let mut data = vec![0x00u8; TS_PACKET_SIZE * 2];
+        data[0] = TS_SYNC_BYTE;
+        data[TS_PACKET_SIZE] = TS_SYNC_BYTE; // confirm at +188
+        assert_eq!(find_ts_sync(&data), 0);
+    }
+
+    #[test]
+    fn find_ts_sync_sync_at_offset_zero_short_buffer_optimistic() {
+        // Buffer has only one packet (≤ TS_PACKET_SIZE bytes after candidate) → optimistic accept
+        let mut data = vec![0x00u8; TS_PACKET_SIZE];
+        data[0] = TS_SYNC_BYTE;
+        assert_eq!(find_ts_sync(&data), 0, "single-packet buffer must accept offset 0");
+    }
+
+    #[test]
+    fn find_ts_sync_false_sync_skipped_real_sync_found() {
+        // byte[5] = 0x47 but byte[5+188] ≠ 0x47 → rejected.
+        // byte[10] = 0x47, +188 and +376 both confirmed → accepted.
+        // Buffer is 4 packets so the triple-confirmation path is exercised.
+        let mut data = vec![0x00u8; TS_PACKET_SIZE * 4];
+        data[5] = TS_SYNC_BYTE; // false candidate — no +188 confirm
+        data[10] = TS_SYNC_BYTE;
+        data[10 + TS_PACKET_SIZE] = TS_SYNC_BYTE;
+        data[10 + TS_PACKET_SIZE * 2] = TS_SYNC_BYTE;
+        assert_eq!(find_ts_sync(&data), 10);
+    }
+
+    #[test]
+    fn find_ts_sync_double_confirmed_sync() {
+        // Two consecutive confirming sync bytes (triple-confirmation path)
+        let mut data = vec![0x00u8; TS_PACKET_SIZE * 4];
+        data[3] = TS_SYNC_BYTE;
+        data[3 + TS_PACKET_SIZE] = TS_SYNC_BYTE;
+        data[3 + TS_PACKET_SIZE * 2] = TS_SYNC_BYTE;
+        assert_eq!(find_ts_sync(&data), 3);
+    }
+
+    #[test]
+    fn ts_sync_candidate_not_sync_byte_returns_false() {
+        let data = [0x00u8; 188];
+        assert!(!ts_sync_candidate_is_valid(&data, 0));
+    }
+
+    #[test]
+    fn ts_sync_candidate_out_of_bounds_returns_false() {
+        let data = [0x47u8; 10];
+        assert!(!ts_sync_candidate_is_valid(&data, 20)); // candidate > data.len()
     }
 }

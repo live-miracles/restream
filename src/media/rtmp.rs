@@ -1827,4 +1827,162 @@ mod tests {
         assert_eq!(app, "live");
         assert_eq!(key, "key");
     }
+
+    // --- FLV video meta: malformed / truncated / unknown codec ---
+
+    #[test]
+    fn parse_flv_video_meta_empty_returns_none() {
+        assert!(parse_flv_video_meta(&[]).is_none());
+    }
+
+    #[test]
+    fn parse_flv_video_meta_single_byte_returns_none() {
+        assert!(parse_flv_video_meta(&[0x17]).is_none());
+    }
+
+    #[test]
+    fn parse_flv_video_meta_unknown_codec_id_returns_none() {
+        // codec_id=5 (On2 VP6 with alpha) — not handled
+        let data = [0x15u8, 0x01, 0x00, 0x00, 0x00];
+        assert!(parse_flv_video_meta(&data).is_none());
+    }
+
+    #[test]
+    fn parse_flv_video_meta_vp6_returns_codec_name() {
+        // frame_type=1, codec_id=4 (VP6) → meta returned with codec="vp6"
+        let data = [0x14u8, 0x00];
+        let meta = parse_flv_video_meta(&data).unwrap();
+        assert_eq!(meta.codec, "vp6");
+        assert_eq!(meta.width, 0);
+    }
+
+    #[test]
+    fn parse_flv_video_meta_h265_returns_codec_name() {
+        // frame_type=1, codec_id=12 (H.265/HEVC enhanced)
+        let data = [0x1Cu8, 0x01, 0x00, 0x00, 0x00];
+        let meta = parse_flv_video_meta(&data).unwrap();
+        assert_eq!(meta.codec, "h265");
+    }
+
+    #[test]
+    fn parse_flv_video_meta_h264_seq_header_truncated_avcc() {
+        // seq header (byte[1]=0) but AVCDecoderConfigurationRecord too short to extract profile/level
+        // data.len() == 6: passes the > 12 check? No: 6 < 12 → skips SPS parsing, no panic
+        let data = [0x17u8, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let meta = parse_flv_video_meta(&data).unwrap();
+        assert_eq!(meta.codec, "h264");
+        // profile/level not parsed (too short)
+        assert!(meta.profile.is_none());
+        assert!(meta.level.is_none());
+        assert_eq!(meta.width, 0);
+    }
+
+    #[test]
+    fn parse_flv_video_meta_h264_seq_header_short_sps_length_field() {
+        // 13 bytes: passes > 12 check. avc_config starts at data[5].
+        // avc_config[5]=0xE1 (numSPS=1), avc_config[6..7]=SPS len = 0x0001 (1 byte),
+        // but then we'd need avc_config[8 + 1] = 9 bytes total in avc_config.
+        // avc_config len = 13-5 = 8 bytes → 8 < 9 → SPS resolution not parsed. No panic.
+        let data = [
+            0x17u8, 0x00, 0x00, 0x00, 0x00, // frame_type/codec, pkt_type, comp_time
+            0x01, 0x64, 0x00, 0x1F, // version, profile, compat, level
+            0xFF, 0xE1,             // lengthSizeMinusOne, numSPS=1
+            0x00, 0x01,             // SPS length = 1 (only 0 bytes remain → out of bounds)
+        ];
+        let meta = parse_flv_video_meta(&data).unwrap();
+        assert_eq!(meta.codec, "h264");
+        assert_eq!(meta.profile.as_deref(), Some("High"));
+        assert_eq!(meta.level.as_deref(), Some("3.1"));
+        assert_eq!(meta.width, 0); // SPS not parsed, no panic
+    }
+
+    // --- FLV audio meta: malformed / truncated / non-AAC codecs ---
+
+    #[test]
+    fn parse_flv_audio_meta_empty_returns_none() {
+        assert!(parse_flv_audio_meta(&[]).is_none());
+    }
+
+    #[test]
+    fn parse_flv_audio_meta_mp3_no_asc() {
+        // format_id=2 (MP3), rate=3 (44100), size=1, type=1 (stereo)
+        let data = [0x2Fu8];
+        let meta = parse_flv_audio_meta(&data).unwrap();
+        assert_eq!(meta.codec, "mp3");
+        assert_eq!(meta.sample_rate, 44100);
+        assert_eq!(meta.channels, 2);
+    }
+
+    #[test]
+    fn parse_flv_audio_meta_speex_mono_11025() {
+        // format_id=11 (Speex), rate=1 (11025), type=0 (mono)
+        let data = [0xB4u8];
+        let meta = parse_flv_audio_meta(&data).unwrap();
+        assert_eq!(meta.codec, "speex");
+        assert_eq!(meta.sample_rate, 11025);
+        assert_eq!(meta.channels, 1);
+        assert_eq!(meta.channel_layout.as_deref(), Some("mono"));
+    }
+
+    #[test]
+    fn parse_flv_audio_meta_aac_data_packet_not_seq_header() {
+        // format_id=10 (AAC), byte[1]=1 (data packet, not seq header) → no ASC parsing
+        let data = [0xAFu8, 0x01, 0x12, 0x10];
+        let meta = parse_flv_audio_meta(&data).unwrap();
+        assert_eq!(meta.codec, "aac");
+        // sample_rate from FLV rate_id bits only (rate_id=3 → 44100)
+        assert_eq!(meta.sample_rate, 44100);
+    }
+
+    #[test]
+    fn parse_flv_audio_meta_aac_seq_header_truncated_asc_one_byte() {
+        // format_id=10, byte[1]=0 (seq header), only 1 byte of ASC → asc.len() < 2, no ASC parsing
+        let data = [0xAFu8, 0x00, 0x12];
+        let meta = parse_flv_audio_meta(&data).unwrap();
+        assert_eq!(meta.codec, "aac");
+        // Falls back to FLV header rates (rate_id=3 → 44100)
+        assert_eq!(meta.sample_rate, 44100);
+    }
+
+    #[test]
+    fn parse_flv_audio_meta_aac_5_1_surround() {
+        // object_type=2 (AAC-LC), freq_idx=3 (48000), ch_config=6 (5.1)
+        // byte[0]: 0xAF (format=10, rate=3, size=1, channels=1 bit)
+        // ASC: (2<<3)|(3>>1)=0x11, (3<<7)|(6<<3)=0xB0
+        let data = [0xAFu8, 0x00, 0x11, 0xB0];
+        let meta = parse_flv_audio_meta(&data).unwrap();
+        assert_eq!(meta.codec, "aac");
+        assert_eq!(meta.sample_rate, 48000);
+        assert_eq!(meta.channels, 6);
+        assert_eq!(meta.channel_layout.as_deref(), Some("5.1"));
+    }
+
+    // --- FLV composition time: edge cases ---
+
+    #[test]
+    fn flv_composition_time_too_short_returns_zero() {
+        assert_eq!(flv_video_composition_time_ms(&[]), 0);
+        assert_eq!(flv_video_composition_time_ms(&[0x17, 0x01, 0x00, 0x00]), 0); // 4 bytes < 5
+    }
+
+    #[test]
+    fn flv_composition_time_sequence_header_returns_zero() {
+        // packet_type=0 (seq header) → composition time is always 0 per spec
+        let data = [0x17u8, 0x00, 0x00, 0x00, 0x28];
+        assert_eq!(flv_video_composition_time_ms(&data), 0);
+    }
+
+    #[test]
+    fn flv_composition_time_h265_nalu_packet() {
+        // codec_id=12 (H.265), packet_type=1 (NALU), positive offset = 40ms
+        let data = [0x1Cu8, 0x01, 0x00, 0x00, 0x28];
+        assert_eq!(flv_video_composition_time_ms(&data), 40);
+    }
+
+    #[test]
+    fn flv_composition_time_audio_byte_returns_zero() {
+        // FLV audio tag (codec_id=10, i.e. byte[0]&0x0F=10, not 7 or 12) → 0
+        let data = [0xAFu8, 0x01, 0x00, 0x00, 0x28];
+        assert_eq!(flv_video_composition_time_ms(&data), 0);
+    }
 }

@@ -420,10 +420,8 @@ pub async fn start_transcoder(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::media::engine::{AudioMeta, VideoMeta};
-    use crate::media::mpegts::{TsDemuxer, TsMuxer};
+    use crate::media::engine::AudioMeta;
     use crate::media::ring_buffer::PayloadFormat;
-    use crate::media::transcoder::run_ffmpeg_transcode_with_scale;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
