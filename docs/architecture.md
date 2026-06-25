@@ -197,9 +197,9 @@ invalidate it. A proper SRT bonded publisher is different: libsrt presents the
 bond as one accepted group ID and one application receive path.
 
 When a reader falls behind by at least the full capacity, it fast-forwards to
-the latest known keyframe. The code does not yet expose per-reader lag,
-overflow, or queue-residency metrics; current diagnostics must not describe the
-write count as live occupancy.
+the latest known keyframe. Health, graph, and diagnostics expose per-reader lag,
+overflow counts, burst-size stats, and unread packet age so operators can spot
+slow consumers before they overflow.
 
 The 4096-slot value is sized as a working target for high-rate streams (~24s at
 4K60, ~48s at 1080p30). Actual depth depends on packetization, frame rate,

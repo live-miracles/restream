@@ -189,13 +189,15 @@ Current semantics:
   `/config`;
 - RTMP and SRT publisher metrics are connection-scoped;
 - SRT listener queue/drop metrics are listener-wide;
-- `readers`, `bytesSent`, and unexpected-reader fields on input are placeholders;
-- ring diagnostics do not yet expose per-reader lag or true occupancy.
+- `bytesSent` is egress-derived and unexpected-reader fields on input remain
+  placeholders;
+- health, graph, and diagnostics expose per-reader source-ring lag, overflow,
+  burst, and unread packet-age metrics.
 - Engine Status and Active Outputs diagnostics filter by `pipeline_id` field.
 
-The diagnostics design in `docs/observability.md` correctly treats application
-residency, reader lag, packet lineage, and transcode lineage as future
-instrumentation work.
+The diagnostics design in `docs/observability.md` still treats packet lineage,
+transcode lineage, and deeper residency histograms as future instrumentation
+work.
 
 ## API Migration Notes
 
@@ -270,7 +272,8 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~remove stale HLS stores when their last segmenter stops~~ — done; segmenter
   shutdown removes the consumer token and in-memory store, with regression
   coverage.
-- add per-reader ring lag, overflow, and packet-age metrics;
+- ~~add per-reader ring lag, overflow, and packet-age metrics~~ — done; source
+  ring reader snapshots are exposed through health, graph, and diagnostics.
 - ~~preserve trustworthy packet metadata across transcoder output~~ — done;
 - ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;
   `MemoryQueue::stats()` reports current depth, capacity, high-water bytes,

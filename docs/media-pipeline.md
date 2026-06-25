@@ -646,6 +646,8 @@ blockers or hardening work:
   (protocol-incorrect).
 - **File ingest**: implemented with child FFmpeg; running state is checked from
   the tracked child process, and exited children are reaped.
-- **Ring buffer**: `Reader::lag()` method added (packets behind write cursor); overflow counter exposed via `Reader.info.overflow_count`. Per-reader queue-residency time not yet tracked.
+- **Ring buffer**: source-ring reader snapshots expose lag slots, overflow
+  count, burst-size stats, and unread packet age through health, graph, and
+  diagnostics.
 - **MemoryQueue**: `stats()` exposes current buffer depth, capacity, high-water
   mark, blocked write count, blocked write time, and closed state.

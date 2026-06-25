@@ -142,30 +142,27 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
             ));
         }
 
-        let write_idx = rb.get_write_idx();
-        let mut max_lag = 0;
-        let mut total_overflows = 0;
-        {
-            let mut readers_guard = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
-            readers_guard.retain(|weak_ref| {
-                if let Some(info) = weak_ref.upgrade() {
-                    let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
-                    let lag = write_idx.saturating_sub(r_idx);
-                    if lag > max_lag {
-                        max_lag = lag;
-                    }
-                    total_overflows += info
-                        .overflow_count
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
+        let reader_snapshots = rb.reader_snapshots();
+        let max_lag = reader_snapshots
+            .iter()
+            .map(|reader| reader.lag_slots)
+            .max()
+            .unwrap_or(0);
+        let total_overflows: usize = reader_snapshots
+            .iter()
+            .map(|reader| reader.overflow_count)
+            .sum();
+        let max_packet_age_ms = reader_snapshots
+            .iter()
+            .filter_map(|reader| reader.packet_age_ms)
+            .max();
         lines.push(format!(
-            "Ring buffer readers: max lag={}, total overflows={}",
-            max_lag, total_overflows
+            "Ring buffer readers: max lag={}, total overflows={}, max packet age={}ms",
+            max_lag,
+            total_overflows,
+            max_packet_age_ms
+                .map(|age| age.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
         ));
         if total_overflows > 0 {
             issues.push(format!(
@@ -634,42 +631,31 @@ async fn check_ring_buffer_health(
         lines.push("Compact packet slots: yes".to_string());
         lines.push("Frame size: variable (media packets)".to_string());
 
-        let write_idx = rb.get_write_idx();
-        let mut readers_info = vec![];
-        {
-            let mut readers_guard = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
-            readers_guard.retain(|weak_ref| {
-                if let Some(info) = weak_ref.upgrade() {
-                    let r_idx = info.read_idx.load(std::sync::atomic::Ordering::Acquire);
-                    let lag = write_idx.saturating_sub(r_idx);
-                    let overflow = info
-                        .overflow_count
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    readers_info.push((info.name.clone(), lag, overflow));
-                    true
-                } else {
-                    false
-                }
-            });
-        }
+        let readers_info = rb.reader_snapshots();
 
         if !readers_info.is_empty() {
             lines.push("Active readers:".to_string());
-            for (name, lag, overflow) in &readers_info {
+            for reader in &readers_info {
                 lines.push(format!(
-                    "  - {}: lag={} slots, overflows={}",
-                    name, lag, overflow
+                    "  - {}: lag={} slots, overflows={}, packet_age={}ms",
+                    reader.name,
+                    reader.lag_slots,
+                    reader.overflow_count,
+                    reader
+                        .packet_age_ms
+                        .map(|age| age.to_string())
+                        .unwrap_or_else(|| "n/a".to_string())
                 ));
-                if *lag > (cap * 8 / 10) {
+                if reader.lag_slots > (cap * 8 / 10) {
                     issues.push(format!(
                         "Reader {} is severely lagging ({} / {} slots). Possible network congestion or performance bottleneck.",
-                        name, lag, cap
+                        reader.name, reader.lag_slots, cap
                     ));
                 }
-                if *overflow > 0 {
+                if reader.overflow_count > 0 {
                     issues.push(format!(
                         "Reader {} has experienced {} overflow(s). Dropped frames occurred.",
-                        name, overflow
+                        reader.name, reader.overflow_count
                     ));
                 }
             }

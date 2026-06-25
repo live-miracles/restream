@@ -48,6 +48,7 @@ use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -119,6 +120,7 @@ pub struct MediaPacket {
 
 pub struct RingSlot {
     data: ArcSwapOption<MediaPacket>,
+    published_at_us: AtomicU64,
 }
 
 #[repr(align(64))]
@@ -153,6 +155,19 @@ pub struct ReaderInfo {
     pub packet_sum: AtomicU64,
     /// Histogram of burst sizes across 6 buckets (see `burst_bucket`).
     pub burst_hist: [AtomicU64; BURST_HIST_BUCKETS],
+}
+
+#[derive(Debug, Clone)]
+pub struct ReaderSnapshot {
+    pub name: String,
+    pub read_idx: usize,
+    pub write_idx: usize,
+    pub lag_slots: usize,
+    pub overflow_count: usize,
+    pub packet_age_ms: Option<u64>,
+    pub burst_count: u64,
+    pub avg_burst_size: f64,
+    pub median_burst_size: usize,
 }
 
 impl ReaderInfo {
@@ -210,6 +225,7 @@ pub struct RingBuffer {
     write_idx: AlignedAtomicUsize,
     last_keyframe_idx: AlignedAtomicUsize,
     capacity: usize,
+    created_at: Instant,
     notify: Arc<tokio::sync::Notify>,
     pub readers: std::sync::Mutex<Vec<std::sync::Weak<ReaderInfo>>>,
     /// Video codec of packets in this ring, set once by the producer.
@@ -226,6 +242,7 @@ impl RingBuffer {
         for _ in 0..capacity {
             slots.push(RingSlot {
                 data: ArcSwapOption::empty(),
+                published_at_us: AtomicU64::new(0),
             });
         }
         Self {
@@ -240,6 +257,7 @@ impl RingBuffer {
                 val: AtomicUsize::new(usize::MAX),
             },
             capacity,
+            created_at: Instant::now(),
             notify: Arc::new(tokio::sync::Notify::new()),
             readers: std::sync::Mutex::new(Vec::new()),
             codec_hint: std::sync::OnceLock::new(),
@@ -271,6 +289,9 @@ impl RingBuffer {
         let slot_idx = idx % self.capacity;
         let is_keyframe = packet.media_type == MediaType::Video && packet.is_keyframe;
 
+        self.slots[slot_idx]
+            .published_at_us
+            .store(self.elapsed_us().max(1), Ordering::Release);
         self.slots[slot_idx].data.store(Some(Arc::new(packet)));
 
         if is_keyframe {
@@ -298,6 +319,9 @@ impl RingBuffer {
             let slot_idx = idx % self.capacity;
             let is_keyframe = packet.media_type == MediaType::Video && packet.is_keyframe;
 
+            self.slots[slot_idx]
+                .published_at_us
+                .store(self.elapsed_us().max(1), Ordering::Release);
             self.slots[slot_idx].data.store(Some(Arc::new(packet)));
             if is_keyframe {
                 self.last_keyframe_idx.val.store(idx, Ordering::Release);
@@ -318,6 +342,10 @@ impl RingBuffer {
     pub fn read_at(&self, idx: usize) -> Option<Arc<MediaPacket>> {
         let slot_idx = idx % self.capacity;
         self.slots[slot_idx].data.load_full()
+    }
+
+    fn elapsed_us(&self) -> u64 {
+        self.created_at.elapsed().as_micros().min(u64::MAX as u128) as u64
     }
 
     pub fn get_write_idx(&self) -> usize {
@@ -367,6 +395,50 @@ impl RingBuffer {
         } else {
             (write_idx.min(self.capacity), self.capacity)
         }
+    }
+
+    pub fn reader_snapshots(&self) -> Vec<ReaderSnapshot> {
+        let write_idx = self.get_write_idx();
+        let now_us = self.elapsed_us();
+        let mut snapshots = Vec::new();
+
+        let mut readers = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        readers.retain(|weak_ref| {
+            let Some(info) = weak_ref.upgrade() else {
+                return false;
+            };
+
+            let read_idx = info.read_idx.load(Ordering::Acquire);
+            let lag_slots = write_idx.saturating_sub(read_idx);
+            let packet_age_ms = if lag_slots == 0 || lag_slots >= self.capacity {
+                None
+            } else {
+                let slot = &self.slots[read_idx % self.capacity];
+                if slot.data.load_full().is_some() {
+                    let published_at_us = slot.published_at_us.load(Ordering::Acquire);
+                    (published_at_us > 0).then(|| now_us.saturating_sub(published_at_us) / 1000)
+                } else {
+                    None
+                }
+            };
+            let (avg_burst_size, median_burst_size, burst_count) = info.burst_stats();
+
+            snapshots.push(ReaderSnapshot {
+                name: info.name.clone(),
+                read_idx,
+                write_idx,
+                lag_slots,
+                overflow_count: info.overflow_count.load(Ordering::Relaxed),
+                packet_age_ms,
+                burst_count,
+                avg_burst_size,
+                median_burst_size,
+            });
+
+            true
+        });
+
+        snapshots
     }
 
     pub fn fast_forward(&self, current_write_idx: usize) -> usize {
@@ -762,6 +834,36 @@ mod tests {
         // After wrapping, fill stays at capacity
         rb.push(audio_packet(100, 100));
         assert_eq!(rb.fill_and_capacity(), (16, 16));
+    }
+
+    #[test]
+    fn reader_snapshots_report_lag_overflow_and_packet_age() {
+        let rb = Arc::new(RingBuffer::new(4));
+        rb.push(video_packet(0, 0, true));
+        let mut reader = Reader::new("slow-reader".to_string(), rb.clone());
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        rb.push(audio_packet(10, 10));
+        rb.push(audio_packet(20, 20));
+
+        let snapshots = rb.reader_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.name, "slow-reader");
+        assert_eq!(snapshot.lag_slots, 3);
+        assert_eq!(snapshot.overflow_count, 0);
+        assert!(
+            snapshot.packet_age_ms.is_some(),
+            "lagging reader should report the age of its next unread packet"
+        );
+
+        for i in 3..8 {
+            rb.push(audio_packet(i * 10, i * 10));
+        }
+        assert!(reader.pull().is_err());
+
+        let snapshots = rb.reader_snapshots();
+        assert_eq!(snapshots[0].overflow_count, 1);
     }
 
     // -- DtsEnforcer --

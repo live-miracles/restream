@@ -63,8 +63,10 @@ Active input fields:
 | `publisher.remoteAddr` | Accepted peer address when available |
 | `publisher.quality` | Protocol-specific live transport snapshot |
 
-`bytesSent`, `readers`, and `unexpectedReaders.count` are emitted as zero
-placeholders.
+`bytesSent` is derived from active egress counters. `readers` is the count of
+live source-ring readers, and `readerMetrics` exposes each reader's lag slots,
+overflow count, unread packet age, read/write indexes, and burst-size stats.
+`unexpectedReaders.count` remains a placeholder.
 
 ### RTMP Publisher Quality
 
@@ -152,11 +154,11 @@ The SSE diagnostic run (`GET /pipelines/:id/diagnostics`) emits nine checks:
 
 | # | Check | Notes |
 |---|---|---|
-| 1 | Engine Status | Ingest/egress state, uptime, bytes, source ring. Shows reader lag as total writes, not live occupancy. |
+| 1 | Engine Status | Ingest/egress state, uptime, bytes, source ring, max reader lag, total overflows, and max unread packet age |
 | 2 | Stream Info | Codec and track metadata |
 | 3 | GOP Analysis | Keyframe interval; uses media PTS when available |
 | 4 | Publisher Transport | RTMP `TCP_INFO`/`SO_MEMINFO` or SRT `srt_bistats()`, including bonded member state |
-| 5 | Ring Buffer Health | Buffer state; per-reader lag and overflow counters not yet exposed |
+| 5 | Ring Buffer Health | Buffer state plus per-reader lag slots, overflow counters, and unread packet age |
 | 6 | Active Outputs | Output state and bytes; egresses associated via `ActiveEgress.pipeline_id` |
 | 7 | System Resources | CPU, RAM, disk |
 | 8 | Network Bandwidth | Host-wide interface rates (not pipeline-specific latency) |
@@ -172,8 +174,9 @@ Returns `404` without an active ingest and `400` for a protocol mismatch.
 
 These should be fixed before adding new timing work:
 
-- `RingBuffer::fill_and_capacity()` reports total writes capped at capacity,
-  not current occupancy or consumer lag.
+- `RingBuffer::fill_and_capacity()` reports source-ring occupancy from the
+  slowest live reader and caps it at capacity. Per-reader snapshots expose live
+  lag and unread packet age.
 - `MemoryQueue::stats()` exposes current depth, capacity, high-water bytes,
   blocked write count, blocked write time, and closed state. These counters
   still need to be surfaced in higher-level graph/API snapshots where useful.
@@ -229,7 +232,7 @@ engine.
 
 1. Correct existing diagnostics (ring-buffer semantics, stale ffprobe claims).
 2. Add `packet_id` and two initial timestamps to `MediaPacket`.
-3. Add reader IDs, lag, overflow, and fixed-size residency histograms.
+3. Add fixed-size residency histograms and packet-lineage timestamps.
 4. Instrument direct RTMP and SRT egress call boundaries.
 5. Port useful old ffprobe analyses (bitrate, GOP, PTS/DTS validation,
    interleaving, stall detection) from existing packet metadata.

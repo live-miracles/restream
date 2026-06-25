@@ -1192,16 +1192,27 @@ impl MediaEngine {
         for pipeline_id in pipeline_ids {
             let ingest_opt = ingests.get(pipeline_id.as_str());
             let pipeline_rb = pipelines.get(pipeline_id.as_str());
-            let readers_count = if let Some(rb) = pipeline_rb {
-                if let Ok(mut r) = rb.readers.lock() {
-                    r.retain(|w| w.upgrade().is_some());
-                    r.len()
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
+            let reader_snapshots = pipeline_rb
+                .map(|rb| rb.reader_snapshots())
+                .unwrap_or_default();
+            let readers_count = reader_snapshots.len();
+            let reader_metrics: Vec<serde_json::Value> = reader_snapshots
+                .iter()
+                .map(|reader| {
+                    serde_json::json!({
+                        "name": reader.name,
+                        "readIndex": reader.read_idx,
+                        "writeIndex": reader.write_idx,
+                        "lagSlots": reader.lag_slots,
+                        "overflowCount": reader.overflow_count,
+                        "overflows": reader.overflow_count,
+                        "packetAgeMs": reader.packet_age_ms,
+                        "burstCount": reader.burst_count,
+                        "avgBurstSize": (reader.avg_burst_size * 10.0).round() / 10.0,
+                        "medianBurstSize": reader.median_burst_size,
+                    })
+                })
+                .collect();
 
             let mut total_bytes_sent = 0u64;
             for (_, egress) in egresses.iter() {
@@ -1235,6 +1246,7 @@ impl MediaEngine {
                     "bytesReceived": bytes_received,
                     "bytesSent": total_bytes_sent,
                     "readers": readers_count,
+                    "readerMetrics": reader_metrics,
                     "bitrateKbps": bitrate_kbps,
                     "video": ingest.video,
                     "audio": ingest.audio,
@@ -1247,6 +1259,7 @@ impl MediaEngine {
                     "bytesReceived": 0,
                     "bytesSent": total_bytes_sent,
                     "readers": readers_count,
+                    "readerMetrics": reader_metrics,
                     "publisher": null,
                     "unexpectedReaders": { "count": 0 }
                 })
@@ -1395,18 +1408,21 @@ impl MediaEngine {
         let rb_node_id = format!("{}_source_rb", pipeline_id);
         let rb_info = pipelines.get(pipeline_id).map(|rb| {
             let (fill, cap) = rb.fill_and_capacity();
-            let readers = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
-            let reader_stats: Vec<serde_json::Value> = readers
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .map(|info| {
-                    let (avg, median, bursts) = info.burst_stats();
+            let reader_stats: Vec<serde_json::Value> = rb
+                .reader_snapshots()
+                .into_iter()
+                .map(|reader| {
                     serde_json::json!({
-                        "name": info.name,
-                        "overflows": info.overflow_count.load(std::sync::atomic::Ordering::Relaxed),
-                        "burstCount": bursts,
-                        "avgBurstSize": (avg * 10.0).round() / 10.0,
-                        "medianBurstSize": median,
+                        "name": reader.name,
+                        "readIndex": reader.read_idx,
+                        "writeIndex": reader.write_idx,
+                        "lagSlots": reader.lag_slots,
+                        "overflowCount": reader.overflow_count,
+                        "overflows": reader.overflow_count,
+                        "packetAgeMs": reader.packet_age_ms,
+                        "burstCount": reader.burst_count,
+                        "avgBurstSize": (reader.avg_burst_size * 10.0).round() / 10.0,
+                        "medianBurstSize": reader.median_burst_size,
                     })
                 })
                 .collect();
@@ -1588,7 +1604,33 @@ impl MediaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader};
+    use bytes::Bytes;
     use std::sync::Arc;
+
+    fn test_video_packet(pts: i64, dts: i64, keyframe: bool) -> MediaPacket {
+        MediaPacket {
+            media_type: MediaType::Video,
+            format: PayloadFormat::Raw,
+            is_keyframe: keyframe,
+            track_index: 0,
+            pts,
+            dts,
+            payload: Bytes::from_static(b"video"),
+        }
+    }
+
+    fn test_audio_packet(pts: i64, dts: i64) -> MediaPacket {
+        MediaPacket {
+            media_type: MediaType::Audio,
+            format: PayloadFormat::Raw,
+            is_keyframe: false,
+            track_index: 0,
+            pts,
+            dts,
+            payload: Bytes::from_static(b"audio"),
+        }
+    }
 
     #[tokio::test]
     async fn test_hls_consumers_monotonic_idle() {
@@ -1706,6 +1748,49 @@ mod tests {
         assert_eq!(
             snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
             false
+        );
+    }
+
+    #[tokio::test]
+    async fn health_and_graph_expose_reader_lag_overflow_and_packet_age() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-reader-metrics";
+        let rb = engine.get_or_create_pipeline(pipeline_id).await;
+
+        rb.push(test_video_packet(0, 0, true));
+        let _reader = Reader::new("graph-reader".to_string(), rb.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        rb.push(test_audio_packet(10, 10));
+
+        let snapshot = engine
+            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
+            .await;
+        let reader_metrics = snapshot["pipelines"][pipeline_id]["input"]["readerMetrics"]
+            .as_array()
+            .unwrap();
+        assert_eq!(reader_metrics.len(), 1);
+        assert_eq!(reader_metrics[0]["name"], "graph-reader");
+        assert_eq!(reader_metrics[0]["lagSlots"], 2);
+        assert_eq!(reader_metrics[0]["overflowCount"], 0);
+        assert!(
+            !reader_metrics[0]["packetAgeMs"].is_null(),
+            "health reader metrics should expose unread packet age"
+        );
+
+        let graph = engine.processing_graph(pipeline_id, &[]).await;
+        let source = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == "ring_buffer")
+            .unwrap();
+        let graph_readers = source["details"]["readers"].as_array().unwrap();
+        assert_eq!(graph_readers.len(), 1);
+        assert_eq!(graph_readers[0]["lagSlots"], 2);
+        assert_eq!(graph_readers[0]["overflowCount"], 0);
+        assert!(
+            !graph_readers[0]["packetAgeMs"].is_null(),
+            "graph reader metrics should expose unread packet age"
         );
     }
 
