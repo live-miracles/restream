@@ -24,6 +24,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::alerts;
 use crate::db;
+use crate::events;
 use crate::diag;
 use crate::media::engine::MediaEngine;
 use crate::media::security::IngestSecurityService;
@@ -283,6 +284,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(pipeline_alerts_handler),
         )
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
+        .route("/api/v1/events", get(v1_events_handler))
         .route("/api/v1/overview", get(v1_overview_handler))
         .route(
             "/api/v1/pipelines/:pipeline_id/summary",
@@ -2093,6 +2095,48 @@ async fn aggregate_alerts_handler(
     Json(serde_json::json!({
         "generatedAt": generated_at,
         "alerts": alert_list,
+    }))
+    .into_response()
+}
+
+/// Query params for GET /api/v1/events.
+#[derive(Debug, serde::Deserialize)]
+struct EventsQuery {
+    pipeline_id: Option<String>,
+    #[serde(default = "default_events_limit")]
+    limit: usize,
+}
+
+fn default_events_limit() -> usize {
+    100
+}
+
+/// Returns recent lifecycle events. Auth required.
+/// Optional query params: pipeline_id, limit (default 100, max 1000).
+async fn v1_events_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<EventsQuery>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let limit = query.limit.min(events::MAX_EVENTS);
+    let pipeline_filter = query.pipeline_id.as_deref();
+    let event_list = state
+        .engine
+        .event_log
+        .recent(limit, pipeline_filter);
+
+    Json(serde_json::json!({
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "count": event_list.len(),
+        "events": event_list,
     }))
     .into_response()
 }

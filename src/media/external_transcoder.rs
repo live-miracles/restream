@@ -516,6 +516,10 @@ pub async fn start_external_transcoder_stage(
     engine
         .remove_stage_metrics(&pipeline_id, &encoding)
         .await;
+    engine.event_log.emit(crate::events::EventKind::StageStopped {
+        pipeline_id: pipeline_id.clone(),
+        encoding: encoding.clone(),
+    });
 
     println!(
         "[ext-transcoder] stage exit   pipeline={} encoding={}",

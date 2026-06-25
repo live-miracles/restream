@@ -315,6 +315,8 @@ pub struct MediaEngine {
     // Keyed by the same storage key as transcoder_buffers.
     // Used by processing_graph() to surface queue depth/HWM in the engineer view.
     pub input_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
+    // Bounded in-memory lifecycle event log.
+    pub event_log: Arc<crate::events::EventLog>,
 }
 
 impl Default for MediaEngine {
@@ -356,6 +358,7 @@ impl MediaEngine {
             ts_muxer_stages: TokioRwLock::new(HashMap::new()),
             diag_semaphores: TokioRwLock::new(HashMap::new()),
             input_queues: TokioRwLock::new(HashMap::new()),
+            event_log: Arc::new(crate::events::EventLog::new()),
         }
     }
 
@@ -539,6 +542,10 @@ impl MediaEngine {
             "[transcoder] Spawning stage: pipeline={} encoding={}",
             pipeline_id, encoding
         );
+        self.event_log.emit(crate::events::EventKind::StageStarted {
+            pipeline_id: pipeline_id.to_string(),
+            encoding: encoding.to_string(),
+        });
 
         let pid = pipeline_id.to_string();
         let enc = encoding.to_string();
@@ -850,6 +857,11 @@ impl MediaEngine {
             },
         );
 
+        self.event_log.emit(crate::events::EventKind::IngestConnected {
+            pipeline_id: pipeline_id.to_string(),
+            protocol: protocol.to_string(),
+            stream_key: stream_key.to_string(),
+        });
         Some(token)
     }
 
@@ -860,7 +872,19 @@ impl MediaEngine {
         }
 
         let mut ingests = self.active_ingests.write().await;
+        let protocol = ingests
+            .get(pipeline_id)
+            .map(|i| i.protocol.clone())
+            .unwrap_or_default();
         ingests.remove(pipeline_id);
+        drop(ingests);
+
+        if !protocol.is_empty() {
+            self.event_log.emit(crate::events::EventKind::IngestDisconnected {
+                pipeline_id: pipeline_id.to_string(),
+                protocol,
+            });
+        }
     }
 
     pub async fn register_egress(
@@ -892,6 +916,10 @@ impl MediaEngine {
             },
         );
 
+        self.event_log.emit(crate::events::EventKind::EgressStarted {
+            pipeline_id: pipeline_id.to_string(),
+            output_id: output_id.to_string(),
+        });
         token
     }
 
@@ -902,7 +930,19 @@ impl MediaEngine {
         }
 
         let mut egresses = self.active_egresses.write().await;
+        let pipeline_id = egresses
+            .get(output_id)
+            .map(|e| e.pipeline_id.clone())
+            .unwrap_or_default();
         egresses.remove(output_id);
+        drop(egresses);
+
+        if !pipeline_id.is_empty() {
+            self.event_log.emit(crate::events::EventKind::EgressStopped {
+                pipeline_id,
+                output_id: output_id.to_string(),
+            });
+        }
     }
 
     /// Update bytes received counter for an active ingest (lock-free atomic).

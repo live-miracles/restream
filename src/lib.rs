@@ -27,6 +27,7 @@ pub mod api;
 pub mod db;
 pub mod diag;
 pub mod domain;
+pub mod events;
 pub mod ffmpeg_extract;
 pub mod media;
 pub mod planner;

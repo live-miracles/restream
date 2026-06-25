@@ -1548,6 +1548,83 @@ async fn v1_pipeline_summary_returns_operator_fields() {
     assert!(body["generatedAt"].is_string());
 }
 
+// --- Lifecycle events endpoint ---
+
+#[tokio::test]
+async fn v1_events_requires_auth() {
+    let (app, _) = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/events")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn v1_events_returns_envelope_and_events_array() {
+    let (app, _pool, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    // Emit a synthetic event directly on the engine's event log
+    engine.event_log.emit(restream::events::EventKind::IngestConnected {
+        pipeline_id: "test-pipeline".to_string(),
+        protocol: "rtmp".to_string(),
+        stream_key: "key01".to_string(),
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/events", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["generatedAt"].is_string());
+    assert!(body["count"].as_u64().unwrap() >= 1);
+    assert!(body["events"].is_array());
+    let events = body["events"].as_array().unwrap();
+    assert!(events.iter().any(|e| e["kind"].as_str() == Some("ingestConnected")));
+}
+
+#[tokio::test]
+async fn v1_events_filters_by_pipeline_id() {
+    let (app, _pool, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    engine.event_log.emit(restream::events::EventKind::IngestConnected {
+        pipeline_id: "pipe-a".to_string(),
+        protocol: "rtmp".to_string(),
+        stream_key: "key01".to_string(),
+    });
+    engine.event_log.emit(restream::events::EventKind::IngestConnected {
+        pipeline_id: "pipe-b".to_string(),
+        protocol: "srt".to_string(),
+        stream_key: "key02".to_string(),
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/events?pipeline_id=pipe-a",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["pipelineId"].as_str().unwrap(), "pipe-a");
+}
+
 // --- Reconciler backoff unit test ---
 
 #[test]
