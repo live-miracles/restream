@@ -11,7 +11,7 @@ use std::time::Instant;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::stage::{EncodingStagePlan, StageKind};
+use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
@@ -447,7 +447,7 @@ impl MediaEngine {
         input_codec_override: Option<&str>,
     ) -> Arc<RingBuffer> {
         let stage_kind = StageKind::parse_legacy_key(encoding);
-        let key = format!("{}:{}", pipeline_id, stage_kind.legacy_key());
+        let key = StageKey::new(pipeline_id, stage_kind.clone()).storage_key();
 
         // Use a single write-lock acquisition to atomically check-and-insert.
         // The previous read-lock-then-write-lock pattern had a TOCTOU window:
@@ -618,15 +618,11 @@ impl MediaEngine {
         upstream_stage_key: &str,
         source_buffer: Arc<RingBuffer>,
     ) -> Arc<RingBuffer> {
-        let key = format!(
-            "{}:{}",
+        let key = StageKey::new(
             pipeline_id,
-            StageKind::codec_edge(
-                "hevc_to_h264",
-                StageKind::parse_legacy_key(upstream_stage_key)
-            )
-            .legacy_key()
-        );
+            StageKind::codec_edge("hevc_to_h264", StageKind::parse_legacy_key(upstream_stage_key)),
+        )
+        .storage_key();
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
