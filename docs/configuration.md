@@ -125,16 +125,16 @@ Examples:
 source
 720p
 1080p+atrack:0
-2160p+remap:0:1
+720p+remap:0:1
 source+downmix:1
 ```
 
-Recognized video presets are `source`, `720p`, `1080p`, `2160p`/`4k`,
-`vertical-crop`, `vertical-rotate`, and the internal `h264` conversion preset.
-`source` is passthrough and bypasses the video transcoder. For non-source video
-presets, the default backend is an external FFmpeg subprocess that performs
-decode/scale/encode. When `RESTREAM_USE_INTERNAL_TRANSCODER=1`, the in-process
-backend performs decode/scale/encode for video presets (audio streams are copied).
+Built-in video profiles are `source`, `720p`, `1080p`, and the internal `h264`
+conversion profile. `source` is passthrough and bypasses the video transcoder.
+For non-source built-in video profiles, the default backend is an external
+FFmpeg subprocess that performs decode/scale/encode. When
+`RESTREAM_USE_INTERNAL_TRANSCODER=1`, the in-process backend performs
+decode/scale/encode for built-in video profiles (audio streams are copied).
 `custom` remains stored configuration only. It is rejected by output
 create/update so operators do not accidentally select a passthrough path that
 looks like custom FFmpeg execution.

@@ -156,8 +156,8 @@ The labels below distinguish implementation from proof.
 | SRT ingest to RTMP egress | **Not protocol-correct** | RTMP egress forwards raw demuxed codec payload as though it were FLV media payload |
 | SRT H.265 passthrough | Implemented, needs full E2E matrix | Codec mapping is tested; decode/probe combinations remain a release gate |
 | RTMP output from H.265 source | **Implemented** | `hevc_to_h264` stage (`h264_transcoder.rs`) does full libavcodec H.265 decode → H.264 encode; audio passthrough. Verified by `h265-srt` and `h265-srt-multi` scale tests |
-| 720p/1080p/2160p transforms via external transcoder (default) | **Implemented** | Subprocess `ffmpeg -vf scale=WxH -c:v libx264`; working and tested |
-| 720p/1080p/2160p transforms via internal transcoder (`RESTREAM_USE_INTERNAL_TRANSCODER=1`) | **Not functionally complete** | `run_ffmpeg_transcoder_stage` demuxes MPEG-TS and copies compressed packets to the output ring without decode, scale filter, or encode |
+| Built-in transforms via external transcoder (default) | **Implemented** | Subprocess `ffmpeg -vf scale=WxH -c:v libx264`; working and tested for default runtime presets |
+| Built-in transforms via internal transcoder (`RESTREAM_USE_INTERNAL_TRANSCODER=1`) | Implemented for `h264`, `720p`, and `1080p` | `run_ffmpeg_transcode_with_scale` performs decode/scale/encode; transcoder integration tests exercise every built-in profile |
 | Vertical crop/rotate | **Not implemented** | Only output dimensions are selected; no scale/crop/rotate filter runs |
 | Multi-track SRT audio ingest | Implemented | Demux maps all audio streams with track indices |
 | `atrack` | Implemented at stream-selection level | Parser tests |
@@ -248,8 +248,9 @@ See `docs/api-reference.md` for the executable route surface.
    and in-process transcoder input now share the TS packet feeder.
 8. Run the protocol matrix from `docs/testing.md`, including H.265,
    B-frame timestamps, cross-protocol packaging, and destination restart.
-9. Implement the decode/filter/encode packet loop, then prove every advertised
-   video preset.
+9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
+   video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
+   path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.
 10. ~~Implement HLS HTTP PUT upload or remove HLS upload choices from the UI~~
    — done by implementing HTTP/HTTPS HLS PUT upload; local HLS remains
    available as `hls://`.

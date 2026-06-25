@@ -4,10 +4,11 @@
 //! transcoder demuxes it and pushes MediaPackets to the output RingBuffer.
 
 use restream::media::avio::MemoryQueue;
+use restream::media::engine::VideoMeta;
 use restream::media::external_transcoder::build_stage_ffmpeg_args;
-use restream::media::mpegts::TsDemuxer;
-use restream::media::ring_buffer::{MediaType, Reader, RingBuffer};
-use restream::media::transcoder::run_ffmpeg_transcoder_stage;
+use restream::media::mpegts::{TsDemuxer, TsMuxer};
+use restream::media::ring_buffer::{MediaType, PayloadFormat, Reader, RingBuffer};
+use restream::media::transcoder::{run_ffmpeg_transcode_with_scale, run_ffmpeg_transcoder_stage};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -86,6 +87,73 @@ fn run_external_stage_args(
     let mut packets = Vec::new();
     demuxer.drain_into(&mut packets);
     packets
+}
+
+fn synthetic_video_only_ts(fixture: &[u8]) -> Vec<u8> {
+    let mut demuxer = TsDemuxer::new();
+    demuxer.feed(fixture);
+    let mut all_packets = Vec::new();
+    demuxer.drain_into(&mut all_packets);
+
+    let video_meta = VideoMeta {
+        codec: "h264".to_string(),
+        width: 1920,
+        height: 1080,
+        fps: 30.0,
+        bw: None,
+        profile: None,
+        level: None,
+        pixel_format: None,
+    };
+    let mut muxer = TsMuxer::new(Some(&video_meta), &[]);
+    let mut synthetic_ts = Vec::new();
+
+    let mut video_count = 0usize;
+    for pkt in all_packets
+        .into_iter()
+        .filter(|p| p.media_type == MediaType::Video)
+    {
+        video_count += 1;
+        let ts_bytes = muxer.mux_packet(
+            MediaType::Video,
+            0,
+            pkt.pts,
+            pkt.dts,
+            pkt.is_keyframe,
+            &pkt.payload,
+        );
+        synthetic_ts.extend_from_slice(ts_bytes);
+    }
+
+    assert!(video_count > 0, "fixture must contain video packets");
+    synthetic_ts
+}
+
+fn run_internal_scale_stage(
+    synthetic_ts: &[u8],
+    preset: &str,
+) -> Vec<std::sync::Arc<restream::media::ring_buffer::MediaPacket>> {
+    let input = Arc::new(MemoryQueue::new());
+    let output = Arc::new(RingBuffer::new(4096));
+    {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(input.write(synthetic_ts));
+    }
+    input.close();
+
+    let result =
+        run_ffmpeg_transcode_with_scale(input, output.clone(), preset, CancellationToken::new());
+    assert!(
+        result.is_ok(),
+        "run_ffmpeg_transcode_with_scale failed for {preset}: {result:?}"
+    );
+
+    let mut reader = Reader::new(format!("test_transcode_scale_{preset}"), output);
+    let mut output_packets = Vec::new();
+    while let Ok(Some(pkt)) = reader.pull() {
+        output_packets.push(pkt);
+    }
+    output_packets
 }
 
 #[test]
@@ -203,96 +271,32 @@ fn cancelled_token_stops_early() {
 }
 
 #[test]
-fn transcode_with_scale_synthetic_video_only() {
-    use restream::media::engine::VideoMeta;
-    use restream::media::mpegts::{TsDemuxer, TsMuxer};
-    use restream::media::ring_buffer::PayloadFormat;
-    use restream::media::transcoder::run_ffmpeg_transcode_with_scale;
-
+fn internal_transcode_builtin_video_presets_produce_video() {
     let fixture = load_fixture();
+    let synthetic_ts = synthetic_video_only_ts(&fixture);
 
-    // 1. Demux video packets from the fixture
-    let mut demuxer = TsDemuxer::new();
-    demuxer.feed(&fixture);
-    let mut all_packets = Vec::new();
-    demuxer.drain_into(&mut all_packets);
+    for preset in ["h264", "720p", "1080p"] {
+        let output_packets = run_internal_scale_stage(&synthetic_ts, preset);
 
-    let video_packets: Vec<_> = all_packets
-        .into_iter()
-        .filter(|p| p.media_type == MediaType::Video)
-        .collect();
-
-    assert!(
-        !video_packets.is_empty(),
-        "Fixture must contain video packets"
-    );
-
-    // 2. Mux video-only packets to generate a synthetic video-only MPEG-TS stream
-    let video_meta = VideoMeta {
-        codec: "h264".to_string(),
-        width: 1920,
-        height: 1080,
-        fps: 30.0,
-        bw: None,
-        profile: None,
-        level: None,
-        pixel_format: None,
-    };
-
-    let mut muxer = TsMuxer::new(Some(&video_meta), &[]);
-    let mut synthetic_ts = Vec::new();
-
-    for pkt in video_packets {
-        // Mux packet using its properties
-        let ts_bytes = muxer.mux_packet(
-            MediaType::Video,
-            0,
-            pkt.pts,
-            pkt.dts,
-            pkt.is_keyframe,
-            &pkt.payload,
+        assert!(
+            !output_packets.is_empty(),
+            "no packets produced by internal transcode preset {preset}"
         );
-        synthetic_ts.extend_from_slice(ts_bytes);
-    }
-
-    // 3. Write synthetic stream to MemoryQueue
-    let input = Arc::new(MemoryQueue::new());
-    let output = Arc::new(RingBuffer::new(4096));
-    {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(input.write(&synthetic_ts));
-    }
-    input.close();
-
-    // 4. Run the decode -> scale -> encode loop with "720p" preset
-    let result =
-        run_ffmpeg_transcode_with_scale(input, output.clone(), "720p", CancellationToken::new());
-
-    assert!(
-        result.is_ok(),
-        "run_ffmpeg_transcode_with_scale failed: {:?}",
-        result
-    );
-
-    // 5. Assert output packets arrive and contain only video
-    let mut reader = Reader::new("test_transcode_scale".to_string(), output);
-    let mut output_packets = Vec::new();
-    while let Ok(Some(pkt)) = reader.pull() {
-        output_packets.push(pkt);
-    }
-
-    assert!(
-        !output_packets.is_empty(),
-        "No packets produced by transcode with scale"
-    );
-    for pkt in &output_packets {
-        assert_eq!(
-            pkt.media_type,
-            MediaType::Video,
-            "Expected only video packets in output"
+        assert!(
+            output_packets.iter().any(|p| p.is_keyframe),
+            "internal transcode preset {preset} should emit a keyframe"
         );
+        for pkt in &output_packets {
+            assert_eq!(
+                pkt.media_type,
+                MediaType::Video,
+                "expected only video packets for preset {preset}"
+            );
+            assert_eq!(
+                pkt.format,
+                PayloadFormat::Raw,
+                "expected raw encoded packets for preset {preset}"
+            );
+        }
     }
-
-    // The output format should be Raw
-    assert_eq!(output_packets[0].format, PayloadFormat::Raw);
 }
