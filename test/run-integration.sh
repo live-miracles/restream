@@ -17,6 +17,7 @@
 # Common env overrides (all modes):
 #   RESTREAM_BIN   path to restream binary (default: target/release/restream)
 #   WORK_DIR       artifact directory      (default: test/artifacts/<mode>)
+#   RESTREAM_DB_PATH SQLite file path       (default: data.db)
 #   RESTREAM_HTTP/RTMP/SRT  port overrides
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
 #
@@ -64,6 +65,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 RESTREAM_BIN="${RESTREAM_BIN:-$ROOT/target/release/restream}"
+RESTREAM_DB_PATH="${RESTREAM_DB_PATH:-data.db}"
 
 # ── Port defaults (each mode may override before calling start_*) ──────────────
 RESTREAM_HTTP="${RESTREAM_HTTP:-3030}"
@@ -170,10 +172,18 @@ cleanup_restream_procs() {
   local pids
   pids=$(ps -eo pid=,comm= | awk '$2 == "restream" {print $1}' || true)
   [[ -n "$pids" ]] && { kill -9 $pids 2>/dev/null || true; sleep 3; }
+  return 0
 }
 
 cleanup_db() {
-  rm -f "$ROOT"/data.db{,-shm,-wal} "$ROOT"/restream.db{,-shm,-wal}
+  local db_url="$RESTREAM_DB_PATH"
+  local db_path="${db_url#sqlite:}"
+  db_path="${db_path%%\?*}"
+  [[ -n "$db_path" ]] || db_path="data.db"
+  if [[ "$db_path" != /* ]]; then
+    db_path="$ROOT/$db_path"
+  fi
+  rm -f "$db_path" "${db_path}-shm" "${db_path}-wal"
 }
 
 start_restream() {
@@ -185,6 +195,7 @@ start_restream() {
   RESTREAM_HTTP_PORT="$RESTREAM_HTTP" \
   RESTREAM_RTMP_PORT="$RESTREAM_RTMP" \
   RESTREAM_SRT_PORT="$RESTREAM_SRT"  \
+  RESTREAM_DB_PATH="$RESTREAM_DB_PATH" \
   "$RESTREAM_BIN" >"$RESTREAM_LOG" 2>&1 &
   RESTREAM_PID=$!
   for i in $(seq 1 30); do
@@ -853,8 +864,9 @@ run_burst_verify() {
   WORK_DIR="${WORK_DIR:-test/artifacts/burst-verify}"
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   init_run_artifacts
-  check_deps ffmpeg ffprobe curl jq
+  check_deps ffmpeg ffprobe curl jq mediamtx
 
+  start_mediamtx
   start_restream
   COOKIE_JAR=$(mktemp)
   api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
@@ -931,10 +943,11 @@ run_burst_verify() {
     pipe_id=$(api POST /pipelines \
       -d "{\"name\":\"${cfg}\",\"streamKey\":\"${stream_key}\"}" | jq -r '.pipeline.id')
 
-    # Add one source output so the ring buffer has an active reader
+    # Add one source output so the ring buffer has an active reader.
+    # mediamtx accepts arbitrary RTMP publish paths and acts as a disposable sink.
     local oid
     oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-      -d "{\"name\":\"src-out\",\"url\":\"rtmp://127.0.0.1:${RESTREAM_RTMP:-1935}/live/${cfg}-out\",\"encoding\":\"source\"}" \
+      -d "{\"name\":\"src-out\",\"url\":\"rtmp://127.0.0.1:${MTX_RTMP}/live/${cfg}-out\",\"encoding\":\"source\"}" \
       | jq -r '.output.id')
     api POST "/pipelines/${pipe_id}/outputs/${oid}/start" >/dev/null
 
