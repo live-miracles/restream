@@ -111,7 +111,7 @@ to the local RTMP listener.
 - MPEG-TS demux/remux for SRT
 - per-pipeline lock-free packet fan-out
 - in-memory HLS store and HTTP pull routes
-- Matroska recording code path
+- MPEG-TS recording code path
 - shared processing-stage identities and audio-stage cache
 - shared TS packet feeder for recording, HLS, and in-process transcoder input
 - centralized stage backend-selection policy
@@ -169,12 +169,12 @@ The labels below distinguish implementation from proof.
 | RTMPS output | **Not wired** | URL parser accepts RTMPS, reconciler dispatches only `rtmp://` |
 | SRT bonded egress | Constructed, live failover unproven | URL/group code exists; bonded group does not receive the high-bitrate option helper |
 | SRT bonded ingest | Implemented and locally validated | One listener accepts a group ID, reads it through one `srt_recvmsg2` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Separate-process tests pass for two-member broadcast and backup groups, including primary-member failure and standby delivery |
-| File ingest | Implemented with child FFmpeg | Not fully in-process; list endpoint reports `running:false` placeholder |
+| File ingest | Implemented with child FFmpeg | Not fully in-process; running state is checked from the tracked child process |
 
 CRUD/lifecycle: deleting an output now cancels its egress task before removing
 the DB row. Deleting a pipeline cancels all its outputs and its ingest.
-Deleting a file-ingest kills its child process. Naturally exited children
-remain tracked.
+Deleting a file-ingest kills its child process. Naturally exited children are
+reaped by the reconciler and by running-state checks.
 
 ## Health and Diagnostics Accuracy
 
@@ -230,14 +230,16 @@ See `docs/api-reference.md` for the executable route surface.
 4. ~~Make output/pipeline/ingest deletion stop runtime tasks~~ — done; egress
    cancellation before DB delete, pipeline delete cancels all outputs and
    ingest, file-ingest delete kills child process.
-5. Reap exited file-ingest children and report actual running state.
+5. ~~Reap exited file-ingest children and report actual running state~~ — done;
+   `MediaEngine::reap_file_ingests()` runs from the reconciler, and file-ingest
+   list/detail responses call `is_file_ingest_running()`.
 6. ~~Detect/log accepted SRT group IDs, expose `srt_group_data`, and reject a
    second independent publisher that only reuses the same StreamID~~ — done.
    Static release packaging now builds libsrt with `ENABLE_BONDING=ON`;
    separate-process broadcast and backup failover tests pass.
 7. ~~Replace the transcoder byte-stream reconstruction~~ — done; output reader
-   now demuxes MPEG-TS to recover timestamps and keyframes. HLS and recording
-   muxers still use the raw-byte approach.
+   now demuxes MPEG-TS to recover timestamps and keyframes. HLS, recording,
+   and in-process transcoder input now share the TS packet feeder.
 8. Run the protocol matrix from `docs/testing.md`, including H.265,
    B-frame timestamps, cross-protocol packaging, and destination restart.
 9. Implement the decode/filter/encode packet loop, then prove every advertised

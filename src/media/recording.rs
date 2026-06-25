@@ -142,7 +142,7 @@ pub async fn start_recording(
     // any panic that escaped catch_unwind (shouldn't happen, but be explicit).
     if let Err(e) = muxer_handle.join() {
         eprintln!(
-            "[recording] MKV muxer thread join failed for {}: {:?}",
+            "[recording] TS writer thread join failed for {}: {:?}",
             filename, e
         );
     }

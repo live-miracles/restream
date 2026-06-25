@@ -225,10 +225,10 @@ Response:
 { "enabled": true, "active": true }
 ```
 
-The recording path intends to write Matroska files in `media/`, and files whose
-task lifetime is shorter than five seconds are deleted as transient artifacts.
-The current feeder concatenates raw packet payloads into FFmpeg input detection,
-so readable recording output is not yet guaranteed.
+The recording path writes raw MPEG-TS files in `media/`, and files whose task
+lifetime is shorter than five seconds are deleted as transient artifacts. The
+recording feeder uses the shared TS packet feeder before writing to the
+MemoryQueue-backed file writer.
 
 ## File Ingest
 

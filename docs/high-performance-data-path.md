@@ -31,7 +31,7 @@ improvement in production-shaped measurements.
 | Batch metadata, prefetch, and vectorized-search refinement | Complete | TS resync and Annex B start-code scanning are vectorized using `memchr` (`find_annexb_start_codes` in `codec.rs` and `for_each_nal_raw` in `mpegts.rs`). Production TS resync uses `memchr` (64 KiB scan is ~631 ns). Annex B NAL scanning uses runtime-dispatched `memchr::memmem` at ~118.73 GiB/s, outperforming `wide` (~40.25 GiB/s) and `pulp` (~4.14 GiB/s) while avoiding complex custom target-feature configurations. |
 | Zero-copy HLS segment finalization | Complete in `24fd309` | 8 MiB finalization fell from ~4.26 ms to ~347 ns by transferring `BytesMut` ownership, over 99.99% lower |
 | Native shared HLS packaging | Complete in `a5d736f` | Replaced the FFmpeg queue plus two-OS-thread path with inline `TsMuxer`, a reusable accumulator, one shared segmenter per pipeline, demand-driven browser heartbeats, and persistent-output reference tracking |
-| Native HLS cost benchmark | Complete in `a5d736f` | Mux-only cost is ~27–147 µs per second of content across 720p30 to 4K30 profiles; six-second mux/accumulate/store cost is ~0.23–2.75 ms. A ten-segment window retains ~23–111 MiB depending on bitrate |
+| Native HLS cost benchmark | Complete in `a5d736f` | Mux-only cost is ~27–147 µs per second of content across 720p30 to 4K30 profiles; six-second mux/accumulate/store cost is ~0.23–2.75 ms. A twenty-segment window retains roughly twice the original ten-segment estimate |
 | Lock-free stage telemetry | HLS complete in `a5d736f`, broader wiring pending | Graph nodes can expose atomic packet, byte, throughput, and processing-time snapshots; HLS records them on its hot path. Ingest/egress objects and other stage slots exist but still need direct-handle updates before their values are meaningful |
 | Native MPEG-TS data-path audit | Complete in `abc558b` | New demux/mux path adds major opportunities in PID dispatch, reusable drains, PES construction, direct TS output, batch APIs, and SIMD-assisted resynchronization/NAL scanning |
 | Reusable MPEG-TS demux drains | Complete in `a741faf` | Real 6.7 MB fixture replay improved from ~12.44 ms to ~11.36 ms, about 8.7%; all 15 MPEG-TS tests pass |
@@ -723,7 +723,7 @@ Track:
 | `data_path/mpegts_mux` | real 6.7 MB fixture re-mux throughput |
 | `data_path/mpegts_resync` | `memchr` versus scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
 | `simd_alternatives` | Portable byte-search and copy alternatives used to decide whether custom architecture-specific routines are justified |
-| `hls_cost` | Native HLS mux, accumulation, segment-store CPU cost, and retained ten-segment memory across representative profiles |
+| `hls_cost` | Native HLS mux, accumulation, segment-store CPU cost, and retained HLS-window memory across representative profiles |
 | `transcoder_runtime_stage` | Exact current FFmpeg `MemoryQueue` + custom-AVIO source passthrough stage over the full H.264 fixture; this is not labelled transcoding until decode/filter/encode is implemented |
 
 It also prints `MediaPacket` and aligned-slot sizes.

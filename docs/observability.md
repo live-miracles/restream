@@ -179,8 +179,8 @@ These should be fixed before adding new timing work:
   timing, but native step 5 is Active Outputs.
 - The native runner no longer emits `probe-raw`, while the report still claims
   raw ffprobe packets and frames are attached.
-- HLS and recording concatenate raw packet payloads into `CustomInput` format
-  detection. Diagnostics must not imply those mux paths are healthy merely
+- HLS, recording, and in-process transcoder input share the TS packet feeder.
+  Diagnostics must still avoid implying those mux paths are healthy merely
   because their task/token is active.
 
 ## Application Residency Design

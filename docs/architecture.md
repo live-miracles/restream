@@ -127,7 +127,7 @@ num_cpus (e.g. 8)    tokio workers
 num_cpus (e.g. 8)    tokio workers
 + 1                  SRT accept loop
 + 1                  hevc_to_h264:from:source OS thread  (RTMP-src passthrough)
-+ 1                  recording MKV muxer
++ 1                  recording TS writer
 ─────
 11 OS threads        + 1 ext FFmpeg child process (video:720p)
 ```
@@ -499,7 +499,7 @@ The egress reads directly from the source RingBuffer.
  OS threads spawned: 0 (inline TsMuxer in async task)
 ```
 
-## Packet Walk: MKV recording
+## Packet Walk: TS recording
 
 ```
  Source RingBuffer
@@ -511,16 +511,16 @@ The egress reads directly from the source RingBuffer.
  ║ ┌──────────────────────────────────┐ ║
  ║ │ Task: recording feeder           │ ║
  ║ │   reader.pull_burst()            │ ║
- ║ │   queue.write_batch(payload)     │ ║
+ ║ │   queue.write_batch(ts bytes)    │ ║
  ║ └───────────────┬──────────────────┘ ║
  ╚═════════════════╪════════════════════╝
                    │
    ════════════════╪════  thread hop (MemoryQueue, Condvar)
                    ▼
  ┌──────────────────────────────────────┐
- │ OS Thread: MKV muxer                 │
- │   queue.read() → FFmpeg demux        │
- │   → FFmpeg mux to Matroska           │
+ │ OS Thread: TS writer                 │
+ │   queue.read()                       │
+ │   → raw MPEG-TS file write           │
  │   → file write (disk I/O)            │
  └──────────────────────────────────────┘
 
@@ -568,7 +568,7 @@ The egress reads directly from the source RingBuffer.
               tasks (async)  feeder     segmenter    feeder
                     │         (task)    (inline       (task)
                     │              │     TsMuxer)        │
-                    │         encoder      │         MKV muxer
+                    │         encoder      │         TS writer
                     │         thread       │         thread
                     │              │       │            │
                     │         output       │          disk
@@ -651,16 +651,15 @@ remains active.
 
 ## HLS and Recording
 
-HLS segments are stored in memory in a ten-segment sliding window and served by
+HLS segments are stored in memory in a twenty-segment sliding window and served by
 Axum. The store and playlist behavior are tested. The live feeder uses the
 native `TsMuxer` inline in the async task. One shared segmenter serves all
 browser previews and HLS-type outputs per pipeline, kept alive by access
 heartbeats and persistent output references.
 
-Recordings use the Matroska muxer and are written under `media/`. Recordings
-shorter than five seconds are removed automatically. Recording uses the
-packet-payload-to-`CustomInput` MemoryQueue pattern and needs contract repair
-before it is considered reliable.
+Recordings are written as raw MPEG-TS files under `media/`. Recordings shorter
+than five seconds are removed automatically. Recording uses the shared TS packet
+feeder and a MemoryQueue-backed writer thread.
 
 ## File Ingest Exception
 
@@ -679,8 +678,9 @@ and sessions. The default password is created on first startup and stored as a
 scrypt hash. Session cookies are `HttpOnly` and `SameSite=Strict`.
 
 Deletion handlers cancel active output/ingest tasks before removing their
-database rows, and file-ingest deletion kills its tracked child. Reaping
-naturally exited file-ingest children remains open.
+database rows, and file-ingest deletion kills its tracked child. Naturally
+exited file-ingest children are reaped by the reconciler and by running-state
+checks.
 
 ## libsrt Internal Threads
 
@@ -730,6 +730,6 @@ under `old/`. The current Rust binary has no `/metrics` text endpoint.
 | `src/media/srt.rs` | 2,387 | SRT server/client, bonding, stats |
 | `src/media/tcp_stats.rs` | 253 | Linux RTMP receiver socket metrics |
 | `src/media/hls.rs` | 338 | In-memory HLS segmenter and store |
-| `src/media/recording.rs` | 228 | Matroska recording |
+| `src/media/recording.rs` | 228 | MPEG-TS recording |
 | `src/media/transcoder.rs` | 420 | Shared video/audio stages |
 | `src/media/security.rs` | 221 | Ingest rate-limit, IP ban, bounded tracked-IP map |
