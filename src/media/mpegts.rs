@@ -2268,6 +2268,113 @@ mod tests {
         );
     }
 
+    // --- NAL scanner edge cases ---
+
+    #[test]
+    fn h264_is_keyframe_empty_payload_returns_false() {
+        assert!(!h264_is_keyframe(&[]));
+    }
+
+    #[test]
+    fn h264_is_keyframe_no_start_codes_returns_false() {
+        // Non-Annex B data, no 0x000001 or 0x00000001 start code
+        assert!(!h264_is_keyframe(&[0x00, 0x01, 0x65, 0x88]));
+    }
+
+    #[test]
+    fn h265_is_keyframe_empty_payload_returns_false() {
+        assert!(!h265_is_keyframe(&[]));
+    }
+
+    #[test]
+    fn h265_is_keyframe_no_start_codes_returns_false() {
+        assert!(!h265_is_keyframe(&[0x00, 0x01, 0x26, 0x01]));
+    }
+
+    #[test]
+    fn find_h264_sps_no_sps_nal_returns_none() {
+        // IDR slice (nal_type=5), no SPS (nal_type=7) present
+        let data = [0x00, 0x00, 0x00, 0x01, 0x65u8, 0xAA, 0xBB];
+        assert!(find_h264_sps(&data).is_none());
+    }
+
+    #[test]
+    fn find_h264_sps_empty_returns_none() {
+        assert!(find_h264_sps(&[]).is_none());
+    }
+
+    #[test]
+    fn find_h264_sps_extracts_sps_nal() {
+        // SPS NAL: nal_type=7 (byte & 0x1F == 7)
+        // find_h264_sps returns NAL data after the first byte (the header byte)
+        let data = [0x00, 0x00, 0x00, 0x01, 0x67u8, 0x64, 0x00, 0x1F];
+        let sps = find_h264_sps(&data);
+        assert!(sps.is_some(), "SPS NAL type 7 must be found");
+        // Returns data after the NAL header byte (0x67)
+        assert_eq!(sps.unwrap(), vec![0x64, 0x00, 0x1F]);
+    }
+
+    #[test]
+    fn find_h265_sps_no_sps_returns_none() {
+        // H.265 IDR (nal_type 19, byte0=(19<<1)=0x26), not SPS (nal_type 33)
+        let data = [0x00, 0x00, 0x00, 0x01, 0x26u8, 0x01, 0xAA];
+        assert!(find_h265_sps(&data).is_none());
+    }
+
+    #[test]
+    fn find_h265_sps_empty_returns_none() {
+        assert!(find_h265_sps(&[]).is_none());
+    }
+
+    #[test]
+    fn find_h265_sps_extracts_sps_payload() {
+        // H.265 SPS: nal_unit_type=33 → byte0=(33<<1)=0x42, byte1=nuh_layer/temporal
+        // find_h265_sps returns sps[2..] (skips the 2-byte NAL header)
+        let data = [0x00, 0x00, 0x00, 0x01, 0x42u8, 0x01, 0xAA, 0xBB, 0xCC];
+        let sps = find_h265_sps(&data);
+        assert!(sps.is_some(), "H.265 SPS (type 33) must be found");
+        assert_eq!(sps.unwrap(), vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn parse_h265_sps_too_short_does_not_panic() {
+        // < 2 bytes → early return without panic
+        let mut meta = VideoMeta::default();
+        parse_h265_sps(&[], &mut meta);
+        assert_eq!(meta.width, 0);
+        parse_h265_sps(&[0x42], &mut meta);
+        assert_eq!(meta.width, 0);
+    }
+
+    #[test]
+    fn mux_audio_only_does_not_panic() {
+        // TsMuxer with no video track, one audio track.
+        // This path is used when a pipeline receives audio-only ingest.
+        let audio = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            profile: None,
+        };
+        let mut muxer = TsMuxer::new(None, &[audio]);
+        let adts = [0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC, 0x21, 0x10];
+        let ts = muxer.mux_packet(MediaType::Audio, 0, 1000, 1000, false, &adts);
+        assert!(!ts.is_empty(), "audio-only muxer must produce TS packets");
+        assert_eq!(ts.len() % TS_PACKET_SIZE, 0, "output must be aligned to TS packet size");
+
+        // Demux round-trip: audio packets must survive
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(ts);
+        demuxer.flush();
+        let packets = demuxer.drain();
+        let audio_count = packets.iter().filter(|p| p.media_type == MediaType::Audio).count();
+        assert!(audio_count > 0, "audio-only round-trip must produce audio packets");
+        let video_count = packets.iter().filter(|p| p.media_type == MediaType::Video).count();
+        assert_eq!(video_count, 0, "audio-only stream must contain no video packets");
+    }
+
     #[test]
     fn pat_pmt_parsing() {
         // Build a minimal PAT + PMT
