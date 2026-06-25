@@ -16,7 +16,9 @@ use bytes::Bytes;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::stage::StageKey;
 use crate::media::avio::MemoryQueue;
+use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 
 /// Zero-copy wrapper: holds an `ffmpeg_next::Packet` so `Bytes::from_owner`
@@ -45,8 +47,7 @@ pub async fn start_h264_transcoder(
     output_buffer: Arc<RingBuffer>,
     engine: Arc<crate::media::engine::MediaEngine>,
     cancel_token: CancellationToken,
-    // Full storage key "{pipeline}:{kind}", e.g. "pipe:hevc_to_h264:from:720p".
-    stage_storage_key: String,
+    stage_key: StageKey,
 ) {
     // Wait for ingest metadata before starting
     let (video_meta, audio_tracks) = loop {
@@ -77,18 +78,14 @@ pub async fn start_h264_transcoder(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
 
-    // Stage metrics: strip the "{pipeline_id}:" prefix to get the stage name.
-    let stage_name = stage_storage_key
-        .split_once(':')
-        .map(|(_, s)| s)
-        .unwrap_or(&stage_storage_key);
+    let stage_name = stage_key.legacy_stage_key();
     let stage_metrics = engine
-        .get_or_create_stage_metrics(&pipeline_id, stage_name)
+        .get_or_create_stage_metrics(&pipeline_id, &stage_name)
         .await;
 
     let input_queue = Arc::new(MemoryQueue::new());
     engine
-        .register_input_queue(&stage_storage_key, input_queue.clone())
+        .register_input_queue(stage_key.clone(), input_queue.clone())
         .await;
 
     // Spawn OS thread for FFmpeg decode→encode
@@ -108,15 +105,17 @@ pub async fn start_h264_transcoder(
     });
     engine.register_os_thread(handle);
 
-    // Forward source RingBuffer packets to MemoryQueue, muxed as MPEG-TS
-    let mut muxer = crate::media::mpegts::TsMuxer::new(Some(&video_meta), &audio_tracks);
-    let num_streams = 1 + audio_tracks.len();
-    let mut dts = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+    // Forward source RingBuffer packets to MemoryQueue, muxed as MPEG-TS.
+    let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
+    let mut feeder = TsPacketFeeder::new(
+        Some(&video_meta),
+        audio_tracks.clone(),
+        PacketFeedConfig {
+            video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+            ..PacketFeedConfig::default()
+        },
+    );
     let mut reader = Reader::new(format!("h264_tc:{}", pipeline_id), input_buffer);
-    let mut nalu_len = 4usize;
-    let mut sps_cache = Vec::new();
-    let mut video_conv_buf = Vec::<u8>::new();
-    let mut audio_conv_buf = Vec::<u8>::new();
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single queue.write() call (one lock acquisition per
     // burst instead of one per packet).
@@ -137,53 +136,7 @@ pub async fn start_h264_transcoder(
                 }
                 for pkt in &packets {
                     let in_bytes = pkt.payload.len() as u64;
-                    let payload: &[u8] = match pkt.media_type {
-                        MediaType::Video => {
-                            match crate::media::codec::video_for_ts_into(
-                                &pkt.payload, pkt.format,
-                                &mut nalu_len, &mut sps_cache, &mut video_conv_buf,
-                            ) {
-                                Some(p) => p,
-                                None => continue,
-                            }
-                        }
-                        MediaType::Audio => {
-                            let track = audio_tracks
-                                .iter()
-                                .find(|a| a.track_index == pkt.track_index)
-                                .or(audio_tracks.first());
-                            let (sr, ch) = track
-                                .map(|a| (a.sample_rate, a.channels))
-                                .unwrap_or((48000, 1));
-                            match crate::media::codec::audio_for_ts_into(
-                                &pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf,
-                            ) {
-                                Some(p) => p,
-                                None => continue,
-                            }
-                        }
-                    };
-
-                    let stream_idx = match pkt.media_type {
-                        MediaType::Video => 0,
-                        MediaType::Audio => {
-                            match audio_tracks
-                                .iter()
-                                .position(|a| a.track_index == pkt.track_index)
-                            {
-                                Some(i) => i + 1,
-                                None => continue, // unknown track — skip to avoid DTS corruption
-                            }
-                        }
-                    };
-
-                    let (pts, dts_val) = dts.enforce(stream_idx, pkt.pts, pkt.dts);
-                    let ts_bytes = muxer.mux_packet(
-                        pkt.media_type, pkt.track_index,
-                        pts, dts_val, pkt.is_keyframe, payload,
-                    );
-                    if !ts_bytes.is_empty() {
-                        ts_batch.extend_from_slice(ts_bytes);
+                    if feeder.extend_ts_for_packet(pkt, &mut ts_batch) {
                         stage_metrics.record_in(in_bytes);
                     }
                 }
@@ -196,14 +149,14 @@ pub async fn start_h264_transcoder(
     }
 
     input_queue.close();
-    engine.remove_input_queue(&stage_storage_key).await;
+    engine.remove_input_queue(&stage_key).await;
+    engine.remove_stage_metrics(&pipeline_id, &stage_name).await;
     engine
-        .remove_stage_metrics(&pipeline_id, stage_name)
-        .await;
-    engine.event_log.emit(crate::events::EventKind::StageStopped {
-        pipeline_id: pipeline_id.clone(),
-        encoding: stage_name.to_string(),
-    });
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id: pipeline_id.clone(),
+            encoding: stage_name.to_string(),
+        });
 }
 
 /// Blocking FFmpeg decode→encode loop, runs on a dedicated OS thread.

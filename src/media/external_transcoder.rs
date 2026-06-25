@@ -40,10 +40,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
-use crate::media::mpegts::{TsDemuxer, TsMuxer};
+use crate::domain::stage::{StageKey, StageKind};
+use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
+use crate::media::mpegts::TsDemuxer;
 use crate::media::pipe_metrics::PipeMetrics;
-use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{Reader, RingBuffer};
 use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 
 /// Stdin writes or stdout reads exceeding this threshold are counted as stalls/idles.
@@ -292,11 +293,9 @@ pub async fn start_external_transcoder_stage(
         );
     }
     let pipe_metrics = Arc::new(PipeMetrics::default());
+    let stage_key = StageKey::new(pipeline_id.as_str(), StageKind::parse_legacy_key(&encoding));
     engine
-        .register_pipe_metrics(
-            &format!("{}:{}", pipeline_id, encoding),
-            pipe_metrics.clone(),
-        )
+        .register_pipe_metrics(stage_key.clone(), pipe_metrics.clone())
         .await;
 
     // ── stderr logger ──────────────────────────────────────────────────────
@@ -436,35 +435,22 @@ pub async fn start_external_transcoder_stage(
         });
     }
 
-    // ── stdin task: source_ring → TsMuxer → FFmpeg stdin ─────────────────
-    // Initialise SPS/PPS cache from the stored sequence header so the first
-    // MPEG-TS segment is self-contained even when the reader joins mid-stream.
-    let mut sps_pps_cache: Vec<u8> = {
-        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
-        if let Some(ref flv_sh) = vsh {
-            if flv_sh.len() > 5 {
-                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
-                let _ = nls; // nalu_len_size will be updated below on first packet
-                annexb
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    };
-    let mut nalu_len_size = 4usize;
-
-    let has_video = !video_meta.codec.is_empty();
-    let num_streams = (has_video as usize) + audio_tracks.len();
-    let mut muxer = TsMuxer::new(Some(&video_meta), &audio_tracks);
-    let mut dts_enforcer = DtsEnforcer::new(num_streams);
+    // ── stdin task: source_ring → TsPacketFeeder → FFmpeg stdin ───────────
+    let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
+    let video_meta_for_feeder = (!video_meta.codec.is_empty()).then_some(&video_meta);
+    let mut feeder = TsPacketFeeder::new(
+        video_meta_for_feeder,
+        audio_tracks.clone(),
+        PacketFeedConfig {
+            video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+            ..PacketFeedConfig::default()
+        },
+    );
     let mut reader = Reader::new(
         format!("ext-stage:{}:{}", pipeline_id, encoding),
         input_buffer,
     );
-    let mut video_conv_buf = Vec::<u8>::new();
-    let mut audio_conv_buf = Vec::<u8>::new();
+    let mut ts_batch = Vec::<u8>::with_capacity(16 * 188);
 
     'outer: loop {
         tokio::select! {
@@ -476,57 +462,10 @@ pub async fn start_external_transcoder_stage(
                 }
                 for pkt in packets {
                     let in_bytes = pkt.payload.len() as u64;
-                    let payload: &[u8] = match pkt.media_type {
-                        MediaType::Video => match video_for_ts_into(
-                            &pkt.payload,
-                            pkt.format,
-                            &mut nalu_len_size,
-                            &mut sps_pps_cache,
-                            &mut video_conv_buf,
-                        ) {
-                            Some(p) => p,
-                            None => continue,
-                        },
-                        MediaType::Audio => {
-                            let track = audio_tracks
-                                .iter()
-                                .find(|a| a.track_index == pkt.track_index)
-                                .or(audio_tracks.first());
-                            let (sr, ch) =
-                                track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
-                            match audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
-                                Some(p) => p,
-                                None => continue,
-                            }
-                        }
-                    };
-
-                    let stream_idx = match pkt.media_type {
-                        MediaType::Video => 0,
-                        MediaType::Audio => {
-                            let vo = has_video as usize;
-                            match audio_tracks
-                                .iter()
-                                .position(|a| a.track_index == pkt.track_index)
-                            {
-                                Some(i) => i + vo,
-                                None => continue, // unknown track — skip to avoid DTS corruption
-                            }
-                        }
-                    };
-
-                    let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
-                    let ts = muxer.mux_packet(
-                        pkt.media_type,
-                        pkt.track_index,
-                        pts,
-                        dts,
-                        pkt.is_keyframe,
-                        payload,
-                    );
-                    if !ts.is_empty() {
+                    ts_batch.clear();
+                    if feeder.extend_ts_for_packet(&pkt, &mut ts_batch) {
                         let t0 = timing::now();
-                        if stdin.write_all(ts).await.is_err() {
+                        if stdin.write_all(&ts_batch).await.is_err() {
                             eprintln!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
                                 pipeline_id, encoding
@@ -549,16 +488,14 @@ pub async fn start_external_transcoder_stage(
     let _ = child.wait().await;
     cancel.cancel();
 
+    engine.remove_stage_metrics(&pipeline_id, &encoding).await;
+    engine.remove_pipe_metrics(&stage_key).await;
     engine
-        .remove_stage_metrics(&pipeline_id, &encoding)
-        .await;
-    engine
-        .remove_pipe_metrics(&format!("{}:{}", pipeline_id, encoding))
-        .await;
-    engine.event_log.emit(crate::events::EventKind::StageStopped {
-        pipeline_id: pipeline_id.clone(),
-        encoding: encoding.clone(),
-    });
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id: pipeline_id.clone(),
+            encoding: encoding.clone(),
+        });
 
     println!(
         "[ext-transcoder] stage exit   pipeline={} encoding={}",

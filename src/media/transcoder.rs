@@ -5,6 +5,7 @@
 //! Audio routing: compound encodings like `720p+atrack:0,1` or `source+remap:0:1`
 //! are parsed to select/remap audio streams.
 
+use crate::domain::stage::{StageKey, StageKind};
 use crate::media::engine::AudioMeta;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
@@ -261,9 +262,9 @@ pub async fn start_transcoder(
     };
 
     let input_queue = Arc::new(crate::media::avio::MemoryQueue::new());
-    let queue_key = format!("{}:{}", pipeline_id, preset);
+    let stage_key = StageKey::new(pipeline_id.as_str(), StageKind::parse_legacy_key(&preset));
     engine
-        .register_input_queue(&queue_key, input_queue.clone())
+        .register_input_queue(stage_key.clone(), input_queue.clone())
         .await;
 
     // Spawn thread to run FFmpeg processing: demux input MPEG-TS, push packets
@@ -358,7 +359,7 @@ pub async fn start_transcoder(
     }
 
     input_queue.close();
-    engine.remove_input_queue(&queue_key).await;
+    engine.remove_input_queue(&stage_key).await;
     engine.event_log.emit(crate::events::EventKind::StageStopped {
         pipeline_id: pipeline_id.clone(),
         encoding: preset.clone(),
