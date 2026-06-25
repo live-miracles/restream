@@ -388,20 +388,27 @@ pub async fn start_external_transcoder_stage(
             let mut buf = vec![0u8; 65536];
             let mut pkts = Vec::with_capacity(32);
             loop {
+                let t0 = Instant::now();
                 tokio::select! {
                     _ = cancel_out.cancelled() => break,
-                    result = stdout.read(&mut buf) => match result {
-                        Ok(0) | Err(_) => {
-                            eprintln!("[ext-transcoder] stdout closed ({})", label_out);
-                            break;
-                        }
-                        Ok(n) => {
-                            demuxer.feed(&buf[..n]);
-                            demuxer.drain_into(&mut pkts);
-                            for pkt in &pkts {
-                                out_metrics.record_out(pkt.payload.len() as u64);
+                    result = stdout.read(&mut buf) => {
+                        let idle_us = t0.elapsed().as_micros() as u64;
+                        match result {
+                            Ok(0) | Err(_) => {
+                                eprintln!("[ext-transcoder] stdout closed ({})", label_out);
+                                break;
                             }
-                            out_ring.push_batch(pkts.drain(..));
+                            Ok(n) => {
+                                if idle_us > PIPE_STALL_THRESHOLD_US {
+                                    out_metrics.record_pipe_idle(idle_us);
+                                }
+                                demuxer.feed(&buf[..n]);
+                                demuxer.drain_into(&mut pkts);
+                                for pkt in &pkts {
+                                    out_metrics.record_out(pkt.payload.len() as u64);
+                                }
+                                out_ring.push_batch(pkts.drain(..));
+                            }
                         }
                     }
                 }
