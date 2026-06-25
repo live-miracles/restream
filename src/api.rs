@@ -430,8 +430,29 @@ struct LoginPayload {
 
 async fn login_post_handler(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<LoginPayload>,
 ) -> impl IntoResponse {
+    // In production the server runs with into_make_service_with_connect_info,
+    // so connect_info is always Some. In unit tests it may be None; fall back
+    // to loopback which the security service never bans.
+    let client_ip = connect_info
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    // Brute-force protection: reject IPs that have exceeded the failure threshold.
+    // Reuses the same IngestSecurityService as RTMP/SRT ingest.
+    if let Some(ban_remaining) = state.security.is_ip_banned(&client_ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": format!("Too many failed attempts. Try again in {} seconds.",
+                                 ban_remaining.as_secs())
+            })),
+        )
+            .into_response();
+    }
+
     let password = payload.password.unwrap_or_default();
     if let Some(r) = check_field_len("password", &password, MAX_PASSWORD_LEN) {
         return r;
@@ -456,12 +477,14 @@ async fn login_post_handler(
         .unwrap_or(false);
 
     if !verified {
+        state.security.record_failure(&client_ip);
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Incorrect password"})),
         )
             .into_response();
     }
+    state.security.record_success(&client_ip);
 
     // Create session — cookie carries the raw token; DB and in-memory set
     // store only SHA-256(token) so a DB dump cannot forge sessions.
