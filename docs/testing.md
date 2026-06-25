@@ -414,8 +414,10 @@ Aggregate release-evidence wrapper:
 This creates `test/artifacts/<run-id>/manifest.json`, runs preflight plus each
 checked-in integration mode in a per-mode subdirectory, and records one JSONL
 result per mode in `test/artifacts/<run-id>/results.jsonl`. Pass `--fast` for a
-quick agent loop, `--only-modes hls-put,bframe-rtmp` while iterating on a subset,
-or `--continue-on-fail` when collecting failure artifacts for every mode.
+quick agent loop, `--preflight-only` to audit readiness for every selected mode
+without starting live services, `--only-modes hls-put,bframe-rtmp` while
+iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
+for every mode.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to

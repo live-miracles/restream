@@ -87,6 +87,17 @@ A focused aggregate-matrix smoke on June 25, 2026 also passed:
 - `bframe-rtmp`: 63/151 probed video packets had `PTS > DTS`, and DTS stayed
   monotone
 
+A full aggregate preflight on June 25, 2026 also passed for `ramp`,
+`mixed-scale`, `bonding`, `burst-verify`, `hls-put`, and `bframe-rtmp`:
+
+- `./test/run-protocol-matrix.sh --run-id protocol-preflight-20260625T142046Z
+  --preflight-only --continue-on-fail`
+- aggregate manifest:
+  `test/artifacts/protocol-preflight-20260625T142046Z/manifest.json`
+- every selected mode reported clean dependency, namespace, and port preflight
+  checks; `bonding` correctly skips the regular `restream` binary check because
+  it builds dedicated static SRT helper binaries
+
 ## Runtime Architecture
 
 ```text

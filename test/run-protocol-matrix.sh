@@ -16,6 +16,7 @@ WORK_ROOT="${WORK_ROOT:-}"
 WORK_ROOT_EXPLICIT=0
 RESTREAM_BIN_ARG=""
 CONTINUE_ON_FAIL=0
+PREFLIGHT_ONLY=0
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_FLAGS=()
 EXTRA_ARGS=()
@@ -32,6 +33,7 @@ Options:
   --fast                  Pass --fast to run-integration.sh
   --skip-load             Pass --skip-load to run-integration.sh
   --continue-on-fail      Run remaining modes after a failure
+  --preflight-only        Run aggregate preflight for all selected modes only
   --restream-bin <path>   RESTREAM_BIN for non-bonding modes
   -h, --help              Show this help
 
@@ -66,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --continue-on-fail)
       CONTINUE_ON_FAIL=1
+      shift
+      ;;
+    --preflight-only)
+      PREFLIGHT_ONLY=1
       shift
       ;;
     --restream-bin)
@@ -133,6 +139,7 @@ write_matrix_manifest() {
   "finishedAt": ${finished_json},
   "gitHead": "$(json_escape "$git_head")",
   "workRoot": "$(json_escape "$WORK_ROOT")",
+  "preflightOnly": $([[ "$PREFLIGHT_ONLY" == "1" ]] && echo true || echo false),
   "modes": $(json_string_array "${MODES[@]}"),
   "resultsJsonl": "$(json_escape "$RESULTS_JSONL")"
 }
@@ -169,7 +176,9 @@ run_mode() {
     exit_code=1
   fi
 
-  if [[ "$status" == "PASS" ]]; then
+  if [[ "$status" == "PASS" && "$PREFLIGHT_ONLY" == "1" ]]; then
+    echo "[matrix] skip run ${mode} (preflight-only)"
+  elif [[ "$status" == "PASS" ]]; then
     echo "[matrix] run ${mode}"
     if ! WORK_DIR="$mode_dir" RESTREAM_BIN="${RESTREAM_BIN_ARG:-${RESTREAM_BIN:-}}" \
       "$RUNNER" "${RUN_FLAGS[@]}" --json "${mode_dir}/assertions.jsonl" "${EXTRA_ARGS[@]}" "$mode" \
