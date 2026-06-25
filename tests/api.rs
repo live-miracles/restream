@@ -291,6 +291,61 @@ async fn rtmps_output_is_accepted_by_api() {
 }
 
 #[tokio::test]
+async fn local_hls_output_is_accepted_by_api() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(&pool, "p_hls", "P", "key_hls", None, None)
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines/p_hls/outputs",
+            &cookie,
+            Some(r#"{"name":"Local HLS","url":"hls://localhost/hls/key_hls","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let json = body_json(resp).await;
+    assert_eq!(json["output"]["url"], "hls://localhost/hls/key_hls");
+}
+
+#[tokio::test]
+async fn http_hls_upload_output_is_rejected_by_api() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(&pool, "p_http_hls", "P", "key_http_hls", None, None)
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines/p_http_hls/outputs",
+            &cookie,
+            Some(r#"{"name":"Remote HLS","url":"https://a.upload.youtube.com/http_upload_hls?cid=abc&copy=0&file=out.m3u8","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let json = body_json(resp).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Supported schemes are rtmp://, rtmps://, srt://, and hls://")
+    );
+}
+
+#[tokio::test]
 async fn output_crud_via_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;

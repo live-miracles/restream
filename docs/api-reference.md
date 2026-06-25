@@ -175,12 +175,13 @@ URL behavior:
 | URL prefix | Egress |
 |---|---|
 | `rtmp://` | RTMP |
+| `rtmps://` | RTMPS |
 | `srt://` | SRT/MPEG-TS |
 | `hls://` | Local in-memory HLS segmenter |
-| `http://` | Local in-memory HLS segmenter |
-| `https://` | Local in-memory HLS segmenter |
 
-Any other prefix is rejected during validation with a `400 Bad Request`. RTMPS is not supported and will be rejected. HLS upload via HTTP/HTTPS is not implemented; the target URL is only used for scheme identification.
+Any other prefix is rejected during validation with a `400 Bad Request`. HLS
+upload via HTTP/HTTPS is not implemented and HTTP/HTTPS output URLs are
+rejected; use `hls://` for the local in-memory HLS segmenter.
 
 ## History
 

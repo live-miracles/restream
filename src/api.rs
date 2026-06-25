@@ -1078,6 +1078,16 @@ struct OutputPayload {
     encoding: String,
 }
 
+fn is_supported_output_url(url: &str) -> bool {
+    url.starts_with("rtmp://")
+        || url.starts_with("rtmps://")
+        || url.starts_with("srt://")
+        || url.starts_with("hls://")
+}
+
+const OUTPUT_URL_SCHEME_ERROR: &str =
+    "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, and hls://";
+
 async fn outputs_create_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1102,17 +1112,11 @@ async fn outputs_create_handler(
         return r;
     }
     let url = payload.url.trim();
-    if !url.starts_with("rtmp://")
-        && !url.starts_with("rtmps://")
-        && !url.starts_with("srt://")
-        && !url.starts_with("hls://")
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
-    {
+    if !is_supported_output_url(url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://"
+                "error": OUTPUT_URL_SCHEME_ERROR
             })),
         )
             .into_response();
@@ -1164,17 +1168,11 @@ async fn outputs_update_handler(
         return r;
     }
     let url = payload.url.trim();
-    if !url.starts_with("rtmp://")
-        && !url.starts_with("rtmps://")
-        && !url.starts_with("srt://")
-        && !url.starts_with("hls://")
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
-    {
+    if !is_supported_output_url(url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://"
+                "error": OUTPUT_URL_SCHEME_ERROR
             })),
         )
             .into_response();

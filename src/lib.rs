@@ -460,9 +460,7 @@ pub async fn run_app() {
                     let is_supported = url_c.starts_with("rtmp://")
                         || url_c.starts_with("rtmps://")
                         || url_c.starts_with("srt://")
-                        || url_c.starts_with("hls://")
-                        || url_c.starts_with("http://")
-                        || url_c.starts_with("https://");
+                        || url_c.starts_with("hls://");
                     if !is_supported {
                         let end_now = chrono::Utc::now().to_rfc3339();
                         let _ = db::update_job(
@@ -520,10 +518,7 @@ pub async fn run_app() {
                                 cancel_token.clone(),
                             )
                             .await;
-                        } else if url_c.starts_with("hls://")
-                            || url_c.starts_with("http://")
-                            || url_c.starts_with("https://")
-                        {
+                        } else if url_c.starts_with("hls://") {
                             // HLS egress: use the shared segmenter, register as persistent consumer
                             let (store, already_running) =
                                 engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
@@ -579,10 +574,7 @@ pub async fn run_app() {
                     // above; by moving the remove here we ensure it runs even
                     // when the egress future panics after add but before its own
                     // remove (which was guarded only by a cancellation wait).
-                    if url_c.starts_with("hls://")
-                        || url_c.starts_with("http://")
-                        || url_c.starts_with("https://")
-                    {
+                    if url_c.starts_with("hls://") {
                         engine_c
                             .remove_hls_persistent_consumer(&pipeline_id_c)
                             .await;

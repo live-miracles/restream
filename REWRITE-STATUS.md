@@ -164,9 +164,9 @@ The labels below distinguish implementation from proof.
 | HLS store and HTTP pull routes | Implemented | Playlist/window and route tests |
 | Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
 | MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
-| HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URL starts local segmenter and ignores destination |
+| HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URLs are rejected; local HLS uses `hls://` |
 | Custom encoding arguments | **Not applied** | API persists value; reconciler treats `custom` as passthrough |
-| RTMPS output | **Not wired** | URL parser accepts RTMPS, reconciler dispatches only `rtmp://` |
+| RTMPS output | Implemented | URL parser accepts RTMPS; reconciler dispatches RTMP/RTMPS URLs to RTMP egress |
 | SRT bonded egress | Constructed, live failover unproven | URL/group code exists; bonded group does not receive the high-bitrate option helper |
 | SRT bonded ingest | Implemented and locally validated | One listener accepts a group ID, reads it through one `srt_recvmsg2` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Separate-process tests pass for two-member broadcast and backup groups, including primary-member failure and standby delivery |
 | File ingest | Implemented with child FFmpeg | Not fully in-process; running state is checked from the tracked child process |
@@ -244,7 +244,9 @@ See `docs/api-reference.md` for the executable route surface.
    B-frame timestamps, cross-protocol packaging, and destination restart.
 9. Implement the decode/filter/encode packet loop, then prove every advertised
    video preset.
-10. Implement HLS HTTP PUT upload or remove HLS upload choices from the UI.
+10. ~~Implement HLS HTTP PUT upload or remove HLS upload choices from the UI~~
+   — done by removing HTTP/HTTPS HLS output URLs from API validation and UI
+   presets; local HLS remains available as `hls://`.
 11. Apply custom encoding configuration or mark it unavailable in the UI.
 12. Implement channel-level audio remap/downmix semantics.
 13. Decide whether RTMPS is supported and wire TLS egress if required.

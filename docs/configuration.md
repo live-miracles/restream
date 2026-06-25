@@ -94,10 +94,13 @@ Supported routing behavior:
 | URL | Runtime behavior |
 |---|---|
 | `rtmp://...` | Native RTMP egress; IPv6 addresses in bracket notation (`[::1]`) are supported |
+| `rtmps://...` | Native RTMPS egress through the RTMP path |
 | `srt://...` | Native SRT MPEG-TS egress; percent-encoded characters in the `streamid` query parameter are decoded automatically |
-| `hls://...`, `http://...`, `https://...` | Starts the pipeline's local in-memory HLS segmenter |
+| `hls://...` | Starts the pipeline's local in-memory HLS segmenter |
 
-Any other prefix is rejected during validation. The target URL for HLS routing is not used for HTTP HLS upload; the target host is ignored after the protocol decision.
+Any other prefix is rejected during validation. HTTP/HTTPS output URLs are not
+accepted because HLS upload is not implemented; use the `hls://` local HLS
+scheme instead.
 
 Encoding strings are compound values:
 

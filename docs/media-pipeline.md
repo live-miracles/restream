@@ -169,8 +169,8 @@ most battle-tested path for production deployments.
 | Multi-track audio | SRT ingest preserves audio track indices |
 | Audio remap/downmix | Stream selection only; channel-level filtering is open |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
-| HLS upload | Not implemented; HTTP/HTTPS output URL starts local segmenter and ignores destination |
-| RTMPS output | `rtmps://` URLs accepted by API; reconciler routes to external transcoder (FFmpeg) which handles TLS natively. Source-passthrough also uses FFmpeg path. |
+| HLS upload | Not implemented; HTTP/HTTPS output URLs are rejected, and local HLS uses `hls://` |
+| RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress |
 
 ## Resolution Presets
 
@@ -633,10 +633,11 @@ blockers or hardening work:
   no decode/filter/encode loop.
 - **Recording**: packet-payload-to-`CustomInput` contract needs repair. ~~Implemented as raw MPEG-TS write; no FFmpeg dependency.~~
 - **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
-- **HLS upload**: HTTP/HTTPS URLs start local segmenter and ignore destination.
+- **HLS upload**: HTTP/HTTPS output URLs are rejected; local HLS uses `hls://`.
 - **Custom encoding**: API persists value; reconciler treats `custom` as
   passthrough.
-- **RTMPS**: URL parser accepts it, but reconciler does not dispatch TLS egress.
+- **RTMPS**: URL parser accepts it and the reconciler dispatches it through
+  RTMP egress.
 - **SRT→RTMP egress**: raw demuxed payload forwarded as FLV media payload
   (protocol-incorrect).
 - **File ingest**: implemented with child FFmpeg; running state is checked from

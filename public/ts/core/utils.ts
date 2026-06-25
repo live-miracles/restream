@@ -39,7 +39,7 @@ function maskSecret(value: unknown): string {
 
 function sanitizeLogMessage(msg: unknown, redacted = true): string {
     if (!redacted) return String(msg);
-    return String(msg).replace(/((?:https?|rtmps?|srt):\/\/[^\s'"<>()]+)/gi, (full, url) =>
+    return String(msg).replace(/((?:https?|rtmps?|srt|hls):\/\/[^\s'"<>()]+)/gi, (full, url) =>
         maskSecret(url || full),
     );
 }
@@ -61,7 +61,7 @@ function formatCodecName(codec: string | undefined | null): string | null {
 }
 
 function isValidOutput(str: string): boolean {
-    return !!str && !str.includes(' ') && /^(rtmps?|https?|srt):\/\//i.test(str);
+    return !!str && !str.includes(' ') && /^(rtmps?|srt|hls):\/\//i.test(str);
 }
 
 function legacyCopy(text: string): boolean {
@@ -264,17 +264,7 @@ export const OUTPUT_SERVER_PRESETS: Record<string, OutputServerPreset[]> = {
         { label: 'Facebook', value: 'rtmps://live-api-s.facebook.com:443/rtmp/' },
         { label: 'VDO Cipher', value: 'rtmp://live-ingest-01.vd0.co:1935/livestream/' },
     ],
-    hls: [
-        { label: 'Custom', value: '' },
-        {
-            label: 'YouTube',
-            value: 'https://a.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=0&file=out.m3u8',
-        },
-        {
-            label: 'YT Backup',
-            value: 'https://b.upload.youtube.com/http_upload_hls?cid=${stream_key}&copy=1&file=out.m3u8',
-        },
-    ],
+    hls: [{ label: 'Local HLS', value: '' }],
     srt: [{ label: 'Custom', value: '' }],
 };
 
@@ -299,7 +289,7 @@ function isAbsoluteUrl(rawValue: string): boolean {
 }
 
 function protocolUsesOutputServerPresets(protocol: string): boolean {
-    return protocol === 'rtmp' || protocol === 'hls';
+    return protocol === 'rtmp';
 }
 
 function resolvePresetOutputUrl(serverUrl: string, rawInput: string): string {
@@ -341,7 +331,7 @@ function matchOutputServerPreset(protocol: string, rawUrl: string): MatchedPrese
 }
 
 function detectOutputProtocol(url: string): string {
-    if (/^https?:\/\//i.test(url)) return 'hls';
+    if (/^hls:\/\//i.test(url)) return 'hls';
     if (/^srt:\/\//i.test(url)) return 'srt';
     return 'rtmp';
 }
@@ -430,7 +420,7 @@ function buildDefaultCustomOutputUrl(
     hostname = 'localhost',
 ): string {
     const token = getDefaultOutputToken(rawSeed);
-    if (protocol === 'hls') return `http://${hostname}/hls/${token}/out.m3u8`;
+    if (protocol === 'hls') return `hls://${hostname}/hls/${token}`;
     if (protocol === 'srt') return `srt://${hostname}:6000?streamid=publish:live/${token}`;
     return `rtmp://${hostname}:1935/live/${token}`;
 }
