@@ -1323,8 +1323,9 @@ impl SrtServer {
         }
 
         // SAFETY: srt_epoll_create creates a new epoll instance. The handle
-        // is valid or negative on error. Closed via srt_epoll_release on
-        // disconnect.
+        // is valid or negative on error. Released by the epoll_waiter task
+        // (see below) so it is always freed even if this async future is
+        // dropped at an await point before reaching the cleanup block.
         let eid = unsafe { srt_epoll_create() };
         if eid < 0 {
             eprintln!("[srt] Failed to create epoll instance");
@@ -1347,6 +1348,19 @@ impl SrtServer {
             return;
         }
 
+        // RAII guard: closes client_sock when this scope exits (normal exit,
+        // panic, or future drop at an await point).  Created after all early-
+        // return paths that would double-close the socket.
+        // SAFETY: client_sock is a valid socket not closed elsewhere after
+        // this point; srt_close is called exactly once via this guard.
+        struct SrtClientGuard(SRTSOCKET);
+        impl Drop for SrtClientGuard {
+            fn drop(&mut self) {
+                unsafe { srt_close(self.0); }
+            }
+        }
+        let _client_sock_guard = SrtClientGuard(client_sock);
+
         // Socket groups use the message API and may deliver up to the live
         // payload limit. Single sockets retain the lean plain-recv path.
         let mut buf = vec![0u8; if is_group { 2048 } else { 1316 }];
@@ -1365,9 +1379,18 @@ impl SrtServer {
         let w_data_ready = data_ready.clone();
         let w_epoll_stop = epoll_stop.clone();
         let w_notify = notify.clone();
+        // The task owns eid and releases it before signaling completion.
+        // This ensures srt_epoll_release runs even if the outer async future
+        // is dropped at an await point (the JoinHandle detaches but the
+        // blocking task continues to completion).
         let mut epoll_waiter = Some(tokio::task::spawn_blocking(move || {
             loop {
                 if w_epoll_stop.load(Ordering::Acquire) {
+                    // Release the epoll handle before waking the outer task.
+                    // SAFETY: eid is valid; we are the only caller of
+                    // srt_epoll_release for this handle. The outer code no
+                    // longer calls srt_epoll_release after this task exits.
+                    unsafe { srt_epoll_release(eid); }
                     // Wake the main task so it can observe we're done.
                     w_data_ready.store(true, Ordering::Release);
                     w_notify.notify_one();
@@ -1408,6 +1431,24 @@ impl SrtServer {
                 // ret == 0 (timeout) or < 0 (error): loop back and check stop.
             }
         }));
+
+        // RAII guard: signals the epoll_waiter task to exit when this scope
+        // ends (normal return, panic, or future dropped at an await point).
+        // The task then calls srt_epoll_release(eid) before exiting.
+        struct EpollStopGuard {
+            stop: Arc<AtomicBool>,
+            notify: Arc<Notify>,
+        }
+        impl Drop for EpollStopGuard {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                self.notify.notify_one();
+            }
+        }
+        let _epoll_stop_guard = EpollStopGuard {
+            stop: epoll_stop.clone(),
+            notify: notify.clone(),
+        };
 
         loop {
             if token.is_cancelled() {
@@ -1525,20 +1566,18 @@ impl SrtServer {
         println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
 
-        // Stop the epoll waiter before releasing the epoll instance.
+        // Signal the epoll_waiter task to stop and wait for it to release eid.
+        // The _epoll_stop_guard would do this on drop, but signaling explicitly
+        // here lets us await the task handle — ensuring eid is released before
+        // the _client_sock_guard drops and closes the socket.
         epoll_stop.store(true, Ordering::Release);
         notify.notify_one();
         if let Some(handle) = epoll_waiter.take() {
             let _ = handle.await;
         }
-
-        // SAFETY: eid and client_sock are valid handles. The epoll waiter
-        // has exited, so it is safe to release the epoll instance. Close
-        // the client socket last.
-        unsafe {
-            srt_epoll_release(eid);
-            srt_close(client_sock);
-        }
+        // _epoll_stop_guard and _client_sock_guard drop here in LIFO order:
+        //   1. _epoll_stop_guard: no-op (stop already set above)
+        //   2. _client_sock_guard: srt_close(client_sock)
     }
 
     async fn handle_play(&self, client_sock: SRTSOCKET, pipeline_id: &str) {
@@ -2343,6 +2382,62 @@ mod tests {
         println!("=====================================");
     }
 
+    /// Verify that when EpollStopGuard drops (simulating a cancelled async
+    /// future), the epoll_waiter task observes the stop flag and exits within
+    /// the 200ms epoll_wait timeout window.  This exercises the RAII path that
+    /// prevents srt_epoll_release from being skipped on future cancellation.
+    #[tokio::test]
+    async fn epoll_stop_guard_signals_waiter_on_drop() {
+        let epoll_stop = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let task_exited = Arc::new(AtomicBool::new(false));
+
+        let w_stop = epoll_stop.clone();
+        let w_notify = notify.clone();
+        let w_exited = task_exited.clone();
+
+        // Simulates the epoll_waiter task: polls every 50ms, exits when stop is set.
+        let handle = tokio::task::spawn_blocking(move || {
+            loop {
+                if w_stop.load(Ordering::Acquire) {
+                    w_exited.store(true, Ordering::Release);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+
+        // EpollStopGuard inline: sets stop + notifies on drop.
+        struct EpollStopGuard {
+            stop: Arc<AtomicBool>,
+            notify: Arc<Notify>,
+        }
+        impl Drop for EpollStopGuard {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                self.notify.notify_one();
+            }
+        }
+        let guard = EpollStopGuard {
+            stop: epoll_stop.clone(),
+            notify: notify.clone(),
+        };
+
+        // Drop the guard — simulates the async future being cancelled.
+        drop(guard);
+
+        // Task must exit within 300ms (50ms poll + scheduling slack).
+        tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+            .await
+            .expect("epoll_waiter task must exit within 300ms of guard drop")
+            .expect("task should not panic");
+
+        assert!(
+            task_exited.load(Ordering::Acquire),
+            "task must have observed the stop flag"
+        );
+    }
+
     /// Stress-test the Notify + AtomicBool coordination pattern used by the
     /// long-lived epoll waiter. Concurrent producer and consumer run with
     /// randomized timing to surface missed-wakeup races.
@@ -2624,7 +2719,10 @@ pub fn start_shared_ts_muxer(
         );
         let mut video_conv_buf = Vec::<u8>::new();
         let mut audio_conv_buf = Vec::<u8>::new();
-        let mut ts_batch = Vec::with_capacity(32);
+        // `chunk_ends` records (byte_offset_end, is_keyframe) for each muxed chunk so
+        // we can slice a single `BytesMut` into per-chunk `Bytes` after the inner loop.
+        // This converts N malloc+memcpy calls (one per chunk) to 1 malloc per burst.
+        let mut chunk_ends: Vec<(usize, bool)> = Vec::with_capacity(32);
         let mut pull_packets = Vec::with_capacity(32);
 
         loop {
@@ -2635,7 +2733,9 @@ pub fn start_shared_ts_muxer(
                     match reader.pull_burst(&mut pull_packets, 32) {
                         Ok(0) | Err(_) => {}
                         Ok(_) => {
-                            ts_batch.clear();
+                            chunk_ends.clear();
+                            // One allocation for the entire burst's TS output.
+                            let mut ts_accum = bytes::BytesMut::with_capacity(65536);
                             for pkt in &pull_packets {
                                 let payload: &[u8] = match pkt.media_type {
                                     MediaType::Video => {
@@ -2695,11 +2795,22 @@ pub fn start_shared_ts_muxer(
                                     payload,
                                 );
                                 if !ts_bytes.is_empty() {
-                                    ts_batch.push((bytes::Bytes::copy_from_slice(ts_bytes), pkt.is_keyframe));
+                                    ts_accum.extend_from_slice(ts_bytes);
+                                    chunk_ends.push((ts_accum.len(), pkt.is_keyframe));
                                 }
                             }
-                            if !ts_batch.is_empty() {
-                                ts_ring_clone.push_batch(ts_batch.drain(..));
+                            if !chunk_ends.is_empty() {
+                                // freeze() promotes ts_accum to a shared Arc-backed Bytes.
+                                // slice() below only bumps the refcount — no extra allocations.
+                                let frozen = ts_accum.freeze();
+                                let mut prev = 0usize;
+                                ts_ring_clone.push_batch(chunk_ends.drain(..).map(
+                                    move |(end, is_kf)| {
+                                        let chunk = frozen.slice(prev..end);
+                                        prev = end;
+                                        (chunk, is_kf)
+                                    },
+                                ));
                             }
                         }
                     }
