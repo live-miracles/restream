@@ -13,7 +13,6 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use serde_json::{Value, json};
-use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
