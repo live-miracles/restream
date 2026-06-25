@@ -163,7 +163,7 @@ The labels below distinguish implementation from proof.
 | RTMP H.264/AAC ingest and same-shape RTMP egress | Basic interoperability observed; timestamp fix applied | Video uses DTS as RTMP timestamp (audio uses PTS); composition offset is carried in FLV payload |
 | SRT H.264/AAC ingest/read/egress | Implemented, prior local validation | Unit tests plus prior live read/egress evidence |
 | SRT ingest to RTMP egress | Packetization implemented; live matrix pending | RTMP egress converts Raw Annex-B/ADTS packets with `video_for_rtmp_into`/`audio_for_rtmp_into`, sends AVCC/AAC sequence headers, and has codec conversion coverage |
-| SRT H.265 passthrough | Implemented, needs full E2E matrix | Codec mapping is tested; decode/probe combinations remain a release gate |
+| SRT H.265 passthrough | **Implemented and live-verified** | `cargo run --bin test_harness -- correctness-hevc-srt` publishes H.265 over SRT, loops it through native SRT egress, and probes HEVC video plus AAC audio |
 | RTMP output from H.265 source | **Implemented** | `hevc_to_h264` stage (`h264_transcoder.rs`) does full libavcodec H.265 decode → H.264 encode; audio passthrough. Verified by `h265-srt` / `h265-srt-multi` scale tests and `cargo run --bin test_harness -- correctness-hevc-rtmp` |
 | Built-in transforms via external transcoder (default) | **Implemented** | Subprocess `ffmpeg -vf scale=WxH -c:v libx264`; working and tested for default runtime presets |
 | Built-in transforms via internal transcoder (`RESTREAM_USE_INTERNAL_TRANSCODER=1`) | Implemented for `h264`, `720p`, and `1080p` | `run_ffmpeg_transcode_with_scale` performs decode/scale/encode; transcoder integration tests exercise every built-in profile |
@@ -259,12 +259,12 @@ See `docs/api-reference.md` for the executable route surface.
 8. Run and publish a clean protocol matrix from `docs/testing.md`. Minimum
    release evidence should include current `test/run-integration.sh` modes
    (`ramp`, `mixed-scale`, `bonding`, `burst-verify`, `hls-put`,
-   `bframe-rtmp`), H.265 SRT passthrough, cross-protocol SRT→RTMP packaging,
-   and a manifest under
+   `bframe-rtmp`), cross-protocol SRT→RTMP packaging, and a manifest under
    `test/artifacts/<run-id>/`. The `hls-put` mode covers HTTP PUT delivery and
    destination restart recovery with a dummy sink; `bframe-rtmp` covers live
    RTMP B-frame timestamp round-trip behavior; `correctness-hevc-rtmp` covers
-   live H.265-to-H.264 RTMP edge conversion.
+   live H.265-to-H.264 RTMP edge conversion; `correctness-hevc-srt` covers
+   live H.265 SRT passthrough.
 9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
    video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
    path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.

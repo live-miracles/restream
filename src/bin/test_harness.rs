@@ -47,6 +47,7 @@ async fn run() -> Result<(), String> {
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
         "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
+        "correctness-hevc-srt" => hevc_srt_passthrough_correctness().await,
         "hevc-load" => hevc_load_test().await,
         "in-process" => in_process_load(500, 2_000).await,
         "network" => network_load(32, Duration::from_secs(5)).await,
@@ -68,7 +69,8 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              matrix, matrix-in-memory, egress, correctness-hevc-rtmp, hevc-load, in-process, network, or all"
+              matrix, matrix-in-memory, egress, correctness-hevc-rtmp, correctness-hevc-srt, \
+              hevc-load, in-process, network, or all"
         )),
     };
 
@@ -724,6 +726,134 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
     println!("artifact={}", path.display());
     // _exit to avoid FFmpeg/SRT teardown races
     unsafe { libc::_exit(if passed { 0 } else { 1 }) };
+}
+
+/// Test: SRT ingest of H.265 → SRT egress passthrough.
+///
+/// Validates that native SRT egress preserves HEVC video identity while carrying
+/// AAC audio, so the H.265 path is not silently mislabeled or transcoded.
+async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
+    let db_path = artifact_path("correctness-hevc-srt.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for (id, name, key) in [
+        ("pipe-hevc-srt-src", "H.265 SRT source", "e2e-hevc-srt"),
+        (
+            "pipe-hevc-srt-sink",
+            "H.265 SRT passthrough sink",
+            "e2e-hevc-srt-sink",
+        ),
+    ] {
+        db::create_pipeline(&pool, id, name, key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = artifact_path("correctness-h265.ts");
+    if !fixture.exists() {
+        generate_fixture_h265(&fixture).await?;
+    }
+
+    let _publisher = spawn_publisher(
+        &fixture,
+        &format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-hevc-srt&pkt_size=1316"),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_ingests(&engine, &["pipe-hevc-srt-src"], Duration::from_secs(15)).await?;
+    println!("[hevc-srt] Source ingest established (H.265 via SRT)");
+
+    let source_ring = engine.get_or_create_pipeline("pipe-hevc-srt-src").await;
+    let srt_sink_url =
+        format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-hevc-srt-sink&pkt_size=1316");
+    let egress_token = engine
+        .register_egress("out-hevc-srt", "pipe-hevc-srt-src", &srt_sink_url)
+        .await;
+    let _srt_egress = tokio::spawn(start_srt_egress(
+        "out-hevc-srt".to_string(),
+        "pipe-hevc-srt-src".to_string(),
+        "source".to_string(),
+        srt_sink_url,
+        source_ring,
+        engine.clone(),
+        egress_token,
+    ));
+
+    wait_for_ingests(&engine, &["pipe-hevc-srt-sink"], Duration::from_secs(15)).await?;
+    println!("[hevc-srt] Sink ingest established (H.265 via SRT egress)");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let srt_read_url = format!(
+        "srt://127.0.0.1:{SRT_PORT}?streamid=read:live/e2e-hevc-srt-sink&mode=caller&transtype=live&latency=100"
+    );
+    let probe = ffprobe(&srt_read_url).await?;
+    let media_check = assert_media_only(&probe, "HEVC SRT passthrough");
+    let streams = normalized_streams(&probe).ok();
+    let video_hevc = probe["streams"]
+        .as_array()
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|s| s["codec_type"] == "video")
+                .map(|s| s["codec_name"].as_str())
+        })
+        .flatten()
+        .is_some_and(|codec| codec == "hevc" || codec == "h265");
+    let audio_aac = probe["streams"]
+        .as_array()
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|s| s["codec_type"] == "audio")
+                .map(|s| s["codec_name"].as_str())
+        })
+        .flatten()
+        == Some("aac");
+
+    let mut results = json!({
+        "passed": media_check.is_ok() && video_hevc && audio_aac,
+        "videoCodec": if video_hevc { "hevc" } else { "NOT_hevc" },
+        "audioCodec": if audio_aac { "aac" } else { "NOT_aac" },
+        "mediaCheck": media_check.is_ok(),
+        "mediaError": media_check.err(),
+        "probe": probe,
+        "srtEgressBytes": engine.egress_bytes("out-hevc-srt").await,
+    });
+    if let Some(s) = streams {
+        results["streams"] = s;
+    }
+    if !video_hevc {
+        results["error"] = json!("SRT output video codec is not HEVC — passthrough failed");
+    }
+
+    let path = artifact_path("correctness-hevc-srt.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    if results["passed"].as_bool().unwrap_or(false) {
+        Ok(results)
+    } else {
+        Err(format!("HEVC SRT passthrough failed: {results}"))
+    }
 }
 
 async fn hevc_load_test() -> Result<Value, String> {

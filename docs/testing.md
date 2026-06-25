@@ -355,6 +355,10 @@ egress capability test, no silent HEVC-as-H.264 mislabeling.
 it ingests H.265 over SRT, runs the shared `hevc_to_h264` stage, and verifies
 the RTMP egress as H.264 video plus AAC audio.
 
+`cargo run --bin test_harness -- correctness-hevc-srt` covers native SRT
+passthrough: it ingests H.265 over SRT, loops it through SRT egress, and
+verifies HEVC video plus AAC audio at the SRT read endpoint.
+
 ### Phase 5: Recovery and Isolation
 
 - publisher stop/restart
@@ -421,6 +425,7 @@ These capabilities must be treated as test results, not assumptions:
 |---|---|
 | RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip through `test/run-integration.sh bframe-rtmp` |
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
+| H.265 SRT passthrough | Live HEVC identity preservation through `cargo run --bin test_harness -- correctness-hevc-srt` |
 | H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `cargo run --bin test_harness -- correctness-hevc-rtmp` |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
