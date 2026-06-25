@@ -253,6 +253,7 @@ pub fn audio_for_rtmp(payload: &[u8]) -> Vec<u8> {
 /// Zero-allocation variant of [`audio_for_rtmp`].
 ///
 /// Clears `out` and writes the FLV-wrapped raw AAC into it in-place.
+#[inline]
 pub fn audio_for_rtmp_into(payload: &[u8], out: &mut Vec<u8>) {
     let raw = strip_adts(payload);
     out.clear();
