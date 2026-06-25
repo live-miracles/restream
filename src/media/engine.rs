@@ -2008,6 +2008,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sweep_unused_transcoder_stages_removes_codec_edge_stages() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-sweep-codec").await;
+
+        let _stage = engine
+            .get_or_create_h264_transcoder("pipe-sweep-codec", "source", source)
+            .await;
+        let stages_before = engine.active_transcoder_stages("pipe-sweep-codec").await;
+        assert!(
+            stages_before
+                .iter()
+                .any(|(stage, live)| stage == "hevc_to_h264:from:source" && *live),
+            "codec-edge stage must be registered before the sweep"
+        );
+
+        let active = std::collections::HashSet::new();
+        engine.sweep_unused_transcoder_stages(&active).await;
+
+        let stages_after = engine.active_transcoder_stages("pipe-sweep-codec").await;
+        assert!(
+            stages_after.is_empty(),
+            "unused codec-edge stages must be removed from the shared stage registry"
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_get_or_create_transcoder_yields_single_stage() {
         // Bug #4 regression: the old read-lock-then-write-lock TOCTOU window
         // allowed concurrent callers to both see "key absent" and both insert,

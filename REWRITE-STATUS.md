@@ -261,7 +261,9 @@ See `docs/api-reference.md` for the executable route surface.
 
 ### Hardening work
 
-- clean up unused shared transcoder stages;
+- ~~clean up unused shared transcoder stages~~ — done; reconciler sweeps stale
+  shared transcoder entries and regression tests cover video preset and
+  codec-edge stages.
 - make graph/task “active” reflect worker health rather than token presence;
 - ~~remove stale HLS stores when their last segmenter stops~~ — done; segmenter
   shutdown removes the consumer token and in-memory store, with regression
