@@ -19,6 +19,8 @@
 #   RESTREAM_HTTP/RTMP/SRT  port overrides
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
 #
+# Each mode writes WORK_DIR/manifest.json with RUNNING → PASS/FAIL status.
+#
 # Mode-specific env overrides are documented inside each run_* function.
 set -euo pipefail
 
@@ -84,6 +86,8 @@ RESTREAM_LOG="${WORK_DIR}/restream.log"
 SCALE_LOG="/dev/null"
 SUMMARY_LOG="/dev/null"
 SNAPSHOTS="/dev/null"
+MANIFEST=""
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -97,7 +101,63 @@ cleanup() {
   [[ -n "$RESTREAM_PID" ]] && kill "$RESTREAM_PID" 2>/dev/null || true
   [[ -n "$COOKIE_JAR" ]]   && rm -f "$COOKIE_JAR"  || true
 }
-trap cleanup EXIT
+
+json_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  printf '%s' "$value"
+}
+
+write_manifest() {
+  local status="$1" finished_at="${2:-}"
+  [[ -n "$MANIFEST" ]] || return 0
+  local git_head finished_json
+  git_head="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  if [[ -n "$finished_at" ]]; then
+    finished_json="\"$(json_escape "$finished_at")\""
+  else
+    finished_json="null"
+  fi
+  cat > "$MANIFEST" <<JSON
+{
+  "mode": "$(json_escape "$MODE")",
+  "status": "$(json_escape "$status")",
+  "startedAt": "$(json_escape "$RUN_STARTED_AT")",
+  "finishedAt": ${finished_json},
+  "workDir": "$(json_escape "$WORK_DIR")",
+  "gitHead": "$(json_escape "$git_head")",
+  "hostNetwork": ${HOST_NETWORK},
+  "networkNamespace": "$([[ "${_IN_NETNS:-0}" == "1" ]] && echo "private" || echo "host")",
+  "artifacts": {
+    "restreamLog": "$(json_escape "$RESTREAM_LOG")",
+    "summary": "$(json_escape "$SUMMARY_LOG")",
+    "scaleCsv": "$(json_escape "$SCALE_LOG")"
+  }
+}
+JSON
+}
+
+init_run_artifacts() {
+  mkdir -p "$WORK_DIR"
+  MANIFEST="${WORK_DIR}/manifest.json"
+  write_manifest "RUNNING"
+}
+
+on_exit() {
+  local status=$?
+  if [[ -n "$MANIFEST" ]]; then
+    if [[ "$status" -eq 0 ]]; then
+      write_manifest "PASS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+    else
+      write_manifest "FAIL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+    fi
+  fi
+  cleanup
+  return "$status"
+}
+trap on_exit EXIT
 
 check_deps() {
   for cmd in "$@"; do
@@ -293,8 +353,6 @@ snapshot_proc() {
 # Per-step RSS+CPU+ffmpeg snapshots; ffprobe spot-checks first and last output.
 # Env: N_OUTPUTS (default 10), ISOLATE=1 (restart per config), SNAP_EVERY (default 1)
 run_ramp() {
-  check_deps ffmpeg ffprobe curl jq mediamtx
-
   local N_OUTPUTS="${N_OUTPUTS:-10}"
   local ISOLATE="${ISOLATE:-0}"
   local SNAP_EVERY="${SNAP_EVERY:-1}"
@@ -305,7 +363,8 @@ run_ramp() {
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SCALE_LOG="${WORK_DIR}/scale.csv"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
-  mkdir -p "$WORK_DIR"
+  init_run_artifacts
+  check_deps ffmpeg ffprobe curl jq mediamtx
 
   printf "config,step,label,cpu_pct,rss_kb,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb\n" > "$SCALE_LOG"
   : > "$SUMMARY_LOG"
@@ -445,8 +504,6 @@ run_ramp() {
 # h264-srt-multi / h265-srt-multi: multi-audio track routing.
 # Env: N_PER_GROUP (default 25), ISOLATE=1 (default)
 run_mixed_scale() {
-  check_deps ffmpeg ffprobe curl jq mediamtx
-
   local N_PER_GROUP="${N_PER_GROUP:-25}"
   local ISOLATE="${ISOLATE:-1}"
 
@@ -456,7 +513,8 @@ run_mixed_scale() {
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SCALE_LOG="${WORK_DIR}/scale.csv"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
-  mkdir -p "$WORK_DIR"
+  init_run_artifacts
+  check_deps ffmpeg ffprobe curl jq mediamtx
 
   # RSS_SUMMARY is separate from SUMMARY_LOG so log_ok() "ok: ..." lines don't
   # pollute the CSV that the final summary table reads back.
@@ -719,6 +777,8 @@ run_mixed_scale() {
 # Verifies SRT socket-level bonding: broadcast group (2 members, failover=0, 1 message)
 # and backup group (2 members, failover=1, 2 messages). Requires static build.
 run_bonding() {
+  init_run_artifacts
+
   local BUILD_ROOT="${RESTREAM_BUILD_ROOT:-$ROOT/.build/static}"
 
   if [[ ! -f "$BUILD_ROOT/env.sh" ]]; then
@@ -788,12 +848,11 @@ run_bonding() {
 #   BURST_SETTLE_SECS   seconds to stream before sampling graph (default: 8)
 #   BURST_CONFIGS       space-separated config names to run (default: all)
 run_burst_verify() {
-  check_deps ffmpeg ffprobe curl jq
-
   local SETTLE="${BURST_SETTLE_SECS:-8}"
   WORK_DIR="${WORK_DIR:-test/artifacts/burst-verify}"
   RESTREAM_LOG="${WORK_DIR}/restream.log"
-  mkdir -p "$WORK_DIR"
+  init_run_artifacts
+  check_deps ffmpeg ffprobe curl jq
 
   start_restream
   COOKIE_JAR=$(mktemp)

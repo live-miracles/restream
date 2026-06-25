@@ -325,6 +325,12 @@ test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
 
+`test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
+for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
+`PASS` or `FAIL` with timestamps, git head, network mode, and primary artifact
+paths. This applies even to setup failures after the mode has initialized its
+artifact directory, making failed matrix attempts auditable instead of silent.
+
 Planned wrappers for the remaining matrix:
 
 ```text
