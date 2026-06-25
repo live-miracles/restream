@@ -439,8 +439,14 @@ async fn pool_connections_have_busy_timeout_set() {
         .await
         .unwrap();
 
-    assert_eq!(conn1, 5000, "busy_timeout must be 5000ms on every connection");
-    assert_eq!(conn2, 5000, "busy_timeout must be 5000ms on every connection");
+    assert_eq!(
+        conn1, 5000,
+        "busy_timeout must be 5000ms on every connection"
+    );
+    assert_eq!(
+        conn2, 5000,
+        "busy_timeout must be 5000ms on every connection"
+    );
 }
 
 // M5: NULL encoding in DB must not cause a decode failure. A row with

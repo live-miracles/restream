@@ -221,8 +221,11 @@ See `docs/api-reference.md` for the executable route surface.
 
 ### Release blockers
 
-1. Replace the stale Node-based GitHub Actions workflow with Rust build/test and
-   live native integration jobs.
+1. ~~Replace the stale Node-based GitHub Actions workflow with Rust build/test
+   and live native integration jobs~~ — done; `.github/workflows/ci.yml`
+   contains Rust format, clippy, workspace tests, coverage, native integration,
+   and HLS player E2E jobs. The repository now satisfies the workflow's
+   `cargo fmt --all --check` gate.
 2. ~~Fix active-egress pipeline association in `/health` and diagnostics~~ — done;
    `ActiveEgress` now stores `pipeline_id`, regression tests added.
 3. ~~Use DTS—not PTS—as the RTMP message timestamp for video packets~~ — done;

@@ -47,8 +47,8 @@
 
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -974,7 +974,11 @@ impl SrtServer {
             srt_startup();
         }
         check_sysctl_limits();
-        Self { db, engine, security }
+        Self {
+            db,
+            engine,
+            security,
+        }
     }
 
     pub async fn run(self: Arc<Self>, port: u16) {
@@ -1356,7 +1360,9 @@ impl SrtServer {
         struct SrtClientGuard(SRTSOCKET);
         impl Drop for SrtClientGuard {
             fn drop(&mut self) {
-                unsafe { srt_close(self.0); }
+                unsafe {
+                    srt_close(self.0);
+                }
             }
         }
         let _client_sock_guard = SrtClientGuard(client_sock);
@@ -1390,7 +1396,9 @@ impl SrtServer {
                     // SAFETY: eid is valid; we are the only caller of
                     // srt_epoll_release for this handle. The outer code no
                     // longer calls srt_epoll_release after this task exits.
-                    unsafe { srt_epoll_release(eid); }
+                    unsafe {
+                        srt_epoll_release(eid);
+                    }
                     // Wake the main task so it can observe we're done.
                     w_data_ready.store(true, Ordering::Release);
                     w_notify.notify_one();
@@ -2494,12 +2502,9 @@ mod tests {
             );
 
             if !data_ready.swap(false, Ordering::Acquire) {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    notify.notified(),
-                )
-                .await
-                .expect("consumer should not hang: permit must be available");
+                tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified())
+                    .await
+                    .expect("consumer should not hang: permit must be available");
             }
         }
 

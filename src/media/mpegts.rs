@@ -2183,9 +2183,18 @@ mod tests {
         demuxer.flush();
         let packets = demuxer.drain();
 
-        let video_count = packets.iter().filter(|p| p.media_type == MediaType::Video).count();
-        let audio0_count = packets.iter().filter(|p| p.media_type == MediaType::Audio && p.track_index == 0).count();
-        let audio1_count = packets.iter().filter(|p| p.media_type == MediaType::Audio && p.track_index == 1).count();
+        let video_count = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Video)
+            .count();
+        let audio0_count = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Audio && p.track_index == 0)
+            .count();
+        let audio1_count = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Audio && p.track_index == 1)
+            .count();
 
         assert_eq!(video_count, 3, "should demux 3 video packets");
         assert_eq!(audio0_count, 3, "should demux 3 packets for audio track 0");
@@ -2197,8 +2206,14 @@ mod tests {
             .filter(|p| p.media_type == MediaType::Audio)
             .map(|p| p.track_index)
             .collect();
-        assert!(audio_track_indices.contains(&0), "track_index 0 must be present");
-        assert!(audio_track_indices.contains(&1), "track_index 1 must be present");
+        assert!(
+            audio_track_indices.contains(&0),
+            "track_index 0 must be present"
+        );
+        assert!(
+            audio_track_indices.contains(&1),
+            "track_index 1 must be present"
+        );
     }
 
     #[test]
@@ -2362,17 +2377,33 @@ mod tests {
         let adts = [0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC, 0x21, 0x10];
         let ts = muxer.mux_packet(MediaType::Audio, 0, 1000, 1000, false, &adts);
         assert!(!ts.is_empty(), "audio-only muxer must produce TS packets");
-        assert_eq!(ts.len() % TS_PACKET_SIZE, 0, "output must be aligned to TS packet size");
+        assert_eq!(
+            ts.len() % TS_PACKET_SIZE,
+            0,
+            "output must be aligned to TS packet size"
+        );
 
         // Demux round-trip: audio packets must survive
         let mut demuxer = TsDemuxer::new();
         demuxer.feed(ts);
         demuxer.flush();
         let packets = demuxer.drain();
-        let audio_count = packets.iter().filter(|p| p.media_type == MediaType::Audio).count();
-        assert!(audio_count > 0, "audio-only round-trip must produce audio packets");
-        let video_count = packets.iter().filter(|p| p.media_type == MediaType::Video).count();
-        assert_eq!(video_count, 0, "audio-only stream must contain no video packets");
+        let audio_count = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Audio)
+            .count();
+        assert!(
+            audio_count > 0,
+            "audio-only round-trip must produce audio packets"
+        );
+        let video_count = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Video)
+            .count();
+        assert_eq!(
+            video_count, 0,
+            "audio-only stream must contain no video packets"
+        );
     }
 
     #[test]
@@ -2775,14 +2806,20 @@ mod tests {
     fn continuity_sentinel_is_not_a_valid_cc_value() {
         // Valid continuity counter values are 0–15 (4-bit field in TS header).
         assert_eq!(CC_UNSET, u8::MAX, "CC_UNSET must be u8::MAX");
-        assert!(CC_UNSET > 15, "CC_UNSET must be out of the valid 0–15 range");
+        assert!(
+            CC_UNSET > 15,
+            "CC_UNSET must be out of the valid 0–15 range"
+        );
     }
 
     #[test]
     fn pmt_version_sentinel_is_not_a_valid_version() {
         // Valid PMT version_number values are 0–31 (5-bit field in PMT header).
         assert_eq!(PMT_VER_UNSET, u8::MAX, "PMT_VER_UNSET must be u8::MAX");
-        assert!(PMT_VER_UNSET > 31, "PMT_VER_UNSET must be out of the valid 0–31 range");
+        assert!(
+            PMT_VER_UNSET > 31,
+            "PMT_VER_UNSET must be out of the valid 0–31 range"
+        );
     }
 
     #[test]
@@ -2803,11 +2840,7 @@ mod tests {
         let mut dem = TsDemuxer::new();
         dem.feed(&data);
 
-        assert_eq!(
-            dem.streams.len(),
-            1,
-            "PMT must add one video stream"
-        );
+        assert_eq!(dem.streams.len(), 1, "PMT must add one video stream");
         assert_eq!(
             dem.streams[0].continuity, CC_UNSET,
             "new stream continuity must be CC_UNSET before first TS packet arrives"
@@ -2841,7 +2874,11 @@ mod tests {
         // Buffer has only one packet (≤ TS_PACKET_SIZE bytes after candidate) → optimistic accept
         let mut data = vec![0x00u8; TS_PACKET_SIZE];
         data[0] = TS_SYNC_BYTE;
-        assert_eq!(find_ts_sync(&data), 0, "single-packet buffer must accept offset 0");
+        assert_eq!(
+            find_ts_sync(&data),
+            0,
+            "single-packet buffer must accept offset 0"
+        );
     }
 
     #[test]

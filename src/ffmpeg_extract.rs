@@ -52,7 +52,9 @@ pub fn ensure_ffmpeg_extracted() -> &'static Path {
         extract_embedded()
     };
 
-    FFMPEG_BIN_PATH.set(path).expect("race initializing FFMPEG_BIN_PATH");
+    FFMPEG_BIN_PATH
+        .set(path)
+        .expect("race initializing FFMPEG_BIN_PATH");
     FFMPEG_BIN_PATH.get().unwrap()
 }
 

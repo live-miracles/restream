@@ -291,7 +291,7 @@ pub async fn get_output(
 ) -> Result<Option<Output>, sqlx::Error> {
     sqlx::query_as::<_, Output>(
         "SELECT id, pipeline_id, name, url, desired_state, COALESCE(encoding, '') AS encoding \
-         FROM outputs WHERE id = ? AND pipeline_id = ?"
+         FROM outputs WHERE id = ? AND pipeline_id = ?",
     )
     .bind(id)
     .bind(pipeline_id)
@@ -314,7 +314,7 @@ pub async fn list_outputs_for_pipeline(
 ) -> Result<Vec<Output>, sqlx::Error> {
     sqlx::query_as::<_, Output>(
         "SELECT id, pipeline_id, name, url, desired_state, COALESCE(encoding, '') AS encoding \
-         FROM outputs WHERE pipeline_id = ? ORDER BY rowid ASC"
+         FROM outputs WHERE pipeline_id = ? ORDER BY rowid ASC",
     )
     .bind(pipeline_id)
     .fetch_all(pool)

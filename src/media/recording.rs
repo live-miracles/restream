@@ -301,9 +301,7 @@ mod tests {
         let file_path = temp_dir.join("test_guard_recording.ts");
         let path_str = file_path.to_string_lossy().to_string();
         let token = CancellationToken::new();
-        let thread = std::thread::spawn(move || {
-            run_ts_writer(queue_for_thread, &path_str, token)
-        });
+        let thread = std::thread::spawn(move || run_ts_writer(queue_for_thread, &path_str, token));
 
         // Simulate the guard drop (async fn drop) by closing the queue directly.
         // In production this is done by QueueCloseGuard::drop.

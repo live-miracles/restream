@@ -104,9 +104,7 @@ async fn correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = db::create_pool(&db_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -215,9 +213,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = db::create_pool(&db_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -308,9 +304,7 @@ async fn egress_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = db::create_pool(&db_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -563,9 +557,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = db::create_pool(&db_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -1034,7 +1026,9 @@ async fn spawn_publisher(
     cmd.args(["-c", "copy", "-f", format]).arg(url);
     // stderr must not be piped without a consumer — the 64KB pipe buffer fills
     // and blocks ffmpeg, hanging the test. Discard it (errors visible via exit code).
-    cmd.stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    cmd.stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     cmd.spawn().map_err(|e| e.to_string())
 }
 
@@ -1574,9 +1568,7 @@ async fn matrix_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = db::create_pool(&db_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
         .await
         .map_err(|e| e.to_string())?;

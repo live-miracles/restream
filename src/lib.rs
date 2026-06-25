@@ -153,7 +153,12 @@ pub async fn run_app() {
     );
 
     tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             eprintln!("[web] Axum server error: {:?}", e);
         }
     });
