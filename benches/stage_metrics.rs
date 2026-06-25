@@ -93,7 +93,7 @@ fn bench_instant_now_elapsed(c: &mut Criterion) {
 }
 
 fn bench_tsc_now_delta(c: &mut Criterion) {
-    use restream::media::external_transcoder::tsc;
+    use restream::media::tsc;
     let using = tsc::calibrate();
     let label = if using {
         "timing/tsc_now_plus_delta_us"
@@ -115,7 +115,7 @@ fn bench_tsc_now_delta(c: &mut Criterion) {
 // instrumentation cost only.
 
 fn bench_stdin_instrumentation_overhead(c: &mut Criterion) {
-    use restream::media::external_transcoder::tsc;
+    use restream::media::tsc;
     let sm = StageMetrics::new();
     let pm = PipeMetrics::default();
     let using = tsc::calibrate();
