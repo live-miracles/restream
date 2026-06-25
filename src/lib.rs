@@ -124,6 +124,7 @@ pub async fn run_app() {
 
     let ports = ServerPorts::from_env();
 
+    let media_dir = std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".to_string());
     let state = Arc::new(crate::api::AppState {
         db: pool.clone(),
         security: security.clone(),
@@ -133,6 +134,7 @@ pub async fn run_app() {
             rtmp: ports.rtmp,
             srt: ports.srt,
         },
+        media_dir,
     });
 
     // Start Web Server

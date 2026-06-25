@@ -2393,7 +2393,6 @@ mod tests {
         let task_exited = Arc::new(AtomicBool::new(false));
 
         let w_stop = epoll_stop.clone();
-        let w_notify = notify.clone();
         let w_exited = task_exited.clone();
 
         // Simulates the epoll_waiter task: polls every 50ms, exits when stop is set.

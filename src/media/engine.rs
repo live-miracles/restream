@@ -317,8 +317,18 @@ impl Default for MediaEngine {
 
 impl MediaEngine {
     pub fn new() -> Self {
-        // Initialize FFmpeg once
-        ffmpeg::init().unwrap();
+        // Initialize FFmpeg once. On failure, emit a human-readable message
+        // and exit — a panic here produces an unreadable backtrace with no
+        // context about what went wrong or which library is missing.
+        if let Err(e) = ffmpeg::init() {
+            eprintln!(
+                "[media] Fatal: FFmpeg initialization failed ({}). \
+                 Ensure the system has compatible FFmpeg libraries installed \
+                 and RESTREAM_FFMPEG_PATH is set correctly if using a custom build.",
+                e
+            );
+            std::process::exit(1);
+        }
 
         Self {
             pipelines: TokioRwLock::new(HashMap::new()),
