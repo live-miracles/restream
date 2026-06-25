@@ -50,25 +50,70 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum MediaType {
-    Video,
-    Audio,
+    Video = 0,
+    Audio = 1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum PayloadFormat {
-    Flv,
-    Raw,
+    Flv = 0,
+    Raw = 1,
 }
 
+/// 56-byte media packet.  `#[repr(C)]` pins the field order so the declared
+/// layout is always respected, preventing the compiler from reordering fields
+/// into a layout that scatters hot fields across two cache lines.
+///
+/// Without `#[repr(C)]`, rustc's default greedy-alignment algorithm places the
+/// largest field (`payload: Bytes`, 32 bytes) first within the struct.  That
+/// puts `media_type`, `is_keyframe`, and `pts`/`dts` at offsets 52–63 inside
+/// `ArcInner`, spanning two 64-byte cache lines — reading `media_type` to
+/// dispatch the packet requires the *second* cache line.
+///
+/// With the declared field order the `ArcInner<MediaPacket>` layout is:
+/// ```text
+/// Byte  0– 7  strong refcount          (ArcInner header)
+/// Byte  8–15  weak refcount            (ArcInner header)
+/// Byte 16     media_type               ← cache line 0 (bytes 0–63)
+/// Byte 17     format
+/// Byte 18     is_keyframe
+/// Byte 19     (1 byte padding)
+/// Byte 20–23  track_index
+/// Byte 24–31  pts
+/// Byte 32–39  dts
+/// Byte 40–47  payload.ptr              ← pointer to codec output, needed immediately
+/// Byte 48–55  payload.len
+/// Byte 56–63  payload.data             ← cache line 1 (bytes 64+): Arc management only
+/// Byte 64–71  payload.vtable
+/// ```
+///
+/// All hot consumer fields — type dispatch, track routing, timestamps, and the
+/// payload pointer+length — fit in the first cache line.  Only the `Bytes` Arc
+/// management fields (`data`, `vtable`) land in the second cache line, and those
+/// are only touched on clone/drop, not on every field read.
+///
+/// Access groups ordered by first-touch in the hot path:
+///   1. Type dispatch  : `media_type`, `format`, `is_keyframe` (offset  0– 2)
+///   2. Track routing  : `track_index`                          (offset  4– 7)
+///   3. Timestamps     : `pts`, `dts`                          (offset  8–23)
+///   4. Payload        : `payload`                             (offset 24–55)
 #[derive(Clone, Debug)]
+#[repr(C)]
 pub struct MediaPacket {
+    // Group 1: type dispatch — read first in every consumer (3 bytes + 1 pad = 4)
     pub media_type: MediaType,
+    pub format: PayloadFormat,
+    pub is_keyframe: bool,
+    // 1 byte implicit C padding before the u32
+    // Group 2: track routing
     pub track_index: u32,
+    // Group 3: timestamps — DTS enforcer reads both together
     pub pts: i64,
     pub dts: i64,
-    pub is_keyframe: bool,
-    pub format: PayloadFormat,
+    // Group 4: payload — largest field, accessed after codec dispatch
     pub payload: Bytes,
 }
 
@@ -279,12 +324,16 @@ impl Drop for Reader {
         // list.  Called while self.info still has strong_count = 1 (our field),
         // so we use Arc::ptr_eq to identify our slot; entries where upgrade()
         // returns None are also pruned.
-        if let Ok(mut readers) = self.buffer.readers.lock() {
-            readers.retain(|w| match w.upgrade() {
-                Some(info) => !Arc::ptr_eq(&info, &self.info),
-                None => false,
-            });
-        }
+        //
+        // unwrap_or_else instead of if-let-Ok: a poisoned mutex (from a panic
+        // while holding the lock) must not silently skip cleanup — leaving our
+        // Weak in the list would artificially inflate min_read_idx and stall
+        // producer overflow recovery.
+        let mut readers = self.buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
+        readers.retain(|w| match w.upgrade() {
+            Some(info) => !Arc::ptr_eq(&info, &self.info),
+            None => false,
+        });
     }
 }
 
@@ -764,6 +813,36 @@ mod tests {
     }
 
     #[test]
+    fn reader_drop_cleans_up_on_poisoned_mutex() {
+        // If another thread panics while holding readers.lock(), the mutex
+        // becomes poisoned. The previous `if let Ok()` would skip cleanup,
+        // leaving a stale Weak in the list. unwrap_or_else recovers the poison
+        // and performs the cleanup correctly.
+        let rb = Arc::new(RingBuffer::new(16));
+        let r = Reader::new("r".into(), rb.clone());
+
+        // Deliberately poison the mutex from another thread.
+        let rb2 = rb.clone();
+        let poison_thread = std::thread::spawn(move || {
+            let _guard = rb2.readers.lock().unwrap();
+            panic!("intentional poison");
+        });
+        let _ = poison_thread.join(); // returns Err (panicked), mutex is now poisoned
+
+        // Verify mutex is poisoned.
+        assert!(rb.readers.lock().is_err());
+
+        // Drop should NOT silently skip: it must clean up via unwrap_or_else.
+        drop(r);
+
+        // After drop, the list is empty even though the mutex was poisoned.
+        assert_eq!(
+            rb.readers.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            0
+        );
+    }
+
+    #[test]
     fn reader_drop_also_prunes_other_stale_weaks() {
         // Simulate a stale Weak that was left behind (e.g. from a previous bug)
         // by manually inserting one, then verifying drop cleans it.
@@ -933,6 +1012,40 @@ mod tests {
     fn vec_new_has_zero_capacity() {
         let v: Vec<u8> = Vec::new();
         assert_eq!(v.capacity(), 0);
+    }
+
+    #[test]
+    fn media_packet_layout_hot_fields_in_first_cache_line() {
+        // MediaPacket is 56 bytes (Bytes = 32 bytes in bytes-1.12, plus 24 bytes of other fields).
+        // ArcInner<MediaPacket> = strong(8) + weak(8) + MediaPacket(56) = 72 bytes.
+        //
+        // #[repr(C)] with this field order ensures all hot consumer fields (media_type,
+        // format, is_keyframe, track_index, pts, dts, payload.ptr, payload.len) land in
+        // cache line 0 of the ArcInner (bytes 0–63), so the codec dispatch path never
+        // needs a second cache line load.  See the struct-level doc for the full layout.
+        assert_eq!(
+            std::mem::size_of::<MediaPacket>(),
+            56,
+            "MediaPacket must be 56 bytes; if this fails, Bytes changed its internal layout"
+        );
+        // Verify field ordering: media_type must be at offset 0, payload last.
+        let p = MediaPacket {
+            media_type: MediaType::Video,
+            format: PayloadFormat::Raw,
+            is_keyframe: false,
+            track_index: 0xDEAD_BEEF,
+            pts: 0,
+            dts: 0,
+            payload: Bytes::new(),
+        };
+        let base = &p as *const MediaPacket as usize;
+        let mt_off = &p.media_type as *const MediaType as usize - base;
+        let pl_off = &p.payload as *const Bytes as usize - base;
+        assert_eq!(mt_off, 0, "media_type must be the first field (offset 0)");
+        assert!(pl_off >= 24, "payload must be after timestamps (offset >= 24)");
+        // The two enums must be exactly 1 byte each.
+        assert_eq!(std::mem::size_of::<MediaType>(), 1);
+        assert_eq!(std::mem::size_of::<PayloadFormat>(), 1);
     }
 
     #[test]
