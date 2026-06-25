@@ -92,23 +92,15 @@ fn bench_instant_now_elapsed(c: &mut Criterion) {
     });
 }
 
-#[cfg(target_arch = "x86_64")]
 fn bench_tsc_now_delta(c: &mut Criterion) {
     use restream::media::external_transcoder::tsc;
-    // Trigger calibration before the benchmark loop.
-    tsc::calibrate();
-    c.bench_function("timing/tsc_now_plus_delta_us", |b| {
-        b.iter(|| {
-            let t0 = tsc::now();
-            let _ = black_box(tsc::delta_us(t0));
-        });
-    });
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn bench_tsc_now_delta(c: &mut Criterion) {
-    use restream::media::external_transcoder::tsc;
-    c.bench_function("timing/tsc_now_plus_delta_us_fallback", |b| {
+    let using = tsc::calibrate();
+    let label = if using {
+        "timing/tsc_now_plus_delta_us"
+    } else {
+        "timing/tsc_now_plus_delta_us_instant_fallback"
+    };
+    c.bench_function(label, |b| {
         b.iter(|| {
             let t0 = tsc::now();
             let _ = black_box(tsc::delta_us(t0));
@@ -122,36 +114,23 @@ fn bench_tsc_now_delta(c: &mut Criterion) {
 // The write itself is not benchmarked (it's I/O); we measure the surrounding
 // instrumentation cost only.
 
-#[cfg(target_arch = "x86_64")]
 fn bench_stdin_instrumentation_overhead(c: &mut Criterion) {
     use restream::media::external_transcoder::tsc;
     let sm = StageMetrics::new();
     let pm = PipeMetrics::default();
-    tsc::calibrate();
+    let using = tsc::calibrate();
+    let label = if using {
+        "pipe/stdin_instrumentation_per_packet_tsc"
+    } else {
+        "pipe/stdin_instrumentation_per_packet_instant_fallback"
+    };
     const THRESHOLD: u64 = 1_000;
 
-    c.bench_function("pipe/stdin_instrumentation_per_packet", |b| {
+    c.bench_function(label, |b| {
         b.iter(|| {
             let t0 = tsc::now();
-            // Simulate a fast (non-stalling) write: delta_us will be ~0.
+            // Simulate a fast (non-stalling) write: delta_us will be near zero.
             let write_us = tsc::delta_us(t0);
-            if write_us > THRESHOLD {
-                pm.record_stall(write_us);
-            }
-            sm.record_in(black_box(1316));
-        });
-    });
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn bench_stdin_instrumentation_overhead(c: &mut Criterion) {
-    let sm = StageMetrics::new();
-    let pm = PipeMetrics::default();
-    const THRESHOLD: u64 = 1_000;
-    c.bench_function("pipe/stdin_instrumentation_per_packet_fallback", |b| {
-        b.iter(|| {
-            let t0 = Instant::now();
-            let write_us = t0.elapsed().as_micros() as u64;
             if write_us > THRESHOLD {
                 pm.record_stall(write_us);
             }

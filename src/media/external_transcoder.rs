@@ -51,70 +51,212 @@ use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 const PIPE_STALL_THRESHOLD_US: u64 = 1_000;
 
 // ── Fast timing ───────────────────────────────────────────────────────────────
-// On x86_64 we use rdtsc (≈3 cycles) instead of Instant::now() (≈20-40 cycles
-// via VDSO clock_gettime). Both are TSC-backed on Linux, but rdtsc skips the
-// VDSO calibration/scaling math that converts cycles to nanoseconds.
+// On x86_64 we prefer rdtsc (≈3 cycles) over Instant::now() (≈20-40 cycles via
+// VDSO clock_gettime). Both are TSC-backed on Linux when TSC is the active
+// clocksource, but rdtsc skips the VDSO calibration/scaling overhead.
 //
-// Calibration: a 100 µs busy-wait on first call. Safe to call from tokio tasks
-// (no thread::sleep, no syscall) and amortised to zero after the first stall.
+// We validate before committing to rdtsc:
+//   1. CPUID[0x80000007].EDX[8] — invariant TSC: rate is constant across
+//      C-states and frequency scaling. Without this, the calibrated rate drifts.
+//   2. Calibrated cycles/µs in [100, 10000] — sanity bounds (100 MHz to 10 GHz).
+//      Values outside this range indicate preemption-skewed or implausibly short
+//      calibration windows.
+//   3. Minimum observed window of 50 µs — guards against timer granularity on
+//      hypervisors where Instant ticks at coarse resolution.
+//
+// If any check fails, both now() and delta_us() fall back to Instant::now() so
+// the caller sees no behaviour change — just slightly higher timing overhead.
+// using_tsc() lets callers log which path is active.
 
-#[cfg(target_arch = "x86_64")]
-pub mod tsc {
-    use std::arch::x86_64::_rdtsc;
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    static CYCLES_PER_US: OnceLock<f64> = OnceLock::new();
-
-    /// Calibrate TSC frequency against Instant via a 100 µs busy-wait.
-    /// Called at most once; subsequent calls read the cached value.
-    pub fn calibrate() -> f64 {
-        *CYCLES_PER_US.get_or_init(|| {
-            let t0 = Instant::now();
-            let c0 = unsafe { _rdtsc() };
-            while t0.elapsed().as_micros() < 100 {
-                core::hint::spin_loop();
-            }
-            let elapsed_us = t0.elapsed().as_micros() as f64;
-            let c1 = unsafe { _rdtsc() };
-            (c1.saturating_sub(c0)) as f64 / elapsed_us
-        })
-    }
-
-    #[inline(always)]
-    pub fn now() -> u64 {
-        unsafe { _rdtsc() }
-    }
-
-    /// Convert a cycle delta (rdtsc end - rdtsc start) to microseconds.
-    #[inline(always)]
-    pub fn delta_us(start: u64) -> u64 {
-        let delta = unsafe { _rdtsc() }.saturating_sub(start);
-        (delta as f64 / calibrate()) as u64
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
 pub mod tsc {
     use std::sync::OnceLock;
     use std::time::Instant;
 
+    const MIN_CYCLES_PER_US: f64 = 100.0;    // 100 MHz — floor for any real CPU
+    const MAX_CYCLES_PER_US: f64 = 10_000.0; // 10 GHz — ceiling beyond current hardware
+    const MIN_WINDOW_US: f64 = 50.0;         // reject calibrations shorter than this
+
+    enum Backend {
+        Tsc(f64),   // cycles per microsecond, validated
+        Instant,    // fallback: invariant TSC absent or calibration out of bounds
+    }
+
+    /// Opaque timestamp. Holds either TSC cycles or nanos since a fixed origin.
+    /// Use only with the delta_us() from the same module — do not interpret directly.
+    #[derive(Copy, Clone)]
+    pub struct Timestamp(u64);
+
+    static BACKEND: OnceLock<Backend> = OnceLock::new();
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn origin() -> Instant {
         *ORIGIN.get_or_init(Instant::now)
     }
 
-    pub fn calibrate() -> f64 { 1.0 } // no-op on non-x86
+    #[cfg(target_arch = "x86_64")]
+    fn has_invariant_tsc() -> bool {
+        // CPUID leaf 0x80000007 ("Advanced Power Management Information")
+        // EDX bit 8 = invariant TSC.
+        let r = unsafe { core::arch::x86_64::__cpuid(0x8000_0007) };
+        (r.edx & (1 << 8)) != 0
+    }
 
-    #[inline(always)]
-    pub fn now() -> u64 {
-        Instant::now().duration_since(origin()).as_nanos() as u64
+    #[cfg(not(target_arch = "x86_64"))]
+    fn has_invariant_tsc() -> bool { false }
+
+    fn backend() -> &'static Backend {
+        BACKEND.get_or_init(|| {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if !has_invariant_tsc() {
+                    return Backend::Instant;
+                }
+
+                let t0 = Instant::now();
+                let c0 = unsafe { core::arch::x86_64::_rdtsc() };
+                while t0.elapsed().as_micros() < 200 {
+                    core::hint::spin_loop();
+                }
+                let elapsed_us = t0.elapsed().as_micros() as f64;
+                let c1 = unsafe { core::arch::x86_64::_rdtsc() };
+
+                if elapsed_us < MIN_WINDOW_US {
+                    return Backend::Instant; // timer granularity too coarse
+                }
+                let cps = c1.saturating_sub(c0) as f64 / elapsed_us;
+                if !(MIN_CYCLES_PER_US..=MAX_CYCLES_PER_US).contains(&cps) {
+                    return Backend::Instant; // calibration out of sane bounds
+                }
+                Backend::Tsc(cps)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                Backend::Instant
+            }
+        })
+    }
+
+    /// Trigger calibration eagerly. Call once at startup to amortise the
+    /// 200 µs busy-wait before entering the hot path.
+    /// Returns true if rdtsc is in use, false if falling back to Instant.
+    pub fn calibrate() -> bool {
+        matches!(backend(), Backend::Tsc(_))
+    }
+
+    /// True if rdtsc passed all checks; false means Instant fallback is active.
+    #[inline]
+    pub fn using_tsc() -> bool {
+        matches!(backend(), Backend::Tsc(_))
     }
 
     #[inline(always)]
-    pub fn delta_us(start: u64) -> u64 {
-        now().saturating_sub(start) / 1_000
+    pub fn now() -> Timestamp {
+        match backend() {
+            Backend::Tsc(_) => {
+                #[cfg(target_arch = "x86_64")]
+                return Timestamp(unsafe { core::arch::x86_64::_rdtsc() });
+                #[cfg(not(target_arch = "x86_64"))]
+                unreachable!()
+            }
+            Backend::Instant => {
+                Timestamp(Instant::now().duration_since(origin()).as_nanos() as u64)
+            }
+        }
+    }
+
+    /// Microseconds since `start` was sampled with now().
+    #[inline(always)]
+    pub fn delta_us(start: Timestamp) -> u64 {
+        match backend() {
+            Backend::Tsc(cps) => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let now = unsafe { core::arch::x86_64::_rdtsc() };
+                    (now.saturating_sub(start.0) as f64 / cps) as u64
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                unreachable!()
+            }
+            Backend::Instant => {
+                let now_ns = Instant::now().duration_since(origin()).as_nanos() as u64;
+                now_ns.saturating_sub(start.0) / 1_000
+            }
+        }
+    }
+
+    // ── Validation logic (pure, exposed for testing) ──────────────────────
+
+    /// Validate a raw cycles-per-µs value from calibration.
+    /// Returns the value if sane, or None if it should trigger a fallback.
+    pub fn validate_cps(cps: f64, window_us: f64) -> Option<f64> {
+        if window_us < MIN_WINDOW_US {
+            return None; // window too short — timer granularity coarse
+        }
+        if !(MIN_CYCLES_PER_US..=MAX_CYCLES_PER_US).contains(&cps) {
+            return None; // out of sane bounds
+        }
+        Some(cps)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn validate_rejects_zero_window() {
+            assert!(validate_cps(3000.0, 0.0).is_none());
+            assert!(validate_cps(3000.0, 10.0).is_none()); // below MIN_WINDOW_US
+            assert!(validate_cps(3000.0, 49.9).is_none());
+        }
+
+        #[test]
+        fn validate_rejects_out_of_bounds_cps() {
+            assert!(validate_cps(50.0, 200.0).is_none());    // below 100 MHz floor
+            assert!(validate_cps(15_000.0, 200.0).is_none()); // above 10 GHz ceiling
+            assert!(validate_cps(0.0, 200.0).is_none());
+            assert!(validate_cps(-1.0, 200.0).is_none());
+        }
+
+        #[test]
+        fn validate_accepts_sane_values() {
+            // Typical desktop/server CPUs: 1–5 GHz
+            assert!(validate_cps(1_000.0, 200.0).is_some()); // 1 GHz
+            assert!(validate_cps(3_000.0, 200.0).is_some()); // 3 GHz
+            assert!(validate_cps(5_000.0, 200.0).is_some()); // 5 GHz
+            // Edge of valid range
+            assert!(validate_cps(100.0, 50.0).is_some());
+            assert!(validate_cps(10_000.0, 50.0).is_some());
+        }
+
+        #[test]
+        fn delta_us_is_monotone() {
+            // Regardless of backend, two consecutive delta_us calls should not
+            // go backwards — start of zero gives current positive elapsed time.
+            let t0 = now();
+            let d = delta_us(t0);
+            // We can't assert d > 0 (might be 0 on very fast systems), but
+            // we can assert a second call doesn't underflow.
+            let d2 = delta_us(t0);
+            assert!(d2 >= d);
+        }
+
+        #[test]
+        fn delta_us_measures_real_elapsed() {
+            let t0 = now();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let d = delta_us(t0);
+            // Should see at least 3 ms (generous lower bound for loaded CI).
+            assert!(d >= 3_000, "expected ≥ 3000 µs, got {} µs", d);
+            // Should not see more than 500 ms (would indicate overflow or wrong units).
+            assert!(d < 500_000, "expected < 500 000 µs, got {} µs", d);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn invariant_tsc_check_does_not_panic() {
+            // We can't assert the result (depends on CPU) but it must not crash.
+            let _ = has_invariant_tsc();
+        }
     }
 }
 
@@ -349,8 +491,15 @@ pub async fn start_external_transcoder_stage(
 
     // ── pipe metrics ──────────────────────────────────────────────────────
     // Separate from stage_metrics: only subprocess-pipe stages have these.
-    // Trigger TSC calibration now (100 µs busy-wait, once per process).
-    tsc::calibrate();
+    // Trigger TSC calibration eagerly (200 µs busy-wait, once per process).
+    // Logs which path was chosen so operators can see it in the stage output.
+    let using_tsc = tsc::calibrate();
+    if !using_tsc {
+        println!(
+            "[ext-transcoder] pipe timing: Instant fallback \
+             (invariant TSC absent or calibration out of bounds)"
+        );
+    }
     let pipe_metrics = Arc::new(PipeMetrics::default());
     engine
         .register_pipe_metrics(
