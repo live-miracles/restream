@@ -15,6 +15,7 @@ use crate::domain::stage::{EncodingStagePlan, StageKind};
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
+use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 
 /// Lock-free counters for one processing stage.
 /// Updated atomically on the hot path; read by `/graph` for operator visibility.
@@ -532,16 +533,11 @@ impl MediaEngine {
         // downmix: requires DSP decode→mix→encode → full internal FFmpeg path.
         // video: stages (video:720p etc.): external subprocess FFmpeg by default;
         //   override with RESTREAM_USE_INTERNAL_TRANSCODER=1.
+        let backend_policy = BackendPolicy::from_env();
         if let Some(audio_op) = stage_kind.audio_operation() {
             let routing =
                 crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
-            let is_lightweight = matches!(
-                routing,
-                crate::media::transcoder::AudioRouting::SelectTracks(_)
-                    | crate::media::transcoder::AudioRouting::Remap { .. }
-                    | crate::media::transcoder::AudioRouting::Passthrough
-            );
-            if is_lightweight {
+            if backend_policy.select_backend(&stage_kind) == StageBackend::AudioRouter {
                 println!(
                     "[audio-router] Spawning stage: pipeline={} encoding={}",
                     pipeline_id, encoding
@@ -561,23 +557,20 @@ impl MediaEngine {
             // Downmix falls through to internal FFmpeg below
         }
 
-        let use_internal = std::env::var("RESTREAM_USE_INTERNAL_TRANSCODER")
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
+        let backend = backend_policy.select_backend(&stage_kind);
 
         println!(
             "[transcoder] Spawning stage: pipeline={} encoding={} backend={}",
             pipeline_id,
             encoding,
-            if use_internal { "internal" } else { "external" }
+            match backend {
+                StageBackend::AudioRouter => "audio-router",
+                StageBackend::InternalFfmpeg => "internal",
+                StageBackend::ExternalFfmpeg => "external",
+            }
         );
 
-        if use_internal {
+        if backend == StageBackend::InternalFfmpeg {
             if encoding.starts_with("video:") {
                 println!(
                     "[transcoder] Info: RESTREAM_USE_INTERNAL_TRANSCODER=1 with video \

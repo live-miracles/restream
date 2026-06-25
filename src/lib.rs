@@ -28,6 +28,7 @@ pub mod diag;
 pub mod domain;
 pub mod ffmpeg_extract;
 pub mod media;
+pub mod planner;
 pub mod runtime_info;
 pub mod types;
 
