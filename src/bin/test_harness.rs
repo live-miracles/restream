@@ -1,3 +1,7 @@
+use axum::Router;
+use axum::extract::{OriginalUri, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{get, put};
 use bytes::Bytes;
 use restream::db;
 use restream::media::codec::{audio_for_ts, video_for_ts};
@@ -13,15 +17,18 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use serde_json::{Value, json};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::Barrier;
+use tokio_util::sync::CancellationToken;
 
 const RTMP_PORT: u16 = 11935;
 const SRT_PORT: u16 = 11080;
@@ -44,6 +51,7 @@ async fn run() -> Result<(), String> {
         "correctness-rtmp" => correctness_rtmp().await,
         "correctness-srt" => correctness_srt().await,
         "correctness-srt-rtmp" => srt_to_rtmp_correctness().await,
+        "hls-put" => hls_put_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
@@ -71,7 +79,7 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              correctness-srt-rtmp, bframe-rtmp, matrix, matrix-in-memory, egress, \
+              correctness-srt-rtmp, hls-put, bframe-rtmp, matrix, matrix-in-memory, egress, \
               correctness-hevc-rtmp, correctness-hevc-srt, hevc-load, in-process, network, or all"
         )),
     };
@@ -102,6 +110,13 @@ fn artifact_path(name: &str) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("test/artifacts/latest"))
         .join(name)
+}
+
+fn env_secs(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 async fn correctness() -> Result<Value, String> {
@@ -341,6 +356,500 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
     } else {
         Err(format!("SRT to RTMP direct egress failed: {results}"))
     }
+}
+
+/// Test: SRT ingest -> HLS HTTP PUT upload for YouTube-style and path-style sinks.
+async fn hls_put_correctness() -> Result<Value, String> {
+    let settle = Duration::from_secs(env_secs("HLS_PUT_SETTLE_SECS", 8));
+    let restart_settle = Duration::from_secs(env_secs("HLS_PUT_RESTART_SECS", 12));
+    let hls_put_port = std::env::var("HLS_PUT_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(8990);
+    let sink_dir = std::env::var_os("HLS_PUT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| artifact_path("hls-put-sink"));
+    let _ = std::fs::remove_dir_all(&sink_dir);
+    std::fs::create_dir_all(&sink_dir).map_err(|e| e.to_string())?;
+
+    std::fs::write(
+        artifact_path("hls-put-sink.log"),
+        format!("Rust in-process HLS PUT sink listening on 127.0.0.1:{hls_put_port}\n"),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        artifact_path("restream.log"),
+        "scenario managed by Rust test_harness hls-put\n",
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        artifact_path("publisher.log"),
+        "publisher managed by Rust test_harness hls-put\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let (mut sink_cancel, mut sink_handle) =
+        start_hls_put_sink(hls_put_port, sink_dir.clone()).await?;
+
+    let db_path = artifact_path("hls-put.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    db::create_pipeline(
+        &pool,
+        "pipe-hls-put",
+        "HLS PUT SRT source",
+        "e2e-hls-put",
+        None,
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = artifact_path("hls-put-h264.ts");
+    if !fixture.exists() {
+        generate_fixture_hls_put(&fixture).await?;
+    }
+
+    let mut publisher = spawn_publisher(
+        &fixture,
+        &format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/e2e-hls-put&pkt_size=1316"),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_ingests(&engine, &["pipe-hls-put"], Duration::from_secs(15)).await?;
+    println!("[hls-put] Source ingest established");
+
+    let source_ring = engine.get_or_create_pipeline("pipe-hls-put").await;
+    let (store, _) = engine.ensure_hls_segmenter("pipe-hls-put").await;
+    let hls_cancel = engine
+        .get_hls_cancel_token("pipe-hls-put")
+        .await
+        .ok_or("HLS segmenter token missing")?;
+    let hls_segmenter = tokio::spawn(restream::media::hls::start_hls_segmenter(
+        "pipe-hls-put".to_string(),
+        store.clone(),
+        source_ring,
+        engine.clone(),
+        hls_cancel.clone(),
+    ));
+    engine.add_hls_persistent_consumer("pipe-hls-put").await;
+
+    let youtube_url =
+        format!("http://127.0.0.1:{hls_put_port}/upload?cid=dummy&copy=0&file=out.m3u8");
+    let akamai_url = format!("http://127.0.0.1:{hls_put_port}/akamai/out.m3u8?token=dummy");
+    let youtube_cancel = CancellationToken::new();
+    let akamai_cancel = CancellationToken::new();
+    let youtube_upload = tokio::spawn(restream::media::hls_upload::start_hls_put_upload(
+        "out-hls-put-youtube".to_string(),
+        "pipe-hls-put".to_string(),
+        youtube_url,
+        store.clone(),
+        youtube_cancel.clone(),
+    ));
+    let akamai_upload = tokio::spawn(restream::media::hls_upload::start_hls_put_upload(
+        "out-hls-put-akamai".to_string(),
+        "pipe-hls-put".to_string(),
+        akamai_url,
+        store,
+        akamai_cancel.clone(),
+    ));
+
+    println!(
+        "[hls-put] Streaming {}s for initial HLS PUT uploads",
+        settle.as_secs()
+    );
+    tokio::time::sleep(settle).await;
+    let artifacts = wait_for_hls_put_artifacts(&sink_dir, Duration::from_secs(30)).await?;
+    validate_hls_playlist(&artifacts.youtube_playlist, "YouTube-style")?;
+    validate_hls_playlist(&artifacts.akamai_playlist, "path-style")?;
+
+    let requests = read_hls_put_requests(&sink_dir)?;
+    let youtube_playlist_content_type = request_seen(&requests, |request| {
+        request["file"] == "out.m3u8" && request["contentType"] == "application/vnd.apple.mpegurl"
+    });
+    let youtube_segment_content_type = request_seen(&requests, |request| {
+        request["file"]
+            .as_str()
+            .is_some_and(|file| is_segment_file(file, "seg"))
+            && request["contentType"] == "video/mp2t"
+    });
+    let akamai_playlist_content_type = request_seen(&requests, |request| {
+        request["file"] == "akamai/out.m3u8"
+            && request["contentType"] == "application/vnd.apple.mpegurl"
+            && request["path"]
+                .as_str()
+                .is_some_and(|path| path.contains("token=dummy"))
+    });
+    let akamai_segment_content_type = request_seen(&requests, |request| {
+        request["file"]
+            .as_str()
+            .is_some_and(|file| is_segment_file(file, "akamai/seg"))
+            && request["contentType"] == "video/mp2t"
+            && request["path"]
+                .as_str()
+                .is_some_and(|path| path.contains("token=dummy"))
+    });
+
+    let youtube_probe = ffprobe(&artifacts.youtube_segment.to_string_lossy()).await?;
+    let akamai_probe = ffprobe(&artifacts.akamai_segment.to_string_lossy()).await?;
+    let youtube_dimensions = video_dimensions(&youtube_probe).unwrap_or_else(|| "none".to_string());
+    let akamai_dimensions = video_dimensions(&akamai_probe).unwrap_or_else(|| "none".to_string());
+    let dimensions_ok = youtube_dimensions == "1280x720" && akamai_dimensions == "1280x720";
+
+    let requests_before = request_line_count(&sink_dir);
+    println!("[hls-put] Restarting sink after {requests_before} PUT requests");
+    sink_cancel.cancel();
+    let _ = sink_handle.await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    (sink_cancel, sink_handle) = start_hls_put_sink(hls_put_port, sink_dir.clone()).await?;
+    let (youtube_recovered, akamai_recovered) =
+        wait_for_hls_put_recovery(&sink_dir, requests_before, restart_settle).await?;
+    let requests_after = request_line_count(&sink_dir);
+
+    youtube_cancel.cancel();
+    akamai_cancel.cancel();
+    hls_cancel.cancel();
+    sink_cancel.cancel();
+    let _ = youtube_upload.await;
+    let _ = akamai_upload.await;
+    let _ = hls_segmenter.await;
+    let _ = sink_handle.await;
+    let _ = publisher.kill().await;
+
+    let passed = youtube_playlist_content_type
+        && youtube_segment_content_type
+        && akamai_playlist_content_type
+        && akamai_segment_content_type
+        && dimensions_ok
+        && youtube_recovered
+        && akamai_recovered;
+
+    let mut results = json!({
+        "passed": passed,
+        "sinkDir": sink_dir,
+        "requestsBeforeRestart": requests_before,
+        "requestsAfterRestart": requests_after,
+        "youtube": {
+            "playlist": artifacts.youtube_playlist,
+            "segment": artifacts.youtube_segment,
+            "dimensions": youtube_dimensions,
+            "playlistContentTypeObserved": youtube_playlist_content_type,
+            "segmentContentTypeObserved": youtube_segment_content_type,
+            "recoveredAfterRestart": youtube_recovered,
+        },
+        "akamai": {
+            "playlist": artifacts.akamai_playlist,
+            "segment": artifacts.akamai_segment,
+            "dimensions": akamai_dimensions,
+            "playlistContentTypeAndQueryObserved": akamai_playlist_content_type,
+            "segmentContentTypeAndQueryObserved": akamai_segment_content_type,
+            "recoveredAfterRestart": akamai_recovered,
+        },
+    });
+    if !dimensions_ok {
+        results["error"] = json!(format!(
+            "expected 1280x720 HLS PUT segments, got youtube={youtube_dimensions} akamai={akamai_dimensions}"
+        ));
+    } else if !youtube_recovered || !akamai_recovered {
+        results["error"] = json!("HLS PUT upload did not recover for both output URL shapes");
+    } else if !passed {
+        results["error"] =
+            json!("HLS PUT upload did not preserve expected content types or signed query shape");
+    }
+
+    let path = artifact_path("hls-put.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    if passed {
+        Ok(results)
+    } else {
+        Err(format!("HLS PUT upload scenario failed: {results}"))
+    }
+}
+
+struct HlsPutArtifacts {
+    youtube_playlist: PathBuf,
+    youtube_segment: PathBuf,
+    akamai_playlist: PathBuf,
+    akamai_segment: PathBuf,
+}
+
+struct HlsPutSinkState {
+    root: PathBuf,
+    requests_path: PathBuf,
+    write_lock: Mutex<()>,
+}
+
+async fn start_hls_put_sink(
+    port: u16,
+    root: PathBuf,
+) -> Result<(CancellationToken, tokio::task::JoinHandle<()>), String> {
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let state = Arc::new(HlsPutSinkState {
+        requests_path: root.join("requests.jsonl"),
+        root,
+        write_lock: Mutex::new(()),
+    });
+    let app = Router::new()
+        .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/*path", put(hls_put_sink_put))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
+    let cancel = CancellationToken::new();
+    let server_cancel = cancel.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app)
+            .with_graceful_shutdown(server_cancel.cancelled_owned())
+            .await
+        {
+            eprintln!("[hls-put-sink] server failed: {err}");
+        }
+    });
+    Ok((cancel, handle))
+}
+
+async fn hls_put_sink_put(
+    State(state): State<Arc<HlsPutSinkState>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    let name =
+        hls_put_sink_file_name(uri.path(), uri.query()).unwrap_or_else(|| "index.m3u8".to_string());
+    let name = name.replace('\\', "/").trim_start_matches('/').to_string();
+    if name.is_empty() || name.split('/').any(|part| part == "..") {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    let target = state.root.join(&name);
+    if let Some(parent) = target.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "[hls-put-sink] failed to create {}: {err}",
+            parent.display()
+        );
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    if let Err(err) = std::fs::write(&target, &body) {
+        eprintln!("[hls-put-sink] failed to write {}: {err}", target.display());
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    let content_type = headers
+        .get(reqwest::header::CONTENT_TYPE.as_str())
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let record = json!({
+        "path": uri.to_string(),
+        "file": name,
+        "contentType": content_type,
+        "bytes": body.len(),
+    });
+    let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&state.requests_path)
+    {
+        Ok(mut file) => {
+            if let Err(err) = writeln!(file, "{record}") {
+                eprintln!(
+                    "[hls-put-sink] failed to append {}: {err}",
+                    state.requests_path.display()
+                );
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "[hls-put-sink] failed to open {}: {err}",
+                state.requests_path.display()
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+    StatusCode::NO_CONTENT
+}
+
+fn hls_put_sink_file_name(path: &str, query: Option<&str>) -> Option<String> {
+    query
+        .and_then(|query| {
+            query.split('&').find_map(|pair| {
+                let (key, value) = pair.split_once('=')?;
+                (key == "file").then(|| value.to_string())
+            })
+        })
+        .or_else(|| {
+            let trimmed = path.trim_start_matches('/');
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+}
+
+async fn wait_for_hls_put_artifacts(
+    sink_dir: &Path,
+    timeout: Duration,
+) -> Result<HlsPutArtifacts, String> {
+    let deadline = Instant::now() + timeout;
+    let youtube_playlist = sink_dir.join("out.m3u8");
+    let akamai_playlist = sink_dir.join("akamai/out.m3u8");
+    loop {
+        let youtube_segment = first_segment_in(sink_dir);
+        let akamai_segment = first_segment_in(&sink_dir.join("akamai"));
+        if youtube_playlist.is_file()
+            && file_nonempty(&youtube_playlist)
+            && akamai_playlist.is_file()
+            && file_nonempty(&akamai_playlist)
+            && let (Some(youtube_segment), Some(akamai_segment)) = (youtube_segment, akamai_segment)
+        {
+            return Ok(HlsPutArtifacts {
+                youtube_playlist,
+                youtube_segment,
+                akamai_playlist,
+                akamai_segment,
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for HLS PUT playlist/segment artifacts in {}",
+                sink_dir.display()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn first_segment_in(dir: &Path) -> Option<PathBuf> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| is_segment_file(name, "seg"))
+                && file_nonempty(path)
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
+fn file_nonempty(path: &Path) -> bool {
+    path.metadata().map(|meta| meta.len() > 0).unwrap_or(false)
+}
+
+fn validate_hls_playlist(path: &Path, label: &str) -> Result<(), String> {
+    let playlist = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if !playlist.contains("#EXTM3U") {
+        return Err(format!("{label} HLS PUT playlist missing EXTM3U header"));
+    }
+    if !playlist.contains(".ts") {
+        return Err(format!(
+            "{label} HLS PUT playlist missing segment reference"
+        ));
+    }
+    Ok(())
+}
+
+fn read_hls_put_requests(sink_dir: &Path) -> Result<Vec<Value>, String> {
+    let path = sink_dir.join("requests.jsonl");
+    let body = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    body.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn request_seen(requests: &[Value], predicate: impl Fn(&Value) -> bool) -> bool {
+    requests.iter().any(predicate)
+}
+
+fn is_segment_file(file: &str, prefix: &str) -> bool {
+    file.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(".ts"))
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn request_line_count(sink_dir: &Path) -> usize {
+    std::fs::read_to_string(sink_dir.join("requests.jsonl"))
+        .map(|body| body.lines().count())
+        .unwrap_or(0)
+}
+
+async fn wait_for_hls_put_recovery(
+    sink_dir: &Path,
+    start_line: usize,
+    timeout: Duration,
+) -> Result<(bool, bool), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let requests = std::fs::read_to_string(sink_dir.join("requests.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .skip(start_line)
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect::<Vec<_>>();
+        let youtube_recovered = request_seen(&requests, |request| {
+            request["file"]
+                .as_str()
+                .is_some_and(|file| is_segment_file(file, "seg"))
+                && request["contentType"] == "video/mp2t"
+        });
+        let akamai_recovered = request_seen(&requests, |request| {
+            request["file"]
+                .as_str()
+                .is_some_and(|file| is_segment_file(file, "akamai/seg"))
+                && request["contentType"] == "video/mp2t"
+                && request["path"]
+                    .as_str()
+                    .is_some_and(|path| path.contains("token=dummy"))
+        });
+        if youtube_recovered && akamai_recovered {
+            return Ok((true, true));
+        }
+        if Instant::now() >= deadline {
+            return Ok((youtube_recovered, akamai_recovered));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn video_dimensions(probe: &Value) -> Option<String> {
+    let stream = probe["streams"]
+        .as_array()?
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")?;
+    Some(format!(
+        "{}x{}",
+        stream["width"].as_i64()?,
+        stream["height"].as_i64()?
+    ))
 }
 
 /// Test: RTMP B-frame ingest -> RTMP egress timestamp round-trip.
@@ -1331,6 +1840,62 @@ async fn generate_fixture_h264(path: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("H.264 fixture generation failed: {status}"))
+    }
+}
+
+async fn generate_fixture_hls_put(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-t",
+            "8",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-x264-params",
+            "no-open-gop=1",
+            "-b:v",
+            "1.5M",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-f",
+            "mpegts",
+        ])
+        .arg(path)
+        .status()
+        .await
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("HLS PUT H.264 fixture generation failed: {status}"))
     }
 }
 

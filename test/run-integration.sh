@@ -286,7 +286,7 @@ resume_allows() {
 mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
-    hls-put)      printf '%s\n' python3 ffmpeg ffprobe curl jq ;;
+    hls-put)      printf '%s\n' cargo ffmpeg ffprobe jq ;;
     bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
     *)            printf '%s\n' ffmpeg ffprobe curl jq mediamtx ;;
   esac
@@ -495,73 +495,6 @@ YML
   tail -30 "${WORK_DIR}/mediamtx.log" >&2 || true
   fail "mediamtx did not become ready"
 }
-
-start_hls_put_sink() {
-  mkdir -p "$HLS_PUT_DIR"
-  cat > "${WORK_DIR}/hls-put-sink.py" <<'PY'
-import json
-import os
-import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
-
-ROOT = os.environ["HLS_PUT_DIR"]
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "RestreamHlsPutSink/1.0"
-
-    def log_message(self, fmt, *args):
-        return
-
-    def do_GET(self):
-        if self.path == "/healthz":
-            self.send_response(204)
-            self.end_headers()
-            return
-        self.send_response(404)
-        self.end_headers()
-
-    def do_PUT(self):
-        parsed = urlsplit(self.path)
-        query = parse_qs(parsed.query)
-        name = query.get("file", [None])[-1]
-        if name is None:
-            name = parsed.path.lstrip("/") or "index.m3u8"
-        name = name.replace("\\", "/").lstrip("/")
-        if not name or any(part == ".." for part in name.split("/")):
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length)
-        target = os.path.join(ROOT, name)
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as fh:
-            fh.write(body)
-        with open(os.path.join(ROOT, "requests.jsonl"), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "path": self.path,
-                "file": name,
-                "contentType": self.headers.get("Content-Type", ""),
-                "bytes": len(body),
-            }) + "\n")
-        self.send_response(204)
-        self.end_headers()
-
-if __name__ == "__main__":
-    ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
-PY
-  HLS_PUT_DIR="$HLS_PUT_DIR" python3 "${WORK_DIR}/hls-put-sink.py" "$HLS_PUT_PORT" >"${WORK_DIR}/hls-put-sink.log" 2>&1 &
-  HLS_PUT_PID=$!
-  for i in $(seq 1 30); do
-    curl -sf "http://127.0.0.1:${HLS_PUT_PORT}/healthz" >/dev/null 2>&1 && return 0
-    sleep 1
-  done
-  tail -30 "${WORK_DIR}/hls-put-sink.log" >&2 || true
-  fail "HLS PUT sink did not become ready"
-}
-
 
 api() {
   local method="$1" path="$2"; shift 2
@@ -1479,120 +1412,28 @@ run_burst_verify() {
 #   HLS_PUT_SETTLE_SECS seconds to wait for HLS upload (default: 8)
 #   HLS_PUT_RESTART_SECS seconds to wait after sink restart (default: 12)
 run_hls_put() {
-  local SETTLE="${HLS_PUT_SETTLE_SECS:-8}"
-  local RESTART_SETTLE="${HLS_PUT_RESTART_SECS:-12}"
   WORK_DIR="${WORK_DIR:-test/artifacts/hls-put}"
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
   HLS_PUT_DIR="${WORK_DIR}/hls-put-sink"
   init_run_artifacts
-  check_deps python3 ffmpeg ffprobe curl jq
+  check_deps cargo ffmpeg ffprobe jq
   : > "$SUMMARY_LOG"
 
-  start_hls_put_sink
-  start_restream
-  COOKIE_JAR=$(mktemp)
-  api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+  HLS_PUT_DIR="$HLS_PUT_DIR" \
+  HLS_PUT_PORT="$HLS_PUT_PORT" \
+  TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    cargo run --quiet --bin test_harness -- hls-put \
+    >"${WORK_DIR}/test-harness.log" 2>&1 \
+    || { tail -80 "${WORK_DIR}/test-harness.log" >&2 || true; fail "Rust hls-put harness failed"; }
 
-  local cfg="hls-put-srt-h264"
-  local stream_key="sk-${cfg}"
-  local pipe_id
-  pipe_id=$(api POST /pipelines \
-    -d "{\"name\":\"${cfg}\",\"streamKey\":\"${stream_key}\"}" | jq -r '.pipeline.id')
-
-  ffmpeg -nostdin -hide_banner -loglevel error -re \
-    -f lavfi -i 'testsrc2=size=1280x720:rate=30' \
-    -f lavfi -i 'anullsrc=r=48000:cl=stereo' \
-    -c:v libx264 -preset ultrafast -tune zerolatency \
-    -g 30 -keyint_min 30 -x264-params "no-open-gop=1" \
-    -map 0:v -map 1:a -b:v 1.5M -c:a aac -b:a 64k \
-    -f mpegts "srt://127.0.0.1:${RESTREAM_SRT}?streamid=publish:live/${stream_key}&latency=200000" \
-    >"${WORK_DIR}/publisher.log" 2>&1 &
-  PUB_PID=$!
-
-  wait_for_input_live "$pipe_id" "$cfg"
-
-  local youtube_url="http://127.0.0.1:${HLS_PUT_PORT}/upload?cid=dummy&copy=0&file=out.m3u8"
-  local akamai_url="http://127.0.0.1:${HLS_PUT_PORT}/akamai/out.m3u8?token=dummy"
-  local youtube_oid akamai_oid
-  youtube_oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-    -d "{\"name\":\"hls-put-youtube\",\"url\":\"${youtube_url}\",\"encoding\":\"source\"}" \
-    | jq -r '.output.id')
-  api POST "/pipelines/${pipe_id}/outputs/${youtube_oid}/start" >/dev/null
-  akamai_oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-    -d "{\"name\":\"hls-put-path\",\"url\":\"${akamai_url}\",\"encoding\":\"source\"}" \
-    | jq -r '.output.id')
-  api POST "/pipelines/${pipe_id}/outputs/${akamai_oid}/start" >/dev/null
-
-  echo "  streaming ${SETTLE}s for HLS PUT uploads..."
-  sleep "$SETTLE"
-
-  local youtube_playlist="${HLS_PUT_DIR}/out.m3u8"
-  local akamai_playlist="${HLS_PUT_DIR}/akamai/out.m3u8"
-  local youtube_segment="" akamai_segment=""
-  for i in $(seq 1 30); do
-    youtube_segment="$(find "$HLS_PUT_DIR" -maxdepth 1 -name 'seg*.ts' -type f -size +0c | sort | head -n1)"
-    akamai_segment="$(find "${HLS_PUT_DIR}/akamai" -maxdepth 1 -name 'seg*.ts' -type f -size +0c 2>/dev/null | sort | head -n1)"
-    [[ -s "$youtube_playlist" && -n "$youtube_segment" && -s "$akamai_playlist" && -n "$akamai_segment" ]] && break
-    sleep 1
-  done
-
-  [[ -s "$youtube_playlist" ]] || fail "HLS PUT YouTube-style playlist was not uploaded"
-  [[ -n "$youtube_segment" ]] || fail "HLS PUT YouTube-style segment was not uploaded"
-  [[ -s "$akamai_playlist" ]] || fail "HLS PUT path-style playlist was not uploaded"
-  [[ -n "$akamai_segment" ]] || fail "HLS PUT path-style segment was not uploaded"
-  grep -q '#EXTM3U' "$youtube_playlist" || fail "HLS PUT YouTube-style playlist missing EXTM3U header"
-  grep -q '.ts' "$youtube_playlist" || fail "HLS PUT YouTube-style playlist missing segment reference"
-  grep -q '#EXTM3U' "$akamai_playlist" || fail "HLS PUT path-style playlist missing EXTM3U header"
-  grep -q '.ts' "$akamai_playlist" || fail "HLS PUT path-style playlist missing segment reference"
-
-  jq -e 'select(.file == "out.m3u8" and .contentType == "application/vnd.apple.mpegurl")' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT YouTube-style playlist content type not observed"
-  jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT YouTube-style segment content type not observed"
-  jq -e 'select(.file == "akamai/out.m3u8" and .contentType == "application/vnd.apple.mpegurl" and (.path | contains("token=dummy")))' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT path-style playlist content type/query not observed"
-  jq -e 'select((.file | test("^akamai/seg[0-9]+\\.ts$")) and .contentType == "video/mp2t" and (.path | contains("token=dummy")))' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT path-style segment content type/query not observed"
-
+  local result_json="${WORK_DIR}/hls-put.json"
   local youtube_dims akamai_dims
-  youtube_dims="$(probe_dims "$youtube_segment" || true)"
-  akamai_dims="$(probe_dims "$akamai_segment" || true)"
-  [[ "$youtube_dims" == "1280x720" ]] || fail "HLS PUT YouTube-style segment dimensions expected 1280x720, got ${youtube_dims:-none}"
-  [[ "$akamai_dims" == "1280x720" ]] || fail "HLS PUT path-style segment dimensions expected 1280x720, got ${akamai_dims:-none}"
-
+  youtube_dims="$(jq -r '.youtube.dimensions' "$result_json")"
+  akamai_dims="$(jq -r '.akamai.dimensions' "$result_json")"
   log_ok "hls-put: YouTube-style playlist and segment uploaded via PUT with ffprobe dimensions ${youtube_dims}"
   log_ok "hls-put: path-style playlist and segment uploaded via PUT with signed query and ffprobe dimensions ${akamai_dims}"
-
-  local requests_before
-  requests_before="$(wc -l < "${HLS_PUT_DIR}/requests.jsonl" | tr -d ' ')"
-  echo "  restarting HLS PUT sink to verify upload recovery..."
-  kill "$HLS_PUT_PID" 2>/dev/null || true
-  wait "$HLS_PUT_PID" 2>/dev/null || true
-  HLS_PUT_PID=""
-  sleep 2
-  start_hls_put_sink
-
-  local youtube_recovered=0 akamai_recovered=0
-  for i in $(seq 1 "$RESTART_SETTLE"); do
-    if tail -n +"$(( requests_before + 1 ))" "${HLS_PUT_DIR}/requests.jsonl" 2>/dev/null \
-      | jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' >/dev/null; then
-      youtube_recovered=1
-    fi
-    if tail -n +"$(( requests_before + 1 ))" "${HLS_PUT_DIR}/requests.jsonl" 2>/dev/null \
-      | jq -e 'select((.file | test("^akamai/seg[0-9]+\\.ts$")) and .contentType == "video/mp2t" and (.path | contains("token=dummy")))' >/dev/null; then
-      akamai_recovered=1
-    fi
-    if [[ "$youtube_recovered" == "1" && "$akamai_recovered" == "1" ]]; then
-      break
-    fi
-    sleep 1
-  done
-  [[ "$youtube_recovered" == "1" ]] || fail "HLS PUT YouTube-style upload did not recover with a new segment after sink restart"
-  [[ "$akamai_recovered" == "1" ]] || fail "HLS PUT path-style upload did not recover with a new segment after sink restart"
   log_ok "hls-put: YouTube-style and path-style uploads recovered after dummy sink restart"
-
-  kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
 }
 
 # ── bframe-rtmp mode ─────────────────────────────────────────────────────────

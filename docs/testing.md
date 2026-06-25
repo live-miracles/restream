@@ -206,6 +206,11 @@ dummy sink and requires fresh segment PUTs after recovery for both shapes.
 Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
 `HLS_PUT_RESTART_SECS` (default 12).
 
+The public shell mode is now a thin artifact/summary wrapper around
+`cargo run --bin test_harness -- hls-put`; the dummy PUT sink, SRT publisher,
+HLS segmenter/uploader tasks, ffprobe checks, signed-query assertions, and sink
+restart recovery are implemented in Rust.
+
 ### `bframe-rtmp` — RTMP B-frame timestamp round-trip
 
 ```sh
@@ -426,9 +431,9 @@ iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
 for every mode.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
-parsers/launchers only. The per-mode media runner remains in
-`test/run-integration.sh` until each mode can move behind typed Rust harness
-entry points.
+parsers/launchers only. `hls-put` and `bframe-rtmp` are already behind typed
+Rust harness entry points; the remaining per-mode media runners should migrate
+one isolated mode at a time while preserving public CLI and artifact layout.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to

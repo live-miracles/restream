@@ -113,11 +113,21 @@ launcher for that mode while preserving its public CLI and artifact layout.
 harness boundary: `test/run-integration.sh bframe-rtmp` now preserves the
 manifest and summary wrapper while delegating the live RTMP B-frame scenario,
 packet capture, and assertions to `cargo run --bin test_harness -- bframe-rtmp`.
-Next continuation point: apply the same pattern to another isolated mode
-(`hls-put` only after its dummy sink can move to Rust, or a single
-`burst-verify` config first).
 
-The focused HLS PUT integration was then expanded and re-run on June 25, 2026:
+`hls-put` has also moved behind that typed Rust harness boundary:
+`test/run-integration.sh hls-put` now preserves the manifest, summary, sink
+directory, request log, publisher/restream sidecars, and public mode name while
+delegating the dummy HTTP PUT sink, SRT ingest publisher, HLS segmenter/upload
+tasks, ffprobe checks, signed-query assertions, and restart recovery to
+`cargo run --bin test_harness -- hls-put`. A focused wrapper run passed on
+June 25, 2026 with `WORK_DIR=test/artifacts/hls-put-rust-wrapper`,
+`HLS_PUT_SETTLE_SECS=4`, and `HLS_PUT_RESTART_SECS=8`; both YouTube-style
+`file=` and path-style `/akamai/out.m3u8?token=dummy` uploads produced
+1280x720 TS segments and recovered after sink restart. Next continuation point:
+apply the same pattern to the isolated `burst-verify` mode before tackling the
+larger `ramp` or `mixed-scale` scale runners.
+
+Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z
   ./test/run-integration.sh --fast --json
