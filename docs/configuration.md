@@ -97,10 +97,12 @@ Supported routing behavior:
 | `rtmps://...` | Native RTMPS egress through the RTMP path with TLS before handshake |
 | `srt://...` | Native SRT MPEG-TS egress; percent-encoded characters in the `streamid` query parameter are decoded automatically |
 | `hls://...` | Starts the pipeline's local in-memory HLS segmenter |
+| `http://...`, `https://...` | Starts the local segmenter and uploads segments/playlist with HTTP PUT |
 
-Any other prefix is rejected during validation. HTTP/HTTPS output URLs are not
-accepted because HLS upload is not implemented; use the `hls://` local HLS
-scheme instead.
+Any other prefix is rejected during validation. For HTTP/HTTPS HLS upload,
+segment upload URLs are derived from the playlist target: a `file=` query
+parameter is replaced with `seg<N>.ts`, otherwise the playlist path filename is
+replaced with the segment filename.
 
 Encoding strings are compound values:
 

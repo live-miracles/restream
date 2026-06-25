@@ -179,11 +179,18 @@ function setupOutputModalProtocolHandlers(): void {
         }
 
         if (protocol === 'hls') {
-            populateOutputServerOptions('hls', '');
+            const matchedPreset =
+                detectOutputProtocol(previousRaw) === 'hls'
+                    ? matchOutputServerPreset('hls', previousRaw)
+                    : null;
+            const selectedServer =
+                matchedPreset?.value || OUTPUT_SERVER_PRESETS.hls[0]?.value || '';
+
+            populateOutputServerOptions('hls', selectedServer);
             rawInput.value =
-                isAbsoluteUrl(previousRaw) && detectOutputProtocol(previousRaw) === 'hls'
-                    ? previousRaw
-                    : buildDefaultCustomOutputUrl('hls', previousRaw, getDefaultOutputHost());
+                matchedPreset?.inputValue ||
+                extractCandidateStreamToken(previousRaw) ||
+                getDefaultOutputToken(previousRaw);
             applyOutputProtocolUi('hls');
             return;
         }
@@ -204,7 +211,7 @@ function setupOutputModalProtocolHandlers(): void {
 
     serverSelect.onchange = () => {
         const protocol = protocolSelect.value || 'rtmp';
-        if (protocol === 'rtmp') {
+        if (protocol === 'rtmp' || protocol === 'hls') {
             const rawValue = rawInput.value.trim();
             if (serverSelect.value) {
                 rawInput.value =
@@ -241,7 +248,7 @@ function setupOutputModalProtocolHandlers(): void {
         }
 
         const protocol = protocolSelect.value || 'rtmp';
-        if (protocol === 'rtmp') {
+        if (protocol === 'rtmp' || protocol === 'hls') {
             if (!isCustomOutputServerSelected(protocol) && isAbsoluteUrl(rawValue)) {
                 const matchedPreset = matchOutputServerPreset(protocol, rawValue);
                 if (matchedPreset) {

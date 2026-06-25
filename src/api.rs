@@ -1086,10 +1086,11 @@ fn is_supported_output_url(url: &str) -> bool {
         || url.starts_with("rtmps://")
         || url.starts_with("srt://")
         || url.starts_with("hls://")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
 }
 
-const OUTPUT_URL_SCHEME_ERROR: &str =
-    "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, and hls://";
+const OUTPUT_URL_SCHEME_ERROR: &str = "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://";
 const CUSTOM_OUTPUT_ENCODING_ERROR: &str =
     "Custom output encoding is not available yet; choose source or a preset encoding";
 

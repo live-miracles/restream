@@ -370,7 +370,7 @@ async fn custom_output_encoding_is_rejected_by_api() {
 }
 
 #[tokio::test]
-async fn http_hls_upload_output_is_rejected_by_api() {
+async fn http_hls_upload_output_is_accepted_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
@@ -388,14 +388,12 @@ async fn http_hls_upload_output_is_rejected_by_api() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     let json = body_json(resp).await;
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Supported schemes are rtmp://, rtmps://, srt://, and hls://")
+    assert_eq!(
+        json["output"]["url"],
+        "https://a.upload.youtube.com/http_upload_hls?cid=abc&copy=0&file=out.m3u8"
     );
 }
 

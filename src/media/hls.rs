@@ -33,6 +33,17 @@ struct HlsSegment {
     data: Bytes,
 }
 
+#[derive(Clone)]
+pub struct HlsSegmentSnapshot {
+    pub index: u64,
+    pub data: Bytes,
+}
+
+pub struct HlsStoreSnapshot {
+    pub playlist: String,
+    pub segments: Vec<HlsSegmentSnapshot>,
+}
+
 pub struct HlsStore {
     inner: Mutex<HlsStoreInner>,
 }
@@ -112,6 +123,32 @@ impl HlsStore {
             .iter()
             .find(|s| s.index == index)
             .map(|s| s.data.clone())
+    }
+
+    pub fn snapshot(&self) -> Option<HlsStoreSnapshot> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.segments.is_empty() {
+            return None;
+        }
+
+        let first_seq = inner.segments.front().map(|s| s.index).unwrap_or(0);
+        let target_dur = inner.target_duration.ceil() as u64;
+        let mut playlist = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:{}\n",
+            target_dur, first_seq
+        );
+        let mut segments = Vec::with_capacity(inner.segments.len());
+        for seg in &inner.segments {
+            playlist.push_str(&format!(
+                "#EXTINF:{:.3},\nseg{}.ts\n",
+                seg.duration, seg.index
+            ));
+            segments.push(HlsSegmentSnapshot {
+                index: seg.index,
+                data: seg.data.clone(),
+            });
+        }
+        Some(HlsStoreSnapshot { playlist, segments })
     }
 }
 

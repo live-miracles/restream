@@ -75,7 +75,7 @@ export function detectAudioPlatform(url: string): AudioPlatform {
     return 'generic';
 }
 
-// Infer protocol from the output URL scheme.
+// Infer protocol from the output URL scheme. http/https → hls.
 export function detectAudioProtocol(url: string, fallback: AudioProtocol = 'rtmp'): AudioProtocol {
     let scheme = '';
     try {
@@ -85,7 +85,7 @@ export function detectAudioProtocol(url: string, fallback: AudioProtocol = 'rtmp
     }
     if (scheme === 'rtmps') return 'rtmps';
     if (scheme === 'srt') return 'srt';
-    if (scheme === 'hls') return 'hls';
+    if (scheme === 'http' || scheme === 'https') return 'hls';
     if (scheme === 'rtmp') return 'rtmp';
     return fallback;
 }

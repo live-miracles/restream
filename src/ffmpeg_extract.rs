@@ -108,7 +108,7 @@ pub fn ffmpeg_bin_path() -> &'static Path {
 pub fn cleanup_ffmpeg() {
     if let Some(path) = FFMPEG_BIN_PATH.get() {
         let parent = path.parent().unwrap();
-        if parent.file_name().map_or(false, |n| n == "restream-ffmpeg") {
+        if parent.file_name().is_some_and(|n| n == "restream-ffmpeg") {
             let _ = std::fs::remove_dir_all(parent);
         }
     }

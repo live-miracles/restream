@@ -70,10 +70,10 @@ impl IngestSecurityService {
         let record = state.get(ip)?;
         let now = Instant::now();
 
-        if let Some(banned_until) = record.banned_until {
-            if banned_until > now {
-                return Some(banned_until.duration_since(now));
-            }
+        if let Some(banned_until) = record.banned_until
+            && banned_until > now
+        {
+            return Some(banned_until.duration_since(now));
         }
 
         None

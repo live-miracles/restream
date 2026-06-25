@@ -465,7 +465,9 @@ pub async fn run_app() {
                     let is_supported = url_c.starts_with("rtmp://")
                         || url_c.starts_with("rtmps://")
                         || url_c.starts_with("srt://")
-                        || url_c.starts_with("hls://");
+                        || url_c.starts_with("hls://")
+                        || url_c.starts_with("http://")
+                        || url_c.starts_with("https://");
                     if !is_supported {
                         let end_now = chrono::Utc::now().to_rfc3339();
                         let _ = db::update_job(
@@ -523,7 +525,10 @@ pub async fn run_app() {
                                 cancel_token.clone(),
                             )
                             .await;
-                        } else if url_c.starts_with("hls://") {
+                        } else if url_c.starts_with("hls://")
+                            || url_c.starts_with("http://")
+                            || url_c.starts_with("https://")
+                        {
                             // HLS egress: use the shared segmenter, register as persistent consumer
                             let (store, already_running) =
                                 engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
@@ -540,10 +545,11 @@ pub async fn run_app() {
                                 let eng2 = engine_c.clone();
                                 let pid2 = pipeline_id_c.clone();
                                 let rb2 = ring_buf.clone();
+                                let store_for_segmenter = store.clone();
                                 tokio::spawn(async move {
                                     crate::media::hls::start_hls_segmenter(
                                         pid2.clone(),
-                                        store,
+                                        store_for_segmenter,
                                         rb2,
                                         eng2.clone(),
                                         hls_cancel,
@@ -553,7 +559,18 @@ pub async fn run_app() {
                                 });
                             }
                             engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
-                            cancel_token.cancelled().await;
+                            if url_c.starts_with("http://") || url_c.starts_with("https://") {
+                                crate::media::hls_upload::start_hls_put_upload(
+                                    output_id_c.clone(),
+                                    pipeline_id_c.clone(),
+                                    url_c.clone(),
+                                    store,
+                                    cancel_token.clone(),
+                                )
+                                .await;
+                            } else {
+                                cancel_token.cancelled().await;
+                            }
                             // remove_hls_persistent_consumer is intentionally called
                             // in the always-runs cleanup section below (outside the
                             // catch_unwind) so a panic between add and here cannot
@@ -579,7 +596,10 @@ pub async fn run_app() {
                     // above; by moving the remove here we ensure it runs even
                     // when the egress future panics after add but before its own
                     // remove (which was guarded only by a cancellation wait).
-                    if url_c.starts_with("hls://") {
+                    if url_c.starts_with("hls://")
+                        || url_c.starts_with("http://")
+                        || url_c.starts_with("https://")
+                    {
                         engine_c
                             .remove_hls_persistent_consumer(&pipeline_id_c)
                             .await;

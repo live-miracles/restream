@@ -171,7 +171,7 @@ most battle-tested path for production deployments.
 | Multi-track audio | SRT ingest preserves audio track indices |
 | Audio remap/downmix | Stream selection only; channel-level filtering is open |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
-| HLS upload | Not implemented; HTTP/HTTPS output URLs are rejected, and local HLS uses `hls://` |
+| HLS upload | Implemented; HTTP/HTTPS output URLs PUT new segments plus playlist to the target |
 | RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress with Rustls wrapping before the RTMP handshake |
 | Custom output encoding | Not applied; `custom` is rejected by output create/update instead of being exposed as a passthrough runtime option |
 
@@ -636,7 +636,8 @@ blockers or hardening work:
   no decode/filter/encode loop.
 - **Recording**: packet-payload-to-`CustomInput` contract needs repair. ~~Implemented as raw MPEG-TS write; no FFmpeg dependency.~~
 - **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
-- **HLS upload**: HTTP/HTTPS output URLs are rejected; local HLS uses `hls://`.
+- **HLS upload**: HTTP/HTTPS output URLs run the shared segmenter and PUT
+  `seg<N>.ts` objects plus the playlist to the target URL.
 - **Custom encoding**: `/encodings/custom` persists future args, but output
   create/update rejects `custom` so operators cannot select an inactive path.
 - **RTMPS**: URL parser accepts it and the reconciler dispatches it through

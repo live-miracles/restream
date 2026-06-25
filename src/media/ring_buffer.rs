@@ -181,7 +181,7 @@ impl ReaderInfo {
         let hist: [u64; BURST_HIST_BUCKETS] =
             std::array::from_fn(|i| self.burst_hist[i].load(Ordering::Relaxed));
         let median = {
-            let half = (bursts + 1) / 2;
+            let half = bursts.div_ceil(2);
             let mut cum = 0u64;
             let mut median_bucket = 0usize;
             for (i, &count) in hist.iter().enumerate() {

@@ -183,10 +183,12 @@ URL behavior:
 | `rtmps://` | RTMPS with TLS before the RTMP handshake |
 | `srt://` | SRT/MPEG-TS |
 | `hls://` | Local in-memory HLS segmenter |
+| `http://` | HLS HTTP PUT upload |
+| `https://` | HLS HTTP PUT upload |
 
-Any other prefix is rejected during validation with a `400 Bad Request`. HLS
-upload via HTTP/HTTPS is not implemented and HTTP/HTTPS output URLs are
-rejected; use `hls://` for the local in-memory HLS segmenter.
+Any other prefix is rejected during validation with a `400 Bad Request`.
+HTTP/HTTPS HLS upload uses one shared local segmenter per pipeline, PUTs each
+new `seg<N>.ts`, then PUTs the playlist URL.
 
 ## History
 
