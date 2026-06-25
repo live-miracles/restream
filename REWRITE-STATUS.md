@@ -256,10 +256,11 @@ See `docs/api-reference.md` for the executable route surface.
    now demuxes MPEG-TS to recover timestamps and keyframes. HLS, recording,
    and in-process transcoder input now share the TS packet feeder.
 8. Run and publish a clean protocol matrix from `docs/testing.md`. Minimum
-   release evidence should include current `test/run-integration.sh` modes,
-   B-frame timestamp round-trips, H.265 SRT passthrough and RTMP edge
-   conversion, cross-protocol SRT→RTMP packaging, HLS PUT destination restart,
-   and a manifest under `test/artifacts/<run-id>/`.
+   release evidence should include current `test/run-integration.sh` modes
+   (`ramp`, `mixed-scale`, `bonding`, `burst-verify`, `hls-put`), B-frame
+   timestamp round-trips, H.265 SRT passthrough and RTMP edge conversion,
+   cross-protocol SRT→RTMP packaging, HLS PUT destination restart, and a
+   manifest under `test/artifacts/<run-id>/`.
 9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
    video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
    path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.

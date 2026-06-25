@@ -166,6 +166,19 @@ readers do not report positive `burstCount` and `avgBurstSize` telemetry.
 Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
 space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"`).
 
+### `hls-put` — HTTP HLS upload dummy sink
+
+```sh
+./test/run-integration.sh hls-put
+```
+
+Publishes one SRT H.264/AAC input, starts an HTTP/YouTube-style HLS PUT output
+with a `file=` query parameter, and verifies that a local dummy sink receives
+both `seg<N>.ts` media segments and the playlist with the expected content
+types. The uploaded segment is also probed with `ffprobe`.
+
+Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8).
+
 ## Validation Results: June 20, 2026
 
 Environment: WSL2, 20 logical CPUs, 7.6 GiB RAM, 2 GiB swap.
@@ -336,6 +349,7 @@ test/run-integration.sh ramp
 test/run-integration.sh mixed-scale
 test/run-integration.sh bonding
 test/run-integration.sh burst-verify
+test/run-integration.sh hls-put
 test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
@@ -351,7 +365,6 @@ Planned wrappers for the remaining matrix:
 ```text
 test/run-ingest-equivalence.sh
 test/run-egress-matrix.sh
-test/run-hls-put.sh
 test/run-h265.sh
 test/run-recovery.sh
 test/run-scale-inprocess.sh
@@ -374,7 +387,7 @@ These capabilities must be treated as test results, not assumptions:
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Cross-protocol SRT→RTMP | Packetization helpers are covered; live matrix must prove end-to-end behavior |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | HTTP PUT delivery is implemented and covered by a dummy sink test; live destination restart remains part of the matrix |
+| HLS upload egress | HTTP PUT delivery is implemented and covered by unit plus `test/run-integration.sh hls-put` dummy sink tests; live destination restart remains part of the matrix |
 | Recording | Readable file with correct streams/timestamps |
 | Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
 | Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |

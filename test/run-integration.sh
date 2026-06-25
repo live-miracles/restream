@@ -13,6 +13,7 @@
 #   mixed-scale 4 configs (h264-srt anchor: HLS+smoke+lifecycle; h265-srt: TC_SPAWNS; multi-audio ×2)
 #   bonding     SRT broadcast+backup bonding (requires static build)
 #   burst-verify closed-GOP RTMP/SRT matrix that verifies graph burst reader stats
+#   hls-put     SRT ingest to HTTP HLS PUT upload against a dummy sink
 #
 # Common env overrides (all modes):
 #   RESTREAM_BIN   path to restream binary (default: target/release/restream)
@@ -20,6 +21,7 @@
 #   RESTREAM_DB_PATH SQLite file path       (default: data.db)
 #   RESTREAM_HTTP/RTMP/SRT  port overrides
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
+#   HLS_PUT_PORT            dummy HLS PUT sink port (default: 8990)
 #
 # Each mode writes WORK_DIR/manifest.json with RUNNING → PASS/FAIL status.
 #
@@ -75,6 +77,7 @@ MTX_RTMP="${MTX_RTMP:-1936}"
 MTX_SRT="${MTX_SRT:-8891}"
 MTX_HLS="${MTX_HLS:-8890}"
 MTX_API="${MTX_API:-9997}"
+HLS_PUT_PORT="${HLS_PUT_PORT:-8990}"
 
 API_URL="http://127.0.0.1:${RESTREAM_HTTP}"
 
@@ -83,9 +86,11 @@ RESTREAM_PID=""
 MTX_PID=""
 PUB_PID=""            # single publisher (scale, mixed-scale, hevc-load, smoke)
 PUB_PIDS=()           # multiple publishers (matrix)
+HLS_PUT_PID=""
 COOKIE_JAR=""
 WORK_DIR="${WORK_DIR:-test/artifacts/${MODE}}"
 RESTREAM_LOG="${WORK_DIR}/restream.log"
+HLS_PUT_DIR="${WORK_DIR}/hls-put-sink"
 SCALE_LOG="/dev/null"
 SUMMARY_LOG="/dev/null"
 SNAPSHOTS="/dev/null"
@@ -100,6 +105,7 @@ log_ok() { echo "ok: $*" | tee -a "${WORK_DIR}/summary.txt"; }
 cleanup() {
   [[ ${#PUB_PIDS[@]} -gt 0 ]] && { for p in "${PUB_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; }
   [[ -n "$PUB_PID" ]]      && kill "$PUB_PID"      2>/dev/null || true
+  [[ -n "$HLS_PUT_PID" ]]  && kill "$HLS_PUT_PID"  2>/dev/null || true
   [[ -n "$MTX_PID" ]]      && kill "$MTX_PID"      2>/dev/null || true
   [[ -n "$RESTREAM_PID" ]] && kill "$RESTREAM_PID" 2>/dev/null || true
   [[ -n "$COOKIE_JAR" ]]   && rm -f "$COOKIE_JAR"  || true
@@ -241,6 +247,70 @@ YML
   done
   tail -30 "${WORK_DIR}/mediamtx.log" >&2 || true
   fail "mediamtx did not become ready"
+}
+
+start_hls_put_sink() {
+  mkdir -p "$HLS_PUT_DIR"
+  cat > "${WORK_DIR}/hls-put-sink.py" <<'PY'
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+ROOT = os.environ["HLS_PUT_DIR"]
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "RestreamHlsPutSink/1.0"
+
+    def log_message(self, fmt, *args):
+        return
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_PUT(self):
+        parsed = urlsplit(self.path)
+        query = parse_qs(parsed.query)
+        name = query.get("file", [None])[-1] or os.path.basename(parsed.path) or "index.m3u8"
+        name = name.replace("\\", "/").lstrip("/")
+        if not name or any(part == ".." for part in name.split("/")):
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        target = os.path.join(ROOT, name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as fh:
+            fh.write(body)
+        with open(os.path.join(ROOT, "requests.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "path": self.path,
+                "file": name,
+                "contentType": self.headers.get("Content-Type", ""),
+                "bytes": len(body),
+            }) + "\n")
+        self.send_response(204)
+        self.end_headers()
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+PY
+  HLS_PUT_DIR="$HLS_PUT_DIR" python3 "${WORK_DIR}/hls-put-sink.py" "$HLS_PUT_PORT" >"${WORK_DIR}/hls-put-sink.log" 2>&1 &
+  HLS_PUT_PID=$!
+  for i in $(seq 1 30); do
+    curl -sf "http://127.0.0.1:${HLS_PUT_PORT}/healthz" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  tail -30 "${WORK_DIR}/hls-put-sink.log" >&2 || true
+  fail "HLS PUT sink did not become ready"
 }
 
 
@@ -1026,6 +1096,81 @@ run_burst_verify() {
   [[ "$fail_count" -eq 0 ]] || fail "burst-verify: ${fail_count} config(s) failed"
 }
 
+# ── hls-put mode ──────────────────────────────────────────────────────────────
+# Publishes one SRT H.264/AAC input, starts an HTTP HLS PUT output that targets
+# a local YouTube-style ?file= sink, and verifies playlist plus segment delivery.
+#
+# Mode env overrides:
+#   HLS_PUT_SETTLE_SECS seconds to wait for HLS upload (default: 8)
+run_hls_put() {
+  local SETTLE="${HLS_PUT_SETTLE_SECS:-8}"
+  WORK_DIR="${WORK_DIR:-test/artifacts/hls-put}"
+  RESTREAM_LOG="${WORK_DIR}/restream.log"
+  SUMMARY_LOG="${WORK_DIR}/summary.txt"
+  HLS_PUT_DIR="${WORK_DIR}/hls-put-sink"
+  init_run_artifacts
+  check_deps python3 ffmpeg ffprobe curl jq
+  : > "$SUMMARY_LOG"
+
+  start_hls_put_sink
+  start_restream
+  COOKIE_JAR=$(mktemp)
+  api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+
+  local cfg="hls-put-srt-h264"
+  local stream_key="sk-${cfg}"
+  local pipe_id
+  pipe_id=$(api POST /pipelines \
+    -d "{\"name\":\"${cfg}\",\"streamKey\":\"${stream_key}\"}" | jq -r '.pipeline.id')
+
+  ffmpeg -nostdin -hide_banner -loglevel error -re \
+    -f lavfi -i 'testsrc2=size=1280x720:rate=30' \
+    -f lavfi -i 'anullsrc=r=48000:cl=stereo' \
+    -c:v libx264 -preset ultrafast -tune zerolatency \
+    -g 30 -keyint_min 30 -x264-params "no-open-gop=1" \
+    -map 0:v -map 1:a -b:v 1.5M -c:a aac -b:a 64k \
+    -f mpegts "srt://127.0.0.1:${RESTREAM_SRT}?streamid=publish:live/${stream_key}&latency=200000" \
+    >"${WORK_DIR}/publisher.log" 2>&1 &
+  PUB_PID=$!
+
+  wait_for_input_live "$pipe_id" "$cfg"
+
+  local upload_url="http://127.0.0.1:${HLS_PUT_PORT}/upload?cid=dummy&copy=0&file=out.m3u8"
+  local oid
+  oid=$(api POST "/pipelines/${pipe_id}/outputs" \
+    -d "{\"name\":\"hls-put\",\"url\":\"${upload_url}\",\"encoding\":\"source\"}" \
+    | jq -r '.output.id')
+  api POST "/pipelines/${pipe_id}/outputs/${oid}/start" >/dev/null
+
+  echo "  streaming ${SETTLE}s for HLS PUT uploads..."
+  sleep "$SETTLE"
+
+  local playlist="${HLS_PUT_DIR}/out.m3u8"
+  local segment=""
+  for i in $(seq 1 30); do
+    segment="$(find "$HLS_PUT_DIR" -maxdepth 1 -name 'seg*.ts' -type f -size +0c | sort | head -n1)"
+    [[ -s "$playlist" && -n "$segment" ]] && break
+    sleep 1
+  done
+
+  [[ -s "$playlist" ]] || fail "HLS PUT playlist was not uploaded"
+  [[ -n "$segment" ]] || fail "HLS PUT segment was not uploaded"
+  grep -q '#EXTM3U' "$playlist" || fail "HLS PUT playlist missing EXTM3U header"
+  grep -q '.ts' "$playlist" || fail "HLS PUT playlist missing segment reference"
+
+  jq -e 'select(.file == "out.m3u8" and .contentType == "application/vnd.apple.mpegurl")' \
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT playlist content type not observed"
+  jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' \
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT segment content type not observed"
+
+  local dims
+  dims="$(probe_dims "$segment" || true)"
+  [[ "$dims" == "1280x720" ]] || fail "HLS PUT segment dimensions expected 1280x720, got ${dims:-none}"
+
+  log_ok "hls-put: playlist and segment uploaded via PUT with ffprobe dimensions ${dims}"
+  kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
+}
+
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 mkdir -p "$WORK_DIR"
 
@@ -1034,9 +1179,10 @@ case "$MODE" in
   mixed-scale)  run_mixed_scale  ;;
   bonding)      run_bonding      ;;
   burst-verify) run_burst_verify ;;
+  hls-put)      run_hls_put      ;;
   *)
     echo "Unknown mode: $MODE" >&2
-    echo "Valid modes: ramp mixed-scale bonding burst-verify" >&2
+    echo "Valid modes: ramp mixed-scale bonding burst-verify hls-put" >&2
     exit 1
     ;;
 esac
