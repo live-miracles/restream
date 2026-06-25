@@ -80,9 +80,11 @@ edge gets a `hevc_to_h264` stage appended.
 
 ### Passthrough rule
 
-`source` and `custom` encodings **never** enter any transcoder stage.
-The egress reads directly from `source_ring`. This is enforced in the
-reconciler (`src/lib.rs`) before any `get_or_create_transcoder` call.
+`source` encodings **never** enter any transcoder stage. The egress reads
+directly from `source_ring`. This is enforced in the reconciler (`src/lib.rs`)
+before any `get_or_create_transcoder` call. `custom` output encodings are
+rejected during output create/update because custom FFmpeg arguments are stored
+for future implementation but not applied by the runtime.
 
 ### Stage-key naming
 
@@ -171,6 +173,7 @@ most battle-tested path for production deployments.
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
 | HLS upload | Not implemented; HTTP/HTTPS output URLs are rejected, and local HLS uses `hls://` |
 | RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress |
+| Custom output encoding | Not applied; `custom` is rejected by output create/update instead of being exposed as a passthrough runtime option |
 
 ## Resolution Presets
 
@@ -182,7 +185,7 @@ veryfast` for H.264 input. The internal transcoder (when enabled with
 
 | Preset | Resolution | Scale filter |
 |---|---|---|
-| `source` / `custom` | passthrough | none — never enters transcoder |
+| `source` | passthrough | none — never enters transcoder |
 | `480p` | 854×480 | `scale=854:480` |
 | `720p` | 1280×720 | `scale=1280:720` |
 | `1080p` | 1920×1080 | `scale=1920:1080` |
@@ -634,8 +637,8 @@ blockers or hardening work:
 - **Recording**: packet-payload-to-`CustomInput` contract needs repair. ~~Implemented as raw MPEG-TS write; no FFmpeg dependency.~~
 - **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
 - **HLS upload**: HTTP/HTTPS output URLs are rejected; local HLS uses `hls://`.
-- **Custom encoding**: API persists value; reconciler treats `custom` as
-  passthrough.
+- **Custom encoding**: `/encodings/custom` persists future args, but output
+  create/update rejects `custom` so operators cannot select an inactive path.
 - **RTMPS**: URL parser accepts it and the reconciler dispatches it through
   RTMP egress.
 - **SRT→RTMP egress**: raw demuxed payload forwarded as FLV media payload

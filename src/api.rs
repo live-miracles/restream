@@ -498,7 +498,10 @@ async fn login_post_handler(
     let token_hash = hash_session_token(&token);
 
     let ts = chrono::Utc::now().timestamp_millis();
-    if db::create_session(&state.db, &token_hash, ts).await.is_err() {
+    if db::create_session(&state.db, &token_hash, ts)
+        .await
+        .is_err()
+    {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to create session",
@@ -1087,6 +1090,16 @@ fn is_supported_output_url(url: &str) -> bool {
 
 const OUTPUT_URL_SCHEME_ERROR: &str =
     "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, and hls://";
+const CUSTOM_OUTPUT_ENCODING_ERROR: &str =
+    "Custom output encoding is not available yet; choose source or a preset encoding";
+
+fn is_custom_output_encoding(encoding: &str) -> bool {
+    encoding
+        .split('+')
+        .next()
+        .map(|video| video.trim().eq_ignore_ascii_case("custom"))
+        .unwrap_or(false)
+}
 
 async fn outputs_create_handler(
     State(state): State<Arc<AppState>>,
@@ -1110,6 +1123,15 @@ async fn outputs_create_handler(
     }
     if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
         return r;
+    }
+    if is_custom_output_encoding(&payload.encoding) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": CUSTOM_OUTPUT_ENCODING_ERROR
+            })),
+        )
+            .into_response();
     }
     let url = payload.url.trim();
     if !is_supported_output_url(url) {
@@ -1166,6 +1188,15 @@ async fn outputs_update_handler(
     }
     if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
         return r;
+    }
+    if is_custom_output_encoding(&payload.encoding) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": CUSTOM_OUTPUT_ENCODING_ERROR
+            })),
+        )
+            .into_response();
     }
     let url = payload.url.trim();
     if !is_supported_output_url(url) {

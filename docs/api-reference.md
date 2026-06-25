@@ -167,6 +167,11 @@ Create/update body:
 The one-second reconciler starts and stops native egress tasks from
 `desiredState`.
 
+Output encoding accepts `source`, built-in video presets, and audio-routing
+suffixes. `custom` output encoding is rejected with `400 Bad Request` because
+custom FFmpeg arguments are persisted for future use but are not applied by the
+runtime yet.
+
 Deleting a running output cancels and unregisters its active egress before the
 database row is removed.
 

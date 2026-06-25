@@ -316,6 +316,60 @@ async fn local_hls_output_is_accepted_by_api() {
 }
 
 #[tokio::test]
+async fn custom_output_encoding_is_rejected_by_api() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(&pool, "p_custom", "P", "key_custom", None, None)
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines/p_custom/outputs",
+            &cookie,
+            Some(r#"{"name":"Custom","url":"rtmp://dest/live/key","encoding":"custom"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let json = body_json(resp).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Custom output encoding is not available yet")
+    );
+
+    let output = db::create_output(
+        &pool,
+        "out_custom_update",
+        "p_custom",
+        "O",
+        "rtmp://dest/live/key",
+        "stopped",
+        "source",
+    )
+    .await
+    .unwrap();
+    let uri = format!("/pipelines/p_custom/outputs/{}", output.id);
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &uri,
+            &cookie,
+            Some(r#"{"name":"Custom","url":"rtmp://dest/live/key","encoding":"custom+atrack:0"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn http_hls_upload_output_is_rejected_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;

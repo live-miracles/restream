@@ -11,9 +11,10 @@ in-process FFmpeg library stages, SQLite state, and an embedded dashboard.
 
 The rewrite is structurally substantial and the Rust test suite is green, but
 it should not yet be described as feature-complete or production-certified.
-Protocol correctness, deployment/CI replacement, HLS upload, custom encoding,
-channel-level audio processing, and several high-rate/bonded combinations remain
-open gates.
+Protocol correctness, deployment/CI replacement, channel-level audio
+processing, and several high-rate/bonded combinations remain open gates. HLS
+upload and custom output encoding are explicitly unavailable rather than
+advertised as working runtime paths.
 
 ## Evidence
 
@@ -165,7 +166,7 @@ The labels below distinguish implementation from proof.
 | Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
 | MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
 | HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URLs are rejected; local HLS uses `hls://` |
-| Custom encoding arguments | **Not applied** | API persists value; reconciler treats `custom` as passthrough |
+| Custom encoding arguments | **Not applied** | `/encodings/custom` still persists future args; output create/update rejects `custom` so the UI/API no longer advertises it as active |
 | RTMPS output | Implemented | URL parser accepts RTMPS; reconciler dispatches RTMP/RTMPS URLs to RTMP egress |
 | SRT bonded egress | Constructed, live failover unproven | URL/group code exists; bonded group does not receive the high-bitrate option helper |
 | SRT bonded ingest | Implemented and locally validated | One listener accepts a group ID, reads it through one `srt_recvmsg2` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Separate-process tests pass for two-member broadcast and backup groups, including primary-member failure and standby delivery |
@@ -247,7 +248,9 @@ See `docs/api-reference.md` for the executable route surface.
 10. ~~Implement HLS HTTP PUT upload or remove HLS upload choices from the UI~~
    — done by removing HTTP/HTTPS HLS output URLs from API validation and UI
    presets; local HLS remains available as `hls://`.
-11. Apply custom encoding configuration or mark it unavailable in the UI.
+11. ~~Apply custom encoding configuration or mark it unavailable in the UI~~
+   — done by removing `custom` from the output modal and rejecting custom
+   output encodings in API create/update.
 12. Implement channel-level audio remap/downmix semantics.
 13. Decide whether RTMPS is supported and wire TLS egress if required.
 

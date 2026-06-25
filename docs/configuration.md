@@ -44,7 +44,7 @@ field.
 | `ingestHost` | Hostname used when generating RTMP/SRT publisher URLs; blank falls back to `localhost` |
 | `ingestSecurity` | In-memory failed-publish tracking and temporary IP bans; changes are persisted |
 | Dashboard password | Scrypt hash stored in SQLite; first-run password is `admin` |
-| Custom encoding | Stored through `/encodings/custom`; not yet applied by the in-process transcoder |
+| Custom encoding | Stored through `/encodings/custom` for future use; not offered as an output encoding and rejected by output create/update |
 | Recording enabled | Stored per pipeline as `recording_enabled:<pipelineId>` |
 
 Sessions are persisted in SQLite and reloaded at startup. Expired sessions are
@@ -124,7 +124,9 @@ Recognized video presets are `source`, `720p`, `1080p`, `2160p`/`4k`,
 presets, the default backend is an external FFmpeg subprocess that performs
 decode/scale/encode. When `RESTREAM_USE_INTERNAL_TRANSCODER=1`, the in-process
 backend performs decode/scale/encode for video presets (audio streams are copied).
-`custom` remains configuration-only passthrough today.
+`custom` remains stored configuration only. It is rejected by output
+create/update so operators do not accidentally select a passthrough path that
+looks like custom FFmpeg execution.
 
 Audio routing parsers accept `atrack`, `remap`, and `downmix`. Only stream-level
 selection is complete; channel filtering/encoding remains open.

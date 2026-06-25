@@ -23,8 +23,9 @@
 //!
 //! # Passthrough
 //!
-//! `source` / `custom` encodings never enter the transcoder stage. Egresses
-//! for those encodings read directly from `source_ring`.
+//! `source` encodings never enter the transcoder stage. Legacy `custom`
+//! output rows also fall through as passthrough, but output create/update now
+//! rejects new custom output encodings until custom FFmpeg args are applied.
 //!
 //! # Backend selection
 //!
