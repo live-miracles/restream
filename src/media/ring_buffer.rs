@@ -1173,7 +1173,8 @@ mod tests {
             v.push((i, i == 0));
         }
         let cap_before = v.capacity();
-        let _drained: Vec<_> = v.drain(..).collect();
+        let drained_len = v.drain(..).count();
+        assert_eq!(drained_len, 10);
         assert!(v.is_empty());
         assert_eq!(v.capacity(), cap_before);
     }

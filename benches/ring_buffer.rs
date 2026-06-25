@@ -202,7 +202,8 @@ fn benchmark_vec_capacity(c: &mut Criterion) {
                 for i in 0..n {
                     v.push((payload.clone(), i == 0));
                 }
-                black_box(v.clear());
+                v.clear();
+                black_box(v.len());
             })
         },
     );
@@ -216,7 +217,8 @@ fn benchmark_vec_capacity(c: &mut Criterion) {
                 for i in 0..n {
                     v.push((payload.clone(), i == 0));
                 }
-                black_box(v.clear());
+                v.clear();
+                black_box(v.len());
             })
         },
     );

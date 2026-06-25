@@ -73,15 +73,18 @@ fn build_one_second(profile: &StreamProfile) -> Vec<(MediaType, u32, i64, bool, 
 
     let idr_payload: Vec<u8> = [0x00, 0x00, 0x00, 0x01, 0x65]
         .into_iter()
-        .chain(std::iter::repeat(0xAA).take(idr_size.saturating_sub(5)))
+        .chain(std::iter::repeat_n(0xAA, idr_size.saturating_sub(5)))
         .collect();
     let p_payload: Vec<u8> = [0x00, 0x00, 0x00, 0x01, 0x41]
         .into_iter()
-        .chain(std::iter::repeat(0xBB).take(p_size.saturating_sub(5)))
+        .chain(std::iter::repeat_n(0xBB, p_size.saturating_sub(5)))
         .collect();
     let audio_payload: Vec<u8> = [0xFF, 0xF1, 0x4C, 0x80, 0x04, 0x1F, 0xFC]
         .into_iter()
-        .chain(std::iter::repeat(0xCC).take(audio_frame_size.saturating_sub(7)))
+        .chain(std::iter::repeat_n(
+            0xCC,
+            audio_frame_size.saturating_sub(7),
+        ))
         .collect();
 
     let frame_dur_ms = 1000 / profile.fps as i64;
@@ -140,7 +143,7 @@ fn bench_hls_mux_cost(c: &mut Criterion) {
             &profile.name,
             |b, _| {
                 b.iter(|| {
-                    let mut muxer = TsMuxer::new(Some(&video), &[audio.clone()]);
+                    let mut muxer = TsMuxer::new(Some(&video), std::slice::from_ref(&audio));
                     let mut ts_bytes = 0usize;
                     for (mt, ti, pts, key, payload) in &packets {
                         ts_bytes += muxer.mux_packet(*mt, *ti, *pts, *pts, *key, payload).len();
@@ -157,7 +160,7 @@ fn bench_hls_mux_cost(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let store = Arc::new(HlsStore::new());
-                    let mut muxer = TsMuxer::new(Some(&video), &[audio.clone()]);
+                    let mut muxer = TsMuxer::new(Some(&video), std::slice::from_ref(&audio));
                     let mut accumulator = BytesMut::with_capacity(8 * 1024 * 1024);
 
                     // Simulate 6 seconds (one segment)
@@ -234,7 +237,7 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
                     let started = Instant::now();
                     for _ in 0..iters {
                         let store = Arc::new(HlsStore::new());
-                        let mut muxer = TsMuxer::new(Some(&video), &[audio.clone()]);
+                        let mut muxer = TsMuxer::new(Some(&video), std::slice::from_ref(&audio));
 
                         for seg_idx in 0..10u64 {
                             let mut accumulator = BytesMut::with_capacity(8 * 1024 * 1024);
@@ -256,7 +259,7 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
 
         // Report segment sizes
         {
-            let mut muxer = TsMuxer::new(Some(&video), &[audio.clone()]);
+            let mut muxer = TsMuxer::new(Some(&video), std::slice::from_ref(&audio));
             let mut accumulator = BytesMut::with_capacity(8 * 1024 * 1024);
             for sec in 0..6i64 {
                 for (mt, ti, pts, key, payload) in &packets {

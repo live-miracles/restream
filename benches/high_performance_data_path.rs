@@ -20,7 +20,7 @@ const RING_CAPACITY: usize = 4096;
 
 fn packet(sequence: usize, payload: &Bytes) -> MediaPacket {
     MediaPacket {
-        media_type: if sequence % 3 == 0 {
+        media_type: if sequence.is_multiple_of(3) {
             MediaType::Audio
         } else {
             MediaType::Video
@@ -28,7 +28,7 @@ fn packet(sequence: usize, payload: &Bytes) -> MediaPacket {
         track_index: 0,
         pts: sequence as i64 * 20,
         dts: sequence as i64 * 20,
-        is_keyframe: sequence % 60 == 0,
+        is_keyframe: sequence.is_multiple_of(60),
         format: PayloadFormat::Raw,
         payload: payload.clone(),
     }
@@ -315,6 +315,10 @@ fn bench_fanout_delivery(c: &mut Criterion) {
 
 fn bench_memory_queue(c: &mut Criterion) {
     let packet = vec![0x47u8; PACKET_BYTES];
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("benchmark runtime");
     let mut group = c.benchmark_group("data_path/memory_queue");
 
     for burst in [1usize, 4, 8, 16, 32, 64] {
@@ -328,7 +332,7 @@ fn bench_memory_queue(c: &mut Criterion) {
                     MemoryQueue::new,
                     |queue| {
                         for _ in 0..burst {
-                            queue.write(&packet);
+                            runtime.block_on(queue.write(&packet));
                         }
                         let mut output = vec![0u8; total_bytes];
                         let mut offset = 0usize;
@@ -353,7 +357,10 @@ fn bench_memory_queue(c: &mut Criterion) {
                 b.iter_batched(
                     MemoryQueue::new,
                     |queue| {
-                        black_box(queue.write_batch(std::iter::repeat_n(packet.as_slice(), burst)));
+                        let written = runtime.block_on(
+                            queue.write_batch(std::iter::repeat_n(packet.as_slice(), burst)),
+                        );
+                        black_box(written);
                         let mut output = vec![0u8; total_bytes];
                         let mut offset = 0usize;
                         while offset < output.len() {
@@ -636,6 +643,10 @@ fn bench_burst_mux_write(c: &mut Criterion) {
         .collect();
 
     let mut group = c.benchmark_group("data_path/burst_mux_write");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("benchmark runtime");
     group.throughput(Throughput::Elements(burst as u64));
 
     // --- BEFORE: N × write() per burst (N mutex acquisitions) ---
@@ -662,7 +673,7 @@ fn bench_burst_mux_write(c: &mut Criterion) {
                         &pkt.payload,
                     );
                     if !ts.is_empty() {
-                        q.write(ts);
+                        runtime.block_on(q.write(ts));
                     }
                 }
             }
@@ -702,7 +713,7 @@ fn bench_burst_mux_write(c: &mut Criterion) {
                     }
                 }
                 if !ts_batch.is_empty() {
-                    q.write(&ts_batch);
+                    runtime.block_on(q.write(&ts_batch));
                     ts_batch.clear();
                 }
             }

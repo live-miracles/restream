@@ -2803,6 +2803,7 @@ mod tests {
     // --- Sentinel u8 for continuity counter and PMT version ---
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn continuity_sentinel_is_not_a_valid_cc_value() {
         // Valid continuity counter values are 0–15 (4-bit field in TS header).
         assert_eq!(CC_UNSET, u8::MAX, "CC_UNSET must be u8::MAX");
@@ -2813,6 +2814,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn pmt_version_sentinel_is_not_a_valid_version() {
         // Valid PMT version_number values are 0–31 (5-bit field in PMT header).
         assert_eq!(PMT_VER_UNSET, u8::MAX, "PMT_VER_UNSET must be u8::MAX");

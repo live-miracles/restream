@@ -241,15 +241,15 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
 
     let idr_payload = vec![0x00, 0x00, 0x00, 0x01, 0x65]
         .into_iter()
-        .chain(std::iter::repeat(0xAA).take(50_000))
+        .chain(std::iter::repeat_n(0xAA, 50_000))
         .collect::<Vec<_>>();
     let p_payload = vec![0x00, 0x00, 0x00, 0x01, 0x41]
         .into_iter()
-        .chain(std::iter::repeat(0xBB).take(5_000))
+        .chain(std::iter::repeat_n(0xBB, 5_000))
         .collect::<Vec<_>>();
     let audio_payload = vec![0xFF, 0xF1, 0x4C, 0x80, 0x04, 0x1F, 0xFC]
         .into_iter()
-        .chain(std::iter::repeat(0xCC).take(1_000))
+        .chain(std::iter::repeat_n(0xCC, 1_000))
         .collect::<Vec<_>>();
 
     let mut packets: Vec<(MediaType, u32, i64, bool, &[u8])> = Vec::new();
@@ -269,7 +269,7 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
 
     group.bench_function("1s_30fps_1080p", |b| {
         b.iter(|| {
-            let mut muxer = TsMuxer::new(Some(&video), &[audio.clone()]);
+            let mut muxer = TsMuxer::new(Some(&video), std::slice::from_ref(&audio));
             let mut total = 0usize;
             for &(mt, ti, pts, key, payload) in &packets {
                 total += muxer.mux_packet(mt, ti, pts, pts, key, payload).len();
@@ -300,7 +300,7 @@ fn crc32_mpeg2_table_driven(data: &[u8]) -> u32 {
     static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
     let table = TABLE.get_or_init(|| {
         let mut table = [0u32; 256];
-        for i in 0..256 {
+        for (i, slot) in table.iter_mut().enumerate() {
             let mut crc = (i as u32) << 24;
             for _ in 0..8 {
                 if crc & 0x8000_0000 != 0 {
@@ -309,7 +309,7 @@ fn crc32_mpeg2_table_driven(data: &[u8]) -> u32 {
                     crc <<= 1;
                 }
             }
-            table[i] = crc;
+            *slot = crc;
         }
         table
     });

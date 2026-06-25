@@ -180,6 +180,7 @@ async fn teardown_matrix_path(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_matrix_iteration(
     source_ring: &Arc<RingBuffer>,
     target_ring: &Arc<RingBuffer>,
@@ -240,10 +241,11 @@ async fn run_matrix_iteration(
 
         cancel.cancel();
         let _ = segmenter.await;
-        if let Some(playlist) = store.get_playlist() {
-            if playlist.contains(".ts") && store.get_segment(0).is_some() {
-                pulled = NUM_PACKETS;
-            }
+        if let Some(playlist) = store.get_playlist()
+            && playlist.contains(".ts")
+            && store.get_segment(0).is_some()
+        {
+            pulled = NUM_PACKETS;
         }
     } else if egress == "srt" {
         let mut muxer = TsMuxer::new(Some(video_meta), audio_tracks);

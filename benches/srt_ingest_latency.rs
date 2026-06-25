@@ -3,7 +3,7 @@ use restream::media::srt::*;
 use std::ffi::c_int;
 use std::time::{Duration, Instant};
 
-unsafe fn make_addr(port: u16) -> sockaddr_in {
+fn make_addr(port: u16) -> sockaddr_in {
     sockaddr_in {
         sin_family: libc::AF_INET as u16,
         sin_port: port.to_be(),
@@ -12,10 +12,12 @@ unsafe fn make_addr(port: u16) -> sockaddr_in {
     }
 }
 
-unsafe fn os_port(sock: SRTSOCKET) -> u16 {
-    let mut name = std::mem::zeroed::<sockaddr_in>();
+fn os_port(sock: SRTSOCKET) -> u16 {
+    let mut name = unsafe { std::mem::zeroed::<sockaddr_in>() };
     let mut len = std::mem::size_of::<sockaddr_in>() as c_int;
-    srt_getsockname(sock, &mut name, &mut len);
+    unsafe {
+        srt_getsockname(sock, &mut name, &mut len);
+    }
     u16::from_be(name.sin_port)
 }
 
@@ -30,61 +32,72 @@ fn srt_error() -> String {
     }
 }
 
-unsafe fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
-    let listener = srt_create_socket();
+fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
+    let listener = unsafe { srt_create_socket() };
     assert!(listener >= 0, "listener: {}", srt_error());
 
     let latency: c_int = 20;
-    srt_setsockopt(
-        listener,
-        0,
-        SRTO_LATENCY,
-        &latency as *const _ as *const _,
-        std::mem::size_of::<c_int>() as c_int,
-    );
+    unsafe {
+        srt_setsockopt(
+            listener,
+            0,
+            SRTO_LATENCY,
+            &latency as *const _ as *const _,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+    }
 
     let addr = make_addr(0);
     assert_eq!(
-        srt_bind(listener, &addr, std::mem::size_of::<sockaddr_in>() as c_int),
+        unsafe { srt_bind(listener, &addr, std::mem::size_of::<sockaddr_in>() as c_int) },
         0,
         "bind: {}",
         srt_error()
     );
-    assert_eq!(srt_listen(listener, 1), 0, "listen: {}", srt_error());
+    assert_eq!(
+        unsafe { srt_listen(listener, 1) },
+        0,
+        "listen: {}",
+        srt_error()
+    );
 
     let actual_port = os_port(listener);
 
     let connect_thread = std::thread::spawn(move || {
-        let sender = srt_create_socket();
+        let sender = unsafe { srt_create_socket() };
         assert!(sender >= 0, "sender: {}", srt_error());
         let slatency: c_int = 20;
-        srt_setsockopt(
-            sender,
-            0,
-            SRTO_LATENCY,
-            &slatency as *const _ as *const _,
-            std::mem::size_of::<c_int>() as c_int,
-        );
+        unsafe {
+            srt_setsockopt(
+                sender,
+                0,
+                SRTO_LATENCY,
+                &slatency as *const _ as *const _,
+                std::mem::size_of::<c_int>() as c_int,
+            );
+        }
         let dst = make_addr(actual_port);
-        let ret = srt_connect(sender, &dst, std::mem::size_of::<sockaddr_in>() as c_int);
+        let ret = unsafe { srt_connect(sender, &dst, std::mem::size_of::<sockaddr_in>() as c_int) };
         assert_eq!(ret, 0, "connect: {}", srt_error());
         sender
     });
 
-    let mut client_sin = std::mem::zeroed::<sockaddr_in>();
+    let mut client_sin = unsafe { std::mem::zeroed::<sockaddr_in>() };
     let mut len = std::mem::size_of::<sockaddr_in>() as c_int;
-    let receiver = srt_accept(listener, &mut client_sin, &mut len);
+    let receiver = unsafe { srt_accept(listener, &mut client_sin, &mut len) };
     assert!(receiver >= 0, "accept: {}", srt_error());
 
-    srt_setsockopt(
-        receiver,
-        0,
-        SRTO_LATENCY,
-        &latency as *const _ as *const _,
-        std::mem::size_of::<c_int>() as c_int,
-    );
+    unsafe {
+        srt_setsockopt(
+            receiver,
+            0,
+            SRTO_LATENCY,
+            &latency as *const _ as *const _,
+            std::mem::size_of::<c_int>() as c_int,
+        );
 
-    srt_close(listener);
+        srt_close(listener);
+    }
     let sender = connect_thread.join().unwrap();
     std::thread::sleep(Duration::from_millis(100));
     (sender, receiver)
@@ -105,7 +118,7 @@ fn bench_srt_ingest_latency(c: &mut Criterion) {
 
     group.bench_function("blocking_hot", |b| {
         b.iter_custom(|iters| {
-            let (sender, receiver) = unsafe { make_srt_pair() };
+            let (sender, receiver) = make_srt_pair();
             let start = Instant::now();
             for _ in 0..iters {
                 unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
@@ -124,7 +137,7 @@ fn bench_srt_ingest_latency(c: &mut Criterion) {
 
     group.bench_function("polling_1ms", |b| {
         b.iter_custom(|iters| {
-            let (sender, receiver) = unsafe { make_srt_pair() };
+            let (sender, receiver) = make_srt_pair();
             let zero: c_int = 0;
             unsafe {
                 srt_setsockopt(
@@ -165,7 +178,7 @@ fn bench_srt_ingest_latency(c: &mut Criterion) {
 
     group.bench_function("epoll_spawn", |b| {
         b.iter_custom(|iters| {
-            let (sender, receiver) = unsafe { make_srt_pair() };
+            let (sender, receiver) = make_srt_pair();
             let zero: c_int = 0;
             unsafe {
                 srt_setsockopt(

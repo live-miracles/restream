@@ -48,7 +48,7 @@ fn make_avcc(num_nalus: usize, nalu_size: usize) -> Vec<u8> {
         buf.extend_from_slice(&len.to_be_bytes());
         // NAL type byte: 0x01 = non-IDR slice (not SPS/PPS/AUD which are filtered)
         buf.push(if i == 0 { 0x65 } else { 0x41 }); // 0x65=IDR, 0x41=P-slice
-        buf.extend(std::iter::repeat(0xBBu8).take(nalu_size - 1));
+        buf.extend(std::iter::repeat_n(0xBBu8, nalu_size - 1));
     }
     buf
 }
@@ -60,7 +60,7 @@ fn make_annexb(num_nalus: usize, nalu_size: usize) -> Vec<u8> {
     for i in 0..num_nalus {
         buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
         buf.push(if i == 0 { 0x65 } else { 0x41 });
-        buf.extend(std::iter::repeat(0xBBu8).take(nalu_size - 1));
+        buf.extend(std::iter::repeat_n(0xBBu8, nalu_size - 1));
     }
     buf
 }
@@ -86,14 +86,14 @@ fn make_adts_audio(size: usize) -> Vec<u8> {
     h.push(((frame_len << 3) >> 8) as u8);
     h.push((frame_len << 3) as u8);
     h.push(0xFC);
-    h.extend(std::iter::repeat(0xAA_u8).take(size));
+    h.extend(std::iter::repeat_n(0xAA_u8, size));
     h
 }
 
 /// 2-byte FLV audio header + raw AAC payload (as produced by RTMP ingest).
 fn make_flv_audio(size: usize) -> Vec<u8> {
     let mut buf = vec![0xAF, 1]; // FLV audio tag: AAC, data packet
-    buf.extend(std::iter::repeat(0xCC_u8).take(size));
+    buf.extend(std::iter::repeat_n(0xCC_u8, size));
     buf
 }
 
@@ -157,7 +157,8 @@ fn bench_annexb_to_avcc(c: &mut Criterion) {
                 let mut sc = Vec::new();
                 b.iter(|| {
                     out.clear();
-                    black_box(annexb_to_avcc_with_scratch(data, &mut out, &mut sc));
+                    annexb_to_avcc_with_scratch(data, &mut out, &mut sc);
+                    black_box(out.len());
                 })
             },
         );
