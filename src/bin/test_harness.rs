@@ -1125,6 +1125,8 @@ async fn ffprobe(url: &str) -> Result<Value, String> {
             "json",
             url,
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| e.to_string())?;
