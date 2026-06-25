@@ -30,8 +30,8 @@ message.
 | `POST` | `/api/auth/change-password` | Change the password; existing sessions remain valid |
 
 Static pages/assets are served without an auth gate; protected API handlers
-enforce the cookie themselves. `/health`, `/healthz`, HLS pull routes, and
-`/audio-caps` are also public.
+enforce the cookie themselves. `/health`, `/healthz`, and `/audio-caps` are
+public. HLS pull routes require the dashboard session cookie.
 
 All responses include `X-Content-Type-Options: nosniff` and
 `X-Frame-Options: SAMEORIGIN` security headers. These are applied globally by
@@ -448,7 +448,7 @@ Responses:
 - `404`: no active store, no completed segments, or evicted segment
 - `400`: invalid segment filename
 
-These routes are currently unauthenticated.
+These routes require the dashboard session cookie.
 
 All HLS routes respond with `Access-Control-Allow-Origin: *` and allow `GET`,
 `OPTIONS`, `Content-Type`, and `Range` so browser-based players on other

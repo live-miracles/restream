@@ -278,7 +278,8 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;
   `MemoryQueue::stats()` reports current depth, capacity, high-water bytes,
   blocked write count, blocked write time, and closed state.
-- secure public HLS playlist and segment routes;
+- ~~secure public HLS playlist and segment routes~~ — done; HLS playlist and
+  segment routes require the dashboard session cookie.
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
 - make listener ports, database path, media path, and operational tuning
   configurable.

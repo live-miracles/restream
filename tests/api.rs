@@ -718,21 +718,50 @@ async fn custom_encoding_roundtrip() {
 #[tokio::test]
 async fn hls_canonical_no_stream_returns_404() {
     let (app, _) = test_app().await;
+    let cookie = login(&app).await;
     let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/hls/nonexistent/index.m3u8")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
+        .oneshot(auth_req(
+            "GET",
+            "/hls/nonexistent/index.m3u8",
+            &cookie,
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
+async fn hls_routes_require_authentication() {
+    let (app, _, engine) = test_app_with_engine().await;
+    engine.get_or_create_hls_store("test_pipe").await;
+
+    for uri in [
+        "/hls/test_pipe",
+        "/hls/test_pipe/index.m3u8",
+        "/hls/test_pipe/notasegment",
+        "/preview/hls/test_pipe",
+        "/preview/hls/test_pipe/index.m3u8",
+        "/preview/hls/test_pipe/notasegment",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "uri={uri}");
+    }
+}
+
+#[tokio::test]
 async fn hls_canonical_and_legacy_playlist_routes_use_the_same_handler() {
     let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
     engine.get_or_create_hls_store("test_pipe").await;
 
     for uri in [
@@ -743,12 +772,7 @@ async fn hls_canonical_and_legacy_playlist_routes_use_the_same_handler() {
     ] {
         let resp = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(auth_req("GET", uri, &cookie, None))
             .await
             .unwrap();
 
@@ -763,6 +787,7 @@ async fn hls_canonical_and_legacy_playlist_routes_use_the_same_handler() {
 #[tokio::test]
 async fn hls_segment_bad_name_returns_400() {
     let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
     engine.get_or_create_hls_store("test_pipe").await;
 
     for uri in [
@@ -771,12 +796,7 @@ async fn hls_segment_bad_name_returns_400() {
     ] {
         let resp = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(auth_req("GET", uri, &cookie, None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "uri={uri}");

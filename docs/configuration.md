@@ -197,10 +197,10 @@ least one persistent HLS output is active; its reference count is adjusted
 correctly even when an HLS egress task panics (refcount is decremented in
 an always-runs cleanup path outside the panic-catching closure).
 
-These routes respond with `Access-Control-Allow-Origin: *` so browser-based
-players on other origins can pull playlists and segments without CORS preflight
-errors.
+These routes require the dashboard session cookie. They still respond with
+HLS CORS headers, but unauthenticated playlist and segment requests return
+`401`.
 
-These routes are currently unauthenticated. Before exposing them publicly, add
-signed URLs or short-lived bearer tokens covering both playlists and segments,
-plus expiry, revocation, rate limits, cache policy, and token-safe audit logs.
+Before exposing HLS outside authenticated dashboard sessions, add signed URLs
+or short-lived bearer tokens covering both playlists and segments, plus expiry,
+revocation, rate limits, cache policy, and token-safe audit logs.

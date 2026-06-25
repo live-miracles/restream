@@ -124,6 +124,14 @@ fn get_session_token_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+async fn request_is_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
+    if let Some(token) = get_session_token_from_headers(headers) {
+        state.is_authenticated(&token).await
+    } else {
+        false
+    }
+}
+
 // Session cookie helper
 fn make_session_cookie(token: &str, max_age: i64) -> String {
     format!(
@@ -2173,7 +2181,12 @@ async fn recording_stop_handler(
 async fn hls_playlist_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     // Auto-start segmenter on first request if ingest is active
     let has_ingest = state
         .engine
@@ -2236,7 +2249,12 @@ async fn hls_playlist_handler(
 async fn hls_segment_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, segment)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     state.engine.touch_hls(&pipeline_id).await;
     let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
         return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
