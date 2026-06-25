@@ -30,7 +30,8 @@ When modifying hotpath code (files under [src/media/](src/media/) or other perfo
 3. **Direct Hot Handles**: Cache `Arc<RingBuffer>`, `Arc<AtomicU64>` byte counters, and other handles at connection setup. Never do registry map/lock lookups on the packet loop.
 4. **Run-to-Completion**: Perform packet-local operations (parse, classify, normalize timestamps, account, publish) on the worker thread itself instead of spawning new tasks/channels.
 5. **Zero-Copy Optimization**: Avoid payload copies. Transfer `Bytes`/`BytesMut` ownership or reuse vectors. Use `drain_into()` not `drain()` to retain vector allocations.
-6. **No Regressions**: Verify correctness gates (PTS/DTS ordering, keyframe alignment, format compliance via probes/ffprobe) after any change. Performance must not come at the cost of protocol correctness.
+6. **Hoist Batch Buffers**: Declare burst-drain `Vec`s (packets, ts_batch, conv_buf) **before** the `loop {}`, call `.clear()` inside each arm. `Vec::with_capacity(N)` inside a loop re-allocates on every burst cycle — one alloc per ~8 ms at 30 fps.
+7. **No Regressions**: Verify correctness gates (PTS/DTS ordering, keyframe alignment, format compliance via probes/ffprobe) after any change. Performance must not come at the cost of protocol correctness.
 
 ### SIMD / Vectorization
 Vectorization opportunities exist in MPEG-TS sync-byte scanning, CRC32 computation, NALU start-code search, PES header parsing, timestamp extraction across packet bursts, and byte-pattern matching in codec probes.

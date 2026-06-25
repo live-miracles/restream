@@ -342,13 +342,14 @@ pub async fn start_transcoder(
     // write them in a single queue.write() call (one lock acquisition per
     // burst instead of one per packet).
     let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
+    let mut packets = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                let mut packets = Vec::with_capacity(32);
+                packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
-                    for pkt in packets {
+                    for pkt in &packets {
                         let payload: &[u8] = match pkt.media_type {
                             MediaType::Video => {
                                 match video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {

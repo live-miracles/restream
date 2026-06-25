@@ -123,6 +123,7 @@ pub fn audio_for_ts<'a>(
 /// mux_packet(slice);
 /// // NLL: conv_buf borrow ends after last use of slice
 /// ```
+#[inline]
 pub fn video_for_ts_into<'a>(
     payload: &'a [u8],
     format: PayloadFormat,
@@ -169,6 +170,7 @@ pub fn video_for_ts_into<'a>(
 /// For `Raw` with ADTS: returns `Some(payload)` directly — zero-copy.
 /// All other cases write into `buf` (cleared first) and return `Some(&buf[..])`.
 /// Returns `None` for config/sequence packets.
+#[inline]
 pub fn audio_for_ts_into<'a>(
     payload: &'a [u8],
     format: PayloadFormat,
@@ -227,6 +229,7 @@ pub fn video_for_rtmp(payload: &[u8], is_keyframe: bool) -> Option<Vec<u8>> {
 /// Clears `out` and writes the FLV-framed AVCC payload into it in-place.
 /// Returns `true` if data was written, `false` if no VCL NALUs were found.
 /// The caller must consume `out` before the next call that clears it.
+#[inline]
 pub fn video_for_rtmp_into(payload: &[u8], is_keyframe: bool, out: &mut Vec<u8>) -> bool {
     let tag = if is_keyframe { 0x17u8 } else { 0x27u8 };
     out.clear();
@@ -315,6 +318,7 @@ pub fn avcc_to_annexb(data: &[u8], nalu_len_size: usize) -> Vec<u8> {
 
 /// Like `avcc_to_annexb` but appends output into a caller-provided buffer.
 /// Callers can reuse the allocation across packets to avoid per-packet heap churn.
+#[inline]
 pub fn avcc_to_annexb_into(data: &[u8], nalu_len_size: usize, out: &mut Vec<u8>) {
     let mut pos = 0;
     while pos + nalu_len_size <= data.len() {
@@ -359,6 +363,7 @@ pub fn annexb_to_avcc(data: &[u8]) -> Vec<u8> {
 /// the cost of the two small intermediate Vecs allocated by `split_annexb_nalus`.
 /// Re-benchmark on hardware with slower allocators or if NALU counts grow
 /// significantly (>4 per frame) where the allocation cost might dominate.
+#[inline]
 pub fn annexb_to_avcc_into(data: &[u8], out: &mut Vec<u8>) {
     let nalus = split_annexb_nalus(data);
     for nalu in &nalus {

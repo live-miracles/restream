@@ -103,6 +103,149 @@ by reusing a caller-provided `Vec<(usize,usize)>`. Benchmarked 2026-06-23:
 All structures are bounded. `MemoryQueue` is the largest steady-state allocation
 and is proportional to stream bitrate × transcoder latency.
 
+## Rust Zero-Cost Abstraction Patterns
+
+These are the idioms that actually matter in this codebase, with the rule and the
+anti-pattern side-by-side. Future code in `src/media/` must follow them.
+
+### Rule 1 — Hoist burst-drain Vecs before the loop
+
+A `Vec::with_capacity(N)` inside a `tokio::select!` arm allocates on every
+burst cycle (~every 8 ms at 30 fps video). Hoist it before the `loop {}` and
+call `.clear()` at the start of the arm.
+
+```rust
+// WRONG — new allocation per burst
+loop {
+    tokio::select! {
+        _ = reader.wait_for_data() => {
+            let mut packets = Vec::with_capacity(32); // ← alloc here
+            reader.pull_burst(&mut packets, 32)?;
+        }
+    }
+}
+
+// CORRECT — one allocation, retained across bursts
+let mut packets = Vec::with_capacity(32);
+loop {
+    tokio::select! {
+        _ = reader.wait_for_data() => {
+            packets.clear();                          // ← just zeroes len
+            reader.pull_burst(&mut packets, 32)?;
+        }
+    }
+}
+```
+
+The same rule applies to `ts_batch`, `video_conv_buf`, `audio_conv_buf`, and
+every other scratch buffer used in a packet loop. A buffer declared outside the
+loop retains its heap capacity indefinitely; a buffer declared inside re-triggers
+the allocator on every burst.
+
+**Files where this is done correctly**: `hls.rs`, `srt.rs` (play sender),
+`recording.rs`.
+
+### Rule 2 — Use `_into` codec variants with per-consumer scratch buffers
+
+Every payload conversion function has a `_into` variant that writes into a
+caller-provided `Vec<u8>` instead of returning a freshly allocated `Vec`:
+
+| Allocating (avoid on hot path) | Zero-allocation (use this) |
+|---|---|
+| `video_for_ts(payload, fmt, ...)` → `Cow<[u8]>` | `video_for_ts_into(payload, fmt, ..., buf)` → `&[u8]` |
+| `audio_for_ts(payload, fmt, ...)` → `Cow<[u8]>` | `audio_for_ts_into(payload, fmt, ..., buf)` → `&[u8]` |
+| `avcc_to_annexb(data, nls)` → `Vec<u8>` | `avcc_to_annexb_into(data, nls, out)` |
+| `annexb_to_avcc(data)` → `Vec<u8>` | `annexb_to_avcc_into(data, out)` |
+| `video_for_rtmp(payload, kf)` → `Vec<u8>` | `video_for_rtmp_into(payload, kf, out)` |
+| `audio_for_rtmp(payload)` → `Vec<u8>` | `audio_for_rtmp_into(payload, out)` |
+
+Hold one `video_conv_buf` and one `audio_conv_buf` per consumer task, declared
+before the loop. The `_into` variant clears the buffer and writes into it; on
+the `Raw` passthrough path it returns the original slice directly (zero-copy).
+
+### Rule 3 — `drain_into` over `drain` to retain `TsDemuxer` output capacity
+
+`TsDemuxer::drain()` uses `std::mem::take`, which strips the internal output
+`Vec`'s capacity on every call. `drain_into(&mut caller_vec)` uses
+`Vec::append`, which transfers elements while leaving both vectors' allocations
+intact.
+
+```rust
+// WRONG
+let pkts = demuxer.drain();   // demuxer's Vec → capacity 0 next call
+
+// CORRECT
+demuxer.drain_into(&mut pkts); // demuxer keeps its allocation
+```
+
+`drain_into` is already the production API on all hot paths (SRT ingest,
+external transcoder). Never introduce a call to `drain()` in a packet loop.
+
+### Rule 4 — `Cow<'a, [u8]>` for conditional-allocation paths
+
+Use `Cow<'a, [u8]>` when a function sometimes borrows and sometimes converts.
+`Cow::Borrowed(slice)` is a zero-cost borrow; `Cow::Owned(vec)` signals an
+allocation happened. This makes the fast path (Raw passthrough) pay nothing.
+
+`video_for_ts` / `audio_for_ts` in `codec.rs` demonstrate this: the
+`PayloadFormat::Raw + ADTS present` path returns `Cow::Borrowed` without
+touching any allocator.
+
+### Rule 5 — `OnceLock` for lazily-computed statics
+
+One-time setup that would otherwise run per-packet (table generation, pattern
+compilation, path resolution) belongs in a `static OnceLock<T>`. After the
+first call the read path is a single atomic load.
+
+Examples in this codebase:
+- CRC-32/MPEG-2 lookup table — computed once, O(1) thereafter (`mpegts.rs`)
+- `memchr::memmem::Finder` — needle pre-compiled once (`codec.rs`)
+- `FFMPEG_BIN_PATH` — resolved once at startup (`ffmpeg_extract.rs`)
+
+### Rule 6 — `Bytes::from_owner` for FFmpeg zero-copy publishing
+
+`OwnedFfmpegPacket(ffmpeg_next::Packet)` wraps an `AVBufferRef`-backed FFmpeg
+packet and implements `AsRef<[u8]>`. `Bytes::from_owner(OwnedFfmpegPacket(pkt))`
+creates a `Bytes` that holds the FFmpeg refcount — no `memcpy` into a new
+buffer. Drop of the last `Bytes` clone calls `av_packet_unref`.
+
+Do not replace this with `Bytes::copy_from_slice(pkt.data())` unless the FFmpeg
+buffer cannot be shared (e.g. the encoder reuses it immediately).
+
+### Rule 7 — `#[repr(align(64))]` for writer-owned atomics
+
+Producer-owned counters (`write_idx`, `last_keyframe_idx`) are wrapped in
+`AlignedAtomicUsize { #[repr(align(64))] }` so each lands on its own cache
+line. This eliminates false sharing between:
+- the producer writing `write_idx`
+- readers loading `write_idx`
+- readers loading `last_keyframe_idx` on overflow recovery
+
+Do not store writer-hot atomics alongside reader-hot or control-plane data in
+the same struct without explicit alignment padding.
+
+### Rule 8 — `#[inline]` on per-packet helpers
+
+Functions called on every packet in a hot loop must carry `#[inline]` so they
+are inlined in non-LTO builds (tests, benches with `bench-dev` profile). In
+release with `lto = "fat"` the compiler inlines regardless, but explicit hints
+improve profiler output and benchmark accuracy.
+
+Apply `#[inline]` to: `video_for_ts_into`, `audio_for_ts_into`,
+`avcc_to_annexb_into`, `annexb_to_avcc_into`, `video_for_rtmp_into`,
+`find_ts_sync`, `h264_is_keyframe`, `h265_is_keyframe`, and any new function
+that is called once per TS packet or media packet.
+
+### Quick checklist for new hot-path code
+
+- [ ] Batch `Vec`s declared **before** the `loop {}`
+- [ ] `_into` codec variant used (not the `Cow`-returning version)
+- [ ] No `drain()` — use `drain_into` or `Vec::append`
+- [ ] No `Vec::with_capacity` or `String::from` inside packet loops
+- [ ] Scratch buffers cleared with `.clear()`, not replaced
+- [ ] New per-packet helper carries `#[inline]`
+- [ ] No `Arc::clone` or `Bytes::clone` inside packet loops (use `Arc` handles cached before the loop)
+
 ## Current Baseline
 
 Existing strengths:

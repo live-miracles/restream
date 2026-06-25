@@ -553,6 +553,7 @@ impl TsDemuxer {
     }
 }
 
+#[inline]
 fn find_ts_sync(data: &[u8]) -> usize {
     if ts_sync_candidate_is_valid(data, 0) {
         return 0;
@@ -1086,6 +1087,7 @@ fn probe_audio(kind: StreamKind, track_index: u32, pes_payload: &[u8]) -> AudioM
 
 // --- H.264 NAL unit scanning ---
 
+#[inline]
 fn h264_is_keyframe(payload: &[u8]) -> bool {
     for_each_nal(payload, |nal_type, _nal_data| {
         // NAL type 5 = IDR slice
@@ -1306,6 +1308,7 @@ fn skip_h265_scaling_list_data(reader: &mut BitReader) {
 
 // --- H.265 NAL unit scanning ---
 
+#[inline]
 fn h265_is_keyframe(payload: &[u8]) -> bool {
     for_each_nal_h265(payload, |nal_type, _nal_data| {
         // H.265 IRAP NAL types: BLA_W_LP(16)..RSV_IRAP_VCL23(23)
