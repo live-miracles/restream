@@ -55,16 +55,13 @@ fn run() -> Result<(), String> {
 
     fs::create_dir_all(&work_root).map_err(|err| err.to_string())?;
     File::create(&results_jsonl).map_err(|err| err.to_string())?;
-    write_matrix_manifest(
-        &matrix_manifest,
-        "RUNNING",
-        &started_at,
-        None,
-        &root,
-        &work_root,
-        &results_jsonl,
-        &config,
-    )?;
+    let manifest_paths = ManifestPaths {
+        manifest: &matrix_manifest,
+        root: &root,
+        work_root: &work_root,
+        results_jsonl: &results_jsonl,
+    };
+    write_matrix_manifest(&manifest_paths, "RUNNING", &started_at, None, &config)?;
 
     let mut overall = 0;
     for mode in &config.modes {
@@ -83,13 +80,10 @@ fn run() -> Result<(), String> {
 
     let finished_at = now();
     write_matrix_manifest(
-        &matrix_manifest,
+        &manifest_paths,
         if overall == 0 { "PASS" } else { "FAIL" },
         &started_at,
         Some(&finished_at),
-        &root,
-        &work_root,
-        &results_jsonl,
         &config,
     )?;
     println!("[matrix] manifest={}", matrix_manifest.display());
@@ -287,17 +281,21 @@ fn run_integration(
     })
 }
 
+struct ManifestPaths<'a> {
+    manifest: &'a Path,
+    root: &'a Path,
+    work_root: &'a Path,
+    results_jsonl: &'a Path,
+}
+
 fn write_matrix_manifest(
-    manifest_path: &Path,
+    paths: &ManifestPaths<'_>,
     status: &str,
     started_at: &str,
     finished_at: Option<&str>,
-    root: &Path,
-    work_root: &Path,
-    results_jsonl: &Path,
     config: &Config,
 ) -> Result<(), String> {
-    let git_head = git_head(root);
+    let git_head = git_head(paths.root);
     let manifest = json!({
         "kind": "protocol-matrix",
         "status": status,
@@ -305,12 +303,12 @@ fn write_matrix_manifest(
         "startedAt": started_at,
         "finishedAt": finished_at,
         "gitHead": git_head,
-        "workRoot": work_root,
+        "workRoot": paths.work_root,
         "preflightOnly": config.preflight_only,
         "modes": config.modes,
-        "resultsJsonl": results_jsonl,
+        "resultsJsonl": paths.results_jsonl,
     });
-    write_json(manifest_path, &manifest)
+    write_json(paths.manifest, &manifest)
 }
 
 fn append_result(path: &Path, result: &ModeResult) -> Result<(), String> {

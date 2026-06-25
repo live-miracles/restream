@@ -2256,7 +2256,7 @@ async fn v1_pipeline_summary_handler(
 
     let snapshot = state
         .engine
-        .health_snapshot(&[pipeline_id.clone()], &recording_enabled)
+        .health_snapshot(std::slice::from_ref(&pipeline_id), &recording_enabled)
         .await;
 
     let generated_at = snapshot["generatedAt"]

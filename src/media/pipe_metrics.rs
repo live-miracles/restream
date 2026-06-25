@@ -45,10 +45,10 @@ impl PipeMetrics {
         serde_json::json!({
             "stalls":     stalls,
             "stallUs":    stall_us,
-            "avgStallUs": if stalls > 0 { stall_us / stalls } else { 0 },
+            "avgStallUs": stall_us.checked_div(stalls).unwrap_or(0),
             "idles":      idles,
             "idleUs":     idle_us,
-            "avgIdleUs":  if idles > 0 { idle_us / idles } else { 0 },
+            "avgIdleUs":  idle_us.checked_div(idles).unwrap_or(0),
         })
     }
 }

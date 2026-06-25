@@ -52,6 +52,7 @@ async fn run() -> Result<(), String> {
         "correctness-srt" => correctness_srt().await,
         "correctness-srt-rtmp" => srt_to_rtmp_correctness().await,
         "hls-put" => hls_put_correctness().await,
+        "burst-verify" => burst_verify_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
@@ -79,8 +80,9 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              correctness-srt-rtmp, hls-put, bframe-rtmp, matrix, matrix-in-memory, egress, \
-              correctness-hevc-rtmp, correctness-hevc-srt, hevc-load, in-process, network, or all"
+              correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, matrix, \
+              matrix-in-memory, egress, correctness-hevc-rtmp, correctness-hevc-srt, \
+              hevc-load, in-process, network, or all"
         )),
     };
 
@@ -850,6 +852,453 @@ fn video_dimensions(probe: &Value) -> Option<String> {
         stream["width"].as_i64()?,
         stream["height"].as_i64()?
     ))
+}
+
+#[derive(Clone)]
+struct BurstConfig {
+    name: &'static str,
+    protocol: &'static str,
+    codec: &'static str,
+    resolution: &'static str,
+    fps: u32,
+    gop: u32,
+    multi_audio: bool,
+}
+
+fn burst_configs() -> Vec<BurstConfig> {
+    vec![
+        BurstConfig {
+            name: "rtmp-h264-1080p-30fps-1a",
+            protocol: "rtmp",
+            codec: "h264",
+            resolution: "1920x1080",
+            fps: 30,
+            gop: 60,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "rtmp-h264-1080p-60fps-1a",
+            protocol: "rtmp",
+            codec: "h264",
+            resolution: "1920x1080",
+            fps: 60,
+            gop: 120,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "rtmp-h264-4k-24fps-1a",
+            protocol: "rtmp",
+            codec: "h264",
+            resolution: "3840x2160",
+            fps: 24,
+            gop: 48,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "rtmp-h264-4k-25fps-2a",
+            protocol: "rtmp",
+            codec: "h264",
+            resolution: "3840x2160",
+            fps: 25,
+            gop: 50,
+            multi_audio: true,
+        },
+        BurstConfig {
+            name: "rtmp-h265-1080p-50fps-1a",
+            protocol: "rtmp",
+            codec: "h265",
+            resolution: "1920x1080",
+            fps: 50,
+            gop: 100,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "rtmp-h265-4k-30fps-2a",
+            protocol: "rtmp",
+            codec: "h265",
+            resolution: "3840x2160",
+            fps: 30,
+            gop: 60,
+            multi_audio: true,
+        },
+        BurstConfig {
+            name: "srt-h264-1080p-25fps-1a",
+            protocol: "srt",
+            codec: "h264",
+            resolution: "1920x1080",
+            fps: 25,
+            gop: 50,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "srt-h264-1080p-60fps-2a",
+            protocol: "srt",
+            codec: "h264",
+            resolution: "1920x1080",
+            fps: 60,
+            gop: 120,
+            multi_audio: true,
+        },
+        BurstConfig {
+            name: "srt-h265-1080p-24fps-1a",
+            protocol: "srt",
+            codec: "h265",
+            resolution: "1920x1080",
+            fps: 24,
+            gop: 48,
+            multi_audio: false,
+        },
+        BurstConfig {
+            name: "srt-h265-4k-30fps-2a",
+            protocol: "srt",
+            codec: "h265",
+            resolution: "3840x2160",
+            fps: 30,
+            gop: 60,
+            multi_audio: true,
+        },
+    ]
+}
+
+fn selected_burst_configs() -> Result<Vec<BurstConfig>, String> {
+    let configs = burst_configs();
+    let Some(selection) = std::env::var("BURST_CONFIGS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(configs);
+    };
+    let wanted = selection.split_whitespace().collect::<Vec<_>>();
+    let selected = configs
+        .into_iter()
+        .filter(|config| wanted.contains(&config.name))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        Err("burst-verify: BURST_CONFIGS matched no configs".to_string())
+    } else {
+        Ok(selected)
+    }
+}
+
+async fn burst_verify_correctness() -> Result<Value, String> {
+    let settle = Duration::from_secs(env_secs("BURST_SETTLE_SECS", 8));
+    let restream_log = artifact_path("restream.log");
+    if let Some(parent) = restream_log.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(
+        restream_log,
+        "scenario managed by Rust test_harness burst-verify\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let db_path = artifact_path("burst-verify.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let _rtmp_task = tokio::spawn(start_rtmp_server_on(
+        pool.clone(),
+        security.clone(),
+        engine.clone(),
+        RTMP_PORT,
+    ));
+    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone(), security));
+    let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let configs = selected_burst_configs()?;
+    let mut pass = 0usize;
+    let mut fail_count = 0usize;
+    let mut case_results = Vec::new();
+
+    for config in configs {
+        println!(
+            "[burst-verify] {}: {} {} {} {}fps GOP={} audio={}",
+            config.name,
+            config.protocol,
+            config.codec,
+            config.resolution,
+            config.fps,
+            config.gop,
+            if config.multi_audio { 2 } else { 1 }
+        );
+
+        let pipeline_id = format!("pipe-burst-{}", config.name);
+        let stream_key = format!("sk-{}", config.name);
+        db::create_pipeline(&pool, &pipeline_id, config.name, &stream_key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let publish_url = if config.protocol == "rtmp" {
+            format!("rtmp://127.0.0.1:{RTMP_PORT}/live/{stream_key}")
+        } else {
+            format!("srt://127.0.0.1:{SRT_PORT}?streamid=publish:live/{stream_key}&pkt_size=1316")
+        };
+        let log_path = artifact_path(&format!("{}-pub.log", config.name));
+        let mut publisher = spawn_burst_publisher(&config, &publish_url, &log_path).await?;
+
+        let mut case_passed = false;
+        let mut case_error = None::<String>;
+        let mut readers = Vec::<Value>::new();
+        let mut burst_ok = 0usize;
+
+        match wait_for_ingest_bytes(&engine, &pipeline_id, Duration::from_secs(20)).await {
+            Ok(()) => {
+                let source_ring = engine.get_or_create_pipeline(&pipeline_id).await;
+                let reader_cancel = CancellationToken::new();
+                let reader_handle = tokio::spawn(run_burst_verify_reader(
+                    config.name.to_string(),
+                    source_ring,
+                    reader_cancel.clone(),
+                ));
+
+                println!(
+                    "[burst-verify] {} streaming {}s for burst stats",
+                    config.name,
+                    settle.as_secs()
+                );
+                tokio::time::sleep(settle).await;
+
+                let graph = engine.processing_graph(&pipeline_id, &[]).await;
+                let graph_path = artifact_path(&format!("{}-graph.json", config.name));
+                std::fs::write(&graph_path, serde_json::to_vec_pretty(&graph).unwrap())
+                    .map_err(|e| e.to_string())?;
+                readers = graph_ring_readers(&graph);
+                burst_ok = readers
+                    .iter()
+                    .filter(|reader| {
+                        reader["burstCount"].as_u64().unwrap_or(0) > 0
+                            && reader["avgBurstSize"].as_f64().unwrap_or(0.0) > 0.0
+                    })
+                    .count();
+                case_passed = !readers.is_empty() && burst_ok == readers.len();
+                if readers.is_empty() {
+                    case_error = Some("no ring buffer readers found in graph".to_string());
+                } else if !case_passed {
+                    case_error = Some(format!(
+                        "{} of {} reader(s) reported non-zero burst stats",
+                        burst_ok,
+                        readers.len()
+                    ));
+                }
+
+                reader_cancel.cancel();
+                let _ = reader_handle.await;
+            }
+            Err(err) => {
+                case_error = Some(err);
+            }
+        }
+
+        let _ = publisher.kill().await;
+        let _ = publisher.wait().await;
+
+        if case_passed {
+            pass += 1;
+        } else {
+            fail_count += 1;
+        }
+        case_results.push(json!({
+            "config": config.name,
+            "protocol": config.protocol,
+            "codec": config.codec,
+            "resolution": config.resolution,
+            "fps": config.fps,
+            "gop": config.gop,
+            "requestedAudioTracks": if config.multi_audio { 2 } else { 1 },
+            "publishedAudioTracks": burst_published_audio_tracks(&config),
+            "passed": case_passed,
+            "readerCount": readers.len(),
+            "burstOk": burst_ok,
+            "readers": readers,
+            "publisherLog": log_path,
+            "error": case_error,
+        }));
+    }
+
+    let passed = fail_count == 0;
+    let results = json!({
+        "passed": passed,
+        "pass": pass,
+        "fail": fail_count,
+        "total": pass + fail_count,
+        "cases": case_results,
+    });
+    let path = artifact_path("burst-verify.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    if passed {
+        Ok(results)
+    } else {
+        Err(format!("burst-verify failed: {results}"))
+    }
+}
+
+async fn spawn_burst_publisher(
+    config: &BurstConfig,
+    url: &str,
+    log_path: &Path,
+) -> Result<Child, String> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
+    let log_err = log.try_clone().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        &format!("testsrc2=size={}:rate={}", config.resolution, config.fps),
+    ]);
+    if config.multi_audio {
+        cmd.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+        ]);
+    } else {
+        cmd.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
+    }
+
+    if config.codec == "h265" {
+        cmd.args([
+            "-c:v",
+            "libx265",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-x265-params",
+            &format!(
+                "log-level=none:keyint={}:min-keyint={}:no-open-gop=1",
+                config.gop, config.gop
+            ),
+        ]);
+    } else {
+        cmd.args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-g",
+            &config.gop.to_string(),
+            "-keyint_min",
+            &config.gop.to_string(),
+            "-x264-params",
+            "no-open-gop=1",
+        ]);
+    }
+
+    if burst_published_audio_tracks(config) == 2 {
+        cmd.args(["-map", "0:v", "-map", "1:a", "-map", "2:a"]);
+    } else {
+        cmd.args(["-map", "0:v", "-map", "1:a"]);
+    }
+    cmd.args(["-b:v", "6M", "-c:a", "aac", "-b:a", "64k"]);
+    if config.protocol == "rtmp" {
+        cmd.args(["-f", "flv"]);
+    } else {
+        cmd.args(["-f", "mpegts"]);
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .kill_on_drop(true);
+    cmd.spawn().map_err(|e| e.to_string())
+}
+
+fn burst_published_audio_tracks(config: &BurstConfig) -> usize {
+    if config.multi_audio && config.protocol != "rtmp" {
+        2
+    } else {
+        1
+    }
+}
+
+async fn run_burst_verify_reader(name: String, ring: Arc<RingBuffer>, cancel: CancellationToken) {
+    let mut reader = Reader::new(format!("burst_verify:{name}:src-out"), ring);
+    let mut packets = Vec::with_capacity(32);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = reader.wait_for_data() => {
+                loop {
+                    packets.clear();
+                    match reader.pull_burst(&mut packets, 32) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_ingest_bytes(
+    engine: &MediaEngine,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ingests = engine.active_ingests.read().await;
+        let ready = ingests
+            .get(pipeline_id)
+            .is_some_and(|ingest| ingest.bytes_received.load(Ordering::Relaxed) > 0);
+        drop(ingests);
+        if ready {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: ingest did not receive bytes within {}s",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn graph_ring_readers(graph: &Value) -> Vec<Value> {
+    graph["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["type"] == "ring_buffer")
+        .flat_map(|node| {
+            node["details"]["readers"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// Test: RTMP B-frame ingest -> RTMP egress timestamp round-trip.
