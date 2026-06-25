@@ -1,6 +1,8 @@
 # Configuration Reference
 
-The Rust runtime currently has a small configuration surface. Listener ports can be overridden via environment variables; runtime paths are fixed in code; user-facing settings are stored in SQLite.
+The Rust runtime has a small environment configuration surface for deployment
+paths, listener ports, and operational tuning. User-facing settings are stored
+in SQLite.
 
 ## Fixed Runtime Values and Environment Variables
 
@@ -10,11 +12,18 @@ The Rust runtime currently has a small configuration surface. Listener ports can
 | RTMP listener | `0.0.0.0:1935` | `RESTREAM_RTMP_PORT` |
 | SRT listener | `0.0.0.0:10080` | `RESTREAM_SRT_PORT` |
 | Transcoder backend | External FFmpeg subprocess | `RESTREAM_USE_INTERNAL_TRANSCODER` (`1`/`true`/`yes`/`on` to enable in-process backend) |
-| SQLite database | `data.db` | *None* |
-| Media directory | `media/` | *None* |
+| SQLite database | `data.db` | `RESTREAM_DB_PATH` |
+| Media directory | `media/` | `RESTREAM_MEDIA_DIR` |
 | File-ingest executable | `ffmpeg` from `PATH` | *None* |
-| Output reconciliation interval | 1 second | *None* |
-| Failed-output restart delay | 5 seconds | *None* |
+| File descriptor limit | `65536` | `RESTREAM_NOFILE_LIMIT` |
+| Output reconciliation interval | 1 second | `RESTREAM_RECONCILE_INTERVAL_MS` |
+| Failed-output max retries | `10` | `RESTREAM_OUTPUT_MAX_RETRIES` |
+| Failed-output restart base backoff | 5 seconds | `RESTREAM_OUTPUT_RETRY_BASE_MS` |
+| Failed-output restart max backoff | 300 seconds | `RESTREAM_OUTPUT_RETRY_MAX_MS` |
+| Idle HLS segmenter timeout | 60 seconds | `RESTREAM_HLS_IDLE_TIMEOUT_MS` |
+| HLS minimum segment length | 1 second | `RESTREAM_HLS_MIN_SEGMENT_MS` |
+| HLS live window length | 20 segments | `RESTREAM_HLS_MAX_SEGMENTS` |
+| HLS segment accumulator capacity | 8 MiB | `RESTREAM_HLS_SEGMENT_CAPACITY_BYTES` |
 
 The Rust server does not currently read the old Node environment variables such
 as `BASE_PATH`, `PUBLIC_INGEST_HOST`, `HEALTH_SNAPSHOT_INTERVAL_MS`,

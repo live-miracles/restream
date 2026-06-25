@@ -281,8 +281,10 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~secure public HLS playlist and segment routes~~ — done; HLS playlist and
   segment routes require the dashboard session cookie.
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
-- make listener ports, database path, media path, and operational tuning
-  configurable.
+- ~~make listener ports, database path, media path, and operational tuning
+  configurable~~ — done; environment overrides cover ports, SQLite path, media
+  directory, fd limit, reconciler cadence, retry backoff, HLS idle timeout, and
+  HLS segment/window sizing.
 - full engine-native graph registries remain pending; graph rendering now uses
   typed stage helpers, but runtime ownership is still mostly in `MediaEngine`.
 

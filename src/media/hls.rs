@@ -27,6 +27,48 @@ const SEGMENT_CAPACITY: usize = 8 * 1024 * 1024;
 // still referenced by the playlist while the stream is moving forward.
 const MAX_SEGMENTS: usize = 20;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HlsConfig {
+    pub min_segment_secs: f64,
+    pub segment_capacity: usize,
+    pub max_segments: usize,
+}
+
+impl Default for HlsConfig {
+    fn default() -> Self {
+        Self {
+            min_segment_secs: MIN_SEGMENT_SECS,
+            segment_capacity: SEGMENT_CAPACITY,
+            max_segments: MAX_SEGMENTS,
+        }
+    }
+}
+
+impl HlsConfig {
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        Self {
+            min_segment_secs: env_u64("RESTREAM_HLS_MIN_SEGMENT_MS")
+                .map(|ms| ms.max(1) as f64 / 1000.0)
+                .unwrap_or(defaults.min_segment_secs),
+            segment_capacity: env_usize("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES")
+                .map(|bytes| bytes.max(188))
+                .unwrap_or(defaults.segment_capacity),
+            max_segments: env_usize("RESTREAM_HLS_MAX_SEGMENTS")
+                .map(|segments| segments.max(1))
+                .unwrap_or(defaults.max_segments),
+        }
+    }
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
 struct HlsSegment {
     index: u64,
     duration: f64,
@@ -46,6 +88,7 @@ pub struct HlsStoreSnapshot {
 
 pub struct HlsStore {
     inner: Mutex<HlsStoreInner>,
+    config: HlsConfig,
 }
 
 struct HlsStoreInner {
@@ -62,13 +105,22 @@ impl Default for HlsStore {
 
 impl HlsStore {
     pub fn new() -> Self {
+        Self::with_config(HlsConfig::from_env())
+    }
+
+    pub fn with_config(config: HlsConfig) -> Self {
         Self {
             inner: Mutex::new(HlsStoreInner {
                 segments: VecDeque::new(),
                 next_index: 0,
                 target_duration: TARGET_DURATION_SECS,
             }),
+            config,
         }
+    }
+
+    pub fn config(&self) -> HlsConfig {
+        self.config
     }
 
     pub fn clear(&self) {
@@ -90,7 +142,7 @@ impl HlsStore {
             duration,
             data,
         });
-        while inner.segments.len() > MAX_SEGMENTS {
+        while inner.segments.len() > self.config.max_segments {
             inner.segments.pop_front();
         }
     }
@@ -169,7 +221,8 @@ pub async fn start_hls_segmenter(
     // This handles the case where the HLS task starts after the seq header has
     // already passed through the ring buffer (e.g. late-joining consumers).
     let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
-    let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
+    let config = store.config();
+    let mut accumulator = BytesMut::with_capacity(config.segment_capacity);
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
     let mut ts_packet_buf = Vec::<u8>::with_capacity(65536);
@@ -189,9 +242,9 @@ pub async fn start_hls_segmenter(
                         if packet.media_type == MediaType::Video && packet.is_keyframe {
                             if got_first_keyframe {
                                 let elapsed = segment_start.elapsed().as_secs_f64();
-                                if elapsed >= MIN_SEGMENT_SECS && !accumulator.is_empty() {
+                                if elapsed >= config.min_segment_secs && !accumulator.is_empty() {
                                     store.push_segment(elapsed, accumulator.split().freeze());
-                                    accumulator.reserve(SEGMENT_CAPACITY);
+                                    accumulator.reserve(config.segment_capacity);
                                     segment_start = Instant::now();
                                 }
                             }
@@ -321,6 +374,24 @@ mod tests {
         assert!(playlist.contains("seg11.ts"));
         assert!(store.get_segment(0).is_none());
         assert!(store.get_segment(2).is_some());
+    }
+
+    #[test]
+    fn custom_max_segments_controls_live_window() {
+        let store = HlsStore::with_config(HlsConfig {
+            max_segments: 3,
+            ..HlsConfig::default()
+        });
+        for index in 0..5u64 {
+            store.push_segment(2.0, Bytes::from(index.to_be_bytes().to_vec()));
+        }
+
+        let playlist = store.get_playlist().expect("playlist");
+        assert!(playlist.contains("#EXT-X-MEDIA-SEQUENCE:2"));
+        assert!(store.get_segment(0).is_none());
+        assert!(store.get_segment(1).is_none());
+        assert!(store.get_segment(2).is_some());
+        assert_eq!(playlist.matches(".ts").count(), 3);
     }
 
     #[test]

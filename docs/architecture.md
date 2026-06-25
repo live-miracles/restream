@@ -65,9 +65,9 @@ can restart the stage on the next tick.
 | Tokio runtime workers | OS threads | `#[tokio::main]` | Async task scheduling, epoll I/O polling |
 | SRT accept loop | `std::thread` | `srt.rs` `SrtServer::run` | Blocks on `srt_accept()`, sends sockets via bounded `mpsc::channel(1024)` |
 | SRT socket monitor | tokio task | `srt.rs` `SrtServer::run` | Polls `/proc/net/udp` every 1s for buffer occupancy |
-| Reconciler | tokio task | `lib.rs` `run_app` | 1-second tick: reconciles output desired vs active state; logs DB errors to stderr instead of silently skipping |
-| RTMP listener | tokio task | `lib.rs` `run_app` | Accepts TCP connections on port 1935 |
-| Web server (Axum) | tokio task | `lib.rs` `run_app` | HTTP on :3030, REST API + SSE health |
+| Reconciler | tokio task | `lib.rs` `run_app` | 1-second default tick: reconciles output desired vs active state; logs DB errors to stderr instead of silently skipping |
+| RTMP listener | tokio task | `lib.rs` `run_app` | Accepts TCP connections on configurable port, default 1935 |
+| Web server (Axum) | tokio task | `lib.rs` `run_app` | REST API + SSE health on configurable HTTP port, default 3030 |
 
 Tokio worker count = `num_cpus` (tokio default, not configurable).
 
@@ -217,7 +217,7 @@ Zero thread hops. The entire path runs as tokio tasks on the async runtime.
           ▼
  ┌────────────────────┐
  │ Kernel TCP stack   │  SO_RCVBUF = 8 MB
- │ :1935 listen sock  │
+ │ default :1935 sock │
  └────────┬───────────┘
           │ socket ready (epoll)
           ▼
@@ -312,7 +312,7 @@ synchronization boundary.
          ▼
  ┌──────────────────────┐
  │ Kernel UDP stack     │  SO_RCVBUF = 8 MB
- │ :10080 listen sock   │
+ │ default :10080 sock  │
  └───────┬──────────────┘
          │
          ▼
@@ -538,7 +538,8 @@ The egress reads directly from the source RingBuffer.
                                    ▼              ▼
                             ┌──────────┐   ┌──────────────┐
                             │  Kernel  │   │   Kernel     │
-                            │  :1935   │   │   :10080     │
+                            │default   │   │default       │
+                            │ :1935    │   │ :10080       │
                             └────┬─────┘   └──────┬───────┘
                                  │                │
                                  │                ▼

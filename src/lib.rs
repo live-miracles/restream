@@ -46,6 +46,16 @@ pub struct ServerPorts {
     pub srt: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeTuning {
+    pub nofile_limit: u64,
+    pub reconciler_interval_ms: u64,
+    pub output_max_retries: u32,
+    pub output_retry_base_ms: u64,
+    pub output_retry_max_ms: u64,
+    pub hls_idle_timeout_ms: u64,
+}
+
 impl ServerPorts {
     pub fn from_env() -> Self {
         Self {
@@ -65,27 +75,102 @@ impl ServerPorts {
     }
 }
 
-fn set_rlimit() {
+impl Default for RuntimeTuning {
+    fn default() -> Self {
+        Self {
+            nofile_limit: 65_536,
+            reconciler_interval_ms: 1_000,
+            output_max_retries: 10,
+            output_retry_base_ms: 5_000,
+            output_retry_max_ms: 300_000,
+            hls_idle_timeout_ms: 60_000,
+        }
+    }
+}
+
+impl RuntimeTuning {
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        Self {
+            nofile_limit: env_u64("RESTREAM_NOFILE_LIMIT", defaults.nofile_limit).max(1),
+            reconciler_interval_ms: env_u64(
+                "RESTREAM_RECONCILE_INTERVAL_MS",
+                defaults.reconciler_interval_ms,
+            )
+            .max(100),
+            output_max_retries: env_u32("RESTREAM_OUTPUT_MAX_RETRIES", defaults.output_max_retries),
+            output_retry_base_ms: env_u64(
+                "RESTREAM_OUTPUT_RETRY_BASE_MS",
+                defaults.output_retry_base_ms,
+            )
+            .max(1),
+            output_retry_max_ms: env_u64(
+                "RESTREAM_OUTPUT_RETRY_MAX_MS",
+                defaults.output_retry_max_ms,
+            )
+            .max(1),
+            hls_idle_timeout_ms: env_u64(
+                "RESTREAM_HLS_IDLE_TIMEOUT_MS",
+                defaults.hls_idle_timeout_ms,
+            )
+            .max(1),
+        }
+    }
+
+    fn session_prune_every_ticks(&self) -> u64 {
+        let ticks = 3_600_000u64.div_ceil(self.reconciler_interval_ms);
+        ticks.max(1)
+    }
+
+    fn output_backoff_ms(&self, retries: u32) -> u64 {
+        let shift = retries.min(16);
+        let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+        self.output_retry_base_ms
+            .saturating_mul(multiplier)
+            .min(self.output_retry_max_ms)
+    }
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn set_rlimit(limit: u64) {
     // SAFETY: setrlimit is a POSIX system call. The rlimit struct is stack-
     // allocated with valid values; no pointer aliasing concerns. Called once
     // at startup before any file descriptors are opened, so raising the limit
     // cannot interfere with other operations.
     unsafe {
         let limit = libc::rlimit {
-            rlim_cur: 65536,
-            rlim_max: 65536,
+            rlim_cur: limit,
+            rlim_max: limit,
         };
         if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
             eprintln!("[system] Failed to raise RLIMIT_NOFILE limit");
         } else {
-            println!("[system] Successfully raised file descriptor limit to 65536");
+            println!(
+                "[system] Successfully raised file descriptor limit to {}",
+                limit.rlim_cur
+            );
         }
     }
 }
 
 pub async fn run_app() {
+    let tuning = RuntimeTuning::from_env();
+
     // Elevate limits for high fd count (500+ egress streams)
-    set_rlimit();
+    set_rlimit(tuning.nofile_limit);
 
     // Initialize database — use create_pool() so per-connection PRAGMAs
     // (busy_timeout, synchronous, cache_size, …) apply to every pooled connection.
@@ -221,19 +306,20 @@ pub async fn run_app() {
     let last_failed: Arc<TokioMutex<HashMap<String, (Instant, u32)>>> =
         Arc::new(TokioMutex::new(HashMap::new()));
     let mut reconciler_tick: u64 = 0;
+    let session_prune_every_ticks = tuning.session_prune_every_ticks();
     loop {
-        // Wait 1 second OR until a shutdown signal fires — whichever is first.
+        // Wait one reconciler interval OR until a shutdown signal fires.
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::time::sleep(Duration::from_millis(tuning.reconciler_interval_ms)) => {}
         }
         reconciler_tick += 1;
 
-        // Hourly session prune (every 3600 ticks × 1 s/tick).
+        // Hourly session prune, adjusted for the configured reconciler interval.
         // Removes in-memory sessions whose DB token has expired (older than
         // 30 days). Prevents the HashSet and sessions table from growing
         // indefinitely across months of uptime.
-        if reconciler_tick.is_multiple_of(3600) {
+        if reconciler_tick.is_multiple_of(session_prune_every_ticks) {
             // DB prune
             let _ = db::prune_expired_sessions(&pool, 30 * 24 * 60 * 60 * 1000).await;
             // In-memory prune: remove tokens that no longer exist in DB.
@@ -277,14 +363,12 @@ pub async fn run_app() {
                 // Check backoff / max-retries for recently-failed outputs
                 let mut lf = last_failed.lock().await;
                 if let Some(&(failed_at, retries)) = lf.get(&output.id) {
-                    const MAX_RETRIES: u32 = 10;
-                    const MAX_BACKOFF_SECS: u64 = 300;
-                    if retries >= MAX_RETRIES {
+                    if retries >= tuning.output_max_retries {
                         lf.remove(&output.id);
                         drop(lf);
                         eprintln!(
                             "[reconciler] Output {} ({}) exceeded {} retries — marking failed",
-                            output.name, output.id, MAX_RETRIES
+                            output.name, output.id, tuning.output_max_retries
                         );
                         let _ = db::set_output_desired_state(
                             &pool,
@@ -295,8 +379,8 @@ pub async fn run_app() {
                         .await;
                         continue;
                     }
-                    let backoff_secs = (5u64 << retries.min(6)).min(MAX_BACKOFF_SECS);
-                    if failed_at.elapsed() < Duration::from_secs(backoff_secs) {
+                    let backoff_ms = tuning.output_backoff_ms(retries);
+                    if failed_at.elapsed() < Duration::from_millis(backoff_ms) {
                         drop(lf);
                         continue; // Wait for backoff
                     }
@@ -735,7 +819,7 @@ pub async fn run_app() {
             }
         }
 
-        // Sweep idle HLS segmenters: shut down if no consumers for 60s
+        // Sweep idle HLS segmenters after the configured idle timeout
         // or if ingest disconnected.
         let hls_ids: Vec<String> = engine.hls_consumers.read().await.keys().cloned().collect();
         for pid in hls_ids {
@@ -743,7 +827,7 @@ pub async fn run_app() {
             let idle = {
                 let consumers = engine.hls_consumers.read().await;
                 match consumers.get(&pid) {
-                    Some(c) => !has_ingest || c.is_idle(60_000),
+                    Some(c) => !has_ingest || c.is_idle(tuning.hls_idle_timeout_ms),
                     None => false,
                 }
             };
@@ -821,4 +905,32 @@ pub async fn run_app() {
     // SRT sender threads have exited and called srt_close() on their sockets.
     crate::media::srt::teardown_srt();
     println!("[shutdown] Done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_tuning_defaults_preserve_existing_operational_behavior() {
+        let tuning = RuntimeTuning::default();
+
+        assert_eq!(tuning.nofile_limit, 65_536);
+        assert_eq!(tuning.reconciler_interval_ms, 1_000);
+        assert_eq!(tuning.session_prune_every_ticks(), 3_600);
+        assert_eq!(tuning.output_max_retries, 10);
+        assert_eq!(tuning.output_backoff_ms(1), 10_000);
+        assert_eq!(tuning.output_backoff_ms(6), 300_000);
+        assert_eq!(tuning.hls_idle_timeout_ms, 60_000);
+    }
+
+    #[test]
+    fn runtime_tuning_prune_cadence_tracks_reconciler_interval() {
+        let tuning = RuntimeTuning {
+            reconciler_interval_ms: 250,
+            ..RuntimeTuning::default()
+        };
+
+        assert_eq!(tuning.session_prune_every_ticks(), 14_400);
+    }
 }
