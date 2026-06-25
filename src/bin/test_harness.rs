@@ -104,7 +104,7 @@ async fn correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePool::connect(&db_url)
+    let pool = db::create_pool(&db_url)
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
@@ -215,7 +215,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePool::connect(&db_url)
+    let pool = db::create_pool(&db_url)
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
@@ -308,7 +308,7 @@ async fn egress_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePool::connect(&db_url)
+    let pool = db::create_pool(&db_url)
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
@@ -563,7 +563,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePool::connect(&db_url)
+    let pool = db::create_pool(&db_url)
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
@@ -741,7 +741,7 @@ async fn hevc_load_test() -> Result<Value, String> {
     const LOAD_MEDIAMTX_RTMP: u16 = 11936;
     const LOAD_SRT_PORT: u16 = 11080;
 
-    let pool = SqlitePool::connect("sqlite::memory:")
+    let pool = db::create_pool("sqlite::memory:")
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)
@@ -1574,7 +1574,7 @@ async fn matrix_correctness() -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePool::connect(&db_url)
+    let pool = db::create_pool(&db_url)
         .await
         .map_err(|e| e.to_string())?;
     db::setup_database_schema(&pool)

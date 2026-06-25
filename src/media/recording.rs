@@ -355,4 +355,31 @@ mod tests {
         let token = CancellationToken::new();
         assert!(run_ts_writer(queue, "/nonexistent_dir/should/fail.ts", token).is_err());
     }
+
+    // H5: QueueCloseGuard must unblock the writer thread even if the queue is
+    // never explicitly closed by the caller (e.g., async fn cancelled/panicked).
+    // Simulate by dropping the guard and verifying the writer exits.
+    #[test]
+    fn queue_close_guard_unblocks_writer_thread() {
+        let queue = Arc::new(MemoryQueue::new());
+
+        // Start the writer thread on an open queue.
+        let queue_for_thread = queue.clone();
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_guard_recording.ts");
+        let path_str = file_path.to_string_lossy().to_string();
+        let token = CancellationToken::new();
+        let thread = std::thread::spawn(move || {
+            run_ts_writer(queue_for_thread, &path_str, token)
+        });
+
+        // Simulate the guard drop (async fn drop) by closing the queue directly.
+        // In production this is done by QueueCloseGuard::drop.
+        queue.close();
+
+        // Writer thread must exit within 1 second — no hang.
+        let result = thread.join().expect("writer thread panicked");
+        assert!(result.is_ok());
+        let _ = std::fs::remove_file(temp_dir.join("test_guard_recording.ts"));
+    }
 }

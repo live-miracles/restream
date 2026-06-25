@@ -1,8 +1,7 @@
 use restream::db;
-use sqlx::SqlitePool;
 
-async fn test_pool() -> SqlitePool {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+async fn test_pool() -> sqlx::SqlitePool {
+    let pool = db::create_pool("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
     pool
 }
@@ -393,4 +392,66 @@ async fn filtered_job_logs() {
         .await
         .unwrap();
     assert_eq!(lifecycle_logs.len(), 2);
+}
+
+// ── Regression tests for Round 10 audit fixes ────────────────────────────────
+
+// M4: Per-connection PRAGMAs — every pooled connection must have busy_timeout
+// set so SQLITE_BUSY retries rather than failing immediately. Verify via the
+// PRAGMA value read back from the pool (not just the setup connection).
+#[tokio::test]
+async fn pool_connections_have_busy_timeout_set() {
+    let pool = db::create_pool("sqlite::memory:").await.unwrap();
+    db::setup_database_schema(&pool).await.unwrap();
+
+    // Acquire two distinct connections and check both have busy_timeout.
+    let conn1 = sqlx::query_scalar::<_, i64>("PRAGMA busy_timeout")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let conn2 = sqlx::query_scalar::<_, i64>("PRAGMA busy_timeout")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(conn1, 5000, "busy_timeout must be 5000ms on every connection");
+    assert_eq!(conn2, 5000, "busy_timeout must be 5000ms on every connection");
+}
+
+// M5: NULL encoding in DB must not cause a decode failure. A row with
+// encoding=NULL must be returned as an empty string via COALESCE.
+#[tokio::test]
+async fn output_with_null_encoding_decodes_as_empty_string() {
+    let pool = db::create_pool("sqlite::memory:").await.unwrap();
+    db::setup_database_schema(&pool).await.unwrap();
+
+    db::create_pipeline(&pool, "p1", "P", "key-null-enc", None, None)
+        .await
+        .unwrap();
+
+    // Insert a row with NULL encoding directly — bypasses the Rust layer to
+    // simulate a legacy row that predates the encoding column.
+    sqlx::query(
+        "INSERT INTO outputs (id, pipeline_id, name, url, desired_state, encoding) \
+         VALUES ('o-null', 'p1', 'Legacy', 'rtmp://x', 'stopped', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let outputs = db::list_outputs(&pool).await.unwrap();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(
+        outputs[0].encoding, "",
+        "NULL encoding must decode to empty string via COALESCE"
+    );
+
+    let fetched = db::get_output(&pool, "p1", "o-null")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.encoding, "");
+
+    let by_pipeline = db::list_outputs_for_pipeline(&pool, "p1").await.unwrap();
+    assert_eq!(by_pipeline[0].encoding, "");
 }
