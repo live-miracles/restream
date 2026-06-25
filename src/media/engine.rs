@@ -1393,18 +1393,34 @@ impl MediaEngine {
         let rb_node_id = format!("{}_source_rb", pipeline_id);
         let rb_info = pipelines.get(pipeline_id).map(|rb| {
             let (fill, cap) = rb.fill_and_capacity();
-            (fill, cap)
+            let readers = rb.readers.lock().unwrap_or_else(|e| e.into_inner());
+            let reader_stats: Vec<serde_json::Value> = readers
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .map(|info| {
+                    let (avg, median, bursts) = info.burst_stats();
+                    serde_json::json!({
+                        "name": info.name,
+                        "overflows": info.overflow_count.load(std::sync::atomic::Ordering::Relaxed),
+                        "burstCount": bursts,
+                        "avgBurstSize": (avg * 10.0).round() / 10.0,
+                        "medianBurstSize": median,
+                    })
+                })
+                .collect();
+            (fill, cap, reader_stats)
         });
         nodes.push(serde_json::json!({
             "id": rb_node_id,
             "type": "ring_buffer",
             "label": "Source Buffer",
             "active": rb_info.is_some(),
-            "details": rb_info.map(|(fill, cap)| serde_json::json!({
+            "details": rb_info.map(|(fill, cap, readers)| serde_json::json!({
                 "fill": fill,
                 "capacity": cap,
                 "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
                 "format": "FLV (interleaved A+V)",
+                "readers": readers,
             })),
         }));
         edges.push(serde_json::json!({

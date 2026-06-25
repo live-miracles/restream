@@ -47,7 +47,7 @@
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -126,10 +126,83 @@ pub struct AlignedAtomicUsize {
     val: AtomicUsize,
 }
 
+/// Compact histogram for `pull_burst` yield sizes.
+///
+/// Buckets cover [1], [2], [3-4], [5-8], [9-16], [17-32].
+/// Burst size 0 (nothing available) is not counted — callers skip stat
+/// recording when `available == 0`.
+pub const BURST_HIST_BUCKETS: usize = 6;
+const fn burst_bucket(n: usize) -> usize {
+    match n {
+        1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        9..=16 => 4,
+        _ => 5,
+    }
+}
+
 pub struct ReaderInfo {
     pub name: String,
     pub read_idx: AtomicUsize,
     pub overflow_count: AtomicUsize,
+    /// Total `pull_burst` calls that returned ≥ 1 packet.
+    pub burst_count: AtomicU64,
+    /// Total packets returned across all bursts (avg = packet_sum / burst_count).
+    pub packet_sum: AtomicU64,
+    /// Histogram of burst sizes across 6 buckets (see `burst_bucket`).
+    pub burst_hist: [AtomicU64; BURST_HIST_BUCKETS],
+}
+
+impl ReaderInfo {
+    fn new(name: String, read_idx: usize) -> Self {
+        Self {
+            name,
+            read_idx: AtomicUsize::new(read_idx),
+            overflow_count: AtomicUsize::new(0),
+            burst_count: AtomicU64::new(0),
+            packet_sum: AtomicU64::new(0),
+            burst_hist: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// Snapshot of burst size statistics: (avg, approx_median, burst_count).
+    pub fn burst_stats(&self) -> (f64, usize, u64) {
+        let bursts = self.burst_count.load(Ordering::Relaxed);
+        let pkts = self.packet_sum.load(Ordering::Relaxed);
+        let avg = if bursts > 0 {
+            pkts as f64 / bursts as f64
+        } else {
+            0.0
+        };
+
+        // Approximate median: walk histogram buckets until cumulative count ≥ 50%
+        let hist: [u64; BURST_HIST_BUCKETS] =
+            std::array::from_fn(|i| self.burst_hist[i].load(Ordering::Relaxed));
+        let median = {
+            let half = (bursts + 1) / 2;
+            let mut cum = 0u64;
+            let mut median_bucket = 0usize;
+            for (i, &count) in hist.iter().enumerate() {
+                cum += count;
+                if cum >= half {
+                    median_bucket = i;
+                    break;
+                }
+            }
+            // Return representative value for the bucket midpoint
+            match median_bucket {
+                0 => 1,
+                1 => 2,
+                2 => 3,
+                3 => 6,
+                4 => 12,
+                _ => 24,
+            }
+        };
+        (avg, median, bursts)
+    }
 }
 
 pub struct RingBuffer {
@@ -329,7 +402,11 @@ impl Drop for Reader {
         // while holding the lock) must not silently skip cleanup — leaving our
         // Weak in the list would artificially inflate min_read_idx and stall
         // producer overflow recovery.
-        let mut readers = self.buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut readers = self
+            .buffer
+            .readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         readers.retain(|w| match w.upgrade() {
             Some(info) => !Arc::ptr_eq(&info, &self.info),
             None => false,
@@ -341,11 +418,7 @@ impl Reader {
     pub fn new(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
         let start_idx = buffer.fast_forward(current_write);
-        let info = Arc::new(ReaderInfo {
-            name,
-            read_idx: AtomicUsize::new(start_idx),
-            overflow_count: AtomicUsize::new(0),
-        });
+        let info = Arc::new(ReaderInfo::new(name, start_idx));
 
         {
             let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
@@ -361,11 +434,7 @@ impl Reader {
 
     pub fn new_live(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
-        let info = Arc::new(ReaderInfo {
-            name,
-            read_idx: AtomicUsize::new(current_write),
-            overflow_count: AtomicUsize::new(0),
-        });
+        let info = Arc::new(ReaderInfo::new(name, current_write));
 
         {
             let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
@@ -457,6 +526,13 @@ impl Reader {
         let loaded = output.len() - start_len;
         self.read_idx += loaded;
         self.info.read_idx.store(self.read_idx, Ordering::Relaxed);
+        if loaded > 0 {
+            self.info.burst_count.fetch_add(1, Ordering::Relaxed);
+            self.info
+                .packet_sum
+                .fetch_add(loaded as u64, Ordering::Relaxed);
+            self.info.burst_hist[burst_bucket(loaded)].fetch_add(1, Ordering::Relaxed);
+        }
         Ok(loaded)
     }
 
@@ -630,11 +706,7 @@ mod tests {
     fn overflow_triggers_fast_forward_to_keyframe() {
         let rb = Arc::new(RingBuffer::new(8));
 
-        let info = Arc::new(ReaderInfo {
-            name: "test_overflow".to_string(),
-            read_idx: AtomicUsize::new(0),
-            overflow_count: AtomicUsize::new(0),
-        });
+        let info = Arc::new(ReaderInfo::new("test_overflow".to_string(), 0));
         let mut reader = Reader {
             buffer: rb.clone(),
             info,
@@ -849,11 +921,7 @@ mod tests {
         let rb = Arc::new(RingBuffer::new(16));
         {
             // Insert a Weak that immediately becomes stale.
-            let ephemeral = Arc::new(ReaderInfo {
-                name: "stale".into(),
-                read_idx: AtomicUsize::new(0),
-                overflow_count: AtomicUsize::new(0),
-            });
+            let ephemeral = Arc::new(ReaderInfo::new("stale".into(), 0));
             rb.readers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1042,7 +1110,10 @@ mod tests {
         let mt_off = &p.media_type as *const MediaType as usize - base;
         let pl_off = &p.payload as *const Bytes as usize - base;
         assert_eq!(mt_off, 0, "media_type must be the first field (offset 0)");
-        assert!(pl_off >= 24, "payload must be after timestamps (offset >= 24)");
+        assert!(
+            pl_off >= 24,
+            "payload must be after timestamps (offset >= 24)"
+        );
         // The two enums must be exactly 1 byte each.
         assert_eq!(std::mem::size_of::<MediaType>(), 1);
         assert_eq!(std::mem::size_of::<PayloadFormat>(), 1);
@@ -1058,5 +1129,39 @@ mod tests {
             v.clear();
             assert_eq!(v.as_ptr() as usize, alloc_id);
         }
+    }
+
+    #[test]
+    fn pull_burst_records_burst_stats() {
+        let rb = Arc::new(RingBuffer::new(64));
+        // Push 5 packets so first burst yields 5, then push 1 for a size-1 burst.
+        for i in 0i64..5 {
+            rb.push(video_packet(i * 33, i * 33, i == 0));
+        }
+        let mut reader = Reader::new("stats_test".to_string(), rb.clone());
+        let mut out = Vec::new();
+
+        // Burst of 5
+        let n = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n, 5);
+
+        // Push 1 more; burst of 1
+        rb.push(video_packet(5_i64 * 33, 5_i64 * 33, false));
+        let n2 = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n2, 1);
+
+        let (avg, median, bursts) = reader.info.burst_stats();
+        assert_eq!(bursts, 2, "two non-empty burst calls");
+        // avg = (5+1)/2 = 3.0
+        assert!((avg - 3.0).abs() < 0.01, "avg burst = {avg}");
+        // n=5 lands in the 5-8 bucket and n=1 lands in the size-1 bucket.
+        // The approximate median walks buckets by count, so the size-1 bucket wins.
+        assert_eq!(median, 1, "median burst = {median}");
+
+        // Empty pull does not record a burst
+        let n3 = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n3, 0);
+        let (_, _, bursts2) = reader.info.burst_stats();
+        assert_eq!(bursts2, 2, "empty pull must not increment burst_count");
     }
 }
