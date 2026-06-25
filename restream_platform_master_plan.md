@@ -1327,6 +1327,15 @@ Implementation note, 2026-06-25:
   reader-lag, ring-overflow, output-down, and SRT-drop conditions. Served at
   `GET /api/v1/alerts` and `GET /pipelines/:id/alerts`. First-seen/last-seen
   tracking deferred to Phase 3 (requires persistent state).
+- stage metrics wired into `external_transcoder` (record_in/record_out per packet)
+  and `h264_transcoder` (record_in on muxer side); metrics are removed on stage
+  exit. `GET /pipelines/:id/graph` now returns live throughput for transcoder nodes.
+- `MemoryQueue` stats surfaced in `processing_graph()` via a new `input_queues`
+  registry in `MediaEngine`; `h264_transcoder` and internal transcoder register
+  their queues. Each transcoder graph node includes a `queueMetrics` field.
+- operator overview (`GET /api/v1/overview`) and pipeline summary
+  (`GET /api/v1/pipelines/:id/summary`) endpoints added; both derive data from
+  a single `health_snapshot` + `derive_alerts` pass.
 
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface

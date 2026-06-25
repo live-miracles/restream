@@ -24,12 +24,12 @@ a working runtime path.
 | Suite | Result |
 |---|---|
 | Library/unit | 361 passed |
-| API integration | 38 passed |
+| API integration | 43 passed |
 | AV sync integration | 14 passed |
 | Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **452 passed, 0 failed** |
+| Total | **457 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -201,6 +201,8 @@ to the local RTMP listener.
 - `GET /pipelines/:id/diagnostics`
 - `GET /pipelines/:id/alerts` — typed alert list for one pipeline
 - `GET /api/v1/alerts` — aggregate alerts across all pipelines
+- `GET /api/v1/overview` — engine-wide operator summary
+- `GET /api/v1/pipelines/:id/summary` — operator pipeline detail
 - HLS pull at `/hls/:id/index.m3u8`
 
 Diagnostics currently run nine checks, including publisher transport and the
@@ -368,6 +370,25 @@ See `docs/api-reference.md` for the executable route surface.
   `GET /pipelines/:id/alerts` and `GET /api/v1/alerts` expose the model. Phase 2
   tracking (`first_seen`, persistent state) deferred; snapshot-derived alerts
   are stateless and re-derived on every request.
+- ~~stage metrics wiring for transcoder stages~~ — done; `external_transcoder`
+  fetches `Arc<StageMetrics>` via `get_or_create_stage_metrics` and calls
+  `record_in` / `record_out` per packet; `h264_transcoder` does the same on the
+  input (muxer) side. Metrics are removed from the engine map on stage exit.
+  The graph endpoint now returns live `packetsIn`, `packetsOut`, `bytesIn`,
+  `bytesOut`, and `packetsPerSec` for every active transcoder node.
+- ~~MemoryQueue stats in processing graph~~ — done; `MediaEngine` now holds an
+  `input_queues` registry (same storage-key scheme as `transcoder_buffers`).
+  `h264_transcoder` and the internal transcoder register their `MemoryQueue`
+  on creation and deregister on exit. `processing_graph()` includes a
+  `queueMetrics` field on each transcoder node with live `len`, `capacity`,
+  `highWaterBytes`, `blockedWrites`, and `blockedWriteUs` from `MemoryQueue::stats()`.
+  External-subprocess stages have no `MemoryQueue` and emit `queueMetrics: null`.
+- ~~operator overview and pipeline summary endpoints~~ — done; `GET /api/v1/overview`
+  returns `totalPipelines`, `activePipelines`, `degradedPipelines`,
+  `failedOutputs`, `alertCount {critical, warning}`, and `srtListener` in a
+  single snapshot pass. `GET /api/v1/pipelines/:id/summary` returns the
+  operator-focused pipeline view (source, outputs rollup, recording, hlsPreview,
+  alerts) without raw graph data; returns 404 for unknown IDs.
 - ~~secure public HLS playlist and segment routes~~ — done; HLS playlist and
   segment routes require the dashboard session cookie.
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
