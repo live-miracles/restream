@@ -1312,7 +1312,16 @@ Implementation note, 2026-06-25 (continued):
   `StageKind` variant and are already centralized. Splitting `MediaEngine` into
   typed registry structs remains a Phase 3 deliverable.
 
-Phase 1 is complete as of 2026-06-25.
+Phase 1 structural items (typed IDs and stage kinds, StageFeeder for HLS/recording/internal
+transcoder, stage planning, graph serialization) are complete as of 2026-06-25.
+
+Remaining Phase 1 gap (deferred to Phase 3): `StageFeeder` does not yet cover
+`external_transcoder.rs` or `h264_transcoder.rs`. Both still own their own
+`TsMuxer`, `DtsEnforcer`, codec conversion, stream-index mapping, and batch write
+loop — the same duplication `feeder.rs` was designed to eliminate. Full feeder
+coverage requires threading the `FeedSink` trait through the subprocess-pipe path,
+which is a larger refactor. Engine-native graph registries (typed `StageKey` maps)
+also remain pending.
 
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
@@ -1360,7 +1369,12 @@ Implementation note, 2026-06-25:
   (≈10 ns), snapshot (≈625 ns), rdtsc vs Instant comparison, and full
   stdin-instrumentation overhead per packet (≈36 ns).
 
-Phase 2 is complete as of 2026-06-25.
+Phase 2 is mostly complete as of 2026-06-25. All four deliverables have substantive
+implementation. Recording StageMetrics gap (graph telemetry node populated with null
+metrics) was identified in review and has been fixed: recording.rs now creates
+StageMetrics, calls record_in per packet, and removes metrics on exit.
+StageStarted/StageStopped event coverage was also extended to h264_transcoder,
+internal transcoder, and HLS segmenter to close the lifecycle event gap.
 
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface
@@ -1404,7 +1418,7 @@ Implementation note, 2026-06-25:
 - agent workflow contract tests
 
 Implementation note, 2026-06-25:
-- the Rust unit and integration suite currently has 441 passing non-doctest
+- the Rust unit and integration suite currently has 471 passing non-doctest
   tests;
 - HLS PUT upload, FFmpeg-backed remap/downmix, shared-stage cleanup, runtime
   tuning, secured HLS pull routes, and built-in internal video preset coverage
