@@ -171,16 +171,33 @@ mod tests {
     use super::*;
     use bytes::Bytes;
 
-    #[test]
-    fn feeder_skips_unknown_audio_track_to_protect_dts_state() {
-        let audio_tracks = Arc::new(vec![AudioMeta {
+    fn audio_track(index: u32) -> AudioMeta {
+        AudioMeta {
             codec: "aac".to_string(),
             sample_rate: 48_000,
             channels: 2,
             channel_layout: None,
-            track_index: 0,
+            track_index: index,
             profile: None,
-        }]);
+        }
+    }
+
+    fn video_meta() -> VideoMeta {
+        VideoMeta {
+            codec: "h264".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            bw: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        }
+    }
+
+    #[test]
+    fn feeder_skips_unknown_audio_track_to_protect_dts_state() {
+        let audio_tracks = Arc::new(vec![audio_track(0)]);
         let mut feeder = TsPacketFeeder::new(None, audio_tracks, PacketFeedConfig::default());
         let packet = MediaPacket {
             media_type: MediaType::Audio,
@@ -195,5 +212,111 @@ mod tests {
 
         assert!(!feeder.extend_ts_for_packet(&packet, &mut output));
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn feeder_matches_manual_codec_mux_and_dts_path() {
+        use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
+        use crate::media::mpegts::TsMuxer;
+        use crate::media::ring_buffer::{DtsEnforcer, PayloadFormat};
+
+        let video = video_meta();
+        let audio_tracks = Arc::new(vec![audio_track(0), audio_track(1)]);
+        let packets = vec![
+            MediaPacket {
+                media_type: MediaType::Video,
+                format: PayloadFormat::Raw,
+                is_keyframe: true,
+                track_index: 0,
+                pts: 0,
+                dts: 0,
+                payload: Bytes::from_static(&[
+                    0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21, 0xA0,
+                ]),
+            },
+            MediaPacket {
+                media_type: MediaType::Audio,
+                format: PayloadFormat::Raw,
+                is_keyframe: false,
+                track_index: 0,
+                pts: 20,
+                dts: 20,
+                payload: Bytes::from_static(&[0x11; 32]),
+            },
+            MediaPacket {
+                media_type: MediaType::Audio,
+                format: PayloadFormat::Raw,
+                is_keyframe: false,
+                track_index: 1,
+                pts: 21,
+                dts: 21,
+                payload: Bytes::from_static(&[0x22; 24]),
+            },
+        ];
+
+        let mut feeder = TsPacketFeeder::new(
+            Some(&video),
+            audio_tracks.clone(),
+            PacketFeedConfig::default(),
+        );
+        let mut feeder_output = Vec::new();
+        for packet in &packets {
+            assert!(feeder.extend_ts_for_packet(packet, &mut feeder_output));
+        }
+
+        let mut muxer = TsMuxer::new(Some(&video), &audio_tracks);
+        let mut dts = DtsEnforcer::new(1 + audio_tracks.len());
+        let mut video_conv_buf = Vec::new();
+        let mut audio_conv_buf = Vec::new();
+        let mut nalu_len_size = 4usize;
+        let mut sps_pps_cache = Vec::new();
+        let mut manual_output = Vec::new();
+
+        for packet in &packets {
+            let payload = match packet.media_type {
+                MediaType::Video => video_for_ts_into(
+                    &packet.payload,
+                    packet.format,
+                    &mut nalu_len_size,
+                    &mut sps_pps_cache,
+                    &mut video_conv_buf,
+                )
+                .expect("video packet should convert"),
+                MediaType::Audio => {
+                    let track = audio_tracks
+                        .iter()
+                        .find(|a| a.track_index == packet.track_index)
+                        .expect("test packet track exists");
+                    audio_for_ts_into(
+                        &packet.payload,
+                        packet.format,
+                        track.sample_rate,
+                        track.channels,
+                        &mut audio_conv_buf,
+                    )
+                    .expect("audio packet should convert")
+                }
+            };
+            let stream_idx = match packet.media_type {
+                MediaType::Video => 0,
+                MediaType::Audio => {
+                    1 + audio_tracks
+                        .iter()
+                        .position(|a| a.track_index == packet.track_index)
+                        .expect("test packet track exists")
+                }
+            };
+            let (pts, dts_value) = dts.enforce(stream_idx, packet.pts, packet.dts);
+            manual_output.extend_from_slice(muxer.mux_packet(
+                packet.media_type,
+                packet.track_index,
+                pts,
+                dts_value,
+                packet.is_keyframe,
+                payload,
+            ));
+        }
+
+        assert_eq!(feeder_output, manual_output);
     }
 }
