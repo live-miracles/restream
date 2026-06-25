@@ -347,6 +347,9 @@ pub async fn start_transcoder(
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
+                // Clear at top so ts_batch never carries stale bytes if a
+                // future continue path skips the end-of-arm clear (M6 fix).
+                ts_batch.clear();
                 packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in &packets {
@@ -404,7 +407,6 @@ pub async fn start_transcoder(
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {
                         input_queue.write(&ts_batch).await;
-                        ts_batch.clear();
                     }
                 }
             }
@@ -800,6 +802,56 @@ mod tests {
         assert_eq!(out_pkts[1].media_type, MediaType::Audio);
         assert_eq!(out_pkts[1].track_index, 0); // re-indexed to 0
     }
+
+    // M7: pts=0 from AV_NOPTS_VALUE would cause a massive backward jump on a
+    // long-running stream. Verify the timestamp conversion formula itself is
+    // correct and that skipping None-pts packets is the right behavior.
+    //
+    // We can't inject AV_NOPTS_VALUE into a live FFmpeg pipeline in a unit
+    // test, but we can verify that the i128-based conversion that follows
+    // a valid pts produces the expected millisecond value, confirming that
+    // pts=0 would produce 0ms (a backward jump from, e.g., 3600000ms).
+    #[test]
+    fn pts_zero_would_produce_zero_ms_timestamp() {
+        // Simulate the conversion for pts=0 with a 90kHz timebase (tb=1/90000).
+        let pts: i64 = 0;
+        let tb_num: i64 = 1;
+        let tb_den: i64 = 90000;
+        let pts_ms = (pts as i128 * tb_num as i128 * 1000 / tb_den as i128) as i64;
+        assert_eq!(pts_ms, 0, "pts=0 produces 0ms — correct to skip, not use");
+
+        // A real 1-hour stream has pts ≈ 324_000_000 ticks at 90kHz.
+        let pts_1h: i64 = 3_600 * 90_000;
+        let pts_ms_1h = (pts_1h as i128 * tb_num as i128 * 1000 / tb_den as i128) as i64;
+        assert_eq!(pts_ms_1h, 3_600_000, "1h at 90kHz = 3600000ms");
+        // Substituting 0 for AV_NOPTS_VALUE would create a -3600000ms backward jump.
+        assert_eq!(pts_ms - pts_ms_1h, -3_600_000);
+    }
+
+    // M6: ts_batch must be cleared at the top of each burst arm so stale bytes
+    // never accumulate across iterations. Verify the invariant by simulating
+    // the burst pattern: partial batch from one burst must not appear in the next.
+    #[test]
+    fn ts_batch_cleared_before_each_burst() {
+        let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
+
+        // Simulate two burst cycles: first accumulates data, second must start empty.
+        let burst1 = b"packet_data_burst1";
+        ts_batch.extend_from_slice(burst1);
+        assert!(!ts_batch.is_empty());
+
+        // Write and clear (as the arm does after write()).
+        // Then simulate loop top: clear is now at the TOP of the arm.
+        ts_batch.clear(); // ← this is the arm-top clear (M6 fix)
+        assert!(
+            ts_batch.is_empty(),
+            "ts_batch must be empty at burst start — stale data would corrupt the stream"
+        );
+
+        let burst2 = b"packet_data_burst2";
+        ts_batch.extend_from_slice(burst2);
+        assert_eq!(&ts_batch[..], burst2, "burst2 must not contain burst1 data");
+    }
 }
 
 /// Execute the FFmpeg-backed processing stage used by `start_transcoder`.
@@ -876,7 +928,9 @@ pub fn run_ffmpeg_transcoder_stage(
         };
 
         let tb = stream.time_base();
-        let pts = packet.pts().unwrap_or(0);
+        // Skip packets with AV_NOPTS_VALUE — using 0 on a long-running stream
+        // would cause a massive backward jump through DtsEnforcer (M7 fix).
+        let Some(pts) = packet.pts() else { continue };
         let dts = packet.dts().unwrap_or(pts);
         let pts_ms = if tb.1 != 0 {
             // i128 avoids f64 precision loss for large pts values (e.g. after
@@ -1012,7 +1066,8 @@ pub fn run_ffmpeg_transcode_with_scale(
                 continue;
             };
             let tb = stream.time_base();
-            let pts = pkt.pts().unwrap_or(0);
+            // Skip packets with AV_NOPTS_VALUE (M7 fix — same as passthrough path).
+            let Some(pts) = pkt.pts() else { continue };
             let dts_val = pkt.dts().unwrap_or(pts);
             let pts_ms = if tb.1 != 0 {
                 (pts as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64

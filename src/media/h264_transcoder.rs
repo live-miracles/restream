@@ -113,6 +113,10 @@ pub async fn start_h264_transcoder(
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
+                // Clear both buffers at the top of each burst — defensive
+                // guard so ts_batch never carries stale bytes if a future
+                // continue path skips the end-of-arm clear (M6 fix).
+                ts_batch.clear();
                 packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_err() {
                     continue;
@@ -170,7 +174,6 @@ pub async fn start_h264_transcoder(
                 // One lock acquisition for the whole burst.
                 if !ts_batch.is_empty() {
                     input_queue.write(&ts_batch).await;
-                    ts_batch.clear();
                 }
             }
         }
@@ -286,7 +289,10 @@ fn run_ffmpeg_h264_stage(
                 continue;
             };
             let tb = stream.time_base();
-            let pts = pkt.pts().unwrap_or(0);
+            // Drop packets with AV_NOPTS_VALUE rather than substituting 0.
+            // A pts of 0 on a stream running for hours would cause a massive
+            // backward jump through DtsEnforcer, corrupting A/V sync (M7 fix).
+            let Some(pts) = pkt.pts() else { continue };
             let dts_val = pkt.dts().unwrap_or(pts);
             let pts_ms = if tb.1 != 0 {
                 // i128 avoids f64 precision loss for large pts values on long
