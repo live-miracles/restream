@@ -5,8 +5,8 @@
 //! MemoryQueue-backed stages have no kernel pipe to observe.
 //!
 //! The engine stores `Arc<PipeMetrics>` in its `pipe_metrics` registry keyed by
-//! the same storage key as `transcoder_buffers`. The processing graph reads it
-//! to populate `pipeMetrics` on transcoder nodes.
+//! the same typed stage identity as `transcoder_buffers`. The processing graph
+//! reads it to populate `pipeMetrics` on transcoder nodes.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

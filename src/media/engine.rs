@@ -218,9 +218,8 @@ pub struct MediaEngine {
     pub hls_stores: TokioRwLock<HashMap<String, Arc<HlsStore>>>,
     // Map of ingest_id -> file ingest child process
     pub file_ingest_children: TokioRwLock<HashMap<String, tokio::process::Child>>,
-    // Map of typed stage key serialized as "<pipeline_id>:<stage_key>" ->
-    // transcoded RingBuffer + cancel token.
-    pub transcoder_buffers: TokioRwLock<HashMap<String, (Arc<RingBuffer>, CancellationToken)>>,
+    // Transcoded RingBuffer + cancel token keyed by typed pipeline/stage identity.
+    pub transcoder_buffers: TokioRwLock<HashMap<StageKey, (Arc<RingBuffer>, CancellationToken)>>,
     // SRT listener socket kernel buffer stats
     pub srt_listener_stats: Arc<ListenerSocketStats>,
     // Map of pipeline_id -> HLS consumer tracking (refcount + idle timer)
@@ -240,12 +239,12 @@ pub struct MediaEngine {
     // Per-pipeline semaphore preventing concurrent diagnostic runs on the same pipeline
     pub diag_semaphores: TokioRwLock<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     // Input MemoryQueues for stages that bridge tokio→OS-thread.
-    // Keyed by the same storage key as transcoder_buffers.
+    // Keyed by the same typed stage identity as transcoder_buffers.
     // Used by processing_graph() to surface queue depth/HWM in the engineer view.
-    pub input_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
+    pub input_queues: TokioRwLock<HashMap<StageKey, Arc<MemoryQueue>>>,
     // Pipe back-pressure metrics for external-subprocess stages.
-    // Keyed by the same storage key as transcoder_buffers.
-    pub pipe_metrics: TokioRwLock<HashMap<String, Arc<PipeMetrics>>>,
+    // Keyed by the same typed stage identity as transcoder_buffers.
+    pub pipe_metrics: TokioRwLock<HashMap<StageKey, Arc<PipeMetrics>>>,
     // Bounded in-memory lifecycle event log.
     pub event_log: Arc<crate::events::EventLog>,
 }
@@ -330,28 +329,20 @@ impl MediaEngine {
         self.stage_metrics.write().await.remove(&key);
     }
 
-    /// Register a MemoryQueue for a stage so the graph can show queue depth/HWM.
-    /// Key is the full storage key, e.g. `"pipe:hevc_to_h264:from:720p"`.
-    pub async fn register_input_queue(&self, storage_key: &str, queue: Arc<MemoryQueue>) {
-        self.input_queues
-            .write()
-            .await
-            .insert(storage_key.to_string(), queue);
+    pub async fn register_input_queue(&self, key: StageKey, queue: Arc<MemoryQueue>) {
+        self.input_queues.write().await.insert(key, queue);
     }
 
-    pub async fn remove_input_queue(&self, storage_key: &str) {
-        self.input_queues.write().await.remove(storage_key);
+    pub async fn remove_input_queue(&self, key: &StageKey) {
+        self.input_queues.write().await.remove(key);
     }
 
-    pub async fn register_pipe_metrics(&self, storage_key: &str, metrics: Arc<PipeMetrics>) {
-        self.pipe_metrics
-            .write()
-            .await
-            .insert(storage_key.to_string(), metrics);
+    pub async fn register_pipe_metrics(&self, key: StageKey, metrics: Arc<PipeMetrics>) {
+        self.pipe_metrics.write().await.insert(key, metrics);
     }
 
-    pub async fn remove_pipe_metrics(&self, storage_key: &str) {
-        self.pipe_metrics.write().await.remove(storage_key);
+    pub async fn remove_pipe_metrics(&self, key: &StageKey) {
+        self.pipe_metrics.write().await.remove(key);
     }
 
     pub async fn is_file_ingest_running(&self, id: &str) -> bool {
@@ -412,7 +403,7 @@ impl MediaEngine {
         input_codec_override: Option<&str>,
     ) -> Arc<RingBuffer> {
         let stage_kind = StageKind::parse_legacy_key(encoding);
-        let key = StageKey::new(pipeline_id, stage_kind.clone()).storage_key();
+        let key = StageKey::new(pipeline_id, stage_kind.clone());
 
         // Use a single write-lock acquisition to atomically check-and-insert.
         // The previous read-lock-then-write-lock pattern had a TOCTOU window:
@@ -590,8 +581,7 @@ impl MediaEngine {
         let key = StageKey::new(
             pipeline_id,
             StageKind::codec_edge("hevc_to_h264", StageKind::parse_legacy_key(upstream_stage_key)),
-        )
-        .storage_key();
+        );
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
@@ -634,16 +624,15 @@ impl MediaEngine {
             "[h264-tc] Spawning shared H.265→H.264 transcoder for pipeline {}",
             pipeline_id
         );
-        let stage_name = key.strip_prefix(&format!("{}:", pipeline_id)).unwrap_or(&key);
+        let stage_name = key.legacy_stage_key();
         self.event_log.emit(crate::events::EventKind::StageStarted {
             pipeline_id: pipeline_id.to_string(),
-            encoding: stage_name.to_string(),
+            encoding: stage_name.clone(),
         });
 
         let pid = pipeline_id.to_string();
         let ob = output_buf.clone();
         let self_clone = self.clone();
-        let stage_storage_key = key.clone();
         tokio::spawn(async move {
             crate::media::h264_transcoder::start_h264_transcoder(
                 pid,
@@ -651,7 +640,7 @@ impl MediaEngine {
                 ob,
                 self_clone,
                 cancel,
-                stage_storage_key,
+                key,
             )
             .await;
         });
@@ -663,12 +652,11 @@ impl MediaEngine {
     /// Used for diagnostics and visualization.
     pub async fn active_transcoder_stages(&self, pipeline_id: &str) -> Vec<(String, bool)> {
         let buffers = self.transcoder_buffers.read().await;
-        let prefix = format!("{}:", pipeline_id);
         buffers
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
+            .filter(|(key, _)| key.pipeline.as_str() == pipeline_id)
             .map(|(k, (_, token))| {
-                let encoding = k.strip_prefix(&prefix).unwrap_or(k).to_string();
+                let encoding = k.legacy_stage_key();
                 (encoding, !token.is_cancelled())
             })
             .collect()
@@ -686,11 +674,10 @@ impl MediaEngine {
     /// deletion so the `Arc<RingBuffer>` for every stage is freed immediately
     /// instead of surviving until the next reconciler creates a replacement stage.
     pub async fn cleanup_pipeline_stages(&self, pipeline_id: &str) {
-        let prefix = format!("{}:", pipeline_id);
         let mut buffers = self.transcoder_buffers.write().await;
         // Cancel all still-running stages then remove every entry for this pipeline.
         buffers.retain(|key, (_rb, token)| {
-            if key.starts_with(&prefix) {
+            if key.pipeline.as_str() == pipeline_id {
                 token.cancel();
                 false
             } else {
@@ -701,7 +688,7 @@ impl MediaEngine {
 
     pub async fn sweep_unused_transcoder_stages(
         &self,
-        active_keys: &std::collections::HashSet<String>,
+        active_keys: &std::collections::HashSet<StageKey>,
     ) {
         let mut buffers = self.transcoder_buffers.write().await;
         buffers.retain(|key, (_rb, token)| {
@@ -1455,10 +1442,10 @@ impl MediaEngine {
         }));
 
         // Nodes: transcoder stages.
-        let prefix = format!("{}:", pipeline_id);
         for (key, (_, token)) in transcoder_buffers.iter() {
-            if let Some(stage_key) = key.strip_prefix(&prefix) {
-                let kind = StageKind::parse_legacy_key(stage_key);
+            if key.pipeline.as_str() == pipeline_id {
+                let kind = &key.kind;
+                let stage_key = key.legacy_stage_key();
                 let stage_id = kind.graph_node_id(pipeline_id);
                 let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
                 let queue_stats = all_input_queues.get(key).map(|q| q.stats());
@@ -2181,6 +2168,28 @@ mod tests {
         let _ = other_stage;
     }
 
+    #[tokio::test]
+    async fn transcoder_stage_registry_uses_typed_stage_keys() {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("pipe-typed").await;
+
+        let _stage = engine
+            .get_or_create_transcoder("pipe-typed", "video:720p", source, None)
+            .await;
+
+        let buffers = engine.transcoder_buffers.read().await;
+        let key = buffers
+            .keys()
+            .find(|key| key.pipeline.as_str() == "pipe-typed")
+            .expect("typed registry should contain created stage");
+
+        assert_eq!(key.storage_key(), "pipe-typed:video:720p");
+        assert!(matches!(
+            &key.kind,
+            StageKind::VideoPreset { preset } if preset == "720p"
+        ));
+    }
+
     /// remove_pipeline must free the source ring buffer from the pipelines map.
     #[tokio::test]
     async fn remove_pipeline_frees_source_ring_buffer() {
@@ -2216,7 +2225,7 @@ mod tests {
             .await;
 
         let mut active = std::collections::HashSet::new();
-        active.insert("pipe-sweep:video:720p".to_string());
+        active.insert(StageKey::new("pipe-sweep", StageKind::video_preset("720p")));
 
         engine.sweep_unused_transcoder_stages(&active).await;
 
@@ -2243,7 +2252,7 @@ mod tests {
             "codec-edge stage must be registered before the sweep"
         );
 
-        let active = std::collections::HashSet::new();
+        let active: std::collections::HashSet<StageKey> = std::collections::HashSet::new();
         engine.sweep_unused_transcoder_stages(&active).await;
 
         let stages_after = engine.active_transcoder_stages("pipe-sweep-codec").await;

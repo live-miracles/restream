@@ -34,7 +34,7 @@ pub mod planner;
 pub mod runtime_info;
 pub mod types;
 
-use crate::domain::stage::EncodingStagePlan;
+use crate::domain::stage::{EncodingStagePlan, StageKey};
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
 use std::collections::HashMap;
@@ -732,7 +732,8 @@ pub async fn run_app() {
 
         // Clean up unused shared transcoder stages
         {
-            let mut needed_stages = std::collections::HashSet::new();
+            let mut needed_stages: std::collections::HashSet<StageKey> =
+                std::collections::HashSet::new();
             let ingests = engine.active_ingests.read().await;
             let egress_tokens = engine.egress_cancel_tokens.read().await;
             for output in &outputs {
@@ -753,14 +754,13 @@ pub async fn run_app() {
                     let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
 
                     if let Some(stage) = stage_plan.video_stage() {
-                        needed_stages.insert(stage.storage_key());
+                        needed_stages.insert(stage);
                     }
                     if let Some(stage) = stage_plan.audio_stage() {
-                        needed_stages.insert(stage.storage_key());
+                        needed_stages.insert(stage);
                     }
                     if needs_rtmp_h264_conv {
-                        needed_stages
-                            .insert(stage_plan.codec_edge_stage("hevc_to_h264").storage_key());
+                        needed_stages.insert(stage_plan.codec_edge_stage("hevc_to_h264"));
                     }
                 }
             }

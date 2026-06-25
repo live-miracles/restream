@@ -244,11 +244,6 @@ impl StageKey {
         }
     }
 
-    pub fn parse_storage_key(value: &str) -> Option<Self> {
-        let (pipeline, stage) = value.split_once(':')?;
-        Some(Self::new(pipeline, StageKind::parse_legacy_key(stage)))
-    }
-
     pub fn legacy_stage_key(&self) -> String {
         self.kind.legacy_key()
     }
