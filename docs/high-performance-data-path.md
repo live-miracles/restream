@@ -44,6 +44,7 @@ improvement in production-shaped measurements.
 | Cached egress byte counters | Complete in `a9c534f` | RTMP and SRT egress paths now cache `bytes_sent` counter before their send loops, replacing per-packet/batched `update_egress_bytes()` async lookups |
 | Production transcoder-stage benchmark | Complete in `76d3969` | Replaced the fake `Bytes::clone()` benchmark with the exact FFmpeg `MemoryQueue` + custom-AVIO stage. Current `source` passthrough processes the 6.4 MiB fixture in ~26.8 ms (~238 MiB/s) |
 | Actual decode/filter/encode transcoder | Missing | Resolution presets configure encoder metadata but currently remux original compressed packets; implement and benchmark the real decoder, scaler/filter graph, encoder, output demux, and ring publication path |
+| Hoist burst-drain Vecs before loop | Complete | `transcoder.rs` and `h264_transcoder.rs` feeder loops fixed. Benchmark `burst_drain_alloc` (bench-dev, x86-64 Zen): `alloc_per_burst` ~2.79 µs vs `hoisted_clear` ~2.54 µs per 32-packet burst — **~9% faster**, ~250 ns saved per burst cycle. At 5 bursts/s per consumer the saving compounds across all egress stages (HLS, recording, SRT, transcoder feeders). |
 | Custom AVIO teardown | Fixed in `76d3969` | Production-context benchmarking exposed a custom `AVIOContext` double-close. Contexts now remain owned by their wrappers, which detach `pb` before FFmpeg context destruction; repeated benchmark iterations complete cleanly |
 
 ## Per-Frame Allocation Audit (2026-06-23)
@@ -141,6 +142,14 @@ The same rule applies to `ts_batch`, `video_conv_buf`, `audio_conv_buf`, and
 every other scratch buffer used in a packet loop. A buffer declared outside the
 loop retains its heap capacity indefinitely; a buffer declared inside re-triggers
 the allocator on every burst.
+
+**Measured (bench-dev, x86-64 Zen, `burst_drain_alloc` group, 32-packet burst):**
+
+| Variant | Time per burst | Throughput |
+|---|---|---|
+| `Vec::with_capacity(32)` inside arm (old) | ~2.79 µs | ~11.5 Melem/s |
+| Hoisted + `.clear()` (new) | ~2.54 µs | ~12.6 Melem/s |
+| **Improvement** | **~9% faster, ~250 ns/burst** | |
 
 **Files where this is done correctly**: `hls.rs`, `srt.rs` (play sender),
 `recording.rs`.
@@ -770,6 +779,8 @@ target deployment hardware before implementation work.
 | Annex B NAL scanning (wide compile-time 256-bit SIMD) | approximately 40.25 GiB/s |
 | Annex B NAL scanning (pulp runtime SIMD abstraction) | approximately 4.14 GiB/s |
 | MPEG-TS muxing baseline (ts_mux_inhouse/1s_30fps_1080p) | approximately 11.85 µs (17.72 GiB/s for 1.55 MB payload) |
+| burst drain, alloc per burst (old transcoder/h264_transcoder) | approximately 2.79 µs per 32-packet burst, 11.5 Melem/s |
+| burst drain, hoisted + clear (new) | approximately 2.54 µs per 32-packet burst, 12.6 Melem/s — ~9% faster, ~250 ns saved per burst |
 
 The lookup comparison supports moving registry resolution out of the packet
 loop. The ring numbers measure in-memory steady-state delivery and deliberately

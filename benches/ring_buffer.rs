@@ -312,6 +312,73 @@ fn benchmark_vec_loop_reuse(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark the exact hot-loop pattern fixed in transcoder/h264_transcoder:
+/// `Vec::with_capacity(32)` inside the burst arm vs hoisted + `.clear()`.
+///
+/// Uses `Arc<MediaPacket>` to match the real element type on the hot path.
+/// The ring is pre-filled so each `pull_burst` call returns a full batch of 32.
+fn benchmark_burst_drain_alloc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("burst_drain_alloc");
+    group.throughput(Throughput::Elements(32));
+
+    let ring = Arc::new(RingBuffer::new(4096));
+    // Pre-fill the ring so pull_burst always has work to do.
+    for i in 0..4096 {
+        ring.push(make_packet(1316));
+        // Update last_keyframe_idx so readers can join
+        let _ = i;
+    }
+
+    // --- OLD: alloc inside the burst arm ---
+    group.bench_function("alloc_per_burst", |b| {
+        b.iter_batched(
+            || {
+                let r = Reader::new("bench_alloc".to_string(), ring.clone());
+                // Refill ring for the reader
+                for _ in 0..64 {
+                    ring.push(make_packet(1316));
+                }
+                r
+            },
+            |mut reader| {
+                // This is what the OLD transcoder/h264_transcoder code did:
+                let mut packets = Vec::with_capacity(32); // ← was inside the arm
+                let _ = reader.pull_burst(&mut packets, 32);
+                for pkt in &packets {
+                    black_box(pkt);
+                }
+                // Vec dropped here — malloc + free every burst
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // --- NEW: hoisted Vec, .clear() per arm ---
+    group.bench_function("hoisted_clear", |b| {
+        b.iter_batched(
+            || {
+                let r = Reader::new("bench_hoisted".to_string(), ring.clone());
+                for _ in 0..64 {
+                    ring.push(make_packet(1316));
+                }
+                (r, Vec::<std::sync::Arc<MediaPacket>>::with_capacity(32))
+            },
+            |(mut reader, mut packets)| {
+                // This is what the NEW code does:
+                packets.clear(); // ← just zeroes len, no alloc
+                let _ = reader.pull_burst(&mut packets, 32);
+                for pkt in &packets {
+                    black_box(pkt);
+                }
+                packets // return so vec lives until next iter_batched cycle
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
@@ -319,6 +386,7 @@ criterion_group!(
     benchmark_reader_lag,
     benchmark_vec_capacity,
     benchmark_vec_loop_reuse,
+    benchmark_burst_drain_alloc,
     // Run concurrency bench last so 500 threads don't noise-up the pure benchmarks.
     benchmark_ring_buffer_concurrency,
 );
