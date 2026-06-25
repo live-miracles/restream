@@ -261,6 +261,10 @@ pub async fn start_transcoder(
     };
 
     let input_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+    let queue_key = format!("{}:{}", pipeline_id, preset);
+    engine
+        .register_input_queue(&queue_key, input_queue.clone())
+        .await;
 
     // Spawn thread to run FFmpeg processing: demux input MPEG-TS, push packets
     // directly to the output RingBuffer (no output mux/demux round-trip).
@@ -354,6 +358,7 @@ pub async fn start_transcoder(
     }
 
     input_queue.close();
+    engine.remove_input_queue(&queue_key).await;
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
+use crate::media::avio::MemoryQueue;
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
@@ -310,6 +311,10 @@ pub struct MediaEngine {
     pub ts_muxer_stages: TokioRwLock<HashMap<String, Arc<TsChunkRing>>>,
     // Per-pipeline semaphore preventing concurrent diagnostic runs on the same pipeline
     pub diag_semaphores: TokioRwLock<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    // Input MemoryQueues for stages that bridge tokio→OS-thread.
+    // Keyed by the same storage key as transcoder_buffers.
+    // Used by processing_graph() to surface queue depth/HWM in the engineer view.
+    pub input_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
 }
 
 impl Default for MediaEngine {
@@ -350,6 +355,7 @@ impl MediaEngine {
             srt_sender_semaphore: Arc::new(tokio::sync::Semaphore::new(512)),
             ts_muxer_stages: TokioRwLock::new(HashMap::new()),
             diag_semaphores: TokioRwLock::new(HashMap::new()),
+            input_queues: TokioRwLock::new(HashMap::new()),
         }
     }
 
@@ -387,6 +393,19 @@ impl MediaEngine {
     pub async fn remove_stage_metrics(&self, pipeline_id: &str, stage_name: &str) {
         let key = format!("{}:{}", pipeline_id, stage_name);
         self.stage_metrics.write().await.remove(&key);
+    }
+
+    /// Register a MemoryQueue for a stage so the graph can show queue depth/HWM.
+    /// Key is the full storage key, e.g. `"pipe:hevc_to_h264:from:720p"`.
+    pub async fn register_input_queue(&self, storage_key: &str, queue: Arc<MemoryQueue>) {
+        self.input_queues
+            .write()
+            .await
+            .insert(storage_key.to_string(), queue);
+    }
+
+    pub async fn remove_input_queue(&self, storage_key: &str) {
+        self.input_queues.write().await.remove(storage_key);
     }
 
     pub async fn is_file_ingest_running(&self, id: &str) -> bool {
@@ -1376,6 +1395,7 @@ impl MediaEngine {
         let hls_stores = self.hls_stores.read().await;
         let hls_consumers = self.hls_consumers.read().await;
         let all_stage_metrics = self.stage_metrics.read().await;
+        let all_input_queues = self.input_queues.read().await;
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -1452,6 +1472,9 @@ impl MediaEngine {
                 let kind = StageKind::parse_legacy_key(stage_key);
                 let stage_id = kind.graph_node_id(pipeline_id);
                 let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
+                let queue_stats = all_input_queues
+                    .get(key)
+                    .map(|q| q.stats());
                 nodes.push(serde_json::json!({
                     "id": stage_id,
                     "type": kind.graph_type(),
@@ -1459,6 +1482,7 @@ impl MediaEngine {
                     "stageKey": stage_key,
                     "active": !token.is_cancelled(),
                     "metrics": all_stage_metrics.get(&stage_metrics_key).map(|m| m.snapshot()),
+                    "queueMetrics": queue_stats,
                 }));
 
                 if let Some(upstream) = kind.upstream() {

@@ -87,6 +87,9 @@ pub async fn start_h264_transcoder(
         .await;
 
     let input_queue = Arc::new(MemoryQueue::new());
+    engine
+        .register_input_queue(&stage_storage_key, input_queue.clone())
+        .await;
 
     // Spawn OS thread for FFmpeg decode→encode
     let iq_clone = input_queue.clone();
@@ -193,6 +196,7 @@ pub async fn start_h264_transcoder(
     }
 
     input_queue.close();
+    engine.remove_input_queue(&stage_storage_key).await;
     engine
         .remove_stage_metrics(&pipeline_id, stage_name)
         .await;
