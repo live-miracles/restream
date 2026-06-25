@@ -1,105 +1,124 @@
 # CLAUDE.md
 
-# Guidelines
-- Always write correctness tests
-- Hotpath code must be benchmarked before and after to justify changes to it
-- Before committing bring docs up-to-date
-- Group changes logically and commit incrementally
-- Make sure not to club other agent's changes when stashing or committing
+Instructions for AI coding agents in this repository.
 
-## Build & Test Commands
-Standard cargo commands (`cargo build`, `cargo test`, `cargo fmt`, `cargo clippy`) work as expected.
-- **Frontend Compile**: `npx tsc -p tsconfig.frontend.json` (Always edit `public/ts/` — never the generated `public/js/`).
-- **Tailwind Build**: `npx tailwindcss -i public/input.css -o public/output.css`
-- **Benchmarks**: `cargo bench --bench <name>` (run before and after any hotpath change).
-- **Integration Tests**: `./test/run-integration.sh <mode>` — runs in a private loopback namespace by default (no port conflicts). Pass `--host` to run directly. Modes: `ramp` (8 configs, outputs added one-by-one, per-step RSS snapshots), `mixed-scale` (concurrent load; h264-srt anchor: HLS+smoke+lifecycle; h265-srt: TC_SPAWNS; multi-audio), `bonding` (SRT socket bonding, requires static build).
+## Principles
 
-See [README.md § Development](README.md#development) for full dev setup, prerequisites, inner loop, and benchmark suite reference.
+- Keep changes small, intentional, and consistent with existing Rust/TypeScript patterns.
+- Read relevant code and docs before editing, especially for media-pipeline behavior.
+- Preserve unrelated user or agent changes. Check `git status` before broad edits, staging, or commits.
+- Add or update tests for behavior changes. Benchmark before and after hot-path changes.
+- Update docs when changing commands, configuration, architecture, protocols, or user-visible behavior.
+- Prefer targeted fixes over rewrites. Add abstractions only when they remove real complexity.
 
-## Key Constraints
-- **Ports**: Defaults are HTTP=3030, RTMP=1935, SRT=10080. Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT` env vars.
-- **Database**: SQLite at `data.db` by default. Override path via `RESTREAM_DB_PATH` (e.g. `RESTREAM_DB_PATH=/data/restream.db`). No migrations; schema created with `CREATE TABLE IF NOT EXISTS` at startup.
-- **Media Directory**: Defaults to `media/`. Override via `RESTREAM_MEDIA_DIR` (e.g. `RESTREAM_MEDIA_DIR=/data/media`). Used for file-ingest sources and `.mkv` recordings.
-- **HLS Segmenter**: In-memory storage only (`VecDeque<Bytes>` inside `HlsStore`), no disk I/O.
-- **Frontend Assets**: Statically embedded in the binary via `rust-embed` (disk-first fallback in dev).
+## Repository Map
 
-## Hotpath & Performance Guidelines
-When modifying hotpath code (files under [src/media/](src/media/) or other performance-critical components), follow the principles in [high-performance-data-path.md](docs/high-performance-data-path.md):
+- Rust backend and control plane: `src/`
+- Media engine and protocols: `src/media/`
+- Frontend source: `public/ts/`
+- Generated frontend output: `public/js/`
+- Tests and validation: `test/`
+- Benchmarks: `benches/`
+- Docs: `docs/`
+- Archived legacy implementation: `old/` (not production runtime)
 
-1. **Always Benchmark Before & After**: Run the relevant Criterion benchmarks (`cargo bench --bench <bench_name>` under [benches/](benches/)) before and after changes.
-2. **Burst-Oriented Design**: Change the unit of work from one packet, one lookup, and one wakeup to a bounded burst (`push_batch` / `pull_burst`).
-3. **Direct Hot Handles**: Cache `Arc<RingBuffer>`, `Arc<AtomicU64>` byte counters, and other handles at connection setup. Never do registry map/lock lookups on the packet loop.
-4. **Run-to-Completion**: Perform packet-local operations (parse, classify, normalize timestamps, account, publish) on the worker thread itself instead of spawning new tasks/channels.
-5. **Zero-Copy Optimization**: Avoid payload copies. Transfer `Bytes`/`BytesMut` ownership or reuse vectors. Use `drain_into()` not `drain()` to retain vector allocations.
-6. **Hoist Batch Buffers**: Declare burst-drain `Vec`s (packets, ts_batch, conv_buf) **before** the `loop {}`, call `.clear()` inside each arm. `Vec::with_capacity(N)` inside a loop re-allocates on every burst cycle — one alloc per ~8 ms at 30 fps.
-7. **No Regressions**: Verify correctness gates (PTS/DTS ordering, keyframe alignment, format compliance via probes/ffprobe) after any change. Performance must not come at the cost of protocol correctness.
+## Standard Commands
 
-### SIMD / Vectorization
-Vectorization opportunities exist in MPEG-TS sync-byte scanning, CRC32 computation, NALU start-code search, PES header parsing, timestamp extraction across packet bursts, and byte-pattern matching in codec probes.
+Use the pinned Rust toolchain from `rust-toolchain.toml`.
 
-Rules for adding vectorized code:
-1. **Benchmark the scalar path first** with Criterion (`cargo bench`). Only add SIMD if the scalar version is a measured bottleneck. Never speculatively vectorize.
-2. **Runtime width selection with scalar fallback**: Use `std::arch::is_x86_feature_detected!` (or equivalent) to pick the widest available path at startup or first call. Cache the function pointer / enum choice — never re-detect per packet. Provide a pure-scalar fallback that is always compiled and always reachable.
-   ```rust
-   // Example dispatch pattern
-   type ScanFn = fn(&[u8]) -> Option<usize>;
-   static SCAN: OnceLock<ScanFn> = OnceLock::new();
-   fn pick_scan() -> ScanFn {
-       #[cfg(target_arch = "x86_64")] {
-           if is_x86_feature_detected!("avx2") { return scan_avx2; }
-           if is_x86_feature_detected!("sse4.2") { return scan_sse42; }
-       }
-       scan_scalar
-   }
-   ```
-3. **Target-feature gating**: Mark SIMD functions with `#[target_feature(enable = "...")]` and keep them in a dedicated module (e.g., `simd.rs` or `simd/`). Do not enable target features globally — it breaks the scalar fallback on older CPUs.
-4. **Unsafe discipline**: SIMD intrinsics require `unsafe`. Keep the unsafe block minimal — just the intrinsic calls. Bounds-check slice access outside the unsafe block. Document the safety invariant (alignment, length) on each function.
-5. **Width progression**: SSE2 (128-bit, x86-64 baseline) → AVX2 (256-bit) → AVX-512 (512-bit, only if benchmarks show a win). Older Intel CPUs throttle core frequency on AVX-512; recent chips (Sapphire Rapids+, Zen 4+) do not — but the wider width still only helps if the hot loop is memory-bandwidth or throughput-bound, not latency-bound. Benchmark on target hardware before committing to an AVX-512 path.
-6. **Testing**: The scalar fallback is the test oracle. Add a property test or exhaustive small-input test that asserts `simd_fn(input) == scalar_fn(input)` for every width variant.
+```sh
+cargo build
+cargo test
+cargo clippy
+cargo fmt
+```
+
+Frontend work:
+
+```sh
+npx tsc -p tsconfig.json
+npx tailwindcss -i public/input.css -o public/output.css
+npx playwright test
+```
+
+Edit `public/ts/` and `public/input.css`. Do not hand-edit generated files in `public/js/`.
+
+Benchmarks and integration tests:
+
+```sh
+cargo bench --bench <name>
+cargo bench --bench <name> --profile bench-dev
+./test/run-integration.sh mixed-scale
+./test/run-integration.sh ramp
+./test/run-integration.sh bonding
+```
+
+Integration tests run in a private loopback namespace by default. Use `--host` only when host networking is required.
+
+## Configuration Defaults
+
+- HTTP: `3030` (`RESTREAM_HTTP_PORT`)
+- RTMP: `1935` (`RESTREAM_RTMP_PORT`)
+- SRT: `10080` (`RESTREAM_SRT_PORT`)
+- SQLite DB: `data.db` (`RESTREAM_DB_PATH`)
+- Media directory: `media/` (`RESTREAM_MEDIA_DIR`)
+
+Frontend assets are embedded with `rust-embed`, with a disk-first fallback during development.
 
 ## Media Pipeline Rules
-When modifying any code in [src/media/](src/media/), follow the pipeline design in [media-pipeline.md](docs/media-pipeline.md) and the architecture in [architecture.md](docs/architecture.md):
 
-### Threading Model
-- **Tokio tasks** own sockets, API handlers, timers, connection lifecycle, and inline demux/mux (RTMP ingest/egress, SRT ingest with TsDemuxer, SRT egress feed with TsMuxer, HLS segmenter).
-- **Dedicated `std::thread`** for blocking FFmpeg work and blocking `srt_send()`: transcoder stages, recording muxer, SRT egress sender.
-- **Never block the tokio runtime**: FFmpeg codec calls (`avcodec_decode_video2`, `avcodec_encode_video2`, `av_interleaved_write_frame`) and `srt_send()` must run on OS threads, not tokio tasks.
-- **`catch_unwind(AssertUnwindSafe(…))`**: Wrap all FFmpeg/libsrt OS thread entry points to prevent panics from crashing the process.
+Before changing `src/media/`, read `docs/architecture.md`, `docs/media-pipeline.md`,
+`docs/high-performance-data-path.md`, and `docs/testing.md`.
 
-### Packet Contract
-- `MediaPacket.format` (`PayloadFormat::Flv` or `PayloadFormat::Raw`) is set by the producer and **must** be checked by every consumer. RTMP ingest produces `Flv`; SRT TsDemuxer, transcoder output, and native MPEG-TS demuxer produce `Raw`.
-- Consumers must strip FLV headers (5-byte video, 2-byte audio) from `Flv` payloads before MPEG-TS muxing. `Raw` payloads pass through directly.
-- Never replace PTS/DTS with wall-clock timestamps. Store and analyze media time and application time independently.
-- RTMP video timestamps are DTS. The signed composition-time offset lives in the FLV payload: `PTS = DTS + offset`. Use `packet.dts` as the RTMP message timestamp for video; `packet.pts` for audio.
+Core invariants:
 
-### Ring Buffer
-- 4096-slot SPMC, lock-free via `ArcSwapOption`. Single-producer assumption (one ingest per pipeline).
-- Use `push_batch()` / `pull_burst()` for burst publication and consumption (up to 32 packets).
-- Overflow recovery: readers fast-forward to latest keyframe via `last_keyframe_idx`.
-- Do not add per-packet logging, serialization, or channel sends on the ring hot path.
+- Tokio tasks own sockets, API handlers, timers, and inline mux/demux work.
+- Blocking FFmpeg calls and blocking `srt_send()` belong on dedicated OS threads.
+- Wrap FFmpeg/libsrt OS-thread entry points with `catch_unwind(AssertUnwindSafe(...))`.
+- Keep media timestamps separate from wall-clock/application time.
+- Respect `MediaPacket.format`: consumers must handle `Flv` and `Raw` explicitly.
+- RTMP video timestamps are DTS; signed FLV composition offset derives PTS.
+- SRT Stream IDs must be normalized before lookup.
+- Duplicate SRT publishers are not bonded ingest. Only libsrt group connections are bonds.
+- HLS storage is in-memory; do not introduce segment disk I/O without an explicit design change.
 
-### Stage Sharing
-- Video stages are shared by preset (e.g., one `720p` encoder for all `720p` outputs).
-- Audio stages are keyed by **both** the audio operation **and** the upstream video stage (e.g., `audio:atrack:0:from:video:720p`). Never key audio stages by audio operation alone — this causes cross-contamination between presets.
-- Task "active" state is cancellation-token presence, not worker health. A native thread can fail while its token remains active.
+## Hot-Path Rules
 
-### Protocol Correctness
-- Probe with the matching ingest protocol (RTMP ingest → RTMP probe, SRT ingest → SRT probe). Cross-protocol probing creates false positives.
-- Emit only media streams: one video + intended audio tracks. Reject subtitles, private data, unknown stream types. The MPEG-TS remuxer must not guess codecs for unknown PIDs.
-- SRT stream IDs: strip query parameters before database lookup. Accept all standard forms (`publish:live/<key>`, `#!::r=live/<key>,m=publish`, bare `<key>`, etc.).
-- Bonded SRT: two independent sockets with matching StreamID are **not** a bond — reject as duplicate publishers. Only libsrt group connections (via `SRTO_GROUPCONNECT`) create bonds.
-- A/V sync: every mux consumer must call `DtsEnforcer::enforce()` with `stream_idx` 0=video, 1…=audio by position in `audio_tracks` (not by `track_index` value). Never apply wall-clock offsets to ring-buffer timestamps. Regression test: `cargo test av_sync` (covers 48h drift-free, cross-stream isolation, RTMP wrap boundary).
+Hot paths include `src/media/`, ring buffers, mux/demux loops, AVIO queues,
+SRT/RTMP packet loops, HLS segmenting, and transcoder data paths.
 
-### MemoryQueue / AVIO
-- `MemoryQueue` (Mutex + Condvar) connects tokio tasks to blocking FFmpeg threads. Use `write_batch()` to amortize lock acquisition.
-- FFmpeg AVIO callbacks run under the MemoryQueue lock. Keep callbacks minimal — no allocation, no logging.
-- Retain `BytesMut` capacity across writes. Use `Bytes::from(Vec<u8>)` for zero-copy freeze.
+- Benchmark before and after hot-path changes with the relevant `benches/` suite.
+- Avoid per-packet allocation, logging, serialization, locks, async channel sends, and system calls.
+- Use burst APIs such as `push_batch`, `pull_burst`, and `write_batch` where available.
+- Hoist reusable buffers outside loops and call `.clear()` inside the loop.
+- Prefer `Bytes`/`BytesMut` ownership transfer and ref-counting over payload copies.
+- Do not add diagnostic readers or metrics that alter production pipeline behavior.
+- Keep protocol correctness tests at least as strong as performance validation.
 
-### What NOT to Do on the Hot Path
-- No per-packet allocation for diagnostics
-- No locks, logging, serialization, or async channel sends
-- No wall-clock or system calls per packet (except monotonic timestamp reads)
-- No payload copies (use `Bytes` ref-counting)
-- No unbounded event collection
-- No diagnostic reader that changes the production pipeline
-- No high-cardinality metrics per packet
+SIMD/vectorization:
+
+- Benchmark the scalar path first.
+- Add SIMD only for a measured bottleneck.
+- Keep a pure scalar fallback and test it as the oracle.
+- Use runtime feature detection once, cache the chosen implementation, and gate target features locally.
+- Keep `unsafe` blocks minimal and document safety invariants.
+
+## Testing Expectations
+
+- Run the narrowest meaningful test first, then broaden based on risk.
+- Use `cargo test av_sync` for timestamp, DTS/PTS, and cross-stream sync changes.
+- Use protocol-matched probes: RTMP changes with RTMP probes, SRT changes with SRT probes.
+- For UI changes, run TypeScript compile and the relevant Playwright tests.
+- For integration or scale behavior, prefer `./test/run-integration.sh mixed-scale`; use `ramp` for memory growth and `bonding` for SRT bonding.
+
+## Key References
+
+- Overview/setup: `README.md`
+- Status/limits: `REWRITE-STATUS.md`
+- Architecture: `docs/architecture.md`
+- Media pipeline: `docs/media-pipeline.md`
+- Performance: `docs/high-performance-data-path.md`
+- Testing: `docs/testing.md`
+- Configuration: `docs/configuration.md`
+- Observability: `docs/observability.md`
+- API: `docs/api-reference.md`
