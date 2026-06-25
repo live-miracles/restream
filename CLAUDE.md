@@ -12,13 +12,13 @@ Standard cargo commands (`cargo build`, `cargo test`, `cargo fmt`, `cargo clippy
 - **Frontend Compile**: `npx tsc -p tsconfig.frontend.json` (Always edit `public/ts/` — never the generated `public/js/`).
 - **Tailwind Build**: `npx tailwindcss -i public/input.css -o public/output.css`
 - **Benchmarks**: `cargo bench --bench <name>` (run before and after any hotpath change).
-- **Integration Tests**: `./test/run-2x3.sh` (requires isolated network namespace to avoid port conflicts).
+- **Integration Tests**: `./test/run-integration.sh <mode>` — runs in a private loopback namespace by default (no port conflicts). Pass `--host` to run directly. Modes: `ramp` (8 configs, outputs added one-by-one, per-step RSS snapshots), `mixed-scale` (concurrent load; h264-srt anchor: HLS+smoke+lifecycle; h265-srt: TC_SPAWNS; multi-audio), `bonding` (SRT socket bonding, requires static build).
 
 See [README.md § Development](README.md#development) for full dev setup, prerequisites, inner loop, and benchmark suite reference.
 
 ## Key Constraints
 - **Ports**: Defaults are HTTP=3030, RTMP=1935, SRT=10080. Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT` env vars.
-- **Database**: SQLite (no migrations; schema created with `CREATE TABLE IF NOT EXISTS` at startup).
+- **Database**: SQLite at `data.db` by default. Override path via `RESTREAM_DB_PATH` (e.g. `RESTREAM_DB_PATH=/data/restream.db`). No migrations; schema created with `CREATE TABLE IF NOT EXISTS` at startup.
 - **HLS Segmenter**: In-memory storage only (`VecDeque<Bytes>` inside `HlsStore`), no disk I/O.
 - **Frontend Assets**: Statically embedded in the binary via `rust-embed` (disk-first fallback in dev).
 

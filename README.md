@@ -158,29 +158,14 @@ As of June 22, 2026 this runs 132 passing tests:
 - 12 database integration tests
 - 4 transcoder integration tests
 
-**Live integration tests** require isolated network (ports 3030/1935/10080 must
-be free):
+**Live integration tests** run in a private loopback namespace by default (no
+port conflicts); pass `--host` to run on the host network:
 
 ```sh
-# Lightweight: Linux network namespace
-unshare --net --map-root-user bash -c '
-  ip link set lo up
-  ./target/release/restream &
-  until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-  ./test/run-2x3.sh
-'
-
-# Alternative: Docker
-docker run --rm -v "$(pwd)":/app -w /app rust:1-bookworm bash -c '
-  apt-get update -qq && apt-get install -y -qq ffmpeg jq libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev pkg-config clang > /dev/null 2>&1
-  cargo build --release
-  ./target/release/restream &
-  until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-  ./test/run-2x3.sh
-'
+./test/run-integration.sh mixed-scale   # correctness gate + concurrent load
+./test/run-integration.sh ramp          # per-output RSS ramp (8 configs)
+./test/run-integration.sh bonding       # SRT socket bonding (requires static build)
 ```
-
-For the broader media/scale harness: `./test/run-media-validation.sh`
 
 Detailed correctness and scale gates are in [Testing](docs/testing.md).
 
@@ -223,9 +208,9 @@ The following come from the **OS** and are not compiled by the script:
 Build steps:
 
 ```sh
-./scripts/setup-static-build.sh   # compile native deps (content-addressed, reuses cache)
-./scripts/test-srt-bonding.sh     # verify broadcast + backup failover
-./scripts/build-static.sh         # fat-LTO static binary → .build/static/cargo-target/release/restream
+./scripts/setup-static-build.sh          # compile native deps (content-addressed, reuses cache)
+./test/run-integration.sh bonding        # verify broadcast + backup failover
+./scripts/build-static.sh               # fat-LTO static binary → .build/static/cargo-target/release/restream
 ```
 
 Force a full native rebuild: `RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh`
@@ -246,7 +231,7 @@ this build enables x264, redistribution must comply with GPL.
 | `1935` | TCP/RTMP | RTMP ingest and play |
 | `10080` | UDP/SRT | SRT ingest and read |
 
-Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT`.
+Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT`, `RESTREAM_DB_PATH`.
 
 | Path | Purpose |
 |---|---|
