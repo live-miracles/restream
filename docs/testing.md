@@ -190,6 +190,13 @@ readers do not report positive `burstCount` and `avgBurstSize` telemetry.
 Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
 space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"`).
 
+The public shell mode is now a thin artifact/summary wrapper around
+`cargo run --bin test_harness -- burst-verify`; the config matrix, RTMP/SRT
+publishers, dummy burst readers, graph snapshots, and burst-stat assertions are
+implemented in Rust. RTMP/FLV can publish only one audio stream, so the Rust
+result records both requested and actually published audio-track counts while
+SRT retains dual-audio coverage.
+
 ### `hls-put` — HTTP HLS upload dummy sink
 
 ```sh
@@ -431,9 +438,10 @@ iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
 for every mode.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
-parsers/launchers only. `hls-put` and `bframe-rtmp` are already behind typed
-Rust harness entry points; the remaining per-mode media runners should migrate
-one isolated mode at a time while preserving public CLI and artifact layout.
+parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
+already behind typed Rust harness entry points; the remaining per-mode media
+runners should migrate one isolated mode at a time while preserving public CLI
+and artifact layout.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to

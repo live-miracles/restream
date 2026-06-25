@@ -286,6 +286,7 @@ resume_allows() {
 mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
+    burst-verify) printf '%s\n' cargo ffmpeg jq ;;
     hls-put)      printf '%s\n' cargo ffmpeg ffprobe jq ;;
     bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
     *)            printf '%s\n' ffmpeg ffprobe curl jq mediamtx ;;
@@ -1237,170 +1238,23 @@ run_bonding() {
 #   BURST_SETTLE_SECS   seconds to stream before sampling graph (default: 8)
 #   BURST_CONFIGS       space-separated config names to run (default: all)
 run_burst_verify() {
-  local SETTLE="${BURST_SETTLE_SECS:-8}"
   WORK_DIR="${WORK_DIR:-test/artifacts/burst-verify}"
   RESTREAM_LOG="${WORK_DIR}/restream.log"
+  SUMMARY_LOG="${WORK_DIR}/summary.txt"
   init_run_artifacts
-  check_deps ffmpeg ffprobe curl jq mediamtx
+  check_deps cargo ffmpeg jq
+  : > "$SUMMARY_LOG"
 
-  start_mediamtx
-  start_restream
-  COOKIE_JAR=$(mktemp)
-  api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+  TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    cargo run --quiet --bin test_harness -- burst-verify \
+    >"${WORK_DIR}/test-harness.log" 2>&1 \
+    || { tail -120 "${WORK_DIR}/test-harness.log" >&2 || true; fail "Rust burst-verify harness failed"; }
 
-  # burst_config  proto  codec  res       fps  gop  multi_audio
-  # GOP = fps * 2 (2-second closed GOP)
-  local -a CONFIGS=(
-    "rtmp-h264-1080p-30fps-1a  rtmp h264 1920x1080 30  60  0"
-    "rtmp-h264-1080p-60fps-1a  rtmp h264 1920x1080 60 120  0"
-    "rtmp-h264-4k-24fps-1a     rtmp h264 3840x2160 24  48  0"
-    "rtmp-h264-4k-25fps-2a     rtmp h264 3840x2160 25  50  1"
-    "rtmp-h265-1080p-50fps-1a  rtmp h265 1920x1080 50 100  0"
-    "rtmp-h265-4k-30fps-2a     rtmp h265 3840x2160 30  60  1"
-    "srt-h264-1080p-25fps-1a   srt  h264 1920x1080 25  50  0"
-    "srt-h264-1080p-60fps-2a   srt  h264 1920x1080 60 120  1"
-    "srt-h265-1080p-24fps-1a   srt  h265 1920x1080 24  48  0"
-    "srt-h265-4k-30fps-2a      srt  h265 3840x2160 30  60  1"
-  )
-
-  local pass=0 fail_count=0
-  local selected_count=0
-
-  for cfg_line in "${CONFIGS[@]}"; do
-    read -r cfg proto codec res fps gop multi_audio <<< "$cfg_line"
-    if [[ -n "${BURST_CONFIGS:-}" ]]; then
-      local selected=0 wanted
-      for wanted in ${BURST_CONFIGS}; do
-        if [[ "$cfg" == "$wanted" ]]; then
-          selected=1
-          break
-        fi
+  local result_json="${WORK_DIR}/burst-verify.json"
+  jq -r '.cases[] | "burst-verify: \(.config) - \(.burstOk) reader(s) with live burst stats"' "$result_json" \
+    | while IFS= read -r line; do
+        log_ok "$line"
       done
-      [[ "$selected" == "1" ]] || continue
-    fi
-    selected_count=$(( selected_count + 1 ))
-
-    echo ""
-    echo "── ${cfg}: ${proto} ${codec} ${res} ${fps}fps GOP=${gop} audio=$([[ $multi_audio == 1 ]] && echo 2 || echo 1) ──"
-
-    # ── build ffmpeg publisher command ─────────────────────────────────────────
-    local stream_key="sk-${cfg}"
-    local pub_url fmt_args=() codec_args=() map_args=() audio_inputs=()
-
-    if [[ "$proto" == "rtmp" ]]; then
-      pub_url="rtmp://127.0.0.1:${RESTREAM_RTMP}/live/${stream_key}"
-      fmt_args=( -f flv "$pub_url" )
-    else
-      pub_url="srt://127.0.0.1:${RESTREAM_SRT}?streamid=publish:live/${stream_key}&latency=200000"
-      fmt_args=( -f mpegts "$pub_url" )
-    fi
-
-    if [[ "$codec" == "h265" ]]; then
-      codec_args=(
-        -c:v libx265 -preset ultrafast -tune zerolatency
-        -x265-params "log-level=none:keyint=${gop}:min-keyint=${gop}:no-open-gop=1"
-      )
-    else
-      codec_args=(
-        -c:v libx264 -preset ultrafast -tune zerolatency
-        -g "$gop" -keyint_min "$gop" -x264-params "no-open-gop=1"
-      )
-    fi
-
-    if [[ "$multi_audio" == "1" ]]; then
-      audio_inputs=( -f lavfi -i 'anullsrc=r=48000:cl=stereo' -f lavfi -i 'anullsrc=r=44100:cl=mono' )
-      map_args=( -map 0:v -map 1:a -map 2:a )
-    else
-      audio_inputs=( -f lavfi -i 'anullsrc=r=48000:cl=stereo' )
-      map_args=( -map 0:v -map 1:a )
-    fi
-
-    # ── create pipeline and publisher ─────────────────────────────────────────
-    local pipe_id
-    pipe_id=$(api POST /pipelines \
-      -d "{\"name\":\"${cfg}\",\"streamKey\":\"${stream_key}\"}" | jq -r '.pipeline.id')
-
-    # Add one source output so the ring buffer has an active reader.
-    # mediamtx accepts arbitrary RTMP publish paths and acts as a disposable sink.
-    local oid
-    oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-      -d "{\"name\":\"src-out\",\"url\":\"rtmp://127.0.0.1:${MTX_RTMP}/live/${cfg}-out\",\"encoding\":\"source\"}" \
-      | jq -r '.output.id')
-    api POST "/pipelines/${pipe_id}/outputs/${oid}/start" >/dev/null
-
-    ffmpeg -nostdin -hide_banner -loglevel error -re \
-      -f lavfi -i "testsrc2=size=${res}:rate=${fps}" \
-      "${audio_inputs[@]}" \
-      "${codec_args[@]}" "${map_args[@]}" \
-      -b:v 6M -c:a aac -b:a 64k \
-      "${fmt_args[@]}" >"${WORK_DIR}/${cfg}-pub.log" 2>&1 &
-    PUB_PID=$!
-
-    # ── wait for ingest to go live ────────────────────────────────────────────
-    wait_for_input_live "$pipe_id" "$cfg" || { fail_count=$(( fail_count + 1 )); kill "$PUB_PID" 2>/dev/null || true; continue; }
-
-    echo "  streaming ${SETTLE}s for burst stats to accumulate..."
-    sleep "$SETTLE"
-
-    # ── sample graph API for burst stats ─────────────────────────────────────
-    local graph
-    graph=$(api GET "/pipelines/${pipe_id}/graph" 2>/dev/null || echo '{}')
-
-    local readers_json avg_burst burst_count median_burst
-    readers_json=$(echo "$graph" | jq -c '
-      .nodes[]
-      | select(.type == "ring_buffer")
-      | .details.readers // []
-      | .[]' 2>/dev/null || echo '')
-
-    local any_reader=0 burst_ok=0 burst_fail_count=0
-    while IFS= read -r reader; do
-      [[ -z "$reader" ]] && continue
-      any_reader=1
-      local rname rbursts ravg rmedian
-      rname=$(echo "$reader" | jq -r '.name')
-      rbursts=$(echo "$reader" | jq -r '.burstCount // 0')
-      ravg=$(echo "$reader" | jq -r '.avgBurstSize // 0')
-      rmedian=$(echo "$reader" | jq -r '.medianBurstSize // 0')
-      printf "  reader=%-40s  bursts=%-8s  avg=%-6s  median=%s\n" \
-        "$rname" "$rbursts" "$ravg" "$rmedian"
-      if [[ "$rbursts" -gt 0 ]] && awk "BEGIN{exit !($ravg > 0)}"; then
-        burst_ok=$(( burst_ok + 1 ))
-      else
-        printf "    WARN: reader '%s' has zero bursts or zero avg\n" "$rname"
-        burst_fail_count=$(( burst_fail_count + 1 ))
-      fi
-    done <<< "$readers_json"
-
-    # ── verdict ───────────────────────────────────────────────────────────────
-    if [[ "$any_reader" == "0" ]]; then
-      printf "  FAIL %-40s  no ring buffer readers found in graph\n" "$cfg"
-      fail_count=$(( fail_count + 1 ))
-    elif [[ "$burst_fail_count" -gt 0 ]]; then
-      printf "  FAIL %-40s  %d reader(s) with zero burst stats\n" "$cfg" "$burst_fail_count"
-      fail_count=$(( fail_count + 1 ))
-    else
-      printf "  ok   %-40s  %d reader(s) reporting burst stats\n" "$cfg" "$burst_ok"
-      log_ok "burst-verify: ${cfg} — ${burst_ok} reader(s) with live burst stats"
-      pass=$(( pass + 1 ))
-    fi
-
-    kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
-
-    # Let restream drain before next config (avoids port reuse races)
-    sleep 3
-  done
-
-  if [[ "$selected_count" -eq 0 ]]; then
-    fail "burst-verify: BURST_CONFIGS matched no configs"
-  fi
-
-  echo ""
-  echo "══════════════════════════════════════════════════════════════════════════"
-  printf "  burst-verify  pass=%d  fail=%d  total=%d\n" "$pass" "$fail_count" "$(( pass + fail_count ))"
-  echo "══════════════════════════════════════════════════════════════════════════"
-
-  [[ "$fail_count" -eq 0 ]] || fail "burst-verify: ${fail_count} config(s) failed"
 }
 
 # ── hls-put mode ──────────────────────────────────────────────────────────────

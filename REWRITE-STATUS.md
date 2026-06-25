@@ -127,6 +127,20 @@ June 25, 2026 with `WORK_DIR=test/artifacts/hls-put-rust-wrapper`,
 apply the same pattern to the isolated `burst-verify` mode before tackling the
 larger `ramp` or `mixed-scale` scale runners.
 
+`burst-verify` has now moved behind the typed Rust harness boundary as well:
+`test/run-integration.sh burst-verify` preserves the manifest, summary, per-case
+publisher logs, graph snapshots, `BURST_CONFIGS` filtering, and public mode name
+while delegating the full ten-config RTMP/SRT, H.264/H.265, 1080p/4K, fps, and
+audio-variant matrix to `cargo run --bin test_harness -- burst-verify`. A
+focused wrapper run passed on June 25, 2026 with
+`WORK_DIR=test/artifacts/burst-rust-wrapper-full` and `BURST_SETTLE_SECS=2`;
+all ten configs reported one live reader with non-zero `burstCount` and
+`avgBurstSize`. The Rust result records both requested and published audio
+track counts because RTMP/FLV can carry only one audio stream while SRT retains
+dual-audio coverage. Next continuation point: migrate the larger `ramp` or
+`mixed-scale` runner in smaller Rust-owned subcommands, starting with one
+configuration family and preserving the existing artifact layout.
+
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z
