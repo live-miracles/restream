@@ -98,6 +98,17 @@ A full aggregate preflight on June 25, 2026 also passed for `ramp`,
   checks; `bonding` correctly skips the regular `restream` binary check because
   it builds dedicated static SRT helper binaries
 
+The aggregate protocol-matrix orchestration has moved from bash into the Rust
+`protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
+direction that Rust should be the canonical integration harness. The thin
+`test/run-protocol-matrix.sh` compatibility launcher now delegates to Rust and
+passed `./test/run-protocol-matrix.sh --run-id rust-matrix-preflight-all
+--preflight-only --continue-on-fail` for all six default modes. The remaining
+bash-heavy surface is the per-mode media runner in `test/run-integration.sh`.
+Next continuation point: move one self-contained per-mode scenario behind a
+typed Rust harness entry point, then leave `test/run-integration.sh` as a
+launcher for that mode while preserving its public CLI and artifact layout.
+
 The focused HLS PUT integration was then expanded and re-run on June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z
