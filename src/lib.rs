@@ -25,11 +25,13 @@
 pub mod api;
 pub mod db;
 pub mod diag;
+pub mod domain;
 pub mod ffmpeg_extract;
 pub mod media;
 pub mod runtime_info;
 pub mod types;
 
+use crate::domain::stage::EncodingStagePlan;
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
 use std::collections::HashMap;
@@ -322,12 +324,8 @@ pub async fn run_app() {
                 // Transcoder backend: external by default (subprocess FFmpeg,
                 // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
                 // in-process libavcodec path.  See docs/media-pipeline.md.
-                let encoding = output.encoding.clone();
-                let video_preset = encoding.split('+').next().unwrap_or("source");
-                let audio_part = encoding.split('+').nth(1);
-
-                let is_passthrough =
-                    video_preset.is_empty() || video_preset == "source" || video_preset == "custom";
+                let stage_plan =
+                    EncodingStagePlan::from_encoding(output.pipeline_id.as_str(), &output.encoding);
 
                 let is_rtmp =
                     output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
@@ -353,7 +351,7 @@ pub async fn run_app() {
                 // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
                 // applied after the video+audio stages, avoiding a redundant
                 // source-resolution encode pass.
-                let needs_video_transcode = !is_passthrough;
+                let video_stage = stage_plan.video_stage();
                 // H.265→H.264 is only needed at the RTMP output edge.
                 let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
                 // Pass the ingest codec as override so the video:preset ring is
@@ -365,16 +363,11 @@ pub async fn run_app() {
                 // Stage 1: video transcode from source ring (H.265 flows through
                 // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
                 // the input_codec_override passed into the stage).
-                let video_stage_key = if needs_video_transcode {
-                    video_preset
-                } else {
-                    "source"
-                };
-                let video_buf = if needs_video_transcode {
+                let video_buf = if let Some(stage) = &video_stage {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            &format!("video:{}", video_preset),
+                            &stage.legacy_stage_key(),
                             source_buf.clone(),
                             ingest_codec_override,
                         )
@@ -386,23 +379,19 @@ pub async fn run_app() {
                 // Stage 2: optional audio filter (keyed on video stage to prevent
                 // cross-contamination between presets). Shared between RTMP and SRT
                 // egresses on the same preset.
-                let (pre_h264_buf, last_stage_key) = if let Some(audio) = audio_part {
-                    if !audio.is_empty() {
-                        let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
-                        let buf = engine
-                            .get_or_create_transcoder(
-                                &output.pipeline_id,
-                                &audio_key,
-                                video_buf.clone(),
-                                None,
-                            )
-                            .await;
-                        (buf, audio_key)
-                    } else {
-                        (video_buf.clone(), video_stage_key.to_string())
-                    }
+                let (pre_h264_buf, last_stage_key) = if let Some(stage) = stage_plan.audio_stage() {
+                    let audio_key = stage.legacy_stage_key();
+                    let buf = engine
+                        .get_or_create_transcoder(
+                            &output.pipeline_id,
+                            &audio_key,
+                            video_buf.clone(),
+                            None,
+                        )
+                        .await;
+                    (buf, audio_key)
                 } else {
-                    (video_buf.clone(), video_stage_key.to_string())
+                    (video_buf.clone(), stage_plan.terminal_stage_ref())
                 };
 
                 // Stage 3: H.265→H.264 conversion for RTMP only (applied after
@@ -653,42 +642,21 @@ pub async fn run_app() {
                         .map(|v| v.codec == "hevc" || v.codec == "h265")
                         .unwrap_or(false);
 
-                    let encoding = &output.encoding;
-                    let video_preset = encoding.split('+').next().unwrap_or("source");
-                    let audio_part = encoding.split('+').nth(1);
-
-                    let is_passthrough = video_preset.is_empty()
-                        || video_preset == "source"
-                        || video_preset == "custom";
-                    let needs_video_transcode = !is_passthrough;
+                    let stage_plan = EncodingStagePlan::from_encoding(
+                        output.pipeline_id.as_str(),
+                        &output.encoding,
+                    );
                     let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
 
-                    let video_stage_key = if needs_video_transcode {
-                        video_preset
-                    } else {
-                        "source"
-                    };
-
-                    if needs_video_transcode {
-                        needed_stages
-                            .insert(format!("{}:video:{}", output.pipeline_id, video_preset));
+                    if let Some(stage) = stage_plan.video_stage() {
+                        needed_stages.insert(stage.storage_key());
                     }
-                    let last_stage_key = if let Some(audio) = audio_part {
-                        if !audio.is_empty() {
-                            let audio_key = format!("audio:{}:from:{}", audio, video_stage_key);
-                            needed_stages.insert(format!("{}:{}", output.pipeline_id, audio_key));
-                            audio_key.to_string()
-                        } else {
-                            video_stage_key.to_string()
-                        }
-                    } else {
-                        video_stage_key.to_string()
-                    };
+                    if let Some(stage) = stage_plan.audio_stage() {
+                        needed_stages.insert(stage.storage_key());
+                    }
                     if needs_rtmp_h264_conv {
-                        needed_stages.insert(format!(
-                            "{}:hevc_to_h264:from:{}",
-                            output.pipeline_id, last_stage_key
-                        ));
+                        needed_stages
+                            .insert(stage_plan.codec_edge_stage("hevc_to_h264").storage_key());
                     }
                 }
             }

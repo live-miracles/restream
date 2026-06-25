@@ -11,6 +11,7 @@ use std::time::Instant;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::stage::{EncodingStagePlan, StageKind};
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
@@ -287,7 +288,8 @@ pub struct MediaEngine {
     pub hls_stores: TokioRwLock<HashMap<String, Arc<HlsStore>>>,
     // Map of ingest_id -> file ingest child process
     pub file_ingest_children: TokioRwLock<HashMap<String, tokio::process::Child>>,
-    // Map of "pipeline_id:encoding" -> transcoded RingBuffer + cancel token
+    // Map of typed stage key serialized as "<pipeline_id>:<stage_key>" ->
+    // transcoded RingBuffer + cancel token.
     pub transcoder_buffers: TokioRwLock<HashMap<String, (Arc<RingBuffer>, CancellationToken)>>,
     // SRT listener socket kernel buffer stats
     pub srt_listener_stats: Arc<ListenerSocketStats>,
@@ -443,7 +445,8 @@ impl MediaEngine {
         // of the packets in source_buffer so the TsMuxer gets the right PMT.
         input_codec_override: Option<&str>,
     ) -> Arc<RingBuffer> {
-        let key = format!("{}:{}", pipeline_id, encoding);
+        let stage_kind = StageKind::parse_legacy_key(encoding);
+        let key = format!("{}:{}", pipeline_id, stage_kind.legacy_key());
 
         // Use a single write-lock acquisition to atomically check-and-insert.
         // The previous read-lock-then-write-lock pattern had a TOCTOU window:
@@ -468,7 +471,7 @@ impl MediaEngine {
         // spawned task runs.
         // • video:* stages: always re-encode with libx264 → always "h264"
         // • audio:* stages: passthrough → inherit hint from source_buffer
-        if encoding.starts_with("video:") {
+        if stage_kind.is_video_preset() {
             // Preserve the input codec: H.265 source → H.265 output, H.264 → H.264.
             // input_codec_override carries the ingest codec ("hevc" or "h265") so
             // the ring is tagged correctly for downstream audio stages and egress.
@@ -503,14 +506,9 @@ impl MediaEngine {
                 .unwrap_or_default()
         };
 
-        let output_tracks = if encoding.starts_with("audio:") {
-            let audio_spec = encoding.strip_prefix("audio:").unwrap_or(encoding);
-            let audio_op = audio_spec
-                .rsplit_once(":from:")
-                .map(|(op, _)| op)
-                .unwrap_or(audio_spec);
+        let output_tracks = if let Some(audio_op) = stage_kind.audio_operation() {
             let routing =
-                crate::media::transcoder::parse_audio_routing(&format!("source+{}", audio_op));
+                crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
             crate::media::transcoder::apply_audio_routing(&routing, &input_tracks)
         } else {
             (*input_tracks).clone()
@@ -534,11 +532,7 @@ impl MediaEngine {
         // downmix: requires DSP decode→mix→encode → full internal FFmpeg path.
         // video: stages (video:720p etc.): external subprocess FFmpeg by default;
         //   override with RESTREAM_USE_INTERNAL_TRANSCODER=1.
-        if let Some(audio_spec) = enc.strip_prefix("audio:") {
-            let audio_op = audio_spec
-                .rsplit_once(":from:")
-                .map(|(op, _)| op)
-                .unwrap_or(audio_spec);
+        if let Some(audio_op) = stage_kind.audio_operation() {
             let routing =
                 crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
             let is_lightweight = matches!(
@@ -631,7 +625,15 @@ impl MediaEngine {
         upstream_stage_key: &str,
         source_buffer: Arc<RingBuffer>,
     ) -> Arc<RingBuffer> {
-        let key = format!("{}:hevc_to_h264:from:{}", pipeline_id, upstream_stage_key);
+        let key = format!(
+            "{}:{}",
+            pipeline_id,
+            StageKind::codec_edge(
+                "hevc_to_h264",
+                StageKind::parse_legacy_key(upstream_stage_key)
+            )
+            .legacy_key()
+        );
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
@@ -1429,68 +1431,44 @@ impl MediaEngine {
             "label": "push(MediaPacket)",
         }));
 
-        // Nodes: transcoder stages (keys are "video:720p" or "audio:atrack:0:from:720p")
+        // Nodes: transcoder stages.
         let prefix = format!("{}:", pipeline_id);
         for (key, (_, token)) in transcoder_buffers.iter() {
             if let Some(stage_key) = key.strip_prefix(&prefix) {
-                let stage_id = format!(
-                    "{}_{}_stage",
-                    pipeline_id,
-                    stage_key.replace([':', '+', ','], "_")
-                );
-                let is_video = stage_key.starts_with("video:");
-                let is_audio = stage_key.starts_with("audio:");
-
-                let label = if is_video {
-                    let preset = stage_key.strip_prefix("video:").unwrap_or(stage_key);
-                    format!("Video: {}", preset)
-                } else if is_audio {
-                    let rest = stage_key.strip_prefix("audio:").unwrap_or(stage_key);
-                    if let Some((audio_op, _from)) = rest.rsplit_once(":from:") {
-                        format!("Audio: {}", audio_op)
-                    } else {
-                        format!("Audio: {}", rest)
-                    }
-                } else {
-                    format!("Stage: {}", stage_key)
-                };
-
+                let kind = StageKind::parse_legacy_key(stage_key);
+                let stage_id = kind.graph_node_id(pipeline_id);
                 let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
                 nodes.push(serde_json::json!({
                     "id": stage_id,
-                    "type": if is_audio { "audio_filter" } else { "transcoder" },
-                    "label": label,
+                    "type": kind.graph_type(),
+                    "label": kind.graph_label(),
                     "stageKey": stage_key,
                     "active": !token.is_cancelled(),
                     "metrics": all_stage_metrics.get(&stage_metrics_key).map(|m| m.snapshot()),
                 }));
 
-                if is_audio {
-                    // Audio stage reads from its upstream video stage (encoded in key)
-                    let upstream_preset = stage_key
-                        .rsplit_once(":from:")
-                        .map(|(_, from)| from)
-                        .unwrap_or("source");
-                    if upstream_preset != "source" {
-                        let upstream_id = format!(
-                            "{}_video_{}_stage",
-                            pipeline_id,
-                            upstream_preset.replace([':', '+', ','], "_")
-                        );
-                        edges.push(serde_json::json!({
-                            "from": upstream_id,
-                            "to": stage_id,
-                            "label": "video copy + audio select",
-                        }));
+                if let Some(upstream) = kind.upstream() {
+                    let (from, label) = if matches!(upstream, StageKind::Source) {
+                        let label = if matches!(kind, StageKind::CodecEdge { .. }) {
+                            "codec conversion"
+                        } else {
+                            "audio select"
+                        };
+                        (rb_node_id.clone(), label)
+                    } else if matches!(kind, StageKind::CodecEdge { .. }) {
+                        (upstream.graph_node_id(pipeline_id), "codec conversion")
                     } else {
-                        edges.push(serde_json::json!({
-                            "from": rb_node_id,
-                            "to": stage_id,
-                            "label": "audio select",
-                        }));
-                    }
-                } else {
-                    let preset = stage_key.strip_prefix("video:").unwrap_or(stage_key);
+                        (
+                            upstream.graph_node_id(pipeline_id),
+                            "video copy + audio select",
+                        )
+                    };
+                    edges.push(serde_json::json!({
+                        "from": from,
+                        "to": stage_id,
+                        "label": label,
+                    }));
+                } else if let StageKind::VideoPreset { preset } = &kind {
                     edges.push(serde_json::json!({
                         "from": rb_node_id,
                         "to": stage_id,
@@ -1538,32 +1516,16 @@ impl MediaEngine {
 
             // Edge: from the appropriate stage to this egress
             // Mirror the reconciler's stage-key logic
-            let video_preset = output.encoding.split('+').next().unwrap_or("source");
-            let audio_part = output.encoding.split('+').nth(1);
-            let needs_video =
-                !video_preset.is_empty() && video_preset != "source" && video_preset != "custom";
-            let video_stage_key = if needs_video { video_preset } else { "source" };
-
-            if let Some(audio) = audio_part.filter(|a| !a.is_empty()) {
-                let audio_stage_key = format!("audio:{}:from:{}", audio, video_stage_key);
-                let stage_id = format!(
-                    "{}_{}_stage",
-                    pipeline_id,
-                    audio_stage_key.replace([':', '+', ','], "_")
-                );
+            let stage_plan = EncodingStagePlan::from_encoding(pipeline_id, &output.encoding);
+            if let Some(stage) = stage_plan.audio_stage() {
                 edges.push(serde_json::json!({
-                    "from": stage_id,
+                    "from": stage.kind.graph_node_id(pipeline_id),
                     "to": output_node_id,
                     "label": "MPEG-TS",
                 }));
-            } else if needs_video {
-                let stage_id = format!(
-                    "{}_video_{}_stage",
-                    pipeline_id,
-                    video_preset.replace([':', '+', ','], "_")
-                );
+            } else if let Some(stage) = stage_plan.video_stage() {
                 edges.push(serde_json::json!({
-                    "from": stage_id,
+                    "from": stage.kind.graph_node_id(pipeline_id),
                     "to": output_node_id,
                     "label": "MPEG-TS",
                 }));
