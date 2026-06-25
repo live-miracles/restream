@@ -717,7 +717,7 @@ run_ramp() {
   printf "config,step,label,cpu_pct,rss_kb,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb\n" > "$SCALE_LOG"
   : > "$SUMMARY_LOG"
 
-  local RAMP_FAMILY_DEFAULTS="rtmp-rtmp-src rtmp-rtmp-720p rtmp-srt-src rtmp-srt-720p"
+  local RAMP_FAMILY_DEFAULTS="rtmp-rtmp-src rtmp-rtmp-720p rtmp-srt-src rtmp-srt-720p srt-rtmp-src srt-rtmp-720p srt-srt-src srt-srt-720p"
   local RAMP_FAMILY_SELECTED="${RAMP_FAMILY_CONFIGS:-$RAMP_FAMILY_DEFAULTS}"
   ramp_rust_owns_config() {
     local cfg="$1" item
@@ -727,9 +727,16 @@ run_ramp() {
     done
     return 1
   }
+  local RAMP_NEEDS_LEGACY=0
+  for cfg in rtmp-rtmp-src rtmp-rtmp-720p rtmp-srt-src rtmp-srt-720p srt-rtmp-src srt-rtmp-720p srt-srt-src srt-srt-720p; do
+    if ! ramp_rust_owns_config "$cfg"; then
+      RAMP_NEEDS_LEGACY=1
+      break
+    fi
+  done
 
   if [[ "${RAMP_RUST_FAMILY:-rtmp-rtmp}" != "0" ]]; then
-    echo "  [rust] ramp-family: RTMP ingest → RTMP/SRT outputs"
+    echo "  [rust] ramp-family: RTMP/SRT ingest → RTMP/SRT outputs"
     TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
     SCALE_LOG="$SCALE_LOG" \
     SUMMARY_LOG="$SUMMARY_LOG" \
@@ -739,10 +746,12 @@ run_ramp() {
       || { tail -120 "${WORK_DIR}/ramp-family.log" >&2 || true; fail "Rust ramp-family harness failed"; }
   fi
 
-  start_restream
-  start_mediamtx
-  COOKIE_JAR=$(mktemp)
-  api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+  if [[ "$RAMP_NEEDS_LEGACY" == "1" ]]; then
+    start_restream
+    start_mediamtx
+    COOKIE_JAR=$(mktemp)
+    api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+  fi
 
   run_scale_config() {
     local cfg="$1" ingest_proto="$2" out_proto="$3" encoding="$4"
@@ -843,10 +852,10 @@ run_ramp() {
   ramp_rust_owns_config "rtmp-rtmp-720p" || run_scale_config "rtmp-rtmp-720p" rtmp rtmp 720p
   ramp_rust_owns_config "rtmp-srt-src"   || run_scale_config "rtmp-srt-src"   rtmp srt  source
   ramp_rust_owns_config "rtmp-srt-720p"  || run_scale_config "rtmp-srt-720p"  rtmp srt  720p
-  run_scale_config "srt-rtmp-src"   srt  rtmp source
-  run_scale_config "srt-rtmp-720p"  srt  rtmp 720p
-  run_scale_config "srt-srt-src"    srt  srt  source
-  run_scale_config "srt-srt-720p"   srt  srt  720p
+  ramp_rust_owns_config "srt-rtmp-src"   || run_scale_config "srt-rtmp-src"   srt  rtmp source
+  ramp_rust_owns_config "srt-rtmp-720p"  || run_scale_config "srt-rtmp-720p"  srt  rtmp 720p
+  ramp_rust_owns_config "srt-srt-src"    || run_scale_config "srt-srt-src"    srt  srt  source
+  ramp_rust_owns_config "srt-srt-720p"   || run_scale_config "srt-srt-720p"   srt  srt  720p
 
   echo ""
   echo "══════════════════════════════════════════════════════════════════"

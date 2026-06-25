@@ -141,25 +141,25 @@ dual-audio coverage. Next continuation point: migrate the larger `ramp` or
 `mixed-scale` runner in smaller Rust-owned subcommands, starting with one
 configuration family and preserving the existing artifact layout.
 
-`ramp` has started that larger-runner migration. The public
-`test/run-integration.sh ramp` mode now delegates the RTMP-ingest families
-(`rtmp-rtmp-src`, `rtmp-rtmp-720p`, `rtmp-srt-src`, and `rtmp-srt-720p`) to
-`cargo run --bin test_harness -- ramp-family`, while the shell wrapper keeps
-the manifest, namespace setup, summary table, and legacy bash coverage for the
-remaining four SRT-ingest configs. The Rust subcommand is still black-box
+`ramp` has moved behind the typed Rust harness boundary as well. The public
+`test/run-integration.sh ramp` mode now delegates all eight
+ingest×egress×encoding configs to `cargo run --bin test_harness -- ramp-family`
+by default, while the shell wrapper keeps the public CLI, namespace setup,
+manifest lifecycle, summary table rendering, and `RAMP_RUST_FAMILY=0` /
+`RAMP_FAMILY_CONFIGS` fallback hooks. The Rust subcommand is still black-box
 coverage: it starts the production `restream` binary plus MediaMTX, logs in
 through the HTTP API, creates pipelines/outputs, snapshots `scale.csv`, appends
 `summary.txt`, and performs the first/last output spot checks. A focused fast
 wrapper run passed on June 25, 2026 with
-`WORK_DIR=test/artifacts/ramp-rust-rtmp-ingest-fast`,
-`RAMP_CONFIG_CLEANUP_SECS=1`, and `./test/run-integration.sh --fast ramp`; the
-artifacts contain all eight summary rows, with the first four produced by Rust.
-A focused aggregate preflight also passed with
-`./test/run-protocol-matrix.sh --run-id ramp-rust-rtmp-ingest-preflight
+`WORK_DIR=test/artifacts/ramp-rust-all-fast`, `RAMP_CONFIG_CLEANUP_SECS=1`, and
+`./test/run-integration.sh --fast ramp`; the artifacts contain all eight
+summary rows and `ramp-family.json` records all eight Rust-owned configs. A
+focused aggregate preflight also passed with
+`./test/run-protocol-matrix.sh --run-id ramp-rust-all-preflight
 --preflight-only --continue-on-fail --only-modes ramp`. Next continuation
-point: move the SRT-ingest families (`srt-rtmp-src`, `srt-rtmp-720p`,
-`srt-srt-src`, and `srt-srt-720p`) into `ramp-family` while preserving the
-shared `scale.csv` and `summary.txt` formats.
+point: move the remaining larger `mixed-scale` runner behind smaller
+Rust-owned subcommands while preserving its current HLS, smoke, lifecycle,
+TC_SPAWNS, and multi-audio assertions.
 
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 

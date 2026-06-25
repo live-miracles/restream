@@ -104,13 +104,12 @@ Env: `N_OUTPUTS` (default 10), `ISOLATE=1` (restart restream+mediamtx per
 config for a clean baseline), `SNAP_EVERY` (default 1, snapshot every N outputs).
 
 The public shell mode has begun moving behind typed Rust harness slices. By
-default, the RTMP-ingest families (`rtmp-rtmp-src`, `rtmp-rtmp-720p`,
-`rtmp-srt-src`, and `rtmp-srt-720p`) are delegated to
+default, all eight ramp configs are delegated to
 `cargo run --bin test_harness -- ramp-family`, which starts the production
 `restream` binary and MediaMTX, drives the HTTP API, and appends the same
 `scale.csv` and `summary.txt` formats. Set `RAMP_RUST_FAMILY=0` to force the
-legacy all-bash ramp path while bisecting harness behavior. The SRT-ingest
-families are still shell-owned and are the next migration target.
+legacy all-bash ramp path while bisecting harness behavior, or set
+`RAMP_FAMILY_CONFIGS` to hand a subset back to bash for focused comparisons.
 
 ### `mixed-scale` — Concurrent group load
 
@@ -449,9 +448,9 @@ for every mode.
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
 already behind typed Rust harness entry points, and `ramp` now delegates its
-RTMP-ingest families to `test_harness ramp-family`. The remaining per-mode
-media runners and SRT-ingest ramp families should migrate one isolated slice at
-a time while preserving public CLI and artifact layout.
+full eight-config matrix to `test_harness ramp-family`. The remaining
+per-mode media runners, starting with `mixed-scale`, should migrate one
+isolated slice at a time while preserving public CLI and artifact layout.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
