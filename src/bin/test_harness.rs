@@ -336,6 +336,18 @@ fn selected_ramp_configs() -> Vec<RampConfig> {
             out_proto: "rtmp",
             encoding: "720p",
         },
+        RampConfig {
+            name: "rtmp-srt-src",
+            ingest_proto: "rtmp",
+            out_proto: "srt",
+            encoding: "source",
+        },
+        RampConfig {
+            name: "rtmp-srt-720p",
+            ingest_proto: "rtmp",
+            out_proto: "srt",
+            encoding: "720p",
+        },
     ];
     let allow = std::env::var("RAMP_FAMILY_CONFIGS").ok().map(|value| {
         value

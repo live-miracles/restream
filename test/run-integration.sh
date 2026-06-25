@@ -717,12 +717,23 @@ run_ramp() {
   printf "config,step,label,cpu_pct,rss_kb,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb\n" > "$SCALE_LOG"
   : > "$SUMMARY_LOG"
 
+  local RAMP_FAMILY_DEFAULTS="rtmp-rtmp-src rtmp-rtmp-720p rtmp-srt-src rtmp-srt-720p"
+  local RAMP_FAMILY_SELECTED="${RAMP_FAMILY_CONFIGS:-$RAMP_FAMILY_DEFAULTS}"
+  ramp_rust_owns_config() {
+    local cfg="$1" item
+    [[ "${RAMP_RUST_FAMILY:-rtmp-ingest}" != "0" ]] || return 1
+    for item in $RAMP_FAMILY_SELECTED; do
+      [[ "$item" == "$cfg" ]] && return 0
+    done
+    return 1
+  }
+
   if [[ "${RAMP_RUST_FAMILY:-rtmp-rtmp}" != "0" ]]; then
-    echo "  [rust] ramp-family: RTMP ingest → RTMP outputs"
+    echo "  [rust] ramp-family: RTMP ingest → RTMP/SRT outputs"
     TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
     SCALE_LOG="$SCALE_LOG" \
     SUMMARY_LOG="$SUMMARY_LOG" \
-    RAMP_FAMILY_CONFIGS="${RAMP_FAMILY_CONFIGS:-rtmp-rtmp-src rtmp-rtmp-720p}" \
+    RAMP_FAMILY_CONFIGS="$RAMP_FAMILY_SELECTED" \
     cargo run --quiet --bin test_harness -- ramp-family \
       >"${WORK_DIR}/ramp-family.log" 2>&1 \
       || { tail -120 "${WORK_DIR}/ramp-family.log" >&2 || true; fail "Rust ramp-family harness failed"; }
@@ -828,12 +839,10 @@ run_ramp() {
     sleep 8
   }
 
-  if [[ "${RAMP_RUST_FAMILY:-rtmp-rtmp}" == "0" ]]; then
-    run_scale_config "rtmp-rtmp-src"  rtmp rtmp source
-    run_scale_config "rtmp-rtmp-720p" rtmp rtmp 720p
-  fi
-  run_scale_config "rtmp-srt-src"   rtmp srt  source
-  run_scale_config "rtmp-srt-720p"  rtmp srt  720p
+  ramp_rust_owns_config "rtmp-rtmp-src"  || run_scale_config "rtmp-rtmp-src"  rtmp rtmp source
+  ramp_rust_owns_config "rtmp-rtmp-720p" || run_scale_config "rtmp-rtmp-720p" rtmp rtmp 720p
+  ramp_rust_owns_config "rtmp-srt-src"   || run_scale_config "rtmp-srt-src"   rtmp srt  source
+  ramp_rust_owns_config "rtmp-srt-720p"  || run_scale_config "rtmp-srt-720p"  rtmp srt  720p
   run_scale_config "srt-rtmp-src"   srt  rtmp source
   run_scale_config "srt-rtmp-720p"  srt  rtmp 720p
   run_scale_config "srt-srt-src"    srt  srt  source
