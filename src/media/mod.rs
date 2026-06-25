@@ -8,6 +8,7 @@ pub mod avio;
 pub mod codec;
 pub mod engine;
 pub mod external_transcoder;
+pub mod feeder;
 pub mod h264_transcoder;
 pub mod hls;
 pub mod mpegts;

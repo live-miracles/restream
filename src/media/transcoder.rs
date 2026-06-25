@@ -5,8 +5,8 @@
 //! Audio routing: compound encodings like `720p+atrack:0,1` or `source+remap:0:1`
 //! are parsed to select/remap audio streams.
 
-use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::AudioMeta;
+use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -313,31 +313,20 @@ pub async fn start_transcoder(
     });
     engine.register_os_thread(handle);
 
-    // Forward source RingBuffer packets to input_queue, muxed as MPEG-TS
-    let mut muxer = crate::media::mpegts::TsMuxer::new(video_meta.as_ref(), &audio_tracks);
-    let num_streams = (video_meta.is_some() as usize) + audio_tracks.len();
-    let mut dts_enforcer = crate::media::ring_buffer::DtsEnforcer::new(num_streams);
+    // Forward source RingBuffer packets to input_queue, muxed as MPEG-TS.
+    let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
+    let mut feeder = TsPacketFeeder::new(
+        video_meta.as_ref(),
+        audio_tracks.clone(),
+        PacketFeedConfig {
+            video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+            ..PacketFeedConfig::default()
+        },
+    );
     let mut reader = Reader::new(
         format!("transcoder:{}:{}", pipeline_id, preset),
         input_buffer,
     );
-    let mut nalu_len_size: usize = 4;
-    let mut sps_pps_cache: Vec<u8> = {
-        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
-        if let Some(ref flv_sh) = vsh {
-            if flv_sh.len() > 5 {
-                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
-                nalu_len_size = nls;
-                annexb
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    };
-    let mut video_conv_buf = Vec::<u8>::new();
-    let mut audio_conv_buf = Vec::<u8>::new();
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single queue.write() call (one lock acquisition per
     // burst instead of one per packet).
@@ -353,56 +342,7 @@ pub async fn start_transcoder(
                 packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in &packets {
-                        let payload: &[u8] = match pkt.media_type {
-                            MediaType::Video => {
-                                match video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
-                            MediaType::Audio => {
-                                let track = audio_tracks
-                                    .iter()
-                                    .find(|a| a.track_index == pkt.track_index)
-                                    .or(audio_tracks.first());
-                                let (sr, ch) = track
-                                    .map(|a| (a.sample_rate, a.channels))
-                                    .unwrap_or((48000, 1));
-                                match audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
-                        };
-
-                        let stream_idx = match pkt.media_type {
-                            MediaType::Video => 0,
-                            MediaType::Audio => {
-                                let video_offset = video_meta.is_some() as usize;
-                                match audio_tracks
-                                    .iter()
-                                    .position(|a| a.track_index == pkt.track_index)
-                                {
-                                    Some(i) => i + video_offset,
-                                    None => continue, // unknown track — skip to avoid DTS corruption
-                                }
-                            }
-                        };
-
-                        let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
-
-                        let ts_bytes = muxer.mux_packet(
-                            pkt.media_type,
-                            pkt.track_index,
-                            pts,
-                            dts,
-                            pkt.is_keyframe,
-                            payload,
-                        );
-
-                        if !ts_bytes.is_empty() {
-                            ts_batch.extend_from_slice(ts_bytes);
-                        }
+                        feeder.extend_ts_for_packet(pkt, &mut ts_batch);
                     }
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {

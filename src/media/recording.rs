@@ -8,10 +8,9 @@
 //! real container (e.g., MP4 with FFmpeg `avformat`) would require an avformat mux
 //! context and is tracked as a roadmap item.
 
-use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::MediaEngine;
-use crate::media::mpegts::TsMuxer;
-use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
+use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
+use crate::media::ring_buffer::{Reader, RingBuffer};
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -82,29 +81,9 @@ pub async fn start_recording(
     let mut reader = Reader::new(format!("recording:{}", pipeline_name), ring_buffer);
     let mut packets = Vec::with_capacity(32);
 
-    // Lazily initialized when first packet arrives
-    let mut muxer: Option<TsMuxer> = None;
-    let mut dts_enforcer: Option<DtsEnforcer> = None;
-    let mut has_video = false;
-    let mut nalu_len_size: usize = 4;
-    let mut sps_pps_cache: Vec<u8> = {
-        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
-        if let Some(ref flv_sh) = vsh {
-            if flv_sh.len() > 5 {
-                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
-                nalu_len_size = nls;
-                annexb
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    };
-    let mut audio_tracks: std::sync::Arc<Vec<crate::media::engine::AudioMeta>> =
-        std::sync::Arc::new(Vec::new());
-    let mut video_conv_buf = Vec::<u8>::new();
-    let mut audio_conv_buf = Vec::<u8>::new();
+    // Lazily initialized when first packet arrives.
+    let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
+    let mut feeder: Option<TsPacketFeeder> = None;
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single queue.write() call (one lock acquisition per
     // burst instead of one per packet).
@@ -122,75 +101,28 @@ pub async fn start_recording(
                     }
 
                     for pkt in &packets {
-                        // Lazily create the muxer from engine metadata
-                        if muxer.is_none() {
+                        // Lazily create the feeder from engine metadata.
+                        if feeder.is_none() {
                             let ingests = engine.active_ingests.read().await;
                             if let Some(ingest) = ingests.get(&pipeline_id) {
                                 let video = ingest.video.as_ref();
-                                has_video = video.is_some();
                                 let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                                let num_streams = video.is_some() as usize + tracks.len();
-                                muxer = Some(TsMuxer::new(video, &tracks));
-                                dts_enforcer = Some(DtsEnforcer::new(num_streams));
-                                audio_tracks = tracks;
+                                feeder = Some(TsPacketFeeder::new(
+                                    video,
+                                    tracks,
+                                    PacketFeedConfig {
+                                        video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+                                        ..PacketFeedConfig::default()
+                                    },
+                                ));
                                 drop(ingests);
                             } else {
                                 continue;
                             }
                         }
 
-                        let Some(ref mut mux) = muxer else { continue };
-                        let Some(ref mut dts) = dts_enforcer else { continue };
-
-                        let payload: &[u8] = match pkt.media_type {
-                            MediaType::Video => {
-                                match video_for_ts_into(&pkt.payload, pkt.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
-                            MediaType::Audio => {
-                                let track = audio_tracks
-                                    .iter()
-                                    .find(|a| a.track_index == pkt.track_index)
-                                    .or(audio_tracks.first());
-                                let (sr, ch) = track
-                                    .map(|a| (a.sample_rate, a.channels))
-                                    .unwrap_or((48000, 1));
-                                match audio_for_ts_into(&pkt.payload, pkt.format, sr, ch, &mut audio_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
-                        };
-
-                        let stream_idx = match pkt.media_type {
-                            MediaType::Video => 0,
-                            MediaType::Audio => {
-                                let video_offset = has_video as usize;
-                                match audio_tracks
-                                    .iter()
-                                    .position(|a| a.track_index == pkt.track_index)
-                                {
-                                    Some(i) => i + video_offset,
-                                    None => continue, // unknown track — skip to avoid DTS corruption
-                                }
-                            }
-                        };
-
-                        let (pts, dts) = dts.enforce(stream_idx, pkt.pts, pkt.dts);
-
-                        let ts_bytes = mux.mux_packet(
-                            pkt.media_type,
-                            pkt.track_index,
-                            pts,
-                            dts,
-                            pkt.is_keyframe,
-                            payload,
-                        );
-
-                        if !ts_bytes.is_empty() {
-                            ts_batch.extend_from_slice(ts_bytes);
+                        if let Some(ref mut feeder) = feeder {
+                            feeder.extend_ts_for_packet(pkt, &mut ts_batch);
                         }
                     }
                     // One lock acquisition for the whole burst.
