@@ -1336,6 +1336,14 @@ Implementation note, 2026-06-25:
 - operator overview (`GET /api/v1/overview`) and pipeline summary
   (`GET /api/v1/pipelines/:id/summary`) endpoints added; both derive data from
   a single `health_snapshot` + `derive_alerts` pass.
+- lifecycle event log implemented in `src/events.rs`: bounded 1000-event FIFO
+  ring covering IngestConnected/Disconnected, StageStarted/Stopped,
+  EgressStarted/Stopped; events carry camelCase fields including `pipelineId`,
+  `seq`, and `timestamp`. `GET /api/v1/events` exposes the log.
+- `generatedAt` added to `processing_graph()` response; alert endpoints now
+  return `{generatedAt, alerts:[...]}` envelope consistent with other v1 responses.
+
+Phase 2 is complete as of 2026-06-25.
 
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface

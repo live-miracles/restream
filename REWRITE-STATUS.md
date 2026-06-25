@@ -23,13 +23,13 @@ a working runtime path.
 
 | Suite | Result |
 |---|---|
-| Library/unit | 361 passed |
-| API integration | 43 passed |
+| Library/unit | 365 passed |
+| API integration | 46 passed |
 | AV sync integration | 14 passed |
 | Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **457 passed, 0 failed** |
+| Total | **464 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -203,6 +203,7 @@ to the local RTMP listener.
 - `GET /api/v1/alerts` — aggregate alerts across all pipelines
 - `GET /api/v1/overview` — engine-wide operator summary
 - `GET /api/v1/pipelines/:id/summary` — operator pipeline detail
+- `GET /api/v1/events[?pipeline_id=&limit=]` — recent lifecycle events
 - HLS pull at `/hls/:id/index.m3u8`
 
 Diagnostics currently run nine checks, including publisher transport and the
@@ -400,7 +401,13 @@ See `docs/api-reference.md` for the executable route surface.
   building now use typed stage helpers throughout, but the `MediaEngine`
   HashMaps still use `String` keys rather than a typed `StageKey` index.
   Splitting `MediaEngine` into dedicated typed registries (`StageRegistry`,
-  `IngestRegistry`, etc.) is a Phase 2 deliverable.
+  `IngestRegistry`, etc.) is a Phase 3 deliverable.
+- ~~lifecycle event log~~ — done; `src/events.rs` provides a bounded 1000-event
+  FIFO ring (`EventLog`) with `EventKind` variants for ingest connect/disconnect,
+  stage start/stop, and egress start/stop. `MediaEngine` emits events at each
+  lifecycle transition. `GET /api/v1/events` exposes the log with optional
+  `pipeline_id` and `limit` query params. First-seen/last-seen for alerts will
+  correlate with this event log in Phase 3.
 
 ### Claims intentionally not made
 
