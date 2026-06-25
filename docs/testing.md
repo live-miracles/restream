@@ -56,7 +56,7 @@ and deletion-cancellation of egress tasks.
 All live integration tests are unified under one entry point:
 
 ```sh
-./test/run-integration.sh [--host] <mode>
+./test/run-integration.sh [--host] [--fast] [--json path] [--only checks] <mode>
 ```
 
 By default every mode that manages its own server processes runs inside a
@@ -64,6 +64,26 @@ private loopback network namespace (`unshare --net`) so ports never conflict
 with the host. Pass `--host` to skip the namespace wrapper.
 
 Required tools: `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, `jq`.
+
+Common runner flags:
+
+| Flag | Purpose |
+|---|---|
+| `--preflight` | Check binary, dependencies, namespace support, and host-mode port conflicts without starting the test. |
+| `--fast` | Set `N_PER_GROUP=1`, `N_OUTPUTS=1`, `SNAP_EVERY=999`, and skip snapshot sleeps for quick agent loops. |
+| `--json <path>` | Write JSONL assertion records alongside the human-readable log. Failed ffprobe assertions include stderr and log tails. |
+| `--only <checks>` | Run selected `mixed-scale` assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `lifecycle`, `tc-spawns`, `load`. |
+| `--skip-load` | Skip resource snapshot sleeps and load assertion records while preserving correctness setup. |
+| `--resume-from <id>` | Skip named assertion records until the requested assertion ID is reached. |
+| `--baseline <path>` | Compare `mixed-scale` RSS summary against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
+| `--save-baseline <path>` | Save the current `mixed-scale` RSS summary as a baseline CSV. |
+
+Typical quick agent loop:
+
+```sh
+./test/run-integration.sh --preflight --json /tmp/restream-preflight.jsonl mixed-scale
+./test/run-integration.sh --fast --json /tmp/restream-mixed.jsonl --only smoke,hls,lifecycle mixed-scale
+```
 
 ### `ramp` — Sequential output ramp
 

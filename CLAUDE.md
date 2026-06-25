@@ -7,6 +7,9 @@ Instructions for AI coding agents in this repository.
 - Keep changes small, intentional, and consistent with existing Rust/TypeScript patterns.
 - Read relevant code and docs before editing, especially for media-pipeline behavior.
 - Preserve unrelated user or agent changes. Check `git status` before broad edits, staging, or commits.
+- Assume parallel agents may be editing the same files. If `git status`, diffs, or file contents show
+  overlapping work, use hunk-based file edits and hunk-based git operations; do not overwrite,
+  reformat, stage, or revert whole files unless that exact whole-file operation was requested.
 - Add or update tests for behavior changes. Benchmark before and after hot-path changes.
 - Update docs when changing commands, configuration, architecture, protocols, or user-visible behavior.
 - Prefer targeted fixes over rewrites. Add abstractions only when they remove real complexity.
