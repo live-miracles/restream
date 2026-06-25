@@ -78,6 +78,7 @@ Core invariants:
 - Tokio tasks own sockets, API handlers, timers, and inline mux/demux work.
 - Blocking FFmpeg calls and blocking `srt_send()` belong on dedicated OS threads.
 - Wrap FFmpeg/libsrt OS-thread entry points with `catch_unwind(AssertUnwindSafe(...))`.
+- Write defensive, resilient engine code: no internal or external failure path may crash the engine; isolate faults and surface errors instead.
 - Keep media timestamps separate from wall-clock/application time.
 - Respect `MediaPacket.format`: consumers must handle `Flv` and `Raw` explicitly.
 - RTMP video timestamps are DTS; signed FLV composition offset derives PTS.
