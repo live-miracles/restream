@@ -179,6 +179,27 @@ mod tests {
         assert_eq!(segment.as_str(), "https://example.com/live/seg42.ts");
     }
 
+    #[test]
+    fn derives_segment_url_from_directory_path() {
+        let playlist = Url::parse("https://example.com/live/channel/").unwrap();
+        let segment = derive_hls_upload_url(&playlist, "seg42.ts");
+        assert_eq!(
+            segment.as_str(),
+            "https://example.com/live/channel/seg42.ts"
+        );
+    }
+
+    #[test]
+    fn preserves_signed_query_for_path_style_uploads() {
+        let playlist =
+            Url::parse("https://example.com/live/out.m3u8?hdnea=token&policy=abc").unwrap();
+        let segment = derive_hls_upload_url(&playlist, "seg42.ts");
+        assert_eq!(
+            segment.as_str(),
+            "https://example.com/live/seg42.ts?hdnea=token&policy=abc"
+        );
+    }
+
     #[tokio::test]
     async fn uploads_segments_and_playlist_to_put_sink() {
         let seen = Arc::new(Mutex::new(Vec::<(String, String, Vec<u8>)>::new()));
