@@ -1284,6 +1284,16 @@ Every benchmark should report:
 - centralize graph serialization
 - establish engine-native graph registries
 
+Implementation note, 2026-06-25:
+- typed stage identity, canonical stage-key building, and encoding-stage planning
+  are now implemented in `src/domain/stage.rs`;
+- shared packet feeder primitives are now implemented in `src/media/feeder.rs`
+  and are used by recording, HLS, and the in-process transcoder feeder path;
+- backend-selection policy is now centralized in
+  `src/planner/backend_policy.rs`;
+- graph serialization now consumes typed `StageKind` parsing/rendering helpers,
+  but full engine-native graph registries remain pending.
+
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
 - lifecycle and event model

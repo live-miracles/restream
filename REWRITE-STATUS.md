@@ -102,6 +102,7 @@ to the local RTMP listener.
 - media listing/deletion safety
 - recording enable/disable
 - build/runtime status endpoint
+- typed stage identity and canonical stage-key planning
 
 ### Native media path
 
@@ -112,6 +113,8 @@ to the local RTMP listener.
 - in-memory HLS store and HTTP pull routes
 - Matroska recording code path
 - shared processing-stage identities and audio-stage cache
+- shared TS packet feeder for recording, HLS, and in-process transcoder input
+- centralized stage backend-selection policy
 - H.264/H.265 codec mapping in FFmpeg paths
 - automatic insertion of an intended H.265-to-H.264 stage for standard RTMP
   output
@@ -256,6 +259,8 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
 - make listener ports, database path, media path, and operational tuning
   configurable.
+- full engine-native graph registries remain pending; graph rendering now uses
+  typed stage helpers, but runtime ownership is still mostly in `MediaEngine`.
 
 ### Claims intentionally not made
 
