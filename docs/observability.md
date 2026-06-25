@@ -174,7 +174,9 @@ These should be fixed before adding new timing work:
 
 - `RingBuffer::fill_and_capacity()` reports total writes capped at capacity,
   not current occupancy or consumer lag.
-- `MemoryQueue` does not expose depth, high-water mark, or blocked time.
+- `MemoryQueue::stats()` exposes current depth, capacity, high-water bytes,
+  blocked write count, blocked write time, and closed state. These counters
+  still need to be surfaced in higher-level graph/API snapshots where useful.
 - The frontend still describes diagnostic step 5 as ffprobe wall-clock packet
   timing, but native step 5 is Active Outputs.
 - The native runner no longer emits `probe-raw`, while the report still claims

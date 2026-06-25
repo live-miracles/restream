@@ -1300,6 +1300,11 @@ Implementation note, 2026-06-25:
 - alert derivation model
 - freshness-aware snapshots
 
+Implementation note, 2026-06-25:
+- `MemoryQueue::stats()` now exposes queue depth, capacity, high-water mark,
+  blocked write count, blocked write time, and closed state. API/graph surfacing
+  remains pending.
+
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface
 - canonical response models

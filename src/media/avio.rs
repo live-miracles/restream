@@ -13,8 +13,9 @@
 use ffmpeg_next as ffmpeg;
 use std::collections::VecDeque;
 use std::os::raw::{c_int, c_void};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
@@ -24,11 +25,25 @@ pub struct MemoryQueue {
     cvar: Condvar,
     space_available: Notify,
     capacity: usize,
+    high_water_bytes: AtomicUsize,
+    blocked_writes: AtomicU64,
+    blocked_write_us: AtomicU64,
 }
 
 struct MemoryQueueInner {
     buf: VecDeque<u8>,
     closed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryQueueStats {
+    pub len: usize,
+    pub capacity: usize,
+    pub high_water_bytes: usize,
+    pub blocked_writes: u64,
+    pub blocked_write_us: u64,
+    pub closed: bool,
 }
 
 impl Default for MemoryQueue {
@@ -51,10 +66,14 @@ impl MemoryQueue {
             cvar: Condvar::new(),
             space_available: Notify::new(),
             capacity,
+            high_water_bytes: AtomicUsize::new(0),
+            blocked_writes: AtomicU64::new(0),
+            blocked_write_us: AtomicU64::new(0),
         }
     }
 
     pub async fn write(&self, data: &[u8]) {
+        let mut blocked_since = None;
         loop {
             {
                 let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -62,7 +81,15 @@ impl MemoryQueue {
                     break;
                 }
             }
+            if blocked_since.is_none() {
+                blocked_since = Some(Instant::now());
+                self.blocked_writes.fetch_add(1, Ordering::Relaxed);
+            }
             self.space_available.notified().await;
+        }
+        if let Some(start) = blocked_since {
+            self.blocked_write_us
+                .fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -70,6 +97,7 @@ impl MemoryQueue {
             return;
         }
         inner.buf.extend(data.iter().copied());
+        self.record_depth(inner.buf.len());
         self.cvar.notify_all();
     }
 
@@ -83,6 +111,7 @@ impl MemoryQueue {
             return 0;
         }
 
+        let mut blocked_since = None;
         loop {
             {
                 let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,7 +119,15 @@ impl MemoryQueue {
                     break;
                 }
             }
+            if blocked_since.is_none() {
+                blocked_since = Some(Instant::now());
+                self.blocked_writes.fetch_add(1, Ordering::Relaxed);
+            }
             self.space_available.notified().await;
+        }
+        if let Some(start) = blocked_since {
+            self.blocked_write_us
+                .fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -103,6 +140,7 @@ impl MemoryQueue {
             inner.buf.extend(chunk.iter().copied());
         }
         if bytes > 0 {
+            self.record_depth(inner.buf.len());
             self.cvar.notify_all();
         }
         bytes
@@ -114,6 +152,7 @@ impl MemoryQueue {
             return;
         }
         inner.buf.extend(data.iter().copied());
+        self.record_depth(inner.buf.len());
         self.cvar.notify_all();
     }
 
@@ -143,6 +182,22 @@ impl MemoryQueue {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn stats(&self) -> MemoryQueueStats {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        MemoryQueueStats {
+            len: inner.buf.len(),
+            capacity: self.capacity,
+            high_water_bytes: self.high_water_bytes.load(Ordering::Relaxed),
+            blocked_writes: self.blocked_writes.load(Ordering::Relaxed),
+            blocked_write_us: self.blocked_write_us.load(Ordering::Relaxed),
+            closed: inner.closed,
+        }
+    }
+
+    fn record_depth(&self, len: usize) {
+        self.high_water_bytes.fetch_max(len, Ordering::Relaxed);
     }
 
     pub fn read(&self, target: &mut [u8]) -> usize {
@@ -536,6 +591,38 @@ mod tests {
     }
 
     #[test]
+    fn stats_report_depth_capacity_high_water_and_closed_state() {
+        let queue = MemoryQueue::new_with_capacity(8);
+        assert_eq!(
+            queue.stats(),
+            MemoryQueueStats {
+                len: 0,
+                capacity: 8,
+                high_water_bytes: 0,
+                blocked_writes: 0,
+                blocked_write_us: 0,
+                closed: false,
+            }
+        );
+
+        queue.write_sync(b"hello");
+        let stats = queue.stats();
+        assert_eq!(stats.len, 5);
+        assert_eq!(stats.capacity, 8);
+        assert_eq!(stats.high_water_bytes, 5);
+        assert!(!stats.closed);
+
+        let mut buf = [0u8; 3];
+        queue.read_nonblocking(&mut buf);
+        let stats = queue.stats();
+        assert_eq!(stats.len, 2);
+        assert_eq!(stats.high_water_bytes, 5);
+
+        queue.close();
+        assert!(queue.stats().closed);
+    }
+
+    #[test]
     fn is_closed_reflects_state() {
         let queue = MemoryQueue::new();
         assert!(!queue.is_closed());
@@ -559,6 +646,29 @@ mod tests {
         let mut buf = [0u8; 5];
         queue.read_nonblocking(&mut buf);
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocked_write_updates_backpressure_stats() {
+        let queue = Arc::new(MemoryQueue::new_with_capacity(5));
+        queue.write(b"hello").await;
+        let q = queue.clone();
+        let handle = tokio::spawn(async move {
+            q.write(b"blocked").await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!handle.is_finished());
+        assert_eq!(queue.stats().blocked_writes, 1);
+
+        let mut buf = [0u8; 5];
+        queue.read_nonblocking(&mut buf);
+        handle.await.unwrap();
+
+        let stats = queue.stats();
+        assert_eq!(stats.blocked_writes, 1);
+        assert!(stats.blocked_write_us > 0);
+        assert!(stats.high_water_bytes >= 7);
     }
 
     #[tokio::test]

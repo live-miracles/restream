@@ -256,7 +256,9 @@ See `docs/api-reference.md` for the executable route surface.
 - remove stale HLS stores when their last segmenter stops;
 - add per-reader ring lag, overflow, and packet-age metrics;
 - ~~preserve trustworthy packet metadata across transcoder output~~ — done;
-- add bounded queue-depth/backpressure telemetry for `MemoryQueue`;
+- ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;
+  `MemoryQueue::stats()` reports current depth, capacity, high-water bytes,
+  blocked write count, blocked write time, and closed state.
 - secure public HLS playlist and segment routes;
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
 - make listener ports, database path, media path, and operational tuning

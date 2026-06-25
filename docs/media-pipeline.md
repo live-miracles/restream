@@ -639,7 +639,8 @@ blockers or hardening work:
 - **RTMPS**: URL parser accepts it, but reconciler does not dispatch TLS egress.
 - **SRT→RTMP egress**: raw demuxed payload forwarded as FLV media payload
   (protocol-incorrect).
-- **File ingest**: list endpoint reports `running: false` placeholder; exited
-  children are not reaped.
+- **File ingest**: implemented with child FFmpeg; running state is checked from
+  the tracked child process, and exited children are reaped.
 - **Ring buffer**: `Reader::lag()` method added (packets behind write cursor); overflow counter exposed via `Reader.info.overflow_count`. Per-reader queue-residency time not yet tracked.
-- **MemoryQueue**: `len()` method added to observe current buffer depth. High-water mark and blocked-time metrics not yet exposed.
+- **MemoryQueue**: `stats()` exposes current buffer depth, capacity, high-water
+  mark, blocked write count, blocked write time, and closed state.
