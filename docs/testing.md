@@ -359,6 +359,11 @@ the RTMP egress as H.264 video plus AAC audio.
 passthrough: it ingests H.265 over SRT, loops it through SRT egress, and
 verifies HEVC video plus AAC audio at the SRT read endpoint.
 
+`cargo run --bin test_harness -- correctness-srt-rtmp` covers the direct
+cross-protocol packetization path: it ingests H.264/AAC over SRT, loops it
+through RTMP egress, and verifies H.264 video plus AAC audio at the RTMP read
+endpoint.
+
 ### Phase 5: Recovery and Isolation
 
 - publisher stop/restart
@@ -427,9 +432,9 @@ These capabilities must be treated as test results, not assumptions:
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
 | H.265 SRT passthrough | Live HEVC identity preservation through `cargo run --bin test_harness -- correctness-hevc-srt` |
 | H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `cargo run --bin test_harness -- correctness-hevc-rtmp` |
+| Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `cargo run --bin test_harness -- correctness-srt-rtmp` |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
-| Cross-protocol SRT→RTMP | Packetization helpers are covered; live matrix must prove end-to-end behavior |
 | HLS live segments | Native TsMuxer validates in-memory |
 | HLS upload egress | HTTP PUT delivery and destination restart recovery are covered by unit plus `test/run-integration.sh hls-put` dummy sink tests |
 | Recording | Readable file with correct streams/timestamps |
