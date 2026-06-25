@@ -232,7 +232,7 @@ borrowed payload slice is returned directly (zero copy).
 
 ## Scale Test Pipeline Paths
 
-`test/run-mixed-scale-test.sh` exercises five ingest configurations, each
+`./test/run-integration.sh mixed-scale` exercises four ingest configurations, each
 fanned out to N RTMP-src + N RTMP-720p + N SRT-src + N SRT-720p outputs.
 The traces below show the exact mux/demux, conversion, and transcoding at
 every hop for each path.

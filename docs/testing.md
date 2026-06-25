@@ -44,119 +44,104 @@ deletion-cancellation of egress tasks.
 
 ## Live Integration Tests
 
-### 2×3 Matrix
-
-Run the 2-pipeline × 3-output live test against a running application:
+All live integration tests are unified under one entry point:
 
 ```sh
-./test/run-2x3.sh
+./test/run-integration.sh [--host] <mode>
 ```
 
-For the external-transcoder routing check, use the broader matrix smoke test:
+By default every mode that manages its own server processes runs inside a
+private loopback network namespace (`unshare --net`) so ports never conflict
+with the host. Pass `--host` to skip the namespace wrapper.
+
+Required tools: `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, `jq`.
+
+### `ramp` — Sequential output ramp
 
 ```sh
-./test/run-2x3-matrix.sh
+N_OUTPUTS=10 ./test/run-integration.sh ramp
 ```
 
-It covers two ingest protocols (RTMP/SRT), three egress protocols (RTMP/SRT/HLS),
-and two encoding modes (passthrough and 720p transcode) while also creating
-multiple same-type outputs so the shared transcoder stage is exercised.
+Sweeps eight ingest×egress×encoding combinations (RTMP/SRT ingest × RTMP/SRT
+output × source/720p encoding). For each config, outputs are added one by one
+and RSS + FFmpeg subprocess counts are snapshotted at every step. Useful for
+spotting per-output memory growth and spotting encoding-stage leaks.
 
-Required tools: `ffmpeg`, `curl`, and `jq`. The script targets native RTMP/SRT
-ingest with six outputs.
+Env: `N_OUTPUTS` (default 10), `ISOLATE=1` (restart restream+mediamtx per
+config for a clean baseline), `SNAP_EVERY` (default 1, snapshot every N outputs).
 
-### Mixed Scale Test
+### `mixed-scale` — Concurrent group load
 
 ```sh
-N_PER_GROUP=25 ./test/run-mixed-scale-test.sh
+N_PER_GROUP=25 ./test/run-integration.sh mixed-scale
 ```
 
-Exercises the five ingest configurations that cover every combination of codec
-and protocol used in production, each fanned out to `4×N_PER_GROUP` mixed outputs
-(RTMP-src + RTMP-720p + SRT-src + SRT-720p):
+Exercises four ingest configurations covering every codec/protocol/audio-track
+combination used in production. Each config fans out to `4×N_PER_GROUP` outputs
+added group-by-group (all RTMP-src, then all RTMP-720p, then all SRT-src, then
+all SRT-720p):
 
-| Config | Ingest | Codec | Audio tracks |
-|---|---|---|---|
-| `h264-rtmp` | RTMP | H.264 | 1 |
-| `h265-srt` | SRT | H.265 | 1 |
-| `h264-srt` | SRT | H.264 | 1 |
-| `h264-srt-multi` | SRT | H.264 | 2 |
-| `h265-srt-multi` | SRT | H.265 | 2 |
+| Config | Ingest | Codec | Audio | Role |
+|---|---|---|:---:|---|
+| `h264-srt` | SRT | H.264 | 1 | **anchor**: HLS + smoke + fatal ffprobe + stop lifecycle |
+| `h265-srt` | SRT | H.265 | 1 | TC_SPAWNS=1 assertion |
+| `h264-srt-multi` | SRT | H.264 | 2 | multi-audio track routing |
+| `h265-srt-multi` | SRT | H.265 | 2 | HEVC + multi-audio |
 
-After each config it prints RSS delta, per-output overhead, and the count of
-external FFmpeg subprocesses. Expected results (see
+**Anchor config (`h264-srt`)** runs three merged correctness checks in addition
+to the resource measurements:
+
+1. **Smoke** — after source outputs are live, asserts no external transcoder has
+   fired (source passthrough must not trigger the 720p encoder).
+2. **Fatal ffprobe** — after all groups, `verify_stream` (fatal, 30×2s retries)
+   on RTMP-src, RTMP-720p, SRT-src, SRT-720p, HLS/mediamtx, and HLS/restream
+   endpoints.
+3. **Stop lifecycle** — calls `/stop` on every output and polls `/config` until
+   all reach `"stopped"` within 60 s.
+
+**h265-srt** asserts `1 ≤ TC_SPAWNS ≤ ext_ffmpeg# + 1`: the number of shared
+internal h264-tc transcoders must be bounded by the number of distinct consumer
+paths (one for RTMP source outputs, one feeding each external ffmpeg for 720p),
+not proportional to N. With both source and 720p output groups this bound is 2
+regardless of N. If sharing breaks, each output spawns its own h264-tc and
+TC_SPAWNS would equal N (or more).
+
+Expected resource counts (see
 [media-pipeline.md § Scale Test Pipeline Paths](media-pipeline.md#scale-test-pipeline-paths)):
 
-| Config | `ext_ffmpeg#` | Int OS threads |
+| Config | `ext_ffmpeg#` | `TC_SPAWNS` bound |
 |---|:---:|:---:|
-| `h264-rtmp` | 1 | 0 |
-| `h264-srt` | 1 | 0 |
-| `h265-srt` | 1 | 1 |
-| `h264-srt-multi` | 1 | 0 |
-| `h265-srt-multi` | 1 | 1 |
+| `h264-srt` | 1 | N/A (H.264 ingest, no h264-tc needed) |
+| `h265-srt` | 1 | ≤ 2 (1 source path + 1 720p path) |
+| `h264-srt-multi` | 1 | N/A |
+| `h265-srt-multi` | 1 | N/A |
 
-Set `ISOLATE=1` to restart restream and mediamtx between configs so each
-baseline is clean. Requires `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, and `jq`.
+Env: `N_PER_GROUP` (default 25), `ISOLATE=1` (default, restarts per config).
 
-### 8-Config Structured Scale Test
+### `bonding` — SRT socket bonding
 
 ```sh
-N_OUTPUTS=10 ./test/run-scale-test.sh
+./test/run-integration.sh bonding
 ```
 
-Sweeps eight ingest×output×encoding combinations (RTMP/SRT ingest × RTMP/SRT
-output × source/720p encoding) and records RSS + FFmpeg subprocess counts as
-outputs are added one by one. Useful for spotting per-output memory growth.
+Verifies libsrt group-socket bonding using dedicated C helper binaries compiled
+from `test/srt-bond-server.c` and `test/srt-bond-client.c` against a statically
+linked libsrt 1.5.5 built with `ENABLE_BONDING=ON`. The script calls
+`scripts/setup-static-build.sh` automatically on first run.
 
-### Media Validation
+Two bonding modes are tested:
 
-```sh
-./test/run-media-validation.sh
-```
+| Mode | Members | `failover` | Messages |
+|---|:---:|:---:|:---:|
+| `broadcast` | 2 | 0 | 1 |
+| `backup` | 2 | 1 | 2 |
 
-Bounded developer/WSL profile:
+Fails if `SRTO_GROUPCONNECT` is unavailable, the two member sockets do not
+attach to the group, or backup delivery does not continue after the primary
+member closes.
 
-- one RTMP file publisher and matching RTMP probe
-- one SRT file publisher and matching SRT probe
-- 500 in-process readers over 2,000 shared packets
-- 32 loopback RTMP egress sessions for five seconds
-
-### Isolation
-
-Both scripts require an isolated network namespace to avoid port conflicts:
-
-**Docker:**
-```sh
-docker run --rm \
-  -v "$(pwd)":/app -w /app \
-  rust:1-bookworm bash -c '
-    apt-get update -qq && apt-get install -y -qq ffmpeg jq libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev pkg-config clang > /dev/null 2>&1
-    cargo build --release
-    ./target/release/restream &
-    until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-    ./test/run-2x3.sh
-  '
-```
-
-**Linux Unshare (lighter):**
-```sh
-unshare --net --map-root-user bash -c '
-  ip link set lo up
-  ./target/release/restream &
-  until curl -sf http://localhost:3030/healthz > /dev/null 2>&1; do sleep 1; done
-  ./test/run-2x3.sh
-'
-```
-
-### SRT Bonding
-
-```sh
-./scripts/test-srt-bonding.sh
-```
-
-Builds and runs separate client/server processes for two-member broadcast and
-backup groups. Fails if `SRTO_GROUPCONNECT` is unavailable, two member tuples
-do not attach, or backup delivery does not continue after primary member close.
+Note: `bonding` runs on the host network (random ports) so it is exempt from
+the netns wrapper even without `--host`.
 
 ## Validation Results: June 20, 2026
 
@@ -322,6 +307,9 @@ baseline on stop.
 ### Automation
 
 ```text
+test/run-integration.sh ramp
+test/run-integration.sh mixed-scale
+test/run-integration.sh bonding
 test/run-ingest-equivalence.sh
 test/run-egress-matrix.sh
 test/run-hls-put.sh
@@ -329,7 +317,6 @@ test/run-h265.sh
 test/run-recovery.sh
 test/run-scale-inprocess.sh
 test/run-scale-500.sh
-test/run-media-validation.sh
 ```
 
 Each run writes artifacts to `test/artifacts/<run-id>/` with manifest,
