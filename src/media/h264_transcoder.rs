@@ -200,6 +200,10 @@ pub async fn start_h264_transcoder(
     engine
         .remove_stage_metrics(&pipeline_id, stage_name)
         .await;
+    engine.event_log.emit(crate::events::EventKind::StageStopped {
+        pipeline_id: pipeline_id.clone(),
+        encoding: stage_name.to_string(),
+    });
 }
 
 /// Blocking FFmpeg decode→encode loop, runs on a dedicated OS thread.

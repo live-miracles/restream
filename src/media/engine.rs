@@ -634,6 +634,11 @@ impl MediaEngine {
             "[h264-tc] Spawning shared H.265→H.264 transcoder for pipeline {}",
             pipeline_id
         );
+        let stage_name = key.strip_prefix(&format!("{}:", pipeline_id)).unwrap_or(&key);
+        self.event_log.emit(crate::events::EventKind::StageStarted {
+            pipeline_id: pipeline_id.to_string(),
+            encoding: stage_name.to_string(),
+        });
 
         let pid = pipeline_id.to_string();
         let ob = output_buf.clone();

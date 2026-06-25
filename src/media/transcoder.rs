@@ -359,6 +359,10 @@ pub async fn start_transcoder(
 
     input_queue.close();
     engine.remove_input_queue(&queue_key).await;
+    engine.event_log.emit(crate::events::EventKind::StageStopped {
+        pipeline_id: pipeline_id.clone(),
+        encoding: preset.clone(),
+    });
 }
 
 #[cfg(test)]

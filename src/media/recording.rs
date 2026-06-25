@@ -50,6 +50,14 @@ pub async fn start_recording(
 
     println!("[recording] Started: {}", filename);
 
+    let stage_metrics = engine
+        .get_or_create_stage_metrics(&pipeline_id, "recording")
+        .await;
+    engine.event_log.emit(crate::events::EventKind::StageStarted {
+        pipeline_id: pipeline_id.clone(),
+        encoding: "recording".to_string(),
+    });
+
     let queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
     // Guard: close the queue on drop so the OS writer thread always unblocks,
@@ -130,6 +138,9 @@ pub async fn start_recording(
                         queue.write(&ts_batch).await;
                         ts_batch.clear();
                     }
+                    for pkt in &packets {
+                        stage_metrics.record_in(pkt.payload.len() as u64);
+                    }
                 }
             }
         }
@@ -158,6 +169,14 @@ pub async fn start_recording(
         let _ = fs::remove_file(&file_path);
         println!("[recording] Deleted short recording: {}", filename);
     }
+
+    engine
+        .remove_stage_metrics(&pipeline_id, "recording")
+        .await;
+    engine.event_log.emit(crate::events::EventKind::StageStopped {
+        pipeline_id: pipeline_id.clone(),
+        encoding: "recording".to_string(),
+    });
 }
 
 fn run_ts_writer(
