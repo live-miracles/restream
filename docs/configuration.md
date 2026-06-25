@@ -139,8 +139,9 @@ backend performs decode/scale/encode for video presets (audio streams are copied
 create/update so operators do not accidentally select a passthrough path that
 looks like custom FFmpeg execution.
 
-Audio routing parsers accept `atrack`, `remap`, and `downmix`. Only stream-level
-selection is complete; channel filtering/encoding remains open.
+Audio routing accepts `atrack`, `remap`, and `downmix`. `atrack` stays on the
+packet-only selector path; channel-level `remap` and `downmix` routes run
+through an external FFmpeg audio stage and re-encode stereo AAC.
 
 ## SRT Socket Policy
 
