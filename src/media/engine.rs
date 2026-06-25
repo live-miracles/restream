@@ -29,6 +29,11 @@ pub struct StageMetrics {
     /// Cumulative processing time in microseconds.
     pub processing_us: AtomicU64,
     pub start_instant: Instant,
+    /// Number of stdin writes that stalled (pipe buffer full, FFmpeg back-pressure).
+    /// Only incremented by external-subprocess stages; always 0 for MemoryQueue stages.
+    pub pipe_stalls: AtomicU64,
+    /// Cumulative microseconds spent blocked on stalled stdin writes.
+    pub pipe_stall_us: AtomicU64,
 }
 
 impl Default for StageMetrics {
@@ -46,6 +51,8 @@ impl StageMetrics {
             bytes_out: AtomicU64::new(0),
             processing_us: AtomicU64::new(0),
             start_instant: Instant::now(),
+            pipe_stalls: AtomicU64::new(0),
+            pipe_stall_us: AtomicU64::new(0),
         }
     }
 
@@ -66,6 +73,14 @@ impl StageMetrics {
         self.processing_us.fetch_add(us, Ordering::Relaxed);
     }
 
+    /// Record a stalled stdin write (pipe buffer was full; FFmpeg was back-pressuring).
+    /// `us` is the duration of the stalled write in microseconds.
+    #[inline]
+    pub fn record_pipe_stall(&self, us: u64) {
+        self.pipe_stalls.fetch_add(1, Ordering::Relaxed);
+        self.pipe_stall_us.fetch_add(us, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> serde_json::Value {
         let pkts_in = self.packets_in.load(Ordering::Relaxed);
         let pkts_out = self.packets_out.load(Ordering::Relaxed);
@@ -80,6 +95,9 @@ impl StageMetrics {
             0.0
         };
 
+        let stalls = self.pipe_stalls.load(Ordering::Relaxed);
+        let stall_us = self.pipe_stall_us.load(Ordering::Relaxed);
+
         serde_json::json!({
             "packetsIn": pkts_in,
             "packetsOut": pkts_out,
@@ -89,6 +107,11 @@ impl StageMetrics {
             "avgUsPerPacket": avg_us_per_packet,
             "uptimeSecs": elapsed,
             "packetsPerSec": if elapsed > 0.0 { pkts_in as f64 / elapsed } else { 0.0 },
+            "pipeMetrics": {
+                "stalls": stalls,
+                "stallUs": stall_us,
+                "avgStallUs": if stalls > 0 { stall_us / stalls } else { 0 },
+            },
         })
     }
 }
@@ -1670,6 +1693,22 @@ mod tests {
     use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader};
     use bytes::Bytes;
     use std::sync::Arc;
+
+    #[test]
+    fn stage_metrics_pipe_stall_snapshot() {
+        let m = StageMetrics::new();
+        let snap = m.snapshot();
+        assert_eq!(snap["pipeMetrics"]["stalls"].as_u64().unwrap(), 0);
+        assert_eq!(snap["pipeMetrics"]["stallUs"].as_u64().unwrap(), 0);
+        assert_eq!(snap["pipeMetrics"]["avgStallUs"].as_u64().unwrap(), 0);
+
+        m.record_pipe_stall(2_000);
+        m.record_pipe_stall(6_000);
+        let snap = m.snapshot();
+        assert_eq!(snap["pipeMetrics"]["stalls"].as_u64().unwrap(), 2);
+        assert_eq!(snap["pipeMetrics"]["stallUs"].as_u64().unwrap(), 8_000);
+        assert_eq!(snap["pipeMetrics"]["avgStallUs"].as_u64().unwrap(), 4_000);
+    }
 
     fn test_video_packet(pts: i64, dts: i64, keyframe: bool) -> MediaPacket {
         MediaPacket {

@@ -36,6 +36,7 @@
 
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +45,11 @@ use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::mpegts::{TsDemuxer, TsMuxer};
 use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 use crate::media::transcoder::{AudioRouting, parse_audio_routing};
+
+/// Stdin writes exceeding this threshold are counted as pipe stalls —
+/// FFmpeg's read end fell behind and the kernel pipe buffer was full.
+/// 1 ms filters normal async scheduling jitter while catching real back-pressure.
+const PIPE_STALL_THRESHOLD_US: u64 = 1_000;
 
 // ── FFmpeg arg builders ────────────────────────────────────────────────────
 
@@ -494,12 +500,17 @@ pub async fn start_external_transcoder_stage(
                         payload,
                     );
                     if !ts.is_empty() {
+                        let t0 = Instant::now();
                         if stdin.write_all(ts).await.is_err() {
                             eprintln!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
                                 pipeline_id, encoding
                             );
                             break 'outer;
+                        }
+                        let write_us = t0.elapsed().as_micros() as u64;
+                        if write_us > PIPE_STALL_THRESHOLD_US {
+                            stage_metrics.record_pipe_stall(write_us);
                         }
                         stage_metrics.record_in(in_bytes);
                     }
