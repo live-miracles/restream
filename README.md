@@ -231,7 +231,7 @@ this build enables x264, redistribution must comply with GPL.
 | `1935` | TCP/RTMP | RTMP ingest and play |
 | `10080` | UDP/SRT | SRT ingest and read |
 
-Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT`, `RESTREAM_DB_PATH`.
+Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT`, `RESTREAM_DB_PATH`, `RESTREAM_MEDIA_DIR`.
 
 | Path | Purpose |
 |---|---|

@@ -35,6 +35,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
             rtmp: 1935,
             srt: 10080,
         },
+        media_dir: "media".to_string(),
     });
 
     (api::create_router(state), pool, engine)
@@ -930,6 +931,7 @@ async fn health_shows_registered_egress() {
                 rtmp: 1935,
                 srt: 10080,
             },
+            media_dir: "media".to_string(),
         });
         api::create_router(state)
     };

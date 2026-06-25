@@ -99,6 +99,9 @@ pub struct AppState {
     pub sessions: Arc<TokioRwLock<HashSet<String>>>,
     pub engine: Arc<MediaEngine>,
     pub ports: PortConfig,
+    /// Directory for recordings and file-ingest sources.
+    /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
+    pub media_dir: String,
 }
 
 impl AppState {
@@ -1719,7 +1722,7 @@ async fn media_list_handler(
     }
 
     let mut files = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir("media").await {
+    if let Ok(mut entries) = tokio::fs::read_dir(&state.media_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             if (name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov"))
@@ -1773,14 +1776,14 @@ async fn media_delete_handler(
             .into_response();
     }
 
-    let _ = std::fs::create_dir_all("media");
-    let media_root = match std::fs::canonicalize("media") {
+    let _ = std::fs::create_dir_all(&state.media_dir);
+    let media_root = match std::fs::canonicalize(&state.media_dir) {
         Ok(p) => p,
         Err(_) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response();
         }
     };
-    let path = std::path::Path::new("media").join(&filename);
+    let path = std::path::Path::new(&state.media_dir).join(&filename);
     let canonical_path = match std::fs::canonicalize(&path) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
@@ -2086,11 +2089,12 @@ async fn recording_start_handler(
         let pid = pipeline_id.clone();
         let pipe_name = pipeline.name.clone();
         let engine_rec = engine.clone();
+        let media_dir = state.media_dir.clone();
         tokio::spawn(async move {
             crate::media::recording::start_recording(
                 pipe_name,
                 pid.clone(),
-                "media".to_string(),
+                media_dir,
                 ring_buf,
                 engine_rec,
                 cancel_token,

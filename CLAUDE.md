@@ -19,6 +19,7 @@ See [README.md § Development](README.md#development) for full dev setup, prereq
 ## Key Constraints
 - **Ports**: Defaults are HTTP=3030, RTMP=1935, SRT=10080. Override via `RESTREAM_HTTP_PORT`, `RESTREAM_RTMP_PORT`, `RESTREAM_SRT_PORT` env vars.
 - **Database**: SQLite at `data.db` by default. Override path via `RESTREAM_DB_PATH` (e.g. `RESTREAM_DB_PATH=/data/restream.db`). No migrations; schema created with `CREATE TABLE IF NOT EXISTS` at startup.
+- **Media Directory**: Defaults to `media/`. Override via `RESTREAM_MEDIA_DIR` (e.g. `RESTREAM_MEDIA_DIR=/data/media`). Used for file-ingest sources and `.mkv` recordings.
 - **HLS Segmenter**: In-memory storage only (`VecDeque<Bytes>` inside `HlsStore`), no disk I/O.
 - **Frontend Assets**: Statically embedded in the binary via `rust-embed` (disk-first fallback in dev).
 

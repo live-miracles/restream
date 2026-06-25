@@ -125,6 +125,7 @@ pub async fn run_app() {
     let ports = ServerPorts::from_env();
 
     let media_dir = std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".to_string());
+    let reconciler_media_dir = media_dir.clone();
     let state = Arc::new(crate::api::AppState {
         db: pool.clone(),
         security: security.clone(),
@@ -730,11 +731,12 @@ pub async fn run_app() {
                 let pid = pipeline.id.clone();
                 let pipe_name = pipeline.name.clone();
                 let engine_rec = engine_c.clone();
+                let media_dir_rec = reconciler_media_dir.clone();
                 tokio::spawn(async move {
                     crate::media::recording::start_recording(
                         pipe_name,
                         pid.clone(),
-                        "media".to_string(),
+                        media_dir_rec,
                         ring_buf,
                         engine_rec,
                         cancel_token,
