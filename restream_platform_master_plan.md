@@ -1310,7 +1310,9 @@ Implementation note, 2026-06-25 (continued):
   rather than hand-formatting `"{pipeline}:{kind.legacy_key()}"`. Infrastructure
   stages (`hls`, `recording`, `play`) keep string keys; they have no typed
   `StageKind` variant and are already centralized. Splitting `MediaEngine` into
-  typed registry structs remains a Phase 2 deliverable.
+  typed registry structs remains a Phase 3 deliverable.
+
+Phase 1 is complete as of 2026-06-25.
 
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
@@ -1342,6 +1344,21 @@ Implementation note, 2026-06-25:
   `seq`, and `timestamp`. `GET /api/v1/events` exposes the log.
 - `generatedAt` added to `processing_graph()` response; alert endpoints now
   return `{generatedAt, alerts:[...]}` envelope consistent with other v1 responses.
+- `PipeMetrics` (`src/media/pipe_metrics.rs`): back-pressure counters for the
+  external-subprocess pipe — stdin stalls (pipe buffer full) and stdout idles
+  (pipe empty). Separate from `StageMetrics` because only external-subprocess
+  stages have a kernel pipe to observe. Surfaced in the graph as `pipeMetrics`.
+- `src/media/timing.rs`: portable elapsed-time module used by pipe metrics
+  instrumentation. Uses `rdtsc` (≈22 ns) on x86_64 with invariant TSC; falls
+  back to `Instant` (≈36 ns) otherwise. Three validation gates (invariant TSC
+  CPUID, calibrated cps bounds, minimum window). `calibrate() → bool` allows
+  stages to log which backend is active.
+- Code organisation: `StageMetrics`, `PipeMetrics`, and the timing module
+  extracted from `engine.rs`/`external_transcoder.rs` into dedicated files;
+  `engine.rs` re-exports both via `pub use`.
+- `benches/stage_metrics.rs`: hot-path cost measurements for record_in/out
+  (≈10 ns), snapshot (≈625 ns), rdtsc vs Instant comparison, and full
+  stdin-instrumentation overhead per packet (≈36 ns).
 
 Phase 2 is complete as of 2026-06-25.
 
@@ -1350,6 +1367,17 @@ Phase 2 is complete as of 2026-06-25.
 - canonical response models
 - operator and engineer endpoints
 - engine-native graph resources
+
+Implementation note, 2026-06-25:
+- Phase 3 operator endpoints are partially landed alongside Phase 2 work:
+  `GET /api/v1/overview`, `GET /api/v1/alerts`, `GET /api/v1/events`,
+  `GET /api/v1/pipelines/:id/summary` are all live and tested.
+- `generatedAt` envelope is consistent across all v1 snapshot endpoints.
+- Remaining Phase 3 deliverables: engineer endpoints
+  (`GET /api/v1/engine/telemetry`, `GET /api/v1/pipelines/:id/telemetry`,
+  `GET /api/v1/stages/:id/telemetry`), `first_seen`/`last_seen` on alerts
+  (correlate with event log), engine-native registry split (typed StageKey
+  indexes replacing String HashMaps in MediaEngine).
 
 ## Phase 4 — agent read and planning plane
 - capability discovery

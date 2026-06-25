@@ -23,13 +23,13 @@ a working runtime path.
 
 | Suite | Result |
 |---|---|
-| Library/unit | 365 passed |
+| Library/unit | 372 passed |
 | API integration | 46 passed |
 | AV sync integration | 14 passed |
 | Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **464 passed, 0 failed** |
+| Total | **471 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -408,6 +408,25 @@ See `docs/api-reference.md` for the executable route surface.
   lifecycle transition. `GET /api/v1/events` exposes the log with optional
   `pipeline_id` and `limit` query params. First-seen/last-seen for alerts will
   correlate with this event log in Phase 3.
+- ~~pipe back-pressure metrics for external transcoder~~ — done; `src/media/pipe_metrics.rs`
+  introduces `PipeMetrics` with stdin-stall and stdout-idle counters. The external
+  transcoder registers an `Arc<PipeMetrics>` in `MediaEngine::pipe_metrics` on
+  startup and removes it on exit. `processing_graph()` includes a `pipeMetrics`
+  field on external-subprocess nodes. `StageMetrics` no longer carries pipe-specific
+  fields. The bench shows `record_stall` at ≈9 ns (2× `AtomicU64 fetch_add Relaxed`).
+- ~~timing module with rdtsc / Instant fallback~~ — done; `src/media/timing.rs`
+  provides `now()` / `delta_us()` backed by `rdtsc` (≈22 ns on x86_64 with
+  invariant TSC) or `Instant` (≈36 ns fallback). Three validation gates before
+  committing to rdtsc: invariant TSC CPUID bit, calibrated cycles/µs in
+  [100, 10000], observed window ≥ 50 µs. `calibrate()` returns `bool`; stages
+  log "Instant fallback" when rdtsc is not used. 6 unit tests cover validation
+  bounds, monotonicity, and real elapsed time.
+- ~~code organisation cleanup~~ — done; `StageMetrics`, `PipeMetrics`, and the
+  timing module were extracted from `engine.rs` / `external_transcoder.rs` into
+  `src/media/stage_metrics.rs`, `src/media/pipe_metrics.rs`, and
+  `src/media/timing.rs`. `engine.rs` re-exports both metric types via `pub use`.
+  `benches/stage_metrics.rs` now covers record_in/out cost (≈10 ns), snapshot
+  cost (≈625 ns), and the full stdin-instrumentation path (≈36 ns per packet).
 
 ### Claims intentionally not made
 
@@ -422,24 +441,30 @@ See `docs/api-reference.md` for the executable route surface.
 
 ## Current File-Level Snapshot
 
-Approximate lines in the reviewed working tree:
+Approximate lines in the reviewed working tree (June 25, 2026):
 
-| Area | Lines |
-|---|---:|
-| `src/api.rs` | 1,887 |
-| `src/db.rs` | 776 |
-| `src/diag.rs` | 987 |
-| `src/lib.rs` | 500 |
-| `src/media/engine.rs` | 1,382 |
-| `src/media/mpegts.rs` | 2,065 |
-| `src/media/rtmp.rs` | 1,496 |
-| `src/media/srt.rs` | 2,290 |
-| `src/media/codec.rs` | 544 |
-| `src/media/ring_buffer.rs` | 568 |
-| `src/media/transcoder.rs` | 403 |
-| `tests/api.rs` | 965 |
-| `tests/db.rs` | 396 |
-| `tests/transcoder.rs` | 120 |
+| Area | Lines | Notes |
+|---|---:|---|
+| `src/api.rs` | 2,749 | v1 operator endpoints added |
+| `src/alerts.rs` | 423 | new: typed alert model |
+| `src/events.rs` | 210 | new: lifecycle event log |
+| `src/db.rs` | 776 | |
+| `src/diag.rs` | 987 | |
+| `src/lib.rs` | 500 | |
+| `src/media/engine.rs` | 2,629 | StageMetrics/PipeMetrics extracted |
+| `src/media/stage_metrics.rs` | 81 | new: hot-path throughput counters |
+| `src/media/pipe_metrics.rs` | 54 | new: subprocess pipe back-pressure |
+| `src/media/timing.rs` | 210 | new: rdtsc/Instant elapsed timing |
+| `src/media/external_transcoder.rs` | 649 | pipe metrics + timing wired |
+| `src/media/mpegts.rs` | 2,918 | |
+| `src/media/rtmp.rs` | 2,101 | |
+| `src/media/srt.rs` | 3,185 | |
+| `src/media/ring_buffer.rs` | 1,269 | |
+| `src/media/transcoder.rs` | 1,185 | |
+| `tests/api.rs` | 1,545 | v1 endpoint tests added |
+| `tests/db.rs` | 396 | |
+| `tests/transcoder.rs` | 120 | |
+| `benches/stage_metrics.rs` | 155 | new: hot-path cost measurements |
 
 Line counts are descriptive only and should not be treated as a completion
 metric.
