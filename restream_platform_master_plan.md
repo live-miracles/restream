@@ -1298,11 +1298,15 @@ Implementation note, 2026-06-25:
 - typed stage identity, canonical stage-key building, and encoding-stage planning
   are now implemented in `src/domain/stage.rs`;
 - shared packet feeder primitives are now implemented in `src/media/feeder.rs`
-  and are used by recording, HLS, and the in-process transcoder feeder path;
+  and are used by recording, HLS, the in-process transcoder feeder path,
+  external FFmpeg subprocess stdin, and the H.265→H.264 bridge feeder;
 - backend-selection policy is now centralized in
   `src/planner/backend_policy.rs`;
 - graph serialization now consumes typed `StageKind` parsing/rendering helpers,
   but full engine-native graph registries remain pending.
+- `src/media/feeder.rs` has an equivalence test proving `TsPacketFeeder`
+  matches the previous manual codec conversion + DTS enforcement + TS mux path;
+  `benches/stage_feeder.rs` measures the shared feeder hot path.
 
 Implementation note, 2026-06-25 (continued):
 - `get_or_create_transcoder` and `get_or_create_h264_transcoder` in
@@ -1312,16 +1316,21 @@ Implementation note, 2026-06-25 (continued):
   `StageKind` variant and are already centralized. Splitting `MediaEngine` into
   typed registry structs remains a Phase 3 deliverable.
 
-Phase 1 structural items (typed IDs and stage kinds, StageFeeder for HLS/recording/internal
-transcoder, stage planning, graph serialization) are complete as of 2026-06-25.
+Phase 1 structural items (typed IDs and stage kinds, StageFeeder coverage for
+recording, HLS, internal/external transcoder feeders, H.265→H.264 bridge feeder,
+stage planning, graph serialization) are complete as of 2026-06-25.
 
-Remaining Phase 1 gap (deferred to Phase 3): `StageFeeder` does not yet cover
-`external_transcoder.rs` or `h264_transcoder.rs`. Both still own their own
-`TsMuxer`, `DtsEnforcer`, codec conversion, stream-index mapping, and batch write
-loop — the same duplication `feeder.rs` was designed to eliminate. Full feeder
-coverage requires threading the `FeedSink` trait through the subprocess-pipe path,
-which is a larger refactor. Engine-native graph registries (typed `StageKey` maps)
-also remain pending.
+Phase 3-only structural follow-up: engine-native graph registries (typed
+`StageKey` maps replacing string-keyed engine maps) remain pending because that
+belongs to the API/runtime model reset rather than the Phase 1 behavior-preserving
+cleanup.
+
+Phase 3 foundation update, 2026-06-25:
+- `MediaEngine` now stores transcoder buffers, stage input queues, and
+  subprocess pipe metrics in typed `StageKey` maps internally. Existing stage
+  tasks and the reconciler may still pass legacy storage strings at the boundary,
+  but the engine parses them once and graph serialization renders from typed
+  keys rather than reparsing registry strings.
 
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
@@ -1365,16 +1374,20 @@ Implementation note, 2026-06-25:
 - Code organisation: `StageMetrics`, `PipeMetrics`, and the timing module
   extracted from `engine.rs`/`external_transcoder.rs` into dedicated files;
   `engine.rs` re-exports both via `pub use`.
-- `benches/stage_metrics.rs`: hot-path cost measurements for record_in/out
-  (≈10 ns), snapshot (≈625 ns), rdtsc vs Instant comparison, and full
-  stdin-instrumentation overhead per packet (≈36 ns).
+- `benches/stage_metrics.rs`: hot-path cost measurements for record_in/out,
+  snapshot, rdtsc vs Instant comparison, and full stdin-instrumentation overhead
+  per packet. Verified on 2026-06-25 with `bench-dev`: record_in/out ≈17 ns,
+  stage snapshot ≈0.9 µs, pipe metric updates ≈16 ns, and full stdin
+  instrumentation ≈60 ns per packet.
 
-Phase 2 is mostly complete as of 2026-06-25. All four deliverables have substantive
-implementation. Recording StageMetrics gap (graph telemetry node populated with null
-metrics) was identified in review and has been fixed: recording.rs now creates
-StageMetrics, calls record_in per packet, and removes metrics on exit.
-StageStarted/StageStopped event coverage was also extended to h264_transcoder,
-internal transcoder, and HLS segmenter to close the lifecycle event gap.
+Phase 2 is complete as of 2026-06-25 for the telemetry substrate scope:
+queue/ring/stage/edge telemetry, lifecycle events, alert derivation, and
+freshness-aware snapshots all have live implementation and tests. Recording
+StageMetrics gap (graph telemetry node populated with null metrics) was identified
+in review and has been fixed: recording.rs now creates StageMetrics, calls
+record_in per packet, and removes metrics on exit. StageStarted/StageStopped event
+coverage was also extended to h264_transcoder, internal transcoder, and HLS
+segmenter to close the lifecycle event gap.
 
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface
@@ -1390,8 +1403,9 @@ Implementation note, 2026-06-25:
 - Remaining Phase 3 deliverables: engineer endpoints
   (`GET /api/v1/engine/telemetry`, `GET /api/v1/pipelines/:id/telemetry`,
   `GET /api/v1/stages/:id/telemetry`), `first_seen`/`last_seen` on alerts
-  (correlate with event log), engine-native registry split (typed StageKey
-  indexes replacing String HashMaps in MediaEngine).
+  (correlate with event log), broader engine registry split behind narrower
+  registry structs, and converting the remaining boundary call sites from
+  legacy storage strings to typed `StageKey` parameters.
 
 ## Phase 4 — agent read and planning plane
 - capability discovery
