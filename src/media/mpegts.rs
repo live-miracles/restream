@@ -2128,6 +2128,80 @@ mod tests {
     }
 
     #[test]
+    fn mux_demux_two_audio_tracks_round_trip() {
+        // TsMuxer assigns separate PIDs to each audio track.
+        // TsDemuxer must recover both with distinct track_index values
+        // and correct packet counts.
+        let video = VideoMeta {
+            codec: "h264".to_string(),
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            bw: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let audio0 = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            profile: None,
+        };
+        let audio1 = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 44100,
+            channels: 1,
+            channel_layout: None,
+            track_index: 1,
+            profile: None,
+        };
+
+        let mut muxer = TsMuxer::new(Some(&video), &[audio0, audio1]);
+        let mut all_ts = Vec::new();
+
+        let video_payload = vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x88];
+        // ADTS frame for AAC-LC 48 kHz stereo (7-byte header, no CRC)
+        let audio0_payload = vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC, 0x21, 0x10];
+        // ADTS frame for AAC-LC 44.1 kHz mono
+        let audio1_payload = vec![0xFF, 0xF1, 0x58, 0x40, 0x02, 0x1F, 0xFC, 0x21, 0x10];
+
+        for i in 0..3u32 {
+            let pts = (i as i64) * 33;
+            let ts = muxer.mux_packet(MediaType::Video, 0, pts, pts, i == 0, &video_payload);
+            all_ts.extend_from_slice(ts);
+            let ts = muxer.mux_packet(MediaType::Audio, 0, pts, pts, false, &audio0_payload);
+            all_ts.extend_from_slice(ts);
+            let ts = muxer.mux_packet(MediaType::Audio, 1, pts, pts, false, &audio1_payload);
+            all_ts.extend_from_slice(ts);
+        }
+
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&all_ts);
+        demuxer.flush();
+        let packets = demuxer.drain();
+
+        let video_count = packets.iter().filter(|p| p.media_type == MediaType::Video).count();
+        let audio0_count = packets.iter().filter(|p| p.media_type == MediaType::Audio && p.track_index == 0).count();
+        let audio1_count = packets.iter().filter(|p| p.media_type == MediaType::Audio && p.track_index == 1).count();
+
+        assert_eq!(video_count, 3, "should demux 3 video packets");
+        assert_eq!(audio0_count, 3, "should demux 3 packets for audio track 0");
+        assert_eq!(audio1_count, 3, "should demux 3 packets for audio track 1");
+
+        // Verify both audio track indices appear in the demuxed stream
+        let audio_track_indices: std::collections::HashSet<u32> = packets
+            .iter()
+            .filter(|p| p.media_type == MediaType::Audio)
+            .map(|p| p.track_index)
+            .collect();
+        assert!(audio_track_indices.contains(&0), "track_index 0 must be present");
+        assert!(audio_track_indices.contains(&1), "track_index 1 must be present");
+    }
+
+    #[test]
     fn nal_scanner_h264_idr() {
         // Start code + IDR NAL
         let data = [0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB];
