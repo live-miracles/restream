@@ -8,15 +8,19 @@ Run the full suite:
 cargo test
 ```
 
-As of June 22, 2026 this runs 132 passing tests:
+As of June 25, 2026 this runs 440 passing non-doctest tests:
 
 | Suite | Tests | Source |
 |---|---:|---|
-| Library/unit | 92 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
-| API integration | 24 | `tests/api.rs` |
-| Database integration | 12 | `tests/db.rs` |
-| Transcoder integration | 4 | `tests/transcoder.rs` |
-| **Total** | **132** | |
+| Library/unit | 350 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
+| API integration | 38 | `tests/api.rs` |
+| AV sync integration | 14 | `tests/av_sync.rs` |
+| Codec integration | 16 | `tests/codec.rs` |
+| Database integration | 15 | `tests/db.rs` |
+| Transcoder integration | 7 | `tests/transcoder.rs` |
+| **Total** | **440** | |
+
+The doctest suite also runs; the single codec example is intentionally ignored.
 
 Unit coverage includes:
 
@@ -26,6 +30,10 @@ Unit coverage includes:
   extraction, rate deltas, socket option IDs, listener UDP-stat parsing
 - Linux `TCP_INFO`/`SO_MEMINFO` conversion and live socket collection
 - Transcoder stage sharing and audio-routing parsing
+- External HLS PUT upload delivery through a dummy HTTP sink
+- FFmpeg-backed audio remap/downmix stage argument generation and fixture-backed
+  execution
+- Internal decode/scale/encode coverage for the built-in video profiles
 - Ring buffer push/pull ordering, overflow fast-forward to keyframe,
   multi-reader isolation, fill/capacity reporting, burst APIs
 - DTS monotonicity enforcement (equal, decreasing, PTS < DTS correction,
@@ -39,8 +47,9 @@ Unit coverage includes:
 
 The API suite covers authentication, configuration, pipeline/output CRUD,
 ingests, HLS aliases, status, graph, diagnostics preconditions, custom
-encoding persistence, egress-pipeline association in `/health`, and
-deletion-cancellation of egress tasks.
+encoding persistence/rejection for runtime outputs, HLS upload output
+acceptance, RTMPS output acceptance, egress-pipeline association in `/health`,
+and deletion-cancellation of egress tasks.
 
 ## Live Integration Tests
 
@@ -306,10 +315,19 @@ baseline on stop.
 
 ### Automation
 
+Currently checked in:
+
 ```text
 test/run-integration.sh ramp
 test/run-integration.sh mixed-scale
 test/run-integration.sh bonding
+test/run-media-validation.sh
+test/run-bitrate-scale-test.py
+```
+
+Planned wrappers for the remaining matrix:
+
+```text
 test/run-ingest-equivalence.sh
 test/run-egress-matrix.sh
 test/run-hls-put.sh
@@ -319,7 +337,7 @@ test/run-scale-inprocess.sh
 test/run-scale-500.sh
 ```
 
-Each run writes artifacts to `test/artifacts/<run-id>/` with manifest,
+Each completed matrix run should write artifacts to `test/artifacts/<run-id>/` with manifest,
 environment, per-case results (PASS/FAIL/EXPECTED_FAIL/SKIPPED/INFRA_FAILURE),
 ffprobe output, captures, metrics, logs, and summary.
 
@@ -331,13 +349,14 @@ These capabilities must be treated as test results, not assumptions:
 |---|---|
 | RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip |
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
-| Video presets (720p, 1080p, etc.) | Decode/filter/encode loop must exist |
+| Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
+| Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Cross-protocol SRT→RTMP | Protocol packaging must be correct |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | HTTP PUT must be implemented |
+| HLS upload egress | HTTP PUT delivery is implemented and covered by a dummy sink test; live destination restart remains part of the matrix |
 | Recording | Readable file with correct streams/timestamps |
-| Audio remap/downmix | Channel-level filtering must be implemented |
-| Custom encoding | Custom args must be applied by transcoder |
+| Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
+| Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |
 | Bonded SRT ingest | Separate-process broadcast + backup tests |
 
 ## Bitrate Scaling and Load Test Results (June 23, 2026)
@@ -385,4 +404,3 @@ Below is the structured data of parent and child process resources collected dir
 #### 4. Verification and Correctness
 * **Result:** Correctness checks successfully verified all 4 output streams (RTMP source, RTMP 720p, SRT source, SRT 720p) for every test case.
 * **Fix details:** Setting a GOP size of 30 frames (`-g 30`) on the publisher allowed `ffprobe` to receive keyframes and sequence headers immediately, validating the stream resolution on all egress types.
-

@@ -96,6 +96,16 @@ A full internal-libav model has the highest upside but also the highest implemen
 
 The current codebase already points toward the correct answer: **Rust owns platform orchestration; FFmpeg owns codec-heavy transforms.**
 
+Current build-out checkpoint, 2026-06-25:
+- HLS HTTP/HTTPS upload egress is implemented through the shared HLS segmenter
+  and PUTs playlists plus segments to the configured destination.
+- Channel-level audio `remap` and `downmix` routes use external FFmpeg filter
+  stages; `atrack` remains a packet-only selector.
+- The opt-in internal video transcoder has decode/scale/encode coverage for
+  every built-in video profile (`h264`, `720p`, `1080p`).
+- The remaining release-level proof gap is the full protocol matrix from
+  `docs/testing.md`, not missing HLS upload or audio-DSP primitives.
+
 ---
 
 ## 2.2 Shared-stage strategy
@@ -1334,6 +1344,15 @@ Implementation note, 2026-06-25:
 - failure injection
 - performance regression gates
 - agent workflow contract tests
+
+Implementation note, 2026-06-25:
+- the Rust unit and integration suite currently has 440 passing non-doctest
+  tests;
+- HLS PUT upload, FFmpeg-backed remap/downmix, shared-stage cleanup, runtime
+  tuning, secured HLS pull routes, and built-in internal video preset coverage
+  are now regression-tested;
+- the remaining release blocker is a reproducible protocol matrix run covering
+  H.265, B-frame timestamps, cross-protocol packaging, and destination restart.
 
 ## Phase 8 — platform optimization
 - package-stage sharing

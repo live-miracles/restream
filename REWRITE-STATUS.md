@@ -1,7 +1,7 @@
 # Rust Backend Rewrite — Status
 
-Branch: `feat/rust-backend-rewrite`
-Code snapshot reviewed: June 22, 2026 (current working-tree changes)
+Branch: `feat/rust-backend-rewrite-v2`
+Code snapshot reviewed: June 25, 2026 (current working-tree changes)
 
 ## Executive Status
 
@@ -11,22 +11,27 @@ in-process FFmpeg library stages, SQLite state, and an embedded dashboard.
 
 The rewrite is structurally substantial and the Rust test suite is green, but
 it should not yet be described as feature-complete or production-certified.
-Protocol correctness, deployment/CI replacement, channel-level audio
-processing, and several high-rate/bonded combinations remain open gates. HLS
-upload and custom output encoding are explicitly unavailable rather than
-advertised as working runtime paths.
+Protocol correctness, the full live matrix, vertical transform semantics, and
+several high-rate/bonded combinations remain open gates. HLS upload and
+channel-level audio remap/downmix are implemented for the default runtime path;
+custom output encoding remains explicitly unavailable rather than advertised as
+a working runtime path.
 
 ## Evidence
 
-`cargo test` on June 22, 2026:
+`cargo test` on June 25, 2026:
 
 | Suite | Result |
 |---|---|
-| Library/unit | 92 passed |
-| API integration | 24 passed |
-| Database integration | 12 passed |
-| Transcoder integration | 4 passed |
-| Total | **132 passed, 0 failed** |
+| Library/unit | 350 passed |
+| API integration | 38 passed |
+| AV sync integration | 14 passed |
+| Codec integration | 16 passed |
+| Database integration | 15 passed |
+| Transcoder integration | 7 passed |
+| Total | **440 passed, 0 failed** |
+
+The doctest suite also runs; the single codec example is intentionally ignored.
 
 Release-build validation on June 21, 2026 also passed:
 
@@ -51,6 +56,9 @@ The current unit coverage includes:
   extraction, rate deltas, socket option IDs, and listener UDP-stat parsing
 - Linux `TCP_INFO`/`SO_MEMINFO` conversion and live socket collection
 - transcoder stage sharing and audio-routing parsing
+- external FFmpeg HLS PUT upload segment/playlist delivery
+- FFmpeg-backed channel remap/downmix audio stages
+- internal decode/scale/encode coverage for built-in video presets
 - ring buffer push/pull ordering, overflow fast-forward to keyframe,
   multi-reader isolation, fill/capacity reporting
 - DTS monotonicity enforcement (equal, decreasing, PTS < DTS correction,
@@ -61,8 +69,9 @@ The current unit coverage includes:
 
 The API suite covers authentication, configuration, pipeline/output CRUD,
 ingests, HLS aliases, status, graph, diagnostics preconditions, custom
-encoding persistence, egress-pipeline association in `/health`, and
-deletion-cancellation of egress tasks.
+encoding persistence/rejection for runtime outputs, HLS upload output
+acceptance, RTMPS output acceptance, egress-pipeline association in `/health`,
+and deletion-cancellation of egress tasks.
 
 The 2×3 live script exists and targets native RTMP/SRT ingest with six outputs.
 The checked-in `test/artifacts/latest/` files are local evidence, not a
@@ -246,8 +255,11 @@ See `docs/api-reference.md` for the executable route surface.
 7. ~~Replace the transcoder byte-stream reconstruction~~ — done; output reader
    now demuxes MPEG-TS to recover timestamps and keyframes. HLS, recording,
    and in-process transcoder input now share the TS packet feeder.
-8. Run the protocol matrix from `docs/testing.md`, including H.265,
-   B-frame timestamps, cross-protocol packaging, and destination restart.
+8. Run and publish a clean protocol matrix from `docs/testing.md`. Minimum
+   release evidence should include current `test/run-integration.sh` modes,
+   B-frame timestamp round-trips, H.265 SRT passthrough and RTMP edge
+   conversion, cross-protocol SRT→RTMP packaging, HLS PUT destination restart,
+   and a manifest under `test/artifacts/<run-id>/`.
 9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
    video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
    path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.
