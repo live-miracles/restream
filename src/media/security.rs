@@ -267,4 +267,85 @@ mod tests {
             state.len()
         );
     }
+
+    // H1: verify the exact call sequence SRT handle_client uses:
+    //   1. is_ip_banned → None (clean IP)
+    //   2. record_failure × N → eventually banned
+    //   3. is_ip_banned → Some (banned)
+    //   4. record_success → ban cleared
+    //   5. is_ip_banned → None again
+    #[test]
+    fn srt_ingest_security_call_sequence() {
+        let cfg = IngestSecurityConfig {
+            failure_limit: 3,
+            failure_window_ms: 60_000,
+            ban_ms: 60_000,
+            tracked_ip_limit: 1000,
+        };
+        let svc = IngestSecurityService::new(cfg);
+        let ip = "203.0.113.1"; // TEST-NET, never a real loopback
+
+        // Step 1: clean IP — allowed through
+        assert!(svc.is_ip_banned(ip).is_none());
+
+        // Step 2: three auth failures — third call triggers ban
+        assert!(!svc.record_failure(ip));
+        assert!(!svc.record_failure(ip));
+        assert!(svc.record_failure(ip), "third failure must ban the IP");
+
+        // Step 3: now rejected
+        assert!(
+            svc.is_ip_banned(ip).is_some(),
+            "banned IP must be rejected at gate"
+        );
+
+        // Step 4: successful auth clears state
+        svc.record_success(ip);
+
+        // Step 5: allowed again
+        assert!(
+            svc.is_ip_banned(ip).is_none(),
+            "IP must be allowed after record_success"
+        );
+    }
+
+    // H3: is_ip_banned uses a read lock — many concurrent callers must not
+    // deadlock and must all see the correct ban status.
+    #[test]
+    fn concurrent_is_ip_banned_no_deadlock_or_wrong_result() {
+        use std::sync::Arc;
+
+        let cfg = IngestSecurityConfig {
+            failure_limit: 1,
+            failure_window_ms: 60_000,
+            ban_ms: 60_000,
+            tracked_ip_limit: 1000,
+        };
+        let svc = Arc::new(IngestSecurityService::new(cfg));
+        let ip = "198.51.100.1"; // TEST-NET
+
+        // Pre-ban the IP
+        svc.record_failure(ip);
+        assert!(svc.is_ip_banned(ip).is_some());
+
+        // 16 concurrent threads all read the ban status simultaneously.
+        // A write lock would serialise them; a read lock allows parallelism.
+        // Any deadlock shows up as a test timeout.
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let s = svc.clone();
+                let ip = ip.to_string();
+                std::thread::spawn(move || {
+                    assert!(
+                        s.is_ip_banned(&ip).is_some(),
+                        "all readers must see the ban"
+                    );
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+    }
 }

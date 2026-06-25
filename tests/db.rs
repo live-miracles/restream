@@ -396,6 +396,31 @@ async fn filtered_job_logs() {
 
 // ── Regression tests for Round 10 audit fixes ────────────────────────────────
 
+// M1: list_sessions must return Err (not Ok([])) when the DB fails. The
+// reconciler's session-prune logic skips retain() on Err — if this returned
+// Ok([]) instead, every active session would be wiped from memory.
+#[tokio::test]
+async fn list_sessions_returns_err_not_empty_on_db_failure() {
+    let pool = db::create_pool("sqlite::memory:").await.unwrap();
+    db::setup_database_schema(&pool).await.unwrap();
+
+    // Insert a live session so Ok([]) vs Err is distinguishable.
+    let _ = sqlx::query("INSERT INTO sessions (token, created_at) VALUES ('tok1', 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Close the pool to simulate a DB failure.
+    pool.close().await;
+
+    let result = db::list_sessions(&pool).await;
+    assert!(
+        result.is_err(),
+        "closed pool must return Err, not Ok([]) — \
+         Ok([]) would wipe all active sessions from memory"
+    );
+}
+
 // M4: Per-connection PRAGMAs — every pooled connection must have busy_timeout
 // set so SQLITE_BUSY retries rather than failing immediately. Verify via the
 // PRAGMA value read back from the pool (not just the setup connection).

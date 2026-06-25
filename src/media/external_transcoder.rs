@@ -509,4 +509,30 @@ mod tests {
             assert_eq!(args[ca_pos + 1], "copy", "preset={preset}");
         }
     }
+
+    // H4: verify that kill() + wait() on a child that has no stdin piped
+    // completes without hanging or panicking. This is the exact pattern used
+    // in the early-return error paths added by the H4 fix.
+    #[tokio::test]
+    async fn kill_and_wait_on_child_without_piped_stdin_does_not_hang() {
+        // Spawn a process without piping stdin (simulates the race where
+        // child.stdin.take() returns None after spawn).
+        let mut child = Command::new("true") // exits immediately with code 0
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn 'true'");
+
+        // stdin.take() returns None here (not piped) — the scenario the fix handles.
+        assert!(child.stdin.take().is_none());
+
+        // The fix: kill (no-op if already exited) then wait (reaps the child).
+        // Must complete without blocking.
+        let _ = child.kill().await;
+        let status = child.wait().await.expect("wait must not fail");
+        // 'true' exits 0; kill() on an already-exited process may produce a
+        // non-zero status on some platforms — just assert we didn't hang.
+        let _ = status;
+    }
 }

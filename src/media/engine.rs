@@ -2351,4 +2351,31 @@ mod tests {
             "stage without readers must be removed"
         );
     }
+
+    // M2: get_hls_cancel_token must return None (not panic) when no HLS
+    // segmenter is registered for the pipeline. The reconciler's HLS egress
+    // path replaced an unwrap() with a None guard after this was identified.
+    #[tokio::test]
+    async fn get_hls_cancel_token_returns_none_with_no_segmenter() {
+        let engine = Arc::new(MediaEngine::new());
+        let token = engine.get_hls_cancel_token("no-such-pipeline").await;
+        assert!(
+            token.is_none(),
+            "must return None, not panic, when segmenter is not registered"
+        );
+    }
+
+    // M2 (continued): after ensure_hls_segmenter registers a segmenter, the
+    // token must be Some — confirming the None case above is not a permanent failure.
+    #[tokio::test]
+    async fn get_hls_cancel_token_returns_some_after_ensure() {
+        let engine = Arc::new(MediaEngine::new());
+        engine.ensure_hls_segmenter("pipe-hls").await;
+        let token = engine.get_hls_cancel_token("pipe-hls").await;
+        assert!(
+            token.is_some(),
+            "token must be Some after ensure_hls_segmenter registers the pipeline"
+        );
+        engine.shutdown_hls_segmenter("pipe-hls").await;
+    }
 }
