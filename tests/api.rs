@@ -1422,6 +1422,132 @@ async fn ingest_update_start_time_too_long_rejected() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+// --- Operator overview and pipeline summary ---
+
+#[tokio::test]
+async fn v1_overview_requires_auth() {
+    let (app, _) = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/overview")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn v1_overview_returns_summary_fields() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/overview", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["totalPipelines"].is_number());
+    assert!(body["activePipelines"].is_number());
+    assert!(body["degradedPipelines"].is_number());
+    assert!(body["failedOutputs"].is_number());
+    assert!(body["alertCount"]["critical"].is_number());
+    assert!(body["alertCount"]["warning"].is_number());
+    assert!(body["generatedAt"].is_string());
+}
+
+#[tokio::test]
+async fn v1_overview_counts_match_pipeline_count() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Create two pipelines
+    for name in &["overview-p1", "overview-p2"] {
+        app.clone()
+            .oneshot(auth_req(
+                "POST",
+                "/pipelines",
+                &cookie,
+                Some(&serde_json::json!({ "name": name, "streamKey": name }).to_string()),
+            ))
+            .await
+            .unwrap();
+    }
+    let _ = pool; // keep alive
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/overview", &cookie, None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["totalPipelines"].as_u64().unwrap(), 2);
+    // No active ingests → 0 active, both pipelines show no-publisher alert → degraded = 2
+    assert_eq!(body["activePipelines"].as_u64().unwrap(), 0);
+    assert_eq!(body["degradedPipelines"].as_u64().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn v1_pipeline_summary_not_found_for_unknown_id() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/pipelines/nonexistent/summary",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn v1_pipeline_summary_returns_operator_fields() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    // Create a pipeline
+    let create = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(&serde_json::json!({ "name": "summary-test", "streamKey": "smrykey" }).to_string()),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(create).await;
+    let pid = body["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/pipelines/{}/summary", pid),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["pipelineId"].as_str().unwrap(), pid);
+    assert!(body["source"]["status"].is_string());
+    assert!(body["outputs"]["total"].is_number());
+    assert!(body["outputs"]["running"].is_number());
+    assert!(body["alerts"].is_array());
+    assert!(body["generatedAt"].is_string());
+}
+
 // --- Reconciler backoff unit test ---
 
 #[test]

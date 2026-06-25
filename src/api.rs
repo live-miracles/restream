@@ -283,6 +283,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(pipeline_alerts_handler),
         )
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
+        .route("/api/v1/overview", get(v1_overview_handler))
+        .route(
+            "/api/v1/pipelines/:pipeline_id/summary",
+            get(v1_pipeline_summary_handler),
+        )
         .route(
             "/pipelines/:pipeline_id/diagnostics",
             get(pipeline_diagnostics_sse_handler),
@@ -2074,6 +2079,191 @@ async fn aggregate_alerts_handler(
         .await;
     let alert_list = alerts::derive_alerts(&snapshot);
     Json(alert_list).into_response()
+}
+
+/// Operator overview: total/active/degraded pipelines, failed outputs, alert counts.
+/// Auth required. Derives all numbers from a single health_snapshot pass.
+async fn v1_overview_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
+    let mut recording_enabled = std::collections::HashMap::new();
+    for pid in &pipeline_ids {
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        recording_enabled.insert(pid.clone(), rec);
+    }
+    let snapshot = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+
+    let alert_list = alerts::derive_alerts(&snapshot);
+    let critical = alert_list
+        .iter()
+        .filter(|a| matches!(a.severity, alerts::Severity::Critical))
+        .count();
+    let warning = alert_list
+        .iter()
+        .filter(|a| matches!(a.severity, alerts::Severity::Warning))
+        .count();
+
+    let snap_pipelines = snapshot["pipelines"].as_object();
+
+    let total = pipeline_ids.len();
+    let mut active = 0usize;
+    let mut degraded = 0usize;
+    let mut failed_outputs = 0usize;
+
+    if let Some(pip_map) = snap_pipelines {
+        for (pip_id, pip) in pip_map {
+            let is_live = pip["input"]["status"].as_str() == Some("on");
+            if is_live {
+                active += 1;
+            }
+            let has_alerts = alert_list
+                .iter()
+                .any(|a| a.pipeline_id.as_deref() == Some(pip_id.as_str()));
+            if has_alerts {
+                degraded += 1;
+            }
+            if let Some(outputs) = pip["outputs"].as_object() {
+                for output in outputs.values() {
+                    if output["status"].as_str().unwrap_or("") != "running" {
+                        failed_outputs += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let generated_at = snapshot["generatedAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Json(serde_json::json!({
+        "generatedAt": generated_at,
+        "totalPipelines": total,
+        "activePipelines": active,
+        "degradedPipelines": degraded,
+        "failedOutputs": failed_outputs,
+        "alertCount": { "critical": critical, "warning": warning },
+        "srtListener": snapshot["srtListener"],
+    }))
+    .into_response()
+}
+
+/// Operator pipeline summary: source state, output rollup, alert list.
+/// Auth required. Returns a focused view without raw graph or queue data.
+async fn v1_pipeline_summary_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let rec_key = format!("recording_enabled:{}", pipeline_id);
+    let rec = db::get_meta(&state.db, &rec_key)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let mut recording_enabled = std::collections::HashMap::new();
+    recording_enabled.insert(pipeline_id.clone(), rec);
+
+    let snapshot = state
+        .engine
+        .health_snapshot(&[pipeline_id.clone()], &recording_enabled)
+        .await;
+
+    let generated_at = snapshot["generatedAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // Verify the pipeline exists in the DB before using snapshot data.
+    // health_snapshot always produces an entry for every requested pipeline_id
+    // (with input.status=off) even if the pipeline doesn't exist in the DB.
+    let exists = db::list_pipelines(&state.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|p| p.id == pipeline_id);
+    if !exists {
+        return (StatusCode::NOT_FOUND, "Pipeline not found").into_response();
+    }
+
+    let pip = &snapshot["pipelines"][&pipeline_id];
+
+    let alert_list = alerts::derive_alerts(&snapshot);
+
+    let input_status = pip["input"]["status"].as_str().unwrap_or("off");
+    let bitrate_kbps = pip["input"]["bitrateKbps"].as_f64();
+
+    let outputs = pip["outputs"].as_object().map(|map| {
+        map.iter()
+            .map(|(id, v)| {
+                serde_json::json!({
+                    "id": id,
+                    "status": v["status"].as_str().unwrap_or("unknown"),
+                    "bitrateKbps": v["bitrateKbps"],
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let total_outputs = outputs.as_ref().map(|o| o.len()).unwrap_or(0);
+    let running_outputs = outputs
+        .as_ref()
+        .map(|o| {
+            o.iter()
+                .filter(|v| v["status"].as_str() == Some("running"))
+                .count()
+        })
+        .unwrap_or(0);
+
+    Json(serde_json::json!({
+        "generatedAt": generated_at,
+        "pipelineId": pipeline_id,
+        "source": {
+            "status": input_status,
+            "bitrateKbps": bitrate_kbps,
+            "protocol": pip["input"]["publisher"]["protocol"],
+            "readers": pip["input"]["readers"],
+        },
+        "outputs": {
+            "total": total_outputs,
+            "running": running_outputs,
+            "list": outputs,
+        },
+        "recording": pip["recording"],
+        "hlsPreview": pip["hlsPreview"],
+        "alerts": alert_list,
+    }))
+    .into_response()
 }
 
 async fn pipeline_diagnostics_sse_handler(
