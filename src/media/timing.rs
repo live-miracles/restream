@@ -1,22 +1,33 @@
-//! Low-overhead elapsed-time measurement for hot-path instrumentation.
+//! Portable elapsed-time measurement for instrumentation.
 //!
-//! On x86_64 we prefer `rdtsc` (≈3 cycles) over `Instant::now()` (≈20-40 cycles
-//! via VDSO `clock_gettime`). Both are TSC-backed on Linux when TSC is the active
-//! clocksource, but `rdtsc` skips the VDSO calibration/scaling overhead.
+//! Provides [`now`] / [`delta_us`] as the single timing primitive used throughout
+//! the media stack. The implementation selects the fastest reliable source at
+//! startup and is transparent to callers:
 //!
-//! # Validation before committing to rdtsc
+//! - **x86_64 with invariant TSC** (`CPUID[0x80000007].EDX[8]`): uses `rdtsc`
+//!   (≈3 cycles) instead of `Instant::now()` (≈20-40 cycles via VDSO).
+//! - **All other cases**: falls back to `Instant::now()`. This covers non-x86_64
+//!   architectures, hypervisors with coarse timers, and CPUs where TSC calibration
+//!   returns a value outside sane bounds (100 MHz – 10 GHz).
 //!
-//! 1. `CPUID[0x80000007].EDX[8]` — invariant TSC: rate is constant across
-//!    C-states and frequency scaling. Without this, the calibrated rate drifts.
-//! 2. Calibrated cycles/µs in `[100, 10000]` — sanity bounds (100 MHz to 10 GHz).
-//!    Values outside this range indicate preemption-skewed or implausibly short
-//!    calibration windows.
-//! 3. Minimum observed window of 50 µs — guards against timer granularity on
-//!    hypervisors where `Instant` ticks at coarse resolution.
+//! # Why not always use `Instant`?
 //!
-//! If any check fails, [`now`] and [`delta_us`] fall back to `Instant::now()` so
-//! callers see no behaviour change — just slightly higher timing overhead.
-//! [`using_tsc`] lets callers log which path is active.
+//! `Instant::now()` on Linux calls `clock_gettime(CLOCK_MONOTONIC)` via VDSO,
+//! which IS TSC-backed but adds calibration scaling (~15-35 extra cycles). For
+//! counters updated on every packet (e.g. pipe stall detection), those cycles
+//! accumulate. At the same time, the paths where this module is used are not
+//! tight inner loops, so either implementation is correct — the rdtsc path is
+//! just a measured improvement.
+//!
+//! # Calibration
+//!
+//! [`calibrate`] triggers a 200 µs busy-wait to measure CPU frequency. It is
+//! safe to call from async tasks (no `thread::sleep`, no syscalls) and is
+//! amortised via [`OnceLock`] — the busy-wait runs at most once per process.
+//! Call it eagerly at stage startup to avoid the cost in the first hot window.
+//!
+//! [`calibrate`] returns `true` if rdtsc is active; [`using_tsc`] re-queries the
+//! same cached result for diagnostic logging.
 
 use std::sync::OnceLock;
 use std::time::Instant;

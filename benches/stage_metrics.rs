@@ -2,7 +2,7 @@
 //!
 //! Key questions answered:
 //!   1. How much does record_in() cost per packet? (atomic fetch_add × 2)
-//!   2. How much does tsc::now() + tsc::delta_us() cost vs Instant::now() + elapsed()?
+//!   2. How much does timing::now() + timing::delta_us() cost vs Instant::now() + elapsed()?
 //!   3. What is the full per-packet overhead in the stdin write path?
 //!
 //! Run:
@@ -93,8 +93,8 @@ fn bench_instant_now_elapsed(c: &mut Criterion) {
 }
 
 fn bench_tsc_now_delta(c: &mut Criterion) {
-    use restream::media::tsc;
-    let using = tsc::calibrate();
+    use restream::media::timing;
+    let using = timing::calibrate();
     let label = if using {
         "timing/tsc_now_plus_delta_us"
     } else {
@@ -102,23 +102,23 @@ fn bench_tsc_now_delta(c: &mut Criterion) {
     };
     c.bench_function(label, |b| {
         b.iter(|| {
-            let t0 = tsc::now();
-            let _ = black_box(tsc::delta_us(t0));
+            let t0 = timing::now();
+            let _ = black_box(timing::delta_us(t0));
         });
     });
 }
 
 // ── Simulated stdin write path ────────────────────────────────────────────────
 // Models the per-packet overhead in the external transcoder's stdin loop:
-//   tsc::now() + (write) + tsc::delta_us() + conditional record + record_in.
+//   timing::now() + (write) + timing::delta_us() + conditional record + record_in.
 // The write itself is not benchmarked (it's I/O); we measure the surrounding
 // instrumentation cost only.
 
 fn bench_stdin_instrumentation_overhead(c: &mut Criterion) {
-    use restream::media::tsc;
+    use restream::media::timing;
     let sm = StageMetrics::new();
     let pm = PipeMetrics::default();
-    let using = tsc::calibrate();
+    let using = timing::calibrate();
     let label = if using {
         "pipe/stdin_instrumentation_per_packet_tsc"
     } else {
@@ -128,9 +128,9 @@ fn bench_stdin_instrumentation_overhead(c: &mut Criterion) {
 
     c.bench_function(label, |b| {
         b.iter(|| {
-            let t0 = tsc::now();
+            let t0 = timing::now();
             // Simulate a fast (non-stalling) write: delta_us will be near zero.
-            let write_us = tsc::delta_us(t0);
+            let write_us = timing::delta_us(t0);
             if write_us > THRESHOLD {
                 pm.record_stall(write_us);
             }

@@ -22,6 +22,6 @@ pub mod security;
 pub mod srt;
 pub mod stage_metrics;
 pub mod tcp_stats;
+pub mod timing;
 pub mod transcoder;
 pub mod ts_chunk_ring;
-pub mod tsc;

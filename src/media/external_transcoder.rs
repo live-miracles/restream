@@ -50,7 +50,7 @@ use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 /// 1 ms filters normal async scheduling jitter while catching real back-pressure.
 const PIPE_STALL_THRESHOLD_US: u64 = 1_000;
 
-use crate::media::tsc;
+use crate::media::timing;
 
 // ── FFmpeg arg builders ────────────────────────────────────────────────────
 
@@ -285,8 +285,7 @@ pub async fn start_external_transcoder_stage(
     // Separate from stage_metrics: only subprocess-pipe stages have these.
     // Trigger TSC calibration eagerly (200 µs busy-wait, once per process).
     // Logs which path was chosen so operators can see it in the stage output.
-    let using_tsc = tsc::calibrate();
-    if !using_tsc {
+    if !timing::calibrate() {
         println!(
             "[ext-transcoder] pipe timing: Instant fallback \
              (invariant TSC absent or calibration out of bounds)"
@@ -407,11 +406,11 @@ pub async fn start_external_transcoder_stage(
             let mut buf = vec![0u8; 65536];
             let mut pkts = Vec::with_capacity(32);
             loop {
-                let t0 = tsc::now();
+                let t0 = timing::now();
                 tokio::select! {
                     _ = cancel_out.cancelled() => break,
                     result = stdout.read(&mut buf) => {
-                        let idle_us = tsc::delta_us(t0);
+                        let idle_us = timing::delta_us(t0);
                         match result {
                             Ok(0) | Err(_) => {
                                 eprintln!("[ext-transcoder] stdout closed ({})", label_out);
@@ -526,7 +525,7 @@ pub async fn start_external_transcoder_stage(
                         payload,
                     );
                     if !ts.is_empty() {
-                        let t0 = tsc::now();
+                        let t0 = timing::now();
                         if stdin.write_all(ts).await.is_err() {
                             eprintln!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
@@ -534,7 +533,7 @@ pub async fn start_external_transcoder_stage(
                             );
                             break 'outer;
                         }
-                        let write_us = tsc::delta_us(t0);
+                        let write_us = timing::delta_us(t0);
                         if write_us > PIPE_STALL_THRESHOLD_US {
                             pipe_metrics.record_stall(write_us);
                         }
