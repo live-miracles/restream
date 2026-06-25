@@ -57,7 +57,7 @@ fn origin() -> Instant {
 fn has_invariant_tsc() -> bool {
     // CPUID leaf 0x80000007 ("Advanced Power Management Information")
     // EDX bit 8 = invariant TSC.
-    let r = unsafe { core::arch::x86_64::__cpuid(0x8000_0007) };
+    let r = core::arch::x86_64::__cpuid(0x8000_0007);
     (r.edx & (1 << 8)) != 0
 }
 
