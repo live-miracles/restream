@@ -379,6 +379,59 @@ fn benchmark_burst_drain_alloc(c: &mut Criterion) {
     group.finish();
 }
 
+/// Burst TS-chunk allocation: per-chunk `Bytes::copy_from_slice` vs a single
+/// `BytesMut` accumulation + `Bytes::slice` pattern.
+///
+/// The SRT shared muxer previously called `copy_from_slice` once per muxed chunk
+/// (up to 32 per burst), producing 32 independent heap allocations.  The new
+/// pattern allocates one `BytesMut` per burst and slices it via refcount bumps.
+fn benchmark_ts_chunk_burst_alloc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ts_chunk_burst_alloc");
+
+    // Simulate a typical burst: 32 media packets → 32 TS chunks of ~376 bytes each
+    // (2 × 188-byte TS packets per media packet is typical for video).
+    let chunk_size = 376usize;
+    let burst = 32usize;
+    let ts_bytes = vec![0x47u8; chunk_size];
+    group.throughput(Throughput::Bytes((chunk_size * burst) as u64));
+
+    // OLD: one Bytes::copy_from_slice per chunk → N alloc+memcpy
+    group.bench_function("per_chunk_copy_from_slice", |b| {
+        b.iter(|| {
+            let mut batch: Vec<(bytes::Bytes, bool)> = Vec::with_capacity(burst);
+            for i in 0..burst {
+                batch.push((bytes::Bytes::copy_from_slice(&ts_bytes), i == 0));
+            }
+            black_box(batch);
+        })
+    });
+
+    // NEW: one BytesMut per burst + Bytes::slice → 1 alloc + N refcount bumps
+    group.bench_function("burst_bytesmut_then_slice", |b| {
+        b.iter(|| {
+            let mut accum = bytes::BytesMut::with_capacity(chunk_size * burst);
+            let mut ends: Vec<(usize, bool)> = Vec::with_capacity(burst);
+            for i in 0..burst {
+                accum.extend_from_slice(&ts_bytes);
+                ends.push((accum.len(), i == 0));
+            }
+            let frozen = accum.freeze();
+            let mut prev = 0usize;
+            let batch: Vec<(bytes::Bytes, bool)> = ends
+                .drain(..)
+                .map(move |(end, is_kf)| {
+                    let chunk = frozen.slice(prev..end);
+                    prev = end;
+                    (chunk, is_kf)
+                })
+                .collect();
+            black_box(batch);
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
@@ -387,6 +440,7 @@ criterion_group!(
     benchmark_vec_capacity,
     benchmark_vec_loop_reuse,
     benchmark_burst_drain_alloc,
+    benchmark_ts_chunk_burst_alloc,
     // Run concurrency bench last so 500 threads don't noise-up the pure benchmarks.
     benchmark_ring_buffer_concurrency,
 );
