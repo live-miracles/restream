@@ -8,17 +8,17 @@ Run the full suite:
 cargo test
 ```
 
-As of June 25, 2026 this runs 440 passing non-doctest tests:
+As of June 25, 2026 this runs 441 passing non-doctest tests:
 
 | Suite | Tests | Source |
 |---|---:|---|
 | Library/unit | 350 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
 | API integration | 38 | `tests/api.rs` |
 | AV sync integration | 14 | `tests/av_sync.rs` |
-| Codec integration | 16 | `tests/codec.rs` |
+| Codec integration | 17 | `tests/codec.rs` |
 | Database integration | 15 | `tests/db.rs` |
 | Transcoder integration | 7 | `tests/transcoder.rs` |
-| **Total** | **440** | |
+| **Total** | **441** | |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -351,7 +351,7 @@ These capabilities must be treated as test results, not assumptions:
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
-| Cross-protocol SRT→RTMP | Protocol packaging must be correct |
+| Cross-protocol SRT→RTMP | Packetization helpers are covered; live matrix must prove end-to-end behavior |
 | HLS live segments | Native TsMuxer validates in-memory |
 | HLS upload egress | HTTP PUT delivery is implemented and covered by a dummy sink test; live destination restart remains part of the matrix |
 | Recording | Readable file with correct streams/timestamps |

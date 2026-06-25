@@ -1346,7 +1346,7 @@ Implementation note, 2026-06-25:
 - agent workflow contract tests
 
 Implementation note, 2026-06-25:
-- the Rust unit and integration suite currently has 440 passing non-doctest
+- the Rust unit and integration suite currently has 441 passing non-doctest
   tests;
 - HLS PUT upload, FFmpeg-backed remap/downmix, shared-stage cleanup, runtime
   tuning, secured HLS pull routes, and built-in internal video preset coverage

@@ -26,10 +26,10 @@ a working runtime path.
 | Library/unit | 350 passed |
 | API integration | 38 passed |
 | AV sync integration | 14 passed |
-| Codec integration | 16 passed |
+| Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **440 passed, 0 failed** |
+| Total | **441 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -162,7 +162,7 @@ The labels below distinguish implementation from proof.
 |---|---|---|
 | RTMP H.264/AAC ingest and same-shape RTMP egress | Basic interoperability observed; timestamp fix applied | Video uses DTS as RTMP timestamp (audio uses PTS); composition offset is carried in FLV payload |
 | SRT H.264/AAC ingest/read/egress | Implemented, prior local validation | Unit tests plus prior live read/egress evidence |
-| SRT ingest to RTMP egress | **Not protocol-correct** | RTMP egress forwards raw demuxed codec payload as though it were FLV media payload |
+| SRT ingest to RTMP egress | Packetization implemented; live matrix pending | RTMP egress converts Raw Annex-B/ADTS packets with `video_for_rtmp_into`/`audio_for_rtmp_into`, sends AVCC/AAC sequence headers, and has codec conversion coverage |
 | SRT H.265 passthrough | Implemented, needs full E2E matrix | Codec mapping is tested; decode/probe combinations remain a release gate |
 | RTMP output from H.265 source | **Implemented** | `hevc_to_h264` stage (`h264_transcoder.rs`) does full libavcodec H.265 decode → H.264 encode; audio passthrough. Verified by `h265-srt` and `h265-srt-multi` scale tests |
 | Built-in transforms via external transcoder (default) | **Implemented** | Subprocess `ffmpeg -vf scale=WxH -c:v libx264`; working and tested for default runtime presets |

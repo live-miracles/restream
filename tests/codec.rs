@@ -226,6 +226,29 @@ fn audio_for_rtmp_raw_aac_no_adts() {
     assert_eq!(&result[2..], raw_aac);
 }
 
+#[test]
+fn srt_demuxed_raw_packets_convert_to_rtmp_flv_packets() {
+    let annexb = make_annexb(&[SPS, PPS, IDR_NALU]);
+    let video_seq = build_avcc_sequence_header(&annexb).expect("AVCC sequence header");
+    assert_eq!(video_seq[0], 0x17, "sequence header should be keyframe AVC");
+    assert_eq!(video_seq[1], 0x00, "sequence header packet type");
+
+    let video = video_for_rtmp(&annexb, true).expect("video data packet");
+    assert_eq!(video[0], 0x17, "video should be an FLV keyframe packet");
+    assert_eq!(video[1], 0x01, "video should be an AVC data packet");
+    let nalu_len = u32::from_be_bytes([video[5], video[6], video[7], video[8]]) as usize;
+    assert_eq!(nalu_len, IDR_NALU.len());
+    assert_eq!(&video[9..9 + nalu_len], IDR_NALU);
+
+    let raw_aac = &[0xDE, 0xAD, 0xBE, 0xEF];
+    let mut adts_aac = build_adts_header(raw_aac.len(), 48000, 2).to_vec();
+    adts_aac.extend_from_slice(raw_aac);
+    let audio = audio_for_rtmp(&adts_aac);
+    assert_eq!(audio[0], 0xAF, "audio should be AAC FLV");
+    assert_eq!(audio[1], 0x01, "audio should be an AAC data packet");
+    assert_eq!(&audio[2..], raw_aac);
+}
+
 // ---------------------------------------------------------------------------
 // Integration: FLV packets → video_for_ts → TsMuxer → valid MPEG-TS output
 // ---------------------------------------------------------------------------

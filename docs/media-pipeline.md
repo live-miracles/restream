@@ -211,7 +211,7 @@ Enhanced RTMP/HEVC packetization is not implemented.
 |---|---|---|---|---|
 | RTMP H.264 | Basic interop; B-frame timestamp gate | Implemented; full matrix gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | RTMP H.265 | Not supported without Enhanced RTMP | Not assumed | Not assumed | Not assumed |
-| SRT H.264 | Not protocol-correct (raw payload as FLV) | Locally validated | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
+| SRT H.264 | Packetization implemented; live matrix gate | Locally validated | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | SRT H.265 | RTMP: `hevc_to_h264` conversion working; SRT: passthrough working | Passthrough implemented; E2E gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | File | RTMP-shaped via child FFmpeg | Implemented for compatible FLV codecs | Live TsMuxer | Contract broken |
 
@@ -637,8 +637,9 @@ normalize once → share video → carry all audio → select audio late
 These are tracked in [REWRITE-STATUS.md](../REWRITE-STATUS.md) as release
 blockers or hardening work:
 
-- **Transcoder**: configures encoder parameters but copies compressed packets;
-  no decode/filter/encode loop.
+- **Internal transcoder**: built-in video profiles run decode/scale/encode;
+  non-built-in/custom profiles require explicit profiling and matrix evidence
+  before being advertised.
 - **Recording**: packet-payload-to-`CustomInput` contract needs repair. ~~Implemented as raw MPEG-TS write; no FFmpeg dependency.~~
 - **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
 - **HLS upload**: HTTP/HTTPS output URLs run the shared segmenter and PUT
@@ -647,8 +648,9 @@ blockers or hardening work:
   create/update rejects `custom` so operators cannot select an inactive path.
 - **RTMPS**: URL parser accepts it and the reconciler dispatches it through
   RTMP egress with Rustls wrapping before the RTMP handshake.
-- **SRT→RTMP egress**: raw demuxed payload forwarded as FLV media payload
-  (protocol-incorrect).
+- **SRT→RTMP egress**: Raw Annex-B/ADTS packets are converted to FLV/AVCC/AAC
+  for RTMP egress, but the live cross-protocol matrix remains the release
+  evidence gate.
 - **File ingest**: implemented with child FFmpeg; running state is checked from
   the tracked child process, and exited children are reaped.
 - **Ring buffer**: source-ring reader snapshots expose lag slots, overflow
