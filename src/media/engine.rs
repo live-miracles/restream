@@ -224,8 +224,8 @@ pub struct MediaEngine {
     pub srt_listener_stats: Arc<ListenerSocketStats>,
     // Map of pipeline_id -> HLS consumer tracking (refcount + idle timer)
     pub hls_consumers: TokioRwLock<HashMap<String, HlsConsumers>>,
-    // Per-stage processing metrics keyed by "<pipeline_id>:<stage_name>"
-    pub stage_metrics: TokioRwLock<HashMap<String, Arc<StageMetrics>>>,
+    // Per-stage processing metrics keyed by typed pipeline/stage identity.
+    pub stage_metrics: TokioRwLock<HashMap<StageKey, Arc<StageMetrics>>>,
     // OS thread handles registered by spawn sites (transcoder, h264_transcoder, SRT threads).
     // Drained and joined at shutdown to prevent blocking threads from outliving the runtime.
     pub os_threads: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
@@ -316,7 +316,10 @@ impl MediaEngine {
         pipeline_id: &str,
         stage_name: &str,
     ) -> Arc<StageMetrics> {
-        let key = format!("{}:{}", pipeline_id, stage_name);
+        let key = StageKey::new(
+            pipeline_id,
+            StageKind::parse_legacy_key(stage_name),
+        );
         let mut metrics = self.stage_metrics.write().await;
         metrics
             .entry(key)
@@ -325,7 +328,10 @@ impl MediaEngine {
     }
 
     pub async fn remove_stage_metrics(&self, pipeline_id: &str, stage_name: &str) {
-        let key = format!("{}:{}", pipeline_id, stage_name);
+        let key = StageKey::new(
+            pipeline_id,
+            StageKind::parse_legacy_key(stage_name),
+        );
         self.stage_metrics.write().await.remove(&key);
     }
 
@@ -1447,7 +1453,6 @@ impl MediaEngine {
                 let kind = &key.kind;
                 let stage_key = key.legacy_stage_key();
                 let stage_id = kind.graph_node_id(pipeline_id);
-                let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
                 let queue_stats = all_input_queues.get(key).map(|q| q.stats());
                 let pipe_stats = all_pipe_metrics.get(key).map(|p| p.snapshot());
                 nodes.push(serde_json::json!({
@@ -1456,7 +1461,7 @@ impl MediaEngine {
                     "label": kind.graph_label(),
                     "stageKey": stage_key,
                     "active": !token.is_cancelled(),
-                    "metrics": all_stage_metrics.get(&stage_metrics_key).map(|m| m.snapshot()),
+                    "metrics": all_stage_metrics.get(key).map(|m| m.snapshot()),
                     "queueMetrics": queue_stats,
                     "pipeMetrics": pipe_stats,
                 }));
@@ -1555,13 +1560,13 @@ impl MediaEngine {
         // Node: recording (if registered)
         if let Some(token) = rec_tokens.get(pipeline_id) {
             let rec_id = format!("{}_recording", pipeline_id);
-            let rec_metrics_key = format!("{}:recording", pipeline_id);
+            let rec_stage_key = StageKey::new(pipeline_id, StageKind::recording());
             nodes.push(serde_json::json!({
                 "id": rec_id,
                 "type": "recording",
                 "label": "MKV Recording",
                 "active": !token.is_cancelled(),
-                "metrics": all_stage_metrics.get(&rec_metrics_key).map(|m| m.snapshot()),
+                "metrics": all_stage_metrics.get(&rec_stage_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
                 "from": rb_node_id,
@@ -1573,7 +1578,7 @@ impl MediaEngine {
         // Node: HLS (if store exists)
         if hls_stores.contains_key(pipeline_id) {
             let hls_id = format!("{}_hls_preview", pipeline_id);
-            let hls_metrics_key = format!("{}:hls", pipeline_id);
+            let hls_stage_key = StageKey::new(pipeline_id, StageKind::hls());
             let hls_active = hls_consumers
                 .get(pipeline_id)
                 .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
@@ -1582,7 +1587,7 @@ impl MediaEngine {
                 "type": "hls",
                 "label": "HLS Preview",
                 "active": hls_active,
-                "metrics": all_stage_metrics.get(&hls_metrics_key).map(|m| m.snapshot()),
+                "metrics": all_stage_metrics.get(&hls_stage_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
                 "from": rb_node_id,

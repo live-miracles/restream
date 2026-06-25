@@ -90,6 +90,8 @@ pub enum StageKind {
         operation: String,
         upstream: Box<StageKind>,
     },
+    Hls,
+    Recording,
     Unknown {
         key: String,
     },
@@ -124,6 +126,12 @@ impl StageKind {
         if key == "source" {
             return Self::Source;
         }
+        if key == "hls" {
+            return Self::Hls;
+        }
+        if key == "recording" {
+            return Self::Recording;
+        }
         if let Some(preset) = key.strip_prefix("video:") {
             return Self::video_preset(preset);
         }
@@ -143,6 +151,8 @@ impl StageKind {
     pub fn legacy_key(&self) -> String {
         match self {
             Self::Source => "source".to_string(),
+            Self::Hls => "hls".to_string(),
+            Self::Recording => "recording".to_string(),
             Self::VideoPreset { preset } => format!("video:{preset}"),
             Self::AudioRoute {
                 operation,
@@ -163,6 +173,8 @@ impl StageKind {
     pub fn legacy_ref(&self) -> String {
         match self {
             Self::Source => "source".to_string(),
+            Self::Hls => "hls".to_string(),
+            Self::Recording => "recording".to_string(),
             // Preserve existing reconciler keys: audio and codec-edge stages refer
             // to a video stage by preset name, while the stage map stores it as
             // "video:<preset>".
@@ -184,6 +196,8 @@ impl StageKind {
     pub fn graph_label(&self) -> String {
         match self {
             Self::Source => "Source".to_string(),
+            Self::Hls => "HLS Preview".to_string(),
+            Self::Recording => "MKV Recording".to_string(),
             Self::VideoPreset { preset } => format!("Video: {preset}"),
             Self::AudioRoute { operation, .. } => format!("Audio: {operation}"),
             Self::CodecEdge { operation, .. } => match operation.as_str() {
@@ -199,8 +213,18 @@ impl StageKind {
             Self::AudioRoute { .. } => "audio_filter",
             Self::CodecEdge { .. } => "codec_edge",
             Self::Source => "source",
+            Self::Hls => "hls",
+            Self::Recording => "recording",
             Self::VideoPreset { .. } | Self::Unknown { .. } => "transcoder",
         }
+    }
+
+    pub fn hls() -> Self {
+        Self::Hls
+    }
+
+    pub fn recording() -> Self {
+        Self::Recording
     }
 
     pub fn upstream(&self) -> Option<&StageKind> {
