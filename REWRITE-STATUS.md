@@ -167,7 +167,7 @@ The labels below distinguish implementation from proof.
 | MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
 | HLS HTTP upload | **Not implemented** | HTTP/HTTPS output URLs are rejected; local HLS uses `hls://` |
 | Custom encoding arguments | **Not applied** | `/encodings/custom` still persists future args; output create/update rejects `custom` so the UI/API no longer advertises it as active |
-| RTMPS output | Implemented | URL parser accepts RTMPS; reconciler dispatches RTMP/RTMPS URLs to RTMP egress |
+| RTMPS output | Implemented | URL parser accepts RTMPS; reconciler dispatches RTMP/RTMPS URLs to RTMP egress, which wraps the TCP stream in Rustls before the RTMP handshake |
 | SRT bonded egress | Constructed, live failover unproven | URL/group code exists; bonded group does not receive the high-bitrate option helper |
 | SRT bonded ingest | Implemented and locally validated | One listener accepts a group ID, reads it through one `srt_recvmsg2` path, exports `srt_group_data`, and rejects unrelated duplicate publishers. Separate-process tests pass for two-member broadcast and backup groups, including primary-member failure and standby delivery |
 | File ingest | Implemented with child FFmpeg | Not fully in-process; running state is checked from the tracked child process |
@@ -252,7 +252,9 @@ See `docs/api-reference.md` for the executable route surface.
    — done by removing `custom` from the output modal and rejecting custom
    output encodings in API create/update.
 12. Implement channel-level audio remap/downmix semantics.
-13. Decide whether RTMPS is supported and wire TLS egress if required.
+13. ~~Decide whether RTMPS is supported and wire TLS egress if required~~
+   — done; RTMPS output wraps the client stream in Rustls before the RTMP
+   handshake.
 
 ### Hardening work
 

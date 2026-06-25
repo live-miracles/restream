@@ -94,7 +94,7 @@ Supported routing behavior:
 | URL | Runtime behavior |
 |---|---|
 | `rtmp://...` | Native RTMP egress; IPv6 addresses in bracket notation (`[::1]`) are supported |
-| `rtmps://...` | Native RTMPS egress through the RTMP path |
+| `rtmps://...` | Native RTMPS egress through the RTMP path with TLS before handshake |
 | `srt://...` | Native SRT MPEG-TS egress; percent-encoded characters in the `streamid` query parameter are decoded automatically |
 | `hls://...` | Starts the pipeline's local in-memory HLS segmenter |
 

@@ -172,7 +172,7 @@ most battle-tested path for production deployments.
 | Audio remap/downmix | Stream selection only; channel-level filtering is open |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
 | HLS upload | Not implemented; HTTP/HTTPS output URLs are rejected, and local HLS uses `hls://` |
-| RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress |
+| RTMPS output | `rtmps://` URLs accepted by API and routed through RTMP egress with Rustls wrapping before the RTMP handshake |
 | Custom output encoding | Not applied; `custom` is rejected by output create/update instead of being exposed as a passthrough runtime option |
 
 ## Resolution Presets
@@ -640,7 +640,7 @@ blockers or hardening work:
 - **Custom encoding**: `/encodings/custom` persists future args, but output
   create/update rejects `custom` so operators cannot select an inactive path.
 - **RTMPS**: URL parser accepts it and the reconciler dispatches it through
-  RTMP egress.
+  RTMP egress with Rustls wrapping before the RTMP handshake.
 - **SRT→RTMP egress**: raw demuxed payload forwarded as FLV media payload
   (protocol-incorrect).
 - **File ingest**: implemented with child FFmpeg; running state is checked from

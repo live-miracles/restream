@@ -180,7 +180,7 @@ URL behavior:
 | URL prefix | Egress |
 |---|---|
 | `rtmp://` | RTMP |
-| `rtmps://` | RTMPS |
+| `rtmps://` | RTMPS with TLS before the RTMP handshake |
 | `srt://` | SRT/MPEG-TS |
 | `hls://` | Local in-memory HLS segmenter |
 

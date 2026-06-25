@@ -14,12 +14,17 @@ use rml_rtmp::sessions::{
     ServerSessionResult,
 };
 use rml_rtmp::time::RtmpTimestamp;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName};
 use tokio_util::sync::CancellationToken;
 
 fn log_rss(label: &str, output_id: &str) {
@@ -373,12 +378,99 @@ fn parse_flv_audio_meta(data: &[u8]) -> Option<AudioMeta> {
     Some(meta)
 }
 
+struct RtmpUrlParts {
+    host: String,
+    port: u16,
+    app: String,
+    stream_key: String,
+    tls: bool,
+}
+
+enum RtmpEgressStream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for RtmpEgressStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            RtmpEgressStream::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
+            RtmpEgressStream::Tls(stream) => Pin::new(stream.as_mut()).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for RtmpEgressStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            RtmpEgressStream::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
+            RtmpEgressStream::Tls(stream) => Pin::new(stream.as_mut()).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            RtmpEgressStream::Plain(stream) => Pin::new(stream).poll_flush(cx),
+            RtmpEgressStream::Tls(stream) => Pin::new(stream.as_mut()).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            RtmpEgressStream::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
+            RtmpEgressStream::Tls(stream) => Pin::new(stream.as_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
+fn rustls_client_config() -> Arc<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|anchor| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            anchor.subject,
+            anchor.spki,
+            anchor.name_constraints,
+        )
+    }));
+
+    Arc::new(
+        ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+async fn connect_rtmp_egress_stream(parts: &RtmpUrlParts) -> io::Result<RtmpEgressStream> {
+    let tcp = TcpStream::connect(format!("{}:{}", parts.host, parts.port)).await?;
+    let _ = tcp.set_nodelay(true);
+
+    if !parts.tls {
+        return Ok(RtmpEgressStream::Plain(tcp));
+    }
+
+    let server_name = ServerName::try_from(parts.host.as_str())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid RTMPS host name"))?;
+    let connector = TlsConnector::from(rustls_client_config());
+    let tls = connector.connect(server_name, tcp).await?;
+    Ok(RtmpEgressStream::Tls(Box::new(tls)))
+}
+
 // Standard RTMP URL parser helper
-fn parse_rtmp_url(url: &str) -> Option<(String, u16, String, String)> {
+fn parse_rtmp_url(url: &str) -> Option<RtmpUrlParts> {
     if !url.starts_with("rtmp://") && !url.starts_with("rtmps://") {
         return None;
     }
-    let prefix_len = if url.starts_with("rtmps://") {
+    let tls = url.starts_with("rtmps://");
+    let prefix_len = if tls {
         "rtmps://".len()
     } else {
         "rtmp://".len()
@@ -410,7 +502,13 @@ fn parse_rtmp_url(url: &str) -> Option<(String, u16, String, String)> {
     let app = &path[..path_slash];
     let stream_key = &path[path_slash + 1..];
 
-    Some((host, port, app.to_string(), stream_key.to_string()))
+    Some(RtmpUrlParts {
+        host,
+        port,
+        app: app.to_string(),
+        stream_key: stream_key.to_string(),
+        tls,
+    })
 }
 
 /// RTMP Ingest Server
@@ -1125,31 +1223,32 @@ pub async fn start_rtmp_egress(
     cancel_token: CancellationToken,
 ) {
     log_rss("egress_start", &output_id);
-    let parsed = match parse_rtmp_url(&target_url) {
+    let parts = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
             eprintln!("[rtmp-egress] Invalid RTMP URL: {}", target_url);
             return;
         }
     };
-    let (host, port, app_name, stream_key) = parsed;
     println!(
-        "[rtmp-egress] Connecting to {}:{} (app: {}, key: {})",
-        host, port, app_name, stream_key
+        "[rtmp-egress] Connecting to {}:{} via {} (app: {}, key: {})",
+        parts.host,
+        parts.port,
+        if parts.tls { "rtmps" } else { "rtmp" },
+        parts.app,
+        parts.stream_key
     );
 
-    let mut socket = match TcpStream::connect(format!("{}:{}", host, port)).await {
+    let mut socket = match connect_rtmp_egress_stream(&parts).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
                 "[rtmp-egress] Connection failed to {}:{}: {:?}",
-                host, port, e
+                parts.host, parts.port, e
             );
             return;
         }
     };
-
-    let _ = socket.set_nodelay(true);
 
     // Perform handshake
     let mut handshake = Handshake::new(PeerType::Client);
@@ -1202,7 +1301,11 @@ pub async fn start_rtmp_egress(
 
     // Initialize ClientSession with tcUrl for MediaMTX compatibility
     let mut config = ClientSessionConfig::new();
-    config.tc_url = Some(format!("rtmp://{}:{}/{}", host, port, app_name));
+    let scheme = if parts.tls { "rtmps" } else { "rtmp" };
+    config.tc_url = Some(format!(
+        "{}://{}:{}/{}",
+        scheme, parts.host, parts.port, parts.app
+    ));
     let (mut session, initial_results) = match ClientSession::new(config) {
         Ok(s) => s,
         Err(_) => return,
@@ -1217,7 +1320,7 @@ pub async fn start_rtmp_egress(
     }
 
     // Request connection
-    let conn_pkt = match session.request_connection(app_name) {
+    let conn_pkt = match session.request_connection(parts.app.clone()) {
         Ok(ClientSessionResult::OutboundResponse(p)) => p,
         _ => return,
     };
@@ -1230,7 +1333,7 @@ pub async fn start_rtmp_egress(
             Ok(r) => r,
             Err(_) => return,
         };
-        if handle_client_results(results, &mut socket, &mut session, &stream_key)
+        if handle_client_results(results, &mut socket, &mut session, &parts.stream_key)
             .await
             .is_err()
         {
@@ -1286,7 +1389,7 @@ pub async fn start_rtmp_egress(
                         ClientSessionResult::RaisedEvent(event) => {
                             match event {
                                 ClientSessionEvent::ConnectionRequestAccepted => {
-                                    let pub_pkt = match session.request_publishing(stream_key.clone(), PublishRequestType::Live) {
+                                    let pub_pkt = match session.request_publishing(parts.stream_key.clone(), PublishRequestType::Live) {
                                         Ok(ClientSessionResult::OutboundResponse(p)) => p,
                                         _ => return,
                                     };
@@ -1444,12 +1547,15 @@ pub async fn start_rtmp_egress(
     }
 }
 
-async fn handle_client_results(
+async fn handle_client_results<S>(
     results: Vec<ClientSessionResult>,
-    socket: &mut TcpStream,
+    socket: &mut S,
     session: &mut ClientSession,
     stream_key: &str,
-) -> Result<(), &'static str> {
+) -> Result<(), &'static str>
+where
+    S: AsyncWrite + Unpin,
+{
     for res in results {
         match res {
             ClientSessionResult::OutboundResponse(pkt) => {
@@ -1756,31 +1862,35 @@ mod tests {
     #[test]
     fn parse_rtmp_url_standard_forms() {
         // Default port
-        let (h, p, app, key) = parse_rtmp_url("rtmp://a.example.com/live/mykey").unwrap();
-        assert_eq!(h, "a.example.com");
-        assert_eq!(p, 1935);
-        assert_eq!(app, "live");
-        assert_eq!(key, "mykey");
+        let parts = parse_rtmp_url("rtmp://a.example.com/live/mykey").unwrap();
+        assert_eq!(parts.host, "a.example.com");
+        assert_eq!(parts.port, 1935);
+        assert_eq!(parts.app, "live");
+        assert_eq!(parts.stream_key, "mykey");
+        assert!(!parts.tls);
 
         // Explicit port
-        let (h, p, app, key) = parse_rtmp_url("rtmp://a.example.com:19350/stream/abc").unwrap();
-        assert_eq!(h, "a.example.com");
-        assert_eq!(p, 19350);
-        assert_eq!(app, "stream");
-        assert_eq!(key, "abc");
+        let parts = parse_rtmp_url("rtmp://a.example.com:19350/stream/abc").unwrap();
+        assert_eq!(parts.host, "a.example.com");
+        assert_eq!(parts.port, 19350);
+        assert_eq!(parts.app, "stream");
+        assert_eq!(parts.stream_key, "abc");
+        assert!(!parts.tls);
 
         // rtmps:// (TLS) — same parsing, different default port behaviour (still 1935 if omitted)
-        let (h, p, app, key) =
+        let parts =
             parse_rtmp_url("rtmps://live-api-s.facebook.com:443/rtmp/FB-STREAM-KEY").unwrap();
-        assert_eq!(h, "live-api-s.facebook.com");
-        assert_eq!(p, 443);
-        assert_eq!(app, "rtmp");
-        assert_eq!(key, "FB-STREAM-KEY");
+        assert_eq!(parts.host, "live-api-s.facebook.com");
+        assert_eq!(parts.port, 443);
+        assert_eq!(parts.app, "rtmp");
+        assert_eq!(parts.stream_key, "FB-STREAM-KEY");
+        assert!(parts.tls);
 
         // Stream key containing slashes is NOT split — key gets everything after first slash in path
-        let (_, _, app, key) = parse_rtmp_url("rtmp://host/app/key/subpart").unwrap();
-        assert_eq!(app, "app");
-        assert_eq!(key, "key/subpart");
+        let parts = parse_rtmp_url("rtmp://host/app/key/subpart").unwrap();
+        assert_eq!(parts.app, "app");
+        assert_eq!(parts.stream_key, "key/subpart");
+        assert!(!parts.tls);
 
         // Unrecognised scheme → None
         assert!(parse_rtmp_url("https://host/live/key").is_none());
@@ -1797,11 +1907,12 @@ mod tests {
     fn parse_rtmp_url_ipv6_literal() {
         let result = parse_rtmp_url("rtmp://[::1]:1935/live/mykey");
         assert!(result.is_some(), "IPv6 URL must parse successfully");
-        let (host, port, app, key) = result.unwrap();
-        assert_eq!(host, "::1");
-        assert_eq!(port, 1935);
-        assert_eq!(app, "live");
-        assert_eq!(key, "mykey");
+        let parts = result.unwrap();
+        assert_eq!(parts.host, "::1");
+        assert_eq!(parts.port, 1935);
+        assert_eq!(parts.app, "live");
+        assert_eq!(parts.stream_key, "mykey");
+        assert!(!parts.tls);
     }
 
     #[test]
@@ -1811,9 +1922,10 @@ mod tests {
             result.is_some(),
             "IPv6 URL without port must use default 1935"
         );
-        let (host, port, _app, _key) = result.unwrap();
-        assert_eq!(host, "2001:db8::1");
-        assert_eq!(port, 1935);
+        let parts = result.unwrap();
+        assert_eq!(parts.host, "2001:db8::1");
+        assert_eq!(parts.port, 1935);
+        assert!(!parts.tls);
     }
 
     #[test]
@@ -1821,11 +1933,12 @@ mod tests {
         // Ensure the IPv4 path still works correctly after the IPv6 fix.
         let result = parse_rtmp_url("rtmp://192.168.1.1:1935/live/key");
         assert!(result.is_some());
-        let (host, port, app, key) = result.unwrap();
-        assert_eq!(host, "192.168.1.1");
-        assert_eq!(port, 1935);
-        assert_eq!(app, "live");
-        assert_eq!(key, "key");
+        let parts = result.unwrap();
+        assert_eq!(parts.host, "192.168.1.1");
+        assert_eq!(parts.port, 1935);
+        assert_eq!(parts.app, "live");
+        assert_eq!(parts.stream_key, "key");
+        assert!(!parts.tls);
     }
 
     // --- FLV video meta: malformed / truncated / unknown codec ---
@@ -1886,8 +1999,8 @@ mod tests {
         let data = [
             0x17u8, 0x00, 0x00, 0x00, 0x00, // frame_type/codec, pkt_type, comp_time
             0x01, 0x64, 0x00, 0x1F, // version, profile, compat, level
-            0xFF, 0xE1,             // lengthSizeMinusOne, numSPS=1
-            0x00, 0x01,             // SPS length = 1 (only 0 bytes remain → out of bounds)
+            0xFF, 0xE1, // lengthSizeMinusOne, numSPS=1
+            0x00, 0x01, // SPS length = 1 (only 0 bytes remain → out of bounds)
         ];
         let meta = parse_flv_video_meta(&data).unwrap();
         assert_eq!(meta.codec, "h264");

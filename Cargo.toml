@@ -30,6 +30,8 @@ arc-swap = "1"
 memchr = "2.7"
 tokio-stream = "0.1"
 rust-embed = "8"
+tokio-rustls = "0.24"
+webpki-roots = "0.25"
 
 
 [build-dependencies]
