@@ -16,10 +16,9 @@ use std::time::Instant;
 use bytes::{Bytes, BytesMut};
 use tokio_util::sync::CancellationToken;
 
-use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::MediaEngine;
-use crate::media::mpegts::TsMuxer;
-use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
+use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
+use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
 
 const TARGET_DURATION_SECS: f64 = 6.0;
 const MIN_SEGMENT_SECS: f64 = 1.0;
@@ -128,35 +127,15 @@ pub async fn start_hls_segmenter(
         .await;
     let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer.clone());
     let mut packets = Vec::with_capacity(32);
-    let mut muxer: Option<(
-        TsMuxer,
-        std::sync::Arc<Vec<crate::media::engine::AudioMeta>>,
-    )> = None;
-    let mut dts_enforcer: Option<DtsEnforcer> = None;
-    let mut has_video = false;
-    let mut nalu_len_size: usize = 4;
+    let mut feeder: Option<TsPacketFeeder> = None;
     // Pre-populate SPS/PPS cache from the engine's stored FLV sequence header.
     // This handles the case where the HLS task starts after the seq header has
     // already passed through the ring buffer (e.g. late-joining consumers).
-    let mut sps_pps_cache: Vec<u8> = {
-        let (vsh, _) = engine.get_sequence_headers(&pipeline_id).await;
-        if let Some(ref flv_sh) = vsh {
-            if flv_sh.len() > 5 {
-                let (nls, annexb) = crate::media::codec::parse_avcc_config(&flv_sh[5..]);
-                nalu_len_size = nls;
-                annexb
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    };
+    let (video_sequence_header, _) = engine.get_sequence_headers(&pipeline_id).await;
     let mut accumulator = BytesMut::with_capacity(SEGMENT_CAPACITY);
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
-    let mut video_conv_buf = Vec::<u8>::new();
-    let mut audio_conv_buf = Vec::<u8>::new();
+    let mut ts_packet_buf = Vec::<u8>::with_capacity(65536);
 
     loop {
         tokio::select! {
@@ -188,99 +167,64 @@ pub async fn start_hls_segmenter(
 
                         metrics.record_in(packet.payload.len() as u64);
 
-                        // Lazily create the muxer and DtsEnforcer once we have ingest metadata.
+                        // Lazily create the feeder once we have ingest metadata.
                         // Wait for video metadata to avoid creating a muxer with zero audio
                         // streams when the probe hasn't completed yet.
-                        let (mux, tracks) = match &mut muxer {
-                            Some((m, t)) => (m, t),
-                            None => {
-                                let (video, audio_tracks) = loop {
-                                    if cancel_token.is_cancelled() {
-                                        return;
+                        if feeder.is_none() {
+                            let (video, audio_tracks) = loop {
+                                if cancel_token.is_cancelled() {
+                                    return;
+                                }
+                                if let Some(tracks) = ring_buffer.audio_tracks() {
+                                    let ingests = engine.active_ingests.read().await;
+                                    if let Some(i) = ingests.get(&pipeline_id)
+                                        && let Some(video) = i.video.clone()
+                                    {
+                                        break (Some(video), std::sync::Arc::new(tracks.to_vec()));
                                     }
-                                    if let Some(tracks) = ring_buffer.audio_tracks() {
-                                        let ingests = engine.active_ingests.read().await;
-                                        if let Some(i) = ingests.get(&pipeline_id)
-                                            && let Some(video) = i.video.clone()
-                                        {
-                                            break (Some(video), std::sync::Arc::new(tracks.to_vec()));
-                                        }
-                                    }
-                                    let result = {
-                                        let ingests = engine.active_ingests.read().await;
-                                        ingests.get(&pipeline_id).and_then(|i| {
-                                            let video = i.video.clone();
-                                            video.as_ref()?;
-                                            let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
-                                            let tracks = if lock.is_empty()
-                                                && let Some(audio) = i.audio.clone() {
-                                                    std::sync::Arc::new(vec![audio])
-                                                } else {
-                                                    std::sync::Arc::clone(&lock)
-                                                };
-                                            Some((video, tracks))
-                                        })
-                                    };
-                                    if let Some(meta) = result {
-                                        break meta;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                                let result = {
+                                    let ingests = engine.active_ingests.read().await;
+                                    ingests.get(&pipeline_id).and_then(|i| {
+                                        let video = i.video.clone();
+                                        video.as_ref()?;
+                                        let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                                        let tracks = if lock.is_empty()
+                                            && let Some(audio) = i.audio.clone() {
+                                                std::sync::Arc::new(vec![audio])
+                                            } else {
+                                                std::sync::Arc::clone(&lock)
+                                            };
+                                        Some((video, tracks))
+                                    })
                                 };
-                                has_video = video.is_some();
-                                let m = TsMuxer::new(video.as_ref(), &audio_tracks);
-                                let num_streams = video.is_some() as usize + audio_tracks.len();
-                                dts_enforcer = Some(DtsEnforcer::new(num_streams));
-                                muxer = Some((m, audio_tracks));
-                                let (m, t) = muxer.as_mut().expect("muxer just initialized");
-                                (m, t)
-                            }
-                        };
+                                if let Some(meta) = result {
+                                    break meta;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            };
+                            feeder = Some(TsPacketFeeder::new(
+                                video.as_ref(),
+                                audio_tracks,
+                                PacketFeedConfig {
+                                    video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+                                    ..PacketFeedConfig::default()
+                                },
+                            ));
+                        }
 
-                        let raw_payload: &[u8] = match packet.media_type {
-                            MediaType::Video => {
-                                match video_for_ts_into(&packet.payload, packet.format, &mut nalu_len_size, &mut sps_pps_cache, &mut video_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
-                            MediaType::Audio => {
-                                let track = tracks.iter()
-                                    .find(|a| a.track_index == packet.track_index)
-                                    .or(tracks.first());
-                                let (sr, ch) = track.map(|a| (a.sample_rate, a.channels)).unwrap_or((48000, 1));
-                                match audio_for_ts_into(&packet.payload, packet.format, sr, ch, &mut audio_conv_buf) {
-                                    Some(p) => p,
-                                    None => continue,
-                                }
-                            }
+                        let Some(ref mut feeder) = feeder else {
+                            continue;
                         };
 
                         let t0 = Instant::now();
-                        let stream_idx = match packet.media_type {
-                            MediaType::Video => 0,
-                            MediaType::Audio => match tracks
-                                .iter()
-                                .position(|a| a.track_index == packet.track_index)
-                            {
-                                Some(i) => i + (has_video as usize),
-                                None => continue, // unknown track — skip to avoid DTS corruption
-                            },
-                        };
-                        let (pts, dts) = dts_enforcer
-                            .as_mut()
-                            .map(|de| de.enforce(stream_idx, packet.pts, packet.dts))
-                            .unwrap_or((packet.pts, packet.dts));
-                        let ts_bytes = mux.mux_packet(
-                            packet.media_type,
-                            packet.track_index,
-                            pts,
-                            dts,
-                            packet.is_keyframe,
-                            raw_payload,
-                        );
+                        ts_packet_buf.clear();
+                        let wrote = feeder.extend_ts_for_packet(packet, &mut ts_packet_buf);
                         metrics.record_processing(t0.elapsed().as_micros() as u64);
-                        metrics.record_out(ts_bytes.len() as u64);
-                        accumulator.extend_from_slice(ts_bytes);
+                        if wrote {
+                            metrics.record_out(ts_packet_buf.len() as u64);
+                            accumulator.extend_from_slice(&ts_packet_buf);
+                        }
                     }
                 }
             }
