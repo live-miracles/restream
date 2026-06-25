@@ -1616,6 +1616,7 @@ impl MediaEngine {
         }
 
         serde_json::json!({
+            "generatedAt": chrono::Utc::now().to_rfc3339(),
             "pipelineId": pipeline_id,
             "nodes": nodes,
             "edges": edges,

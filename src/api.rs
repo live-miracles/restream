@@ -2041,8 +2041,16 @@ async fn pipeline_alerts_handler(
         .engine
         .health_snapshot(&[pipeline_id], &recording_enabled)
         .await;
+    let generated_at = snapshot["generatedAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let alert_list = alerts::derive_alerts(&snapshot);
-    Json(alert_list).into_response()
+    Json(serde_json::json!({
+        "generatedAt": generated_at,
+        "alerts": alert_list,
+    }))
+    .into_response()
 }
 
 /// Returns derived alerts across all pipelines. Auth required.
@@ -2077,8 +2085,16 @@ async fn aggregate_alerts_handler(
         .engine
         .health_snapshot(&pipeline_ids, &recording_enabled)
         .await;
+    let generated_at = snapshot["generatedAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let alert_list = alerts::derive_alerts(&snapshot);
-    Json(alert_list).into_response()
+    Json(serde_json::json!({
+        "generatedAt": generated_at,
+        "alerts": alert_list,
+    }))
+    .into_response()
 }
 
 /// Operator overview: total/active/degraded pipelines, failed outputs, alert counts.
