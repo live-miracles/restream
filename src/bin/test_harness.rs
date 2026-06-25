@@ -44,6 +44,7 @@ async fn run() -> Result<(), String> {
         "correctness-rtmp" => correctness_rtmp().await,
         "correctness-srt" => correctness_srt().await,
         "correctness-srt-rtmp" => srt_to_rtmp_correctness().await,
+        "bframe-rtmp" => bframe_rtmp_correctness().await,
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
@@ -70,8 +71,8 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              correctness-srt-rtmp, matrix, matrix-in-memory, egress, correctness-hevc-rtmp, \
-              correctness-hevc-srt, hevc-load, in-process, network, or all"
+              correctness-srt-rtmp, bframe-rtmp, matrix, matrix-in-memory, egress, \
+              correctness-hevc-rtmp, correctness-hevc-srt, hevc-load, in-process, network, or all"
         )),
     };
 
@@ -96,7 +97,11 @@ async fn run() -> Result<(), String> {
 }
 
 fn artifact_path(name: &str) -> PathBuf {
-    Path::new("test/artifacts/latest").join(name)
+    std::env::var_os("TEST_HARNESS_ARTIFACT_DIR")
+        .or_else(|| std::env::var_os("WORK_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("test/artifacts/latest"))
+        .join(name)
 }
 
 async fn correctness() -> Result<Value, String> {
@@ -335,6 +340,122 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
         Ok(results)
     } else {
         Err(format!("SRT to RTMP direct egress failed: {results}"))
+    }
+}
+
+/// Test: RTMP B-frame ingest -> RTMP egress timestamp round-trip.
+///
+/// Publishes B-frame H.264/AAC over RTMP, loops the source through native RTMP
+/// egress, and verifies ffprobe observes composition offsets (PTS > DTS) while
+/// DTS stays monotone.
+async fn bframe_rtmp_correctness() -> Result<Value, String> {
+    let db_path = artifact_path("bframe-rtmp.sqlite");
+    let _ = std::fs::remove_file(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+    let pool = db::create_pool(&db_url).await.map_err(|e| e.to_string())?;
+    db::setup_database_schema(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for (id, name, key) in [
+        ("pipe-bframe-src", "B-frame RTMP source", "e2e-bframe-src"),
+        ("pipe-bframe-sink", "B-frame RTMP sink", "e2e-bframe-sink"),
+    ] {
+        db::create_pipeline(&pool, id, name, key, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let engine = Arc::new(MediaEngine::new());
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let _rtmp_task = tokio::spawn(start_rtmp_server_on(
+        pool,
+        security,
+        engine.clone(),
+        RTMP_PORT,
+    ));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fixture = artifact_path("correctness-h264.ts");
+    if !fixture.exists() {
+        generate_fixture_h264(&fixture).await?;
+    }
+
+    let mut publisher = spawn_publisher(
+        &fixture,
+        &format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-bframe-src"),
+        "flv",
+        false,
+    )
+    .await?;
+    wait_for_ingests(&engine, &["pipe-bframe-src"], Duration::from_secs(15)).await?;
+    println!("[bframe-rtmp] Source ingest established");
+
+    let source_ring = engine.get_or_create_pipeline("pipe-bframe-src").await;
+    let sink_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-bframe-sink");
+    let token = engine
+        .register_egress("out-bframe-rtmp", "pipe-bframe-src", &sink_url)
+        .await;
+    let _egress = tokio::spawn(start_rtmp_egress(
+        "out-bframe-rtmp".to_string(),
+        "pipe-bframe-src".to_string(),
+        sink_url.clone(),
+        source_ring,
+        engine.clone(),
+        token,
+    ));
+
+    wait_for_ingests(&engine, &["pipe-bframe-sink"], Duration::from_secs(15)).await?;
+    println!("[bframe-rtmp] Sink ingest established");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let probe = ffprobe(&sink_url).await?;
+    let media_check = assert_media_only(&probe, "RTMP B-frame egress");
+    let packets_path = artifact_path("bframe-packets.json");
+    let packet_probe = ffprobe_video_packets(&sink_url, &packets_path).await?;
+    let packet_count = count_video_packets(&packet_probe);
+    let bframe_count = count_bframe_packets(&packet_probe);
+    let dts_monotone = video_dts_monotone(&packet_probe);
+    let passed = media_check.is_ok() && packet_count >= 30 && bframe_count > 0 && dts_monotone;
+    let _ = publisher.kill().await;
+
+    let mut results = json!({
+        "passed": passed,
+        "mediaCheck": media_check.is_ok(),
+        "mediaError": media_check.err(),
+        "probe": probe,
+        "packetProbe": packet_probe,
+        "packetArtifact": packets_path,
+        "packetCount": packet_count,
+        "bframeCount": bframe_count,
+        "dtsMonotone": dts_monotone,
+        "rtmpEgressBytes": engine.egress_bytes("out-bframe-rtmp").await,
+    });
+    if packet_count < 30 {
+        results["error"] = json!(format!(
+            "expected at least 30 video packets, got {packet_count}"
+        ));
+    } else if bframe_count == 0 {
+        results["error"] = json!("RTMP egress did not expose any packets with PTS > DTS");
+    } else if !dts_monotone {
+        results["error"] = json!("RTMP egress DTS values are not monotone");
+    }
+
+    let path = artifact_path("bframe-rtmp.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    println!("artifact={}", path.display());
+    if passed {
+        Ok(results)
+    } else {
+        Err(format!("RTMP B-frame round-trip failed: {results}"))
     }
 }
 
@@ -1403,6 +1524,94 @@ async fn ffprobe(url: &str) -> Result<Value, String> {
         ));
     }
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+async fn ffprobe_video_packets(url: &str, output_path: &Path) -> Result<Value, String> {
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let child = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-read_intervals",
+            "%+5",
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts_time,dts_time",
+            "-of",
+            "json",
+            url,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let output = tokio::time::timeout(Duration::from_secs(25), child.wait_with_output())
+        .await
+        .map_err(|_| format!("ffprobe packet capture timed out: {url}"))?
+        .map_err(|e| e.to_string())?;
+    std::fs::write(output_path, &output.stdout).map_err(|e| e.to_string())?;
+    let stderr_path = artifact_path("bframe-ffprobe.log");
+    std::fs::write(&stderr_path, &output.stderr).map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe packet capture failed for {url}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+
+fn packet_times(packet_probe: &Value) -> impl Iterator<Item = (Option<f64>, Option<f64>)> + '_ {
+    packet_probe["packets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|packet| {
+            (
+                packet["pts_time"].as_str().and_then(parse_probe_time),
+                packet["dts_time"].as_str().and_then(parse_probe_time),
+            )
+        })
+}
+
+fn parse_probe_time(value: &str) -> Option<f64> {
+    if value == "N/A" {
+        None
+    } else {
+        value.parse().ok()
+    }
+}
+
+fn count_video_packets(packet_probe: &Value) -> usize {
+    packet_times(packet_probe)
+        .filter(|(_, dts)| dts.is_some())
+        .count()
+}
+
+fn count_bframe_packets(packet_probe: &Value) -> usize {
+    packet_times(packet_probe)
+        .filter(|(pts, dts)| matches!((pts, dts), (Some(pts), Some(dts)) if pts > dts))
+        .count()
+}
+
+fn video_dts_monotone(packet_probe: &Value) -> bool {
+    let mut last = None;
+    for (_, dts) in packet_times(packet_probe) {
+        let Some(dts) = dts else {
+            continue;
+        };
+        if last.is_some_and(|last| dts < last) {
+            return false;
+        }
+        last = Some(dts);
+    }
+    true
 }
 
 fn normalized_streams(probe: &Value) -> Result<Value, String> {

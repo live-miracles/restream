@@ -287,7 +287,7 @@ mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
     hls-put)      printf '%s\n' python3 ffmpeg ffprobe curl jq ;;
-    bframe-rtmp)  printf '%s\n' ffmpeg ffprobe curl jq mediamtx ;;
+    bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
     *)            printf '%s\n' ffmpeg ffprobe curl jq mediamtx ;;
   esac
 }
@@ -1604,64 +1604,25 @@ run_bframe_rtmp() {
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
   init_run_artifacts
-  check_deps ffmpeg ffprobe curl jq mediamtx
+  check_deps cargo ffmpeg ffprobe jq
   : > "$SUMMARY_LOG"
 
-  start_mediamtx
-  start_restream
-  COOKIE_JAR=$(mktemp)
-  api POST /api/auth/login -d '{"password":"admin"}' >/dev/null
+  TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    cargo run --quiet --bin test_harness -- bframe-rtmp \
+    >"${WORK_DIR}/test-harness.log" 2>&1 \
+    || { tail -80 "${WORK_DIR}/test-harness.log" >&2 || true; fail "Rust bframe-rtmp harness failed"; }
+  printf 'publisher managed by Rust test_harness bframe-rtmp\n' >"${WORK_DIR}/publisher.log"
 
-  local cfg="bframe-rtmp"
-  local stream_key="sk-${cfg}"
-  local pipe_id
-  pipe_id=$(api POST /pipelines \
-    -d "{\"name\":\"${cfg}\",\"streamKey\":\"${stream_key}\"}" | jq -r '.pipeline.id')
-
-  ffmpeg -nostdin -hide_banner -loglevel error -re \
-    -f lavfi -i 'testsrc2=size=1280x720:rate=30' \
-    -f lavfi -i 'anullsrc=r=48000:cl=stereo' \
-    -c:v libx264 -preset veryfast -bf 2 \
-    -g 60 -keyint_min 60 -x264-params "scenecut=0:open-gop=0" \
-    -map 0:v -map 1:a -b:v 2M -c:a aac -b:a 64k \
-    -f flv "rtmp://127.0.0.1:${RESTREAM_RTMP}/live/${stream_key}" \
-    >"${WORK_DIR}/publisher.log" 2>&1 &
-  PUB_PID=$!
-
-  wait_for_input_live "$pipe_id" "$cfg"
-
-  local out_url="rtmp://127.0.0.1:${MTX_RTMP}/live/${cfg}-out"
-  local oid
-  oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-    -d "{\"name\":\"rtmp-bframes\",\"url\":\"${out_url}\",\"encoding\":\"source\"}" \
-    | jq -r '.output.id')
-  api POST "/pipelines/${pipe_id}/outputs/${oid}/start" >/dev/null
-
-  verify_stream "RTMP B-frame egress" "$out_url" "1280x720"
-
-  local packets_json="${WORK_DIR}/bframe-packets.json"
-  timeout 25 ffprobe -v error -read_intervals '%+5' \
-    -select_streams v:0 \
-    -show_packets -show_entries packet=pts_time,dts_time \
-    -of json "$out_url" > "$packets_json" 2>"${WORK_DIR}/bframe-ffprobe.log" \
-    || fail "ffprobe packet capture failed for RTMP B-frame egress"
-
+  local result_json="${WORK_DIR}/bframe-rtmp.json"
   local packet_count bframe_count dts_monotone
-  packet_count=$(jq '[.packets[]? | select(.dts_time != null and .dts_time != "N/A")] | length' "$packets_json")
-  bframe_count=$(jq '[.packets[]? | select(.pts_time != null and .dts_time != null and .pts_time != "N/A" and .dts_time != "N/A" and ((.pts_time | tonumber) > (.dts_time | tonumber)))] | length' "$packets_json")
-  dts_monotone=$(jq -r '
-    reduce ([.packets[]? | select(.dts_time != null and .dts_time != "N/A") | (.dts_time | tonumber)][]) as $d
-      ({ok: true, last: null};
-       if (.last == null or $d >= .last) then {ok: .ok, last: $d} else {ok: false, last: $d} end)
-    | .ok
-  ' "$packets_json")
-
+  packet_count="$(jq -r '.packetCount' "$result_json")"
+  bframe_count="$(jq -r '.bframeCount' "$result_json")"
+  dts_monotone="$(jq -r '.dtsMonotone' "$result_json")"
   [[ "$packet_count" -ge 30 ]] || fail "expected at least 30 video packets, got ${packet_count}"
   [[ "$bframe_count" -gt 0 ]] || fail "RTMP egress did not expose any packets with PTS > DTS"
   [[ "$dts_monotone" == "true" ]] || fail "RTMP egress DTS values are not monotone"
 
   log_ok "bframe-rtmp: ${bframe_count}/${packet_count} packets had PTS>DTS and DTS stayed monotone"
-  kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
 }
 
 # ── Dispatch ───────────────────────────────────────────────────────────────────

@@ -109,6 +109,14 @@ Next continuation point: move one self-contained per-mode scenario behind a
 typed Rust harness entry point, then leave `test/run-integration.sh` as a
 launcher for that mode while preserving its public CLI and artifact layout.
 
+`bframe-rtmp` is the first per-mode scenario moved behind that typed Rust
+harness boundary: `test/run-integration.sh bframe-rtmp` now preserves the
+manifest and summary wrapper while delegating the live RTMP B-frame scenario,
+packet capture, and assertions to `cargo run --bin test_harness -- bframe-rtmp`.
+Next continuation point: apply the same pattern to another isolated mode
+(`hls-put` only after its dummy sink can move to Rust, or a single
+`burst-verify` config first).
+
 The focused HLS PUT integration was then expanded and re-run on June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z

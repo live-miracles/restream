@@ -217,6 +217,10 @@ and probes the egress packet stream with `ffprobe -show_packets`. The mode
 requires at least one video packet with `PTS > DTS` and verifies DTS stays
 monotone across the captured egress packets.
 
+The public shell mode is now a thin artifact/summary wrapper around
+`cargo run --bin test_harness -- bframe-rtmp`; the live scenario, packet probe,
+and assertions are implemented in Rust.
+
 ## Validation Results: June 20, 2026
 
 Environment: WSL2, 20 logical CPUs, 7.6 GiB RAM, 2 GiB swap.
