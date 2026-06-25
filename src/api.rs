@@ -103,8 +103,9 @@ pub struct AppState {
 
 impl AppState {
     pub async fn is_authenticated(&self, token: &str) -> bool {
+        let token_hash = hash_session_token(token);
         let sessions = self.sessions.read().await;
-        sessions.contains(token)
+        sessions.contains(&token_hash)
     }
 }
 
@@ -145,6 +146,15 @@ async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
 // Hex encoding helper
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+// One-way hash of a session token for safe DB storage.
+// Cookie holds the raw token; DB holds only SHA-256(token).
+// A DB dump cannot recover valid session tokens.
+fn hash_session_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    to_hex(&digest)
 }
 
 // Scrypt password hashing matching TS crypto.scryptSync implementation
@@ -453,14 +463,16 @@ async fn login_post_handler(
             .into_response();
     }
 
-    // Create session
+    // Create session — cookie carries the raw token; DB and in-memory set
+    // store only SHA-256(token) so a DB dump cannot forge sessions.
     use rand::RngCore;
     let mut token_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut token_bytes);
     let token = to_hex(&token_bytes);
+    let token_hash = hash_session_token(&token);
 
     let ts = chrono::Utc::now().timestamp_millis();
-    if db::create_session(&state.db, &token, ts).await.is_err() {
+    if db::create_session(&state.db, &token_hash, ts).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to create session",
@@ -468,7 +480,7 @@ async fn login_post_handler(
             .into_response();
     }
 
-    state.sessions.write().await.insert(token.clone());
+    state.sessions.write().await.insert(token_hash);
 
     let cookie = make_session_cookie(&token, SESSION_MAX_AGE_SECONDS);
     (
@@ -484,8 +496,9 @@ async fn logout_handler(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
-        state.sessions.write().await.remove(&token);
-        if let Err(e) = db::delete_session(&state.db, &token).await {
+        let token_hash = hash_session_token(&token);
+        state.sessions.write().await.remove(&token_hash);
+        if let Err(e) = db::delete_session(&state.db, &token_hash).await {
             eprintln!("[logout] Failed to delete session from DB: {}", e);
         }
     }
@@ -2294,5 +2307,44 @@ mod tests {
         assert!(cookie.contains("session="));
         assert!(cookie.contains("Max-Age=0"));
         assert!(cookie.contains("HttpOnly"));
+    }
+
+    // --- Session token hashing ---
+
+    #[test]
+    fn hash_session_token_known_vector() {
+        // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        assert_eq!(
+            hash_session_token(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn hash_session_token_different_tokens_produce_different_hashes() {
+        let h1 = hash_session_token("token_a");
+        let h2 = hash_session_token("token_b");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn hash_session_token_is_deterministic() {
+        let token = "abc1234567890def";
+        assert_eq!(hash_session_token(token), hash_session_token(token));
+    }
+
+    #[test]
+    fn hash_session_token_output_is_64_hex_chars() {
+        // SHA-256 produces 32 bytes = 64 hex digits
+        let h = hash_session_token("any_token_value");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_session_token_not_equal_to_raw() {
+        // Sanity: the hash must differ from the input
+        let token = "my_raw_session_token";
+        assert_ne!(hash_session_token(token), token);
     }
 }
