@@ -162,7 +162,7 @@ The labels below distinguish implementation from proof.
 | Multi-track SRT audio ingest | Implemented | Demux maps all audio streams with track indices |
 | `atrack` | Implemented at stream-selection level | Parser tests |
 | `remap` / `downmix` | Partial | Select streams; no channel-level `pan`/mix filter |
-| HLS store and HTTP pull routes | Implemented | Playlist/window and route tests |
+| HLS store and HTTP pull routes | Implemented | Playlist/window, route, and segmenter shutdown cleanup tests |
 | Live HLS media generation | Native TsMuxer, structurally sound | Inline MPEG-TS mux with shared segmenter per pipeline |
 | MPEG-TS recording | **Implemented** | Writes raw MPEG-TS to `.ts` file via `MemoryQueue`; no FFmpeg dependency. Container upgrade (MP4/MKV via avformat) is a roadmap item |
 | HLS HTTP upload | Implemented | HTTP/HTTPS output URLs run the shared HLS segmenter and PUT new segments plus playlist to the target |
@@ -263,7 +263,9 @@ See `docs/api-reference.md` for the executable route surface.
 
 - clean up unused shared transcoder stages;
 - make graph/task “active” reflect worker health rather than token presence;
-- remove stale HLS stores when their last segmenter stops;
+- ~~remove stale HLS stores when their last segmenter stops~~ — done; segmenter
+  shutdown removes the consumer token and in-memory store, with regression
+  coverage.
 - add per-reader ring lag, overflow, and packet-age metrics;
 - ~~preserve trustworthy packet metadata across transcoder output~~ — done;
 - ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;

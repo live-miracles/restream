@@ -2359,4 +2359,30 @@ mod tests {
         );
         engine.shutdown_hls_segmenter("pipe-hls").await;
     }
+
+    #[tokio::test]
+    async fn shutdown_hls_segmenter_removes_consumer_and_store() {
+        let engine = Arc::new(MediaEngine::new());
+        let (store, already_running) = engine.ensure_hls_segmenter("pipe-hls-clean").await;
+        assert!(!already_running);
+        store.push_segment(1.0, bytes::Bytes::from_static(b"segment"));
+
+        assert!(engine.get_hls_store("pipe-hls-clean").await.is_some());
+        assert!(
+            engine
+                .get_hls_cancel_token("pipe-hls-clean")
+                .await
+                .is_some()
+        );
+
+        engine.shutdown_hls_segmenter("pipe-hls-clean").await;
+
+        assert!(engine.get_hls_store("pipe-hls-clean").await.is_none());
+        assert!(
+            engine
+                .get_hls_cancel_token("pipe-hls-clean")
+                .await
+                .is_none()
+        );
+    }
 }
