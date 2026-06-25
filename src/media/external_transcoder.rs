@@ -181,6 +181,8 @@ pub async fn start_external_transcoder_stage(
                 "[ext-transcoder] ffmpeg stdin unavailable ({}:{})",
                 pipeline_id, encoding
             );
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             cancel.cancel();
             return;
         }
@@ -192,6 +194,8 @@ pub async fn start_external_transcoder_stage(
                 "[ext-transcoder] ffmpeg stdout unavailable ({}:{})",
                 pipeline_id, encoding
             );
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             cancel.cancel();
             return;
         }
@@ -203,9 +207,8 @@ pub async fn start_external_transcoder_stage(
                 "[ext-transcoder] ffmpeg stderr unavailable ({}:{})",
                 pipeline_id, encoding
             );
-            // Non-fatal — stderr is just for logging
-            // Create a dummy stderr reader that never produces data
-            // by continuing without it
+            let _ = child.kill().await;
+            let _ = child.wait().await;
             cancel.cancel();
             return;
         }

@@ -33,7 +33,16 @@ impl IngestSecurityService {
     }
 
     fn is_loopback_ip(ip: &str) -> bool {
-        ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
+        // Parse as IpAddr to cover the full loopback ranges:
+        //   IPv4: 127.0.0.0/8 (not just 127.0.0.1)
+        //   IPv6: ::1 and IPv4-mapped ::ffff:127.x.x.x
+        //   Literal "localhost" fallback for non-parseable strings.
+        if ip == "localhost" {
+            return true;
+        }
+        ip.parse::<std::net::IpAddr>()
+            .map(|a| a.is_loopback())
+            .unwrap_or(false)
     }
 
     pub fn update_config(&self, new_config: IngestSecurityConfig) {
@@ -54,19 +63,16 @@ impl IngestSecurityService {
             return None;
         }
 
-        let mut state = self.state.write().ok()?;
-        let record = state.get_mut(ip)?;
+        // Read lock only — no mutations. Cleanup of stale entries happens
+        // lazily in record_failure, keeping this hot check lock-free under
+        // concurrent ban lookups (e.g., flood from many IPs).
+        let state = self.state.read().ok()?;
+        let record = state.get(ip)?;
         let now = Instant::now();
-
-        // Prune old failures
-        let window = Duration::from_millis(self.get_config().failure_window_ms as u64);
-        record.failures.retain(|&t| now.duration_since(t) < window);
 
         if let Some(banned_until) = record.banned_until {
             if banned_until > now {
                 return Some(banned_until.duration_since(now));
-            } else {
-                record.banned_until = None;
             }
         }
 
@@ -164,10 +170,42 @@ mod tests {
     fn loopback_ips_are_not_rate_limited() {
         let service = IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG);
 
-        assert!(service.is_ip_banned("127.0.0.1").is_none());
-        assert!(!service.record_failure("127.0.0.1"));
-        assert!(service.is_ip_banned("127.0.0.1").is_none());
-        service.record_success("127.0.0.1");
+        // IPv4 loopback variants
+        for ip in &["127.0.0.1", "127.0.0.2", "127.255.255.255", "localhost"] {
+            assert!(
+                service.is_ip_banned(ip).is_none(),
+                "loopback {ip} should be exempt"
+            );
+            assert!(
+                !service.record_failure(ip),
+                "loopback {ip} should not record failure"
+            );
+            assert!(
+                service.is_ip_banned(ip).is_none(),
+                "loopback {ip} should remain exempt after failure"
+            );
+        }
+        // IPv6 loopback
+        assert!(service.is_ip_banned("::1").is_none());
+        assert!(!service.record_failure("::1"));
+    }
+
+    #[test]
+    fn non_loopback_ips_are_rate_limited() {
+        let cfg = IngestSecurityConfig {
+            failure_limit: 2,
+            failure_window_ms: 60_000,
+            ban_ms: 10_000,
+            tracked_ip_limit: 1000,
+        };
+        let svc = IngestSecurityService::new(cfg);
+        // 10.x.x.x is not loopback
+        assert!(!svc.record_failure("10.0.0.1"));
+        assert!(svc.record_failure("10.0.0.1")); // 2nd → banned
+        assert!(svc.is_ip_banned("10.0.0.1").is_some());
+        // 192.168.x.x is not loopback
+        assert!(!svc.record_failure("192.168.1.1"));
+        assert!(svc.is_ip_banned("192.168.1.1").is_none()); // only 1 failure, not banned
     }
 
     #[test]

@@ -958,10 +958,15 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
 pub struct SrtServer {
     db: sqlx::SqlitePool,
     engine: Arc<MediaEngine>,
+    security: Arc<crate::media::security::IngestSecurityService>,
 }
 
 impl SrtServer {
-    pub fn new(db: sqlx::SqlitePool, engine: Arc<MediaEngine>) -> Self {
+    pub fn new(
+        db: sqlx::SqlitePool,
+        engine: Arc<MediaEngine>,
+        security: Arc<crate::media::security::IngestSecurityService>,
+    ) -> Self {
         // SAFETY: srt_startup must be called once before any other SRT
         // function. This is the only call site, at server construction time,
         // enforced by the singleton SrtServer pattern.
@@ -969,7 +974,7 @@ impl SrtServer {
             srt_startup();
         }
         check_sysctl_limits();
-        Self { db, engine }
+        Self { db, engine, security }
     }
 
     pub async fn run(self: Arc<Self>, port: u16) {
@@ -1153,6 +1158,19 @@ impl SrtServer {
 
     async fn handle_client(&self, client_sock: SRTSOCKET, client_addr: SocketAddr) {
         let is_group = is_srt_group(client_sock);
+        let client_ip = client_addr.ip().to_string();
+
+        // Rate-limit check — same gate as RTMP (H1 fix)
+        if let Some(remaining) = self.security.is_ip_banned(&client_ip) {
+            eprintln!(
+                "[srt] Rejecting banned IP {} (ban expires in {:.1}s)",
+                client_ip,
+                remaining.as_secs_f64()
+            );
+            // SAFETY: client_sock is a valid accepted socket not yet closed.
+            unsafe { srt_close(client_sock) };
+            return;
+        }
 
         // Read streamid
         let mut streamid_buf = [0u8; 512];
@@ -1203,11 +1221,15 @@ impl SrtServer {
             Ok(Some(p)) => p,
             _ => {
                 eprintln!("[srt] Unauthorized connection for stream key: {}", stream_key);
+                self.security.record_failure(&client_ip);
                 // SAFETY: client_sock is a valid accepted socket not yet closed.
                 unsafe { srt_close(client_sock); }
                 return;
             }
         };
+
+        // Clear failure state on successful authentication.
+        self.security.record_success(&client_ip);
 
         println!(
             "[srt] Authenticated stream key: {} for pipeline: {} (mode={})",
@@ -3022,13 +3044,14 @@ pub async fn start_srt_egress(
     // write them in a single out_queue.write() call (one lock acquisition
     // per burst instead of one per packet).
     let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
+    let mut packets = Vec::with_capacity(32);
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
             _ = reader.wait_for_data() => {
-                let mut packets = Vec::with_capacity(32);
+                packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
-                    for pkt in packets {
+                    for pkt in &packets {
                         if !pkt.payload.is_empty() {
                             ts_batch.extend_from_slice(&pkt.payload);
                         }

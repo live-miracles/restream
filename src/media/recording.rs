@@ -53,6 +53,16 @@ pub async fn start_recording(
 
     let queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
+    // Guard: close the queue on drop so the OS writer thread always unblocks,
+    // even if this async fn is cancelled or panics before reaching queue.close().
+    struct QueueCloseGuard(Arc<crate::media::avio::MemoryQueue>);
+    impl Drop for QueueCloseGuard {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _queue_guard = QueueCloseGuard(queue.clone());
+
     let queue_clone = queue.clone();
     let file_path_clone = file_path.clone();
     let cancel_token_clone = cancel_token.clone();
@@ -221,7 +231,10 @@ pub async fn start_recording(
 fn run_ts_writer(
     queue: Arc<crate::media::avio::MemoryQueue>,
     file_path: &str,
-    _token: CancellationToken,
+    // Cancellation propagates via queue.close() called by QueueCloseGuard on
+    // the async side. The token is threaded through for future use (e.g., if
+    // MemoryQueue gains a timed-read path) and to make the dependency explicit.
+    _cancel: CancellationToken,
 ) -> Result<(), &'static str> {
     use std::io::Write;
 

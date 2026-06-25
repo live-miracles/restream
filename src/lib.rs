@@ -32,7 +32,6 @@ pub mod types;
 
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
-use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -85,9 +84,10 @@ pub async fn run_app() {
     // Elevate limits for high fd count (500+ egress streams)
     set_rlimit();
 
-    // Initialize database
+    // Initialize database — use create_pool() so per-connection PRAGMAs
+    // (busy_timeout, synchronous, cache_size, …) apply to every pooled connection.
     let db_url = "sqlite:data.db?mode=rwc";
-    let pool = SqlitePool::connect(db_url)
+    let pool = db::create_pool(db_url)
         .await
         .expect("Failed to connect to SQLite database");
 
@@ -150,24 +150,27 @@ pub async fn run_app() {
         }
     });
 
-    // Start RTMP server
+    // Start RTMP server — capture handle to detect early exit (M3).
     let db_clone = pool.clone();
     let security_clone = security.clone();
     let engine_clone = engine.clone();
     let rtmp_port = ports.rtmp;
-    tokio::spawn(async move {
+    let rtmp_handle = tokio::spawn(async move {
         crate::media::rtmp::start_rtmp_server_on(db_clone, security_clone, engine_clone, rtmp_port)
             .await;
+        eprintln!("[rtmp] Server task exited unexpectedly");
     });
 
-    // Start SRT server
+    // Start SRT server — pass security for rate limiting (H1).
     let srt_server = Arc::new(crate::media::srt::SrtServer::new(
         pool.clone(),
         engine.clone(),
+        security.clone(),
     ));
     let srt_port = ports.srt;
     let srt_handle = tokio::spawn(async move {
         srt_server.run(srt_port).await;
+        eprintln!("[srt] Server task exited unexpectedly");
     });
 
     // ── Graceful shutdown ────────────────────────────────────────────────────
@@ -221,12 +224,21 @@ pub async fn run_app() {
             // DB prune
             let _ = db::prune_expired_sessions(&pool, 30 * 24 * 60 * 60 * 1000).await;
             // In-memory prune: remove tokens that no longer exist in DB.
-            let live_tokens = db::list_sessions(&pool).await.unwrap_or_default();
-            let live_set: std::collections::HashSet<String> = live_tokens.into_iter().collect();
-            sessions_for_reconciler
-                .write()
-                .await
-                .retain(|t| live_set.contains(t));
+            // Skip the retain if the DB call fails — an empty result would
+            // incorrectly log out every active session.
+            match db::list_sessions(&pool).await {
+                Ok(live_tokens) => {
+                    let live_set: std::collections::HashSet<String> =
+                        live_tokens.into_iter().collect();
+                    sessions_for_reconciler
+                        .write()
+                        .await
+                        .retain(|t| live_set.contains(t));
+                }
+                Err(e) => {
+                    eprintln!("[reconciler] Failed to list sessions for prune: {e}");
+                }
+            }
         }
 
         let outputs = match db::list_outputs(&pool).await {
@@ -521,8 +533,15 @@ pub async fn run_app() {
                             let (store, already_running) =
                                 engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
                             if !already_running {
-                                let hls_cancel =
-                                    engine_c.get_hls_cancel_token(&pipeline_id_c).await.unwrap();
+                                let Some(hls_cancel) =
+                                    engine_c.get_hls_cancel_token(&pipeline_id_c).await
+                                else {
+                                    eprintln!(
+                                        "[reconciler] HLS segmenter token missing for {} — skipping",
+                                        pipeline_id_c
+                                    );
+                                    return;
+                                };
                                 let eng2 = engine_c.clone();
                                 let pid2 = pipeline_id_c.clone();
                                 let rb2 = ring_buf.clone();
@@ -796,6 +815,9 @@ pub async fn run_app() {
     // Close the SQLite pool so WAL is checkpointed into the main DB file.
     // Must be called after all DB-writing tasks have been cancelled above.
     pool.close().await;
+
+    // Abort RTMP task (it has no graceful-shutdown path; aborting is safe here).
+    rtmp_handle.abort();
 
     // Await the SRT server task: dropping tx (via drain_os_thread_handles above)
     // unblocks run()'s accept loop; waiting here ensures _server_sock_guard Drop

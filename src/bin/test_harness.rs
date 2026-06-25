@@ -121,11 +121,11 @@ async fn correctness() -> Result<Value, String> {
     let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
     let rtmp_task = tokio::spawn(start_rtmp_server_on(
         pool.clone(),
-        security,
+        security.clone(),
         engine.clone(),
         RTMP_PORT,
     ));
-    let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
     let srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -244,7 +244,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
             RTMP_PORT,
         ))
     } else {
-        let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+        let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
         tokio::spawn(srt_server.run(SRT_PORT))
     };
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -330,11 +330,11 @@ async fn egress_correctness() -> Result<Value, String> {
     // Keep the server tasks alive until the deliberate `_exit` at the end.
     let _rtmp_task = tokio::spawn(start_rtmp_server_on(
         pool.clone(),
-        security,
+        security.clone(),
         engine.clone(),
         RTMP_PORT,
     ));
-    let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
     let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -587,7 +587,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
         engine.clone(),
         RTMP_PORT,
     ));
-    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone()));
+    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone(), security));
     let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -781,8 +781,8 @@ async fn hevc_load_test() -> Result<Value, String> {
 
     // Start SRT server only (no RTMP server — egresses go to mediamtx)
     let engine = Arc::new(MediaEngine::new());
-    let _security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
-    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone()));
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
+    let srt_server = Arc::new(SrtServer::new(pool.clone(), engine.clone(), security));
     let _srt_task = tokio::spawn(srt_server.run(LOAD_SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -1032,7 +1032,9 @@ async fn spawn_publisher(
         cmd.args(["-map", "0:v", "-map", "0:a:0"]);
     }
     cmd.args(["-c", "copy", "-f", format]).arg(url);
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    // stderr must not be piped without a consumer — the 64KB pipe buffer fills
+    // and blocks ffmpeg, hanging the test. Discard it (errors visible via exit code).
+    cmd.stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
     cmd.spawn().map_err(|e| e.to_string())
 }
 
@@ -1114,27 +1116,30 @@ async fn wait_for_ingests(
 }
 
 async fn ffprobe(url: &str) -> Result<Value, String> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(12),
-        Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-probesize",
-                "2M",
-                "-analyzeduration",
-                "2M",
-                "-show_entries",
-                "stream=index,codec_name,codec_type,width,height,sample_rate,channels",
-                "-of",
-                "json",
-                url,
-            ])
-            .output(),
-    )
-    .await
-    .map_err(|_| format!("ffprobe timed out: {url}"))?
-    .map_err(|e| e.to_string())?;
+    // kill_on_drop(true) ensures the subprocess is killed when the timeout
+    // drops the future, preventing orphan ffprobe processes (T2 fix).
+    let child = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-probesize",
+            "2M",
+            "-analyzeduration",
+            "2M",
+            "-show_entries",
+            "stream=index,codec_name,codec_type,width,height,sample_rate,channels",
+            "-of",
+            "json",
+            url,
+        ])
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let output = tokio::time::timeout(Duration::from_secs(12), child.wait_with_output())
+        .await
+        .map_err(|_| format!("ffprobe timed out: {url}"))?
+        .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "ffprobe failed for {url}: {}",
@@ -1640,11 +1645,11 @@ async fn matrix_correctness() -> Result<Value, String> {
     // Spawn servers
     let _rtmp_task = tokio::spawn(start_rtmp_server_on(
         pool.clone(),
-        security,
+        security.clone(),
         engine.clone(),
         RTMP_PORT,
     ));
-    let srt_server = Arc::new(SrtServer::new(pool, engine.clone()));
+    let srt_server = Arc::new(SrtServer::new(pool, engine.clone(), security));
     let _srt_task = tokio::spawn(srt_server.run(SRT_PORT));
     tokio::time::sleep(Duration::from_millis(500)).await;
 
