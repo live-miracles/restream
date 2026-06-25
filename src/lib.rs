@@ -22,6 +22,7 @@
 //! `std::thread::spawn` calls are wrapped in `catch_unwind` so an FFmpeg panic
 //! (e.g., from a corrupt stream) logs an error instead of taking down the process.
 
+pub mod alerts;
 pub mod api;
 pub mod db;
 pub mod diag;

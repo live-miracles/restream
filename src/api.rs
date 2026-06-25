@@ -22,6 +22,7 @@ use tokio::sync::RwLock as TokioRwLock;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use crate::alerts;
 use crate::db;
 use crate::diag;
 use crate::media::engine::MediaEngine;
@@ -277,6 +278,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
         .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
+        .route(
+            "/pipelines/:pipeline_id/alerts",
+            get(pipeline_alerts_handler),
+        )
+        .route("/api/v1/alerts", get(aggregate_alerts_handler))
         .route(
             "/pipelines/:pipeline_id/diagnostics",
             get(pipeline_diagnostics_sse_handler),
@@ -2000,6 +2006,74 @@ async fn pipeline_graph_handler(
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let graph = state.engine.processing_graph(&pipeline_id, &outputs).await;
     Json(graph).into_response()
+}
+
+/// Returns derived alerts for a single pipeline. Auth required.
+async fn pipeline_alerts_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let mut recording_enabled = std::collections::HashMap::new();
+    let rec_key = format!("recording_enabled:{}", pipeline_id);
+    let rec = db::get_meta(&state.db, &rec_key)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    recording_enabled.insert(pipeline_id.clone(), rec);
+
+    let snapshot = state
+        .engine
+        .health_snapshot(&[pipeline_id], &recording_enabled)
+        .await;
+    let alert_list = alerts::derive_alerts(&snapshot);
+    Json(alert_list).into_response()
+}
+
+/// Returns derived alerts across all pipelines. Auth required.
+async fn aggregate_alerts_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
+        Err(_) => vec![],
+    };
+    let mut recording_enabled = std::collections::HashMap::new();
+    for pid in &pipeline_ids {
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        recording_enabled.insert(pid.clone(), rec);
+    }
+    let snapshot = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    let alert_list = alerts::derive_alerts(&snapshot);
+    Json(alert_list).into_response()
 }
 
 async fn pipeline_diagnostics_sse_handler(
