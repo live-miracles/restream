@@ -175,9 +175,11 @@ space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"
 Publishes one SRT H.264/AAC input, starts an HTTP/YouTube-style HLS PUT output
 with a `file=` query parameter, and verifies that a local dummy sink receives
 both `seg<N>.ts` media segments and the playlist with the expected content
-types. The uploaded segment is also probed with `ffprobe`.
+types. The uploaded segment is also probed with `ffprobe`. The mode then
+restarts the dummy sink and requires a fresh segment PUT after recovery.
 
-Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8).
+Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
+`HLS_PUT_RESTART_SECS` (default 12).
 
 ## Validation Results: June 20, 2026
 
@@ -387,7 +389,7 @@ These capabilities must be treated as test results, not assumptions:
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Cross-protocol SRT→RTMP | Packetization helpers are covered; live matrix must prove end-to-end behavior |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | HTTP PUT delivery is implemented and covered by unit plus `test/run-integration.sh hls-put` dummy sink tests; live destination restart remains part of the matrix |
+| HLS upload egress | HTTP PUT delivery and destination restart recovery are covered by unit plus `test/run-integration.sh hls-put` dummy sink tests |
 | Recording | Readable file with correct streams/timestamps |
 | Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
 | Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |

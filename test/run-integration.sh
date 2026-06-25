@@ -1102,8 +1102,10 @@ run_burst_verify() {
 #
 # Mode env overrides:
 #   HLS_PUT_SETTLE_SECS seconds to wait for HLS upload (default: 8)
+#   HLS_PUT_RESTART_SECS seconds to wait after sink restart (default: 12)
 run_hls_put() {
   local SETTLE="${HLS_PUT_SETTLE_SECS:-8}"
+  local RESTART_SETTLE="${HLS_PUT_RESTART_SECS:-12}"
   WORK_DIR="${WORK_DIR:-test/artifacts/hls-put}"
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
@@ -1168,6 +1170,28 @@ run_hls_put() {
   [[ "$dims" == "1280x720" ]] || fail "HLS PUT segment dimensions expected 1280x720, got ${dims:-none}"
 
   log_ok "hls-put: playlist and segment uploaded via PUT with ffprobe dimensions ${dims}"
+
+  local requests_before
+  requests_before="$(wc -l < "${HLS_PUT_DIR}/requests.jsonl" | tr -d ' ')"
+  echo "  restarting HLS PUT sink to verify upload recovery..."
+  kill "$HLS_PUT_PID" 2>/dev/null || true
+  wait "$HLS_PUT_PID" 2>/dev/null || true
+  HLS_PUT_PID=""
+  sleep 2
+  start_hls_put_sink
+
+  local recovered=0
+  for i in $(seq 1 "$RESTART_SETTLE"); do
+    if tail -n +"$(( requests_before + 1 ))" "${HLS_PUT_DIR}/requests.jsonl" 2>/dev/null \
+      | jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' >/dev/null; then
+      recovered=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$recovered" == "1" ]] || fail "HLS PUT upload did not recover with a new segment after sink restart"
+  log_ok "hls-put: upload recovered after dummy sink restart"
+
   kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
 }
 
