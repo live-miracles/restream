@@ -1097,7 +1097,9 @@ impl MediaEngine {
     /// Check if a recording is actively running for a pipeline.
     pub async fn is_recording_active(&self, pipeline_id: &str) -> bool {
         let tokens = self.recording_cancel_tokens.read().await;
-        tokens.contains_key(pipeline_id)
+        tokens
+            .get(pipeline_id)
+            .is_some_and(|token| !token.is_cancelled())
     }
 
     /// Ensure an HLS segmenter is running for this pipeline. Returns the store
@@ -1303,8 +1305,12 @@ impl MediaEngine {
             }
 
             let rec_enabled = recording_enabled.get(pipeline_id).copied().unwrap_or(false);
-            let rec_active = rec_tokens.contains_key(pipeline_id.as_str());
-            let hls_active = hls_consumers.contains_key(pipeline_id.as_str());
+            let rec_active = rec_tokens
+                .get(pipeline_id.as_str())
+                .is_some_and(|token| !token.is_cancelled());
+            let hls_active = hls_consumers
+                .get(pipeline_id.as_str())
+                .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
 
             pipelines_json.insert(
                 pipeline_id.clone(),
@@ -1357,6 +1363,7 @@ impl MediaEngine {
         let transcoder_buffers = self.transcoder_buffers.read().await;
         let rec_tokens = self.recording_cancel_tokens.read().await;
         let hls_stores = self.hls_stores.read().await;
+        let hls_consumers = self.hls_consumers.read().await;
         let all_stage_metrics = self.stage_metrics.read().await;
 
         let mut nodes = Vec::new();
@@ -1531,15 +1538,15 @@ impl MediaEngine {
             }
         }
 
-        // Node: recording (if active)
-        if rec_tokens.contains_key(pipeline_id) {
+        // Node: recording (if registered)
+        if let Some(token) = rec_tokens.get(pipeline_id) {
             let rec_id = format!("{}_recording", pipeline_id);
             let rec_metrics_key = format!("{}:recording", pipeline_id);
             nodes.push(serde_json::json!({
                 "id": rec_id,
                 "type": "recording",
                 "label": "MKV Recording",
-                "active": true,
+                "active": !token.is_cancelled(),
                 "metrics": all_stage_metrics.get(&rec_metrics_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
@@ -1549,15 +1556,18 @@ impl MediaEngine {
             }));
         }
 
-        // Node: HLS (if active)
+        // Node: HLS (if store exists)
         if hls_stores.contains_key(pipeline_id) {
             let hls_id = format!("{}_hls_preview", pipeline_id);
             let hls_metrics_key = format!("{}:hls", pipeline_id);
+            let hls_active = hls_consumers
+                .get(pipeline_id)
+                .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
             nodes.push(serde_json::json!({
                 "id": hls_id,
                 "type": "hls",
                 "label": "HLS Preview",
-                "active": true,
+                "active": hls_active,
                 "metrics": all_stage_metrics.get(&hls_metrics_key).map(|m| m.snapshot()),
             }));
             edges.push(serde_json::json!({
@@ -1677,6 +1687,25 @@ mod tests {
         assert_eq!(
             snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
             true
+        );
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_cancelled_hls_preview_inactive() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-hls-cancelled";
+
+        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
+        let token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
+        token.cancel();
+
+        let snapshot = engine
+            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
+            .await;
+
+        assert_eq!(
+            snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
+            false
         );
     }
 
@@ -1833,6 +1862,66 @@ mod tests {
         engine.unregister_recording("p1").await;
         assert!(!engine.is_recording_active("p1").await);
         assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelled_recording_token_is_not_active() {
+        let engine = MediaEngine::new();
+        let token = engine.register_recording("p-cancelled-rec").await;
+
+        assert!(engine.is_recording_active("p-cancelled-rec").await);
+        token.cancel();
+
+        assert!(
+            !engine.is_recording_active("p-cancelled-rec").await,
+            "cancelled recording token must not be reported as active"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_cancelled_recording_inactive() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-rec-cancelled";
+        let token = engine.register_recording(pipeline_id).await;
+        token.cancel();
+
+        let mut recording_enabled = HashMap::new();
+        recording_enabled.insert(pipeline_id.to_string(), true);
+        let snapshot = engine
+            .health_snapshot(&[pipeline_id.to_string()], &recording_enabled)
+            .await;
+
+        assert_eq!(
+            snapshot["pipelines"][pipeline_id]["recording"]["active"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn processing_graph_marks_cancelled_recording_and_hls_inactive() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-graph-cancelled";
+        let rec_token = engine.register_recording(pipeline_id).await;
+        rec_token.cancel();
+
+        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
+        let hls_token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
+        hls_token.cancel();
+
+        let graph = engine.processing_graph(pipeline_id, &[]).await;
+        let nodes = graph["nodes"].as_array().unwrap();
+
+        let recording = nodes
+            .iter()
+            .find(|node| node["type"] == "recording")
+            .expect("recording node should remain visible while registered");
+        assert_eq!(recording["active"], false);
+
+        let hls = nodes
+            .iter()
+            .find(|node| node["type"] == "hls")
+            .expect("HLS node should remain visible while its store exists");
+        assert_eq!(hls["active"], false);
     }
 
     #[tokio::test]

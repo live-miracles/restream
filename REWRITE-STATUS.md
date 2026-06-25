@@ -264,7 +264,9 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~clean up unused shared transcoder stages~~ — done; reconciler sweeps stale
   shared transcoder entries and regression tests cover video preset and
   codec-edge stages.
-- make graph/task “active” reflect worker health rather than token presence;
+- ~~make graph/task “active” reflect worker health rather than token presence~~
+  — done; health and graph active flags now treat cancelled recording/HLS
+  tokens as inactive, with regression coverage.
 - ~~remove stale HLS stores when their last segmenter stops~~ — done; segmenter
   shutdown removes the consumer token and in-memory store, with regression
   coverage.
