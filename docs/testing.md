@@ -196,11 +196,12 @@ space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"
 ./test/run-integration.sh hls-put
 ```
 
-Publishes one SRT H.264/AAC input, starts an HTTP/YouTube-style HLS PUT output
-with a `file=` query parameter, and verifies that a local dummy sink receives
-both `seg<N>.ts` media segments and the playlist with the expected content
-types. The uploaded segment is also probed with `ffprobe`. The mode then
-restarts the dummy sink and requires a fresh segment PUT after recovery.
+Publishes one SRT H.264/AAC input, starts both HTTP/YouTube-style `file=` and
+path-style HLS PUT outputs, and verifies that a local dummy sink receives
+`seg<N>.ts` media segments plus playlists with the expected content types. The
+path-style output also verifies signed query preservation. Uploaded segments
+from both output shapes are probed with `ffprobe`. The mode then restarts the
+dummy sink and requires fresh segment PUTs after recovery for both shapes.
 
 Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
 `HLS_PUT_RESTART_SECS` (default 12).
@@ -454,7 +455,7 @@ These capabilities must be treated as test results, not assumptions:
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | HTTP PUT delivery and destination restart recovery are covered by unit plus `test/run-integration.sh hls-put` dummy sink tests |
+| HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and `test/run-integration.sh hls-put` dummy sink tests |
 | Recording | Readable file with correct streams/timestamps |
 | Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
 | Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |

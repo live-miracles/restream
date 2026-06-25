@@ -13,7 +13,7 @@
 #   mixed-scale 4 configs (h264-srt anchor: HLS+smoke+lifecycle; h265-srt: TC_SPAWNS; multi-audio ×2)
 #   bonding     SRT broadcast+backup bonding (requires static build)
 #   burst-verify closed-GOP RTMP/SRT matrix that verifies graph burst reader stats
-#   hls-put     SRT ingest to HTTP HLS PUT upload against a dummy sink
+#   hls-put     SRT ingest to YouTube/path-style HTTP HLS PUT upload sinks
 #   bframe-rtmp RTMP B-frame ingest to RTMP egress timestamp round-trip
 #
 # Common env overrides (all modes):
@@ -524,7 +524,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query)
-        name = query.get("file", [None])[-1] or os.path.basename(parsed.path) or "index.m3u8"
+        name = query.get("file", [None])[-1]
+        if name is None:
+            name = parsed.path.lstrip("/") or "index.m3u8"
         name = name.replace("\\", "/").lstrip("/")
         if not name or any(part == ".." for part in name.split("/")):
             self.send_response(400)
@@ -1469,8 +1471,9 @@ run_burst_verify() {
 }
 
 # ── hls-put mode ──────────────────────────────────────────────────────────────
-# Publishes one SRT H.264/AAC input, starts an HTTP HLS PUT output that targets
-# a local YouTube-style ?file= sink, and verifies playlist plus segment delivery.
+# Publishes one SRT H.264/AAC input, starts HTTP HLS PUT outputs that target
+# local YouTube-style ?file= and path-style sinks, and verifies playlist plus
+# segment delivery for both shapes.
 #
 # Mode env overrides:
 #   HLS_PUT_SETTLE_SECS seconds to wait for HLS upload (default: 8)
@@ -1509,39 +1512,57 @@ run_hls_put() {
 
   wait_for_input_live "$pipe_id" "$cfg"
 
-  local upload_url="http://127.0.0.1:${HLS_PUT_PORT}/upload?cid=dummy&copy=0&file=out.m3u8"
-  local oid
-  oid=$(api POST "/pipelines/${pipe_id}/outputs" \
-    -d "{\"name\":\"hls-put\",\"url\":\"${upload_url}\",\"encoding\":\"source\"}" \
+  local youtube_url="http://127.0.0.1:${HLS_PUT_PORT}/upload?cid=dummy&copy=0&file=out.m3u8"
+  local akamai_url="http://127.0.0.1:${HLS_PUT_PORT}/akamai/out.m3u8?token=dummy"
+  local youtube_oid akamai_oid
+  youtube_oid=$(api POST "/pipelines/${pipe_id}/outputs" \
+    -d "{\"name\":\"hls-put-youtube\",\"url\":\"${youtube_url}\",\"encoding\":\"source\"}" \
     | jq -r '.output.id')
-  api POST "/pipelines/${pipe_id}/outputs/${oid}/start" >/dev/null
+  api POST "/pipelines/${pipe_id}/outputs/${youtube_oid}/start" >/dev/null
+  akamai_oid=$(api POST "/pipelines/${pipe_id}/outputs" \
+    -d "{\"name\":\"hls-put-path\",\"url\":\"${akamai_url}\",\"encoding\":\"source\"}" \
+    | jq -r '.output.id')
+  api POST "/pipelines/${pipe_id}/outputs/${akamai_oid}/start" >/dev/null
 
   echo "  streaming ${SETTLE}s for HLS PUT uploads..."
   sleep "$SETTLE"
 
-  local playlist="${HLS_PUT_DIR}/out.m3u8"
-  local segment=""
+  local youtube_playlist="${HLS_PUT_DIR}/out.m3u8"
+  local akamai_playlist="${HLS_PUT_DIR}/akamai/out.m3u8"
+  local youtube_segment="" akamai_segment=""
   for i in $(seq 1 30); do
-    segment="$(find "$HLS_PUT_DIR" -maxdepth 1 -name 'seg*.ts' -type f -size +0c | sort | head -n1)"
-    [[ -s "$playlist" && -n "$segment" ]] && break
+    youtube_segment="$(find "$HLS_PUT_DIR" -maxdepth 1 -name 'seg*.ts' -type f -size +0c | sort | head -n1)"
+    akamai_segment="$(find "${HLS_PUT_DIR}/akamai" -maxdepth 1 -name 'seg*.ts' -type f -size +0c 2>/dev/null | sort | head -n1)"
+    [[ -s "$youtube_playlist" && -n "$youtube_segment" && -s "$akamai_playlist" && -n "$akamai_segment" ]] && break
     sleep 1
   done
 
-  [[ -s "$playlist" ]] || fail "HLS PUT playlist was not uploaded"
-  [[ -n "$segment" ]] || fail "HLS PUT segment was not uploaded"
-  grep -q '#EXTM3U' "$playlist" || fail "HLS PUT playlist missing EXTM3U header"
-  grep -q '.ts' "$playlist" || fail "HLS PUT playlist missing segment reference"
+  [[ -s "$youtube_playlist" ]] || fail "HLS PUT YouTube-style playlist was not uploaded"
+  [[ -n "$youtube_segment" ]] || fail "HLS PUT YouTube-style segment was not uploaded"
+  [[ -s "$akamai_playlist" ]] || fail "HLS PUT path-style playlist was not uploaded"
+  [[ -n "$akamai_segment" ]] || fail "HLS PUT path-style segment was not uploaded"
+  grep -q '#EXTM3U' "$youtube_playlist" || fail "HLS PUT YouTube-style playlist missing EXTM3U header"
+  grep -q '.ts' "$youtube_playlist" || fail "HLS PUT YouTube-style playlist missing segment reference"
+  grep -q '#EXTM3U' "$akamai_playlist" || fail "HLS PUT path-style playlist missing EXTM3U header"
+  grep -q '.ts' "$akamai_playlist" || fail "HLS PUT path-style playlist missing segment reference"
 
   jq -e 'select(.file == "out.m3u8" and .contentType == "application/vnd.apple.mpegurl")' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT playlist content type not observed"
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT YouTube-style playlist content type not observed"
   jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' \
-    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT segment content type not observed"
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT YouTube-style segment content type not observed"
+  jq -e 'select(.file == "akamai/out.m3u8" and .contentType == "application/vnd.apple.mpegurl" and (.path | contains("token=dummy")))' \
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT path-style playlist content type/query not observed"
+  jq -e 'select((.file | test("^akamai/seg[0-9]+\\.ts$")) and .contentType == "video/mp2t" and (.path | contains("token=dummy")))' \
+    "${HLS_PUT_DIR}/requests.jsonl" >/dev/null || fail "HLS PUT path-style segment content type/query not observed"
 
-  local dims
-  dims="$(probe_dims "$segment" || true)"
-  [[ "$dims" == "1280x720" ]] || fail "HLS PUT segment dimensions expected 1280x720, got ${dims:-none}"
+  local youtube_dims akamai_dims
+  youtube_dims="$(probe_dims "$youtube_segment" || true)"
+  akamai_dims="$(probe_dims "$akamai_segment" || true)"
+  [[ "$youtube_dims" == "1280x720" ]] || fail "HLS PUT YouTube-style segment dimensions expected 1280x720, got ${youtube_dims:-none}"
+  [[ "$akamai_dims" == "1280x720" ]] || fail "HLS PUT path-style segment dimensions expected 1280x720, got ${akamai_dims:-none}"
 
-  log_ok "hls-put: playlist and segment uploaded via PUT with ffprobe dimensions ${dims}"
+  log_ok "hls-put: YouTube-style playlist and segment uploaded via PUT with ffprobe dimensions ${youtube_dims}"
+  log_ok "hls-put: path-style playlist and segment uploaded via PUT with signed query and ffprobe dimensions ${akamai_dims}"
 
   local requests_before
   requests_before="$(wc -l < "${HLS_PUT_DIR}/requests.jsonl" | tr -d ' ')"
@@ -1552,17 +1573,24 @@ run_hls_put() {
   sleep 2
   start_hls_put_sink
 
-  local recovered=0
+  local youtube_recovered=0 akamai_recovered=0
   for i in $(seq 1 "$RESTART_SETTLE"); do
     if tail -n +"$(( requests_before + 1 ))" "${HLS_PUT_DIR}/requests.jsonl" 2>/dev/null \
       | jq -e 'select((.file | test("^seg[0-9]+\\.ts$")) and .contentType == "video/mp2t")' >/dev/null; then
-      recovered=1
+      youtube_recovered=1
+    fi
+    if tail -n +"$(( requests_before + 1 ))" "${HLS_PUT_DIR}/requests.jsonl" 2>/dev/null \
+      | jq -e 'select((.file | test("^akamai/seg[0-9]+\\.ts$")) and .contentType == "video/mp2t" and (.path | contains("token=dummy")))' >/dev/null; then
+      akamai_recovered=1
+    fi
+    if [[ "$youtube_recovered" == "1" && "$akamai_recovered" == "1" ]]; then
       break
     fi
     sleep 1
   done
-  [[ "$recovered" == "1" ]] || fail "HLS PUT upload did not recover with a new segment after sink restart"
-  log_ok "hls-put: upload recovered after dummy sink restart"
+  [[ "$youtube_recovered" == "1" ]] || fail "HLS PUT YouTube-style upload did not recover with a new segment after sink restart"
+  [[ "$akamai_recovered" == "1" ]] || fail "HLS PUT path-style upload did not recover with a new segment after sink restart"
+  log_ok "hls-put: YouTube-style and path-style uploads recovered after dummy sink restart"
 
   kill "$PUB_PID" 2>/dev/null || true; PUB_PID=""
 }

@@ -82,8 +82,8 @@ A focused aggregate-matrix smoke on June 25, 2026 also passed:
 - `./test/run-protocol-matrix.sh --run-id protocol-smoke-20260625T141347Z
   --fast --continue-on-fail --only-modes hls-put,bframe-rtmp`
 - aggregate manifest: `test/artifacts/protocol-smoke-20260625T141347Z/manifest.json`
-- `hls-put`: playlist and TS segment uploaded via HTTP PUT, probed as
-  1280×720, then recovered after dummy sink restart
+- `hls-put`: YouTube-style playlist and TS segment uploaded via HTTP PUT,
+  probed as 1280×720, then recovered after dummy sink restart
 - `bframe-rtmp`: 63/151 probed video packets had `PTS > DTS`, and DTS stayed
   monotone
 
@@ -97,6 +97,16 @@ A full aggregate preflight on June 25, 2026 also passed for `ramp`,
 - every selected mode reported clean dependency, namespace, and port preflight
   checks; `bonding` correctly skips the regular `restream` binary check because
   it builds dedicated static SRT helper binaries
+
+The focused HLS PUT integration was then expanded and re-run on June 25, 2026:
+
+- `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z
+  ./test/run-integration.sh --fast --json
+  test/artifacts/hls-put-dual-20260625T142444Z/assertions.jsonl hls-put`
+- manifest: `test/artifacts/hls-put-dual-20260625T142444Z/manifest.json`
+- YouTube-style `file=` upload and path-style `/akamai/out.m3u8?token=dummy`
+  upload both produced playlists plus 1280×720 TS segments, preserved expected
+  content types, and recovered with fresh segment PUTs after dummy sink restart
 
 ## Runtime Architecture
 
