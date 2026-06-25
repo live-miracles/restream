@@ -240,8 +240,9 @@ See `docs/api-reference.md` for the executable route surface.
 2. ~~Fix active-egress pipeline association in `/health` and diagnostics~~ — done;
    `ActiveEgress` now stores `pipeline_id`, regression tests added.
 3. ~~Use DTS—not PTS—as the RTMP message timestamp for video packets~~ — done;
-   video uses DTS in both play and egress paths. B-frame round-trip tests
-   remain desirable.
+   video uses DTS in both play and egress paths, and `bframe-rtmp` verifies
+   live RTMP egress preserves B-frame composition offsets while DTS remains
+   monotone.
 4. ~~Make output/pipeline/ingest deletion stop runtime tasks~~ — done; egress
    cancellation before DB delete, pipeline delete cancels all outputs and
    ingest, file-ingest delete kills child process.
@@ -257,11 +258,12 @@ See `docs/api-reference.md` for the executable route surface.
    and in-process transcoder input now share the TS packet feeder.
 8. Run and publish a clean protocol matrix from `docs/testing.md`. Minimum
    release evidence should include current `test/run-integration.sh` modes
-   (`ramp`, `mixed-scale`, `bonding`, `burst-verify`, `hls-put`), B-frame
-   timestamp round-trips, H.265 SRT passthrough and RTMP edge conversion,
+   (`ramp`, `mixed-scale`, `bonding`, `burst-verify`, `hls-put`,
+   `bframe-rtmp`), H.265 SRT passthrough and RTMP edge conversion,
    cross-protocol SRT→RTMP packaging, and a manifest under
    `test/artifacts/<run-id>/`. The `hls-put` mode covers HTTP PUT delivery and
-   destination restart recovery with a dummy sink.
+   destination restart recovery with a dummy sink; `bframe-rtmp` covers live
+   RTMP B-frame timestamp round-trip behavior.
 9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
    video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
    path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.

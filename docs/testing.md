@@ -181,6 +181,17 @@ restarts the dummy sink and requires a fresh segment PUT after recovery.
 Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
 `HLS_PUT_RESTART_SECS` (default 12).
 
+### `bframe-rtmp` — RTMP B-frame timestamp round-trip
+
+```sh
+./test/run-integration.sh bframe-rtmp
+```
+
+Publishes one RTMP H.264/AAC input with B-frames, starts an RTMP source output,
+and probes the egress packet stream with `ffprobe -show_packets`. The mode
+requires at least one video packet with `PTS > DTS` and verifies DTS stays
+monotone across the captured egress packets.
+
 ## Validation Results: June 20, 2026
 
 Environment: WSL2, 20 logical CPUs, 7.6 GiB RAM, 2 GiB swap.
@@ -352,6 +363,7 @@ test/run-integration.sh mixed-scale
 test/run-integration.sh bonding
 test/run-integration.sh burst-verify
 test/run-integration.sh hls-put
+test/run-integration.sh bframe-rtmp
 test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
@@ -383,7 +395,7 @@ These capabilities must be treated as test results, not assumptions:
 
 | Capability | Gate |
 |---|---|
-| RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip |
+| RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip through `test/run-integration.sh bframe-rtmp` |
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
