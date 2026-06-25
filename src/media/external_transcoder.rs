@@ -36,20 +36,87 @@
 
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
+use crate::media::engine::PipeMetrics;
 use crate::media::mpegts::{TsDemuxer, TsMuxer};
 use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 
-/// Stdin writes exceeding this threshold are counted as pipe stalls —
-/// FFmpeg's read end fell behind and the kernel pipe buffer was full.
+/// Stdin writes or stdout reads exceeding this threshold are counted as stalls/idles.
 /// 1 ms filters normal async scheduling jitter while catching real back-pressure.
 const PIPE_STALL_THRESHOLD_US: u64 = 1_000;
+
+// ── Fast timing ───────────────────────────────────────────────────────────────
+// On x86_64 we use rdtsc (≈3 cycles) instead of Instant::now() (≈20-40 cycles
+// via VDSO clock_gettime). Both are TSC-backed on Linux, but rdtsc skips the
+// VDSO calibration/scaling math that converts cycles to nanoseconds.
+//
+// Calibration: a 100 µs busy-wait on first call. Safe to call from tokio tasks
+// (no thread::sleep, no syscall) and amortised to zero after the first stall.
+
+#[cfg(target_arch = "x86_64")]
+pub mod tsc {
+    use std::arch::x86_64::_rdtsc;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static CYCLES_PER_US: OnceLock<f64> = OnceLock::new();
+
+    /// Calibrate TSC frequency against Instant via a 100 µs busy-wait.
+    /// Called at most once; subsequent calls read the cached value.
+    pub fn calibrate() -> f64 {
+        *CYCLES_PER_US.get_or_init(|| {
+            let t0 = Instant::now();
+            let c0 = unsafe { _rdtsc() };
+            while t0.elapsed().as_micros() < 100 {
+                core::hint::spin_loop();
+            }
+            let elapsed_us = t0.elapsed().as_micros() as f64;
+            let c1 = unsafe { _rdtsc() };
+            (c1.saturating_sub(c0)) as f64 / elapsed_us
+        })
+    }
+
+    #[inline(always)]
+    pub fn now() -> u64 {
+        unsafe { _rdtsc() }
+    }
+
+    /// Convert a cycle delta (rdtsc end - rdtsc start) to microseconds.
+    #[inline(always)]
+    pub fn delta_us(start: u64) -> u64 {
+        let delta = unsafe { _rdtsc() }.saturating_sub(start);
+        (delta as f64 / calibrate()) as u64
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub mod tsc {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+    fn origin() -> Instant {
+        *ORIGIN.get_or_init(Instant::now)
+    }
+
+    pub fn calibrate() -> f64 { 1.0 } // no-op on non-x86
+
+    #[inline(always)]
+    pub fn now() -> u64 {
+        Instant::now().duration_since(origin()).as_nanos() as u64
+    }
+
+    #[inline(always)]
+    pub fn delta_us(start: u64) -> u64 {
+        now().saturating_sub(start) / 1_000
+    }
+}
 
 // ── FFmpeg arg builders ────────────────────────────────────────────────────
 
@@ -276,10 +343,20 @@ pub async fn start_external_transcoder_stage(
     };
 
     // ── stage metrics ─────────────────────────────────────────────────────
-    // Fetch (or create) the shared Arc<StageMetrics> for this stage so the
-    // graph endpoint can report live throughput without extra I/O.
     let stage_metrics = engine
         .get_or_create_stage_metrics(&pipeline_id, &encoding)
+        .await;
+
+    // ── pipe metrics ──────────────────────────────────────────────────────
+    // Separate from stage_metrics: only subprocess-pipe stages have these.
+    // Trigger TSC calibration now (100 µs busy-wait, once per process).
+    tsc::calibrate();
+    let pipe_metrics = Arc::new(PipeMetrics::default());
+    engine
+        .register_pipe_metrics(
+            &format!("{}:{}", pipeline_id, encoding),
+            pipe_metrics.clone(),
+        )
         .await;
 
     // ── stderr logger ──────────────────────────────────────────────────────
@@ -381,18 +458,19 @@ pub async fn start_external_transcoder_stage(
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
         let label_out = label.clone();
-        let out_metrics = stage_metrics.clone();
+        let out_stage_metrics = stage_metrics.clone();
+        let out_pipe_metrics = pipe_metrics.clone();
         let mut stdout = stdout;
         tokio::spawn(async move {
             let mut demuxer = TsDemuxer::new();
             let mut buf = vec![0u8; 65536];
             let mut pkts = Vec::with_capacity(32);
             loop {
-                let t0 = Instant::now();
+                let t0 = tsc::now();
                 tokio::select! {
                     _ = cancel_out.cancelled() => break,
                     result = stdout.read(&mut buf) => {
-                        let idle_us = t0.elapsed().as_micros() as u64;
+                        let idle_us = tsc::delta_us(t0);
                         match result {
                             Ok(0) | Err(_) => {
                                 eprintln!("[ext-transcoder] stdout closed ({})", label_out);
@@ -400,12 +478,12 @@ pub async fn start_external_transcoder_stage(
                             }
                             Ok(n) => {
                                 if idle_us > PIPE_STALL_THRESHOLD_US {
-                                    out_metrics.record_pipe_idle(idle_us);
+                                    out_pipe_metrics.record_idle(idle_us);
                                 }
                                 demuxer.feed(&buf[..n]);
                                 demuxer.drain_into(&mut pkts);
                                 for pkt in &pkts {
-                                    out_metrics.record_out(pkt.payload.len() as u64);
+                                    out_stage_metrics.record_out(pkt.payload.len() as u64);
                                 }
                                 out_ring.push_batch(pkts.drain(..));
                             }
@@ -507,7 +585,7 @@ pub async fn start_external_transcoder_stage(
                         payload,
                     );
                     if !ts.is_empty() {
-                        let t0 = Instant::now();
+                        let t0 = tsc::now();
                         if stdin.write_all(ts).await.is_err() {
                             eprintln!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
@@ -515,9 +593,9 @@ pub async fn start_external_transcoder_stage(
                             );
                             break 'outer;
                         }
-                        let write_us = t0.elapsed().as_micros() as u64;
+                        let write_us = tsc::delta_us(t0);
                         if write_us > PIPE_STALL_THRESHOLD_US {
-                            stage_metrics.record_pipe_stall(write_us);
+                            pipe_metrics.record_stall(write_us);
                         }
                         stage_metrics.record_in(in_bytes);
                     }
@@ -533,6 +611,9 @@ pub async fn start_external_transcoder_stage(
 
     engine
         .remove_stage_metrics(&pipeline_id, &encoding)
+        .await;
+    engine
+        .remove_pipe_metrics(&format!("{}:{}", pipeline_id, encoding))
         .await;
     engine.event_log.emit(crate::events::EventKind::StageStopped {
         pipeline_id: pipeline_id.clone(),

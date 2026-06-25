@@ -18,7 +18,7 @@ use crate::media::ring_buffer::RingBuffer;
 use crate::media::ts_chunk_ring::TsChunkRing;
 use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 
-/// Lock-free counters for one processing stage.
+/// Lock-free throughput counters for one processing stage.
 /// Updated atomically on the hot path; read by `/graph` for operator visibility.
 #[derive(Debug)]
 pub struct StageMetrics {
@@ -29,16 +29,52 @@ pub struct StageMetrics {
     /// Cumulative processing time in microseconds.
     pub processing_us: AtomicU64,
     pub start_instant: Instant,
-    /// Number of stdin writes that stalled (pipe buffer full, FFmpeg back-pressure).
-    /// Only incremented by external-subprocess stages; always 0 for MemoryQueue stages.
-    pub pipe_stalls: AtomicU64,
+}
+
+/// Back-pressure counters for an external subprocess stage (FFmpeg stdin/stdout pipe).
+///
+/// Separate from `StageMetrics` because these fields only exist for the external
+/// transcoder — internal/MemoryQueue-backed stages have no pipe to observe.
+/// Registered in `MediaEngine::pipe_metrics` keyed by the stage storage key.
+#[derive(Debug, Default)]
+pub struct PipeMetrics {
+    /// Stdin writes that stalled: pipe buffer was full, FFmpeg wasn't consuming fast enough.
+    pub stalls: AtomicU64,
     /// Cumulative microseconds spent blocked on stalled stdin writes.
-    pub pipe_stall_us: AtomicU64,
-    /// Number of stdout reads that idled (pipe empty, FFmpeg not producing output yet).
-    /// High values indicate FFmpeg encode is CPU-bound or stalled.
-    pub pipe_idles: AtomicU64,
-    /// Cumulative microseconds spent waiting on idle stdout reads.
-    pub pipe_idle_us: AtomicU64,
+    pub stall_us: AtomicU64,
+    /// Stdout reads that idled: pipe was empty, FFmpeg hadn't produced output yet.
+    pub idles: AtomicU64,
+    /// Cumulative microseconds spent waiting for idle stdout reads.
+    pub idle_us: AtomicU64,
+}
+
+impl PipeMetrics {
+    #[inline]
+    pub fn record_stall(&self, us: u64) {
+        self.stalls.fetch_add(1, Ordering::Relaxed);
+        self.stall_us.fetch_add(us, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn record_idle(&self, us: u64) {
+        self.idles.fetch_add(1, Ordering::Relaxed);
+        self.idle_us.fetch_add(us, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> serde_json::Value {
+        let stalls = self.stalls.load(Ordering::Relaxed);
+        let stall_us = self.stall_us.load(Ordering::Relaxed);
+        let idles = self.idles.load(Ordering::Relaxed);
+        let idle_us = self.idle_us.load(Ordering::Relaxed);
+        serde_json::json!({
+            "stalls":    stalls,
+            "stallUs":   stall_us,
+            "avgStallUs": if stalls > 0 { stall_us / stalls } else { 0 },
+            "idles":     idles,
+            "idleUs":    idle_us,
+            "avgIdleUs": if idles > 0 { idle_us / idles } else { 0 },
+        })
+    }
 }
 
 impl Default for StageMetrics {
@@ -56,10 +92,6 @@ impl StageMetrics {
             bytes_out: AtomicU64::new(0),
             processing_us: AtomicU64::new(0),
             start_instant: Instant::now(),
-            pipe_stalls: AtomicU64::new(0),
-            pipe_stall_us: AtomicU64::new(0),
-            pipe_idles: AtomicU64::new(0),
-            pipe_idle_us: AtomicU64::new(0),
         }
     }
 
@@ -80,20 +112,6 @@ impl StageMetrics {
         self.processing_us.fetch_add(us, Ordering::Relaxed);
     }
 
-    /// Record a stalled stdin write (pipe buffer was full; FFmpeg was back-pressuring).
-    #[inline]
-    pub fn record_pipe_stall(&self, us: u64) {
-        self.pipe_stalls.fetch_add(1, Ordering::Relaxed);
-        self.pipe_stall_us.fetch_add(us, Ordering::Relaxed);
-    }
-
-    /// Record an idle stdout read (pipe was empty; FFmpeg hadn't produced output yet).
-    #[inline]
-    pub fn record_pipe_idle(&self, us: u64) {
-        self.pipe_idles.fetch_add(1, Ordering::Relaxed);
-        self.pipe_idle_us.fetch_add(us, Ordering::Relaxed);
-    }
-
     pub fn snapshot(&self) -> serde_json::Value {
         let pkts_in = self.packets_in.load(Ordering::Relaxed);
         let pkts_out = self.packets_out.load(Ordering::Relaxed);
@@ -108,11 +126,6 @@ impl StageMetrics {
             0.0
         };
 
-        let stalls = self.pipe_stalls.load(Ordering::Relaxed);
-        let stall_us = self.pipe_stall_us.load(Ordering::Relaxed);
-        let idles = self.pipe_idles.load(Ordering::Relaxed);
-        let idle_us = self.pipe_idle_us.load(Ordering::Relaxed);
-
         serde_json::json!({
             "packetsIn": pkts_in,
             "packetsOut": pkts_out,
@@ -122,14 +135,6 @@ impl StageMetrics {
             "avgUsPerPacket": avg_us_per_packet,
             "uptimeSecs": elapsed,
             "packetsPerSec": if elapsed > 0.0 { pkts_in as f64 / elapsed } else { 0.0 },
-            "pipeMetrics": {
-                "stalls": stalls,
-                "stallUs": stall_us,
-                "avgStallUs": if stalls > 0 { stall_us / stalls } else { 0 },
-                "idles": idles,
-                "idleUs": idle_us,
-                "avgIdleUs": if idles > 0 { idle_us / idles } else { 0 },
-            },
         })
     }
 }
@@ -356,6 +361,9 @@ pub struct MediaEngine {
     // Keyed by the same storage key as transcoder_buffers.
     // Used by processing_graph() to surface queue depth/HWM in the engineer view.
     pub input_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
+    // Pipe back-pressure metrics for external-subprocess stages.
+    // Keyed by the same storage key as transcoder_buffers.
+    pub pipe_metrics: TokioRwLock<HashMap<String, Arc<PipeMetrics>>>,
     // Bounded in-memory lifecycle event log.
     pub event_log: Arc<crate::events::EventLog>,
 }
@@ -399,6 +407,7 @@ impl MediaEngine {
             ts_muxer_stages: TokioRwLock::new(HashMap::new()),
             diag_semaphores: TokioRwLock::new(HashMap::new()),
             input_queues: TokioRwLock::new(HashMap::new()),
+            pipe_metrics: TokioRwLock::new(HashMap::new()),
             event_log: Arc::new(crate::events::EventLog::new()),
         }
     }
@@ -450,6 +459,17 @@ impl MediaEngine {
 
     pub async fn remove_input_queue(&self, storage_key: &str) {
         self.input_queues.write().await.remove(storage_key);
+    }
+
+    pub async fn register_pipe_metrics(&self, storage_key: &str, metrics: Arc<PipeMetrics>) {
+        self.pipe_metrics
+            .write()
+            .await
+            .insert(storage_key.to_string(), metrics);
+    }
+
+    pub async fn remove_pipe_metrics(&self, storage_key: &str) {
+        self.pipe_metrics.write().await.remove(storage_key);
     }
 
     pub async fn is_file_ingest_running(&self, id: &str) -> bool {
@@ -1477,6 +1497,7 @@ impl MediaEngine {
         let hls_consumers = self.hls_consumers.read().await;
         let all_stage_metrics = self.stage_metrics.read().await;
         let all_input_queues = self.input_queues.read().await;
+        let all_pipe_metrics = self.pipe_metrics.read().await;
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -1553,9 +1574,8 @@ impl MediaEngine {
                 let kind = StageKind::parse_legacy_key(stage_key);
                 let stage_id = kind.graph_node_id(pipeline_id);
                 let stage_metrics_key = format!("{}:{}", pipeline_id, stage_key);
-                let queue_stats = all_input_queues
-                    .get(key)
-                    .map(|q| q.stats());
+                let queue_stats = all_input_queues.get(key).map(|q| q.stats());
+                let pipe_stats = all_pipe_metrics.get(key).map(|p| p.snapshot());
                 nodes.push(serde_json::json!({
                     "id": stage_id,
                     "type": kind.graph_type(),
@@ -1564,6 +1584,7 @@ impl MediaEngine {
                     "active": !token.is_cancelled(),
                     "metrics": all_stage_metrics.get(&stage_metrics_key).map(|m| m.snapshot()),
                     "queueMetrics": queue_stats,
+                    "pipeMetrics": pipe_stats,
                 }));
 
                 if let Some(upstream) = kind.upstream() {
@@ -1713,31 +1734,37 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn stage_metrics_pipe_metrics_snapshot() {
-        let m = StageMetrics::new();
-        let snap = m.snapshot();
-        // All pipe metrics start at zero
-        assert_eq!(snap["pipeMetrics"]["stalls"].as_u64().unwrap(), 0);
-        assert_eq!(snap["pipeMetrics"]["stallUs"].as_u64().unwrap(), 0);
-        assert_eq!(snap["pipeMetrics"]["avgStallUs"].as_u64().unwrap(), 0);
-        assert_eq!(snap["pipeMetrics"]["idles"].as_u64().unwrap(), 0);
-        assert_eq!(snap["pipeMetrics"]["idleUs"].as_u64().unwrap(), 0);
-        assert_eq!(snap["pipeMetrics"]["avgIdleUs"].as_u64().unwrap(), 0);
+    fn pipe_metrics_snapshot_correctness() {
+        let pm = PipeMetrics::default();
+        let snap = pm.snapshot();
 
-        // Stdin stall accumulation
-        m.record_pipe_stall(2_000);
-        m.record_pipe_stall(6_000);
-        let snap = m.snapshot();
-        assert_eq!(snap["pipeMetrics"]["stalls"].as_u64().unwrap(), 2);
-        assert_eq!(snap["pipeMetrics"]["stallUs"].as_u64().unwrap(), 8_000);
-        assert_eq!(snap["pipeMetrics"]["avgStallUs"].as_u64().unwrap(), 4_000);
+        // All counters start at zero; avg fields are also zero.
+        assert_eq!(snap["stalls"].as_u64().unwrap(), 0);
+        assert_eq!(snap["stallUs"].as_u64().unwrap(), 0);
+        assert_eq!(snap["avgStallUs"].as_u64().unwrap(), 0);
+        assert_eq!(snap["idles"].as_u64().unwrap(), 0);
+        assert_eq!(snap["idleUs"].as_u64().unwrap(), 0);
+        assert_eq!(snap["avgIdleUs"].as_u64().unwrap(), 0);
 
-        // Stdout idle accumulation
-        m.record_pipe_idle(3_000);
-        let snap = m.snapshot();
-        assert_eq!(snap["pipeMetrics"]["idles"].as_u64().unwrap(), 1);
-        assert_eq!(snap["pipeMetrics"]["idleUs"].as_u64().unwrap(), 3_000);
-        assert_eq!(snap["pipeMetrics"]["avgIdleUs"].as_u64().unwrap(), 3_000);
+        // Stdin stall accumulation and average.
+        pm.record_stall(2_000);
+        pm.record_stall(6_000);
+        let snap = pm.snapshot();
+        assert_eq!(snap["stalls"].as_u64().unwrap(), 2);
+        assert_eq!(snap["stallUs"].as_u64().unwrap(), 8_000);
+        assert_eq!(snap["avgStallUs"].as_u64().unwrap(), 4_000);
+
+        // Stdout idle accumulation and average.
+        pm.record_idle(3_000);
+        let snap = pm.snapshot();
+        assert_eq!(snap["idles"].as_u64().unwrap(), 1);
+        assert_eq!(snap["idleUs"].as_u64().unwrap(), 3_000);
+        assert_eq!(snap["avgIdleUs"].as_u64().unwrap(), 3_000);
+
+        // StageMetrics snapshot no longer contains pipe fields.
+        let sm = StageMetrics::new();
+        let ssnap = sm.snapshot();
+        assert!(ssnap.get("pipeMetrics").is_none());
     }
 
     fn test_video_packet(pts: i64, dts: i64, keyframe: bool) -> MediaPacket {

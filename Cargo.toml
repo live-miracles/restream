@@ -84,6 +84,10 @@ harness = false
 name = "codec_conversions"
 harness = false
 
+[[bench]]
+name = "stage_metrics"
+harness = false
+
 [profile.dev]
 incremental = true
 codegen-units = 16
