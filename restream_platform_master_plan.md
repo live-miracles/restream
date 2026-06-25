@@ -1304,6 +1304,14 @@ Implementation note, 2026-06-25:
 - graph serialization now consumes typed `StageKind` parsing/rendering helpers,
   but full engine-native graph registries remain pending.
 
+Implementation note, 2026-06-25 (continued):
+- `get_or_create_transcoder` and `get_or_create_h264_transcoder` in
+  `src/media/engine.rs` now derive storage keys through `StageKey::storage_key()`
+  rather than hand-formatting `"{pipeline}:{kind.legacy_key()}"`. Infrastructure
+  stages (`hls`, `recording`, `play`) keep string keys; they have no typed
+  `StageKind` variant and are already centralized. Splitting `MediaEngine` into
+  typed registry structs remains a Phase 2 deliverable.
+
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
 - lifecycle and event model
@@ -1314,6 +1322,11 @@ Implementation note, 2026-06-25:
 - `MemoryQueue::stats()` now exposes queue depth, capacity, high-water mark,
   blocked write count, blocked write time, and closed state. API/graph surfacing
   remains pending.
+- typed alert model implemented in `src/alerts.rs`: `Alert`, `Severity`, `Scope`
+  structs and a pure `derive_alerts(&snapshot)` function covering publisher-absent,
+  reader-lag, ring-overflow, output-down, and SRT-drop conditions. Served at
+  `GET /api/v1/alerts` and `GET /pipelines/:id/alerts`. First-seen/last-seen
+  tracking deferred to Phase 3 (requires persistent state).
 
 ## Phase 3 — API reset
 - `/api/v1` clean-slate surface

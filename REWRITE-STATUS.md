@@ -23,13 +23,13 @@ a working runtime path.
 
 | Suite | Result |
 |---|---|
-| Library/unit | 350 passed |
+| Library/unit | 361 passed |
 | API integration | 38 passed |
 | AV sync integration | 14 passed |
 | Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **441 passed, 0 failed** |
+| Total | **452 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -199,10 +199,19 @@ to the local RTMP listener.
 - `GET /pipelines/:id/probe`
 - `GET /pipelines/:id/graph`
 - `GET /pipelines/:id/diagnostics`
+- `GET /pipelines/:id/alerts` — typed alert list for one pipeline
+- `GET /api/v1/alerts` — aggregate alerts across all pipelines
 - HLS pull at `/hls/:id/index.m3u8`
 
 Diagnostics currently run nine checks, including publisher transport and the
 shared SRT listener socket.
+
+Alert derivation is a pure snapshot pass over the `health_snapshot()` result.
+Conditions derived: publisher absent (Critical/Pipeline), reader lag above
+threshold (Warning/Stage), ring overflow (Warning/Stage), output not running
+while publisher is active (Warning/Output), SRT listener UDP drops
+(Warning/Engine). Each alert carries `id`, `severity`, `scope`, `evidence`,
+and `recommended_action` fields. Results are sorted Critical-first.
 
 ## Capability Matrix
 
@@ -349,6 +358,16 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;
   `MemoryQueue::stats()` reports current depth, capacity, high-water bytes,
   blocked write count, blocked write time, and closed state.
+- ~~canonical stage-key building in `MediaEngine`~~ — done; `get_or_create_transcoder`
+  and `get_or_create_h264_transcoder` now derive the storage key through
+  `StageKey::storage_key()` rather than hand-formatting `"{pid}:{kind}"`.
+  Infrastructure stages (`hls`, `recording`, `play`) keep string keys because
+  they have no typed `StageKind` variant; they are already centralized.
+- ~~typed alert derivation model~~ — done; `src/alerts.rs` introduces `Alert`,
+  `Severity`, and `Scope` types and a pure `derive_alerts(&snapshot)` function;
+  `GET /pipelines/:id/alerts` and `GET /api/v1/alerts` expose the model. Phase 2
+  tracking (`first_seen`, persistent state) deferred; snapshot-derived alerts
+  are stateless and re-derived on every request.
 - ~~secure public HLS playlist and segment routes~~ — done; HLS playlist and
   segment routes require the dashboard session cookie.
 - ~~replace or hide stale Grafana and status-page UI tied to MediaMTX~~ — done;
@@ -356,8 +375,11 @@ See `docs/api-reference.md` for the executable route surface.
   configurable~~ — done; environment overrides cover ports, SQLite path, media
   directory, fd limit, reconciler cadence, retry backoff, HLS idle timeout, and
   HLS segment/window sizing.
-- full engine-native graph registries remain pending; graph rendering now uses
-  typed stage helpers, but runtime ownership is still mostly in `MediaEngine`.
+- full engine-native graph registries remain pending; graph rendering and key
+  building now use typed stage helpers throughout, but the `MediaEngine`
+  HashMaps still use `String` keys rather than a typed `StageKey` index.
+  Splitting `MediaEngine` into dedicated typed registries (`StageRegistry`,
+  `IngestRegistry`, etc.) is a Phase 2 deliverable.
 
 ### Claims intentionally not made
 
