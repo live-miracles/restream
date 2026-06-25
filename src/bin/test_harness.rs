@@ -55,6 +55,7 @@ async fn run() -> Result<(), String> {
         "burst-verify" => burst_verify_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "ramp-family" => ramp_family_correctness().await,
+        "mixed-anchor" => mixed_anchor_correctness().await,
         "matrix" => matrix_correctness().await,
         "matrix-in-memory" => matrix_correctness_in_memory().await,
         "egress" => egress_correctness().await,
@@ -81,7 +82,8 @@ async fn run() -> Result<(), String> {
         }
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
-              correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, ramp-family, matrix, \
+              correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, ramp-family, \
+              mixed-anchor, matrix, \
               matrix-in-memory, egress, correctness-hevc-rtmp, correctness-hevc-srt, \
               hevc-load, in-process, network, or all"
         )),
@@ -845,24 +847,32 @@ async fn check_ramp_stream(
 }
 
 async fn probe_dims_ramp(url: &str) -> Result<String, String> {
-    let child = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-probesize",
-            "10000000",
-            "-analyzeduration",
-            "10000000",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height",
-            "-of",
-            "csv=p=0",
-            url,
-        ])
+    probe_dims_ramp_with_cookie(url, None).await
+}
+
+async fn probe_dims_ramp_with_cookie(url: &str, cookie: Option<&str>) -> Result<String, String> {
+    let mut command = Command::new("ffprobe");
+    command.args([
+        "-v",
+        "error",
+        "-probesize",
+        "10000000",
+        "-analyzeduration",
+        "10000000",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0",
+    ]);
+    if let Some(cookie) = cookie {
+        command.args(["-headers", &format!("Cookie: {cookie}\r\n")]);
+    }
+    let child = command
+        .arg(url)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -871,7 +881,8 @@ async fn probe_dims_ramp(url: &str) -> Result<String, String> {
         .map_err(|_| format!("ffprobe timed out: {url}"))?
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err(format!("ffprobe failed: {url}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffprobe failed: {url}: {}", stderr.trim()));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -879,6 +890,882 @@ async fn probe_dims_ramp(url: &str) -> Result<String, String> {
         .unwrap_or("")
         .trim()
         .replace(',', "x"))
+}
+
+struct MixedEnv {
+    work_dir: PathBuf,
+    scale_log: PathBuf,
+    rss_summary: PathBuf,
+    summary_log: PathBuf,
+    restream_log: PathBuf,
+    mediamtx_log: PathBuf,
+    mediamtx_config: PathBuf,
+    restream_bin: PathBuf,
+    restream_db_path: PathBuf,
+    assertion_log: Option<PathBuf>,
+    only_checks: Option<Vec<String>>,
+    resume_from: Option<String>,
+    skip_load: bool,
+    restream_http: u16,
+    restream_rtmp: u16,
+    restream_srt: u16,
+    mtx_rtmp: u16,
+    mtx_srt: u16,
+    mtx_hls: u16,
+    mtx_api: u16,
+    n_per_group: usize,
+    snapshot_sleep: Duration,
+}
+
+impl MixedEnv {
+    fn from_env() -> Self {
+        let work_dir = std::env::var_os("WORK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("test/artifacts/mixed-scale"));
+        Self {
+            scale_log: std::env::var_os("SCALE_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("scale.csv")),
+            rss_summary: std::env::var_os("RSS_SUMMARY")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("rss-summary.csv")),
+            summary_log: std::env::var_os("SUMMARY_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("summary.txt")),
+            restream_log: std::env::var_os("MIXED_RESTREAM_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("mixed-anchor-restream.log")),
+            mediamtx_log: std::env::var_os("MIXED_MEDIAMTX_LOG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("mixed-anchor-mediamtx.log")),
+            mediamtx_config: std::env::var_os("MIXED_MEDIAMTX_CONFIG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("mixed-anchor-mediamtx.yml")),
+            restream_bin: std::env::var_os("RESTREAM_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data.db")),
+            assertion_log: std::env::var_os("ASSERTION_LOG")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+            only_checks: std::env::var("ONLY_CHECKS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(|item| item.trim().replace('_', "-"))
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                }),
+            resume_from: std::env::var("RESUME_FROM")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            skip_load: std::env::var("SKIP_LOAD")
+                .ok()
+                .is_some_and(|value| value == "1"),
+            restream_http: env_u16("RESTREAM_HTTP", 3030),
+            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
+            restream_srt: env_u16("RESTREAM_SRT", 10080),
+            mtx_rtmp: env_u16("MTX_RTMP", 1936),
+            mtx_srt: env_u16("MTX_SRT", 8891),
+            mtx_hls: env_u16("MTX_HLS", 8890),
+            mtx_api: env_u16("MTX_API", 9997),
+            n_per_group: env_usize("N_PER_GROUP", 25),
+            snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
+            work_dir,
+        }
+    }
+
+    fn check_selected(&self, check: &str) -> bool {
+        self.only_checks
+            .as_ref()
+            .is_none_or(|items| items.iter().any(|item| item == check))
+    }
+}
+
+struct MixedResume {
+    target: Option<String>,
+    active: bool,
+}
+
+impl MixedResume {
+    fn new(target: Option<String>) -> Self {
+        Self {
+            active: target.is_none(),
+            target,
+        }
+    }
+
+    fn allows(&mut self, id: &str) -> bool {
+        if self.active {
+            return true;
+        }
+        if self.target.as_deref() == Some(id) {
+            self.active = true;
+            return true;
+        }
+        false
+    }
+}
+
+async fn mixed_anchor_correctness() -> Result<Value, String> {
+    let env = MixedEnv::from_env();
+    if env.n_per_group == 0 {
+        return Err("N_PER_GROUP must be greater than zero".to_string());
+    }
+    std::fs::create_dir_all(&env.work_dir).map_err(|e| e.to_string())?;
+    ensure_mixed_artifacts(&env)?;
+
+    let mut mediamtx = start_mixed_mediamtx(&env).await?;
+    let mut restream = start_mixed_restream(&env).await?;
+    let restream_pid = restream.id().unwrap_or(0);
+    let mut api = RampApi::new(env.restream_http);
+    api.login().await?;
+
+    let mut resume = MixedResume::new(env.resume_from.clone());
+    let result = run_mixed_anchor_config(&env, &api, restream_pid, &mut resume).await;
+
+    stop_child(&mut restream).await;
+    stop_child(&mut mediamtx).await;
+
+    result.map(|config| {
+        json!({
+            "passed": true,
+            "mode": "mixed-anchor",
+            "configs": [config],
+            "artifacts": {
+                "scaleCsv": env.scale_log,
+                "rssSummary": env.rss_summary,
+                "summary": env.summary_log,
+                "restreamLog": env.restream_log,
+                "mediamtxLog": env.mediamtx_log,
+            }
+        })
+    })
+}
+
+fn ensure_mixed_artifacts(env: &MixedEnv) -> Result<(), String> {
+    if !env.scale_log.exists() {
+        std::fs::write(
+            &env.scale_log,
+            "config,label,cpu_pct,rss_kb,ext_ffmpeg_n,ext_ffmpeg_rss_kb\n",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if !env.rss_summary.exists() {
+        std::fs::write(&env.rss_summary, "").map_err(|e| e.to_string())?;
+    }
+    if !env.summary_log.exists() {
+        std::fs::write(&env.summary_log, "").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn start_mixed_restream(env: &MixedEnv) -> Result<Child, String> {
+    if !env.restream_bin.exists() {
+        return Err(format!(
+            "restream binary not found at {}",
+            env.restream_bin.display()
+        ));
+    }
+    cleanup_ramp_db(&env.restream_db_path);
+    let log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
+    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
+    let mut child = Command::new(&env.restream_bin)
+        .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
+        .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
+        .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
+        .env(
+            "RESTREAM_DB_PATH",
+            env.restream_db_path.to_string_lossy().to_string(),
+        )
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr_log))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/healthz", env.restream_http),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut child).await;
+        return Err(format!("restream did not become ready: {err}"));
+    }
+    Ok(child)
+}
+
+async fn start_mixed_mediamtx(env: &MixedEnv) -> Result<Child, String> {
+    std::fs::write(
+        &env.mediamtx_config,
+        format!(
+            "logLevel: warn\nrtmp: yes\nrtmpAddress: :{}\nrtmpEncryption: \"no\"\nrtsp: no\nsrt: yes\nsrtAddress: :{}\nhls: yes\nhlsAddress: :{}\nhlsPartDuration: 200ms\nhlsSegmentDuration: 2s\nwebrtc: no\napi: yes\napiAddress: :{}\nmetrics: no\npaths:\n  all:\n",
+            env.mtx_rtmp, env.mtx_srt, env.mtx_hls, env.mtx_api
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let log = std::fs::File::create(&env.mediamtx_log).map_err(|e| e.to_string())?;
+    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
+    let mut child = Command::new("mediamtx")
+        .arg(&env.mediamtx_config)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr_log))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/v3/paths/list", env.mtx_api),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut child).await;
+        return Err(format!("mediamtx did not become ready: {err}"));
+    }
+    Ok(child)
+}
+
+async fn run_mixed_anchor_config(
+    env: &MixedEnv,
+    api: &RampApi,
+    restream_pid: u32,
+    resume: &mut MixedResume,
+) -> Result<Value, String> {
+    let cfg = "h264-srt";
+    let n = env.n_per_group;
+    let total = n * 4;
+    let stream_key = format!("sk-{cfg}");
+
+    let pipeline = api
+        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create response missing pipeline.id")?
+        .to_string();
+
+    let mut publisher = spawn_mixed_anchor_publisher(env, &stream_key).await?;
+    wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, "baseline (input live, 0 outputs)").await?;
+    }
+
+    let mut output_ids = Vec::with_capacity(total + 1);
+    let hls_output = create_mixed_output(
+        api,
+        &pipeline_id,
+        "hls-preview",
+        &format!("hls://{cfg}-preview"),
+        "source",
+    )
+    .await?;
+    start_mixed_output(api, &pipeline_id, &hls_output).await?;
+    output_ids.push(hls_output);
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        cfg,
+        "rtmp-src",
+        n,
+        "source",
+        |index| {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
+                env.mtx_rtmp
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
+    }
+
+    if env.check_selected("smoke") && resume.allows("MS-smoke") {
+        let started = Instant::now();
+        let launches =
+            count_log_matches(&env.restream_log, "[external-transcoder] Launching ffmpeg");
+        if launches != 0 {
+            emit_mixed_result(
+                env,
+                cfg,
+                "MS-smoke",
+                "fail",
+                started.elapsed(),
+                Some(json!({
+                    "message": format!("smoke: external transcoder fired before 720p outputs ({launches} launches)"),
+                    "external_transcoder_launches": launches,
+                })),
+            )?;
+            return Err(format!(
+                "smoke: external transcoder fired before 720p outputs ({launches} launches)"
+            ));
+        }
+        emit_mixed_result(
+            env,
+            cfg,
+            "MS-smoke",
+            "pass",
+            started.elapsed(),
+            Some(json!({
+                "external_transcoder_launches": launches,
+            })),
+        )?;
+        log_mixed_ok(env, "smoke: no external transcoder for source outputs")?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        cfg,
+        "rtmp-720p",
+        n,
+        "720p",
+        |index| {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{index}",
+                env.mtx_rtmp
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 720p")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        cfg,
+        "srt-src",
+        n,
+        "source",
+        |index| {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
+                env.mtx_srt
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        cfg,
+        "srt-720p",
+        n,
+        "720p",
+        |index| {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-720p-{index}",
+                env.mtx_srt
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(
+            env,
+            restream_pid,
+            cfg,
+            &format!("after all {total} outputs"),
+        )
+        .await?;
+    }
+
+    let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
+    let ffmpeg = ffmpeg_pipe1_stats().await;
+    let rss_delta = rss_final.saturating_sub(rss_baseline);
+    let per_output = rss_delta / total as u64;
+    append_line(
+        &env.rss_summary,
+        &format!(
+            "{cfg},rss_delta_kb={rss_delta},per_output_kb={per_output},ext_ffmpeg_n={},ext_ffmpeg_rss_kb={}\n",
+            ffmpeg.count, ffmpeg.rss_kb
+        ),
+    )?;
+    if !env.skip_load && env.check_selected("load") {
+        emit_mixed_result(
+            env,
+            cfg,
+            "MS-load-h264-srt",
+            "pass",
+            Duration::ZERO,
+            Some(json!({
+                "rss_delta_kb": rss_delta,
+                "per_output_kb": per_output,
+                "ext_ffmpeg_n": ffmpeg.count,
+                "ext_ffmpeg_rss_kb": ffmpeg.rss_kb,
+            })),
+        )?;
+    }
+
+    if env.check_selected("ffprobe") {
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-ffprobe-rtmp-src",
+            &format!("RTMP-src  out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+            "1920x1080",
+            None,
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-ffprobe-rtmp-720p",
+            &format!("RTMP-720p out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+            "1280x720",
+            None,
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-ffprobe-srt-src",
+            &format!("SRT-src   out{n}"),
+            &format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            "1920x1080",
+            None,
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-ffprobe-srt-720p",
+            &format!("SRT-720p  out{n}"),
+            &format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            "1280x720",
+            None,
+            resume,
+        )
+        .await?;
+    } else if env.check_selected("lifecycle") {
+        warm_mixed_stream(
+            &format!("RTMP-720p out{n} lifecycle warmup"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+            "1280x720",
+            None,
+        )
+        .await;
+    }
+
+    if env.check_selected("hls") {
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-hls-mtx",
+            "HLS/mtx",
+            &format!(
+                "http://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}/index.m3u8",
+                env.mtx_hls
+            ),
+            "1920x1080",
+            None,
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            cfg,
+            "MS-hls-restream",
+            "HLS/restream",
+            &format!(
+                "http://127.0.0.1:{}/hls/{pipeline_id}/index.m3u8",
+                env.restream_http
+            ),
+            "1920x1080",
+            api.cookie.as_deref(),
+            resume,
+        )
+        .await?;
+    }
+
+    stop_child(&mut publisher).await;
+    stop_mixed_outputs(api, &pipeline_id, &output_ids).await;
+    let lifecycle_started = Instant::now();
+    let lifecycle_result =
+        wait_for_outputs_stopped(api, &pipeline_id, &output_ids, Duration::from_secs(60)).await;
+    if env.check_selected("lifecycle") && resume.allows("MS-lifecycle") {
+        if let Err(error) = lifecycle_result {
+            emit_mixed_result(
+                env,
+                cfg,
+                "MS-lifecycle",
+                "fail",
+                lifecycle_started.elapsed(),
+                Some(json!({
+                    "message": error,
+                    "stopped": false,
+                    "requested": output_ids.len(),
+                })),
+            )?;
+            return Err("lifecycle: outputs did not all stop within 60 s".to_string());
+        }
+        emit_mixed_result(
+            env,
+            cfg,
+            "MS-lifecycle",
+            "pass",
+            lifecycle_started.elapsed(),
+            Some(json!({
+                "stopped": output_ids.len(),
+            })),
+        )?;
+        log_mixed_ok(env, "lifecycle: all outputs stopped")?;
+    } else if lifecycle_result.is_err() {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    } else {
+        log_mixed_ok(env, "lifecycle: all outputs stopped")?;
+    }
+
+    Ok(json!({
+        "config": cfg,
+        "pipelineId": pipeline_id,
+        "nPerGroup": n,
+        "totalOutputs": total,
+        "rssDeltaKb": rss_delta,
+        "perOutputKb": per_output,
+        "extFfmpegCount": ffmpeg.count,
+        "extFfmpegRssKb": ffmpeg.rss_kb,
+    }))
+}
+
+async fn spawn_mixed_anchor_publisher(env: &MixedEnv, stream_key: &str) -> Result<Child, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=1920x1080:rate=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=stereo",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-b:v",
+        "1.5M",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-f",
+        "mpegts",
+    ]);
+    cmd.arg(format!(
+        "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
+        env.restream_srt
+    ));
+    let log_path = env.work_dir.join("mixed-anchor-publisher.log");
+    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
+    let stderr = log.try_clone().map_err(|e| e.to_string())?;
+    cmd.stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    cmd.spawn().map_err(|e| e.to_string())
+}
+
+async fn create_mixed_output(
+    api: &RampApi,
+    pipeline_id: &str,
+    name: &str,
+    url: &str,
+    encoding: &str,
+) -> Result<String, String> {
+    let output = api
+        .post_json(
+            &format!("/pipelines/{pipeline_id}/outputs"),
+            json!({"name": name, "url": url, "encoding": encoding}),
+        )
+        .await?;
+    output["output"]["id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or("output create response missing output.id".to_string())
+}
+
+async fn start_mixed_output(
+    api: &RampApi,
+    pipeline_id: &str,
+    output_id: &str,
+) -> Result<(), String> {
+    api.post_json(
+        &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+        Value::Null,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn add_mixed_group<F>(
+    api: &RampApi,
+    pipeline_id: &str,
+    cfg: &str,
+    group: &str,
+    count: usize,
+    encoding: &str,
+    url_for: F,
+    output_ids: &mut Vec<String>,
+) -> Result<(), String>
+where
+    F: Fn(usize) -> String,
+{
+    for index in 1..=count {
+        let output_id = create_mixed_output(
+            api,
+            pipeline_id,
+            &format!("{group}-{index}"),
+            &url_for(index),
+            encoding,
+        )
+        .await?;
+        start_mixed_output(api, pipeline_id, &output_id).await?;
+        output_ids.push(output_id);
+    }
+    println!("[mixed-anchor] added {count} {group} outputs for {cfg}");
+    Ok(())
+}
+
+async fn snapshot_mixed(
+    env: &MixedEnv,
+    restream_pid: u32,
+    cfg: &str,
+    label: &str,
+) -> Result<(), String> {
+    if !env.snapshot_sleep.is_zero() {
+        tokio::time::sleep(env.snapshot_sleep).await;
+    }
+    let cpu = process_cpu_pct(restream_pid)
+        .await
+        .unwrap_or_else(|| "0".to_string());
+    let rss = process_rss_kb(restream_pid).await.unwrap_or(0);
+    let ffmpeg = ffmpeg_pipe1_stats().await;
+    append_line(
+        &env.scale_log,
+        &format!(
+            "{cfg},\"{label}\",{cpu},{rss},{},{}\n",
+            ffmpeg.count, ffmpeg.rss_kb
+        ),
+    )?;
+    println!(
+        "  {label:<45} cpu={cpu}% rss={rss} KB ext_ffmpeg#={} ext_ffmpeg_rss={} KB",
+        ffmpeg.count, ffmpeg.rss_kb
+    );
+    Ok(())
+}
+
+async fn verify_mixed_stream(
+    env: &MixedEnv,
+    cfg: &str,
+    id: &str,
+    label: &str,
+    url: &str,
+    expected: &str,
+    cookie: Option<&str>,
+    resume: &mut MixedResume,
+) -> Result<(), String> {
+    if !resume.allows(id) {
+        return Ok(());
+    }
+    let started = Instant::now();
+    let mut last = String::new();
+    let mut last_error = String::new();
+    for attempt in 1..=30 {
+        match probe_dims_ramp_with_cookie(url, cookie).await {
+            Ok(dimensions) if dimensions == expected => {
+                emit_mixed_result(
+                    env,
+                    cfg,
+                    id,
+                    "pass",
+                    started.elapsed(),
+                    Some(json!({
+                        "label": label,
+                        "expected": expected,
+                        "got": dimensions,
+                        "url": url,
+                    })),
+                )?;
+                log_mixed_ok(env, &format!("ffprobe: {label} -> {dimensions}"))?;
+                return Ok(());
+            }
+            Ok(dimensions) => {
+                if !dimensions.is_empty() {
+                    last = dimensions;
+                }
+                eprintln!("    attempt {attempt}: got '{last}', want '{expected}'");
+            }
+            Err(error) => {
+                last_error = error.clone();
+                eprintln!("    attempt {attempt}: {error}");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    let message = format!(
+        "ffprobe: {label} - expected {expected}, got '{}'",
+        if last.is_empty() {
+            "<no output>"
+        } else {
+            &last
+        }
+    );
+    emit_mixed_result(
+        env,
+        cfg,
+        id,
+        "fail",
+        started.elapsed(),
+        Some(json!({
+            "message": message,
+            "label": label,
+            "expected": expected,
+            "got": last,
+            "url": url,
+            "ffprobe_stderr": last_error,
+        })),
+    )?;
+    Err(message)
+}
+
+async fn warm_mixed_stream(label: &str, url: &str, expected: &str, cookie: Option<&str>) {
+    for attempt in 1..=15 {
+        match probe_dims_ramp_with_cookie(url, cookie).await {
+            Ok(dimensions) if dimensions == expected => {
+                println!("  warmup: {label} -> {dimensions}");
+                return;
+            }
+            Ok(dimensions) => {
+                if !dimensions.is_empty() {
+                    eprintln!(
+                        "    warmup attempt {attempt}: got '{dimensions}', want '{expected}'"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!("    warmup attempt {attempt}: {error}");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    eprintln!(
+        "    warmup: {label} did not reach {expected}; lifecycle will report if stop state is unhealthy"
+    );
+}
+
+async fn stop_mixed_outputs(api: &RampApi, pipeline_id: &str, output_ids: &[String]) {
+    for output_id in output_ids {
+        let _ = api
+            .post_json(
+                &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+                Value::Null,
+            )
+            .await;
+    }
+}
+
+async fn wait_for_outputs_stopped(
+    api: &RampApi,
+    pipeline_id: &str,
+    output_ids: &[String],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let config = api.get_json("/config").await?;
+        let all_stopped = output_ids.iter().all(|output_id| {
+            config["jobs"]
+                .as_array()
+                .and_then(|jobs| {
+                    jobs.iter().find(|job| {
+                        job["pipelineId"] == pipeline_id && job["outputId"] == output_id.as_str()
+                    })
+                })
+                .and_then(|job| job["status"].as_str())
+                .is_none_or(|status| status == "stopped")
+        });
+        if all_stopped {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("lifecycle: outputs did not all stop within 60 s".to_string());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn emit_mixed_result(
+    env: &MixedEnv,
+    cfg: &str,
+    id: &str,
+    status: &str,
+    elapsed: Duration,
+    extra: Option<Value>,
+) -> Result<(), String> {
+    let Some(path) = &env.assertion_log else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut object = serde_json::Map::new();
+    object.insert("id".to_string(), json!(id));
+    object.insert("mode".to_string(), json!("mixed-scale"));
+    object.insert("config".to_string(), json!(cfg));
+    object.insert("status".to_string(), json!(status));
+    object.insert("ms".to_string(), json!(elapsed.as_millis()));
+    if let Some(Value::Object(extra)) = extra {
+        object.extend(extra);
+    }
+    append_line(path, &format!("{}\n", Value::Object(object))).map_err(|e| e.to_string())
+}
+
+fn log_mixed_ok(env: &MixedEnv, message: &str) -> Result<(), String> {
+    append_line(&env.summary_log, &format!("ok: {message}\n"))
+}
+
+fn count_log_matches(path: &Path, needle: &str) -> usize {
+    std::fs::read_to_string(path)
+        .map(|content| content.matches(needle).count())
+        .unwrap_or(0)
 }
 
 async fn correctness() -> Result<Value, String> {

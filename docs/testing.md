@@ -159,6 +159,14 @@ Expected resource counts (see
 
 Env: `N_PER_GROUP` (default 25), `ISOLATE=1` (default, restarts per config).
 
+The `h264-srt` anchor is now Rust-owned by default through
+`cargo run --bin test_harness -- mixed-anchor`. The shell wrapper still owns the
+remaining `h265-srt`, `h264-srt-multi`, and `h265-srt-multi` configs and keeps
+the public CLI, manifest, CSV, summary, and JSONL assertion layout intact. Set
+`MIXED_RUST_ANCHOR=0` to force the legacy bash anchor while bisecting behavior.
+The Rust anchor sends the logged-in session cookie when probing restream's
+protected `/hls/:pipeline_id/index.m3u8` endpoint.
+
 ### `bonding` — SRT socket bonding
 
 ```sh

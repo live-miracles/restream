@@ -161,6 +161,21 @@ point: move the remaining larger `mixed-scale` runner behind smaller
 Rust-owned subcommands while preserving its current HLS, smoke, lifecycle,
 TC_SPAWNS, and multi-audio assertions.
 
+The first `mixed-scale` slice has now moved behind the typed Rust harness:
+`cargo run --bin test_harness -- mixed-anchor` owns the `h264-srt` anchor config
+by default from `test/run-integration.sh mixed-scale`, while the shell runner
+continues to own `h265-srt`, `h264-srt-multi`, and `h265-srt-multi`. The Rust
+slice preserves the existing artifact layout (`scale.csv`, `rss-summary.csv`,
+`summary.txt`, assertion JSONL, sidecar logs, and `mixed-anchor.json`), creates
+the HLS preview plus four output groups, emits `MS-smoke`, `MS-ffprobe-*`,
+`MS-hls-*`, and `MS-lifecycle`, and uses the authenticated session cookie for
+restream's protected HLS pull route. A direct focused run passed on June 25,
+2026 with `ONLY_CHECKS=smoke,hls,lifecycle`, `N_PER_GROUP=1`, and
+`SNAPSHOT_SLEEP_SECS=0`; the wrapper-level `--only smoke,ffprobe,hls,lifecycle`
+run also passed the Rust anchor before continuing into the still-bash-owned
+configs. Next continuation point: move `h265-srt` into Rust with its
+`MS-tc-spawns` assertion, then migrate the two multi-audio configs.
+
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z

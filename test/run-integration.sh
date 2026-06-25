@@ -288,6 +288,7 @@ mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
     ramp)         printf '%s\n' cargo ffmpeg ffprobe curl jq mediamtx ;;
+    mixed-scale)  printf '%s\n' cargo ffmpeg ffprobe curl jq mediamtx ;;
     burst-verify) printf '%s\n' cargo ffmpeg jq ;;
     hls-put)      printf '%s\n' cargo ffmpeg ffprobe jq ;;
     bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
@@ -508,10 +509,20 @@ api() {
 
 probe_dims_capture() {
   local url="$1" stderr_path="$2"
+  local -a ffprobe_headers=()
+  if [[ -n "${COOKIE_JAR:-}" && -f "$COOKIE_JAR" ]]; then
+    case "$url" in
+      "${API_URL}/hls/"*|"${API_URL}/preview/hls/"*)
+        local cookie
+        cookie="$(awk '$6 == "session" { print $6 "=" $7 }' "$COOKIE_JAR" | tail -n1)"
+        [[ -n "$cookie" ]] && ffprobe_headers=(-headers $'Cookie: '"$cookie"$'\r\n')
+        ;;
+    esac
+  fi
   ffprobe -v error \
     -probesize 10000000 -analyzeduration 10000000 \
     -select_streams v:0 -show_entries stream=width,height \
-    -of csv=p=0 "$url" 2>"$stderr_path" | tr ',' 'x' | head -n1 | tr -d '[:space:]'
+    -of csv=p=0 "${ffprobe_headers[@]}" "$url" 2>"$stderr_path" | tr ',' 'x' | head -n1 | tr -d '[:space:]'
 }
 
 probe_dims() {
@@ -893,7 +904,7 @@ run_mixed_scale() {
   SCALE_LOG="${WORK_DIR}/scale.csv"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
   init_run_artifacts
-  check_deps ffmpeg ffprobe curl jq mediamtx
+  check_deps cargo ffmpeg ffprobe curl jq mediamtx
 
   # RSS_SUMMARY is separate from SUMMARY_LOG so log_ok() "ok: ..." lines don't
   # pollute the CSV that the final summary table reads back.
@@ -901,6 +912,24 @@ run_mixed_scale() {
   printf "config,label,cpu_pct,rss_kb,ext_ffmpeg_n,ext_ffmpeg_rss_kb\n" > "$SCALE_LOG"
   : > "$RSS_SUMMARY"
   : > "$SUMMARY_LOG"
+
+  if [[ "${MIXED_RUST_ANCHOR:-1}" != "0" ]]; then
+    echo "  [rust] mixed-anchor: h264-srt HLS/smoke/lifecycle"
+    TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    WORK_DIR="$WORK_DIR" \
+    SCALE_LOG="$SCALE_LOG" \
+    RSS_SUMMARY="$RSS_SUMMARY" \
+    SUMMARY_LOG="$SUMMARY_LOG" \
+    ASSERTION_LOG="$ASSERTION_LOG" \
+    ONLY_CHECKS="$ONLY_CHECKS" \
+    RESUME_FROM="$RESUME_FROM" \
+    SKIP_LOAD="$SKIP_LOAD" \
+    N_PER_GROUP="$N_PER_GROUP" \
+    SNAPSHOT_SLEEP_SECS="${SNAPSHOT_SLEEP_SECS:-3}" \
+    cargo run --quiet --bin test_harness -- mixed-anchor \
+      >"${WORK_DIR}/mixed-anchor.log" 2>&1 \
+      || { tail -160 "${WORK_DIR}/mixed-anchor.log" >&2 || true; fail "Rust mixed-anchor harness failed"; }
+  fi
 
   MTX_HLS_ENABLED=yes  # anchor config (h264-srt) probes both HLS endpoints
   start_restream
@@ -1166,7 +1195,9 @@ run_mixed_scale() {
   }
 
   #              cfg                proto  codec  multi  anchor  tc_spawns
-  run_mixed_config "h264-srt"       srt    h264   0      1       0
+  if [[ "${MIXED_RUST_ANCHOR:-1}" == "0" ]]; then
+    run_mixed_config "h264-srt"       srt    h264   0      1       0
+  fi
   run_mixed_config "h265-srt"       srt    h265   0      0       1
   run_mixed_config "h264-srt-multi" srt    h264   1      0       0
   run_mixed_config "h265-srt-multi" srt    h265   1      0       0
