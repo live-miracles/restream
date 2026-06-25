@@ -86,8 +86,10 @@ pub async fn run_app() {
 
     // Initialize database — use create_pool() so per-connection PRAGMAs
     // (busy_timeout, synchronous, cache_size, …) apply to every pooled connection.
-    let db_url = "sqlite:data.db?mode=rwc";
-    let pool = db::create_pool(db_url)
+    let db_url = std::env::var("RESTREAM_DB_PATH")
+        .map(|p| format!("sqlite:{}?mode=rwc", p))
+        .unwrap_or_else(|_| "sqlite:data.db?mode=rwc".to_string());
+    let pool = db::create_pool(&db_url)
         .await
         .expect("Failed to connect to SQLite database");
 
