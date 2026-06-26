@@ -32,9 +32,7 @@ pub fn parse_start_time_ms(input: &str) -> Result<Option<i64>, String> {
 
     let parts: Vec<&str> = trimmed.split(':').collect();
     if !(2..=3).contains(&parts.len()) {
-        return Err(
-            "start_time must be seconds or MM:SS(.mmm) or HH:MM:SS(.mmm)".to_string(),
-        );
+        return Err("start_time must be seconds or MM:SS(.mmm) or HH:MM:SS(.mmm)".to_string());
     }
 
     let seconds = parts[parts.len() - 1]
@@ -63,8 +61,7 @@ pub fn parse_start_time_ms(input: &str) -> Result<Option<i64>, String> {
         0
     };
 
-    let total_ms =
-        (((hours * 3600 + minutes * 60) as f64 + seconds) * 1000.0).round() as i64;
+    let total_ms = (((hours * 3600 + minutes * 60) as f64 + seconds) * 1000.0).round() as i64;
     Ok(Some(total_ms))
 }
 
@@ -118,7 +115,9 @@ pub fn spawn_internal_file_ingest(
             engine_for_thread
                 .clear_file_ingest_running(&ingest_id_for_thread)
                 .await;
-            engine_for_thread.unregister_ingest(&pipeline_id_for_thread).await;
+            engine_for_thread
+                .unregister_ingest(&pipeline_id_for_thread)
+                .await;
         });
     });
     engine.register_os_thread(handle);
@@ -262,10 +261,7 @@ fn run_internal_file_ingest_once(
         }
 
         let ist_index = stream.index();
-        let mapped_index = stream_mapping
-            .get(ist_index)
-            .copied()
-            .unwrap_or(-1);
+        let mapped_index = stream_mapping.get(ist_index).copied().unwrap_or(-1);
         if mapped_index < 0 {
             continue;
         }
@@ -319,7 +315,12 @@ fn run_internal_file_ingest_once(
     );
 
     demuxer.flush();
-    push_demuxed_packets(&mut demuxer, &mut packets, ring_buffer, cached_keyframe_times);
+    push_demuxed_packets(
+        &mut demuxer,
+        &mut packets,
+        ring_buffer,
+        cached_keyframe_times,
+    );
     maybe_publish_probe(
         engine,
         runtime_handle,
@@ -331,7 +332,10 @@ fn run_internal_file_ingest_once(
     Ok(())
 }
 
-fn packet_timestamp_ms(stream: &ffmpeg_next::Stream<'_>, packet: &ffmpeg_next::Packet) -> Option<i64> {
+fn packet_timestamp_ms(
+    stream: &ffmpeg_next::Stream<'_>,
+    packet: &ffmpeg_next::Packet,
+) -> Option<i64> {
     let ts = packet.dts().or_else(|| packet.pts())?;
     let tb = stream.time_base();
     if tb.1 == 0 {
@@ -340,11 +344,7 @@ fn packet_timestamp_ms(stream: &ffmpeg_next::Stream<'_>, packet: &ffmpeg_next::P
     Some((ts as i128 * tb.0 as i128 * 1000 / tb.1 as i128) as i64)
 }
 
-fn pace_packet(
-    cancel: &CancellationToken,
-    anchor: &mut Option<(i64, Instant)>,
-    packet_ts_ms: i64,
-) {
+fn pace_packet(cancel: &CancellationToken, anchor: &mut Option<(i64, Instant)>, packet_ts_ms: i64) {
     if packet_ts_ms < 0 {
         return;
     }

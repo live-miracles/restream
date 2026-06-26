@@ -860,7 +860,10 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         if resp.status() == StatusCode::OK {
             let bytes = resp.into_body().collect().await.unwrap().to_bytes();
             let body = String::from_utf8(bytes.to_vec()).expect("playlist utf8");
-            if body.lines().any(|line| !line.starts_with('#') && !line.is_empty()) {
+            if body
+                .lines()
+                .any(|line| !line.starts_with('#') && !line.is_empty())
+            {
                 playlist_body = Some(body);
                 break;
             }
@@ -887,7 +890,10 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let segment_body = resp.into_body().collect().await.unwrap().to_bytes();
-    assert!(!segment_body.is_empty(), "segment payload should not be empty");
+    assert!(
+        !segment_body.is_empty(),
+        "segment payload should not be empty"
+    );
 
     cancel.cancel();
     sleep(Duration::from_millis(250)).await;

@@ -456,7 +456,10 @@ impl MediaEngine {
         if let Some(child) = children.get_mut(id) {
             match child.try_wait() {
                 Ok(None) => {
-                    self.active_file_ingests.write().await.insert(id.to_string());
+                    self.active_file_ingests
+                        .write()
+                        .await
+                        .insert(id.to_string());
                     true
                 }
                 _ => {
@@ -495,7 +498,10 @@ impl MediaEngine {
     }
 
     pub async fn mark_file_ingest_running(&self, id: &str) {
-        self.active_file_ingests.write().await.insert(id.to_string());
+        self.active_file_ingests
+            .write()
+            .await
+            .insert(id.to_string());
     }
 
     pub async fn clear_file_ingest_running(&self, id: &str) {

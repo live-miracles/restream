@@ -220,8 +220,8 @@ The shared SRT listener monitor reads Linux `/proc/net/udp` and tracks:
 - cumulative kernel UDP drops
 
 These are listener-wide values, not per-pipeline. `bondingAvailable: false`
-means ordinary SRT works but the installed libsrt must be rebuilt with
-`ENABLE_BONDING=ON` before bonded ingest can work.
+means ordinary SRT works but the pinned repo-managed libsrt build was not
+prepared with bonding support or the wrong binary was linked.
 
 ## Diagnostic Checks
 

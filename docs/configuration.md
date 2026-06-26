@@ -188,12 +188,12 @@ links in the background. Merely opening two independent sockets with the same
 StreamID does not create a bond.
 
 The linked libsrt must be built with `ENABLE_BONDING=ON`. The listener checks
-`SRTO_GROUPCONNECT` at startup and logs a warning when a distribution library
-provides only disabled group stubs; ordinary single-link SRT remains enabled.
-The static release setup builds pinned SRT 1.5.5 with bonding enabled and runs
-separate-process broadcast and backup/failover tests before packaging. This
-does not require a second ingest endpoint: all member tuples join the group
-accepted from the shared listener.
+`SRTO_GROUPCONNECT` at startup and logs a warning when the linked binary does
+not expose working bonding support; ordinary single-link SRT remains enabled.
+The repo-managed native prefix builds pinned SRT 1.5.5 with bonding enabled and
+runs separate-process broadcast and backup/failover tests before packaging.
+This does not require a second ingest endpoint: all member tuples join the
+group accepted from the shared listener.
 
 ## HLS Pull and Authorization
 

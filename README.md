@@ -75,13 +75,13 @@ subprocess path, with an opt-in in-process backend behind
 
 There are two build paths with different FFmpeg requirements:
 
-**Debug / fast iteration** — links against system FFmpeg and libsrt:
+**Debug / fast iteration** — links against system FFmpeg, but always links
+against the repo-managed static `libsrt.a` from `.build/static/prefix`:
 
 | Dependency | Purpose |
 |---|---|
 | Rust toolchain | Pinned in `rust-toolchain.toml` (1.96.0, includes rustfmt + clippy) |
 | FFmpeg dev libs | `libavcodec`, `libavformat`, `libavfilter`, `libswscale`, `libswresample`, `libavutil` (via pkg-config) |
-| libsrt dev | SRT transport (via pkg-config) |
 | libssl-dev | OpenSSL pkg-config metadata and headers required by the system SRT package |
 | nasm | Assembler for FFmpeg x86 codecs |
 | clang | C compiler for FFmpeg/SRT bindings in `build.rs` |
@@ -93,16 +93,21 @@ Debian/Ubuntu:
 
 ```sh
 apt-get install -y ffmpeg jq pkg-config clang nasm mold \
-  libsrt-openssl-dev libssl-dev \
+  libssl-dev \
   libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
   libswscale-dev libavfilter-dev libavdevice-dev
 ```
 
-Ubuntu 24.04 ships `libsrt-openssl-dev` rather than `libsrt-dev`.
+Before the first Rust build, bootstrap the pinned native dependency prefix:
 
-Note: development builds link against the distro FFmpeg and libsrt packages via
-`pkg-config`. Those packages may not have x86 ASM or bonding enabled, so
-performance and bonding behaviour can differ from the static release build.
+```sh
+scripts/resource-limit ./scripts/setup-static-build.sh
+```
+
+Note: development builds still use the distro FFmpeg packages via `pkg-config`,
+so FFmpeg performance/capabilities can differ from the static release build.
+SRT does not: all builds pin SRT to the repo-managed static build with
+`ENABLE_BONDING=ON`.
 
 **Static release** — builds its own FFmpeg, x264, x265, and SRT from source (see
 [Static Release Build](#static-release-build) below). This is the only path
@@ -114,7 +119,7 @@ that guarantees `--enable-x86asm`, pinned codec versions, and
 **Rust backend** — the primary edit cycle:
 
 ```sh
-scripts/resource-limit cargo build   # debug build
+scripts/resource-limit ./scripts/build-native.sh   # debug build + libsrt linkage verification
 cargo run                            # start on :3030 / :1935 / :10080
 scripts/resource-limit cargo test    # 132 tests (92 lib + 24 API + 12 DB + 4 transcoder)
 scripts/resource-limit cargo clippy  # lint

@@ -506,8 +506,9 @@ StreamID alone does not create a group. Two independent sockets with matching
 StreamIDs are rejected as duplicate publishers.
 
 Requires libsrt compiled with `ENABLE_BONDING=ON`; startup warns and retains
-single-link ingest otherwise. The static release build supplies a
-bonding-enabled libsrt; development builds depend on the system library.
+single-link ingest otherwise. All builds link against the repo-managed static
+SRT build from `.build/static/prefix`, so bonded-ingest support no longer
+depends on the distro `libsrt` package.
 
 ### Egress
 

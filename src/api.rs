@@ -1690,15 +1690,26 @@ async fn run_file_ingest_task(
         }
         drop(children);
 
-        if let Err(err) = stdout_res && !cancel.is_cancelled() {
-            eprintln!("[file-ingest] stdout reader failed ({}): {}", ingest.id, err);
+        if let Err(err) = stdout_res
+            && !cancel.is_cancelled()
+        {
+            eprintln!(
+                "[file-ingest] stdout reader failed ({}): {}",
+                ingest.id, err
+            );
         }
-        if let Err(err) = stderr_res && !cancel.is_cancelled() {
-            eprintln!("[file-ingest] stderr reader failed ({}): {}", ingest.id, err);
+        if let Err(err) = stderr_res
+            && !cancel.is_cancelled()
+        {
+            eprintln!(
+                "[file-ingest] stderr reader failed ({}): {}",
+                ingest.id, err
+            );
         }
 
         if let Some(status) = exit_status
-            && !status.success() && !cancel.is_cancelled()
+            && !status.success()
+            && !cancel.is_cancelled()
         {
             eprintln!(
                 "[file-ingest] ffmpeg exited unsuccessfully ({}): {}",
