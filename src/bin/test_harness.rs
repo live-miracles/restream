@@ -4,6 +4,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, put};
 use bytes::Bytes;
 use restream::db;
+use restream::domain::stage::{StageKey, StageKind};
 use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::engine::MediaEngine;
 use restream::media::ring_buffer::{
@@ -3904,7 +3905,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
 
     let source_ring = engine.get_or_create_pipeline("pipe-hevc-src").await;
     let h264_ring = engine
-        .get_or_create_h264_transcoder("pipe-hevc-src", "source", source_ring)
+        .get_or_create_h264_transcoder("pipe-hevc-src", StageKind::source(), source_ring)
         .await;
     let rtmp_sink_url = format!("rtmp://127.0.0.1:{RTMP_PORT}/live/e2e-hevc-sink");
 
@@ -4199,7 +4200,7 @@ async fn hevc_load_test() -> Result<Value, String> {
     // Create shared H.264 transcoder
     let source_ring = engine.get_or_create_pipeline("pipe-hevc-load").await;
     let _h264_ring = engine
-        .get_or_create_h264_transcoder("pipe-hevc-load", "source", source_ring)
+        .get_or_create_h264_transcoder("pipe-hevc-load", StageKind::source(), source_ring)
         .await;
     tokio::time::sleep(Duration::from_secs(3)).await; // let first keyframe through encoder
 
@@ -5257,6 +5258,7 @@ async fn matrix_correctness() -> Result<Value, String> {
                 trans_ring.clone(),
                 engine.clone(),
                 cancel,
+                StageKey::new(src_pipe, StageKind::video_preset("720p")),
             ));
             trans_ring
         } else {
@@ -5531,6 +5533,7 @@ async fn matrix_correctness_in_memory() -> Result<Value, String> {
                 trans_ring.clone(),
                 engine.clone(),
                 cancel.clone(),
+                StageKey::new("pipe", StageKind::video_preset("720p")),
             ));
             (trans_ring, Some(cancel), Some(handle))
         } else {
