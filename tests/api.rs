@@ -42,6 +42,12 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
     (api::create_router(state), pool, engine)
 }
 
+async fn authenticated_app() -> (axum::Router, String) {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+    (app, cookie)
+}
+
 async fn login(app: &axum::Router) -> String {
     let resp = app
         .clone()
@@ -1643,4 +1649,76 @@ fn reconciler_exponential_backoff_values() {
     assert_eq!(backoff(6), 300); // 5*64=320 capped to 300
     assert_eq!(backoff(7), 300); // min(6) saturates
     assert_eq!(backoff(10), 300);
+}
+
+// ─── Engineer telemetry endpoint tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn engine_telemetry_returns_structured_response() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/engine/telemetry", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert!(body["generatedAt"].is_string());
+    assert!(body["ingests"].is_array());
+    assert!(body["stages"].is_array());
+    assert!(body["egresses"].is_array());
+    assert!(body["activeTranscoderBuffers"].is_number());
+}
+
+#[tokio::test]
+async fn pipeline_telemetry_returns_structured_response() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(r#"{"name":"TelPipe","streamKey":"telkey_6c71124cde80358ca7c13081"}"#),
+        ))
+        .await
+        .unwrap();
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap();
+
+    let resp = app
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/pipelines/{pid}/telemetry"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert!(body["generatedAt"].is_string());
+    assert_eq!(body["pipelineId"].as_str().unwrap(), pid);
+    assert!(body["stages"].is_array());
+    assert!(body["egresses"].is_array());
+}
+
+#[tokio::test]
+async fn engine_telemetry_requires_auth() {
+    let (app, _) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/engine/telemetry")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
