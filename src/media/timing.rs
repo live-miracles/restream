@@ -37,7 +37,7 @@ const MAX_CYCLES_PER_US: f64 = 10_000.0; // 10 GHz — ceiling beyond current ha
 const MIN_WINDOW_US: f64 = 50.0; // reject calibrations shorter than this
 
 enum Backend {
-    Tsc(f64), // cycles per microsecond, validated
+    Tsc(f64), // microseconds per cycle, derived from validated calibration
     Instant,  // fallback: invariant TSC absent or calibration out of bounds
 }
 
@@ -45,6 +45,10 @@ enum Backend {
 /// Use only with [`delta_us`] from this module — do not interpret directly.
 #[derive(Copy, Clone)]
 pub struct Timestamp(u64);
+
+/// Cached timing backend handle for hot loops.
+#[derive(Copy, Clone)]
+pub struct Clock(&'static Backend);
 
 static BACKEND: OnceLock<Backend> = OnceLock::new();
 static ORIGIN: OnceLock<Instant> = OnceLock::new();
@@ -89,7 +93,7 @@ fn backend() -> &'static Backend {
             if !(MIN_CYCLES_PER_US..=MAX_CYCLES_PER_US).contains(&cps) {
                 return Backend::Instant; // calibration out of sane bounds
             }
-            Backend::Tsc(cps)
+            Backend::Tsc(1.0 / cps)
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -105,44 +109,66 @@ pub fn calibrate() -> bool {
     matches!(backend(), Backend::Tsc(_))
 }
 
+/// Return a cached timing backend handle for packet loops.
+#[inline]
+pub fn clock() -> Clock {
+    Clock(backend())
+}
+
 /// `true` if rdtsc passed all validation checks; `false` means `Instant` fallback.
 #[inline]
 pub fn using_tsc() -> bool {
     matches!(backend(), Backend::Tsc(_))
 }
 
+impl Clock {
+    /// Capture a timestamp with the cached backend.
+    #[inline(always)]
+    pub fn now(self) -> Timestamp {
+        match self.0 {
+            Backend::Tsc(_) => {
+                #[cfg(target_arch = "x86_64")]
+                return Timestamp(unsafe { core::arch::x86_64::_rdtsc() });
+                #[cfg(not(target_arch = "x86_64"))]
+                unreachable!()
+            }
+            Backend::Instant => {
+                Timestamp(Instant::now().duration_since(origin()).as_nanos() as u64)
+            }
+        }
+    }
+
+    /// Microseconds elapsed since `start` was captured by this clock.
+    #[inline(always)]
+    pub fn delta_us(self, start: Timestamp) -> u64 {
+        match self.0 {
+            Backend::Tsc(us_per_cycle) => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let now = unsafe { core::arch::x86_64::_rdtsc() };
+                    (now.saturating_sub(start.0) as f64 * us_per_cycle) as u64
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                unreachable!()
+            }
+            Backend::Instant => {
+                let now_ns = Instant::now().duration_since(origin()).as_nanos() as u64;
+                now_ns.saturating_sub(start.0) / 1_000
+            }
+        }
+    }
+}
+
 /// Capture a timestamp. Pair with [`delta_us`].
 #[inline(always)]
 pub fn now() -> Timestamp {
-    match backend() {
-        Backend::Tsc(_) => {
-            #[cfg(target_arch = "x86_64")]
-            return Timestamp(unsafe { core::arch::x86_64::_rdtsc() });
-            #[cfg(not(target_arch = "x86_64"))]
-            unreachable!()
-        }
-        Backend::Instant => Timestamp(Instant::now().duration_since(origin()).as_nanos() as u64),
-    }
+    clock().now()
 }
 
 /// Microseconds elapsed since `start` was captured with [`now`].
 #[inline(always)]
 pub fn delta_us(start: Timestamp) -> u64 {
-    match backend() {
-        Backend::Tsc(cps) => {
-            #[cfg(target_arch = "x86_64")]
-            {
-                let now = unsafe { core::arch::x86_64::_rdtsc() };
-                (now.saturating_sub(start.0) as f64 / cps) as u64
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            unreachable!()
-        }
-        Backend::Instant => {
-            let now_ns = Instant::now().duration_since(origin()).as_nanos() as u64;
-            now_ns.saturating_sub(start.0) / 1_000
-        }
-    }
+    clock().delta_us(start)
 }
 
 /// Validate a raw cycles-per-µs value produced by calibration.

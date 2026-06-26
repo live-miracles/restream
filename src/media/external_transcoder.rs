@@ -316,6 +316,7 @@ pub async fn start_external_transcoder_stage(
              (invariant TSC absent or calibration out of bounds)"
         );
     }
+    let timing_clock = timing::clock();
     let pipe_metrics = Arc::new(PipeMetrics::default());
     engine
         .register_pipe_metrics(stage_key.clone(), pipe_metrics.clone())
@@ -430,17 +431,18 @@ pub async fn start_external_transcoder_stage(
         let label_out = label.clone();
         let out_stage_metrics = stage_metrics.clone();
         let out_pipe_metrics = pipe_metrics.clone();
+        let out_timing_clock = timing_clock;
         let mut stdout = stdout;
         tokio::spawn(async move {
             let mut demuxer = TsDemuxer::new();
             let mut buf = vec![0u8; 65536];
             let mut pkts = Vec::with_capacity(32);
             loop {
-                let t0 = timing::now();
+                let t0 = out_timing_clock.now();
                 tokio::select! {
                     _ = cancel_out.cancelled() => break,
                     result = stdout.read(&mut buf) => {
-                        let idle_us = timing::delta_us(t0);
+                        let idle_us = out_timing_clock.delta_us(t0);
                         match result {
                             Ok(0) | Err(_) => {
                                 eprintln!("[ext-transcoder] stdout closed ({})", label_out);
@@ -482,20 +484,21 @@ pub async fn start_external_transcoder_stage(
         input_buffer,
     );
     let mut ts_batch = Vec::<u8>::with_capacity(16 * 188);
+    let mut packets = Vec::with_capacity(32);
 
     'outer: loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = reader.wait_for_data() => {
-                let mut packets = Vec::with_capacity(32);
+                packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_err() {
                     continue;
                 }
-                for pkt in packets {
+                for pkt in packets.drain(..) {
                     let in_bytes = pkt.payload.len() as u64;
                     ts_batch.clear();
                     if feeder.extend_ts_for_packet(&pkt, &mut ts_batch) {
-                        let t0 = timing::now();
+                        let t0 = timing_clock.now();
                         if stdin.write_all(&ts_batch).await.is_err() {
                             eprintln!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
@@ -503,7 +506,7 @@ pub async fn start_external_transcoder_stage(
                             );
                             break 'outer;
                         }
-                        let write_us = timing::delta_us(t0);
+                        let write_us = timing_clock.delta_us(t0);
                         if write_us > PIPE_STALL_THRESHOLD_US {
                             pipe_metrics.record_stall(write_us);
                         }

@@ -432,33 +432,42 @@ fn bench_mpegts_demux_drain(c: &mut Criterion) {
     group.sample_size(10);
     group.throughput(Throughput::Bytes(fixture.len() as u64));
 
-    group.bench_function("take_output_vector", |b| {
+    group.bench_function("take_then_consume", |b| {
         b.iter(|| {
             let mut demuxer = TsDemuxer::new();
-            let mut packets = 0usize;
+            let mut consumed_bytes = 0usize;
             for chunk in fixture.chunks(1316) {
                 demuxer.feed(chunk);
-                packets += demuxer.drain().len();
+                for pkt in demuxer.drain() {
+                    consumed_bytes += black_box(pkt.payload.len());
+                }
             }
             demuxer.flush();
-            packets += demuxer.drain().len();
-            black_box(packets);
+            for pkt in demuxer.drain() {
+                consumed_bytes += black_box(pkt.payload.len());
+            }
+            black_box(consumed_bytes);
         });
     });
 
-    group.bench_function("reuse_output_vector", |b| {
+    group.bench_function("reuse_then_consume", |b| {
         b.iter(|| {
             let mut demuxer = TsDemuxer::new();
             let mut output = Vec::with_capacity(16);
-            let mut packets = 0usize;
+            let mut consumed_bytes = 0usize;
             for chunk in fixture.chunks(1316) {
                 demuxer.feed(chunk);
-                packets += demuxer.drain_into(&mut output);
-                output.clear();
+                demuxer.drain_into(&mut output);
+                for pkt in output.drain(..) {
+                    consumed_bytes += black_box(pkt.payload.len());
+                }
             }
             demuxer.flush();
-            packets += demuxer.drain_into(&mut output);
-            black_box(packets);
+            demuxer.drain_into(&mut output);
+            for pkt in output.drain(..) {
+                consumed_bytes += black_box(pkt.payload.len());
+            }
+            black_box(consumed_bytes);
         });
     });
 
