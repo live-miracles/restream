@@ -233,6 +233,12 @@ pub async fn start_external_transcoder_stage(
                 "[ext-transcoder] failed to spawn ffmpeg ({}:{}): {}",
                 pipeline_id, encoding, e
             );
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: encoding.clone(),
+                });
             return;
         }
     };
@@ -249,6 +255,12 @@ pub async fn start_external_transcoder_stage(
             let _ = child.kill().await;
             let _ = child.wait().await;
             cancel.cancel();
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: encoding.clone(),
+                });
             return;
         }
     };
@@ -262,6 +274,12 @@ pub async fn start_external_transcoder_stage(
             let _ = child.kill().await;
             let _ = child.wait().await;
             cancel.cancel();
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: encoding.clone(),
+                });
             return;
         }
     };
@@ -275,14 +293,18 @@ pub async fn start_external_transcoder_stage(
             let _ = child.kill().await;
             let _ = child.wait().await;
             cancel.cancel();
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: encoding.clone(),
+                });
             return;
         }
     };
 
     // ── stage metrics ─────────────────────────────────────────────────────
-    let stage_metrics = engine
-        .get_or_create_stage_metrics(stage_key.clone())
-        .await;
+    let stage_metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
 
     // ── pipe metrics ──────────────────────────────────────────────────────
     // Separate from stage_metrics: only subprocess-pipe stages have these.
@@ -348,6 +370,14 @@ pub async fn start_external_transcoder_stage(
             let _ = stdin.shutdown().await;
             let _ = child.kill().await;
             let _ = child.wait().await;
+            engine.remove_stage_metrics(&stage_key).await;
+            engine.remove_pipe_metrics(&stage_key).await;
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: encoding.clone(),
+                });
             return;
         }
         let result = {

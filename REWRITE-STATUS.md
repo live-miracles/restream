@@ -472,11 +472,10 @@ See `docs/api-reference.md` for the executable route surface.
 - ~~add bounded queue-depth/backpressure telemetry for `MemoryQueue`~~ — done;
   `MemoryQueue::stats()` reports current depth, capacity, high-water bytes,
   blocked write count, blocked write time, and closed state.
-- ~~canonical stage-key building in `MediaEngine`~~ — done; `get_or_create_transcoder`
-  and `get_or_create_h264_transcoder` now derive the storage key through
-  `StageKey::storage_key()` rather than hand-formatting `"{pid}:{kind}"`.
-  Infrastructure stages (`hls`, `recording`, `play`) keep string keys because
-  they have no typed `StageKind` variant; they are already centralized.
+- ~~canonical stage-key building in `MediaEngine`~~ — done; stage registries now
+  use typed `StageKey` values end-to-end. The intermediate legacy string-key
+  helpers were removed during Phase 3; extracting finer-grained registry structs
+  remains a future cleanup.
 - ~~typed alert derivation model~~ — done; `src/alerts.rs` introduces `Alert`,
   `Severity`, and `Scope` types and a pure `derive_alerts(&snapshot)` function;
   `GET /pipelines/:id/alerts` and `GET /api/v1/alerts` expose the model.

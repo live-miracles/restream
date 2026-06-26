@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use restream::domain::stage::{StageKey, StageKind};
 use restream::media::codec::{audio_for_ts, video_for_ts};
 use restream::media::engine::{AudioMeta, MediaEngine, VideoMeta};
 use restream::media::mpegts::TsMuxer;
@@ -149,6 +150,7 @@ async fn setup_matrix_path(
             trans_ring.clone(),
             engine.clone(),
             cancel.clone(),
+            StageKey::new("pipe", StageKind::video_preset("720p")),
         ));
         tokio::time::sleep(Duration::from_millis(50)).await;
         (trans_ring, Some(cancel), Some(handle))

@@ -1309,12 +1309,9 @@ Implementation note, 2026-06-25:
   `benches/stage_feeder.rs` measures the shared feeder hot path.
 
 Implementation note, 2026-06-25 (continued):
-- `get_or_create_transcoder` and `get_or_create_h264_transcoder` in
-  `src/media/engine.rs` now derive storage keys through `StageKey::storage_key()`
-  rather than hand-formatting `"{pipeline}:{kind.legacy_key()}"`. Infrastructure
-  stages (`hls`, `recording`, `play`) keep string keys; they have no typed
-  `StageKind` variant and are already centralized. Splitting `MediaEngine` into
-  typed registry structs remains a Phase 3 deliverable.
+- stage registries now use typed `StageKey` values end-to-end. The intermediate
+  legacy string-key helpers were removed during Phase 3; extracting finer-grained
+  registry structs remains a future cleanup.
 
 Phase 1 structural items (typed IDs and stage kinds, StageFeeder coverage for
 recording, HLS, internal/external transcoder feeders, H.265→H.264 bridge feeder,

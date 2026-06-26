@@ -218,10 +218,12 @@ pub async fn start_hls_segmenter(
     let metrics = engine
         .get_or_create_stage_metrics(hls_stage_key.clone())
         .await;
-    engine.event_log.emit(crate::events::EventKind::StageStarted {
-        pipeline_id: pipeline_id.clone(),
-        encoding: "hls".to_string(),
-    });
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStarted {
+            pipeline_id: pipeline_id.clone(),
+            encoding: "hls".to_string(),
+        });
     let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer.clone());
     let mut packets = Vec::with_capacity(32);
     let mut feeder: Option<TsPacketFeeder> = None;
@@ -271,6 +273,11 @@ pub async fn start_hls_segmenter(
                         if feeder.is_none() {
                             let (video, audio_tracks) = loop {
                                 if cancel_token.is_cancelled() {
+                                    engine.remove_stage_metrics(&hls_stage_key).await;
+                                    engine.event_log.emit(crate::events::EventKind::StageStopped {
+                                        pipeline_id: pipeline_id.clone(),
+                                        encoding: "hls".to_string(),
+                                    });
                                     return;
                                 }
                                 if let Some(tracks) = ring_buffer.audio_tracks() {
@@ -330,10 +337,12 @@ pub async fn start_hls_segmenter(
     }
 
     engine.remove_stage_metrics(&hls_stage_key).await;
-    engine.event_log.emit(crate::events::EventKind::StageStopped {
-        pipeline_id: pipeline_id.clone(),
-        encoding: "hls".to_string(),
-    });
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id: pipeline_id.clone(),
+            encoding: "hls".to_string(),
+        });
 
     // Flush remaining data as final segment
     if !accumulator.is_empty() {

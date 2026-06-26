@@ -24,8 +24,8 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::alerts;
 use crate::db;
-use crate::events;
 use crate::diag;
+use crate::events;
 use crate::media::engine::MediaEngine;
 use crate::media::security::IngestSecurityService;
 use crate::types::*;
@@ -132,6 +132,20 @@ async fn request_is_authenticated(state: &AppState, headers: &HeaderMap) -> bool
         state.is_authenticated(&token).await
     } else {
         false
+    }
+}
+
+async fn require_authenticated(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<axum::response::Response> {
+    // Cleanup note: newer handlers should use this helper, and the broader API
+    // should eventually move auth into an extractor or route middleware instead
+    // of repeating per-handler cookie checks.
+    if request_is_authenticated(state, headers).await {
+        None
+    } else {
+        Some((StatusCode::UNAUTHORIZED, "Unauthorized").into_response())
     }
 }
 
@@ -287,10 +301,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
         .route("/api/v1/events", get(v1_events_handler))
         .route("/api/v1/overview", get(v1_overview_handler))
-        .route(
-            "/api/v1/engine/telemetry",
-            get(v1_engine_telemetry_handler),
-        )
+        .route("/api/v1/engine/telemetry", get(v1_engine_telemetry_handler))
         .route(
             "/api/v1/pipelines/:pipeline_id/telemetry",
             get(v1_pipeline_telemetry_handler),
@@ -2034,12 +2045,8 @@ async fn pipeline_alerts_handler(
     headers: HeaderMap,
     Path(pipeline_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let mut recording_enabled = std::collections::HashMap::new();
@@ -2054,14 +2061,13 @@ async fn pipeline_alerts_handler(
 
     let snapshot = state
         .engine
-        .health_snapshot(&[pipeline_id], &recording_enabled)
+        .health_snapshot(std::slice::from_ref(&pipeline_id), &recording_enabled)
         .await;
-    let generated_at = snapshot["generatedAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
     let mut alert_list = alerts::derive_alerts(&snapshot);
-    state.alert_tracker.track(&mut alert_list);
+    state
+        .alert_tracker
+        .track_pipeline(&pipeline_id, &mut alert_list);
     Json(serde_json::json!({
         "generatedAt": generated_at,
         "alerts": alert_list,
@@ -2074,12 +2080,8 @@ async fn aggregate_alerts_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
@@ -2101,10 +2103,7 @@ async fn aggregate_alerts_handler(
         .engine
         .health_snapshot(&pipeline_ids, &recording_enabled)
         .await;
-    let generated_at = snapshot["generatedAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
     let mut alert_list = alerts::derive_alerts(&snapshot);
     state.alert_tracker.track(&mut alert_list);
     Json(serde_json::json!({
@@ -2133,20 +2132,13 @@ async fn v1_events_handler(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<EventsQuery>,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let limit = query.limit.min(events::MAX_EVENTS);
     let pipeline_filter = query.pipeline_id.as_deref();
-    let event_list = state
-        .engine
-        .event_log
-        .recent(limit, pipeline_filter);
+    let event_list = state.engine.event_log.recent(limit, pipeline_filter);
 
     Json(serde_json::json!({
         "generatedAt": chrono::Utc::now().to_rfc3339(),
@@ -2162,12 +2154,8 @@ async fn v1_overview_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
@@ -2227,10 +2215,7 @@ async fn v1_overview_handler(
         }
     }
 
-    let generated_at = snapshot["generatedAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
 
     Json(serde_json::json!({
         "generatedAt": generated_at,
@@ -2248,12 +2233,8 @@ async fn v1_engine_telemetry_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
     Json(state.engine.engine_telemetry().await).into_response()
 }
@@ -2263,12 +2244,8 @@ async fn v1_pipeline_telemetry_handler(
     Path(pipeline_id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
     Json(state.engine.pipeline_telemetry(&pipeline_id).await).into_response()
 }
@@ -2278,12 +2255,8 @@ async fn v1_stage_telemetry_handler(
     Path(stage_key): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
     match state.engine.stage_telemetry_by_display(&stage_key).await {
         Some(val) => Json(val).into_response(),
@@ -2298,12 +2271,8 @@ async fn v1_pipeline_summary_handler(
     headers: HeaderMap,
     Path(pipeline_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let rec_key = format!("recording_enabled:{}", pipeline_id);
@@ -2321,10 +2290,7 @@ async fn v1_pipeline_summary_handler(
         .health_snapshot(std::slice::from_ref(&pipeline_id), &recording_enabled)
         .await;
 
-    let generated_at = snapshot["generatedAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
 
     // Verify the pipeline exists in the DB before using snapshot data.
     // health_snapshot always produces an entry for every requested pipeline_id
@@ -2341,7 +2307,9 @@ async fn v1_pipeline_summary_handler(
     let pip = &snapshot["pipelines"][&pipeline_id];
 
     let mut alert_list = alerts::derive_alerts(&snapshot);
-    state.alert_tracker.track(&mut alert_list);
+    state
+        .alert_tracker
+        .track_pipeline(&pipeline_id, &mut alert_list);
 
     let input_status = pip["input"]["status"].as_str().unwrap_or("off");
     let bitrate_kbps = pip["input"]["bitrateKbps"].as_f64();

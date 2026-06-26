@@ -57,10 +57,12 @@ pub async fn start_recording(
     let stage_metrics = engine
         .get_or_create_stage_metrics(rec_stage_key.clone())
         .await;
-    engine.event_log.emit(crate::events::EventKind::StageStarted {
-        pipeline_id: pipeline_id.clone(),
-        encoding: "recording".to_string(),
-    });
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStarted {
+            pipeline_id: pipeline_id.clone(),
+            encoding: "recording".to_string(),
+        });
 
     let queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
@@ -175,10 +177,12 @@ pub async fn start_recording(
     }
 
     engine.remove_stage_metrics(&rec_stage_key).await;
-    engine.event_log.emit(crate::events::EventKind::StageStopped {
-        pipeline_id: pipeline_id.clone(),
-        encoding: "recording".to_string(),
-    });
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id: pipeline_id.clone(),
+            encoding: "recording".to_string(),
+        });
 }
 
 fn run_ts_writer(

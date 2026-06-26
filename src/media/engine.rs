@@ -502,7 +502,9 @@ impl MediaEngine {
                         routing,
                         source_buffer,
                         ob,
+                        self_clone,
                         cancel,
+                        key,
                     )
                     .await;
                 });
@@ -576,10 +578,7 @@ impl MediaEngine {
         upstream: StageKind,
         source_buffer: Arc<RingBuffer>,
     ) -> Arc<RingBuffer> {
-        let key = StageKey::new(
-            pipeline_id,
-            StageKind::codec_edge("hevc_to_h264", upstream),
-        );
+        let key = StageKey::new(pipeline_id, StageKind::codec_edge("hevc_to_h264", upstream));
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
         let mut buffers = self.transcoder_buffers.write().await;
@@ -646,10 +645,7 @@ impl MediaEngine {
     }
 
     /// Return the active processing stages for a pipeline as (kind, is_alive) pairs.
-    pub async fn active_transcoder_stages(
-        &self,
-        pipeline_id: &str,
-    ) -> Vec<(StageKind, bool)> {
+    pub async fn active_transcoder_stages(&self, pipeline_id: &str) -> Vec<(StageKind, bool)> {
         let buffers = self.transcoder_buffers.read().await;
         buffers
             .iter()
@@ -788,11 +784,12 @@ impl MediaEngine {
             },
         );
 
-        self.event_log.emit(crate::events::EventKind::IngestConnected {
-            pipeline_id: pipeline_id.to_string(),
-            protocol: protocol.to_string(),
-            stream_key: stream_key.to_string(),
-        });
+        self.event_log
+            .emit(crate::events::EventKind::IngestConnected {
+                pipeline_id: pipeline_id.to_string(),
+                protocol: protocol.to_string(),
+                stream_key: stream_key.to_string(),
+            });
         Some(token)
     }
 
@@ -811,10 +808,11 @@ impl MediaEngine {
         drop(ingests);
 
         if !protocol.is_empty() {
-            self.event_log.emit(crate::events::EventKind::IngestDisconnected {
-                pipeline_id: pipeline_id.to_string(),
-                protocol,
-            });
+            self.event_log
+                .emit(crate::events::EventKind::IngestDisconnected {
+                    pipeline_id: pipeline_id.to_string(),
+                    protocol,
+                });
         }
     }
 
@@ -847,10 +845,11 @@ impl MediaEngine {
             },
         );
 
-        self.event_log.emit(crate::events::EventKind::EgressStarted {
-            pipeline_id: pipeline_id.to_string(),
-            output_id: output_id.to_string(),
-        });
+        self.event_log
+            .emit(crate::events::EventKind::EgressStarted {
+                pipeline_id: pipeline_id.to_string(),
+                output_id: output_id.to_string(),
+            });
         token
     }
 
@@ -869,10 +868,11 @@ impl MediaEngine {
         drop(egresses);
 
         if !pipeline_id.is_empty() {
-            self.event_log.emit(crate::events::EventKind::EgressStopped {
-                pipeline_id,
-                output_id: output_id.to_string(),
-            });
+            self.event_log
+                .emit(crate::events::EventKind::EgressStopped {
+                    pipeline_id,
+                    output_id: output_id.to_string(),
+                });
         }
     }
 
@@ -1513,7 +1513,9 @@ impl MediaEngine {
 
     pub async fn stage_telemetry_by_display(&self, display: &str) -> Option<serde_json::Value> {
         let all_stage_metrics = self.stage_metrics.read().await;
-        let key = all_stage_metrics.keys().find(|k| k.to_string() == display)?;
+        let key = all_stage_metrics
+            .keys()
+            .find(|k| k.to_string() == display)?;
         let metrics = all_stage_metrics.get(key)?;
 
         let all_pipe_metrics = self.pipe_metrics.read().await;
@@ -2234,13 +2236,28 @@ mod tests {
         let source = engine.get_or_create_pipeline("pipe-share").await;
 
         let a = engine
-            .get_or_create_transcoder("pipe-share", StageKind::video_preset("720p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-share",
+                StageKind::video_preset("720p"),
+                source.clone(),
+                None,
+            )
             .await;
         let b = engine
-            .get_or_create_transcoder("pipe-share", StageKind::video_preset("720p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-share",
+                StageKind::video_preset("720p"),
+                source.clone(),
+                None,
+            )
             .await;
         let c = engine
-            .get_or_create_transcoder("pipe-share", StageKind::video_preset("1080p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-share",
+                StageKind::video_preset("1080p"),
+                source.clone(),
+                None,
+            )
             .await;
 
         assert!(
@@ -2261,10 +2278,20 @@ mod tests {
         let source = engine.get_or_create_pipeline("pipe-audio").await;
 
         let v720 = engine
-            .get_or_create_transcoder("pipe-audio", StageKind::video_preset("720p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-audio",
+                StageKind::video_preset("720p"),
+                source.clone(),
+                None,
+            )
             .await;
         let v1080 = engine
-            .get_or_create_transcoder("pipe-audio", StageKind::video_preset("1080p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-audio",
+                StageKind::video_preset("1080p"),
+                source.clone(),
+                None,
+            )
             .await;
 
         let a720 = engine
@@ -2312,10 +2339,20 @@ mod tests {
         let other = engine.get_or_create_pipeline("pipe-keep").await;
 
         let s1 = engine
-            .get_or_create_transcoder("pipe-del", StageKind::video_preset("720p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-del",
+                StageKind::video_preset("720p"),
+                source.clone(),
+                None,
+            )
             .await;
         let s2 = engine
-            .get_or_create_transcoder("pipe-del", StageKind::video_preset("1080p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-del",
+                StageKind::video_preset("1080p"),
+                source.clone(),
+                None,
+            )
             .await;
         let other_stage = engine
             .get_or_create_transcoder("pipe-keep", StageKind::video_preset("720p"), other, None)
@@ -2398,10 +2435,20 @@ mod tests {
         let source = engine.get_or_create_pipeline("pipe-sweep").await;
 
         let s1 = engine
-            .get_or_create_transcoder("pipe-sweep", StageKind::video_preset("720p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-sweep",
+                StageKind::video_preset("720p"),
+                source.clone(),
+                None,
+            )
             .await;
         let s2 = engine
-            .get_or_create_transcoder("pipe-sweep", StageKind::video_preset("1080p"), source.clone(), None)
+            .get_or_create_transcoder(
+                "pipe-sweep",
+                StageKind::video_preset("1080p"),
+                source.clone(),
+                None,
+            )
             .await;
 
         let mut active = std::collections::HashSet::new();
@@ -2426,9 +2473,9 @@ mod tests {
             .await;
         let stages_before = engine.active_transcoder_stages("pipe-sweep-codec").await;
         assert!(
-            stages_before
-                .iter()
-                .any(|(stage, live)| *stage == StageKind::codec_edge("hevc_to_h264", StageKind::source()) && *live),
+            stages_before.iter().any(|(stage, live)| *stage
+                == StageKind::codec_edge("hevc_to_h264", StageKind::source())
+                && *live),
             "codec-edge stage must be registered before the sweep"
         );
 
@@ -2465,8 +2512,13 @@ mod tests {
             let b = barrier.clone();
             join_set.spawn(async move {
                 b.wait().await;
-                e.get_or_create_transcoder("pipe-concurrent", StageKind::video_preset("720p"), s, None)
-                    .await
+                e.get_or_create_transcoder(
+                    "pipe-concurrent",
+                    StageKind::video_preset("720p"),
+                    s,
+                    None,
+                )
+                .await
             });
         }
 
@@ -2540,7 +2592,12 @@ mod tests {
         let engine = Arc::new(MediaEngine::new());
         let source = engine.get_or_create_pipeline("p-hevc").await;
         let ring = engine
-            .get_or_create_transcoder("p-hevc", StageKind::video_preset("720p"), source, Some("hevc"))
+            .get_or_create_transcoder(
+                "p-hevc",
+                StageKind::video_preset("720p"),
+                source,
+                Some("hevc"),
+            )
             .await;
         assert_eq!(
             ring.codec_hint_str(),
@@ -2572,7 +2629,11 @@ mod tests {
             .get_or_create_h264_transcoder("p-dual", StageKind::source(), source.clone())
             .await;
         let from_720 = engine
-            .get_or_create_h264_transcoder("p-dual", StageKind::video_preset("720p"), source.clone())
+            .get_or_create_h264_transcoder(
+                "p-dual",
+                StageKind::video_preset("720p"),
+                source.clone(),
+            )
             .await;
 
         assert!(
@@ -2587,10 +2648,18 @@ mod tests {
         let source = engine.get_or_create_pipeline("p-shared-h264").await;
 
         let ring1 = engine
-            .get_or_create_h264_transcoder("p-shared-h264", StageKind::video_preset("720p"), source.clone())
+            .get_or_create_h264_transcoder(
+                "p-shared-h264",
+                StageKind::video_preset("720p"),
+                source.clone(),
+            )
             .await;
         let ring2 = engine
-            .get_or_create_h264_transcoder("p-shared-h264", StageKind::video_preset("720p"), source.clone())
+            .get_or_create_h264_transcoder(
+                "p-shared-h264",
+                StageKind::video_preset("720p"),
+                source.clone(),
+            )
             .await;
 
         assert!(

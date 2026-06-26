@@ -371,9 +371,6 @@ mod tests {
     fn audio_route_upstream_is_accessible() {
         let kind = StageKind::audio_route("atrack:0", StageKind::video_preset("720p"));
         assert_eq!(kind.graph_label(), "Audio: atrack:0");
-        assert_eq!(
-            *kind.upstream().unwrap(),
-            StageKind::video_preset("720p")
-        );
+        assert_eq!(*kind.upstream().unwrap(), StageKind::video_preset("720p"));
     }
 }

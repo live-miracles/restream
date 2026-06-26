@@ -52,6 +52,12 @@ pub async fn start_h264_transcoder(
     // Wait for ingest metadata before starting
     let (video_meta, audio_tracks) = loop {
         if cancel_token.is_cancelled() {
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: stage_key.kind.to_string(),
+                });
             return;
         }
         let result = {
@@ -78,9 +84,7 @@ pub async fn start_h264_transcoder(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
 
-    let stage_metrics = engine
-        .get_or_create_stage_metrics(stage_key.clone())
-        .await;
+    let stage_metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
 
     let input_queue = Arc::new(MemoryQueue::new());
     engine

@@ -9,6 +9,7 @@ use crate::domain::stage::StageKey;
 use crate::media::engine::AudioMeta;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
+use crate::media::stage_metrics::StageMetrics;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -55,8 +56,12 @@ pub async fn start_audio_router(
     routing: AudioRouting,
     input_buffer: Arc<RingBuffer>,
     output_buffer: Arc<RingBuffer>,
+    engine: Arc<crate::media::engine::MediaEngine>,
     cancel: CancellationToken,
+    stage_key: StageKey,
 ) {
+    let stage_metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
+
     // Inherit the codec_hint from the input ring so downstream egresses
     // (SRT, RTMP) build correct PMT even after passing through the audio router.
     let hint = input_buffer.codec_hint_str();
@@ -94,6 +99,7 @@ pub async fn start_audio_router(
                     continue;
                 }
                 for pkt in packets.drain(..) {
+                    stage_metrics.record_in(pkt.payload.len() as u64);
                     let out = match &routing {
                         AudioRouting::Passthrough => Some((*pkt).clone()),
 
@@ -132,6 +138,7 @@ pub async fn start_audio_router(
                         }
                     };
                     if let Some(p) = out {
+                        stage_metrics.record_out(p.payload.len() as u64);
                         if !first_push_logged {
                             println!(
                                 "[audio-router] first push pipeline={} type={:?} track={} codec_out='{}'",
@@ -151,6 +158,14 @@ pub async fn start_audio_router(
             }
         }
     }
+
+    engine.remove_stage_metrics(&stage_key).await;
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id,
+            encoding: stage_key.kind.to_string(),
+        });
 }
 
 pub fn parse_audio_routing(encoding: &str) -> AudioRouting {
@@ -238,6 +253,12 @@ pub async fn start_transcoder(
     // Wait for ingest metadata before starting the transcoder
     let (video_meta, audio_tracks) = loop {
         if cancel_token.is_cancelled() {
+            engine
+                .event_log
+                .emit(crate::events::EventKind::StageStopped {
+                    pipeline_id: pipeline_id.clone(),
+                    encoding: stage_key.kind.to_string(),
+                });
             return;
         }
         let result = {
@@ -263,6 +284,7 @@ pub async fn start_transcoder(
     };
 
     let input_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+    let stage_metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
     engine
         .register_input_queue(stage_key.clone(), input_queue.clone())
         .await;
@@ -275,6 +297,7 @@ pub async fn start_transcoder(
     let cancel_on_exit = cancel_token.clone();
     let pipeline_id_clone = pipeline_id.clone();
     let out_buf = output_buffer.clone();
+    let stage_metrics_for_thread = stage_metrics.clone();
     let handle = std::thread::spawn(move || {
         let use_internal = std::env::var("RESTREAM_USE_INTERNAL_TRANSCODER")
             .map(|v| {
@@ -288,18 +311,20 @@ pub async fn start_transcoder(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if use_internal && preset_clone.starts_with("video:") {
                 let video_preset = preset_clone.strip_prefix("video:").unwrap_or(&preset_clone);
-                run_ffmpeg_transcode_with_scale(
+                run_ffmpeg_transcode_with_scale_with_metrics(
                     input_queue_clone,
                     out_buf,
                     video_preset,
                     cancel_token_clone,
+                    Some(stage_metrics_for_thread),
                 )
             } else {
-                run_ffmpeg_transcoder_stage(
+                run_ffmpeg_transcoder_stage_with_metrics(
                     input_queue_clone,
                     out_buf,
                     &preset_clone,
                     cancel_token_clone,
+                    Some(stage_metrics_for_thread),
                 )
             }
         }));
@@ -347,7 +372,9 @@ pub async fn start_transcoder(
                 packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in &packets {
-                        feeder.extend_ts_for_packet(pkt, &mut ts_batch);
+                        if feeder.extend_ts_for_packet(pkt, &mut ts_batch) {
+                            stage_metrics.record_in(pkt.payload.len() as u64);
+                        }
                     }
                     // One lock acquisition for the whole burst.
                     if !ts_batch.is_empty() {
@@ -360,10 +387,13 @@ pub async fn start_transcoder(
 
     input_queue.close();
     engine.remove_input_queue(&stage_key).await;
-    engine.event_log.emit(crate::events::EventKind::StageStopped {
-        pipeline_id: pipeline_id.clone(),
-        encoding: preset.clone(),
-    });
+    engine.remove_stage_metrics(&stage_key).await;
+    engine
+        .event_log
+        .emit(crate::events::EventKind::StageStopped {
+            pipeline_id: pipeline_id.clone(),
+            encoding: preset.clone(),
+        });
 }
 
 #[cfg(test)]
@@ -694,9 +724,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_audio_router_reindexes_packets() {
+        use crate::domain::stage::{StageKey, StageKind};
+        use crate::media::engine::MediaEngine;
+
         let source_ring = Arc::new(RingBuffer::new(16));
         let out_ring = Arc::new(RingBuffer::new(16));
+        let engine = Arc::new(MediaEngine::new());
         let cancel = CancellationToken::new();
+        let stage_key = StageKey::new(
+            "pipe-id",
+            StageKind::audio_route("atrack:2", StageKind::source()),
+        );
 
         // Start audio router
         let routing = AudioRouting::SelectTracks(vec![2]);
@@ -705,7 +743,9 @@ mod tests {
             routing,
             source_ring.clone(),
             out_ring.clone(),
+            engine,
             cancel.clone(),
+            stage_key,
         ));
 
         // Push some source packets
@@ -810,6 +850,16 @@ pub fn run_ffmpeg_transcoder_stage(
     preset: &str,
     token: CancellationToken,
 ) -> Result<(), &'static str> {
+    run_ffmpeg_transcoder_stage_with_metrics(in_queue, out_ring, preset, token, None)
+}
+
+fn run_ffmpeg_transcoder_stage_with_metrics(
+    in_queue: Arc<crate::media::avio::MemoryQueue>,
+    out_ring: Arc<RingBuffer>,
+    preset: &str,
+    token: CancellationToken,
+    metrics: Option<Arc<StageMetrics>>,
+) -> Result<(), &'static str> {
     use crate::media::avio::CustomInput;
 
     let (video_preset, audio_routing) = if let Some(vp) = preset.strip_prefix("video:") {
@@ -891,7 +941,7 @@ pub fn run_ffmpeg_transcoder_stage(
         };
         let is_keyframe = packet.is_key();
 
-        batch.push(MediaPacket {
+        let output_packet = MediaPacket {
             media_type,
             track_index,
             pts: pts_ms,
@@ -899,7 +949,11 @@ pub fn run_ffmpeg_transcoder_stage(
             is_keyframe,
             format: PayloadFormat::Raw,
             payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(packet)),
-        });
+        };
+        if let Some(metrics) = &metrics {
+            metrics.record_out(output_packet.payload.len() as u64);
+        }
+        batch.push(output_packet);
         if batch.len() >= 32 {
             out_ring.push_batch(batch.drain(..));
         }
@@ -917,6 +971,16 @@ pub fn run_ffmpeg_transcode_with_scale(
     out_ring: Arc<RingBuffer>,
     video_preset: &str,
     token: CancellationToken,
+) -> Result<(), &'static str> {
+    run_ffmpeg_transcode_with_scale_with_metrics(in_queue, out_ring, video_preset, token, None)
+}
+
+fn run_ffmpeg_transcode_with_scale_with_metrics(
+    in_queue: Arc<crate::media::avio::MemoryQueue>,
+    out_ring: Arc<RingBuffer>,
+    video_preset: &str,
+    token: CancellationToken,
+    metrics: Option<Arc<StageMetrics>>,
 ) -> Result<(), &'static str> {
     use crate::media::avio::CustomInput;
     use ffmpeg_next::format::Pixel;
@@ -1024,7 +1088,7 @@ pub fn run_ffmpeg_transcode_with_scale(
                 dts_val
             };
             let is_keyframe = pkt.is_key();
-            out_ring.push(MediaPacket {
+            let output_packet = MediaPacket {
                 media_type,
                 track_index,
                 pts: pts_ms,
@@ -1032,7 +1096,11 @@ pub fn run_ffmpeg_transcode_with_scale(
                 is_keyframe,
                 format: PayloadFormat::Raw,
                 payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(pkt)),
-            });
+            };
+            if let Some(metrics) = &metrics {
+                metrics.record_out(output_packet.payload.len() as u64);
+            }
+            out_ring.push(output_packet);
             continue;
         }
 
@@ -1156,7 +1224,7 @@ pub fn run_ffmpeg_transcode_with_scale(
                 let dts_ms = dts_raw * fps_den * 1000 / fps_num;
                 // enc_pkt is reused across iterations; clone() calls av_packet_ref (refcount
                 // bump only, no data copy) so the ring buffer holds the AVBufferRef alive.
-                out_ring.push(MediaPacket {
+                let output_packet = MediaPacket {
                     media_type: MediaType::Video,
                     track_index: 0,
                     pts: pts_ms,
@@ -1164,7 +1232,11 @@ pub fn run_ffmpeg_transcode_with_scale(
                     is_keyframe: enc_pkt.is_key(),
                     format: PayloadFormat::Raw,
                     payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
-                });
+                };
+                if let Some(metrics) = &metrics {
+                    metrics.record_out(output_packet.payload.len() as u64);
+                }
+                out_ring.push(output_packet);
             }
         }
     }
@@ -1175,7 +1247,7 @@ pub fn run_ffmpeg_transcode_with_scale(
             let pts_ms = enc_pkt.pts().unwrap_or(0) * fps_den * 1000 / fps_num;
             let dts_raw = enc_pkt.dts().unwrap_or_else(|| enc_pkt.pts().unwrap_or(0));
             let dts_ms = dts_raw * fps_den * 1000 / fps_num;
-            out_ring.push(MediaPacket {
+            let output_packet = MediaPacket {
                 media_type: MediaType::Video,
                 track_index: 0,
                 pts: pts_ms,
@@ -1183,7 +1255,11 @@ pub fn run_ffmpeg_transcode_with_scale(
                 is_keyframe: enc_pkt.is_key(),
                 format: PayloadFormat::Raw,
                 payload: bytes::Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
-            });
+            };
+            if let Some(metrics) = &metrics {
+                metrics.record_out(output_packet.payload.len() as u64);
+            }
+            out_ring.push(output_packet);
         }
     }
 

@@ -32,13 +32,13 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-const MIN_CYCLES_PER_US: f64 = 100.0;    // 100 MHz — floor for any real CPU
+const MIN_CYCLES_PER_US: f64 = 100.0; // 100 MHz — floor for any real CPU
 const MAX_CYCLES_PER_US: f64 = 10_000.0; // 10 GHz — ceiling beyond current hardware
-const MIN_WINDOW_US: f64 = 50.0;         // reject calibrations shorter than this
+const MIN_WINDOW_US: f64 = 50.0; // reject calibrations shorter than this
 
 enum Backend {
-    Tsc(f64),  // cycles per microsecond, validated
-    Instant,   // fallback: invariant TSC absent or calibration out of bounds
+    Tsc(f64), // cycles per microsecond, validated
+    Instant,  // fallback: invariant TSC absent or calibration out of bounds
 }
 
 /// Opaque timestamp. Holds either TSC cycles or nanos since a fixed origin.

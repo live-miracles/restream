@@ -1,5 +1,6 @@
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
+use restream::domain::stage::{StageKey, StageKind};
 use restream::media::engine::MediaEngine;
 use restream::media::security::IngestSecurityService;
 use restream::{api, db};
@@ -1529,7 +1530,9 @@ async fn v1_pipeline_summary_returns_operator_fields() {
             "POST",
             "/pipelines",
             &cookie,
-            Some(&serde_json::json!({ "name": "summary-test", "streamKey": "smrykey" }).to_string()),
+            Some(
+                &serde_json::json!({ "name": "summary-test", "streamKey": "smrykey" }).to_string(),
+            ),
         ))
         .await
         .unwrap();
@@ -1581,11 +1584,13 @@ async fn v1_events_returns_envelope_and_events_array() {
     let cookie = login(&app).await;
 
     // Emit a synthetic event directly on the engine's event log
-    engine.event_log.emit(restream::events::EventKind::IngestConnected {
-        pipeline_id: "test-pipeline".to_string(),
-        protocol: "rtmp".to_string(),
-        stream_key: "key01".to_string(),
-    });
+    engine
+        .event_log
+        .emit(restream::events::EventKind::IngestConnected {
+            pipeline_id: "test-pipeline".to_string(),
+            protocol: "rtmp".to_string(),
+            stream_key: "key01".to_string(),
+        });
 
     let resp = app
         .clone()
@@ -1598,7 +1603,11 @@ async fn v1_events_returns_envelope_and_events_array() {
     assert!(body["count"].as_u64().unwrap() >= 1);
     assert!(body["events"].is_array());
     let events = body["events"].as_array().unwrap();
-    assert!(events.iter().any(|e| e["kind"].as_str() == Some("ingestConnected")));
+    assert!(
+        events
+            .iter()
+            .any(|e| e["kind"].as_str() == Some("ingestConnected"))
+    );
 }
 
 #[tokio::test]
@@ -1606,16 +1615,20 @@ async fn v1_events_filters_by_pipeline_id() {
     let (app, _pool, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
 
-    engine.event_log.emit(restream::events::EventKind::IngestConnected {
-        pipeline_id: "pipe-a".to_string(),
-        protocol: "rtmp".to_string(),
-        stream_key: "key01".to_string(),
-    });
-    engine.event_log.emit(restream::events::EventKind::IngestConnected {
-        pipeline_id: "pipe-b".to_string(),
-        protocol: "srt".to_string(),
-        stream_key: "key02".to_string(),
-    });
+    engine
+        .event_log
+        .emit(restream::events::EventKind::IngestConnected {
+            pipeline_id: "pipe-a".to_string(),
+            protocol: "rtmp".to_string(),
+            stream_key: "key01".to_string(),
+        });
+    engine
+        .event_log
+        .emit(restream::events::EventKind::IngestConnected {
+            pipeline_id: "pipe-b".to_string(),
+            protocol: "srt".to_string(),
+            stream_key: "key02".to_string(),
+        });
 
     let resp = app
         .clone()
@@ -1721,6 +1734,39 @@ async fn engine_telemetry_requires_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn stage_telemetry_returns_structured_response() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+    let stage_key = StageKey::new("telemetry-pipe", StageKind::video_preset("720p"));
+    let metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
+    metrics.record_in(123);
+    metrics.record_out(45);
+    metrics.record_processing(9);
+
+    let resp = app
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/stages/{stage_key}/telemetry"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert!(body["generatedAt"].is_string());
+    assert_eq!(body["stageKey"].as_str().unwrap(), stage_key.to_string());
+    assert_eq!(body["pipelineId"].as_str().unwrap(), "telemetry-pipe");
+    assert_eq!(body["kind"].as_str().unwrap(), "video:720p");
+    assert_eq!(body["metrics"]["packetsIn"].as_u64().unwrap(), 1);
+    assert_eq!(body["metrics"]["packetsOut"].as_u64().unwrap(), 1);
+    assert_eq!(body["metrics"]["bytesIn"].as_u64().unwrap(), 123);
+    assert_eq!(body["metrics"]["bytesOut"].as_u64().unwrap(), 45);
+    assert_eq!(body["metrics"]["processingUs"].as_u64().unwrap(), 9);
 }
 
 #[tokio::test]

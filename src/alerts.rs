@@ -131,8 +131,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                 title: "No active publisher".into(),
                 cause: "The pipeline is configured but not receiving a stream.".into(),
                 evidence: vec!["input.status = off".into()],
-                recommended_action:
-                    "Start the publisher or check the stream key and connection.".into(),
+                recommended_action: "Start the publisher or check the stream key and connection."
+                    .into(),
                 generated_at: generated_at.clone(),
                 first_seen: None,
                 last_seen: None,
@@ -147,10 +147,7 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
 
-                let lag = reader
-                    .get("lagSlots")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let lag = reader.get("lagSlots").and_then(|v| v.as_u64()).unwrap_or(0);
                 if lag > LAG_SLOTS_WARN {
                     alerts.push(Alert {
                         id: format!("pipeline:{}:stage:{}:lag", pipeline_id, name),
@@ -162,9 +159,10 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                         title: format!("Stage '{}' is lagging behind the ring buffer", name),
                         cause: "The consumer is reading slower than the producer is writing."
                             .into(),
-                        evidence: vec![
-                            format!("lagSlots = {} (threshold {})", lag, LAG_SLOTS_WARN),
-                        ],
+                        evidence: vec![format!(
+                            "lagSlots = {} (threshold {})",
+                            lag, LAG_SLOTS_WARN
+                        )],
                         recommended_action:
                             "Check downstream network/encoder throughput or reduce output bitrate."
                                 .into(),
@@ -190,9 +188,10 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                             "Stage '{}' has overflowed the ring buffer {} time(s)",
                             name, overflows
                         ),
-                        cause: "The ring buffer was full when this reader tried to consume packets; \
+                        cause:
+                            "The ring buffer was full when this reader tried to consume packets; \
                                 some packets were skipped."
-                            .into(),
+                                .into(),
                         evidence: vec![format!("overflowCount = {}", overflows)],
                         recommended_action:
                             "Reduce output count or increase processing throughput.".into(),
@@ -209,10 +208,7 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
             && let Some(outputs) = pipeline.get("outputs").and_then(|v| v.as_object())
         {
             for (output_id, output) in outputs {
-                let status = output
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let status = output.get("status").and_then(|v| v.as_str()).unwrap_or("");
                 if status != "running" {
                     alerts.push(Alert {
                         id: format!("pipeline:{}:output:{}:not_running", pipeline_id, output_id),
@@ -259,12 +255,14 @@ fn sorted(mut alerts: Vec<Alert>) -> Vec<Alert> {
 struct AlertHistory {
     first_seen: String,
     last_seen: String,
+    pipeline_id: Option<String>,
 }
 
 /// Tracks `first_seen`/`last_seen` timestamps for recurring alert conditions.
 ///
-/// Call `track` after each `derive_alerts` invocation. It stamps each alert
-/// with its history and prunes entries for alerts that have resolved.
+/// Call one of the `track_*` methods after each `derive_alerts` invocation. It
+/// stamps each alert with its history and prunes entries only for the snapshot
+/// scope that was actually observed.
 pub struct AlertTracker {
     history: Mutex<HashMap<String, AlertHistory>>,
 }
@@ -282,8 +280,25 @@ impl AlertTracker {
         }
     }
 
-    /// Stamp each alert with its first/last seen times and prune resolved entries.
+    /// Stamp alerts from a complete snapshot and prune every resolved entry.
     pub fn track(&self, alerts: &mut [Alert]) {
+        self.track_with_prune(alerts, |_| true);
+    }
+
+    /// Stamp alerts from a single-pipeline snapshot and prune only resolved
+    /// entries for that same pipeline. Alerts for other pipelines remain intact
+    /// because this snapshot did not observe them.
+    pub fn track_pipeline(&self, pipeline_id: &str, alerts: &mut [Alert]) {
+        self.track_with_prune(alerts, |history| {
+            history.pipeline_id.as_deref() == Some(pipeline_id)
+        });
+    }
+
+    fn track_with_prune(
+        &self,
+        alerts: &mut [Alert],
+        mut should_prune_if_absent: impl FnMut(&AlertHistory) -> bool,
+    ) {
         let now = chrono::Utc::now().to_rfc3339();
         let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
         let mut active_ids: HashMap<&str, ()> = HashMap::with_capacity(alerts.len());
@@ -295,20 +310,20 @@ impl AlertTracker {
                 .or_insert_with(|| AlertHistory {
                     first_seen: now.clone(),
                     last_seen: now.clone(),
+                    pipeline_id: alert.pipeline_id.clone(),
                 });
             entry.last_seen = now.clone();
             alert.first_seen = Some(entry.first_seen.clone());
             alert.last_seen = Some(entry.last_seen.clone());
         }
 
-        history.retain(|id, _| active_ids.contains_key(id.as_str()));
+        history.retain(|id, entry| {
+            active_ids.contains_key(id.as_str()) || !should_prune_if_absent(entry)
+        });
     }
 
     pub fn active_count(&self) -> usize {
-        self.history
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -545,5 +560,41 @@ mod tests {
         assert!(alerts.is_empty());
         tracker.track(&mut alerts);
         assert_eq!(tracker.active_count(), 0);
+    }
+
+    #[test]
+    fn tracker_pipeline_scope_does_not_prune_other_pipelines() {
+        let tracker = AlertTracker::new();
+        let snap = json!({
+            "generatedAt": "2026-06-25T00:00:00Z",
+            "srtListener": { "udpDrops": 0 },
+            "pipelines": {
+                "pipe-a": {
+                    "input": { "status": "off", "readerMetrics": [] },
+                    "outputs": {}
+                },
+                "pipe-b": {
+                    "input": { "status": "off", "readerMetrics": [] },
+                    "outputs": {}
+                }
+            }
+        });
+
+        let mut all_alerts = derive_alerts(&snap);
+        tracker.track(&mut all_alerts);
+        assert_eq!(tracker.active_count(), 2);
+
+        let pipe_a = snapshot_with_pipeline("pipe-a", "off");
+        let mut pipe_a_alerts = derive_alerts(&pipe_a);
+        tracker.track_pipeline("pipe-a", &mut pipe_a_alerts);
+
+        assert_eq!(tracker.active_count(), 2);
+        assert_eq!(
+            pipe_a_alerts[0].first_seen,
+            all_alerts
+                .iter()
+                .find(|alert| alert.pipeline_id.as_deref() == Some("pipe-a"))
+                .and_then(|alert| alert.first_seen.clone())
+        );
     }
 }

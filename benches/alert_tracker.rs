@@ -8,7 +8,7 @@
 //! Run:
 //!   cargo bench --bench alert_tracker --profile bench-dev
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use restream::alerts::{AlertTracker, derive_alerts};
 
 fn empty_snapshot() -> serde_json::Value {
