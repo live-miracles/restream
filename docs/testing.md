@@ -572,15 +572,17 @@ for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
 paths. This applies even to setup failures after the mode has initialized its
 artifact directory, making failed matrix attempts auditable instead of silent.
 
-Planned wrappers for the remaining matrix:
+Planned scenario families for the remaining matrix should be added as Rust
+`test_harness` or `protocol_matrix` entries, with shell kept to compatibility
+launching only:
 
 ```text
-test/run-ingest-equivalence.sh
-test/run-egress-matrix.sh
-test/run-h265.sh
-test/run-recovery.sh
-test/run-scale-inprocess.sh
-test/run-scale-500.sh
+ingest-equivalence
+egress-matrix
+h265
+recovery
+scale-inprocess
+scale-500
 ```
 
 Each completed matrix run should write artifacts to `test/artifacts/<run-id>/` with manifest,

@@ -10,12 +10,11 @@ FFmpeg child per output to a Rust application with native RTMP/SRT transport,
 in-process FFmpeg library stages, SQLite state, and an embedded dashboard.
 
 The rewrite is structurally substantial and the Rust test suite is green, but
-it should not yet be described as feature-complete or production-certified.
-Protocol correctness, the full live matrix, vertical transform semantics, and
-several high-rate/bonded combinations remain open gates. HLS upload and
-channel-level audio remap/downmix are implemented for the default runtime path;
-custom output encoding remains explicitly unavailable rather than advertised as
-a working runtime path.
+it should not yet be described as production-certified. The full live protocol
+matrix and several high-rate/bonded combinations remain open gates. HLS upload,
+channel-level audio remap/downmix, and every built-in video preset transform
+are implemented for the default runtime path; custom output encoding remains
+explicitly unavailable rather than advertised as a working runtime path.
 
 ## Evidence
 
@@ -134,13 +133,14 @@ Phase 7 artifact safety was tightened on June 26, 2026:
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
 direction that Rust should be the canonical integration harness. The thin
-`test/run-protocol-matrix.sh` compatibility launcher now delegates to Rust and
-passed `./test/run-protocol-matrix.sh --run-id rust-matrix-preflight-all
---preflight-only --continue-on-fail` for all six default modes. The remaining
-bash-heavy surface is the per-mode media runner in `test/run-integration.sh`.
-Next continuation point: move one self-contained per-mode scenario behind a
-typed Rust harness entry point, then leave `test/run-integration.sh` as a
-launcher for that mode while preserving its public CLI and artifact layout.
+`test/run-protocol-matrix.sh` compatibility launcher now delegates to Rust. The
+current default matrix has nine modes: `ramp`, `mixed-scale`, `bonding`,
+`burst-verify`, `hls-put`, `bframe-rtmp`, `correctness-srt-rtmp`,
+`correctness-hevc-rtmp`, and `correctness-hevc-srt`. The remaining shell
+surface is the per-mode compatibility runner in `test/run-integration.sh`;
+continuation work should keep shrinking it toward argument parsing, preflight,
+manifest lifecycle, and summary rendering while adding new scenario logic in
+Rust harness entry points.
 
 `bframe-rtmp` is the first per-mode scenario moved behind that typed Rust
 harness boundary: `test/run-integration.sh bframe-rtmp` now preserves the
@@ -156,9 +156,7 @@ tasks, ffprobe checks, signed-query assertions, and restart recovery to
 June 25, 2026 with `WORK_DIR=test/artifacts/hls-put-rust-wrapper`,
 `HLS_PUT_SETTLE_SECS=4`, and `HLS_PUT_RESTART_SECS=8`; both YouTube-style
 `file=` and path-style `/akamai/out.m3u8?token=dummy` uploads produced
-1280x720 TS segments and recovered after sink restart. Next continuation point:
-apply the same pattern to the isolated `burst-verify` mode before tackling the
-larger `ramp` or `mixed-scale` scale runners.
+1280x720 TS segments and recovered after sink restart.
 
 `burst-verify` has now moved behind the typed Rust harness boundary as well:
 `test/run-integration.sh burst-verify` preserves the manifest, summary, per-case
@@ -170,9 +168,7 @@ focused wrapper run passed on June 25, 2026 with
 all ten configs reported one live reader with non-zero `burstCount` and
 `avgBurstSize`. The Rust result records both requested and published audio
 track counts because RTMP/FLV can carry only one audio stream while SRT retains
-dual-audio coverage. Next continuation point: migrate the larger `ramp` or
-`mixed-scale` runner in smaller Rust-owned subcommands, starting with one
-configuration family and preserving the existing artifact layout.
+dual-audio coverage.
 
 `ramp` has moved behind the typed Rust harness boundary as well. The public
 `test/run-integration.sh ramp` mode now delegates all eight
@@ -189,10 +185,7 @@ wrapper run passed on June 25, 2026 with
 summary rows and `ramp-family.json` records all eight Rust-owned configs. A
 focused aggregate preflight also passed with
 `./test/run-protocol-matrix.sh --run-id ramp-rust-all-preflight
---preflight-only --continue-on-fail --only-modes ramp`. Next continuation
-point: restore and verify the historical `h264-rtmp` mixed-scale ingest slice,
-then broaden live verification of all Rust-delegated `mixed-scale` slices before
-retiring the remaining shell-heavy runner surface.
+--preflight-only --continue-on-fail --only-modes ramp`.
 
 The historical RTMP/H.264 `mixed-scale` slice is restored through the Rust
 harness entry point `mixed-h264-rtmp` and delegated by
