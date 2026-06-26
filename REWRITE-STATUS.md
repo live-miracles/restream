@@ -240,6 +240,12 @@ Earlier focused HLS PUT integration evidence from June 25, 2026:
   upload both produced playlists plus 1280×720 TS segments, preserved expected
   content types, and recovered with fresh segment PUTs after dummy sink restart
 
+HLS PUT was rechecked in the default private loopback namespace on June 26,
+2026 with `WORK_DIR=test/artifacts/hls-put-default-20260626
+./test/run-integration.sh --fast hls-put`; YouTube-style `file=` and
+path-style signed-query uploads both delivered playlist plus segment PUTs,
+probed as 1280×720, and recovered after dummy sink restart.
+
 ## Runtime Architecture
 
 ```text
