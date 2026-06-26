@@ -1912,3 +1912,214 @@ async fn stage_telemetry_returns_404_for_unknown_stage() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[cfg(not(feature = "agent-plane"))]
+#[tokio::test]
+async fn agent_plane_returns_404_when_feature_is_compiled_out() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/agent/capabilities", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["compiledIn"], false);
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_capabilities_requires_auth() {
+    let (app, _) = test_app().await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/agent/capabilities")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_capabilities_reports_read_planning_only() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/agent/capabilities", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert_eq!(body["feature"], "agent-plane");
+    assert_eq!(body["compiledIn"], true);
+    assert_eq!(body["executionEnabled"], false);
+    assert!(body["readTools"].as_array().unwrap().len() >= 5);
+    assert!(body["planningTools"].as_array().unwrap().len() >= 3);
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_investigation_returns_evidence_envelope() {
+    let (app, _pool, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let create = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(
+                &serde_json::json!({ "name": "agent-pipe", "streamKey": "agent-key" }).to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let pipe = body_json(create).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .event_log
+        .emit(restream::events::EventKind::IngestDisconnected {
+            pipeline_id: pid.clone(),
+            protocol: "rtmp".to_string(),
+        });
+
+    let resp = app
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/investigations",
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "workflow": "investigatePipelineIssue",
+                    "pipelineId": pid,
+                    "eventLimit": 10
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert_eq!(body["readOnly"], true);
+    assert_eq!(body["summary"]["hasGraph"], true);
+    assert!(body["evidence"]["health"].is_object());
+    assert!(body["evidence"]["graph"]["nodes"].is_array());
+    assert!(body["evidence"]["telemetry"].is_object());
+    assert!(body["evidence"]["alerts"].is_array());
+    assert!(body["evidence"]["events"].is_array());
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_plan_validates_and_previews_stage_impact() {
+    let (app, _pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let create = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(
+                &serde_json::json!({ "name": "agent-plan", "streamKey": "agent-plan-key" })
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let pipe = body_json(create).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap();
+
+    let resp = app
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/plans",
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "intent": "Attach a 720p RTMP output",
+                    "pipelineId": pid,
+                    "proposedChanges": [{
+                        "kind": "addOutput",
+                        "name": "Primary CDN",
+                        "url": "rtmp://example/live/key",
+                        "encoding": "720p+atrack:0"
+                    }]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert!(body["planId"].as_str().unwrap().starts_with("plan_"));
+    assert_eq!(body["executionEnabled"], false);
+    assert_eq!(body["validation"]["valid"], true);
+    let added_nodes = body["graphPreview"]["addedNodes"].as_array().unwrap();
+    assert!(
+        added_nodes
+            .iter()
+            .any(|node| node["stageKey"].as_str() == Some("video:720p"))
+    );
+    assert!(
+        body["impact"]["sharedStageCandidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|stage| stage.as_str() == Some("video:720p"))
+    );
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_plan_validate_reports_invalid_changes() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/plans/validate",
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "intent": "Attach bad output",
+                    "pipelineId": "missing",
+                    "proposedChanges": [{
+                        "kind": "addOutput",
+                        "url": "ftp://example/live/key",
+                        "encoding": "custom"
+                    }]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp).await;
+    assert_eq!(body["validation"]["valid"], false);
+    let codes: Vec<_> = body["validation"]["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|issue| issue["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"pipelineNotFound"));
+    assert!(codes.contains(&"unsupportedOutputUrl"));
+    assert!(codes.contains(&"customEncodingUnsupported"));
+}

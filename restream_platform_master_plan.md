@@ -1425,6 +1425,22 @@ Phase 3 completion, 2026-06-26:
 - intent -> plan -> validate
 - graph diff and impact previews
 
+Phase 4 implementation checkpoint, 2026-06-26:
+- Added an optional `agent-plane` Cargo feature. Default core builds compile
+  the agent module out and return an authenticated `404` envelope from
+  `/api/v1/agent/*` routes with `compiledIn: false`.
+- Added a modular `src/agent_plane.rs` read/planning module with no media-engine
+  ownership: capability discovery, investigation evidence envelopes, draft plan
+  generation, validation, static graph preview, and impact estimation.
+- Wired authenticated v1 routes:
+  `GET /api/v1/agent/capabilities`,
+  `POST /api/v1/agent/investigations`,
+  `POST /api/v1/agent/plans`,
+  `POST /api/v1/agent/plans/validate`,
+  `POST /api/v1/agent/graph-diff-preview`.
+- Execution is intentionally unavailable (`executionEnabled: false`) so phase 6
+  can remain separately gated and removable.
+
 ## Phase 5 — UI reset
 - overview, pipeline, engineer, admin modes
 - operator-first design

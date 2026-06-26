@@ -218,6 +218,44 @@ Streams Server-Sent Events. An optional `probe=rtmp|srt` query must match the
 active ingest protocol. Returns `404` without an active ingest and `400` for a
 protocol mismatch.
 
+## Optional Agent Read/Planning Plane
+
+The phase-4 agent plane is behind the `agent-plane` Cargo feature. Normal core
+builds compile it out and return `404` from `/api/v1/agent/*` routes with
+`compiledIn: false`.
+
+When compiled with `--features agent-plane`, the routes are authenticated,
+read-only, and do not mutate pipeline, output, or runtime state. Execution is
+reserved for the separate phase-6 feature.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/agent/capabilities` | Discover compiled-in read and planning tools |
+| `POST` | `/api/v1/agent/investigations` | Bundle health, graph, telemetry, alerts, and events for investigation workflows |
+| `POST` | `/api/v1/agent/plans` | Convert intent plus structured proposed changes into a draft plan |
+| `POST` | `/api/v1/agent/plans/validate` | Return only validation results for a draft plan |
+| `POST` | `/api/v1/agent/graph-diff-preview` | Return graph/impact preview for a draft plan |
+
+Plan request:
+
+```json
+{
+  "intent": "Attach a 720p RTMP output",
+  "pipelineId": "pipeline_abc",
+  "proposedChanges": [
+    {
+      "kind": "addOutput",
+      "name": "Primary CDN",
+      "url": "rtmp://destination/live/key",
+      "encoding": "720p+atrack:0"
+    }
+  ]
+}
+```
+
+Plan responses include `planId`, validation errors/warnings, static graph
+preview, and impact notes. `executionEnabled` is always `false` in phase 4.
+
 The current run contains nine checks; see [Observability](observability.md).
 
 ## Recording

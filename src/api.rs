@@ -308,6 +308,23 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/overview", get(v1_overview_handler))
         .route("/api/v1/engine/telemetry", get(v1_engine_telemetry_handler))
         .route(
+            "/api/v1/agent/capabilities",
+            get(agent_capabilities_handler),
+        )
+        .route(
+            "/api/v1/agent/investigations",
+            post(agent_investigation_handler),
+        )
+        .route("/api/v1/agent/plans", post(agent_plan_handler))
+        .route(
+            "/api/v1/agent/plans/validate",
+            post(agent_plan_validate_handler),
+        )
+        .route(
+            "/api/v1/agent/graph-diff-preview",
+            post(agent_graph_diff_preview_handler),
+        )
+        .route(
             "/api/v1/pipelines/:pipeline_id/telemetry",
             get(v1_pipeline_telemetry_handler),
         )
@@ -2550,6 +2567,245 @@ async fn v1_stage_telemetry_handler(
         Some(val) => Json(val).into_response(),
         None => (StatusCode::NOT_FOUND, "Stage not found").into_response(),
     }
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_capabilities_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    Json(crate::agent_plane::capabilities()).into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_capabilities_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_investigation_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_plane::InvestigationRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
+    let pipeline_exists = request
+        .pipeline_id
+        .as_deref()
+        .is_none_or(|pid| pipelines.iter().any(|p| p.id == pid));
+    let output_exists = request.output_id.as_deref().is_none_or(|oid| {
+        outputs.iter().any(|output| {
+            output.id == oid
+                && request
+                    .pipeline_id
+                    .as_deref()
+                    .is_none_or(|pid| output.pipeline_id == pid)
+        })
+    });
+
+    let pipeline_ids: Vec<String> = request
+        .pipeline_id
+        .clone()
+        .map(|pid| vec![pid])
+        .unwrap_or_else(|| pipelines.iter().map(|p| p.id.clone()).collect());
+    let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
+    let health = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    let alerts = alerts::derive_alerts(&health);
+    let graph = if let Some(pid) = request.pipeline_id.as_deref()
+        && pipeline_exists
+    {
+        Some(state.engine.processing_graph(pid, &outputs).await)
+    } else {
+        None
+    };
+    let telemetry = if let Some(pid) = request.pipeline_id.as_deref() {
+        state.engine.pipeline_telemetry(pid).await
+    } else {
+        state.engine.engine_telemetry().await
+    };
+    let events = state.engine.event_log.recent(
+        request.event_limit.min(events::MAX_EVENTS),
+        request.pipeline_id.as_deref(),
+    );
+
+    Json(crate::agent_plane::investigation_response(
+        request,
+        pipeline_exists,
+        output_exists,
+        health,
+        graph,
+        telemetry,
+        alerts,
+        events,
+    ))
+    .into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_investigation_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_plan_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_plane::PlanRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let response = build_agent_plan(&state, request).await;
+    Json(response).into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_plan_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_plan_validate_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_plane::PlanRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let response = build_agent_plan(&state, request).await;
+    Json(serde_json::json!({
+        "generatedAt": response.generated_at,
+        "planId": response.plan_id,
+        "validation": response.validation,
+    }))
+    .into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_plan_validate_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_graph_diff_preview_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_plane::PlanRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let response = build_agent_plan(&state, request).await;
+    Json(serde_json::json!({
+        "generatedAt": response.generated_at,
+        "planId": response.plan_id,
+        "graphPreview": response.graph_preview,
+        "impact": response.impact,
+    }))
+    .into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_graph_diff_preview_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn build_agent_plan(
+    state: &AppState,
+    request: crate::agent_plane::PlanRequest,
+) -> crate::agent_plane::PlanResponse {
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
+    let current_graph = if let Some(pid) = request.pipeline_id.as_deref()
+        && pipelines.iter().any(|p| p.id == pid)
+    {
+        Some(state.engine.processing_graph(pid, &outputs).await)
+    } else {
+        None
+    };
+    crate::agent_plane::plan_response(request, &pipelines, &outputs, current_graph.as_ref())
+}
+
+#[cfg(feature = "agent-plane")]
+async fn recording_enabled_map(
+    state: &AppState,
+    pipeline_ids: &[String],
+) -> std::collections::HashMap<String, bool> {
+    let mut recording_enabled = std::collections::HashMap::new();
+    for pid in pipeline_ids {
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        recording_enabled.insert(pid.clone(), rec);
+    }
+    recording_enabled
+}
+
+#[cfg(not(feature = "agent-plane"))]
+fn agent_plane_unavailable() -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "agent-plane feature is not compiled in",
+            "feature": "agent-plane",
+            "compiledIn": false
+        })),
+    )
+        .into_response()
 }
 
 /// Operator pipeline summary: source state, output rollup, alert list.
