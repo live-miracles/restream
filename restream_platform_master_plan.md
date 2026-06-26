@@ -1464,6 +1464,9 @@ Phase 7 acceleration note, 2026-06-26:
 - The disk guard is exposed as an `artifact-disk` JSON preflight record, so
   protocol-matrix runs can fail before expensive live services start instead
   of filling the filesystem mid-suite.
+- Host-network preflight is mode-aware: legacy live modes check the configured
+  Restream/MediaMTX service ports, and Rust-only harness modes check the
+  concrete harness loopback ports they bind.
 - `test/run-protocol-matrix.sh` now handles `--help`, `--list-modes`, and
   invalid `--only-modes` selections without compiling, while real runs use
   `scripts/resource-limit` for the Rust orchestrator build/run step. The

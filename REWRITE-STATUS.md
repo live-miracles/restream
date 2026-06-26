@@ -115,6 +115,10 @@ Phase 7 artifact safety was tightened on June 26, 2026:
 - live runs prune old ignored top-level `test/artifacts/` directories so only
   the latest three runs remain, while protecting the active run directory;
   `KEEP_ARTIFACTS=1` disables pruning for deliberate retention/debug sessions.
+- host-network preflight is now mode-aware: legacy live modes check the
+  Restream/MediaMTX port set, while Rust-only harness modes check the concrete
+  harness loopback ports they bind (`11935`, `11080`, and `HLS_PUT_PORT` for
+  the HLS PUT dummy sink).
 - `test/run-protocol-matrix.sh --help` and `--list-modes` are now answered by
   the shell wrapper without compiling the Rust orchestrator; `--only-modes` is
   validated before `cargo run`, and real matrix runs go through

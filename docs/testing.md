@@ -157,7 +157,11 @@ The runner applies two disk-safety guards before starting live services:
 
 `--preflight` emits an `artifact-disk` JSON record with the artifact root,
 current free MB, configured floor, and pass/fail status. Protocol-matrix runs
-inherit the same guard for each delegated mode.
+inherit the same guard for each delegated mode. When `--host` is used,
+preflight emits the candidate `ports` list and checks the actual ports a mode
+binds: legacy live modes check the configured Restream/MediaMTX ports, while
+Rust-only harness modes check the harness loopback ports (`11935` for RTMP,
+`11080` for SRT, and `HLS_PUT_PORT` for the dummy HLS PUT sink).
 
 Typical quick agent loop:
 

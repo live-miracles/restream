@@ -138,6 +138,8 @@ RESTREAM_DB_PATH="${RESTREAM_DB_PATH:-data.db}"
 ARTIFACT_ROOT_ABS="${ROOT}/test/artifacts"
 ARTIFACT_KEEP_RUNS=3
 RESTREAM_ARTIFACT_MIN_FREE_MB="${RESTREAM_ARTIFACT_MIN_FREE_MB:-2048}"
+TEST_HARNESS_RTMP=11935
+TEST_HARNESS_SRT=11080
 
 # ── Port defaults (each mode may override before calling start_*) ──────────────
 RESTREAM_HTTP="${RESTREAM_HTTP:-3030}"
@@ -390,6 +392,20 @@ mode_deps() {
   esac
 }
 
+mode_ports() {
+  case "$MODE" in
+    bonding) ;;
+    burst-verify) printf '%s\n' "$TEST_HARNESS_RTMP" "$TEST_HARNESS_SRT" ;;
+    hls-put)      printf '%s\n' "$TEST_HARNESS_SRT" "$HLS_PUT_PORT" ;;
+    bframe-rtmp)  printf '%s\n' "$TEST_HARNESS_RTMP" ;;
+    correctness-srt-rtmp|correctness-hevc-rtmp)
+                  printf '%s\n' "$TEST_HARNESS_RTMP" "$TEST_HARNESS_SRT" ;;
+    correctness-hevc-srt)
+                  printf '%s\n' "$TEST_HARNESS_SRT" ;;
+    *)            printf '%s\n' "$RESTREAM_HTTP" "$RESTREAM_RTMP" "$RESTREAM_SRT" "$MTX_RTMP" "$MTX_SRT" "$MTX_HLS" "$MTX_API" ;;
+  esac
+}
+
 port_is_busy() {
   local port="$1"
   if command -v ss >/dev/null 2>&1; then
@@ -455,24 +471,24 @@ run_preflight() {
     fi
   fi
 
-  case "$MODE" in
-    bonding) ports=() ;;
-    hls-put) ports=("$RESTREAM_HTTP" "$RESTREAM_RTMP" "$RESTREAM_SRT" "$HLS_PUT_PORT") ;;
-    *) ports=("$RESTREAM_HTTP" "$RESTREAM_RTMP" "$RESTREAM_SRT" "$MTX_RTMP" "$MTX_SRT" "$MTX_HLS" "$MTX_API") ;;
-  esac
+  mapfile -t ports < <(mode_ports)
   if [[ "$HOST_NETWORK" == "1" || "$MODE" == "bonding" ]]; then
     local port
     for port in "${ports[@]}"; do
       port_is_busy "$port" && busy+=("$port")
     done
   fi
-  local busy_json="[" sep2=""
-  for port in "${busy[@]}"; do busy_json+="${sep2}${port}"; sep2=','; done
+  local ports_json="[" sep2=""
+  for port in "${ports[@]}"; do ports_json+="${sep2}${port}"; sep2=','; done
+  ports_json+="]"
+
+  local busy_json="[" sep3=""
+  for port in "${busy[@]}"; do busy_json+="${sep3}${port}"; sep3=','; done
   busy_json+="]"
   if [[ "${#busy[@]}" -eq 0 ]]; then
-    emit_preflight "{\"check\":\"ports\",\"busy\":${busy_json},\"status\":\"ok\",\"hostNetwork\":${HOST_NETWORK}}"
+    emit_preflight "{\"check\":\"ports\",\"ports\":${ports_json},\"busy\":${busy_json},\"status\":\"ok\",\"hostNetwork\":${HOST_NETWORK}}"
   else
-    emit_preflight "{\"check\":\"ports\",\"busy\":${busy_json},\"status\":\"fail\",\"hostNetwork\":${HOST_NETWORK},\"hint\":\"free the listed ports or omit --host\"}"
+    emit_preflight "{\"check\":\"ports\",\"ports\":${ports_json},\"busy\":${busy_json},\"status\":\"fail\",\"hostNetwork\":${HOST_NETWORK},\"hint\":\"free the listed ports or omit --host\"}"
     fail_count=$(( fail_count + 1 ))
   fi
 
