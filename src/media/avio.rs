@@ -386,7 +386,13 @@ impl CustomOutput {
                 1,
                 queue as *mut c_void,
                 None,
-                Some(write_packet_cb),
+                // FFmpeg 8 made the write callback buffer const; older host
+                // headers still expose it as mutable. Pointer mutability is
+                // not an ABI distinction, and write_packet_cb only reads it.
+                Some(std::mem::transmute::<
+                    unsafe extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int,
+                    _,
+                >(write_packet_cb)),
                 None,
             );
 
@@ -474,11 +480,7 @@ unsafe extern "C" fn read_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size:
 // of data to write. The MemoryQueue is alive for the AVIO context lifetime.
 // `from_raw_parts` is valid because FFmpeg guarantees `buf` is `buf_size`
 // readable bytes.
-unsafe extern "C" fn write_packet_cb(
-    opaque: *mut c_void,
-    buf: *const u8,
-    buf_size: c_int,
-) -> c_int {
+unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let queue = unsafe { &*(opaque as *const MemoryQueue) };
     let slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
     queue.write_sync(slice);
