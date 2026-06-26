@@ -1,5 +1,0 @@
-h264-rtmp,rss_delta_kb=93648,per_output_kb=2341,ext_ffmpeg_n=0,ext_ffmpeg_rss_kb=0
-h265-srt,rss_delta_kb=330600,per_output_kb=8265,ext_ffmpeg_n=0,ext_ffmpeg_rss_kb=0
-h264-srt,rss_delta_kb=59908,per_output_kb=1497,ext_ffmpeg_n=0,ext_ffmpeg_rss_kb=0
-h264-srt-multi,rss_delta_kb=64748,per_output_kb=1618,ext_ffmpeg_n=0,ext_ffmpeg_rss_kb=0
-h265-srt-multi,rss_delta_kb=279552,per_output_kb=6988,ext_ffmpeg_n=0,ext_ffmpeg_rss_kb=0

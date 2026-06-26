@@ -1,8 +1,0 @@
-rtmp-rtmp-src,rss_delta_kb=14928,per_output_kb=149,ffmpeg_n=0,ffmpeg_rss_kb=0
-rtmp-rtmp-720p,rss_delta_kb=24916,per_output_kb=249,ffmpeg_n=1,ffmpeg_rss_kb=457676
-rtmp-srt-src,rss_delta_kb=416508,per_output_kb=4165,ffmpeg_n=0,ffmpeg_rss_kb=0
-rtmp-srt-720p,rss_delta_kb=234620,per_output_kb=2346,ffmpeg_n=1,ffmpeg_rss_kb=458008
-srt-rtmp-src,rss_delta_kb=22804,per_output_kb=228,ffmpeg_n=0,ffmpeg_rss_kb=0
-srt-rtmp-720p,rss_delta_kb=22288,per_output_kb=222,ffmpeg_n=1,ffmpeg_rss_kb=455576
-srt-srt-src,rss_delta_kb=405336,per_output_kb=4053,ffmpeg_n=0,ffmpeg_rss_kb=0
-srt-srt-720p,rss_delta_kb=225724,per_output_kb=2257,ffmpeg_n=1,ffmpeg_rss_kb=455720
