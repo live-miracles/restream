@@ -24,8 +24,6 @@
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
 #   HLS_PUT_PORT            dummy HLS PUT sink port (default: 8990)
 #   RESTREAM_ARTIFACT_MIN_FREE_MB fail before live runs when free space is below this (default: 2048)
-#   RESTREAM_ARTIFACT_RETENTION   keep newest N top-level test/artifacts dirs before pruning (default: 12)
-#   RESTREAM_ARTIFACT_PRUNE=0     disable old test/artifacts pruning
 #   ALLOW_GLOBAL_PROCESS_CLEANUP=1 opt into legacy host-wide restream/mediamtx cleanup
 #
 # Each mode writes WORK_DIR/manifest.json with RUNNING → PASS/FAIL status.
@@ -134,15 +132,9 @@ cd "$ROOT"
 
 RESTREAM_BIN="${RESTREAM_BIN:-$ROOT/target/release/restream}"
 RESTREAM_DB_PATH="${RESTREAM_DB_PATH:-data.db}"
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-test/artifacts}"
-if [[ "$ARTIFACT_ROOT" == /* ]]; then
-  ARTIFACT_ROOT_ABS="$ARTIFACT_ROOT"
-else
-  ARTIFACT_ROOT_ABS="${ROOT}/${ARTIFACT_ROOT}"
-fi
+ARTIFACT_ROOT_ABS="${ROOT}/test/artifacts"
+ARTIFACT_KEEP_RUNS=3
 RESTREAM_ARTIFACT_MIN_FREE_MB="${RESTREAM_ARTIFACT_MIN_FREE_MB:-2048}"
-RESTREAM_ARTIFACT_RETENTION="${RESTREAM_ARTIFACT_RETENTION:-12}"
-RESTREAM_ARTIFACT_PRUNE="${RESTREAM_ARTIFACT_PRUNE:-1}"
 
 # ── Port defaults (each mode may override before calling start_*) ──────────────
 RESTREAM_HTTP="${RESTREAM_HTTP:-3030}"
@@ -261,15 +253,12 @@ ensure_artifact_free_space() {
     fail "could not determine free space for artifact root ${ARTIFACT_ROOT_ABS}"
   fi
   if (( free_mb < RESTREAM_ARTIFACT_MIN_FREE_MB )); then
-    fail "artifact filesystem has ${free_mb}MB free, below RESTREAM_ARTIFACT_MIN_FREE_MB=${RESTREAM_ARTIFACT_MIN_FREE_MB}; prune ${ARTIFACT_ROOT} or lower the guard intentionally"
+    fail "artifact filesystem has ${free_mb}MB free, below RESTREAM_ARTIFACT_MIN_FREE_MB=${RESTREAM_ARTIFACT_MIN_FREE_MB}; prune test/artifacts or lower the guard intentionally"
   fi
 }
 
 prune_old_artifacts() {
-  [[ "$RESTREAM_ARTIFACT_PRUNE" == "1" ]] || return 0
   [[ "${KEEP_ARTIFACTS:-0}" != "1" ]] || return 0
-  require_uint_env RESTREAM_ARTIFACT_RETENTION "$RESTREAM_ARTIFACT_RETENTION"
-  [[ "$RESTREAM_ARTIFACT_RETENTION" -eq 0 ]] && return 0
   [[ -d "$ARTIFACT_ROOT_ABS" ]] || return 0
 
   local work_abs protected_top keep_count=0 entry path
@@ -283,9 +272,10 @@ prune_old_artifacts() {
   for entry in "${_artifact_entries[@]}"; do
     path="${entry#* }"
     if [[ "$path" == "$protected_top" ]]; then
+      keep_count=$(( keep_count + 1 ))
       continue
     fi
-    if (( keep_count < RESTREAM_ARTIFACT_RETENTION )); then
+    if (( keep_count < ARTIFACT_KEEP_RUNS )); then
       keep_count=$(( keep_count + 1 ))
       continue
     fi
@@ -500,7 +490,7 @@ JSON
 }
 
 init_run_artifacts() {
-  mkdir -p "$ARTIFACT_ROOT_ABS"
+  mkdir -p "$WORK_DIR"
   prune_old_artifacts
   ensure_artifact_free_space
   if [[ "${KEEP_ARTIFACTS:-0}" != "1" && -d "$WORK_DIR" ]]; then

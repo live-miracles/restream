@@ -1458,8 +1458,9 @@ Implementation note, 2026-06-25:
 Phase 7 acceleration note, 2026-06-26:
 - `test/run-integration.sh` now enforces a disk-safety preflight for live
   artifact runs: `RESTREAM_ARTIFACT_MIN_FREE_MB` fails early when the artifact
-  filesystem is low on space, and `RESTREAM_ARTIFACT_RETENTION` prunes old
-  ignored `test/artifacts/` runs while protecting the active run directory.
+  filesystem is low on space, and old ignored `test/artifacts/` runs are
+  pruned so only the latest three remain while protecting the active run
+  directory.
 - The disk guard is exposed as an `artifact-disk` JSON preflight record, so
   protocol-matrix runs can fail before expensive live services start instead
   of filling the filesystem mid-suite.

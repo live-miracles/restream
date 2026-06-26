@@ -146,15 +146,14 @@ cleanup before a run.
 
 Live integration runs write logs, JSONL assertions, ffprobe stderr, SQLite
 fixtures, generated media, and manifests under `test/artifacts/` by default.
-The runner now applies two disk-safety guards before starting live services:
+The runner applies two disk-safety guards before starting live services:
 
 - `RESTREAM_ARTIFACT_MIN_FREE_MB` (default `2048`) fails the run when the
   artifact filesystem has less free space than the configured floor. Set it to
   `0` only for an intentional no-floor diagnostic run.
-- `RESTREAM_ARTIFACT_RETENTION` (default `12`) keeps the newest N top-level
-  `test/artifacts/` directories and prunes older ones. The active run directory
-  is protected. Set `RESTREAM_ARTIFACT_PRUNE=0` or `KEEP_ARTIFACTS=1` to
-  disable pruning for a run that needs manual artifact retention.
+- old top-level `test/artifacts/` directories are pruned so only the latest
+  three runs remain. The active run directory is protected. Set
+  `KEEP_ARTIFACTS=1` only for a deliberate manual-retention/debug session.
 
 `--preflight` emits an `artifact-disk` JSON record with the artifact root,
 current free MB, configured floor, and pass/fail status. Protocol-matrix runs
