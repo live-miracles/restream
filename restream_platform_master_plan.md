@@ -1434,10 +1434,16 @@ Phase 4 implementation checkpoint, 2026-06-26:
   generation, validation, static graph preview, and impact estimation.
 - Wired authenticated v1 routes:
   `GET /api/v1/agent/capabilities`,
+  `GET /api/v1/agent/context`,
   `POST /api/v1/agent/investigations`,
   `POST /api/v1/agent/plans`,
   `POST /api/v1/agent/plans/validate`,
   `POST /api/v1/agent/graph-diff-preview`.
+- Added the canonical redacted agent context bundle: build/runtime status,
+  feature flags, redacted persisted config, health, telemetry, graphs, alerts,
+  lifecycle events, media inventory, and diagnostics metadata. Stream keys and
+  output URLs are replaced with stable fingerprints and URL scheme/host
+  summaries.
 - Execution is intentionally unavailable (`executionEnabled: false`) so phase 6
   can remain separately gated and removable.
 

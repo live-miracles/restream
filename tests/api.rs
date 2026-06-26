@@ -1927,6 +1927,20 @@ async fn agent_plane_returns_404_when_feature_is_compiled_out() {
     assert_eq!(body["compiledIn"], false);
 }
 
+#[cfg(not(feature = "agent-plane"))]
+#[tokio::test]
+async fn agent_context_returns_404_when_feature_is_compiled_out() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/agent/context", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["compiledIn"], false);
+}
+
 #[cfg(feature = "agent-plane")]
 #[tokio::test]
 async fn agent_capabilities_requires_auth() {
@@ -1966,9 +1980,29 @@ async fn agent_capabilities_reports_read_planning_only() {
 
 #[cfg(feature = "agent-plane")]
 #[tokio::test]
-async fn agent_investigation_returns_evidence_envelope() {
+async fn agent_context_requires_auth() {
+    let (app, _) = test_app().await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/agent/context")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_context_returns_redacted_state_bundle() {
     let (app, _pool, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
+    let raw_stream_key = "agent-context-secret-key";
+    let raw_output_url = "rtmp://example.com/live/super-secret-output-key";
 
     let create = app
         .clone()
@@ -1977,7 +2011,83 @@ async fn agent_investigation_returns_evidence_envelope() {
             "/pipelines",
             &cookie,
             Some(
-                &serde_json::json!({ "name": "agent-pipe", "streamKey": "agent-key" }).to_string(),
+                &serde_json::json!({ "name": "agent-context", "streamKey": raw_stream_key })
+                    .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let pipe = body_json(create).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let output_resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "name": "Redacted CDN",
+                    "url": raw_output_url,
+                    "encoding": "source"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(output_resp.status(), StatusCode::CREATED);
+
+    engine
+        .event_log
+        .emit(restream::events::EventKind::IngestConnected {
+            pipeline_id: pid.clone(),
+            protocol: "rtmp".to_string(),
+            stream_key: raw_stream_key.to_string(),
+        });
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/agent/context", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let raw = serde_json::to_string(&body).unwrap();
+
+    assert_eq!(body["readOnly"], true);
+    assert_eq!(body["features"]["agentPlane"], true);
+    assert_eq!(body["features"]["agentExecution"], false);
+    assert!(body["state"]["pipelines"].is_array());
+    assert!(body["state"]["outputs"].is_array());
+    assert!(body["runtime"]["health"].is_object());
+    assert!(body["runtime"]["telemetry"]["engine"].is_object());
+    assert!(body["runtime"]["graphs"].is_array());
+    assert!(body["redaction"]["recursiveFields"].is_array());
+
+    assert!(!raw.contains(raw_stream_key));
+    assert!(!raw.contains("super-secret-output-key"));
+    assert!(raw.contains("streamKeyFingerprint"));
+    assert!(raw.contains("urlFingerprint"));
+    assert!(raw.contains("example.com"));
+}
+
+#[cfg(feature = "agent-plane")]
+#[tokio::test]
+async fn agent_investigation_returns_evidence_envelope() {
+    let (app, _pool, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+    let raw_stream_key = "agent-investigation-secret-key";
+
+    let create = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(
+                &serde_json::json!({ "name": "agent-pipe", "streamKey": raw_stream_key })
+                    .to_string(),
             ),
         ))
         .await
@@ -1987,9 +2097,10 @@ async fn agent_investigation_returns_evidence_envelope() {
 
     engine
         .event_log
-        .emit(restream::events::EventKind::IngestDisconnected {
+        .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: pid.clone(),
             protocol: "rtmp".to_string(),
+            stream_key: raw_stream_key.to_string(),
         });
 
     let resp = app
@@ -2018,6 +2129,10 @@ async fn agent_investigation_returns_evidence_envelope() {
     assert!(body["evidence"]["telemetry"].is_object());
     assert!(body["evidence"]["alerts"].is_array());
     assert!(body["evidence"]["events"].is_array());
+
+    let raw = serde_json::to_string(&body).unwrap();
+    assert!(!raw.contains(raw_stream_key));
+    assert!(raw.contains("streamKeyFingerprint"));
 }
 
 #[cfg(feature = "agent-plane")]

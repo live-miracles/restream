@@ -231,10 +231,23 @@ reserved for the separate phase-6 feature.
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/v1/agent/capabilities` | Discover compiled-in read and planning tools |
+| `GET` | `/api/v1/agent/context` | Return one redacted read-only state bundle for agent reasoning |
 | `POST` | `/api/v1/agent/investigations` | Bundle health, graph, telemetry, alerts, and events for investigation workflows |
 | `POST` | `/api/v1/agent/plans` | Convert intent plus structured proposed changes into a draft plan |
 | `POST` | `/api/v1/agent/plans/validate` | Return only validation results for a draft plan |
 | `POST` | `/api/v1/agent/graph-diff-preview` | Return graph/impact preview for a draft plan |
+
+Context responses include:
+
+- build/runtime status, OS basics, native-library versions, and feature flags
+- redacted pipelines, outputs, ingests, jobs, transcode profiles, and settings
+- health, engine telemetry, per-pipeline telemetry, processing graphs, alerts,
+  and recent lifecycle events
+- media inventory and diagnostics endpoint metadata
+- redaction metadata describing which fields were removed
+
+Raw stream keys and output URLs are never returned by this endpoint. They are
+replaced with stable SHA-256 fingerprints plus URL scheme/host summaries.
 
 Plan request:
 

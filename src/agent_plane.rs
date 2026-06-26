@@ -5,12 +5,12 @@
 //! testable planning primitives when the feature is enabled.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 use crate::domain::stage::EncodingStagePlan;
-use crate::types::{Output, Pipeline};
+use crate::types::{Ingest, Job, Output, Pipeline};
 
 const OUTPUT_URL_SCHEME_ERROR: &str =
     "Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://";
@@ -117,6 +117,62 @@ pub struct PlanResponse {
     pub impact: ImpactPreview,
 }
 
+pub fn redacted_context(
+    pipelines: &[Pipeline],
+    outputs: &[Output],
+    jobs: &[Job],
+    ingests: &[Ingest],
+    status: Value,
+    health: Value,
+    engine_telemetry: Value,
+    pipeline_telemetry: Vec<Value>,
+    graphs: Vec<Value>,
+    alerts: Vec<crate::alerts::Alert>,
+    events: Vec<crate::events::Event>,
+    configuration: Value,
+    media: Value,
+) -> Value {
+    serde_json::json!({
+        "generatedAt": now(),
+        "readOnly": true,
+        "redaction": {
+            "policy": "agentContextV1",
+            "streamKeys": "raw stream keys are replaced with stable SHA-256 fingerprints",
+            "urls": "raw URLs are replaced with scheme, host, and stable SHA-256 fingerprints",
+            "recursiveFields": ["streamKey", "targetUrl", "url"]
+        },
+        "engine": redact_secrets(status),
+        "features": {
+            "agentPlane": true,
+            "agentExecution": false,
+            "executionCompiledIn": false
+        },
+        "configuration": redact_secrets(configuration),
+        "state": {
+            "pipelines": pipelines.iter().map(redacted_pipeline).collect::<Vec<_>>(),
+            "outputs": outputs.iter().map(redacted_output).collect::<Vec<_>>(),
+            "ingests": ingests.iter().map(redacted_ingest).collect::<Vec<_>>(),
+            "jobs": jobs.iter().map(redact_serializable).collect::<Vec<_>>()
+        },
+        "runtime": {
+            "health": redact_secrets(health),
+            "telemetry": {
+                "engine": redact_secrets(engine_telemetry),
+                "pipelines": pipeline_telemetry.into_iter().map(redact_secrets).collect::<Vec<_>>()
+            },
+            "graphs": graphs.into_iter().map(redact_secrets).collect::<Vec<_>>(),
+            "alerts": alerts.iter().map(redact_serializable).collect::<Vec<_>>(),
+            "events": events.iter().map(redact_serializable).collect::<Vec<_>>()
+        },
+        "diagnostics": {
+            "streamingEndpoint": "/pipelines/:pipeline_id/diagnostics",
+            "includedInContext": false,
+            "reason": "Diagnostics are active SSE probes and are not run by the read-only context endpoint."
+        },
+        "media": redact_secrets(media)
+    })
+}
+
 pub fn capabilities() -> AgentCapabilities {
     AgentCapabilities {
         generated_at: now(),
@@ -125,6 +181,7 @@ pub fn capabilities() -> AgentCapabilities {
         compiled_in: true,
         execution_enabled: false,
         read_tools: vec![
+            "get_agent_context",
             "get_engine_telemetry",
             "get_pipeline_summary",
             "get_pipeline_graph",
@@ -148,6 +205,105 @@ pub fn capabilities() -> AgentCapabilities {
             "Phase 6 execution is intentionally not compiled into this feature.",
         ],
     }
+}
+
+pub fn redact_secrets(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(redact_map(map)),
+        Value::Array(values) => Value::Array(values.into_iter().map(redact_secrets).collect()),
+        other => other,
+    }
+}
+
+fn redact_map(map: Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in map {
+        match key.as_str() {
+            "streamKey" | "stream_key" => {
+                if let Some(raw) = value.as_str() {
+                    out.insert(format!("{key}Fingerprint"), fingerprint(raw));
+                    out.insert(key, Value::String("redacted".to_string()));
+                } else {
+                    out.insert(key, redact_secrets(value));
+                }
+            }
+            "targetUrl" | "url" => {
+                if let Some(raw) = value.as_str() {
+                    out.insert(format!("{key}Redacted"), redacted_url(raw));
+                    out.insert(format!("{key}Fingerprint"), fingerprint(raw));
+                    out.insert(key, Value::String("redacted".to_string()));
+                } else {
+                    out.insert(key, redact_secrets(value));
+                }
+            }
+            _ => {
+                out.insert(key, redact_secrets(value));
+            }
+        }
+    }
+    out
+}
+
+fn redacted_pipeline(pipeline: &Pipeline) -> Value {
+    serde_json::json!({
+        "id": pipeline.id,
+        "name": pipeline.name,
+        "streamKey": "redacted",
+        "streamKeyFingerprint": fingerprint(&pipeline.stream_key),
+        "inputSource": pipeline.input_source,
+        "encoding": pipeline.encoding,
+    })
+}
+
+fn redacted_output(output: &Output) -> Value {
+    serde_json::json!({
+        "id": output.id,
+        "pipelineId": output.pipeline_id,
+        "name": output.name,
+        "url": "redacted",
+        "urlRedacted": redacted_url(&output.url),
+        "urlFingerprint": fingerprint(&output.url),
+        "desiredState": output.desired_state,
+        "encoding": output.encoding,
+    })
+}
+
+fn redacted_ingest(ingest: &Ingest) -> Value {
+    serde_json::json!({
+        "id": ingest.id,
+        "filename": ingest.filename,
+        "streamKey": "redacted",
+        "streamKeyFingerprint": fingerprint(&ingest.stream_key),
+        "loop": ingest.loop_flag,
+        "startTime": ingest.start_time,
+    })
+}
+
+fn redact_serializable<T: Serialize>(value: &T) -> Value {
+    redact_secrets(serde_json::to_value(value).unwrap_or(Value::Null))
+}
+
+fn redacted_url(raw: &str) -> Value {
+    let (scheme, rest) = raw
+        .split_once("://")
+        .map(|(scheme, rest)| (Some(scheme), rest))
+        .unwrap_or((None, raw));
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|part| !part.is_empty());
+    serde_json::json!({
+        "scheme": scheme,
+        "host": host,
+        "fingerprint": fingerprint(raw)
+    })
+}
+
+fn fingerprint(raw: &str) -> Value {
+    let digest = Sha256::digest(raw.as_bytes());
+    serde_json::json!({
+        "sha256Prefix": hex_prefix(&digest, 16)
+    })
 }
 
 pub fn investigation_response(
@@ -212,11 +368,11 @@ pub fn investigation_response(
         },
         "findings": findings,
         "evidence": {
-            "health": health,
-            "graph": graph,
-            "telemetry": telemetry,
-            "alerts": alerts,
-            "events": events,
+            "health": redact_secrets(health),
+            "graph": graph.map(redact_secrets),
+            "telemetry": redact_secrets(telemetry),
+            "alerts": alerts.iter().map(redact_serializable).collect::<Vec<_>>(),
+            "events": events.iter().map(redact_serializable).collect::<Vec<_>>(),
         }
     })
 }

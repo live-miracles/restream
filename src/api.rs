@@ -311,6 +311,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/agent/capabilities",
             get(agent_capabilities_handler),
         )
+        .route("/api/v1/agent/context", get(agent_context_handler))
         .route(
             "/api/v1/agent/investigations",
             post(agent_investigation_handler),
@@ -2592,6 +2593,30 @@ async fn agent_capabilities_handler(
 }
 
 #[cfg(feature = "agent-plane")]
+async fn agent_context_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let context = build_agent_context(&state).await;
+    Json(context).into_response()
+}
+
+#[cfg(not(feature = "agent-plane"))]
+async fn agent_context_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
 async fn agent_investigation_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2757,6 +2782,124 @@ async fn agent_graph_diff_preview_handler(
         return response;
     }
     agent_plane_unavailable()
+}
+
+#[cfg(feature = "agent-plane")]
+async fn build_agent_context(state: &AppState) -> serde_json::Value {
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
+    let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
+    let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
+    let ingests = db::list_ingests(&state.db).await.unwrap_or_default();
+    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+    let health = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    let alerts = alerts::derive_alerts(&health);
+    let events = state.engine.event_log.recent(events::MAX_EVENTS, None);
+    let engine_telemetry = state.engine.engine_telemetry().await;
+    let mut pipeline_telemetry = Vec::new();
+    let mut graphs = Vec::new();
+    for pipeline_id in &pipeline_ids {
+        pipeline_telemetry.push(state.engine.pipeline_telemetry(pipeline_id).await);
+        graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
+    }
+
+    let bonding_available = state
+        .engine
+        .srt_listener_stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    status["os"] = serde_json::json!({
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "hostname": System::host_name().unwrap_or_default(),
+        "kernelVersion": System::kernel_version(),
+        "uptime": System::uptime(),
+    });
+
+    let server_name = db::get_meta(&state.db, "server_name")
+        .await
+        .unwrap_or(Some("Name".to_string()))
+        .unwrap_or("Name".to_string());
+    let ingest_host = db::get_ingest_host(&state.db)
+        .await
+        .unwrap_or_default()
+        .unwrap_or_default();
+    let custom_encoding_len = db::get_meta(&state.db, "custom_encoding")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value.len())
+        .unwrap_or(0);
+    let configuration = serde_json::json!({
+        "serverName": server_name,
+        "ingestHost": ingest_host,
+        "ingestSecurity": state.security.get_config(),
+        "transcodeProfiles": crate::media::profiles::cache().read().await.clone(),
+        "customEncoding": {
+            "configured": custom_encoding_len > 0,
+            "byteLength": custom_encoding_len,
+        },
+        "ports": {
+            "rtmp": state.ports.rtmp,
+            "srt": state.ports.srt,
+        }
+    });
+    let media = agent_media_inventory(state).await;
+
+    crate::agent_plane::redacted_context(
+        &pipelines,
+        &outputs,
+        &jobs,
+        &ingests,
+        status,
+        health,
+        engine_telemetry,
+        pipeline_telemetry,
+        graphs,
+        alerts,
+        events,
+        configuration,
+        media,
+    )
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_media_inventory(state: &AppState) -> serde_json::Value {
+    let mut files = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&state.media_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if (name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov"))
+                && let Ok(metadata) = entry.metadata().await
+            {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|d| chrono::DateTime::from_timestamp_millis(d.as_millis() as i64))
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default();
+
+                let ingests = db::list_ingests_for_filename(&state.db, &name)
+                    .await
+                    .unwrap_or_default();
+                files.push(serde_json::json!({
+                    "name": name,
+                    "size": metadata.len(),
+                    "modifiedAt": modified,
+                    "ingestCount": ingests.len()
+                }));
+            }
+        }
+    }
+    serde_json::json!({
+        "mediaDir": state.media_dir,
+        "files": files,
+    })
 }
 
 #[cfg(feature = "agent-plane")]
