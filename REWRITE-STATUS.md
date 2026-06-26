@@ -138,6 +138,20 @@ Phase 7 artifact safety was tightened on June 26, 2026:
   now points agents at `scripts/resource-limit ./scripts/setup-static-build.sh`
   before `scripts/resource-limit cargo build --release` when that prefix is
   missing.
+- Static native setup/build was repaired on June 26, 2026:
+  `scripts/resource-limit ./scripts/setup-static-build.sh` now completes after
+  cleaning FFmpeg's source-tree configure state before the standalone embedded
+  binary build, and the static/standalone FFmpeg configs include the AC-3
+  encoder required by `restream-ffmpeg-capabilities`. A follow-up
+  `scripts/resource-limit ./scripts/build-static.sh` produced
+  `.build/static/cargo-target/release/restream`, passed the FFmpeg capability
+  probe, and verified the binary is statically linked.
+- The current all-nine aggregate preflight passed on June 26, 2026 with
+  `./test/run-protocol-matrix.sh --run-id
+  phase7-nine-static-preflight-20260626-codex --preflight-only
+  --continue-on-fail --restream-bin
+  .build/static/cargo-target/release/restream`; aggregate manifest:
+  `test/artifacts/phase7-nine-static-preflight-20260626-codex/manifest.json`.
 
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s

@@ -1472,6 +1472,9 @@ Phase 7 acceleration note, 2026-06-26:
   `scripts/resource-limit` for the Rust orchestrator build/run step. The
   orchestrator build uses `RESTREAM_PROTOCOL_MATRIX_ONLY=1`, avoiding the
   media-native link prerequisite until a selected live mode actually needs it.
+- Static setup/build now completes with the embedded FFmpeg AC-3/x264/x265
+  capability surface, and the nine-mode protocol-matrix preflight passes when
+  pointed at `.build/static/cargo-target/release/restream`.
 - H.265 passthrough, H.265-to-H.264 RTMP edge conversion, and SRT-to-RTMP
   packetization are exposed as first-class `test/run-integration.sh` modes and
   included in the default protocol matrix.

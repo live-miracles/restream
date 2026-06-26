@@ -561,6 +561,11 @@ agents can inspect and slice the matrix cheaply; real matrix runs invoke
 preflight does not require the media-native SRT/FFmpeg link prefix before any
 live mode starts. Do not set that flag for `restream` or `test_harness` builds;
 it is only for the non-media protocol-matrix orchestrator binary.
+For release-parity preflight, build the static binary with
+`scripts/resource-limit ./scripts/setup-static-build.sh` followed by
+`scripts/resource-limit ./scripts/build-static.sh`, then pass
+`--restream-bin .build/static/cargo-target/release/restream` to the matrix
+wrapper.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, `bframe-rtmp`,
