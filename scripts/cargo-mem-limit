@@ -11,6 +11,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Serialize builds so concurrent agents don't OOM the VM.
+# build-lock marks the environment before running its command, so this wrapper
+# can also be safely called from an already locked shell/script.
+if [[ -z "${RESTREAM_BUILD_LOCK_HELD:-}" ]]; then
+    exec "$SCRIPT_DIR/build-lock" "$SCRIPT_DIR/cargo-mem-limit" "$@"
+fi
+
 MB_PER_JOB=500
 MIN_JOBS=2
 

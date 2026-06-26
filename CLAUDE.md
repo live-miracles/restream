@@ -38,8 +38,8 @@ cargo fmt
 
 ### Resource-Aware Builds
 
-`.cargo/config.toml` caps parallel jobs at 8 by default. When multiple agents may be
-building concurrently, use the memory-aware wrapper which sizes jobs to available RAM:
+When multiple agents may be building concurrently, use the memory-aware wrapper.
+It acquires the shared repository build lock, then sizes Cargo jobs to available RAM:
 
 ```sh
 scripts/cargo-mem-limit build
@@ -49,6 +49,16 @@ scripts/cargo-mem-limit clippy
 
 Never run concurrent `cargo build --release` from multiple agents — release builds use
 significantly more memory per compilation unit.
+
+For other heavy build commands, acquire the same lock explicitly:
+
+```sh
+scripts/build-lock cargo bench --bench <name>
+scripts/build-lock cargo build --release
+```
+
+The lock uses `flock(1)` on `.build-lock`; it is released automatically if the
+process exits or crashes.
 
 Frontend work:
 

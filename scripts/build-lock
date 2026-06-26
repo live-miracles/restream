@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Serialize heavy build commands behind a shared flock so concurrent
+# agents don't OOM the WSL VM.
+#
+# Usage: scripts/build-lock cargo build [--release]
+#        scripts/build-lock cargo test
+#        scripts/build-lock scripts/cargo-mem-limit bench
+#
+# The lock is exclusive by default (one build at a time). Pass --shared / -s
+# before the command to allow concurrent reads (e.g. cargo check) while still
+# blocking against exclusive builds.
+#
+# The lockfile lives in the repo root at .build-lock (gitignored).
+# flock releases automatically on process exit, signal, or crash; no stale locks.
+
+set -euo pipefail
+
+LOCK_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.build-lock"
+FLOCK_MODE="--exclusive"
+WAIT_TIMEOUT=600  # 10 minutes max wait
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --shared|-s)
+            FLOCK_MODE="--shared"
+            shift
+            ;;
+        --timeout|-t)
+            if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "build-lock: --timeout requires a non-negative integer seconds value" >&2
+                exit 2
+            fi
+            WAIT_TIMEOUT="$2"
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    echo "build-lock: no command specified" >&2
+    echo "usage: scripts/build-lock [--shared] [--timeout N] COMMAND..." >&2
+    exit 1
+fi
+
+# Show who's waiting when the requested lock isn't immediately available.
+if ! flock --nonblock "$FLOCK_MODE" "$LOCK_FILE" true 2>/dev/null; then
+    echo "build-lock: waiting for another build to finish (timeout ${WAIT_TIMEOUT}s)..." >&2
+fi
+
+export RESTREAM_BUILD_LOCK_HELD=1
+exec flock "$FLOCK_MODE" --timeout "$WAIT_TIMEOUT" "$LOCK_FILE" "$@"
