@@ -264,27 +264,28 @@ prune_old_artifacts() {
   [[ "${KEEP_ARTIFACTS:-0}" != "1" ]] || return 0
   [[ -d "$ARTIFACT_ROOT_ABS" ]] || return 0
 
-  local work_abs protected_top keep_count=0 entry path
+  local work_abs protected_top keep_remaining entry path
   work_abs="$(abs_path "$WORK_DIR")"
-  protected_top="$work_abs"
-  while [[ "$(dirname "$protected_top")" != "$ARTIFACT_ROOT_ABS" && "$protected_top" != "$ARTIFACT_ROOT_ABS" && "$protected_top" != "/" ]]; do
-    protected_top="$(dirname "$protected_top")"
-  done
+  protected_top=""
+  if [[ "$work_abs" == "$ARTIFACT_ROOT_ABS"/* ]]; then
+    protected_top="${work_abs#"$ARTIFACT_ROOT_ABS"/}"
+    protected_top="${ARTIFACT_ROOT_ABS}/${protected_top%%/*}"
+  fi
+  keep_remaining="$ARTIFACT_KEEP_RUNS"
+  [[ -z "$protected_top" ]] || keep_remaining=$((keep_remaining - 1))
+  (( keep_remaining >= 0 )) || keep_remaining=0
 
-  mapfile -t _artifact_entries < <(find "$ARTIFACT_ROOT_ABS" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn)
-  for entry in "${_artifact_entries[@]}"; do
+  while IFS= read -r entry; do
     path="${entry#* }"
-    if [[ "$path" == "$protected_top" ]]; then
-      keep_count=$(( keep_count + 1 ))
+    if [[ -n "$protected_top" && "$path" == "$protected_top" ]]; then
       continue
     fi
-    if (( keep_count < ARTIFACT_KEEP_RUNS )); then
-      keep_count=$(( keep_count + 1 ))
+    if (( keep_remaining > 0 )); then
+      keep_remaining=$(( keep_remaining - 1 ))
       continue
     fi
     rm -rf -- "$path"
-  done
-  unset _artifact_entries
+  done < <(find "$ARTIFACT_ROOT_ABS" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn)
 }
 
 init_assertion_log() {
