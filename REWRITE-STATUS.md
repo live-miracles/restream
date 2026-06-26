@@ -160,14 +160,20 @@ focused aggregate preflight also passed with
 --preflight-only --continue-on-fail --only-modes ramp`. Next continuation
 point: restore and verify the historical `h264-rtmp` mixed-scale ingest slice,
 then broaden live verification of all Rust-delegated `mixed-scale` slices before
-retiring the legacy bash body once the fallback window is no longer needed.
+retiring the remaining shell-heavy runner surface.
 
 The historical RTMP/H.264 `mixed-scale` slice is restored through the Rust
 harness entry point `mixed-h264-rtmp` and delegated by
 `test/run-integration.sh mixed-scale` by default. It preserves the RTMP/FLV
 publisher shape, the four output groups, `scale.csv`, `rss-summary.csv`,
-`MS-load-h264-rtmp`, and optional non-fatal spot checks. Use
-`MIXED_RUST_H264_RTMP=0` to force the per-config bash fallback while bisecting.
+`MS-load-h264-rtmp`, and optional non-fatal spot checks.
+
+For live mixed-scale runs, the wrapper now passes `FFMPEG_BIN_PATH` to the Rust
+harness, defaulting to the system `ffmpeg` found by dependency checks. This is
+required because the embedded standalone `public/bin/ffmpeg` is a minimal static
+binary built with `--enable-libx264` but not `--enable-libx265`; the next native
+build-system slice should add static x265 support to
+`scripts/setup-static-build.sh` and refresh the embedded binary.
 
 The first `mixed-scale` slice has now moved behind the typed Rust harness:
 `cargo run --bin test_harness -- mixed-anchor` owns the `h264-srt` anchor config
@@ -186,11 +192,10 @@ entry point, `cargo run --bin test_harness -- mixed-h265-srt`, and is delegated
 by `test/run-integration.sh mixed-scale` by default. The Rust path preserves the
 same group order, `scale.csv`, `rss-summary.csv`, optional non-fatal spot
 checks, `MS-load-h265-srt`, and `MS-tc-spawns` bound (`1..ext_ffmpeg_n + 1`) as
-the bash path; `MIXED_RUST_H265_SRT=0` keeps the legacy bash fallback. A direct
-focused run passed on June 26, 2026 with `ONLY_CHECKS=tc-spawns`,
-`N_PER_GROUP=1`, and `SNAPSHOT_SLEEP_SECS=0`. A wrapper fast path with
-`--only tc-spawns --skip-load` also passed the Rust `mixed-h265-srt` slice
-(`MS-tc-spawns`: `tc_spawns=2`, bound `2`).
+the original bash path. A direct focused run passed on June 26, 2026 with
+`ONLY_CHECKS=tc-spawns`, `N_PER_GROUP=1`, and `SNAPSHOT_SLEEP_SECS=0`. A wrapper
+fast path with `--only tc-spawns --skip-load` also passed the Rust
+`mixed-h265-srt` slice (`MS-tc-spawns`: `tc_spawns=2`, bound `2`).
 
 The two multi-audio `mixed-scale` slices are now wired through Rust harness
 entry points, `mixed-h264-srt-multi` and `mixed-h265-srt-multi`, and are
@@ -199,20 +204,21 @@ two-audio SRT publisher (`48000` Hz stereo plus `44100` Hz mono), the four
 output groups, `scale.csv`, `rss-summary.csv`, optional non-fatal spot checks,
 and the route-specific audio encodings (`720p+atrack:0` for RTMP 720p and
 `720p+atrack:0,1` for SRT 720p). The Rust `ffprobe` path now emits fatal JSONL
-assertions for those route-specific audio counts. `MIXED_RUST_H264_SRT_MULTI=0`
-and `MIXED_RUST_H265_SRT_MULTI=0` keep per-config bash fallbacks. Direct focused
-runs passed on June 26, 2026 with `ONLY_CHECKS=load`, `N_PER_GROUP=1`,
-`SNAPSHOT_SLEEP_SECS=0`, and custom non-default ports before the stronger
-audio-count assertion was added:
+assertions for those route-specific audio counts. Direct focused runs passed on
+June 26, 2026 with `ONLY_CHECKS=load`, `N_PER_GROUP=1`, `SNAPSHOT_SLEEP_SECS=0`,
+and custom non-default ports before the stronger audio-count assertion was added:
 `mixed-h264-srt-multi` emitted `MS-load-h264-srt-multi` pass with two audio
 tracks, and `mixed-h265-srt-multi` emitted `MS-load-h265-srt-multi` pass with
 one external FFmpeg feed. A wrapper fast path also passed with
 `./test/run-integration.sh --fast --skip-load --only load mixed-scale`,
 delegating the then-current four configs to Rust and printing
 `[rust] all mixed-scale configs delegated; skipping legacy bash runner`.
-Next continuation point: run focused `h264-rtmp` validation plus a broader
-five-config mixed-scale check with `ffprobe` enabled, then remove the fallback
-bash body when the team no longer needs it for bisecting.
+The shell fallback body has now been removed; `mixed-scale` is a Rust launcher
+plus summary renderer. A namespaced default-port wrapper run with
+`./test/run-integration.sh --fast --only ffprobe mixed-scale` passed all five
+slices on June 26, 2026 after routing the Rust harness to the system FFmpeg.
+Next continuation point: add x265 to the embedded standalone FFmpeg build, then
+rerun the five-config mixed-scale check without relying on `FFMPEG_BIN_PATH`.
 
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 

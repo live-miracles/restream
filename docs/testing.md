@@ -117,13 +117,14 @@ legacy all-bash ramp path while bisecting harness behavior, or set
 N_PER_GROUP=25 ./test/run-integration.sh mixed-scale
 ```
 
-Exercises four ingest configurations covering every codec/protocol/audio-track
+Exercises five ingest configurations covering every codec/protocol/audio-track
 combination used in production. Each config fans out to `4×N_PER_GROUP` outputs
 added group-by-group (all RTMP-src, then all RTMP-720p, then all SRT-src, then
 all SRT-720p):
 
 | Config | Ingest | Codec | Audio | Role |
 |---|---|---|:---:|---|
+| `h264-rtmp` | RTMP | H.264 | 1 | RTMP/FLV ingest baseline |
 | `h264-srt` | SRT | H.264 | 1 | **anchor**: HLS + smoke + fatal ffprobe + stop lifecycle |
 | `h265-srt` | SRT | H.265 | 1 | TC_SPAWNS=1 assertion |
 | `h264-srt-multi` | SRT | H.264 | 2 | multi-audio track routing |
@@ -152,21 +153,25 @@ Expected resource counts (see
 
 | Config | `ext_ffmpeg#` | `TC_SPAWNS` bound |
 |---|:---:|:---:|
+| `h264-rtmp` | 1 | N/A |
 | `h264-srt` | 1 | N/A (H.264 ingest, no h264-tc needed) |
 | `h265-srt` | 1 | ≤ 2 (1 source path + 1 720p path) |
 | `h264-srt-multi` | 1 | N/A |
 | `h265-srt-multi` | 1 | N/A |
 
-Env: `N_PER_GROUP` (default 25), `ISOLATE=1` (default, restarts per config).
+Env: `N_PER_GROUP` (default 25).
 
 The `mixed-scale` configs are now Rust-owned by default through
 `test_harness` entry points while the shell wrapper keeps the public CLI,
-manifest, CSV, summary, and JSONL assertion layout intact. Use
-`MIXED_RUST_ANCHOR=0`, `MIXED_RUST_H265_SRT=0`,
-`MIXED_RUST_H264_SRT_MULTI=0`, or `MIXED_RUST_H265_SRT_MULTI=0` to force a
-legacy bash slice while bisecting behavior. The multi-audio Rust slices
-preserve the two-audio SRT publisher, RTMP `720p+atrack:0`, and SRT
+manifest, CSV, summary, and JSONL assertion layout intact. The multi-audio
+Rust slices preserve the two-audio SRT publisher, RTMP `720p+atrack:0`, and SRT
 `720p+atrack:0,1` route encodings.
+
+The wrapper passes `FFMPEG_BIN_PATH` to the Rust harness, defaulting to the
+system `ffmpeg` found by dependency checks. The embedded standalone
+`public/bin/ffmpeg` is intentionally small today and has `libx264` but not
+`libx265`, so H.265 720p live checks need the system binary until the embedded
+build grows static x265 support.
 
 ### `bonding` — SRT socket bonding
 
@@ -458,8 +463,8 @@ Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
 already behind typed Rust harness entry points, and `ramp` now delegates its
 full eight-config matrix to `test_harness ramp-family`. `mixed-scale` now
-delegates its four config slices to Rust by default and keeps per-slice bash
-fallback flags only for bisecting while broader live verification continues.
+delegates its five config slices to Rust and leaves the shell layer as a
+launcher plus summary renderer.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
