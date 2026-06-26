@@ -23,6 +23,9 @@
 #   RESTREAM_HTTP/RTMP/SRT  port overrides
 #   MTX_RTMP/SRT/HLS/API    mediamtx port overrides
 #   HLS_PUT_PORT            dummy HLS PUT sink port (default: 8990)
+#   RESTREAM_ARTIFACT_MIN_FREE_MB fail before live runs when free space is below this (default: 2048)
+#   RESTREAM_ARTIFACT_RETENTION   keep newest N top-level test/artifacts dirs before pruning (default: 12)
+#   RESTREAM_ARTIFACT_PRUNE=0     disable old test/artifacts pruning
 #   ALLOW_GLOBAL_PROCESS_CLEANUP=1 opt into legacy host-wide restream/mediamtx cleanup
 #
 # Each mode writes WORK_DIR/manifest.json with RUNNING → PASS/FAIL status.
@@ -131,6 +134,15 @@ cd "$ROOT"
 
 RESTREAM_BIN="${RESTREAM_BIN:-$ROOT/target/release/restream}"
 RESTREAM_DB_PATH="${RESTREAM_DB_PATH:-data.db}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-test/artifacts}"
+if [[ "$ARTIFACT_ROOT" == /* ]]; then
+  ARTIFACT_ROOT_ABS="$ARTIFACT_ROOT"
+else
+  ARTIFACT_ROOT_ABS="${ROOT}/${ARTIFACT_ROOT}"
+fi
+RESTREAM_ARTIFACT_MIN_FREE_MB="${RESTREAM_ARTIFACT_MIN_FREE_MB:-2048}"
+RESTREAM_ARTIFACT_RETENTION="${RESTREAM_ARTIFACT_RETENTION:-12}"
+RESTREAM_ARTIFACT_PRUNE="${RESTREAM_ARTIFACT_PRUNE:-1}"
 
 # ── Port defaults (each mode may override before calling start_*) ──────────────
 RESTREAM_HTTP="${RESTREAM_HTTP:-3030}"
@@ -186,6 +198,17 @@ RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fail()   { echo "FAIL: $*" >&2; exit 1; }
 log_ok() { echo "ok: $*" | tee -a "${WORK_DIR}/summary.txt"; }
 
+is_uint() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+require_uint_env() {
+  local name="$1" value="$2"
+  if ! is_uint "$value"; then
+    fail "${name} must be a non-negative integer"
+  fi
+}
+
 cleanup() {
   [[ ${#PUB_PIDS[@]} -gt 0 ]] && { for p in "${PUB_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; }
   [[ -n "$PUB_PID" ]]      && kill "$PUB_PID"      2>/dev/null || true
@@ -205,6 +228,70 @@ json_escape() {
 
 now_ms() {
   date +%s%3N
+}
+
+abs_path() {
+  local path="$1" dir base
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+    return
+  fi
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  mkdir -p "$dir"
+  printf '%s/%s\n' "$(cd "$dir" && pwd)" "$base"
+}
+
+available_mb_for_path() {
+  local path="$1" probe
+  probe="$path"
+  while [[ ! -e "$probe" && "$probe" != "/" ]]; do
+    probe="$(dirname "$probe")"
+  done
+  df -Pm "$probe" | awk 'NR==2 {print $4}'
+}
+
+ensure_artifact_free_space() {
+  require_uint_env RESTREAM_ARTIFACT_MIN_FREE_MB "$RESTREAM_ARTIFACT_MIN_FREE_MB"
+  [[ "$RESTREAM_ARTIFACT_MIN_FREE_MB" -eq 0 ]] && return 0
+
+  local free_mb
+  free_mb="$(available_mb_for_path "$ARTIFACT_ROOT_ABS")"
+  if [[ -z "$free_mb" || ! "$free_mb" =~ ^[0-9]+$ ]]; then
+    fail "could not determine free space for artifact root ${ARTIFACT_ROOT_ABS}"
+  fi
+  if (( free_mb < RESTREAM_ARTIFACT_MIN_FREE_MB )); then
+    fail "artifact filesystem has ${free_mb}MB free, below RESTREAM_ARTIFACT_MIN_FREE_MB=${RESTREAM_ARTIFACT_MIN_FREE_MB}; prune ${ARTIFACT_ROOT} or lower the guard intentionally"
+  fi
+}
+
+prune_old_artifacts() {
+  [[ "$RESTREAM_ARTIFACT_PRUNE" == "1" ]] || return 0
+  [[ "${KEEP_ARTIFACTS:-0}" != "1" ]] || return 0
+  require_uint_env RESTREAM_ARTIFACT_RETENTION "$RESTREAM_ARTIFACT_RETENTION"
+  [[ "$RESTREAM_ARTIFACT_RETENTION" -eq 0 ]] && return 0
+  [[ -d "$ARTIFACT_ROOT_ABS" ]] || return 0
+
+  local work_abs protected_top keep_count=0 entry path
+  work_abs="$(abs_path "$WORK_DIR")"
+  protected_top="$work_abs"
+  while [[ "$(dirname "$protected_top")" != "$ARTIFACT_ROOT_ABS" && "$protected_top" != "$ARTIFACT_ROOT_ABS" && "$protected_top" != "/" ]]; do
+    protected_top="$(dirname "$protected_top")"
+  done
+
+  mapfile -t _artifact_entries < <(find "$ARTIFACT_ROOT_ABS" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn)
+  for entry in "${_artifact_entries[@]}"; do
+    path="${entry#* }"
+    if [[ "$path" == "$protected_top" ]]; then
+      continue
+    fi
+    if (( keep_count < RESTREAM_ARTIFACT_RETENTION )); then
+      keep_count=$(( keep_count + 1 ))
+      continue
+    fi
+    rm -rf -- "$path"
+  done
+  unset _artifact_entries
 }
 
 init_assertion_log() {
@@ -341,6 +428,24 @@ run_preflight() {
     emit_preflight "{\"check\":\"netns\",\"unshare_available\":false,\"status\":\"skip\",\"hint\":\"host networking requested or mode does not use netns\"}"
   fi
 
+  local free_mb
+  if ! is_uint "$RESTREAM_ARTIFACT_MIN_FREE_MB"; then
+    emit_preflight "{\"check\":\"artifact-disk\",\"status\":\"fail\",\"hint\":\"RESTREAM_ARTIFACT_MIN_FREE_MB must be a non-negative integer\"}"
+    fail_count=$(( fail_count + 1 ))
+  else
+    mkdir -p "$ARTIFACT_ROOT_ABS"
+    free_mb="$(available_mb_for_path "$ARTIFACT_ROOT_ABS")"
+    if [[ -z "$free_mb" || ! "$free_mb" =~ ^[0-9]+$ ]]; then
+      emit_preflight "{\"check\":\"artifact-disk\",\"root\":\"$(json_escape "$ARTIFACT_ROOT_ABS")\",\"status\":\"fail\",\"hint\":\"could not determine free space\"}"
+      fail_count=$(( fail_count + 1 ))
+    elif (( RESTREAM_ARTIFACT_MIN_FREE_MB > 0 && free_mb < RESTREAM_ARTIFACT_MIN_FREE_MB )); then
+      emit_preflight "{\"check\":\"artifact-disk\",\"root\":\"$(json_escape "$ARTIFACT_ROOT_ABS")\",\"freeMb\":${free_mb},\"minFreeMb\":${RESTREAM_ARTIFACT_MIN_FREE_MB},\"status\":\"fail\",\"hint\":\"prune test artifacts or lower RESTREAM_ARTIFACT_MIN_FREE_MB intentionally\"}"
+      fail_count=$(( fail_count + 1 ))
+    else
+      emit_preflight "{\"check\":\"artifact-disk\",\"root\":\"$(json_escape "$ARTIFACT_ROOT_ABS")\",\"freeMb\":${free_mb},\"minFreeMb\":${RESTREAM_ARTIFACT_MIN_FREE_MB},\"status\":\"ok\"}"
+    fi
+  fi
+
   case "$MODE" in
     bonding) ports=() ;;
     hls-put) ports=("$RESTREAM_HTTP" "$RESTREAM_RTMP" "$RESTREAM_SRT" "$HLS_PUT_PORT") ;;
@@ -395,6 +500,9 @@ JSON
 }
 
 init_run_artifacts() {
+  mkdir -p "$ARTIFACT_ROOT_ABS"
+  prune_old_artifacts
+  ensure_artifact_free_space
   if [[ "${KEEP_ARTIFACTS:-0}" != "1" && -d "$WORK_DIR" ]]; then
     rm -rf "$WORK_DIR"
   fi

@@ -107,6 +107,16 @@ mixed-scale Rust launcher and embedded `libx265` work:
 - aggregate manifest:
   `test/artifacts/protocol-preflight-20260626-codex/manifest.json`
 
+Phase 7 artifact safety was tightened on June 26, 2026:
+
+- `test/run-integration.sh` now emits an `artifact-disk` preflight record and
+  fails before live services start if the artifact filesystem has less free
+  space than `RESTREAM_ARTIFACT_MIN_FREE_MB` (default 2048 MB).
+- live runs prune old ignored top-level `test/artifacts/` directories according
+  to `RESTREAM_ARTIFACT_RETENTION` (default 12), while protecting the active
+  run directory; `RESTREAM_ARTIFACT_PRUNE=0` or `KEEP_ARTIFACTS=1` disables
+  pruning for deliberate retention/debug sessions.
+
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
 direction that Rust should be the canonical integration harness. The thin
