@@ -362,25 +362,24 @@ async fn check_active_outputs(
                         ));
                     }
                 }
-                "srt" => {
+                "srt"
                     if quality.ms_rtt.is_some()
                         || quality.mbps_send_rate.is_some()
-                        || quality.srt_bonded.is_some()
-                    {
-                        lines.push(format!(
-                            "  srt_quality rtt_ms={:?} send_mbps={:?} sent_loss={:?} sent_drop={:?} sent_retrans={:?} bonded={:?} members={:?}/{:?} active={:?} broken={:?}",
-                            quality.ms_rtt,
-                            quality.mbps_send_rate,
-                            quality.packets_sent_loss,
-                            quality.packets_sent_drop,
-                            quality.packets_sent_retrans,
-                            quality.srt_bonded,
-                            quality.srt_group_connected_members,
-                            quality.srt_group_member_count,
-                            quality.srt_group_active_members,
-                            quality.srt_group_broken_members
-                        ));
-                    }
+                        || quality.srt_bonded.is_some() =>
+                {
+                    lines.push(format!(
+                        "  srt_quality rtt_ms={:?} send_mbps={:?} sent_loss={:?} sent_drop={:?} sent_retrans={:?} bonded={:?} members={:?}/{:?} active={:?} broken={:?}",
+                        quality.ms_rtt,
+                        quality.mbps_send_rate,
+                        quality.packets_sent_loss,
+                        quality.packets_sent_drop,
+                        quality.packets_sent_retrans,
+                        quality.srt_bonded,
+                        quality.srt_group_connected_members,
+                        quality.srt_group_member_count,
+                        quality.srt_group_active_members,
+                        quality.srt_group_broken_members
+                    ));
                 }
                 _ => {}
             }
