@@ -56,6 +56,7 @@ async fn run() -> Result<(), String> {
         "burst-verify" => burst_verify_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "ramp-family" => ramp_family_correctness().await,
+        "mixed-h264-rtmp" => mixed_h264_rtmp_correctness().await,
         "mixed-anchor" => mixed_anchor_correctness().await,
         "mixed-h265-srt" => mixed_h265_srt_correctness().await,
         "mixed-h264-srt-multi" => mixed_h264_srt_multi_correctness().await,
@@ -87,9 +88,10 @@ async fn run() -> Result<(), String> {
         other => Err(format!(
             "unknown command {other:?}; use correctness, correctness-rtmp, correctness-srt, \
               correctness-srt-rtmp, hls-put, burst-verify, bframe-rtmp, ramp-family, \
-              mixed-anchor, mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, matrix, \
-              matrix-in-memory, egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              hevc-load, in-process, network, or all"
+              mixed-h264-rtmp, mixed-anchor, mixed-h265-srt, mixed-h264-srt-multi, \
+              mixed-h265-srt-multi, matrix, matrix-in-memory, egress, \
+              correctness-hevc-rtmp, correctness-hevc-srt, hevc-load, in-process, \
+              network, or all"
         )),
     };
 
@@ -1091,6 +1093,41 @@ async fn mixed_h265_srt_correctness() -> Result<Value, String> {
     })
 }
 
+async fn mixed_h264_rtmp_correctness() -> Result<Value, String> {
+    let env = MixedEnv::from_env("mixed-h264-rtmp");
+    if env.n_per_group == 0 {
+        return Err("N_PER_GROUP must be greater than zero".to_string());
+    }
+    std::fs::create_dir_all(&env.work_dir).map_err(|e| e.to_string())?;
+    ensure_mixed_artifacts(&env)?;
+
+    let mut mediamtx = start_mixed_mediamtx(&env).await?;
+    let mut restream = start_mixed_restream(&env).await?;
+    let restream_pid = restream.id().unwrap_or(0);
+    let mut api = RampApi::new(env.restream_http);
+    api.login().await?;
+
+    let config = run_mixed_h264_rtmp_config(&env, &api, restream_pid).await;
+
+    stop_child(&mut restream).await;
+    stop_child(&mut mediamtx).await;
+
+    config.map(|config| {
+        json!({
+            "passed": true,
+            "mode": "mixed-h264-rtmp",
+            "configs": [config],
+            "artifacts": {
+                "scaleCsv": env.scale_log,
+                "rssSummary": env.rss_summary,
+                "summary": env.summary_log,
+                "restreamLog": env.restream_log,
+                "mediamtxLog": env.mediamtx_log,
+            }
+        })
+    })
+}
+
 async fn mixed_h264_srt_multi_correctness() -> Result<Value, String> {
     mixed_srt_multi_correctness("mixed-h264-srt-multi", "h264-srt-multi", false).await
 }
@@ -1823,6 +1860,206 @@ async fn run_mixed_h265_srt_config(
     }))
 }
 
+async fn run_mixed_h264_rtmp_config(
+    env: &MixedEnv,
+    api: &RampApi,
+    restream_pid: u32,
+) -> Result<Value, String> {
+    let cfg = "h264-rtmp";
+    let n = env.n_per_group;
+    let total = n * 4;
+    let stream_key = format!("sk-{cfg}");
+
+    let pipeline = api
+        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create response missing pipeline.id")?
+        .to_string();
+
+    let mut publisher = spawn_mixed_h264_rtmp_publisher(env, &stream_key).await?;
+    wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, "baseline (input live, 0 outputs)").await?;
+    }
+
+    let mut output_ids = Vec::with_capacity(total);
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "rtmp-src",
+            count: n,
+            encoding: "source",
+        },
+        |index| {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
+                env.mtx_rtmp
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "rtmp-720p",
+            count: n,
+            encoding: "720p",
+        },
+        |index| {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{index}",
+                env.mtx_rtmp
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 720p")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "srt-src",
+            count: n,
+            encoding: "source",
+        },
+        |index| {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
+                env.mtx_srt
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "srt-720p",
+            count: n,
+            encoding: "720p",
+        },
+        |index| {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-720p-{index}",
+                env.mtx_srt
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(
+            env,
+            restream_pid,
+            cfg,
+            &format!("after all {total} outputs"),
+        )
+        .await?;
+    }
+
+    let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
+    let ffmpeg = ffmpeg_pipe1_stats().await;
+    let rss_delta = rss_final.saturating_sub(rss_baseline);
+    let per_output = rss_delta / total as u64;
+    append_line(
+        &env.rss_summary,
+        &format!(
+            "{cfg},rss_delta_kb={rss_delta},per_output_kb={per_output},ext_ffmpeg_n={},ext_ffmpeg_rss_kb={}\n",
+            ffmpeg.count, ffmpeg.rss_kb
+        ),
+    )?;
+    if !env.skip_load && env.check_selected("load") {
+        emit_mixed_result(
+            env,
+            cfg,
+            "MS-load-h264-rtmp",
+            "pass",
+            Duration::ZERO,
+            Some(json!({
+                "rss_delta_kb": rss_delta,
+                "per_output_kb": per_output,
+                "ext_ffmpeg_n": ffmpeg.count,
+                "ext_ffmpeg_rss_kb": ffmpeg.rss_kb,
+            })),
+        )?;
+    }
+
+    if env.check_selected("ffprobe") {
+        check_mixed_stream(
+            &format!("RTMP-src  out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+            "1920x1080",
+            None,
+        )
+        .await;
+        check_mixed_stream(
+            &format!("RTMP-720p out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+            "1280x720",
+            None,
+        )
+        .await;
+        check_mixed_stream(
+            &format!("SRT-src   out{n}"),
+            &format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            "1920x1080",
+            None,
+        )
+        .await;
+        check_mixed_stream(
+            &format!("SRT-720p  out{n}"),
+            &format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            "1280x720",
+            None,
+        )
+        .await;
+    }
+
+    stop_child(&mut publisher).await;
+    stop_mixed_outputs(api, &pipeline_id, &output_ids).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    Ok(json!({
+        "config": cfg,
+        "pipelineId": pipeline_id,
+        "nPerGroup": n,
+        "totalOutputs": total,
+        "rssDeltaKb": rss_delta,
+        "perOutputKb": per_output,
+        "extFfmpegCount": ffmpeg.count,
+        "extFfmpegRssKb": ffmpeg.rss_kb,
+    }))
+}
+
 async fn run_mixed_srt_multi_config(
     env: &MixedEnv,
     api: &RampApi,
@@ -2141,6 +2378,57 @@ async fn spawn_mixed_h265_srt_publisher(env: &MixedEnv, stream_key: &str) -> Res
         env.restream_srt
     ));
     let log_path = env.work_dir.join("mixed-h265-srt-publisher.log");
+    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
+    let stderr = log.try_clone().map_err(|e| e.to_string())?;
+    cmd.stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    cmd.spawn().map_err(|e| e.to_string())
+}
+
+async fn spawn_mixed_h264_rtmp_publisher(
+    env: &MixedEnv,
+    stream_key: &str,
+) -> Result<Child, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=1920x1080:rate=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=stereo",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-b:v",
+        "1.5M",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-f",
+        "flv",
+    ]);
+    cmd.arg(format!(
+        "rtmp://127.0.0.1:{}/live/{stream_key}",
+        env.restream_rtmp
+    ));
+    let log_path = env.work_dir.join("mixed-h264-rtmp-publisher.log");
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
     let stderr = log.try_clone().map_err(|e| e.to_string())?;
     cmd.stdout(Stdio::from(log))

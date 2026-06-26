@@ -15,6 +15,14 @@ It does not expose a Prometheus text endpoint, proxy Grafana, or poll a sidecar.
 | `GET /pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
 | `GET /pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
 | `GET /pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |
+| `GET /api/v1/overview` | Session | Engine-wide operator summary: pipeline counts, alert rollup, SRT listener |
+| `GET /api/v1/alerts` | Session | Aggregate alerts across all pipelines with `firstSeen`/`lastSeen` tracking |
+| `GET /api/v1/events` | Session | Lifecycle event log (ingest, stage, egress transitions) |
+| `GET /api/v1/pipelines/:id/summary` | Session | Operator pipeline view: source, outputs, alerts |
+| `GET /api/v1/pipelines/:id/alerts` | Session | Per-pipeline alert list |
+| `GET /api/v1/engine/telemetry` | Session | Engineer: all ingests, stages, egresses, transcoder buffers |
+| `GET /api/v1/pipelines/:id/telemetry` | Session | Engineer: pipeline-scoped ingest, ring, stages, egresses |
+| `GET /api/v1/stages/:key/telemetry` | Session | Engineer: single-stage throughput and pipe metrics |
 
 See [API Reference](api-reference.md) for request/response details.
 

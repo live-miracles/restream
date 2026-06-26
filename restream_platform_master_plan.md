@@ -1320,17 +1320,14 @@ Phase 1 structural items (typed IDs and stage kinds, StageFeeder coverage for
 recording, HLS, internal/external transcoder feeders, H.265→H.264 bridge feeder,
 stage planning, graph serialization) are complete as of 2026-06-25.
 
-Phase 3-only structural follow-up: engine-native graph registries (typed
-`StageKey` maps replacing string-keyed engine maps) remain pending because that
-belongs to the API/runtime model reset rather than the Phase 1 behavior-preserving
-cleanup.
-
 Phase 3 foundation update, 2026-06-25:
 - `MediaEngine` now stores transcoder buffers, stage input queues, and
-  subprocess pipe metrics in typed `StageKey` maps internally. Existing stage
-  tasks and the reconciler may still pass legacy storage strings at the boundary,
-  but the engine parses them once and graph serialization renders from typed
-  keys rather than reparsing registry strings.
+  subprocess pipe metrics in typed `StageKey` maps internally.
+
+Phase 3 typed-key completion, 2026-06-26:
+- The legacy string layer has been removed entirely. All engine method
+  signatures accept typed `StageKind`/`StageKey` parameters. The reconciler
+  and stage tasks pass typed keys end-to-end.
 
 ## Phase 2 — telemetry substrate
 - queue/ring/stage/edge telemetry
@@ -1400,12 +1397,30 @@ Implementation note, 2026-06-25:
   `GET /api/v1/overview`, `GET /api/v1/alerts`, `GET /api/v1/events`,
   `GET /api/v1/pipelines/:id/summary` are all live and tested.
 - `generatedAt` envelope is consistent across all v1 snapshot endpoints.
-- Remaining Phase 3 deliverables: engineer endpoints
-  (`GET /api/v1/engine/telemetry`, `GET /api/v1/pipelines/:id/telemetry`,
-  `GET /api/v1/stages/:id/telemetry`), `first_seen`/`last_seen` on alerts
-  (correlate with event log), broader engine registry split behind narrower
-  registry structs, and converting the remaining boundary call sites from
-  legacy storage strings to typed `StageKey` parameters.
+
+Phase 3 completion, 2026-06-26:
+- Engineer telemetry endpoints landed:
+  `GET /api/v1/engine/telemetry` (all ingests, stages, egresses, buffer count),
+  `GET /api/v1/pipelines/:id/telemetry` (pipeline-scoped ingest, ring, stages,
+  egresses), `GET /api/v1/stages/:key/telemetry` (single-stage throughput and
+  pipe metrics, 404 for unknown stages).
+- `AlertTracker` with `firstSeen`/`lastSeen` timestamps: stamps alerts on
+  first observation, updates `lastSeen` on each subsequent observation, prunes
+  resolved conditions. Wired into `/api/v1/alerts`,
+  `/pipelines/:id/alerts`, and `/api/v1/pipelines/:id/summary`.
+- Legacy string layer removed from `StageKey`/`StageKind`: `parse_legacy_key`,
+  `storage_key`, `legacy_key`, `legacy_ref`, `legacy_stage_key`,
+  `terminal_stage_ref`, and `Unknown` variant all deleted. All engine method
+  signatures accept typed `StageKind`/`StageKey` parameters. `fmt::Display`
+  on `StageKind` produces canonical strings for logging and events.
+- API tests for all three engineer telemetry endpoints plus auth enforcement.
+- AlertTracker unit tests: stamps first/last, preserves first_seen across
+  updates, prunes resolved alerts.
+- Docs updated: `docs/api-reference.md` and `docs/observability.md` document
+  all v1 operator and engineer endpoints.
+- Remaining structural follow-up: splitting `MediaEngine` into finer-grained
+  registry structs (`StageRegistry`, `IngestRegistry`) is a future cleanup,
+  not gating Phase 3 completion.
 
 ## Phase 4 — agent read and planning plane
 - capability discovery

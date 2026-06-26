@@ -1,7 +1,7 @@
 # Rust Backend Rewrite — Status
 
 Branch: `feat/rust-backend-rewrite-v2`
-Code snapshot reviewed: June 25, 2026 (current working-tree changes)
+Code snapshot reviewed: June 26, 2026 (current working-tree changes)
 
 ## Executive Status
 
@@ -19,17 +19,17 @@ a working runtime path.
 
 ## Evidence
 
-`cargo test` on June 25, 2026:
+`cargo test` on June 26, 2026:
 
 | Suite | Result |
 |---|---|
-| Library/unit | 372 passed |
-| API integration | 46 passed |
+| Library/unit | 379 passed |
+| API integration | 50 passed |
 | AV sync integration | 14 passed |
 | Codec integration | 17 passed |
 | Database integration | 15 passed |
 | Transcoder integration | 7 passed |
-| Total | **471 passed, 0 failed** |
+| Total | **482 passed, 0 failed** |
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -71,7 +71,8 @@ The API suite covers authentication, configuration, pipeline/output CRUD,
 ingests, HLS aliases, status, graph, diagnostics preconditions, custom
 encoding persistence/rejection for runtime outputs, HLS upload output
 acceptance, RTMPS output acceptance, egress-pipeline association in `/health`,
-and deletion-cancellation of egress tasks.
+deletion-cancellation of egress tasks, engineer telemetry endpoints (engine,
+pipeline, stage), and telemetry auth enforcement.
 
 The 2×3 live script exists and targets native RTMP/SRT ingest with six outputs.
 The checked-in `test/artifacts/latest/` files are local evidence, not a
@@ -157,9 +158,16 @@ summary rows and `ramp-family.json` records all eight Rust-owned configs. A
 focused aggregate preflight also passed with
 `./test/run-protocol-matrix.sh --run-id ramp-rust-all-preflight
 --preflight-only --continue-on-fail --only-modes ramp`. Next continuation
-point: broaden live verification of the now Rust-delegated `mixed-scale`
-slices, then retire the legacy bash body once the fallback window is no longer
-needed.
+point: restore and verify the historical `h264-rtmp` mixed-scale ingest slice,
+then broaden live verification of all Rust-delegated `mixed-scale` slices before
+retiring the legacy bash body once the fallback window is no longer needed.
+
+The historical RTMP/H.264 `mixed-scale` slice is restored through the Rust
+harness entry point `mixed-h264-rtmp` and delegated by
+`test/run-integration.sh mixed-scale` by default. It preserves the RTMP/FLV
+publisher shape, the four output groups, `scale.csv`, `rss-summary.csv`,
+`MS-load-h264-rtmp`, and optional non-fatal spot checks. Use
+`MIXED_RUST_H264_RTMP=0` to force the per-config bash fallback while bisecting.
 
 The first `mixed-scale` slice has now moved behind the typed Rust harness:
 `cargo run --bin test_harness -- mixed-anchor` owns the `h264-srt` anchor config
@@ -190,19 +198,21 @@ delegated by `test/run-integration.sh mixed-scale` by default. They preserve the
 two-audio SRT publisher (`48000` Hz stereo plus `44100` Hz mono), the four
 output groups, `scale.csv`, `rss-summary.csv`, optional non-fatal spot checks,
 and the route-specific audio encodings (`720p+atrack:0` for RTMP 720p and
-`720p+atrack:0,1` for SRT 720p). `MIXED_RUST_H264_SRT_MULTI=0` and
-`MIXED_RUST_H265_SRT_MULTI=0` keep per-config bash fallbacks. Direct focused
+`720p+atrack:0,1` for SRT 720p). The Rust `ffprobe` path now emits fatal JSONL
+assertions for those route-specific audio counts. `MIXED_RUST_H264_SRT_MULTI=0`
+and `MIXED_RUST_H265_SRT_MULTI=0` keep per-config bash fallbacks. Direct focused
 runs passed on June 26, 2026 with `ONLY_CHECKS=load`, `N_PER_GROUP=1`,
-`SNAPSHOT_SLEEP_SECS=0`, and custom non-default ports:
+`SNAPSHOT_SLEEP_SECS=0`, and custom non-default ports before the stronger
+audio-count assertion was added:
 `mixed-h264-srt-multi` emitted `MS-load-h264-srt-multi` pass with two audio
 tracks, and `mixed-h265-srt-multi` emitted `MS-load-h265-srt-multi` pass with
 one external FFmpeg feed. A wrapper fast path also passed with
 `./test/run-integration.sh --fast --skip-load --only load mixed-scale`,
-delegating all four configs to Rust and printing
+delegating the then-current four configs to Rust and printing
 `[rust] all mixed-scale configs delegated; skipping legacy bash runner`.
-Next continuation point: run a broader mixed-scale check with `ffprobe` enabled,
-then remove the fallback bash body when the team no longer needs it for
-bisecting.
+Next continuation point: run focused `h264-rtmp` validation plus a broader
+five-config mixed-scale check with `ffprobe` enabled, then remove the fallback
+bash body when the team no longer needs it for bisecting.
 
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
@@ -250,6 +260,8 @@ to the local RTMP listener.
 - recording enable/disable
 - build/runtime status endpoint
 - typed stage identity and canonical stage-key planning
+- engineer telemetry endpoints (engine, pipeline, stage)
+- persistent alert tracking with firstSeen/lastSeen timestamps
 
 ### Native media path
 
@@ -291,6 +303,9 @@ to the local RTMP listener.
 - `GET /api/v1/overview` — engine-wide operator summary
 - `GET /api/v1/pipelines/:id/summary` — operator pipeline detail
 - `GET /api/v1/events[?pipeline_id=&limit=]` — recent lifecycle events
+- `GET /api/v1/engine/telemetry` — engineer engine-wide telemetry
+- `GET /api/v1/pipelines/:id/telemetry` — engineer pipeline-scoped telemetry
+- `GET /api/v1/stages/:key/telemetry` — engineer single-stage telemetry
 - HLS pull at `/hls/:id/index.m3u8`
 
 Diagnostics currently run nine checks, including publisher transport and the
@@ -301,7 +316,10 @@ Conditions derived: publisher absent (Critical/Pipeline), reader lag above
 threshold (Warning/Stage), ring overflow (Warning/Stage), output not running
 while publisher is active (Warning/Output), SRT listener UDP drops
 (Warning/Engine). Each alert carries `id`, `severity`, `scope`, `evidence`,
-and `recommended_action` fields. Results are sorted Critical-first.
+`recommended_action`, `firstSeen`, and `lastSeen` fields. `firstSeen`
+records when the condition was first observed; `lastSeen` updates on each
+subsequent observation. Resolved alerts are pruned from the persistent
+tracker. Results are sorted Critical-first.
 
 ## Capability Matrix
 
@@ -455,9 +473,9 @@ See `docs/api-reference.md` for the executable route surface.
   they have no typed `StageKind` variant; they are already centralized.
 - ~~typed alert derivation model~~ — done; `src/alerts.rs` introduces `Alert`,
   `Severity`, and `Scope` types and a pure `derive_alerts(&snapshot)` function;
-  `GET /pipelines/:id/alerts` and `GET /api/v1/alerts` expose the model. Phase 2
-  tracking (`first_seen`, persistent state) deferred; snapshot-derived alerts
-  are stateless and re-derived on every request.
+  `GET /pipelines/:id/alerts` and `GET /api/v1/alerts` expose the model.
+  `AlertTracker` now stamps `firstSeen`/`lastSeen` on each alert and prunes
+  resolved conditions automatically.
 - ~~stage metrics wiring for transcoder stages~~ — done; `external_transcoder`
   fetches `Arc<StageMetrics>` via `get_or_create_stage_metrics` and calls
   `record_in` / `record_out` per packet; `h264_transcoder` does the same on the
@@ -484,17 +502,18 @@ See `docs/api-reference.md` for the executable route surface.
   configurable~~ — done; environment overrides cover ports, SQLite path, media
   directory, fd limit, reconciler cadence, retry backoff, HLS idle timeout, and
   HLS segment/window sizing.
-- full engine-native graph registries remain pending; graph rendering and key
-  building now use typed stage helpers throughout, but the `MediaEngine`
-  HashMaps still use `String` keys rather than a typed `StageKey` index.
-  Splitting `MediaEngine` into dedicated typed registries (`StageRegistry`,
-  `IngestRegistry`, etc.) is a Phase 3 deliverable.
+- ~~engine-native typed registries~~ — done; `MediaEngine` internal maps
+  (`stage_metrics`, `transcoder_buffers`, `input_queues`, `pipe_metrics`) now
+  use typed `StageKey` keys. The legacy string layer (`parse_legacy_key`,
+  `storage_key`, `legacy_key`, `Unknown` variant) has been removed entirely.
+  All engine method signatures accept typed `StageKind`/`StageKey` parameters.
+  Splitting into finer-grained registry structs (`StageRegistry`,
+  `IngestRegistry`, etc.) remains a future cleanup.
 - ~~lifecycle event log~~ — done; `src/events.rs` provides a bounded 1000-event
   FIFO ring (`EventLog`) with `EventKind` variants for ingest connect/disconnect,
   stage start/stop, and egress start/stop. `MediaEngine` emits events at each
   lifecycle transition. `GET /api/v1/events` exposes the log with optional
-  `pipeline_id` and `limit` query params. First-seen/last-seen for alerts will
-  correlate with this event log in Phase 3.
+  `pipeline_id` and `limit` query params.
 - ~~pipe back-pressure metrics for external transcoder~~ — done; `src/media/pipe_metrics.rs`
   introduces `PipeMetrics` with stdin-stall and stdout-idle counters. The external
   transcoder registers an `Arc<PipeMetrics>` in `MediaEngine::pipe_metrics` on
@@ -528,17 +547,17 @@ See `docs/api-reference.md` for the executable route surface.
 
 ## Current File-Level Snapshot
 
-Approximate lines in the reviewed working tree (June 25, 2026):
+Approximate lines in the reviewed working tree (June 26, 2026):
 
 | Area | Lines | Notes |
 |---|---:|---|
-| `src/api.rs` | 2,749 | v1 operator endpoints added |
-| `src/alerts.rs` | 423 | new: typed alert model |
+| `src/api.rs` | 2,812 | v1 operator + engineer endpoints |
+| `src/alerts.rs` | 549 | typed alert model + AlertTracker |
 | `src/events.rs` | 210 | new: lifecycle event log |
 | `src/db.rs` | 776 | |
 | `src/diag.rs` | 987 | |
 | `src/lib.rs` | 500 | |
-| `src/media/engine.rs` | 2,629 | StageMetrics/PipeMetrics extracted |
+| `src/media/engine.rs` | 2,823 | typed StageKey registries + telemetry |
 | `src/media/stage_metrics.rs` | 81 | new: hot-path throughput counters |
 | `src/media/pipe_metrics.rs` | 54 | new: subprocess pipe back-pressure |
 | `src/media/timing.rs` | 210 | new: rdtsc/Instant elapsed timing |
@@ -548,7 +567,7 @@ Approximate lines in the reviewed working tree (June 25, 2026):
 | `src/media/srt.rs` | 3,185 | |
 | `src/media/ring_buffer.rs` | 1,269 | |
 | `src/media/transcoder.rs` | 1,185 | |
-| `tests/api.rs` | 1,545 | v1 endpoint tests added |
+| `tests/api.rs` | 1,740 | v1 + engineer endpoint tests |
 | `tests/db.rs` | 396 | |
 | `tests/transcoder.rs` | 120 | |
 | `benches/stage_metrics.rs` | 155 | new: hot-path cost measurements |

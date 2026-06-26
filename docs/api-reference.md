@@ -453,3 +453,117 @@ These routes require the dashboard session cookie.
 All HLS routes respond with `Access-Control-Allow-Origin: *` and allow `GET`,
 `OPTIONS`, `Content-Type`, and `Range` so browser-based players on other
 origins can pull segments and playlists without CORS preflight errors.
+
+## Operator v1 Endpoints
+
+All `/api/v1` routes require the session cookie.
+
+### `GET /api/v1/overview`
+
+Engine-wide operator summary: pipeline counts, alert rollup, SRT listener state.
+
+```json
+{
+  "generatedAt": "...",
+  "totalPipelines": 3,
+  "activePipelines": 2,
+  "degradedPipelines": 0,
+  "failedOutputs": 0,
+  "alertCount": { "critical": 0, "warning": 1 },
+  "srtListener": { ... }
+}
+```
+
+### `GET /api/v1/alerts`
+
+Aggregate alerts across all pipelines. Each alert carries `id`, `severity`,
+`scope`, `evidence`, `recommendedAction`, `firstSeen`, and `lastSeen` fields.
+Sorted Critical-first. `firstSeen` is stamped on first observation;
+`lastSeen` updates on every subsequent observation. Resolved alerts are
+pruned automatically.
+
+```json
+{
+  "generatedAt": "...",
+  "alerts": [ { "id": "...", "severity": "Warning", ... } ]
+}
+```
+
+### `GET /api/v1/events`
+
+Lifecycle event log. Query params: `pipeline_id` (optional filter),
+`limit` (default 100, max 1000).
+
+```json
+{
+  "generatedAt": "...",
+  "events": [ { "seq": 1, "kind": "IngestConnected", "pipelineId": "...", "timestamp": "..." } ]
+}
+```
+
+### `GET /api/v1/pipelines/:pipelineId/summary`
+
+Operator-focused pipeline view: source state, output rollup, recording,
+HLS preview, alerts. Returns 404 for unknown pipeline IDs.
+
+### `GET /api/v1/pipelines/:pipelineId/alerts`
+
+Alerts for a single pipeline. Same alert shape as the aggregate endpoint.
+
+## Engineer v1 Endpoints
+
+All engineer endpoints require the session cookie.
+
+### `GET /api/v1/engine/telemetry`
+
+Engine-wide telemetry: all active ingests, processing stages with throughput
+counters, egresses, and transcoder buffer count.
+
+```json
+{
+  "generatedAt": "...",
+  "ingests": [
+    { "pipelineId": "...", "protocol": "rtmp", "uptimeSecs": 42.5, "bytesReceived": 12345678, "metrics": { ... } }
+  ],
+  "stages": [
+    { "stageKey": "pipe1:video:720p", "pipelineId": "pipe1", "kind": "video:720p", "metrics": { "packetsIn": 100, "packetsOut": 100, "bytesIn": 50000, "bytesOut": 30000, "processingUs": 1200 }, "pipeMetrics": { ... } }
+  ],
+  "egresses": [
+    { "outputId": "...", "pipelineId": "...", "uptimeSecs": 42.0, "bytesOut": 9876543 }
+  ],
+  "activeTranscoderBuffers": 2
+}
+```
+
+### `GET /api/v1/pipelines/:pipelineId/telemetry`
+
+Pipeline-scoped telemetry: ingest, source ring buffer, processing stages,
+and egresses for a single pipeline.
+
+```json
+{
+  "generatedAt": "...",
+  "pipelineId": "...",
+  "ingest": { "protocol": "srt", "uptimeSecs": 10.0, "bytesReceived": 500000, "metrics": { ... } },
+  "sourceRing": { "fill": 42, "capacity": 8192, "readers": [ { "name": "...", "lagSlots": 5, "overflowCount": 0, "packetAgeMs": 120 } ] },
+  "stages": [ { "kind": "video:720p", "metrics": { ... } } ],
+  "egresses": [ { "outputId": "...", "uptimeSecs": 10.0, "bytesOut": 400000 } ]
+}
+```
+
+### `GET /api/v1/stages/:stageKey/telemetry`
+
+Single-stage telemetry by stage key (e.g. `pipe1:video:720p`). Returns raw
+throughput counters and subprocess pipe metrics (if present). Returns 404
+if the stage is not currently active.
+
+```json
+{
+  "generatedAt": "...",
+  "stageKey": "pipe1:video:720p",
+  "pipelineId": "pipe1",
+  "kind": "video:720p",
+  "metrics": { "packetsIn": 100, "packetsOut": 100, "bytesIn": 50000, "bytesOut": 30000, "processingUs": 1200 },
+  "pipeMetrics": null
+}
+```
