@@ -115,6 +115,9 @@ Phase 7 artifact safety was tightened on June 26, 2026:
 - live runs prune old ignored top-level `test/artifacts/` directories so only
   the latest three runs remain, while protecting the active run directory;
   `KEEP_ARTIFACTS=1` disables pruning for deliberate retention/debug sessions.
+- `test/run-protocol-matrix.sh --help` and `--list-modes` are now answered by
+  the shell wrapper without compiling the Rust orchestrator; real matrix runs
+  go through `scripts/resource-limit cargo run --bin protocol_matrix`.
 
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
