@@ -560,7 +560,9 @@ agents can inspect and slice the matrix cheaply; real matrix runs invoke
 `RESTREAM_PROTOCOL_MATRIX_ONLY=1` for that orchestrator build so aggregate
 preflight does not require the media-native SRT/FFmpeg link prefix before any
 live mode starts. Do not set that flag for `restream` or `test_harness` builds;
-it is only for the non-media protocol-matrix orchestrator binary.
+it is only for the non-media protocol-matrix orchestrator binary. The Rust
+orchestrator removes that variable before delegating to `test/run-integration.sh`
+so selected live modes still build/link their media-native binaries normally.
 For release-parity preflight, build the static binary with
 `scripts/resource-limit ./scripts/setup-static-build.sh` followed by
 `scripts/resource-limit ./scripts/build-static.sh`, then pass

@@ -39,11 +39,11 @@ fn main() {
         "cargo:rustc-env=RESTREAM_BUILD_SRT_VERSION={}",
         repo_static_srt.version
     );
-    println!(
-        "cargo:rustc-link-search=native={}",
-        repo_static_srt.lib_dir.display()
-    );
     if fully_static {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            repo_static_srt.lib_dir.display()
+        );
         let output = std::process::Command::new("c++")
             .arg("-print-file-name=libstdc++.a")
             .output()
@@ -73,6 +73,8 @@ fn main() {
         println!("cargo:rustc-link-arg=-lgcc");
         println!("cargo:rustc-link-arg=-Wl,--end-group");
     } else {
+        let srt_link_dir = isolate_srt_archive(&repo_static_srt.archive);
+        println!("cargo:rustc-link-search=native={}", srt_link_dir.display());
         println!("cargo:rustc-link-lib=static:+whole-archive=srt");
         println!("cargo:rustc-link-lib=dylib=ssl");
         println!("cargo:rustc-link-lib=dylib=crypto");
@@ -122,6 +124,7 @@ fn main() {
 struct RepoStaticSrt {
     version: String,
     lib_dir: std::path::PathBuf,
+    archive: std::path::PathBuf,
 }
 
 fn repo_static_srt() -> RepoStaticSrt {
@@ -154,7 +157,20 @@ fn repo_static_srt() -> RepoStaticSrt {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    RepoStaticSrt { version, lib_dir }
+    RepoStaticSrt {
+        version,
+        lib_dir,
+        archive,
+    }
+}
+
+fn isolate_srt_archive(archive: &std::path::Path) -> std::path::PathBuf {
+    let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR missing"));
+    let link_dir = out_dir.join("srt-link");
+    std::fs::create_dir_all(&link_dir).expect("failed to create isolated SRT link directory");
+    std::fs::copy(archive, link_dir.join("libsrt.a"))
+        .expect("failed to copy repo static libsrt into isolated link directory");
+    link_dir
 }
 
 fn embed_pkg_version(env_name: &str, package: &str, statik: bool) {

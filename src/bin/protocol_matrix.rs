@@ -259,6 +259,7 @@ fn run_integration(
     let mut command = Command::new(runner);
     command
         .env("WORK_DIR", mode_dir)
+        .env_remove("RESTREAM_PROTOCOL_MATRIX_ONLY")
         .env(
             "RESTREAM_BIN",
             config
