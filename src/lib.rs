@@ -226,6 +226,7 @@ pub async fn run_app() {
             srt: ports.srt,
         },
         media_dir,
+        alert_tracker: crate::alerts::AlertTracker::new(),
     });
 
     // Start Web Server

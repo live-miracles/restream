@@ -3,6 +3,9 @@
 //! `derive_alerts` is pure — it takes a `health_snapshot()` JSON value and
 //! returns a sorted `Vec<Alert>` (Critical before Warning). No I/O, no locks.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use serde::Serialize;
 
 // ─── Severity ────────────────────────────────────────────────────────────────
@@ -56,6 +59,12 @@ pub struct Alert {
     pub recommended_action: String,
     /// Copied from `snapshot.generatedAt`.
     pub generated_at: String,
+    /// When this alert condition was first observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_seen: Option<String>,
+    /// When this alert condition was most recently observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
 }
 
 // ─── Thresholds ──────────────────────────────────────────────────────────────
@@ -94,6 +103,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
             evidence: vec![format!("udpDrops = {}", udp_drops)],
             recommended_action: "Increase SO_RCVBUF or reduce SRT publisher bandwidth.".into(),
             generated_at: generated_at.clone(),
+            first_seen: None,
+            last_seen: None,
         });
     }
 
@@ -123,6 +134,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                 recommended_action:
                     "Start the publisher or check the stream key and connection.".into(),
                 generated_at: generated_at.clone(),
+                first_seen: None,
+                last_seen: None,
             });
         }
 
@@ -156,6 +169,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                             "Check downstream network/encoder throughput or reduce output bitrate."
                                 .into(),
                         generated_at: generated_at.clone(),
+                        first_seen: None,
+                        last_seen: None,
                     });
                 }
 
@@ -182,6 +197,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                         recommended_action:
                             "Reduce output count or increase processing throughput.".into(),
                         generated_at: generated_at.clone(),
+                        first_seen: None,
+                        last_seen: None,
                     });
                 }
             }
@@ -214,6 +231,8 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                             "Check the destination URL, credentials, and network reachability."
                                 .into(),
                         generated_at: generated_at.clone(),
+                        first_seen: None,
+                        last_seen: None,
                     });
                 }
             }
@@ -232,6 +251,65 @@ fn sorted(mut alerts: Vec<Alert>) -> Vec<Alert> {
             .then(a.id.cmp(&b.id))
     });
     alerts
+}
+
+// ─── Alert Tracker ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct AlertHistory {
+    first_seen: String,
+    last_seen: String,
+}
+
+/// Tracks `first_seen`/`last_seen` timestamps for recurring alert conditions.
+///
+/// Call `track` after each `derive_alerts` invocation. It stamps each alert
+/// with its history and prunes entries for alerts that have resolved.
+pub struct AlertTracker {
+    history: Mutex<HashMap<String, AlertHistory>>,
+}
+
+impl Default for AlertTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AlertTracker {
+    pub fn new() -> Self {
+        Self {
+            history: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Stamp each alert with its first/last seen times and prune resolved entries.
+    pub fn track(&self, alerts: &mut [Alert]) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        let mut active_ids: HashMap<&str, ()> = HashMap::with_capacity(alerts.len());
+
+        for alert in alerts.iter_mut() {
+            active_ids.insert(&alert.id, ());
+            let entry = history
+                .entry(alert.id.clone())
+                .or_insert_with(|| AlertHistory {
+                    first_seen: now.clone(),
+                    last_seen: now.clone(),
+                });
+            entry.last_seen = now.clone();
+            alert.first_seen = Some(entry.first_seen.clone());
+            alert.last_seen = Some(entry.last_seen.clone());
+        }
+
+        history.retain(|id, _| active_ids.contains_key(id.as_str()));
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -419,5 +497,53 @@ mod tests {
         assert_eq!(alerts.len(), 2);
         assert_eq!(alerts[0].severity, Severity::Critical);
         assert_eq!(alerts[1].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn tracker_stamps_first_and_last_seen() {
+        let tracker = AlertTracker::new();
+        let snap = snapshot_with_pipeline("pipe1", "off");
+        let mut alerts = derive_alerts(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].first_seen.is_none());
+
+        tracker.track(&mut alerts);
+        let first = alerts[0].first_seen.clone().unwrap();
+        let last = alerts[0].last_seen.clone().unwrap();
+        assert_eq!(first, last);
+        assert_eq!(tracker.active_count(), 1);
+    }
+
+    #[test]
+    fn tracker_updates_last_seen_preserves_first_seen() {
+        let tracker = AlertTracker::new();
+        let snap = snapshot_with_pipeline("pipe1", "off");
+
+        let mut alerts1 = derive_alerts(&snap);
+        tracker.track(&mut alerts1);
+        let first = alerts1[0].first_seen.clone().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let mut alerts2 = derive_alerts(&snap);
+        tracker.track(&mut alerts2);
+        assert_eq!(alerts2[0].first_seen.as_ref().unwrap(), &first);
+        assert_ne!(alerts2[0].last_seen.as_ref().unwrap(), &first);
+    }
+
+    #[test]
+    fn tracker_prunes_resolved_alerts() {
+        let tracker = AlertTracker::new();
+
+        let snap_off = snapshot_with_pipeline("pipe1", "off");
+        let mut alerts = derive_alerts(&snap_off);
+        tracker.track(&mut alerts);
+        assert_eq!(tracker.active_count(), 1);
+
+        let snap_on = snapshot_with_pipeline("pipe1", "on");
+        let mut alerts = derive_alerts(&snap_on);
+        assert!(alerts.is_empty());
+        tracker.track(&mut alerts);
+        assert_eq!(tracker.active_count(), 0);
     }
 }

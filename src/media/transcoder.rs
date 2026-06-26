@@ -629,7 +629,7 @@ mod tests {
     /// See docs/media-pipeline.md "Audio Stage Cache Concern".
     #[test]
     fn stage_keys_isolate_video_presets() {
-        use crate::domain::stage::{EncodingStagePlan, StageKind};
+        use crate::domain::stage::EncodingStagePlan;
 
         let plan_720 = EncodingStagePlan::from_encoding("pipe1", "720p+atrack:0");
         let plan_1080 = EncodingStagePlan::from_encoding("pipe1", "1080p+atrack:0");
@@ -649,7 +649,6 @@ mod tests {
     #[test]
     fn video_stage_shared_across_audio_variants() {
         use crate::domain::stage::{EncodingStagePlan, StageKind};
-
         let expected = StageKind::video_preset("720p");
         for encoding in &["720p", "720p+atrack:0", "720p+remap:0:1"] {
             let plan = EncodingStagePlan::from_encoding("pipe1", encoding);

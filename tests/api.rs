@@ -36,6 +36,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
             srt: 10080,
         },
         media_dir: "media".to_string(),
+        alert_tracker: restream::alerts::AlertTracker::new(),
     });
 
     (api::create_router(state), pool, engine)
@@ -1059,6 +1060,7 @@ async fn health_shows_registered_egress() {
                 srt: 10080,
             },
             media_dir: "media".to_string(),
+            alert_tracker: restream::alerts::AlertTracker::new(),
         });
         api::create_router(state)
     };

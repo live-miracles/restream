@@ -104,6 +104,7 @@ pub struct AppState {
     /// Directory for recordings and file-ingest sources.
     /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
     pub media_dir: String,
+    pub alert_tracker: alerts::AlertTracker,
 }
 
 impl AppState {
@@ -2055,7 +2056,8 @@ async fn pipeline_alerts_handler(
         .as_str()
         .unwrap_or("")
         .to_string();
-    let alert_list = alerts::derive_alerts(&snapshot);
+    let mut alert_list = alerts::derive_alerts(&snapshot);
+    state.alert_tracker.track(&mut alert_list);
     Json(serde_json::json!({
         "generatedAt": generated_at,
         "alerts": alert_list,
@@ -2099,7 +2101,8 @@ async fn aggregate_alerts_handler(
         .as_str()
         .unwrap_or("")
         .to_string();
-    let alert_list = alerts::derive_alerts(&snapshot);
+    let mut alert_list = alerts::derive_alerts(&snapshot);
+    state.alert_tracker.track(&mut alert_list);
     Json(serde_json::json!({
         "generatedAt": generated_at,
         "alerts": alert_list,
@@ -2315,7 +2318,8 @@ async fn v1_pipeline_summary_handler(
 
     let pip = &snapshot["pipelines"][&pipeline_id];
 
-    let alert_list = alerts::derive_alerts(&snapshot);
+    let mut alert_list = alerts::derive_alerts(&snapshot);
+    state.alert_tracker.track(&mut alert_list);
 
     let input_status = pip["input"]["status"].as_str().unwrap_or("off");
     let bitrate_kbps = pip["input"]["bitrateKbps"].as_f64();
