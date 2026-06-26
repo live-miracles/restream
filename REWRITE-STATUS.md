@@ -99,6 +99,14 @@ A full aggregate preflight on June 25, 2026 also passed for `ramp`,
   checks; `bonding` correctly skips the regular `restream` binary check because
   it builds dedicated static SRT helper binaries
 
+The same all-mode aggregate preflight passed again on June 26, 2026 after the
+mixed-scale Rust launcher and embedded `libx265` work:
+
+- `./test/run-protocol-matrix.sh --run-id protocol-preflight-20260626-codex
+  --preflight-only`
+- aggregate manifest:
+  `test/artifacts/protocol-preflight-20260626-codex/manifest.json`
+
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
 direction that Rust should be the canonical integration harness. The thin
