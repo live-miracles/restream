@@ -1170,10 +1170,12 @@ async fn run_mixed_anchor_config(
     add_mixed_group(
         api,
         &pipeline_id,
-        cfg,
-        "rtmp-src",
-        n,
-        "source",
+        MixedGroupSpec {
+            cfg,
+            group: "rtmp-src",
+            count: n,
+            encoding: "source",
+        },
         |index| {
             format!(
                 "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
@@ -1223,10 +1225,12 @@ async fn run_mixed_anchor_config(
     add_mixed_group(
         api,
         &pipeline_id,
-        cfg,
-        "rtmp-720p",
-        n,
-        "720p",
+        MixedGroupSpec {
+            cfg,
+            group: "rtmp-720p",
+            count: n,
+            encoding: "720p",
+        },
         |index| {
             format!(
                 "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{index}",
@@ -1243,10 +1247,12 @@ async fn run_mixed_anchor_config(
     add_mixed_group(
         api,
         &pipeline_id,
-        cfg,
-        "srt-src",
-        n,
-        "source",
+        MixedGroupSpec {
+            cfg,
+            group: "srt-src",
+            count: n,
+            encoding: "source",
+        },
         |index| {
             format!(
                 "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
@@ -1263,10 +1269,12 @@ async fn run_mixed_anchor_config(
     add_mixed_group(
         api,
         &pipeline_id,
-        cfg,
-        "srt-720p",
-        n,
-        "720p",
+        MixedGroupSpec {
+            cfg,
+            group: "srt-720p",
+            count: n,
+            encoding: "720p",
+        },
         |index| {
             format!(
                 "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-720p-{index}",
@@ -1316,51 +1324,59 @@ async fn run_mixed_anchor_config(
     if env.check_selected("ffprobe") {
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-ffprobe-rtmp-src",
-            &format!("RTMP-src  out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-            "1920x1080",
-            None,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-rtmp-src",
+                label: &format!("RTMP-src  out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+                expected: "1920x1080",
+                cookie: None,
+            },
             resume,
         )
         .await?;
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-ffprobe-rtmp-720p",
-            &format!("RTMP-720p out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-            "1280x720",
-            None,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-rtmp-720p",
+                label: &format!("RTMP-720p out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+                expected: "1280x720",
+                cookie: None,
+            },
             resume,
         )
         .await?;
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-ffprobe-srt-src",
-            &format!("SRT-src   out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1920x1080",
-            None,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-srt-src",
+                label: &format!("SRT-src   out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1920x1080",
+                cookie: None,
+            },
             resume,
         )
         .await?;
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-ffprobe-srt-720p",
-            &format!("SRT-720p  out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1280x720",
-            None,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-srt-720p",
+                label: &format!("SRT-720p  out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1280x720",
+                cookie: None,
+            },
             resume,
         )
         .await?;
@@ -1377,29 +1393,33 @@ async fn run_mixed_anchor_config(
     if env.check_selected("hls") {
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-hls-mtx",
-            "HLS/mtx",
-            &format!(
-                "http://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}/index.m3u8",
-                env.mtx_hls
-            ),
-            "1920x1080",
-            None,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-hls-mtx",
+                label: "HLS/mtx",
+                url: &format!(
+                    "http://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}/index.m3u8",
+                    env.mtx_hls
+                ),
+                expected: "1920x1080",
+                cookie: None,
+            },
             resume,
         )
         .await?;
         verify_mixed_stream(
             env,
-            cfg,
-            "MS-hls-restream",
-            "HLS/restream",
-            &format!(
-                "http://127.0.0.1:{}/hls/{pipeline_id}/index.m3u8",
-                env.restream_http
-            ),
-            "1920x1080",
-            api.cookie.as_deref(),
+            MixedProbeSpec {
+                cfg,
+                id: "MS-hls-restream",
+                label: "HLS/restream",
+                url: &format!(
+                    "http://127.0.0.1:{}/hls/{pipeline_id}/index.m3u8",
+                    env.restream_http
+                ),
+                expected: "1920x1080",
+                cookie: api.cookie.as_deref(),
+            },
             resume,
         )
         .await?;
@@ -1535,32 +1555,39 @@ async fn start_mixed_output(
     .map(|_| ())
 }
 
+struct MixedGroupSpec<'a> {
+    cfg: &'a str,
+    group: &'a str,
+    count: usize,
+    encoding: &'a str,
+}
+
 async fn add_mixed_group<F>(
     api: &RampApi,
     pipeline_id: &str,
-    cfg: &str,
-    group: &str,
-    count: usize,
-    encoding: &str,
+    spec: MixedGroupSpec<'_>,
     url_for: F,
     output_ids: &mut Vec<String>,
 ) -> Result<(), String>
 where
     F: Fn(usize) -> String,
 {
-    for index in 1..=count {
+    for index in 1..=spec.count {
         let output_id = create_mixed_output(
             api,
             pipeline_id,
-            &format!("{group}-{index}"),
+            &format!("{}-{index}", spec.group),
             &url_for(index),
-            encoding,
+            spec.encoding,
         )
         .await?;
         start_mixed_output(api, pipeline_id, &output_id).await?;
         output_ids.push(output_id);
     }
-    println!("[mixed-anchor] added {count} {group} outputs for {cfg}");
+    println!(
+        "[mixed-anchor] added {} {} outputs for {}",
+        spec.count, spec.group, spec.cfg
+    );
     Ok(())
 }
 
@@ -1592,46 +1619,53 @@ async fn snapshot_mixed(
     Ok(())
 }
 
+struct MixedProbeSpec<'a> {
+    cfg: &'a str,
+    id: &'a str,
+    label: &'a str,
+    url: &'a str,
+    expected: &'a str,
+    cookie: Option<&'a str>,
+}
+
 async fn verify_mixed_stream(
     env: &MixedEnv,
-    cfg: &str,
-    id: &str,
-    label: &str,
-    url: &str,
-    expected: &str,
-    cookie: Option<&str>,
+    spec: MixedProbeSpec<'_>,
     resume: &mut MixedResume,
 ) -> Result<(), String> {
-    if !resume.allows(id) {
+    if !resume.allows(spec.id) {
         return Ok(());
     }
     let started = Instant::now();
     let mut last = String::new();
     let mut last_error = String::new();
     for attempt in 1..=30 {
-        match probe_dims_ramp_with_cookie(url, cookie).await {
-            Ok(dimensions) if dimensions == expected => {
+        match probe_dims_ramp_with_cookie(spec.url, spec.cookie).await {
+            Ok(dimensions) if dimensions == spec.expected => {
                 emit_mixed_result(
                     env,
-                    cfg,
-                    id,
+                    spec.cfg,
+                    spec.id,
                     "pass",
                     started.elapsed(),
                     Some(json!({
-                        "label": label,
-                        "expected": expected,
+                        "label": spec.label,
+                        "expected": spec.expected,
                         "got": dimensions,
-                        "url": url,
+                        "url": spec.url,
                     })),
                 )?;
-                log_mixed_ok(env, &format!("ffprobe: {label} -> {dimensions}"))?;
+                log_mixed_ok(env, &format!("ffprobe: {} -> {dimensions}", spec.label))?;
                 return Ok(());
             }
             Ok(dimensions) => {
                 if !dimensions.is_empty() {
                     last = dimensions;
                 }
-                eprintln!("    attempt {attempt}: got '{last}', want '{expected}'");
+                eprintln!(
+                    "    attempt {attempt}: got '{last}', want '{}'",
+                    spec.expected
+                );
             }
             Err(error) => {
                 last_error = error.clone();
@@ -1641,7 +1675,9 @@ async fn verify_mixed_stream(
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     let message = format!(
-        "ffprobe: {label} - expected {expected}, got '{}'",
+        "ffprobe: {} - expected {}, got '{}'",
+        spec.label,
+        spec.expected,
         if last.is_empty() {
             "<no output>"
         } else {
@@ -1650,16 +1686,16 @@ async fn verify_mixed_stream(
     );
     emit_mixed_result(
         env,
-        cfg,
-        id,
+        spec.cfg,
+        spec.id,
         "fail",
         started.elapsed(),
         Some(json!({
             "message": message,
-            "label": label,
-            "expected": expected,
+            "label": spec.label,
+            "expected": spec.expected,
             "got": last,
-            "url": url,
+            "url": spec.url,
             "ffprobe_stderr": last_error,
         })),
     )?;
