@@ -157,24 +157,21 @@ summary rows and `ramp-family.json` records all eight Rust-owned configs. A
 focused aggregate preflight also passed with
 `./test/run-protocol-matrix.sh --run-id ramp-rust-all-preflight
 --preflight-only --continue-on-fail --only-modes ramp`. Next continuation
-point: move the remaining larger `mixed-scale` runner behind smaller
-Rust-owned subcommands while preserving its current HLS, smoke, lifecycle,
-TC_SPAWNS, and multi-audio assertions.
+point: broaden live verification of the now Rust-delegated `mixed-scale`
+slices, then retire the legacy bash body once the fallback window is no longer
+needed.
 
 The first `mixed-scale` slice has now moved behind the typed Rust harness:
 `cargo run --bin test_harness -- mixed-anchor` owns the `h264-srt` anchor config
-by default from `test/run-integration.sh mixed-scale`, while the shell runner
-continues to own `h265-srt`, `h264-srt-multi`, and `h265-srt-multi`. The Rust
-slice preserves the existing artifact layout (`scale.csv`, `rss-summary.csv`,
-`summary.txt`, assertion JSONL, sidecar logs, and `mixed-anchor.json`), creates
-the HLS preview plus four output groups, emits `MS-smoke`, `MS-ffprobe-*`,
-`MS-hls-*`, and `MS-lifecycle`, and uses the authenticated session cookie for
-restream's protected HLS pull route. A direct focused run passed on June 25,
-2026 with `ONLY_CHECKS=smoke,hls,lifecycle`, `N_PER_GROUP=1`, and
+by default from `test/run-integration.sh mixed-scale`. The Rust slice preserves
+the existing artifact layout (`scale.csv`, `rss-summary.csv`, `summary.txt`,
+assertion JSONL, sidecar logs, and `mixed-anchor.json`), creates the HLS preview
+plus four output groups, emits `MS-smoke`, `MS-ffprobe-*`, `MS-hls-*`, and
+`MS-lifecycle`, and uses the authenticated session cookie for restream's
+protected HLS pull route. A direct focused run passed on June 25, 2026 with
+`ONLY_CHECKS=smoke,hls,lifecycle`, `N_PER_GROUP=1`, and
 `SNAPSHOT_SLEEP_SECS=0`; the wrapper-level `--only smoke,ffprobe,hls,lifecycle`
-run also passed the Rust anchor before continuing into the still-bash-owned
-configs. Next continuation point: move `h265-srt` into Rust with its
-`MS-tc-spawns` assertion, then migrate the two multi-audio configs.
+run also passed the Rust anchor.
 
 The `h265-srt` mixed-scale slice has also been moved behind a Rust harness
 entry point, `cargo run --bin test_harness -- mixed-h265-srt`, and is delegated
@@ -185,9 +182,27 @@ the bash path; `MIXED_RUST_H265_SRT=0` keeps the legacy bash fallback. A direct
 focused run passed on June 26, 2026 with `ONLY_CHECKS=tc-spawns`,
 `N_PER_GROUP=1`, and `SNAPSHOT_SLEEP_SECS=0`. A wrapper fast path with
 `--only tc-spawns --skip-load` also passed the Rust `mixed-h265-srt` slice
-(`MS-tc-spawns`: `tc_spawns=2`, bound `2`) before continuing into the
-still-bash-owned multi-audio configs. Next continuation point: migrate the two
-multi-audio configs.
+(`MS-tc-spawns`: `tc_spawns=2`, bound `2`).
+
+The two multi-audio `mixed-scale` slices are now wired through Rust harness
+entry points, `mixed-h264-srt-multi` and `mixed-h265-srt-multi`, and are
+delegated by `test/run-integration.sh mixed-scale` by default. They preserve the
+two-audio SRT publisher (`48000` Hz stereo plus `44100` Hz mono), the four
+output groups, `scale.csv`, `rss-summary.csv`, optional non-fatal spot checks,
+and the route-specific audio encodings (`720p+atrack:0` for RTMP 720p and
+`720p+atrack:0,1` for SRT 720p). `MIXED_RUST_H264_SRT_MULTI=0` and
+`MIXED_RUST_H265_SRT_MULTI=0` keep per-config bash fallbacks. Direct focused
+runs passed on June 26, 2026 with `ONLY_CHECKS=load`, `N_PER_GROUP=1`,
+`SNAPSHOT_SLEEP_SECS=0`, and custom non-default ports:
+`mixed-h264-srt-multi` emitted `MS-load-h264-srt-multi` pass with two audio
+tracks, and `mixed-h265-srt-multi` emitted `MS-load-h265-srt-multi` pass with
+one external FFmpeg feed. A wrapper fast path also passed with
+`./test/run-integration.sh --fast --skip-load --only load mixed-scale`,
+delegating all four configs to Rust and printing
+`[rust] all mixed-scale configs delegated; skipping legacy bash runner`.
+Next continuation point: run a broader mixed-scale check with `ffprobe` enabled,
+then remove the fallback bash body when the team no longer needs it for
+bisecting.
 
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 

@@ -159,18 +159,14 @@ Expected resource counts (see
 
 Env: `N_PER_GROUP` (default 25), `ISOLATE=1` (default, restarts per config).
 
-The `h264-srt` anchor is now Rust-owned by default through
-`cargo run --bin test_harness -- mixed-anchor`. The shell wrapper still owns the
-remaining `h265-srt`, `h264-srt-multi`, and `h265-srt-multi` configs and keeps
-the public CLI, manifest, CSV, summary, and JSONL assertion layout intact. Set
-`MIXED_RUST_ANCHOR=0` to force the legacy bash anchor while bisecting behavior.
-The Rust anchor sends the logged-in session cookie when probing restream's
-protected `/hls/:pipeline_id/index.m3u8` endpoint.
-
-The `h265-srt` config is also Rust-owned by default through
-`cargo run --bin test_harness -- mixed-h265-srt`. It preserves the non-fatal
-spot checks and the `MS-tc-spawns` stage-sharing assertion. Set
-`MIXED_RUST_H265_SRT=0` to force the legacy bash path while bisecting behavior.
+The `mixed-scale` configs are now Rust-owned by default through
+`test_harness` entry points while the shell wrapper keeps the public CLI,
+manifest, CSV, summary, and JSONL assertion layout intact. Use
+`MIXED_RUST_ANCHOR=0`, `MIXED_RUST_H265_SRT=0`,
+`MIXED_RUST_H264_SRT_MULTI=0`, or `MIXED_RUST_H265_SRT_MULTI=0` to force a
+legacy bash slice while bisecting behavior. The multi-audio Rust slices
+preserve the two-audio SRT publisher, RTMP `720p+atrack:0`, and SRT
+`720p+atrack:0,1` route encodings.
 
 ### `bonding` — SRT socket bonding
 
@@ -461,9 +457,9 @@ for every mode.
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
 already behind typed Rust harness entry points, and `ramp` now delegates its
-full eight-config matrix to `test_harness ramp-family`. The remaining
-per-mode media runners, starting with `mixed-scale`, should migrate one
-isolated slice at a time while preserving public CLI and artifact layout.
+full eight-config matrix to `test_harness ramp-family`. `mixed-scale` now
+delegates its four config slices to Rust by default and keeps per-slice bash
+fallback flags only for bisecting while broader live verification continues.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
