@@ -1511,6 +1511,24 @@ impl MediaEngine {
         }))
     }
 
+    pub async fn stage_telemetry_by_display(&self, display: &str) -> Option<serde_json::Value> {
+        let all_stage_metrics = self.stage_metrics.read().await;
+        let key = all_stage_metrics.keys().find(|k| k.to_string() == display)?;
+        let metrics = all_stage_metrics.get(key)?;
+
+        let all_pipe_metrics = self.pipe_metrics.read().await;
+        let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
+
+        Some(serde_json::json!({
+            "generatedAt": chrono::Utc::now().to_rfc3339(),
+            "stageKey": key.to_string(),
+            "pipelineId": key.pipeline.as_str(),
+            "kind": key.kind.to_string(),
+            "metrics": metrics.snapshot(),
+            "pipeMetrics": pipe,
+        }))
+    }
+
     /// Build a processing graph for a pipeline showing all stages and connections.
     /// Returns a JSON structure suitable for visualization.
     pub async fn processing_graph(

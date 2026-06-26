@@ -1722,3 +1722,19 @@ async fn engine_telemetry_requires_auth() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn stage_telemetry_returns_404_for_unknown_stage() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/stages/nonexistent:source/telemetry",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

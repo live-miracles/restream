@@ -2007,6 +2007,29 @@ async fn run_mixed_srt_multi_config(
             None,
         )
         .await;
+        verify_mixed_audio_route(
+            env,
+            cfg,
+            "MS-audio-rtmp-720p",
+            &format!("RTMP-720p audio out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+            "1280x720",
+            1,
+        )
+        .await?;
+        verify_mixed_audio_route(
+            env,
+            cfg,
+            "MS-audio-srt-720p",
+            &format!("SRT-720p audio out{n}"),
+            &format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            "1280x720",
+            2,
+        )
+        .await?;
     }
 
     stop_child(&mut publisher).await;
@@ -2408,6 +2431,101 @@ async fn check_mixed_stream(label: &str, url: &str, expected: &str, cookie: Opti
         "  FAIL {label:<45} expected={expected} got={}",
         if last.is_empty() { "none" } else { &last }
     );
+}
+
+async fn verify_mixed_audio_route(
+    env: &MixedEnv,
+    cfg: &str,
+    id: &str,
+    label: &str,
+    url: &str,
+    expected_dimensions: &str,
+    expected_audio_tracks: usize,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut last_dimensions = String::new();
+    let mut last_audio_tracks = None;
+    let mut last_error = String::new();
+    for attempt in 1..=15 {
+        match ffprobe(url).await {
+            Ok(probe) => {
+                let dimensions = video_dimensions(&probe).unwrap_or_default();
+                let audio_tracks = probe_audio_track_count(&probe);
+                if dimensions == expected_dimensions && audio_tracks == expected_audio_tracks {
+                    emit_mixed_result(
+                        env,
+                        cfg,
+                        id,
+                        "pass",
+                        started.elapsed(),
+                        Some(json!({
+                            "label": label,
+                            "expected": expected_dimensions,
+                            "got": dimensions,
+                            "expected_audio_tracks": expected_audio_tracks,
+                            "audio_tracks": audio_tracks,
+                            "url": url,
+                        })),
+                    )?;
+                    log_mixed_ok(
+                        env,
+                        &format!("{label}: {dimensions}, audio_tracks={audio_tracks}"),
+                    )?;
+                    return Ok(());
+                }
+                if !dimensions.is_empty() {
+                    last_dimensions = dimensions;
+                }
+                last_audio_tracks = Some(audio_tracks);
+                eprintln!(
+                    "    audio attempt {attempt}: got dims='{}' audio_tracks={}, want dims='{}' audio_tracks={}",
+                    if last_dimensions.is_empty() {
+                        "<none>"
+                    } else {
+                        &last_dimensions
+                    },
+                    audio_tracks,
+                    expected_dimensions,
+                    expected_audio_tracks
+                );
+            }
+            Err(error) => {
+                last_error = error.clone();
+                eprintln!("    audio attempt {attempt}: {error}");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    let message = format!(
+        "{label}: expected {expected_dimensions} with {expected_audio_tracks} audio tracks, got '{}' with {} audio tracks",
+        if last_dimensions.is_empty() {
+            "<no video>"
+        } else {
+            &last_dimensions
+        },
+        last_audio_tracks
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "<unknown>".to_string())
+    );
+    emit_mixed_result(
+        env,
+        cfg,
+        id,
+        "fail",
+        started.elapsed(),
+        Some(json!({
+            "message": message,
+            "label": label,
+            "expected": expected_dimensions,
+            "got": last_dimensions,
+            "expected_audio_tracks": expected_audio_tracks,
+            "audio_tracks": last_audio_tracks,
+            "url": url,
+            "ffprobe_stderr": last_error,
+        })),
+    )?;
+    Err(message)
 }
 
 async fn stop_mixed_outputs(api: &RampApi, pipeline_id: &str, output_ids: &[String]) {
@@ -3231,6 +3349,18 @@ async fn wait_for_hls_put_recovery(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn probe_audio_track_count(probe: &Value) -> usize {
+    probe["streams"]
+        .as_array()
+        .map(|streams| {
+            streams
+                .iter()
+                .filter(|s| s["codec_type"] == "audio")
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn video_dimensions(probe: &Value) -> Option<String> {

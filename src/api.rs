@@ -296,6 +296,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(v1_pipeline_telemetry_handler),
         )
         .route(
+            "/api/v1/stages/:stage_key/telemetry",
+            get(v1_stage_telemetry_handler),
+        )
+        .route(
             "/api/v1/pipelines/:pipeline_id/summary",
             get(v1_pipeline_summary_handler),
         )
@@ -2267,6 +2271,24 @@ async fn v1_pipeline_telemetry_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     Json(state.engine.pipeline_telemetry(&pipeline_id).await).into_response()
+}
+
+async fn v1_stage_telemetry_handler(
+    State(state): State<Arc<AppState>>,
+    Path(stage_key): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    match state.engine.stage_telemetry_by_display(&stage_key).await {
+        Some(val) => Json(val).into_response(),
+        None => (StatusCode::NOT_FOUND, "Stage not found").into_response(),
+    }
 }
 
 /// Operator pipeline summary: source state, output rollup, alert list.
