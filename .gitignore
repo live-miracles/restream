@@ -12,6 +12,7 @@ old/
 .idea/
 .vscode/
 .claude
+.codex
 
 # Downloaded binaries
 /bin/
