@@ -287,6 +287,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/events", get(v1_events_handler))
         .route("/api/v1/overview", get(v1_overview_handler))
         .route(
+            "/api/v1/engine/telemetry",
+            get(v1_engine_telemetry_handler),
+        )
+        .route(
+            "/api/v1/pipelines/:pipeline_id/telemetry",
+            get(v1_pipeline_telemetry_handler),
+        )
+        .route(
             "/api/v1/pipelines/:pipeline_id/summary",
             get(v1_pipeline_summary_handler),
         )
@@ -2227,6 +2235,35 @@ async fn v1_overview_handler(
         "srtListener": snapshot["srtListener"],
     }))
     .into_response()
+}
+
+async fn v1_engine_telemetry_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    Json(state.engine.engine_telemetry().await).into_response()
+}
+
+async fn v1_pipeline_telemetry_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pipeline_id): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    Json(state.engine.pipeline_telemetry(&pipeline_id).await).into_response()
 }
 
 /// Operator pipeline summary: source state, output rollup, alert list.

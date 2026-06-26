@@ -1351,6 +1351,166 @@ impl MediaEngine {
         })
     }
 
+    /// Engine-wide telemetry: raw counters for all active ingests, stages, and
+    /// egresses. Intended for engineer dashboards and debugging.
+    pub async fn engine_telemetry(&self) -> serde_json::Value {
+        let generated_at = chrono::Utc::now().to_rfc3339();
+        let ingests = self.active_ingests.read().await;
+        let egresses = self.active_egresses.read().await;
+        let stage_metrics = self.stage_metrics.read().await;
+        let pipe_metrics = self.pipe_metrics.read().await;
+        let buffers = self.transcoder_buffers.read().await;
+
+        let ingest_arr: Vec<serde_json::Value> = ingests
+            .iter()
+            .map(|(pid, i)| {
+                serde_json::json!({
+                    "pipelineId": pid,
+                    "protocol": i.protocol,
+                    "uptimeSecs": i.start_time.elapsed().as_secs_f64(),
+                    "bytesReceived": i.bytes_received.load(Ordering::Relaxed),
+                    "metrics": i.metrics.snapshot(),
+                })
+            })
+            .collect();
+
+        let stage_arr: Vec<serde_json::Value> = stage_metrics
+            .iter()
+            .map(|(key, m)| {
+                let mut val = serde_json::json!({
+                    "stageKey": key.to_string(),
+                    "pipelineId": key.pipeline.as_str(),
+                    "kind": key.kind.to_string(),
+                    "metrics": m.snapshot(),
+                });
+                if let Some(pm) = pipe_metrics.get(key) {
+                    val["pipeMetrics"] = pm.snapshot();
+                }
+                val
+            })
+            .collect();
+
+        let egress_arr: Vec<serde_json::Value> = egresses
+            .iter()
+            .map(|(oid, e)| {
+                serde_json::json!({
+                    "outputId": oid,
+                    "pipelineId": e.pipeline_id,
+                    "uptimeSecs": e.start_instant.elapsed().as_secs_f64(),
+                    "bytesOut": e.bytes_sent.load(Ordering::Relaxed),
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "generatedAt": generated_at,
+            "ingests": ingest_arr,
+            "stages": stage_arr,
+            "egresses": egress_arr,
+            "activeTranscoderBuffers": buffers.len(),
+        })
+    }
+
+    /// Per-pipeline telemetry: ingest metrics, all stage metrics for this
+    /// pipeline, and egress metrics. Returns None if the pipeline has no
+    /// active components.
+    pub async fn pipeline_telemetry(&self, pipeline_id: &str) -> serde_json::Value {
+        let generated_at = chrono::Utc::now().to_rfc3339();
+        let ingests = self.active_ingests.read().await;
+        let egresses = self.active_egresses.read().await;
+        let all_stage_metrics = self.stage_metrics.read().await;
+        let all_pipe_metrics = self.pipe_metrics.read().await;
+        let pipelines = self.pipelines.read().await;
+
+        let ingest = ingests.get(pipeline_id).map(|i| {
+            serde_json::json!({
+                "protocol": i.protocol,
+                "streamKey": i.stream_key,
+                "uptimeSecs": i.start_time.elapsed().as_secs_f64(),
+                "bytesReceived": i.bytes_received.load(Ordering::Relaxed),
+                "video": i.video,
+                "audio": i.audio,
+                "metrics": i.metrics.snapshot(),
+            })
+        });
+
+        let ring_info = pipelines.get(pipeline_id).map(|rb| {
+            let (fill, cap) = rb.fill_and_capacity();
+            let readers: Vec<serde_json::Value> = rb
+                .reader_snapshots()
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "lagSlots": r.lag_slots,
+                        "overflowCount": r.overflow_count,
+                        "packetAgeMs": r.packet_age_ms,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "fill": fill,
+                "capacity": cap,
+                "readers": readers,
+            })
+        });
+
+        let stages: Vec<serde_json::Value> = all_stage_metrics
+            .iter()
+            .filter(|(k, _)| k.pipeline.as_str() == pipeline_id)
+            .map(|(k, m)| {
+                let mut val = serde_json::json!({
+                    "kind": k.kind.to_string(),
+                    "metrics": m.snapshot(),
+                });
+                if let Some(pm) = all_pipe_metrics.get(k) {
+                    val["pipeMetrics"] = pm.snapshot();
+                }
+                val
+            })
+            .collect();
+
+        let pipeline_egresses: Vec<serde_json::Value> = egresses
+            .iter()
+            .filter(|(_, e)| e.pipeline_id == pipeline_id)
+            .map(|(oid, e)| {
+                serde_json::json!({
+                    "outputId": oid,
+                    "uptimeSecs": e.start_instant.elapsed().as_secs_f64(),
+                    "bytesOut": e.bytes_sent.load(Ordering::Relaxed),
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "generatedAt": generated_at,
+            "pipelineId": pipeline_id,
+            "ingest": ingest,
+            "sourceRing": ring_info,
+            "stages": stages,
+            "egresses": pipeline_egresses,
+        })
+    }
+
+    /// Single-stage telemetry by StageKey. Returns raw counters and pipe
+    /// metrics (if present). Used by the engineer stage telemetry endpoint.
+    pub async fn stage_telemetry(&self, key: &StageKey) -> Option<serde_json::Value> {
+        let all_stage_metrics = self.stage_metrics.read().await;
+        let metrics = all_stage_metrics.get(key)?;
+
+        let all_pipe_metrics = self.pipe_metrics.read().await;
+        let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
+
+        Some(serde_json::json!({
+            "generatedAt": chrono::Utc::now().to_rfc3339(),
+            "stageKey": key.to_string(),
+            "pipelineId": key.pipeline.as_str(),
+            "kind": key.kind.to_string(),
+            "metrics": metrics.snapshot(),
+            "pipeMetrics": pipe,
+        }))
+    }
+
     /// Build a processing graph for a pipeline showing all stages and connections.
     /// Returns a JSON structure suitable for visualization.
     pub async fn processing_graph(
