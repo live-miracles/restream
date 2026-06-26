@@ -6,8 +6,11 @@ set -euo pipefail
 # - 500 in-process readers
 # - 32 loopback RTMP egress sessions
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
 mkdir -p test/artifacts/latest
-cargo build --release --bin test_harness
+scripts/resource-limit cargo build --release --bin test_harness
 
 : > test/artifacts/latest/run.log
 for mode in correctness-rtmp correctness-srt egress in-process network; do

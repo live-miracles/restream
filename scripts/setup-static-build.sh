@@ -8,6 +8,11 @@ SOURCES="$BUILD_ROOT/src"
 PREFIX="$BUILD_ROOT/prefix"
 STAMPS="$BUILD_ROOT/stamps"
 
+if [[ -z "${RESTREAM_BUILD_LOCK_HELD:-}" ]]; then
+    echo "setup-static-build: run via scripts/resource-limit ./scripts/setup-static-build.sh" >&2
+    exit 2
+fi
+
 SRT_VERSION="${SRT_VERSION:-v1.5.5}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
 X264_COMMIT="${X264_COMMIT:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
@@ -98,7 +103,7 @@ write_stamp() {
 # ─ Microarchitecture/Optimization Level ──────────────────────────────────────
 # By default, compiles with x86-64-v3 (AVX2 baseline) for wide compatibility in releases.
 # You can override this by setting the RESTREAM_MARCH environment variable, e.g.:
-#   RESTREAM_MARCH=native ./scripts/setup-static-build.sh
+#   RESTREAM_MARCH=native scripts/resource-limit ./scripts/setup-static-build.sh
 #
 MARCH="${RESTREAM_MARCH:-x86-64-v3}"
 
@@ -423,7 +428,7 @@ EOF
 
 echo
 echo "Static build environment is ready."
-echo "Build with: ./scripts/build-static.sh"
-echo "Faster iteration: RESTREAM_BUILD_PROFILE=fast-release ./scripts/build-static.sh"
-echo "Force native rebuild: RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh"
+echo "Build with: scripts/resource-limit ./scripts/build-static.sh"
+echo "Faster iteration: RESTREAM_BUILD_PROFILE=fast-release scripts/resource-limit ./scripts/build-static.sh"
+echo "Force native rebuild: RESTREAM_REBUILD_NATIVE=1 scripts/resource-limit ./scripts/setup-static-build.sh"
 echo "Environment: $BUILD_ROOT/env.sh"

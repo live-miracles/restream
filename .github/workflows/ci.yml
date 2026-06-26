@@ -55,9 +55,9 @@ jobs:
           key: clippy-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: clippy-${{ runner.os }}-
       - name: Rust clippy (strict for lib)
-        run: cargo clippy --lib -- -D warnings
+        run: scripts/resource-limit cargo clippy --lib -- -D warnings
       - name: Rust clippy (warn only for all targets)
-        run: cargo clippy --workspace --all-targets
+        run: scripts/resource-limit cargo clippy --workspace --all-targets
 
   test:
     name: Unit & integration tests
@@ -83,7 +83,7 @@ jobs:
           key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: test-${{ runner.os }}-
       - name: Rust tests
-        run: cargo test --workspace
+        run: scripts/resource-limit cargo test --workspace
 
   coverage:
     name: Code coverage
@@ -206,13 +206,13 @@ jobs:
         run: chmod +x bin/mediamtx/mediamtx
 
       - name: Build release binary
-        run: cargo build --release
+        run: scripts/resource-limit cargo build --release
 
       - name: Run ramp integration test
-        run: ./test/run-integration.sh ramp
+        run: scripts/resource-limit ./test/run-integration.sh ramp
 
       - name: Run mixed-scale integration test
-        run: ./test/run-integration.sh mixed-scale
+        run: scripts/resource-limit ./test/run-integration.sh mixed-scale
 
       - name: Upload test artifacts on failure
         if: failure()
@@ -254,7 +254,7 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium
       - name: Build release binary
-        run: cargo build --release
+        run: scripts/resource-limit cargo build --release
       - name: Start app
         run: ./target/release/restream &
       - name: Wait for app

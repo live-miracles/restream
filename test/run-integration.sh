@@ -2,7 +2,7 @@
 # run-integration.sh — unified integration test runner
 #
 # Usage:
-#   ./test/run-integration.sh [--host] [--preflight] [--fast] [--json path] [--only checks] <mode>
+#   scripts/resource-limit ./test/run-integration.sh [--host] [--preflight] [--fast] [--json path] [--only checks] <mode>
 #
 # By default every mode that manages its own server processes runs inside a
 # private loopback network namespace (unshare --net) so ports never conflict
@@ -318,7 +318,7 @@ run_preflight() {
     mtime="$(date -u -r "$RESTREAM_BIN" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
     emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"ok\",\"mtime\":\"$(json_escape "$mtime")\"}"
   else
-    emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"fail\",\"hint\":\"run cargo build --release\"}"
+    emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"fail\",\"hint\":\"run scripts/resource-limit cargo build --release\"}"
     fail_count=$(( fail_count + 1 ))
   fi
 
@@ -1011,7 +1011,7 @@ run_bonding() {
   local BUILD_ROOT="${RESTREAM_BUILD_ROOT:-$ROOT/.build/static}"
 
   if [[ ! -f "$BUILD_ROOT/env.sh" ]]; then
-    "$ROOT/scripts/setup-static-build.sh"
+    "$ROOT/scripts/resource-limit" "$ROOT/scripts/setup-static-build.sh"
   fi
   # shellcheck source=/dev/null
   source "$BUILD_ROOT/env.sh"

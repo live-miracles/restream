@@ -4,8 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_ROOT="${RESTREAM_BUILD_ROOT:-$ROOT/.build/static}"
 
+if [[ -z "${RESTREAM_BUILD_LOCK_HELD:-}" ]]; then
+    echo "build-static: run via scripts/resource-limit ./scripts/build-static.sh" >&2
+    exit 2
+fi
+
 if [[ ! -f "$BUILD_ROOT/env.sh" ]]; then
-    "$ROOT/scripts/setup-static-build.sh"
+    "$ROOT/scripts/resource-limit" "$ROOT/scripts/setup-static-build.sh"
 fi
 
 # shellcheck source=/dev/null

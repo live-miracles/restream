@@ -31,8 +31,8 @@ Use the pinned Rust toolchain from `rust-toolchain.toml`.
 
 ```sh
 cargo build
-cargo test
-cargo clippy
+scripts/resource-limit cargo test
+scripts/resource-limit cargo clippy
 cargo fmt
 ```
 
@@ -63,6 +63,8 @@ For non-Cargo heavy commands, use the same wrapper:
 
 ```sh
 scripts/resource-limit ./test/run-integration.sh mixed-scale
+scripts/resource-limit ./scripts/setup-static-build.sh
+scripts/resource-limit ./scripts/build-static.sh
 ```
 
 The lock uses `flock(1)` on `.build-lock`; it is released automatically if the
@@ -84,11 +86,11 @@ Edit `public/ts/` and `public/input.css`. Do not hand-edit generated files in `p
 Benchmarks and integration tests:
 
 ```sh
-cargo bench --bench <name>
-cargo bench --bench <name> --profile bench-dev
-./test/run-integration.sh mixed-scale
-./test/run-integration.sh ramp
-./test/run-integration.sh bonding
+scripts/resource-limit cargo bench --bench <name>
+scripts/resource-limit cargo bench --bench <name> --profile bench-dev
+scripts/resource-limit ./test/run-integration.sh mixed-scale
+scripts/resource-limit ./test/run-integration.sh ramp
+scripts/resource-limit ./test/run-integration.sh bonding
 ```
 
 Integration tests run in a private loopback namespace by default. Use `--host` only when host networking is required.
@@ -148,7 +150,7 @@ SIMD/vectorization:
 - Use `cargo test av_sync` for timestamp, DTS/PTS, and cross-stream sync changes.
 - Use protocol-matched probes: RTMP changes with RTMP probes, SRT changes with SRT probes.
 - For UI changes, run TypeScript compile and the relevant Playwright tests.
-- For integration or scale behavior, prefer `./test/run-integration.sh mixed-scale`; use `ramp` for memory growth and `bonding` for SRT bonding.
+- For integration or scale behavior, prefer `scripts/resource-limit ./test/run-integration.sh mixed-scale`; use `ramp` for memory growth and `bonding` for SRT bonding.
 
 ## Key References
 

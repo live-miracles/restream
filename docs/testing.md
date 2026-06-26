@@ -5,7 +5,7 @@
 Run the full suite:
 
 ```sh
-cargo test
+scripts/resource-limit cargo test
 ```
 
 As of June 25, 2026 this runs 441 passing non-doctest tests:
@@ -56,7 +56,7 @@ and deletion-cancellation of egress tasks.
 All live integration tests are unified under one entry point:
 
 ```sh
-./test/run-integration.sh [--host] [--fast] [--json path] [--only checks] <mode>
+scripts/resource-limit ./test/run-integration.sh [--host] [--fast] [--json path] [--only checks] <mode>
 ```
 
 By default every mode that manages its own server processes runs inside a
@@ -85,14 +85,14 @@ cleanup before a run.
 Typical quick agent loop:
 
 ```sh
-./test/run-integration.sh --preflight --json /tmp/restream-preflight.jsonl mixed-scale
-./test/run-integration.sh --fast --json /tmp/restream-mixed.jsonl --only smoke,hls,lifecycle mixed-scale
+scripts/resource-limit ./test/run-integration.sh --preflight --json /tmp/restream-preflight.jsonl mixed-scale
+scripts/resource-limit ./test/run-integration.sh --fast --json /tmp/restream-mixed.jsonl --only smoke,hls,lifecycle mixed-scale
 ```
 
 ### `ramp` — Sequential output ramp
 
 ```sh
-N_OUTPUTS=10 ./test/run-integration.sh ramp
+N_OUTPUTS=10 scripts/resource-limit ./test/run-integration.sh ramp
 ```
 
 Sweeps eight ingest×egress×encoding combinations (RTMP/SRT ingest × RTMP/SRT
@@ -114,7 +114,7 @@ legacy all-bash ramp path while bisecting harness behavior, or set
 ### `mixed-scale` — Concurrent group load
 
 ```sh
-N_PER_GROUP=25 ./test/run-integration.sh mixed-scale
+N_PER_GROUP=25 scripts/resource-limit ./test/run-integration.sh mixed-scale
 ```
 
 Exercises five ingest configurations covering every codec/protocol/audio-track
@@ -183,13 +183,14 @@ The five mixed-scale slices are intentionally non-redundant: `h264-rtmp`,
 ### `bonding` — SRT socket bonding
 
 ```sh
-./test/run-integration.sh bonding
+scripts/resource-limit ./test/run-integration.sh bonding
 ```
 
 Verifies libsrt group-socket bonding using dedicated C helper binaries compiled
 from `test/srt-bond-server.c` and `test/srt-bond-client.c` against a statically
 linked libsrt 1.5.5 built with `ENABLE_BONDING=ON`. The script calls
-`scripts/setup-static-build.sh` automatically on first run.
+`scripts/resource-limit ./scripts/setup-static-build.sh` automatically on first
+run.
 
 Two bonding modes are tested:
 
@@ -208,7 +209,7 @@ the netns wrapper even without `--host`.
 ### `burst-verify` — Closed-GOP reader telemetry matrix
 
 ```sh
-./test/run-integration.sh burst-verify
+scripts/resource-limit ./test/run-integration.sh burst-verify
 ```
 
 Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
@@ -229,7 +230,7 @@ SRT retains dual-audio coverage.
 ### `hls-put` — HTTP HLS upload dummy sink
 
 ```sh
-./test/run-integration.sh hls-put
+scripts/resource-limit ./test/run-integration.sh hls-put
 ```
 
 Publishes one SRT H.264/AAC input, starts both HTTP/YouTube-style `file=` and
@@ -250,7 +251,7 @@ restart recovery are implemented in Rust.
 ### `bframe-rtmp` — RTMP B-frame timestamp round-trip
 
 ```sh
-./test/run-integration.sh bframe-rtmp
+scripts/resource-limit ./test/run-integration.sh bframe-rtmp
 ```
 
 Publishes one RTMP H.264/AAC input with B-frames, starts an RTMP source output,
@@ -441,12 +442,12 @@ baseline on stop.
 Currently checked in:
 
 ```text
-test/run-integration.sh ramp
-test/run-integration.sh mixed-scale
-test/run-integration.sh bonding
-test/run-integration.sh burst-verify
-test/run-integration.sh hls-put
-test/run-integration.sh bframe-rtmp
+scripts/resource-limit ./test/run-integration.sh ramp
+scripts/resource-limit ./test/run-integration.sh mixed-scale
+scripts/resource-limit ./test/run-integration.sh bonding
+scripts/resource-limit ./test/run-integration.sh burst-verify
+scripts/resource-limit ./test/run-integration.sh hls-put
+scripts/resource-limit ./test/run-integration.sh bframe-rtmp
 test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```

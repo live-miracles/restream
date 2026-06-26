@@ -111,7 +111,7 @@ split-debuginfo = "unpacked"
 opt-level = 2
 
 # bench-dev: runs Criterion at full optimization without fat-LTO.
-# Use:  cargo bench --bench <name> --profile bench-dev
+# Use:  scripts/resource-limit cargo bench --bench <name> --profile bench-dev
 # Much faster to build than the default `bench` profile (which inherits release
 # and uses fat LTO + 1 codegen unit). Accuracy is equivalent for relative
 # comparisons; absolute ns values may differ ≤5% from full release.

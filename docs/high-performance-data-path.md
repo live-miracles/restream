@@ -731,19 +731,19 @@ It also prints `MediaPacket` and aligned-slot sizes.
 Run everything:
 
 ```bash
-cargo bench --bench high_performance_data_path
+scripts/resource-limit cargo bench --bench high_performance_data_path
 ```
 
 Run one group:
 
 ```bash
-cargo bench --bench high_performance_data_path -- control_plane_lookup
-cargo bench --bench high_performance_data_path -- ingest_hot_handle
-cargo bench --bench high_performance_data_path -- ring_producer
-cargo bench --bench high_performance_data_path -- ring_consumer
-cargo bench --bench high_performance_data_path -- fanout_delivery
-cargo bench --bench high_performance_data_path -- memory_queue
-cargo bench --bench high_performance_data_path -- segment_finalize
+scripts/resource-limit cargo bench --bench high_performance_data_path -- control_plane_lookup
+scripts/resource-limit cargo bench --bench high_performance_data_path -- ingest_hot_handle
+scripts/resource-limit cargo bench --bench high_performance_data_path -- ring_producer
+scripts/resource-limit cargo bench --bench high_performance_data_path -- ring_consumer
+scripts/resource-limit cargo bench --bench high_performance_data_path -- fanout_delivery
+scripts/resource-limit cargo bench --bench high_performance_data_path -- memory_queue
+scripts/resource-limit cargo bench --bench high_performance_data_path -- segment_finalize
 ```
 
 ### Initial local baseline

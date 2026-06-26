@@ -9,7 +9,7 @@ The current static build default is FFmpeg `n8.1.2`, matching the
 `ffmpeg-next = "8.0"` Rust binding family in `Cargo.toml`.
 
 ```bash
-./scripts/setup-static-build.sh
+scripts/resource-limit ./scripts/setup-static-build.sh
 ```
 
 To test a different FFmpeg tag, override `FFMPEG_VERSION` for the external
@@ -20,12 +20,12 @@ FFmpeg library and embedded subprocess binary, then update `ffmpeg-next` in
 
 ### 1. Select FFmpeg Version
 ```bash
-FFMPEG_VERSION=n8.1.2 ./scripts/setup-static-build.sh
+FFMPEG_VERSION=n8.1.2 scripts/resource-limit ./scripts/setup-static-build.sh
 ```
 
 ### 2. Build Static FFmpeg Binary
 ```bash
-./scripts/setup-static-build.sh
+scripts/resource-limit ./scripts/setup-static-build.sh
 ```
 This downloads, patches, and compiles FFmpeg from source with optimizations:
 - `x86-64-v3` baseline (AVX2 on Haswell 2013+)
@@ -36,7 +36,7 @@ This downloads, patches, and compiles FFmpeg from source with optimizations:
 
 ### 3. Build Rust Binary
 ```bash
-cargo build --release
+scripts/resource-limit ./scripts/build-static.sh
 ```
 Compiles with:
 - Matching `ffmpeg-next` crate version
@@ -79,7 +79,7 @@ cp .build/static/prefix/bin/ffmpeg public/bin/ffmpeg
 
 ## Environment Variables
 
-When building, you can optionally set these directly (though the script is recommended):
+When building, you can optionally set these directly on the resource-limited script:
 
 ```bash
 # External FFmpeg version (library and embedded binary)
@@ -92,7 +92,7 @@ export RESTREAM_BUILD_ROOT=/custom/build/path
 export RESTREAM_REBUILD_NATIVE=1
 
 # Then build
-./scripts/setup-static-build.sh
+scripts/resource-limit ./scripts/setup-static-build.sh
 ```
 
 ## Manual Version Update

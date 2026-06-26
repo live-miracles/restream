@@ -128,8 +128,8 @@ restarting the backend.
 Run before and after any hotpath change:
 
 ```sh
-cargo bench --bench <name>    # one suite
-cargo bench                   # all suites
+scripts/resource-limit cargo bench --bench <name>    # one suite
+scripts/resource-limit cargo bench                   # all suites
 ```
 
 | Suite | What it measures |
@@ -148,7 +148,7 @@ cargo bench                   # all suites
 Run the full Rust suite:
 
 ```sh
-cargo test
+scripts/resource-limit cargo test
 ```
 
 As of June 22, 2026 this runs 132 passing tests:
@@ -162,9 +162,9 @@ As of June 22, 2026 this runs 132 passing tests:
 port conflicts); pass `--host` to run on the host network:
 
 ```sh
-./test/run-integration.sh mixed-scale   # correctness gate + concurrent load
-./test/run-integration.sh ramp          # per-output RSS ramp (8 configs)
-./test/run-integration.sh bonding       # SRT socket bonding (requires static build)
+scripts/resource-limit ./test/run-integration.sh mixed-scale   # correctness gate + concurrent load
+scripts/resource-limit ./test/run-integration.sh ramp          # per-output RSS ramp (8 configs)
+scripts/resource-limit ./test/run-integration.sh bonding       # SRT socket bonding (requires static build)
 ```
 
 Detailed correctness and scale gates are in [Testing](docs/testing.md).
@@ -209,14 +209,14 @@ The following come from the **OS** and are not compiled by the script:
 Build steps:
 
 ```sh
-./scripts/setup-static-build.sh          # compile native deps (content-addressed, reuses cache)
-./test/run-integration.sh bonding        # verify broadcast + backup failover
-./scripts/build-static.sh               # fat-LTO static binary → .build/static/cargo-target/release/restream
+scripts/resource-limit ./scripts/setup-static-build.sh          # compile native deps (content-addressed, reuses cache)
+scripts/resource-limit ./test/run-integration.sh bonding        # verify broadcast + backup failover
+scripts/resource-limit ./scripts/build-static.sh                # fat-LTO static binary → .build/static/cargo-target/release/restream
 ```
 
-Force a full native rebuild: `RESTREAM_REBUILD_NATIVE=1 ./scripts/setup-static-build.sh`
+Force a full native rebuild: `RESTREAM_REBUILD_NATIVE=1 scripts/resource-limit ./scripts/setup-static-build.sh`
 
-For faster iteration, use thin LTO: `RESTREAM_BUILD_PROFILE=fast-release ./scripts/build-static.sh`
+For faster iteration, use thin LTO: `RESTREAM_BUILD_PROFILE=fast-release scripts/resource-limit ./scripts/build-static.sh`
 (output: `.build/static/cargo-target/fast-release/restream`)
 
 The build script verifies the binary has no dynamic loader dependency, probes
