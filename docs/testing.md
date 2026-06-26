@@ -568,6 +568,7 @@ These capabilities must be treated as test results, not assumptions:
 | Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `cargo run --bin test_harness -- correctness-srt-rtmp` |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
+| Embedded FFmpeg subprocess feature set | `scripts/build-static.sh` runs `restream-ffmpeg-capabilities` to prove the required codecs, `file`/`pipe` protocols, and `mov`/`matroska`/`mpegts` mux/demux surface are present |
 | HLS live segments | Native TsMuxer validates in-memory |
 | HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and `test/run-integration.sh hls-put` dummy sink tests |
 | Recording | Readable file with correct streams/timestamps |

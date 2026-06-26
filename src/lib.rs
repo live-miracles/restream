@@ -147,6 +147,17 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+pub fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn set_rlimit(limit: u64) {
     // SAFETY: setrlimit is a POSIX system call. The rlimit struct is stack-
     // allocated with valid values; no pointer aliasing concerns. Called once

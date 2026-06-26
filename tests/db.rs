@@ -20,6 +20,11 @@ async fn pipeline_crud() {
 
     let fetched = db::get_pipeline(&pool, "p1").await.unwrap().unwrap();
     assert_eq!(fetched.name, "Test Pipeline");
+    let by_stream_key = db::get_pipeline_by_stream_key(&pool, "key01")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_stream_key.id, "p1");
 
     let all = db::list_pipelines(&pool).await.unwrap();
     assert_eq!(all.len(), 1);

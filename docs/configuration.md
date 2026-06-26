@@ -12,9 +12,10 @@ in SQLite.
 | RTMP listener | `0.0.0.0:1935` | `RESTREAM_RTMP_PORT` |
 | SRT listener | `0.0.0.0:10080` | `RESTREAM_SRT_PORT` |
 | Transcoder backend | External FFmpeg subprocess | `RESTREAM_USE_INTERNAL_TRANSCODER` (`1`/`true`/`yes`/`on` to enable in-process backend) |
+| File-ingest backend | External embedded FFmpeg subprocess | `RESTREAM_USE_INTERNAL_FILE_INGEST` (`1`/`true`/`yes`/`on` to enable in-process remux + demux) |
+| External transcoder and file-ingest executable | Embedded `public/bin/ffmpeg`, extracted to `/tmp/restream-ffmpeg/ffmpeg` at startup | `FFMPEG_BIN_PATH` |
 | SQLite database | `data.db` | `RESTREAM_DB_PATH` |
 | Media directory | `media/` | `RESTREAM_MEDIA_DIR` |
-| File-ingest executable | `ffmpeg` from `PATH` | *None* |
 | File descriptor limit | `65536` | `RESTREAM_NOFILE_LIMIT` |
 | Output reconciliation interval | 1 second | `RESTREAM_RECONCILE_INTERVAL_MS` |
 | Failed-output max retries | `10` | `RESTREAM_OUTPUT_MAX_RETRIES` |
@@ -28,6 +29,10 @@ in SQLite.
 The Rust server does not currently read the old Node environment variables such
 as `BASE_PATH`, `PUBLIC_INGEST_HOST`, `HEALTH_SNAPSHOT_INTERVAL_MS`,
 or the old output-recovery knobs. Do not depend on those variables.
+
+`FFMPEG_BIN_PATH` overrides the shared subprocess FFmpeg path used by the
+external transcoder and by file ingest when
+`RESTREAM_USE_INTERNAL_FILE_INGEST` is not enabled.
 
 ## SQLite-Backed Settings
 

@@ -19,7 +19,7 @@ independent interoperability sink in end-to-end tests.
 - Shared processing-stage scaffolding and stream-level audio selection
 - In-memory HLS playlist/segment storage and pull routes
 - Matroska recording scaffolding
-- File ingest by spawning the system `ffmpeg` binary into the local RTMP ingest
+- File ingest by spawning the embedded static `ffmpeg` binary and reading MPEG-TS from stdout
 - SQLite-backed pipelines, outputs, jobs, ingests, settings, and sessions
 - Native health, probe, processing-graph, diagnostics, and host-metrics APIs
 
@@ -63,8 +63,11 @@ native ingest -> RingBuffer -> RTMP/SRT output
 Axum API/dashboard -> SQLite
 ```
 
-Most media work is in-process through linked FFmpeg libraries. File ingest is
-the exception and requires the `ffmpeg` executable on `PATH`.
+Most media work is in-process through linked FFmpeg libraries. The external
+transcoder uses the embedded static `public/bin/ffmpeg`, which is extracted at
+startup unless `FFMPEG_BIN_PATH` is set. File ingest defaults to that same
+subprocess path, with an opt-in in-process backend behind
+`RESTREAM_USE_INTERNAL_FILE_INGEST=1`.
 
 ## Development
 
@@ -79,21 +82,27 @@ There are two build paths with different FFmpeg requirements:
 | Rust toolchain | Pinned in `rust-toolchain.toml` (1.96.0, includes rustfmt + clippy) |
 | FFmpeg dev libs | `libavcodec`, `libavformat`, `libavfilter`, `libswscale`, `libswresample`, `libavutil` (via pkg-config) |
 | libsrt dev | SRT transport (via pkg-config) |
+| libssl-dev | OpenSSL pkg-config metadata and headers required by the system SRT package |
 | nasm | Assembler for FFmpeg x86 codecs |
 | clang | C compiler for FFmpeg/SRT bindings in `build.rs` |
+| mold | Linux linker selected by `.cargo/config.toml` |
 | Node.js / npx | Frontend TypeScript compiler and Tailwind CSS (UI work only) |
 | ffmpeg, curl, jq | Live integration test tools |
 
 Debian/Ubuntu:
 
 ```sh
-apt-get install -y ffmpeg jq pkg-config clang nasm libsrt-dev \
+apt-get install -y ffmpeg jq pkg-config clang nasm mold \
+  libsrt-openssl-dev libssl-dev \
   libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
   libswscale-dev libavfilter-dev libavdevice-dev
 ```
 
-Note: distribution FFmpeg and libsrt may not have x86 ASM or bonding enabled.
-Performance and bonding behaviour will differ from the static release build.
+Ubuntu 24.04 ships `libsrt-openssl-dev` rather than `libsrt-dev`.
+
+Note: development builds link against the distro FFmpeg and libsrt packages via
+`pkg-config`. Those packages may not have x86 ASM or bonding enabled, so
+performance and bonding behaviour can differ from the static release build.
 
 **Static release** — builds its own FFmpeg, x264, x265, and SRT from source (see
 [Static Release Build](#static-release-build) below). This is the only path
@@ -105,17 +114,17 @@ that guarantees `--enable-x86asm`, pinned codec versions, and
 **Rust backend** — the primary edit cycle:
 
 ```sh
-cargo build            # debug build
-cargo run              # start on :3030 / :1935 / :10080
-cargo test             # 132 tests (92 lib + 24 API + 12 DB + 4 transcoder)
-cargo clippy           # lint
+scripts/resource-limit cargo build   # debug build
+cargo run                            # start on :3030 / :1935 / :10080
+scripts/resource-limit cargo test    # 132 tests (92 lib + 24 API + 12 DB + 4 transcoder)
+scripts/resource-limit cargo clippy  # lint
 cargo fmt              # format
 ```
 
 **Frontend** — only when editing `public/ts/` or `public/input.css`:
 
 ```sh
-npx tsc -p tsconfig.frontend.json                          # TS → public/js/
+npm run build:frontend                                     # TS → public/js/
 npx tailwindcss -i public/input.css -o public/output.css   # rebuild CSS
 ```
 
@@ -186,13 +195,13 @@ prefix (`.build/static/prefix/`). These are **not** taken from the OS:
 | Component | Status | Used for |
 |---|---|---|
 | `mpegts` demuxer | Active | `CustomInput` AVIO probe — transcoder input |
-| `matroska`, `mov` demuxers | Planned | In-process file ingest (`.mkv`/`.mp4`/`.mov` sources) |
+| `matroska`, `mov` demuxers | Active | Embedded file-ingest FFmpeg (`.mkv`/`.mp4`/`.mov` sources) |
 | `mpegts`, `matroska` muxers | Active / Planned | `CustomOutput`; recording MKV (recording currently writes raw bytes — FFmpeg muxer not yet called) |
 | `h264`, `hevc`, `aac`, `mp3`, `ac3`, `eac3` decoders | Active / Planned | Stream info via `avformat_find_stream_info`; decode loop (transcoder, not yet implemented) |
 | `libx264`, `libx265`, `aac` encoders | Planned | Transcoder H.264/H.265 encode + audio re-encode for remap/downmix (not yet implemented) |
 | `h264`, `hevc`, `aac`, `ac3` parsers | Active | Required by `avformat_find_stream_info` |
 | `h264_mp4toannexb`, `hevc_mp4toannexb`, `aac_adtstoasc` BSFs | Active | Header conversion in `codec.rs` |
-| `pipe` protocol | Active | AVIO callback bridge for `MemoryQueue` |
+| `file`, `pipe` protocols | Active | File-ingest subprocess input and AVIO callback bridge for `MemoryQueue` |
 | `scale`, `crop`, `transpose` filters | Planned | Resolution change (720p/1080p/2160p); vertical/rotate |
 | `format`, `aformat` filters | Planned | Pixel/sample format negotiation before encoder |
 | `aresample`, `pan` filters | Planned | `AudioRouting::Downmix`, `AudioRouting::Remap` |
@@ -220,9 +229,31 @@ For faster iteration, use thin LTO: `RESTREAM_BUILD_PROFILE=fast-release scripts
 (output: `.build/static/cargo-target/fast-release/restream`)
 
 The build script verifies the binary has no dynamic loader dependency, probes
-the required H.264/H.265 encode/decode and audio codec set, and asserts that FFmpeg's x86
-assembly paths are active (2× faster transcoding vs no-asm build). Because
-this build enables x264 and x265, redistribution must comply with GPL.
+the required H.264/H.265 encode/decode and audio codec set, checks the
+`file`/`pipe` protocol plus `mov`/`matroska`/`mpegts` format surface needed by
+the shared external-transcoder and file-ingest subprocess path, and asserts
+that FFmpeg's x86 assembly paths are active (2× faster transcoding vs no-asm
+build). Because this build enables x264 and x265, redistribution must comply
+with GPL.
+
+For the static release build, `libsrt` is cloned from Haivision and compiled as
+`libsrt.a` with `ENABLE_BONDING=ON`, `ENABLE_SHARED=OFF`, and
+`USE_ENCLIB=openssl`; `build.rs` then links that archive statically for the
+release artifact. Debug builds do not use that path: they resolve the system
+`srt` package dynamically through `pkg-config`.
+
+### Runtime Dependencies
+
+For the static release path, the core runtime dependency boundary is:
+
+- `.build/static/cargo-target/<profile>/restream`: statically linked Rust app
+  plus statically linked FFmpeg/libsrt/OpenSSL/x264/x265
+- Embedded `public/` assets inside the Rust binary, including the static
+  `public/bin/ffmpeg` subprocess binary extracted at startup for the external
+  transcoder and file ingest
+
+Core RTMP/SRT/HLS runtime does not require system FFmpeg, system libsrt, or any
+other shared libraries once that static release artifact is built.
 
 ### Runtime
 

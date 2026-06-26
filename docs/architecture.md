@@ -662,15 +662,26 @@ Recordings are written as raw MPEG-TS files under `media/`. Recordings shorter
 than five seconds are removed automatically. Recording uses the shared TS packet
 feeder and a MemoryQueue-backed writer thread.
 
-## File Ingest Exception
+## File Ingest
 
-Most media processing is linked in-process. Configured file ingest still spawns:
+Configured file ingest has two backends:
+
+- default: spawn the same embedded `public/bin/ffmpeg` binary used by the
+  external transcoder, point it at a media file directly, and read MPEG-TS from
+  stdout;
+- optional (`RESTREAM_USE_INTERNAL_FILE_INGEST=1`): remux the file to MPEG-TS
+  in-process through linked libavformat/libavcodec and feed the same
+  `TsDemuxer` path without a subprocess.
+
+The subprocess path uses:
 
 ```text
-ffmpeg -re ... -c copy -f flv rtmp://localhost:1935/live/<key>
+ffmpeg -re [-stream_loop -1] [-ss <start>] -i media/<file> -map 0 -c copy -f mpegts pipe:1
 ```
 
-The child is tracked by ingest ID and can be stopped through the API.
+Both backends converge on `TsDemuxer`, push `MediaPacket`s into the source
+ring, track running state by ingest ID, and stop through the API without any
+RTMP loopback hop.
 
 ## State and Authentication
 

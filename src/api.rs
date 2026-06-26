@@ -16,9 +16,14 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
+use std::path::{Path as FsPath, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use sysinfo::{Disks, Networks, System};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::RwLock as TokioRwLock;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -1460,6 +1465,264 @@ struct IngestPayload {
     start_time: Option<String>,
 }
 
+struct SpawnedFileIngestChild {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+}
+
+fn build_file_ingest_args(ingest: &Ingest, file_path: &FsPath) -> Vec<String> {
+    let mut args = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "warning".into(),
+        "-re".into(),
+    ];
+    if ingest.loop_flag {
+        args.extend(["-stream_loop".into(), "-1".into()]);
+    }
+    if !ingest.start_time.is_empty() {
+        args.extend(["-ss".into(), ingest.start_time.clone()]);
+    }
+    args.extend(["-i".into(), file_path.to_string_lossy().into_owned()]);
+    args.extend([
+        "-map".into(),
+        "0".into(),
+        "-c".into(),
+        "copy".into(),
+        "-f".into(),
+        "mpegts".into(),
+        "pipe:1".into(),
+    ]);
+    args
+}
+
+fn spawn_file_ingest_child(
+    ingest: &Ingest,
+    file_path: &FsPath,
+) -> Result<SpawnedFileIngestChild, String> {
+    let ffmpeg_bin = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+    let args = build_file_ingest_args(ingest, file_path);
+    let mut child = Command::new(ffmpeg_bin)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture ffmpeg stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture ffmpeg stderr".to_string())?;
+
+    Ok(SpawnedFileIngestChild {
+        child,
+        stdout,
+        stderr,
+    })
+}
+
+async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
+    let mut children = engine.file_ingest_children.write().await;
+    if let Some(mut child) = children.remove(ingest_id) {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
+async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &str) {
+    if let Ok(Some(pipeline)) = db::get_pipeline_by_stream_key(&state.db, stream_key).await {
+        state.engine.unregister_ingest(&pipeline.id).await;
+    }
+}
+
+async fn pump_file_ingest_stdout(
+    state: Arc<AppState>,
+    pipeline: Pipeline,
+    ring_buffer: Arc<crate::media::ring_buffer::RingBuffer>,
+    mut stdout: ChildStdout,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let (bytes_received, ingest_metrics, cached_keyframe_times) = {
+        let ingests = state.engine.active_ingests.read().await;
+        let ingest = ingests
+            .get(&pipeline.id)
+            .ok_or_else(|| format!("Active ingest missing for pipeline {}", pipeline.id))?;
+        (
+            ingest.bytes_received.clone(),
+            ingest.metrics.clone(),
+            ingest.keyframe_times.clone(),
+        )
+    };
+
+    let mut demuxer = crate::media::mpegts::TsDemuxer::new();
+    let mut packets = Vec::with_capacity(16);
+    let mut probe_sent = false;
+    let mut buf = vec![0u8; 64 * 1024];
+
+    loop {
+        let read = tokio::select! {
+            _ = cancel.cancelled() => break,
+            res = stdout.read(&mut buf) => res,
+        }
+        .map_err(|e| format!("Failed to read ffmpeg stdout: {e}"))?;
+
+        if read == 0 {
+            break;
+        }
+
+        demuxer.feed(&buf[..read]);
+        if demuxer.drain_into(&mut packets) > 0 {
+            for pkt in &packets {
+                if pkt.media_type == crate::media::ring_buffer::MediaType::Video && pkt.is_keyframe
+                {
+                    let mut times = cached_keyframe_times
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    times.push(pkt.pts);
+                    if times.len() > 30 {
+                        times.remove(0);
+                    }
+                }
+            }
+            ring_buffer.push_batch(packets.drain(..));
+        }
+
+        if !probe_sent && let Some(probe) = demuxer.take_probe() {
+            probe_sent = true;
+            let first_audio = probe.audio_tracks.first().cloned();
+            state
+                .engine
+                .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                .await;
+            if !probe.audio_tracks.is_empty() {
+                state
+                    .engine
+                    .update_ingest_audio_tracks(&pipeline.id, probe.audio_tracks)
+                    .await;
+            }
+        }
+
+        bytes_received.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
+        ingest_metrics.record_in(read as u64);
+    }
+
+    Ok(())
+}
+
+async fn log_file_ingest_stderr(
+    ingest_id: &str,
+    mut stderr: ChildStderr,
+) -> Result<(), std::io::Error> {
+    const STDERR_CAP: usize = 64 * 1024;
+    let mut buf = [0u8; 4096];
+    let mut all = Vec::new();
+    let mut truncated = false;
+
+    loop {
+        match stderr.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let remaining = STDERR_CAP.saturating_sub(all.len());
+                if remaining > 0 {
+                    all.extend_from_slice(&buf[..n.min(remaining)]);
+                } else if !truncated {
+                    truncated = true;
+                    eprintln!(
+                        "[file-ingest] ffmpeg stderr ({}) truncated at {} bytes",
+                        ingest_id, STDERR_CAP
+                    );
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    if !all.is_empty() {
+        eprintln!(
+            "[file-ingest] ffmpeg stderr ({}): {}",
+            ingest_id,
+            String::from_utf8_lossy(&all).trim()
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_file_ingest_task(
+    state: Arc<AppState>,
+    ingest: Ingest,
+    pipeline: Pipeline,
+    file_path: PathBuf,
+    ring_buffer: Arc<crate::media::ring_buffer::RingBuffer>,
+    cancel: CancellationToken,
+    mut spawned: SpawnedFileIngestChild,
+) {
+    loop {
+        state
+            .engine
+            .file_ingest_children
+            .write()
+            .await
+            .insert(ingest.id.clone(), spawned.child);
+
+        let stderr_id = ingest.id.clone();
+        let stdout_fut = pump_file_ingest_stdout(
+            state.clone(),
+            pipeline.clone(),
+            ring_buffer.clone(),
+            spawned.stdout,
+            cancel.clone(),
+        );
+        let stderr_fut = log_file_ingest_stderr(&stderr_id, spawned.stderr);
+        let (stdout_res, stderr_res) = tokio::join!(stdout_fut, stderr_fut);
+
+        let mut exit_status = None;
+        let mut children = state.engine.file_ingest_children.write().await;
+        if let Some(mut child) = children.remove(&ingest.id) {
+            exit_status = child.wait().await.ok();
+        }
+        drop(children);
+
+        if let Err(err) = stdout_res && !cancel.is_cancelled() {
+            eprintln!("[file-ingest] stdout reader failed ({}): {}", ingest.id, err);
+        }
+        if let Err(err) = stderr_res && !cancel.is_cancelled() {
+            eprintln!("[file-ingest] stderr reader failed ({}): {}", ingest.id, err);
+        }
+
+        if let Some(status) = exit_status
+            && !status.success() && !cancel.is_cancelled()
+        {
+            eprintln!(
+                "[file-ingest] ffmpeg exited unsuccessfully ({}): {}",
+                ingest.id, status
+            );
+        }
+
+        if cancel.is_cancelled() || !ingest.loop_flag {
+            break;
+        }
+
+        match spawn_file_ingest_child(&ingest, &file_path) {
+            Ok(next) => spawned = next,
+            Err(err) => {
+                eprintln!("[file-ingest] restart failed ({}): {}", ingest.id, err);
+                break;
+            }
+        }
+    }
+
+    state.engine.clear_file_ingest_running(&ingest.id).await;
+    state.engine.unregister_ingest(&pipeline.id).await;
+}
+
 async fn ingests_post_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1572,13 +1835,11 @@ async fn ingests_delete_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let mut children = state.engine.file_ingest_children.write().await;
-    if let Some(mut child) = children.remove(&id) {
-        let _ = child.kill().await;
-        // Reap the child so it does not linger as a zombie process.
-        let _ = child.wait().await;
+    if let Ok(Some(ingest)) = db::get_ingest(&state.db, &id).await {
+        unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;
     }
-    drop(children);
+    stop_file_ingest_child(&state.engine, &id).await;
+    state.engine.clear_file_ingest_running(&id).await;
 
     let _ = db::delete_ingest(&state.db, &id).await;
     Json(serde_json::json!({"deleted": true})).into_response()
@@ -1602,14 +1863,7 @@ async fn ingests_start_handler(
         _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
     };
 
-    // Check if already running
-    if state
-        .engine
-        .file_ingest_children
-        .read()
-        .await
-        .contains_key(&id)
-    {
+    if state.engine.is_file_ingest_running(&id).await {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "Ingest already running"})),
@@ -1617,8 +1871,8 @@ async fn ingests_start_handler(
             .into_response();
     }
 
-    let file_path = format!("media/{}", ingest.filename);
-    if !std::path::Path::new(&file_path).exists() {
+    let file_path = FsPath::new(&state.media_dir).join(&ingest.filename);
+    if !file_path.exists() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Media file not found"})),
@@ -1626,67 +1880,93 @@ async fn ingests_start_handler(
             .into_response();
     }
 
-    let rtmp_url = format!(
-        "rtmp://localhost:{}/live/{}",
-        state.ports.rtmp, ingest.stream_key
-    );
-    let mut args: Vec<String> = vec![
-        "-nostdin".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "warning".into(),
-        "-re".into(),
-    ];
-    if ingest.loop_flag {
-        args.extend(["-stream_loop".into(), "-1".into()]);
-    }
-    if !ingest.start_time.is_empty() {
-        args.extend(["-ss".into(), ingest.start_time.clone()]);
-    }
-    args.extend([
-        "-i".into(),
-        file_path,
-        "-map".into(),
-        "0".into(),
-        "-c".into(),
-        "copy".into(),
-        "-flvflags".into(),
-        "no_duration_filesize".into(),
-        "-f".into(),
-        "flv".into(),
-        rtmp_url,
-    ]);
-
-    match tokio::process::Command::new("ffmpeg")
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => {
-            state
-                .engine
-                .file_ingest_children
-                .write()
-                .await
-                .insert(id.clone(), child);
-            Json(serde_json::json!({
-                "id": ingest.id,
-                "filename": ingest.filename,
-                "streamKey": ingest.stream_key,
-                "loop": ingest.loop_flag,
-                "startTime": ingest.start_time,
-                "running": true
-            }))
-            .into_response()
+    let pipeline = match db::get_pipeline_by_stream_key(&state.db, &ingest.stream_key).await {
+        Ok(Some(pipeline)) => pipeline,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "No pipeline found for stream key"})),
+            )
+                .into_response();
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to spawn ffmpeg: {}", e)})),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to resolve pipeline: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let ring_buffer = state.engine.get_or_create_pipeline(&pipeline.id).await;
+    let Some(cancel) = state
+        .engine
+        .try_register_ingest(&pipeline.id, &ingest.stream_key, "file")
+        .await
+    else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "Pipeline already has an active ingest"})),
         )
-            .into_response(),
+            .into_response();
+    };
+
+    state.engine.mark_file_ingest_running(&ingest.id).await;
+
+    if crate::media::file_ingest::use_internal_file_ingest() {
+        if let Err(e) = crate::media::file_ingest::spawn_internal_file_ingest(
+            state.engine.clone(),
+            tokio::runtime::Handle::current(),
+            ingest.id.clone(),
+            pipeline.id.clone(),
+            file_path,
+            ingest.start_time.clone(),
+            ingest.loop_flag,
+            ring_buffer,
+            cancel,
+        ) {
+            state.engine.clear_file_ingest_running(&ingest.id).await;
+            state.engine.unregister_ingest(&pipeline.id).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response();
+        }
+    } else {
+        let spawned = match spawn_file_ingest_child(&ingest, &file_path) {
+            Ok(child) => child,
+            Err(e) => {
+                state.engine.clear_file_ingest_running(&ingest.id).await;
+                state.engine.unregister_ingest(&pipeline.id).await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e})),
+                )
+                    .into_response();
+            }
+        };
+
+        tokio::spawn(run_file_ingest_task(
+            state.clone(),
+            ingest.clone(),
+            pipeline,
+            file_path,
+            ring_buffer,
+            cancel,
+            spawned,
+        ));
     }
+
+    Json(serde_json::json!({
+        "id": ingest.id,
+        "filename": ingest.filename,
+        "streamKey": ingest.stream_key,
+        "loop": ingest.loop_flag,
+        "startTime": ingest.start_time,
+        "running": true
+    }))
+    .into_response()
 }
 
 async fn ingests_stop_handler(
@@ -1707,12 +1987,9 @@ async fn ingests_stop_handler(
         _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
     };
 
-    let mut children = state.engine.file_ingest_children.write().await;
-    if let Some(mut child) = children.remove(&id) {
-        let _ = child.kill().await;
-        // Reap the child so it does not linger as a zombie process.
-        let _ = child.wait().await;
-    }
+    unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;
+    stop_file_ingest_child(&state.engine, &id).await;
+    state.engine.clear_file_ingest_running(&id).await;
 
     Json(serde_json::json!({
         "id": ingest.id,

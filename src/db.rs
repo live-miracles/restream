@@ -203,6 +203,18 @@ pub async fn get_pipeline(pool: &SqlitePool, id: &str) -> Result<Option<Pipeline
     .await
 }
 
+pub async fn get_pipeline_by_stream_key(
+    pool: &SqlitePool,
+    stream_key: &str,
+) -> Result<Option<Pipeline>, sqlx::Error> {
+    sqlx::query_as::<_, Pipeline>(
+        "SELECT id, name, stream_key, input_source, encoding FROM pipelines WHERE stream_key = ?",
+    )
+    .bind(stream_key)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn list_pipelines(pool: &SqlitePool) -> Result<Vec<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
         "SELECT id, name, stream_key, input_source, encoding FROM pipelines",

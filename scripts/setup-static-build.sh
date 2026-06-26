@@ -268,7 +268,7 @@ FFMPEG_FINGERPRINT="$(
             --enable-avfilter \
             --enable-swscale \
             --enable-swresample \
-            --enable-protocol=pipe \
+            --enable-protocol=file,pipe \
             --enable-demuxer=mpegts,matroska,mov \
             --enable-muxer=mpegts,matroska \
             --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
@@ -305,7 +305,7 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-avfilter \
         --enable-swscale \
         --enable-swresample \
-        --enable-protocol=pipe \
+        --enable-protocol=file,pipe \
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
@@ -367,7 +367,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-avfilter \
         --enable-swscale \
         --enable-swresample \
-        --enable-protocol=pipe \
+        --enable-protocol=file,pipe \
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
@@ -392,12 +392,13 @@ fi
 CAPABILITIES="$PREFIX/bin/restream-ffmpeg-capabilities"
 if [[ ! -x "$CAPABILITIES" ||
     "$ROOT/test/ffmpeg-capabilities.c" -nt "$CAPABILITIES" ||
+    "$PREFIX/lib/libavformat.a" -nt "$CAPABILITIES" ||
     "$PREFIX/lib/libavcodec.a" -nt "$CAPABILITIES" ||
     "$PREFIX/lib/libavutil.a" -nt "$CAPABILITIES" ]]; then
     PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" cc -O2 -static \
-        $(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --cflags libavcodec libavutil) \
+        $(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --cflags libavformat libavcodec libavutil) \
         "$ROOT/test/ffmpeg-capabilities.c" \
-        $(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --static --libs libavcodec libavutil) \
+        $(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --static --libs libavformat libavcodec libavutil) \
         -o "$CAPABILITIES"
 fi
 

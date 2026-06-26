@@ -246,8 +246,8 @@ MemoryQueue-backed file writer.
 | `POST` | `/api/ingests` | Create |
 | `PUT` | `/api/ingests/:id` | Update |
 | `DELETE` | `/api/ingests/:id` | Delete |
-| `POST` | `/api/ingests/:id/start` | Spawn system FFmpeg into local RTMP |
-| `POST` | `/api/ingests/:id/stop` | Kill the tracked child |
+| `POST` | `/api/ingests/:id/start` | Start file ingest via the configured backend |
+| `POST` | `/api/ingests/:id/stop` | Stop the active ingest task/process |
 
 Create/update body:
 
@@ -260,11 +260,20 @@ Create/update body:
 }
 ```
 
-Start returns `400` if `media/<filename>` does not exist and `409` if that ingest
-ID already has a tracked child. The list endpoint currently reports
-`running: false` for every row; it does not consult the child map. Natural child
-exit is not reaped from the map, so a later start can remain stuck at `409`.
-Deleting an ingest definition terminates its running child process if one exists.
+Start returns `400` if `media/<filename>` does not exist, `400` if no pipeline
+matches the configured stream key, and `409` if that ingest ID already has a
+running file ingest or the target pipeline already has another active
+publisher.
+
+By default the backend is the embedded `public/bin/ffmpeg` subprocess:
+
+```text
+ffmpeg -re [-stream_loop -1] [-ss <start>] -i media/<file> -map 0 -c copy -f mpegts pipe:1
+```
+
+Set `RESTREAM_USE_INTERNAL_FILE_INGEST=1` to switch start/stop to the
+in-process remux path instead. Deleting an ingest definition terminates the
+running ingest regardless of backend.
 Both stop and delete kill the child and call `wait()` to reap it immediately so
 no zombie processes remain.
 

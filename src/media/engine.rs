@@ -4,7 +4,7 @@
 //! to build the JSON returned by `/health`.
 
 use ffmpeg_next as ffmpeg;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -274,6 +274,8 @@ pub struct MediaEngine {
     pub hls_stores: TokioRwLock<HashMap<String, Arc<HlsStore>>>,
     // Map of ingest_id -> file ingest child process
     pub file_ingest_children: TokioRwLock<HashMap<String, tokio::process::Child>>,
+    // Configured file ingest IDs considered active, regardless of backend.
+    pub active_file_ingests: TokioRwLock<HashSet<String>>,
     // Transcoded RingBuffer + cancel token keyed by typed pipeline/stage identity.
     pub transcoder_buffers: TokioRwLock<HashMap<StageKey, (Arc<RingBuffer>, CancellationToken)>>,
     // SRT listener socket kernel buffer stats
@@ -335,6 +337,7 @@ impl MediaEngine {
             recording_cancel_tokens: TokioRwLock::new(HashMap::new()),
             hls_stores: TokioRwLock::new(HashMap::new()),
             file_ingest_children: TokioRwLock::new(HashMap::new()),
+            active_file_ingests: TokioRwLock::new(HashSet::new()),
             transcoder_buffers: TokioRwLock::new(HashMap::new()),
             srt_listener_stats: Arc::new(ListenerSocketStats::default()),
             hls_consumers: TokioRwLock::new(HashMap::new()),
@@ -452,19 +455,24 @@ impl MediaEngine {
         let mut children = self.file_ingest_children.write().await;
         if let Some(child) = children.get_mut(id) {
             match child.try_wait() {
-                Ok(None) => true,
+                Ok(None) => {
+                    self.active_file_ingests.write().await.insert(id.to_string());
+                    true
+                }
                 _ => {
                     children.remove(id);
+                    self.active_file_ingests.write().await.remove(id);
                     false
                 }
             }
         } else {
-            false
+            self.active_file_ingests.read().await.contains(id)
         }
     }
 
     pub async fn reap_file_ingests(&self) {
         let mut children = self.file_ingest_children.write().await;
+        let mut stopped = Vec::new();
         children.retain(|id, child| match child.try_wait() {
             Ok(None) => true,
             _ => {
@@ -472,9 +480,26 @@ impl MediaEngine {
                     "[engine] File ingest child process {} has exited/stopped",
                     id
                 );
+                stopped.push(id.clone());
                 false
             }
         });
+        drop(children);
+
+        if !stopped.is_empty() {
+            let mut active = self.active_file_ingests.write().await;
+            for id in stopped {
+                active.remove(&id);
+            }
+        }
+    }
+
+    pub async fn mark_file_ingest_running(&self, id: &str) {
+        self.active_file_ingests.write().await.insert(id.to_string());
+    }
+
+    pub async fn clear_file_ingest_running(&self, id: &str) {
+        self.active_file_ingests.write().await.remove(id);
     }
 
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
