@@ -162,6 +162,10 @@ preflight emits the candidate `ports` list and checks the actual ports a mode
 binds: legacy live modes check the configured Restream/MediaMTX ports, while
 Rust-only harness modes check the harness loopback ports (`11935` for RTMP,
 `11080` for SRT, and `HLS_PUT_PORT` for the dummy HLS PUT sink).
+If a live mode needs `target/release/restream` and the repo-managed static SRT
+archive is also missing, the binary check points agents at
+`scripts/resource-limit ./scripts/setup-static-build.sh` before the release
+build step.
 
 Typical quick agent loop:
 

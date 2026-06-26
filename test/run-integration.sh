@@ -140,6 +140,7 @@ ARTIFACT_KEEP_RUNS=3
 RESTREAM_ARTIFACT_MIN_FREE_MB="${RESTREAM_ARTIFACT_MIN_FREE_MB:-2048}"
 TEST_HARNESS_RTMP=11935
 TEST_HARNESS_SRT=11080
+STATIC_SRT_ARCHIVE="${RESTREAM_BUILD_ROOT:-$ROOT/.build/static}/prefix/lib/libsrt.a"
 
 # ── Port defaults (each mode may override before calling start_*) ──────────────
 RESTREAM_HTTP="${RESTREAM_HTTP:-3030}"
@@ -417,6 +418,14 @@ port_is_busy() {
   fi
 }
 
+release_binary_hint() {
+  if [[ ! -f "$STATIC_SRT_ARCHIVE" ]]; then
+    printf 'run scripts/resource-limit ./scripts/setup-static-build.sh, then scripts/resource-limit cargo build --release'
+  else
+    printf 'run scripts/resource-limit cargo build --release'
+  fi
+}
+
 run_preflight() {
   init_assertion_log
   local fail_count=0 status missing=() cmd busy=() ports=()
@@ -430,7 +439,7 @@ run_preflight() {
     mtime="$(date -u -r "$RESTREAM_BIN" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
     emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"ok\",\"mtime\":\"$(json_escape "$mtime")\"}"
   else
-    emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"fail\",\"hint\":\"run scripts/resource-limit cargo build --release\"}"
+    emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"fail\",\"hint\":\"$(json_escape "$(release_binary_hint)")\"}"
     fail_count=$(( fail_count + 1 ))
   fi
 

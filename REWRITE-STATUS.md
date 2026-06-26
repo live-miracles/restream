@@ -129,6 +129,15 @@ Phase 7 artifact safety was tightened on June 26, 2026:
   `./test/run-protocol-matrix.sh --run-id phase7-correctness-preflight
   --preflight-only --only-modes
   correctness-srt-rtmp,correctness-hevc-rtmp,correctness-hevc-srt`.
+- A current all-nine aggregate preflight on June 26, 2026 with
+  `./test/run-protocol-matrix.sh --run-id phase7-nine-preflight-20260626-codex
+  --preflight-only --continue-on-fail` reached every mode. Seven Rust-only or
+  helper-backed modes passed readiness; `ramp` and `mixed-scale` failed the
+  binary preflight because `target/release/restream` and the repo-managed
+  static SRT prefix were absent from this worktree. The binary preflight hint
+  now points agents at `scripts/resource-limit ./scripts/setup-static-build.sh`
+  before `scripts/resource-limit cargo build --release` when that prefix is
+  missing.
 
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s
