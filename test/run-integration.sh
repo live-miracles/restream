@@ -395,6 +395,9 @@ JSON
 }
 
 init_run_artifacts() {
+  if [[ "${KEEP_ARTIFACTS:-0}" != "1" && -d "$WORK_DIR" ]]; then
+    rm -rf "$WORK_DIR"
+  fi
   mkdir -p "$WORK_DIR"
   MANIFEST="${WORK_DIR}/manifest.json"
   init_assertion_log
