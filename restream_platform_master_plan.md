@@ -1444,6 +1444,10 @@ Phase 4 implementation checkpoint, 2026-06-26:
   lifecycle events, media inventory, and diagnostics metadata. Stream keys and
   output URLs are replaced with stable fingerprints and URL scheme/host
   summaries.
+- Extended the context bundle into an agent state contract: route/schema
+  capability metadata, desired-vs-actual input/output/recording/HLS summaries,
+  storage/media capacity, recent job/output history, passive diagnostics
+  findings, and HLS/recording/file-ingest/ingest-security dependency summaries.
 - Execution is intentionally unavailable (`executionEnabled: false`) so phase 6
   can remain separately gated and removable.
 

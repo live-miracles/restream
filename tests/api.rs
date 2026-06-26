@@ -1976,6 +1976,15 @@ async fn agent_capabilities_reports_read_planning_only() {
     assert_eq!(body["executionEnabled"], false);
     assert!(body["readTools"].as_array().unwrap().len() >= 5);
     assert!(body["planningTools"].as_array().unwrap().len() >= 3);
+    assert!(
+        body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|route| route["path"] == "/api/v1/agent/context" && route["mutates"] == false)
+    );
+    assert!(body["schemas"]["PlanRequest"].is_object());
+    assert_eq!(body["redaction"]["policy"], "agentContextV1");
 }
 
 #[cfg(feature = "agent-plane")]
@@ -2063,6 +2072,25 @@ async fn agent_context_returns_redacted_state_bundle() {
     assert!(body["runtime"]["health"].is_object());
     assert!(body["runtime"]["telemetry"]["engine"].is_object());
     assert!(body["runtime"]["graphs"].is_array());
+    assert!(body["api"]["routes"].as_array().unwrap().len() >= 5);
+    assert!(body["api"]["schemas"]["AgentContextV1"].is_object());
+    assert_eq!(
+        body["desiredVsActual"]["summary"]["pipelines"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        body["desiredVsActual"]["summary"]["outputs"].as_u64(),
+        Some(1)
+    );
+    assert!(body["diagnostics"]["pipelines"].as_array().unwrap().len() == 1);
+    assert!(body["dependencies"]["hls"]["config"].is_object());
+    assert!(body["dependencies"]["recording"]["pipelines"].is_array());
+    assert_eq!(
+        body["dependencies"]["fileIngest"]["configured"].as_u64(),
+        Some(0)
+    );
+    assert!(body["dependencies"]["ingestSecurity"]["config"].is_object());
+    assert!(body["storage"]["mediaFileCount"].as_u64().is_some());
     assert!(body["redaction"]["recursiveFields"].is_array());
 
     assert!(!raw.contains(raw_stream_key));

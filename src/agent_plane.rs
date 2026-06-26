@@ -26,6 +26,9 @@ pub struct AgentCapabilities {
     pub read_tools: Vec<&'static str>,
     pub planning_tools: Vec<&'static str>,
     pub execution_tools: Vec<&'static str>,
+    pub routes: Value,
+    pub schemas: Value,
+    pub redaction: Value,
     pub notes: Vec<&'static str>,
 }
 
@@ -131,15 +134,18 @@ pub fn redacted_context(
     events: Vec<crate::events::Event>,
     configuration: Value,
     media: Value,
+    desired_vs_actual: Value,
+    diagnostics: Value,
+    dependencies: Value,
+    storage: Value,
 ) -> Value {
     serde_json::json!({
         "generatedAt": now(),
         "readOnly": true,
-        "redaction": {
-            "policy": "agentContextV1",
-            "streamKeys": "raw stream keys are replaced with stable SHA-256 fingerprints",
-            "urls": "raw URLs are replaced with scheme, host, and stable SHA-256 fingerprints",
-            "recursiveFields": ["streamKey", "targetUrl", "url"]
+        "redaction": redaction_policy(),
+        "api": {
+            "routes": route_catalog(),
+            "schemas": schema_catalog()
         },
         "engine": redact_secrets(status),
         "features": {
@@ -164,12 +170,11 @@ pub fn redacted_context(
             "alerts": alerts.iter().map(redact_serializable).collect::<Vec<_>>(),
             "events": events.iter().map(redact_serializable).collect::<Vec<_>>()
         },
-        "diagnostics": {
-            "streamingEndpoint": "/pipelines/:pipeline_id/diagnostics",
-            "includedInContext": false,
-            "reason": "Diagnostics are active SSE probes and are not run by the read-only context endpoint."
-        },
-        "media": redact_secrets(media)
+        "desiredVsActual": redact_secrets(desired_vs_actual),
+        "diagnostics": redact_secrets(diagnostics),
+        "dependencies": redact_secrets(dependencies),
+        "media": redact_secrets(media),
+        "storage": redact_secrets(storage)
     })
 }
 
@@ -200,11 +205,85 @@ pub fn capabilities() -> AgentCapabilities {
             "estimate_change_impact",
         ],
         execution_tools: Vec::new(),
+        routes: route_catalog(),
+        schemas: schema_catalog(),
+        redaction: redaction_policy(),
         notes: vec![
             "Phase 4 is read/planning only.",
             "Phase 6 execution is intentionally not compiled into this feature.",
         ],
     }
+}
+
+pub fn redaction_policy() -> Value {
+    serde_json::json!({
+        "policy": "agentContextV1",
+        "streamKeys": "raw stream keys are replaced with stable SHA-256 fingerprints",
+        "urls": "raw URLs are replaced with scheme, host, and stable SHA-256 fingerprints",
+        "credentials": "credential-bearing fields are recursively redacted when represented as streamKey, stream_key, targetUrl, or url",
+        "recursiveFields": ["streamKey", "stream_key", "targetUrl", "url"],
+        "fingerprint": {
+            "algorithm": "sha256",
+            "encoding": "hex",
+            "prefixChars": 16
+        }
+    })
+}
+
+pub fn route_catalog() -> Value {
+    serde_json::json!([
+        {"tool": "get_agent_capabilities", "method": "GET", "path": "/api/v1/agent/capabilities", "auth": "session", "feature": "agent-plane", "mutates": false, "responseSchema": "AgentCapabilities"},
+        {"tool": "get_agent_context", "method": "GET", "path": "/api/v1/agent/context", "auth": "session", "feature": "agent-plane", "mutates": false, "responseSchema": "AgentContextV1"},
+        {"tool": "investigate_pipeline_issue", "method": "POST", "path": "/api/v1/agent/investigations", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "InvestigationRequest", "responseSchema": "InvestigationResponse"},
+        {"tool": "plan_pipeline_change", "method": "POST", "path": "/api/v1/agent/plans", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "PlanResponse"},
+        {"tool": "validate_change", "method": "POST", "path": "/api/v1/agent/plans/validate", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "ValidationResult"},
+        {"tool": "preview_graph_diff", "method": "POST", "path": "/api/v1/agent/graph-diff-preview", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "GraphDiffPreview"},
+        {"tool": "get_core_overview", "method": "GET", "path": "/api/v1/overview", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "Overview"},
+        {"tool": "get_core_pipeline_graph", "method": "GET", "path": "/pipelines/:pipeline_id/graph", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "ProcessingGraph"},
+        {"tool": "get_core_engine_telemetry", "method": "GET", "path": "/api/v1/engine/telemetry", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "EngineTelemetry"},
+        {"tool": "get_core_pipeline_telemetry", "method": "GET", "path": "/api/v1/pipelines/:pipeline_id/telemetry", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "PipelineTelemetry"},
+        {"tool": "run_pipeline_diagnostics_stream", "method": "GET", "path": "/pipelines/:pipeline_id/diagnostics?probe=:probe", "auth": "session", "feature": "core", "mutates": false, "streaming": true, "responseSchema": "DiagnosticsSse"}
+    ])
+}
+
+pub fn schema_catalog() -> Value {
+    serde_json::json!({
+        "InvestigationRequest": {
+            "type": "object",
+            "fields": {
+                "workflow": {"type": "string", "optional": true},
+                "pipelineId": {"type": "string", "optional": true},
+                "outputId": {"type": "string", "optional": true},
+                "eventLimit": {"type": "integer", "default": 100, "max": 1000}
+            }
+        },
+        "PlanRequest": {
+            "type": "object",
+            "required": ["intent"],
+            "fields": {
+                "intent": {"type": "string"},
+                "pipelineId": {"type": "string", "optional": true},
+                "proposedChanges": {"type": "array", "items": "ProposedChange", "default": []}
+            }
+        },
+        "ProposedChange": {
+            "type": "object",
+            "required": ["kind"],
+            "fields": {
+                "kind": {"type": "string", "enum": ["addOutput", "updateOutput", "removeOutput", "startOutput", "stopOutput"]},
+                "pipelineId": {"type": "string", "optional": true},
+                "outputId": {"type": "string", "optional": true},
+                "name": {"type": "string", "optional": true},
+                "url": {"type": "string", "optional": true, "redacted": true},
+                "encoding": {"type": "string", "optional": true},
+                "desiredState": {"type": "string", "optional": true, "enum": ["running", "stopped"]}
+            }
+        },
+        "AgentContextV1": {
+            "type": "object",
+            "sections": ["api", "engine", "features", "configuration", "state", "runtime", "desiredVsActual", "diagnostics", "dependencies", "media", "storage", "redaction"]
+        }
+    })
 }
 
 pub fn redact_secrets(value: Value) -> Value {
@@ -281,6 +360,10 @@ fn redacted_ingest(ingest: &Ingest) -> Value {
 
 fn redact_serializable<T: Serialize>(value: &T) -> Value {
     redact_secrets(serde_json::to_value(value).unwrap_or(Value::Null))
+}
+
+pub fn redact_secrets_from_serializable<T: Serialize>(value: &T) -> Value {
+    redact_serializable(value)
 }
 
 fn redacted_url(raw: &str) -> Value {

@@ -2805,6 +2805,24 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         pipeline_telemetry.push(state.engine.pipeline_telemetry(pipeline_id).await);
         graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
     }
+    let desired_vs_actual = agent_desired_vs_actual(
+        &pipelines,
+        &outputs,
+        &ingests,
+        &jobs,
+        &recording_enabled,
+        &health,
+    );
+    let diagnostics = agent_diagnostics_summary(&pipelines, &outputs, &health, &graphs);
+    let dependencies = agent_dependency_summary(
+        state,
+        &pipelines,
+        &outputs,
+        &ingests,
+        &recording_enabled,
+        &health,
+    )
+    .await;
 
     let bonding_available = state
         .engine
@@ -2849,6 +2867,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         }
     });
     let media = agent_media_inventory(state).await;
+    let storage = agent_storage_summary(state, &media).await;
 
     crate::agent_plane::redacted_context(
         &pipelines,
@@ -2864,6 +2883,10 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         events,
         configuration,
         media,
+        desired_vs_actual,
+        diagnostics,
+        dependencies,
+        storage,
     )
 }
 
@@ -2899,6 +2922,349 @@ async fn agent_media_inventory(state: &AppState) -> serde_json::Value {
     serde_json::json!({
         "mediaDir": state.media_dir,
         "files": files,
+    })
+}
+
+#[cfg(feature = "agent-plane")]
+fn agent_desired_vs_actual(
+    pipelines: &[Pipeline],
+    outputs: &[Output],
+    ingests: &[Ingest],
+    jobs: &[Job],
+    recording_enabled: &std::collections::HashMap<String, bool>,
+    health: &serde_json::Value,
+) -> serde_json::Value {
+    let mut pipeline_reports = Vec::new();
+    let mut drift_count = 0usize;
+    let mut converged_count = 0usize;
+    let mut pending_count = 0usize;
+
+    for pipeline in pipelines {
+        let pipeline_health = &health["pipelines"][&pipeline.id];
+        let input_status = pipeline_health["input"]["status"].as_str().unwrap_or("off");
+        let file_ingests: Vec<_> = ingests
+            .iter()
+            .filter(|ingest| ingest.stream_key == pipeline.stream_key)
+            .collect();
+        let input_desired = if file_ingests.is_empty() {
+            "externalPublisherOptional"
+        } else {
+            "fileIngestConfigured"
+        };
+
+        let pipeline_outputs: Vec<_> = outputs
+            .iter()
+            .filter(|output| output.pipeline_id == pipeline.id)
+            .collect();
+        let mut output_reports = Vec::new();
+        for output in pipeline_outputs {
+            let runtime = &pipeline_health["outputs"][&output.id];
+            let actual = runtime["status"].as_str().unwrap_or("stopped");
+            let reason = if output.desired_state == "running" && input_status != "on" {
+                pending_count += 1;
+                "pendingInput"
+            } else if output.desired_state == "running" && actual == "running" {
+                converged_count += 1;
+                "converged"
+            } else if output.desired_state == "stopped" && actual != "running" {
+                converged_count += 1;
+                "converged"
+            } else {
+                drift_count += 1;
+                "desiredActualMismatch"
+            };
+            let recent_jobs: Vec<_> = jobs
+                .iter()
+                .filter(|job| job.pipeline_id == pipeline.id && job.output_id == output.id)
+                .take(5)
+                .map(crate::agent_plane::redact_secrets_from_serializable)
+                .collect();
+            output_reports.push(serde_json::json!({
+                "outputId": output.id,
+                "name": output.name,
+                "desiredState": output.desired_state,
+                "actualStatus": actual,
+                "actualPhase": runtime["phase"],
+                "converged": reason == "converged",
+                "reason": reason,
+                "encoding": output.encoding,
+                "recentJobs": recent_jobs,
+            }));
+        }
+
+        let recording_desired = recording_enabled
+            .get(&pipeline.id)
+            .copied()
+            .unwrap_or(false);
+        let recording_active = pipeline_health["recording"]["active"]
+            .as_bool()
+            .unwrap_or(false);
+        let recording_reason = if !recording_desired && !recording_active {
+            "converged"
+        } else if recording_desired && recording_active {
+            "converged"
+        } else if recording_desired && input_status != "on" {
+            "pendingInput"
+        } else {
+            "desiredActualMismatch"
+        };
+
+        pipeline_reports.push(serde_json::json!({
+            "pipelineId": pipeline.id,
+            "name": pipeline.name,
+            "input": {
+                "desired": input_desired,
+                "actualStatus": input_status,
+                "fileIngestCount": file_ingests.len(),
+                "externalPublishersAllowed": true
+            },
+            "outputs": output_reports,
+            "recording": {
+                "desiredEnabled": recording_desired,
+                "actualActive": recording_active,
+                "converged": recording_reason == "converged",
+                "reason": recording_reason
+            },
+            "hlsPreview": {
+                "desired": "onDemand",
+                "actualActive": pipeline_health["hlsPreview"]["active"].as_bool().unwrap_or(false)
+            }
+        }));
+    }
+
+    serde_json::json!({
+        "summary": {
+            "pipelines": pipelines.len(),
+            "outputs": outputs.len(),
+            "convergedOutputs": converged_count,
+            "pendingOutputs": pending_count,
+            "driftedOutputs": drift_count,
+        },
+        "pipelines": pipeline_reports,
+    })
+}
+
+#[cfg(feature = "agent-plane")]
+fn agent_diagnostics_summary(
+    pipelines: &[Pipeline],
+    outputs: &[Output],
+    health: &serde_json::Value,
+    graphs: &[serde_json::Value],
+) -> serde_json::Value {
+    let mut pipeline_reports = Vec::new();
+    for pipeline in pipelines {
+        let pipeline_health = &health["pipelines"][&pipeline.id];
+        let graph = graphs
+            .iter()
+            .find(|graph| graph["pipelineId"].as_str() == Some(pipeline.id.as_str()));
+        let inactive_nodes = graph
+            .and_then(|graph| graph["nodes"].as_array())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter(|node| !node["active"].as_bool().unwrap_or(false))
+                    .map(|node| {
+                        serde_json::json!({
+                            "id": node["id"],
+                            "type": node["type"],
+                            "label": node["label"],
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let desired_running_outputs = outputs
+            .iter()
+            .filter(|output| output.pipeline_id == pipeline.id && output.desired_state == "running")
+            .count();
+        let actual_running_outputs = pipeline_health["outputs"]
+            .as_object()
+            .map(|outputs| {
+                outputs
+                    .values()
+                    .filter(|output| output["status"].as_str() == Some("running"))
+                    .count()
+            })
+            .unwrap_or(0);
+        let mut findings = Vec::new();
+        if pipeline_health["input"]["status"].as_str() != Some("on") {
+            findings.push(serde_json::json!({
+                "severity": "critical",
+                "code": "noActivePublisher",
+                "message": "Pipeline has no active publisher."
+            }));
+        }
+        if actual_running_outputs < desired_running_outputs {
+            findings.push(serde_json::json!({
+                "severity": "warning",
+                "code": "desiredOutputsNotRunning",
+                "message": "One or more desired running outputs are not active.",
+                "desiredRunningOutputs": desired_running_outputs,
+                "actualRunningOutputs": actual_running_outputs
+            }));
+        }
+        pipeline_reports.push(serde_json::json!({
+            "pipelineId": pipeline.id,
+            "passive": true,
+            "activeProbeEndpoint": format!("/pipelines/{}/diagnostics", pipeline.id),
+            "supportedProbeQueryValues": ["rtmp", "srt"],
+            "includedActiveProbeResults": false,
+            "reason": "The context endpoint is read-only and does not open active SSE diagnostics probes.",
+            "inactiveGraphNodes": inactive_nodes,
+            "findings": findings,
+        }));
+    }
+
+    serde_json::json!({
+        "streamingEndpointTemplate": "/pipelines/:pipeline_id/diagnostics?probe=:probe",
+        "includedActiveProbeResults": false,
+        "pipelines": pipeline_reports,
+    })
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_dependency_summary(
+    state: &AppState,
+    pipelines: &[Pipeline],
+    outputs: &[Output],
+    ingests: &[Ingest],
+    recording_enabled: &std::collections::HashMap<String, bool>,
+    health: &serde_json::Value,
+) -> serde_json::Value {
+    let hls_config = crate::media::hls::HlsConfig::from_env();
+    let hls_consumers = state.engine.hls_consumers.read().await;
+    let hls_stores = state.engine.hls_stores.read().await;
+    let recording_tokens = state.engine.recording_cancel_tokens.read().await;
+    let active_file_ingests = state.engine.active_file_ingests.read().await;
+    let file_ingest_children = state.engine.file_ingest_children.read().await;
+
+    let mut hls = Vec::new();
+    let mut recordings = Vec::new();
+    for pipeline in pipelines {
+        let store = hls_stores.get(&pipeline.id);
+        let consumer = hls_consumers.get(&pipeline.id);
+        let snapshot = store.and_then(|store| store.snapshot());
+        hls.push(serde_json::json!({
+            "pipelineId": pipeline.id,
+            "storeExists": store.is_some(),
+            "active": consumer.is_some_and(|consumer| !consumer.cancel_token.is_cancelled()),
+            "persistentConsumers": consumer
+                .map(|consumer| consumer.persistent.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(0),
+            "lastAccessAgeMs": consumer.map(|consumer| {
+                let now = consumer.reference_instant.elapsed().as_millis() as u64;
+                let last = consumer.last_access_ms.load(std::sync::atomic::Ordering::Relaxed);
+                now.saturating_sub(last)
+            }),
+            "segments": snapshot.as_ref().map(|snapshot| snapshot.segments.len()).unwrap_or(0),
+            "playlistBytes": snapshot.as_ref().map(|snapshot| snapshot.playlist.len()).unwrap_or(0),
+        }));
+
+        let desired_enabled = recording_enabled
+            .get(&pipeline.id)
+            .copied()
+            .unwrap_or(false);
+        let active = recording_tokens
+            .get(&pipeline.id)
+            .is_some_and(|token| !token.is_cancelled());
+        recordings.push(serde_json::json!({
+            "pipelineId": pipeline.id,
+            "desiredEnabled": desired_enabled,
+            "active": active,
+            "inputStatus": health["pipelines"][&pipeline.id]["input"]["status"],
+        }));
+    }
+
+    let mut file_ingest = Vec::new();
+    for ingest in ingests {
+        let media_path = FsPath::new(&state.media_dir).join(&ingest.filename);
+        file_ingest.push(serde_json::json!({
+            "id": ingest.id,
+            "filename": ingest.filename,
+            "mediaExists": media_path.exists(),
+            "markedActive": active_file_ingests.contains(&ingest.id),
+            "childRegistered": file_ingest_children.contains_key(&ingest.id),
+            "backend": if crate::media::file_ingest::use_internal_file_ingest() { "internal" } else { "ffmpeg-subprocess" },
+            "loop": ingest.loop_flag,
+            "startTime": ingest.start_time,
+            "streamKey": ingest.stream_key,
+        }));
+    }
+
+    let hls_output_count = outputs
+        .iter()
+        .filter(|output| {
+            output.url.starts_with("hls://")
+                || output.url.starts_with("http://")
+                || output.url.starts_with("https://")
+        })
+        .count();
+
+    serde_json::json!({
+        "hls": {
+            "config": {
+                "minSegmentSecs": hls_config.min_segment_secs,
+                "segmentCapacity": hls_config.segment_capacity,
+                "maxSegments": hls_config.max_segments,
+            },
+            "outputCount": hls_output_count,
+            "pipelines": hls,
+        },
+        "recording": {
+            "pipelines": recordings,
+        },
+        "fileIngest": {
+            "configured": file_ingest.len(),
+            "backend": if crate::media::file_ingest::use_internal_file_ingest() { "internal" } else { "ffmpeg-subprocess" },
+            "ingests": file_ingest,
+        },
+        "ingestSecurity": {
+            "config": state.security.get_config(),
+            "loopbackExempt": true,
+            "trackedIpRuntimeStateRedacted": true,
+        }
+    })
+}
+
+#[cfg(feature = "agent-plane")]
+async fn agent_storage_summary(state: &AppState, media: &serde_json::Value) -> serde_json::Value {
+    let media_bytes = media["files"]
+        .as_array()
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|file| file["size"].as_u64())
+                .sum::<u64>()
+        })
+        .unwrap_or(0);
+    let media_file_count = media["files"]
+        .as_array()
+        .map(|files| files.len())
+        .unwrap_or(0);
+    let media_root = std::fs::canonicalize(&state.media_dir)
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| state.media_dir.clone());
+
+    let disks = Disks::new_with_refreshed_list();
+    let mut selected_disk = None;
+    for disk in disks.list() {
+        if FsPath::new(&media_root).starts_with(disk.mount_point()) {
+            selected_disk = Some(serde_json::json!({
+                "mountPoint": disk.mount_point().display().to_string(),
+                "totalBytes": disk.total_space(),
+                "availableBytes": disk.available_space(),
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "mediaDir": state.media_dir,
+        "mediaRoot": media_root,
+        "mediaFileCount": media_file_count,
+        "mediaBytes": media_bytes,
+        "disk": selected_disk,
+        "databasePath": std::env::var("RESTREAM_DB_PATH").unwrap_or_else(|_| "data.db".to_string()),
     })
 }
 

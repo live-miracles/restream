@@ -239,15 +239,20 @@ reserved for the separate phase-6 feature.
 
 Context responses include:
 
+- route and lightweight schema metadata for agent clients
 - build/runtime status, OS basics, native-library versions, and feature flags
 - redacted pipelines, outputs, ingests, jobs, transcode profiles, and settings
+- current desired-vs-actual summaries for inputs, outputs, recording, and HLS
 - health, engine telemetry, per-pipeline telemetry, processing graphs, alerts,
   and recent lifecycle events
-- media inventory and diagnostics endpoint metadata
+- media inventory, storage summary, dependency summaries, and passive
+  diagnostics findings plus active diagnostics route metadata
 - redaction metadata describing which fields were removed
 
 Raw stream keys and output URLs are never returned by this endpoint. They are
 replaced with stable SHA-256 fingerprints plus URL scheme/host summaries.
+The context endpoint does not open active diagnostics probes; agents can use the
+advertised diagnostics SSE route when an explicit live probe is needed.
 
 Plan request:
 
