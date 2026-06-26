@@ -38,14 +38,15 @@ cargo fmt
 
 ### Resource-Aware Builds
 
-When multiple agents may be building concurrently, use the memory-aware wrapper.
-It acquires the shared repository build lock, then sizes Cargo jobs to available RAM:
+When multiple agents may be building concurrently, use the resource-aware wrapper.
+It acquires the shared repository build lock, then sizes build jobs to available
+RAM and CPU budget:
 
 ```sh
-scripts/cargo-mem-limit build
-scripts/cargo-mem-limit build --release
-scripts/cargo-mem-limit test
-scripts/cargo-mem-limit clippy
+scripts/resource-limit cargo build
+scripts/resource-limit cargo build --release
+scripts/resource-limit cargo test
+scripts/resource-limit cargo clippy
 ```
 
 Do not run bare `cargo build --release` from agents; release builds use
@@ -55,17 +56,20 @@ wrapper.
 For other Cargo build commands, prefer the wrapper too:
 
 ```sh
-scripts/cargo-mem-limit bench --bench <name>
+scripts/resource-limit cargo bench --bench <name>
 ```
 
-For non-Cargo heavy commands, acquire the same lock explicitly:
+For non-Cargo heavy commands, use the same wrapper:
 
 ```sh
-scripts/build-lock ./test/run-integration.sh mixed-scale
+scripts/resource-limit ./test/run-integration.sh mixed-scale
 ```
 
 The lock uses `flock(1)` on `.build-lock`; it is released automatically if the
-process exits or crashes.
+process exits or crashes. The wrapper exports `BUILD_JOBS`, `CARGO_BUILD_JOBS`,
+`CMAKE_BUILD_PARALLEL_LEVEL`, and `MAKEFLAGS`; tune with
+`RESTREAM_MB_PER_JOB`, `RESTREAM_CPU_RESERVE`, `RESTREAM_MIN_JOBS`, and
+`RESTREAM_MAX_JOBS`.
 
 Frontend work:
 
