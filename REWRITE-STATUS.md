@@ -469,13 +469,14 @@ See `docs/api-reference.md` for the executable route surface.
 8. Run and publish a clean protocol matrix from `docs/testing.md`. Minimum
    release evidence should include current `test/run-integration.sh` modes
    (`ramp`, `mixed-scale`, `bonding`, `burst-verify`, `hls-put`,
-   `bframe-rtmp`) through `test/run-protocol-matrix.sh`, which creates an
-   aggregate manifest under `test/artifacts/<run-id>/`. The `hls-put` mode
-   covers HTTP PUT delivery and destination restart recovery with a dummy sink;
-   `bframe-rtmp` covers live RTMP B-frame timestamp round-trip behavior;
-   `correctness-srt-rtmp` covers live SRT→RTMP packetization;
-   `correctness-hevc-rtmp` covers live H.265-to-H.264 RTMP edge conversion;
-   `correctness-hevc-srt` covers live H.265 SRT passthrough.
+   `bframe-rtmp`, `correctness-srt-rtmp`, `correctness-hevc-rtmp`,
+   `correctness-hevc-srt`) through `test/run-protocol-matrix.sh`, which
+   creates an aggregate manifest under `test/artifacts/<run-id>/`. The
+   `hls-put` mode covers HTTP PUT delivery and destination restart recovery
+   with a dummy sink; `bframe-rtmp` covers live RTMP B-frame timestamp
+   round-trip behavior; `correctness-srt-rtmp` covers live SRT→RTMP
+   packetization; `correctness-hevc-rtmp` covers live H.265-to-H.264 RTMP edge
+   conversion; `correctness-hevc-srt` covers live H.265 SRT passthrough.
 9. ~~Implement the decode/filter/encode packet loop, then prove every built-in
    video preset~~ — done for `h264`, `720p`, and `1080p`; the opt-in internal
    path now has matrix coverage through `run_ffmpeg_transcode_with_scale`.

@@ -15,6 +15,9 @@
 #   burst-verify closed-GOP RTMP/SRT matrix that verifies graph burst reader stats
 #   hls-put     SRT ingest to YouTube/path-style HTTP HLS PUT upload sinks
 #   bframe-rtmp RTMP B-frame ingest to RTMP egress timestamp round-trip
+#   correctness-srt-rtmp   SRT H.264/AAC ingest to native RTMP egress
+#   correctness-hevc-rtmp  SRT H.265 ingest to H.264 RTMP egress
+#   correctness-hevc-srt   SRT H.265 ingest to native SRT egress
 #
 # Common env overrides (all modes):
 #   RESTREAM_BIN   path to restream binary (default: target/release/restream)
@@ -361,6 +364,17 @@ resume_allows() {
   return 1
 }
 
+harness_only_mode() {
+  case "$MODE" in
+    burst-verify|hls-put|bframe-rtmp|correctness-srt-rtmp|correctness-hevc-rtmp|correctness-hevc-srt)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 mode_deps() {
   case "$MODE" in
     bonding)      printf '%s\n' bash timeout ;;
@@ -369,6 +383,8 @@ mode_deps() {
     burst-verify) printf '%s\n' cargo ffmpeg jq ;;
     hls-put)      printf '%s\n' cargo ffmpeg ffprobe jq ;;
     bframe-rtmp)  printf '%s\n' cargo ffmpeg ffprobe jq ;;
+    correctness-srt-rtmp|correctness-hevc-rtmp|correctness-hevc-srt)
+                  printf '%s\n' cargo ffmpeg ffprobe jq ;;
     *)            printf '%s\n' ffmpeg ffprobe curl jq mediamtx ;;
   esac
 }
@@ -390,6 +406,8 @@ run_preflight() {
 
   if [[ "$MODE" == "bonding" ]]; then
     emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"skip\",\"hint\":\"bonding mode builds and runs static SRT helper binaries\"}"
+  elif harness_only_mode; then
+    emit_preflight "{\"check\":\"binary\",\"path\":\"$(json_escape "$RESTREAM_BIN")\",\"status\":\"skip\",\"hint\":\"mode is managed by the Rust test_harness in-process\"}"
   elif [[ -x "$RESTREAM_BIN" ]]; then
     local mtime
     mtime="$(date -u -r "$RESTREAM_BIN" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
@@ -1260,6 +1278,30 @@ run_bframe_rtmp() {
   log_ok "bframe-rtmp: ${bframe_count}/${packet_count} packets had PTS>DTS and DTS stayed monotone"
 }
 
+run_harness_correctness() {
+  local command="$1" label="$2"
+  WORK_DIR="${WORK_DIR:-test/artifacts/${command}}"
+  RESTREAM_LOG="${WORK_DIR}/restream.log"
+  SUMMARY_LOG="${WORK_DIR}/summary.txt"
+  init_run_artifacts
+  check_deps cargo ffmpeg ffprobe jq
+  : > "$SUMMARY_LOG"
+
+  TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    cargo run --quiet --bin test_harness -- "$command" \
+    >"${WORK_DIR}/test-harness.log" 2>&1 \
+    || { tail -100 "${WORK_DIR}/test-harness.log" >&2 || true; fail "Rust ${command} harness failed"; }
+  printf 'scenario managed by Rust test_harness %s\n' "$command" >"${WORK_DIR}/restream.log"
+
+  local result_json="${WORK_DIR}/${command}.json"
+  local video_codec audio_codec
+  jq -e '.passed == true' "$result_json" >/dev/null \
+    || fail "${command} did not report passed=true"
+  video_codec="$(jq -r '.videoCodec // "unknown"' "$result_json")"
+  audio_codec="$(jq -r '.audioCodec // "unknown"' "$result_json")"
+  log_ok "${command}: ${label} verified video=${video_codec} audio=${audio_codec}"
+}
+
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 mkdir -p "$WORK_DIR"
 
@@ -1275,9 +1317,18 @@ case "$MODE" in
   burst-verify) run_burst_verify ;;
   hls-put)      run_hls_put      ;;
   bframe-rtmp)  run_bframe_rtmp  ;;
+  correctness-srt-rtmp)
+    run_harness_correctness "correctness-srt-rtmp" "SRT H.264/AAC to RTMP egress"
+    ;;
+  correctness-hevc-rtmp)
+    run_harness_correctness "correctness-hevc-rtmp" "SRT H.265 to H.264 RTMP egress"
+    ;;
+  correctness-hevc-srt)
+    run_harness_correctness "correctness-hevc-srt" "SRT H.265 passthrough"
+    ;;
   *)
     echo "Unknown mode: $MODE" >&2
-    echo "Valid modes: ramp mixed-scale bonding burst-verify hls-put bframe-rtmp" >&2
+    echo "Valid modes: ramp mixed-scale bonding burst-verify hls-put bframe-rtmp correctness-srt-rtmp correctness-hevc-rtmp correctness-hevc-srt" >&2
     exit 1
     ;;
 esac

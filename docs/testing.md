@@ -525,6 +525,9 @@ scripts/resource-limit ./test/run-integration.sh bonding
 scripts/resource-limit ./test/run-integration.sh burst-verify
 scripts/resource-limit ./test/run-integration.sh hls-put
 scripts/resource-limit ./test/run-integration.sh bframe-rtmp
+scripts/resource-limit ./test/run-integration.sh correctness-srt-rtmp
+scripts/resource-limit ./test/run-integration.sh correctness-hevc-rtmp
+scripts/resource-limit ./test/run-integration.sh correctness-hevc-srt
 test/run-media-validation.sh
 test/run-bitrate-scale-test.py
 ```
@@ -548,11 +551,12 @@ agents can inspect and slice the matrix cheaply; real matrix runs invoke
 `cargo run` through `scripts/resource-limit`.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
-parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
-already behind typed Rust harness entry points, and `ramp` now delegates its
-full eight-config matrix to `test_harness ramp-family`. `mixed-scale` now
-delegates its five config slices to Rust and leaves the shell layer as a
-launcher plus summary renderer.
+parsers/launchers only. `burst-verify`, `hls-put`, `bframe-rtmp`,
+`correctness-srt-rtmp`, `correctness-hevc-rtmp`, and `correctness-hevc-srt`
+are behind typed Rust harness entry points, and `ramp` now delegates its full
+eight-config matrix to `test_harness ramp-family`. `mixed-scale` now delegates
+its five config slices to Rust and leaves the shell layer as a launcher plus
+summary renderer.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
@@ -583,9 +587,9 @@ These capabilities must be treated as test results, not assumptions:
 |---|---|
 | RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip through `test/run-integration.sh bframe-rtmp` |
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
-| H.265 SRT passthrough | Live HEVC identity preservation through `cargo run --bin test_harness -- correctness-hevc-srt` |
-| H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `cargo run --bin test_harness -- correctness-hevc-rtmp` |
-| Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `cargo run --bin test_harness -- correctness-srt-rtmp` |
+| H.265 SRT passthrough | Live HEVC identity preservation through `test/run-integration.sh correctness-hevc-srt` |
+| H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `test/run-integration.sh correctness-hevc-rtmp` |
+| Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `test/run-integration.sh correctness-srt-rtmp` |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Embedded FFmpeg subprocess feature set | `scripts/build-static.sh` runs `restream-ffmpeg-capabilities` to prove the required codecs, `file`/`pipe` protocols, and `mov`/`matroska`/`mpegts` mux/demux surface are present |

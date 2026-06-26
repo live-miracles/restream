@@ -1467,6 +1467,9 @@ Phase 7 acceleration note, 2026-06-26:
 - `test/run-protocol-matrix.sh` now handles `--help`, `--list-modes`, and
   invalid `--only-modes` selections without compiling, while real runs use
   `scripts/resource-limit` for the Rust orchestrator build/run step.
+- H.265 passthrough, H.265-to-H.264 RTMP edge conversion, and SRT-to-RTMP
+  packetization are exposed as first-class `test/run-integration.sh` modes and
+  included in the default protocol matrix.
 
 ## Phase 8 — platform optimization
 - package-stage sharing

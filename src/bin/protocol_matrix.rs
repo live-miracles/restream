@@ -12,6 +12,9 @@ const DEFAULT_MODES: &[&str] = &[
     "burst-verify",
     "hls-put",
     "bframe-rtmp",
+    "correctness-srt-rtmp",
+    "correctness-hevc-rtmp",
+    "correctness-hevc-srt",
 ];
 
 #[derive(Debug)]

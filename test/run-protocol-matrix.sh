@@ -5,7 +5,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-DEFAULT_MODES=(ramp mixed-scale bonding burst-verify hls-put bframe-rtmp)
+DEFAULT_MODES=(
+  ramp
+  mixed-scale
+  bonding
+  burst-verify
+  hls-put
+  bframe-rtmp
+  correctness-srt-rtmp
+  correctness-hevc-rtmp
+  correctness-hevc-srt
+)
 
 usage() {
   cat <<USAGE
