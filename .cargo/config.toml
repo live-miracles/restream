@@ -1,3 +1,9 @@
+# Limit parallel rustc jobs to avoid OOM on memory-constrained WSL (7.6 GiB / 20 vCPU).
+# Each rustc instance uses 200–500 MB; 8 jobs ≈ 4 GiB peak, leaving room for concurrent builds.
+# Override with: CARGO_BUILD_JOBS=N cargo build
+[build]
+jobs = 8
+
 # mold is ~10× faster than ld for linking. All profiles benefit.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"

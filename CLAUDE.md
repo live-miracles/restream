@@ -36,6 +36,21 @@ cargo clippy
 cargo fmt
 ```
 
+### Resource-Aware Builds
+
+The dev environment is memory-constrained (7.6 GiB / 20 vCPU WSL). `.cargo/config.toml` caps
+parallel jobs at 8 by default. When multiple agents may be building concurrently, use the
+memory-aware wrapper which dynamically sizes jobs to available RAM:
+
+```sh
+scripts/cargo-mem-limit build
+scripts/cargo-mem-limit test
+scripts/cargo-mem-limit clippy
+```
+
+Never run concurrent `cargo build --release` from multiple agents — release builds use
+significantly more memory per compilation unit.
+
 Frontend work:
 
 ```sh

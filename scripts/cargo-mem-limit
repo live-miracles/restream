@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Memory-aware cargo wrapper. Computes CARGO_BUILD_JOBS from available RAM
+# so concurrent builds don't OOM WSL.
+#
+# Usage: scripts/cargo-mem-limit build [--release]
+#        scripts/cargo-mem-limit test
+#        scripts/cargo-mem-limit clippy
+#
+# Budget: ~500 MB per rustc job. Uses MemAvailable (not MemFree) so buffer/cache
+# pages count as available. Caps at nproc so we never exceed CPU count.
+
+set -euo pipefail
+
+MB_PER_JOB=500
+MIN_JOBS=2
+
+avail_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
+cpus=$(nproc)
+mem_jobs=$((avail_mb / MB_PER_JOB))
+
+# clamp to [MIN_JOBS, cpus]
+jobs=$mem_jobs
+(( jobs < MIN_JOBS )) && jobs=$MIN_JOBS
+(( jobs > cpus ))     && jobs=$cpus
+
+echo "mem-limit: ${avail_mb}MB available → $jobs jobs (of $cpus CPUs)" >&2
+
+export CARGO_BUILD_JOBS="$jobs"
+exec cargo "$@"
