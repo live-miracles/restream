@@ -272,7 +272,7 @@ FFMPEG_FINGERPRINT="$(
             --enable-demuxer=mpegts,matroska,mov \
             --enable-muxer=mpegts,matroska \
             --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-            --enable-encoder=aac,libx264,libx265 \
+            --enable-encoder=aac,ac3,libx264,libx265 \
             --enable-parser=h264,hevc,aac,ac3 \
             --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
             --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
@@ -309,7 +309,7 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-        --enable-encoder=aac,libx264,libx265 \
+        --enable-encoder=aac,ac3,libx264,libx265 \
         --enable-parser=h264,hevc,aac,ac3 \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
@@ -321,6 +321,7 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
 
     make -j"${BUILD_JOBS:-$(nproc)}"
     make install
+    make distclean
     popd >/dev/null
     write_stamp "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT"
 else
@@ -339,6 +340,9 @@ FFMPEG_BIN_BDIR="$BUILD_ROOT/ffmpeg-standalone-build"
 if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
     [[ ! -x "$FFMPEG_BIN_DEST" ]]; then
     echo "Building standalone ffmpeg $FFMPEG_VERSION binary..."
+    if [[ -f "$SOURCES/ffmpeg/config.h" ]]; then
+        make -C "$SOURCES/ffmpeg" distclean
+    fi
     mkdir -p "$FFMPEG_BIN_BDIR"
     pushd "$FFMPEG_BIN_BDIR" > /dev/null
 
@@ -371,7 +375,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-        --enable-encoder=aac,libx264,libx265 \
+        --enable-encoder=aac,ac3,libx264,libx265 \
         --enable-parser=h264,hevc,aac,ac3 \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
