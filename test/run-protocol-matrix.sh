@@ -97,4 +97,5 @@ while [[ "$i" -lt "${#args[@]}" ]]; do
   esac
 done
 
-exec "$ROOT/scripts/resource-limit" cargo run --quiet --bin protocol_matrix -- "$@"
+exec env RESTREAM_PROTOCOL_MATRIX_ONLY=1 \
+  "$ROOT/scripts/resource-limit" cargo run --quiet --bin protocol_matrix -- "$@"

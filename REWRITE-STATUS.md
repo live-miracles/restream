@@ -118,7 +118,14 @@ Phase 7 artifact safety was tightened on June 26, 2026:
 - `test/run-protocol-matrix.sh --help` and `--list-modes` are now answered by
   the shell wrapper without compiling the Rust orchestrator; `--only-modes` is
   validated before `cargo run`, and real matrix runs go through
-  `scripts/resource-limit cargo run --bin protocol_matrix`.
+  `scripts/resource-limit cargo run --bin protocol_matrix` with
+  `RESTREAM_PROTOCOL_MATRIX_ONLY=1` so matrix preflight can run before the
+  media-native static prefix is built.
+- A focused aggregate preflight for the three first-class correctness gates
+  passed on June 26, 2026 with
+  `./test/run-protocol-matrix.sh --run-id phase7-correctness-preflight
+  --preflight-only --only-modes
+  correctness-srt-rtmp,correctness-hevc-rtmp,correctness-hevc-srt`.
 
 The aggregate protocol-matrix orchestration has moved from bash into the Rust
 `protocol_matrix` binary, aligning with `restream_platform_master_plan.md`'s

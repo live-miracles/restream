@@ -548,7 +548,11 @@ iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
 for every mode. `--help` and `--list-modes` are handled by the shell wrapper
 without compiling, and `--only-modes` is validated before `cargo run`, so
 agents can inspect and slice the matrix cheaply; real matrix runs invoke
-`cargo run` through `scripts/resource-limit`.
+`cargo run` through `scripts/resource-limit`. The wrapper sets
+`RESTREAM_PROTOCOL_MATRIX_ONLY=1` for that orchestrator build so aggregate
+preflight does not require the media-native SRT/FFmpeg link prefix before any
+live mode starts. Do not set that flag for `restream` or `test_harness` builds;
+it is only for the non-media protocol-matrix orchestrator binary.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, `bframe-rtmp`,

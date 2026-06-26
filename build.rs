@@ -3,6 +3,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RESTREAM_FULLY_STATIC");
     println!("cargo:rerun-if-env-changed=RESTREAM_BUILD_ROOT");
     println!("cargo:rerun-if-env-changed=RESTREAM_NATIVE_BUILD_ID");
+    println!("cargo:rerun-if-env-changed=RESTREAM_PROTOCOL_MATRIX_ONLY");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=Cargo.toml");
 
@@ -18,6 +19,14 @@ fn main() {
     println!("cargo:rustc-env=GIT_COMMIT_HASH={}", commit.trim());
     embed_toolchain_versions();
     embed_rust_dependency_inventory();
+
+    if std::env::var_os("RESTREAM_PROTOCOL_MATRIX_ONLY").is_some() {
+        println!("cargo:rustc-env=RESTREAM_BUILD_SRT_VERSION=not-linked");
+        println!("cargo:rustc-env=RESTREAM_BUILD_X264_VERSION=not-linked");
+        println!("cargo:rustc-env=RESTREAM_BUILD_X265_VERSION=not-linked");
+        println!("cargo:rustc-env=RESTREAM_BUILD_OPENSSL_VERSION=not-linked");
+        return;
+    }
 
     // Always link SRT from the repo-managed static prefix so bonded ingest does
     // not depend on distro library build flags. Whole-archiving is intentional:
