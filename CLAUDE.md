@@ -43,18 +43,25 @@ It acquires the shared repository build lock, then sizes Cargo jobs to available
 
 ```sh
 scripts/cargo-mem-limit build
+scripts/cargo-mem-limit build --release
 scripts/cargo-mem-limit test
 scripts/cargo-mem-limit clippy
 ```
 
-Never run concurrent `cargo build --release` from multiple agents — release builds use
-significantly more memory per compilation unit.
+Do not run bare `cargo build --release` from agents; release builds use
+significantly more memory per compilation unit and should still go through the
+wrapper.
 
-For other heavy build commands, acquire the same lock explicitly:
+For other Cargo build commands, prefer the wrapper too:
 
 ```sh
-scripts/build-lock cargo bench --bench <name>
-scripts/build-lock cargo build --release
+scripts/cargo-mem-limit bench --bench <name>
+```
+
+For non-Cargo heavy commands, acquire the same lock explicitly:
+
+```sh
+scripts/build-lock ./test/run-integration.sh mixed-scale
 ```
 
 The lock uses `flock(1)` on `.build-lock`; it is released automatically if the

@@ -2,9 +2,9 @@
 # Serialize heavy build commands behind a shared flock so concurrent
 # agents don't OOM the WSL VM.
 #
-# Usage: scripts/build-lock cargo build [--release]
-#        scripts/build-lock cargo test
-#        scripts/build-lock scripts/cargo-mem-limit bench
+# Usage: scripts/build-lock ./test/run-integration.sh mixed-scale
+#        scripts/build-lock scripts/setup-static-build.sh
+#        scripts/cargo-mem-limit build --release  # preferred for Cargo builds
 #
 # The lock is exclusive by default (one build at a time). Pass --shared / -s
 # before the command to allow concurrent reads (e.g. cargo check) while still
