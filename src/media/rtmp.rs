@@ -43,7 +43,7 @@ use crate::media::codec;
 use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, StageMetrics, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
-use crate::media::tcp_stats::collect_rtmp_receiver_stats;
+use crate::media::tcp_stats::{collect_rtmp_receiver_stats, collect_rtmp_sender_stats};
 use bytes::Bytes;
 
 struct RtmpIngestHandle {
@@ -431,6 +431,15 @@ impl AsyncWrite for RtmpEgressStream {
     }
 }
 
+impl RtmpEgressStream {
+    fn tcp_stream(&self) -> &TcpStream {
+        match self {
+            Self::Plain(stream) => stream,
+            Self::Tls(stream) => stream.get_ref().0,
+        }
+    }
+}
+
 fn rustls_client_config() -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|anchor| {
@@ -462,6 +471,77 @@ async fn connect_rtmp_egress_stream(parts: &RtmpUrlParts) -> io::Result<RtmpEgre
     let connector = TlsConnector::from(rustls_client_config());
     let tls = connector.connect(server_name, tcp).await?;
     Ok(RtmpEgressStream::Tls(Box::new(tls)))
+}
+
+fn rtmp_sender_quality(
+    socket: &RtmpEgressStream,
+    previous_tcp_bytes: &mut Option<(u64, Instant)>,
+) -> PublisherQuality {
+    let now = Instant::now();
+    match collect_rtmp_sender_stats(socket.tcp_stream()) {
+        Ok(stats) => {
+            let send_rate = stats.tcp_bytes_sent.and_then(|bytes| {
+                let rate = previous_tcp_bytes.and_then(|(previous, sampled_at)| {
+                    let elapsed = now.duration_since(sampled_at).as_secs_f64();
+                    let delta = bytes.checked_sub(previous)?;
+                    (elapsed > 0.0).then_some((delta as f64 * 8.0) / (elapsed * 1_000_000.0))
+                });
+                *previous_tcp_bytes = Some((bytes, now));
+                rate
+            });
+            PublisherQuality {
+                tcp_congestion_algorithm: stats.tcp_congestion_algorithm,
+                tcp_rtt_ms: stats.tcp_rtt_ms,
+                tcp_rtt_var_ms: stats.tcp_rtt_var_ms,
+                tcp_bytes_sent: stats.tcp_bytes_sent,
+                tcp_bytes_acked: stats.tcp_bytes_acked,
+                tcp_bytes_retrans: stats.tcp_bytes_retrans,
+                tcp_last_snd_ms: stats.tcp_last_snd_ms,
+                tcp_snd_mss: stats.tcp_snd_mss,
+                tcp_pmtu: stats.tcp_pmtu,
+                tcp_unacked: stats.tcp_unacked,
+                tcp_sacked: stats.tcp_sacked,
+                tcp_lost: stats.tcp_lost,
+                tcp_retrans: stats.tcp_retrans,
+                tcp_snd_cwnd: stats.tcp_snd_cwnd,
+                tcp_snd_ssthresh: stats.tcp_snd_ssthresh,
+                tcp_advmss: stats.tcp_advmss,
+                tcp_reordering: stats.tcp_reordering,
+                tcp_notsent_bytes: stats.tcp_notsent_bytes,
+                tcp_total_retrans: stats.tcp_total_retrans,
+                tcp_pacing_rate_bps: stats.tcp_pacing_rate_bps,
+                tcp_max_pacing_rate_bps: stats.tcp_max_pacing_rate_bps,
+                tcp_delivery_rate_bps: stats.tcp_delivery_rate_bps,
+                tcp_segs_out: stats.tcp_segs_out,
+                tcp_data_segs_out: stats.tcp_data_segs_out,
+                tcp_delivered: stats.tcp_delivered,
+                tcp_delivered_ce: stats.tcp_delivered_ce,
+                tcp_busy_time_ms: stats.tcp_busy_time_ms,
+                tcp_rwnd_limited_ms: stats.tcp_rwnd_limited_ms,
+                tcp_sndbuf_limited_ms: stats.tcp_sndbuf_limited_ms,
+                tcp_dsack_dups: stats.tcp_dsack_dups,
+                tcp_reord_seen: stats.tcp_reord_seen,
+                tcp_snd_wnd: stats.tcp_snd_wnd,
+                tcp_total_rto: stats.tcp_total_rto,
+                tcp_total_rto_recoveries: stats.tcp_total_rto_recoveries,
+                tcp_total_rto_time_ms: stats.tcp_total_rto_time_ms,
+                tcp_skmem_wmem_alloc: stats.tcp_skmem_wmem_alloc,
+                tcp_skmem_wmem_max: stats.tcp_skmem_wmem_max,
+                tcp_send_rate_mbps: send_rate,
+                ..PublisherQuality::default()
+            }
+        }
+        Err(error) => PublisherQuality {
+            tcp_stats_unavailable_reason: Some(
+                match error.kind() {
+                    std::io::ErrorKind::Unsupported => "not_linux",
+                    _ => "collection_failed",
+                }
+                .to_string(),
+            ),
+            ..PublisherQuality::default()
+        },
+    }
 }
 
 // Standard RTMP URL parser helper
@@ -742,6 +822,7 @@ async fn handle_rtmp_client(
                             rate
                         });
                         PublisherQuality {
+                            tcp_congestion_algorithm: stats.tcp_congestion_algorithm,
                             tcp_rtt_ms: stats.tcp_rtt_ms,
                             tcp_rtt_var_ms: stats.tcp_rtt_var_ms,
                             tcp_bytes_received: stats.tcp_bytes_received,
@@ -1402,6 +1483,9 @@ pub async fn start_rtmp_egress(
     let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
     let progress_sample_interval = Duration::from_millis(250);
     let mut last_progress_sample = Instant::now() - progress_sample_interval;
+    let mut tcp_stats_interval = tokio::time::interval(Duration::from_secs(2));
+    tcp_stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut previous_tcp_bytes: Option<(u64, Instant)> = None;
     // Track the last SPS bytes we sent so we can re-send the AVCC decoder
     // config record when the encoder changes resolution or bitrate mid-stream.
     // None = no sequence header sent yet.
@@ -1421,6 +1505,10 @@ pub async fn start_rtmp_egress(
             _ = cancel_token.cancelled() => {
                 let _ = session.stop_publishing();
                 break;
+            }
+            _ = tcp_stats_interval.tick() => {
+                let quality = rtmp_sender_quality(&socket, &mut previous_tcp_bytes);
+                engine.update_egress_quality(&output_id, quality).await;
             }
             // Read from server to handle acknowledgements, status codes, pings
             res = socket.read(&mut buffer) => {

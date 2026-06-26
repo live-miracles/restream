@@ -670,6 +670,14 @@ struct SrtCounterSnapshot {
     sampled_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SrtSenderCounterSnapshot {
+    packets_sent_loss: u64,
+    packets_sent_drop: u64,
+    packets_sent_retrans: u64,
+    sampled_at: Instant,
+}
+
 fn counter_rate(current: u64, previous: u64, elapsed_seconds: f64) -> Option<f64> {
     if elapsed_seconds <= 0.0 {
         return None;
@@ -743,6 +751,63 @@ fn srt_quality_from_stats(
             srt_send_buf_avail_bytes: Some(stats.byte_avail_snd_buf),
             srt_recv_buf_avail_bytes: Some(stats.byte_avail_rcv_buf),
             srt_flight_size_pkts: Some(stats.pkt_flight_size),
+            ..PublisherQuality::default()
+        },
+        current,
+    )
+}
+
+fn srt_sender_quality_from_stats(
+    stats: &SrtTraceBStats,
+    previous: Option<SrtSenderCounterSnapshot>,
+    sampled_at: Instant,
+) -> (PublisherQuality, SrtSenderCounterSnapshot) {
+    let current = SrtSenderCounterSnapshot {
+        packets_sent_loss: stats.pkt_snd_loss_total.max(0) as u64,
+        packets_sent_drop: stats.pkt_snd_drop_total.max(0) as u64,
+        packets_sent_retrans: stats.pkt_retrans_total.max(0) as u64,
+        sampled_at,
+    };
+    let elapsed =
+        previous.map(|snapshot| sampled_at.duration_since(snapshot.sampled_at).as_secs_f64());
+
+    (
+        PublisherQuality {
+            ms_rtt: Some(stats.ms_rtt),
+            mbps_send_rate: Some(stats.mbps_send_rate),
+            mbps_link_capacity: Some(stats.mbps_bandwidth),
+            ms_send_tsb_pd_delay: Some(stats.ms_snd_tsb_pd_delay.max(0) as f64),
+            ms_send_buf: Some(stats.ms_snd_buf.max(0) as f64),
+            packets_sent_loss: Some(current.packets_sent_loss),
+            packets_sent_drop: Some(current.packets_sent_drop),
+            packets_sent_retrans: Some(current.packets_sent_retrans),
+            packets_received_nak: Some(stats.pkt_recv_nak_total.max(0) as u64),
+            packets_sent_loss_per_sec: previous.zip(elapsed).and_then(|(snapshot, seconds)| {
+                counter_rate(
+                    current.packets_sent_loss,
+                    snapshot.packets_sent_loss,
+                    seconds,
+                )
+            }),
+            packets_sent_drop_per_sec: previous.zip(elapsed).and_then(|(snapshot, seconds)| {
+                counter_rate(
+                    current.packets_sent_drop,
+                    snapshot.packets_sent_drop,
+                    seconds,
+                )
+            }),
+            packets_sent_retrans_per_sec: previous.zip(elapsed).and_then(|(snapshot, seconds)| {
+                counter_rate(
+                    current.packets_sent_retrans,
+                    snapshot.packets_sent_retrans,
+                    seconds,
+                )
+            }),
+            srt_send_buf_bytes: Some(stats.byte_snd_buf),
+            srt_send_buf_avail_bytes: Some(stats.byte_avail_snd_buf),
+            srt_flight_size_pkts: Some(stats.pkt_flight_size),
+            srt_flow_window_pkts: Some(stats.pkt_flow_window),
+            srt_congestion_window_pkts: Some(stats.pkt_congestion_window),
             ..PublisherQuality::default()
         },
         current,
@@ -2096,6 +2161,57 @@ mod tests {
     }
 
     #[test]
+    fn maps_srt_sender_quality_from_bistats() {
+        let stats = SrtTraceBStats {
+            ms_rtt: 12.5,
+            mbps_send_rate: 3.25,
+            mbps_bandwidth: 42.0,
+            ms_snd_tsb_pd_delay: 120,
+            ms_snd_buf: 80,
+            pkt_snd_loss_total: 10,
+            pkt_snd_drop_total: 3,
+            pkt_retrans_total: 5,
+            pkt_recv_nak_total: 7,
+            byte_snd_buf: 4096,
+            byte_avail_snd_buf: 8192,
+            pkt_flight_size: 4,
+            pkt_flow_window: 8192,
+            pkt_congestion_window: 1024,
+            ..unsafe { std::mem::zeroed() }
+        };
+        let sampled_at = Instant::now();
+        let previous = SrtSenderCounterSnapshot {
+            packets_sent_loss: 4,
+            packets_sent_drop: 1,
+            packets_sent_retrans: 2,
+            sampled_at: sampled_at - Duration::from_secs(2),
+        };
+
+        let (quality, snapshot) = srt_sender_quality_from_stats(&stats, Some(previous), sampled_at);
+
+        assert_eq!(quality.ms_rtt, Some(12.5));
+        assert_eq!(quality.mbps_send_rate, Some(3.25));
+        assert_eq!(quality.mbps_link_capacity, Some(42.0));
+        assert_eq!(quality.ms_send_tsb_pd_delay, Some(120.0));
+        assert_eq!(quality.ms_send_buf, Some(80.0));
+        assert_eq!(quality.packets_sent_loss, Some(10));
+        assert_eq!(quality.packets_sent_drop, Some(3));
+        assert_eq!(quality.packets_sent_retrans, Some(5));
+        assert_eq!(quality.packets_received_nak, Some(7));
+        assert_eq!(quality.packets_sent_loss_per_sec, Some(3.0));
+        assert_eq!(quality.packets_sent_drop_per_sec, Some(1.0));
+        assert_eq!(quality.packets_sent_retrans_per_sec, Some(1.5));
+        assert_eq!(quality.srt_send_buf_bytes, Some(4096));
+        assert_eq!(quality.srt_send_buf_avail_bytes, Some(8192));
+        assert_eq!(quality.srt_flight_size_pkts, Some(4));
+        assert_eq!(quality.srt_flow_window_pkts, Some(8192));
+        assert_eq!(quality.srt_congestion_window_pkts, Some(1024));
+        assert_eq!(snapshot.packets_sent_loss, 10);
+        assert_eq!(snapshot.packets_sent_drop, 3);
+        assert_eq!(snapshot.packets_sent_retrans, 5);
+    }
+
+    #[test]
     fn linked_libsrt_exposes_group_connect_when_required() {
         unsafe {
             assert_eq!(srt_startup(), 0);
@@ -3143,6 +3259,7 @@ pub async fn start_srt_egress(
         egress_last_error,
         egress_last_error_ms,
         egress_failure_phase,
+        egress_quality,
     ) = {
         let egresses = engine.active_egresses.read().await;
         if let Some(e) = egresses.get(&output_id) {
@@ -3154,9 +3271,10 @@ pub async fn start_srt_egress(
                 Some(e.last_error.clone()),
                 Some(e.last_error_ms.clone()),
                 Some(e.failure_phase.clone()),
+                Some(e.quality.clone()),
             )
         } else {
-            (None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None)
         }
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
@@ -3185,6 +3303,9 @@ pub async fn start_srt_egress(
             let mut buf = vec![0u8; 1316];
             let progress_sample_interval = Duration::from_millis(250);
             let mut last_progress_sample = Instant::now() - progress_sample_interval;
+            let quality_sample_interval = Duration::from_secs(1);
+            let mut last_quality_sample = Instant::now() - quality_sample_interval;
+            let mut previous_sender_stats: Option<SrtSenderCounterSnapshot> = None;
             loop {
                 let n = out_queue_send.read(&mut buf);
                 if n == 0 {
@@ -3232,6 +3353,30 @@ pub async fn start_srt_egress(
                         );
                     }
                     last_progress_sample = Instant::now();
+                }
+                if last_quality_sample.elapsed() >= quality_sample_interval {
+                    let mut stats: SrtTraceBStats = unsafe { std::mem::zeroed() };
+                    let sampled_at = Instant::now();
+                    let group_summary = use_bonding
+                        .then(|| srt_group_summary(client_sock))
+                        .flatten();
+                    let mut quality = if unsafe { srt_bistats(client_sock, &mut stats, 0, 1) } >= 0
+                    {
+                        let (quality, snapshot) = srt_sender_quality_from_stats(
+                            &stats,
+                            previous_sender_stats,
+                            sampled_at,
+                        );
+                        previous_sender_stats = Some(snapshot);
+                        quality
+                    } else {
+                        PublisherQuality::default()
+                    };
+                    add_srt_group_quality(&mut quality, use_bonding, group_summary);
+                    if let Some(ref quality_slot) = egress_quality {
+                        *quality_slot.lock().unwrap_or_else(|e| e.into_inner()) = quality;
+                    }
+                    last_quality_sample = sampled_at;
                 }
             }
         }));

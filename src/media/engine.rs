@@ -77,28 +77,74 @@ impl HlsConsumers {
 #[serde(rename_all = "camelCase")]
 pub struct PublisherQuality {
     // TCP metrics (RTMP)
+    pub tcp_congestion_algorithm: Option<String>,
     pub tcp_rtt_ms: Option<f64>,
     pub tcp_rtt_var_ms: Option<f64>,
     pub tcp_bytes_received: Option<u64>,
+    pub tcp_bytes_sent: Option<u64>,
+    pub tcp_bytes_acked: Option<u64>,
+    pub tcp_bytes_retrans: Option<u64>,
     pub tcp_last_rcv_ms: Option<u64>,
+    pub tcp_last_snd_ms: Option<u64>,
     pub tcp_rcv_rtt_ms: Option<f64>,
     pub tcp_rcv_space: Option<u64>,
     pub tcp_rcv_ooopack: Option<u64>,
+    pub tcp_snd_mss: Option<u64>,
+    pub tcp_pmtu: Option<u64>,
+    pub tcp_unacked: Option<u64>,
+    pub tcp_sacked: Option<u64>,
+    pub tcp_lost: Option<u64>,
+    pub tcp_retrans: Option<u64>,
+    pub tcp_snd_cwnd: Option<u64>,
+    pub tcp_snd_ssthresh: Option<u64>,
+    pub tcp_advmss: Option<u64>,
+    pub tcp_reordering: Option<u64>,
+    pub tcp_notsent_bytes: Option<u64>,
+    pub tcp_total_retrans: Option<u64>,
+    pub tcp_pacing_rate_bps: Option<u64>,
+    pub tcp_max_pacing_rate_bps: Option<u64>,
+    pub tcp_delivery_rate_bps: Option<u64>,
+    pub tcp_segs_out: Option<u64>,
+    pub tcp_data_segs_out: Option<u64>,
+    pub tcp_delivered: Option<u64>,
+    pub tcp_delivered_ce: Option<u64>,
+    pub tcp_busy_time_ms: Option<u64>,
+    pub tcp_rwnd_limited_ms: Option<u64>,
+    pub tcp_sndbuf_limited_ms: Option<u64>,
+    pub tcp_dsack_dups: Option<u64>,
+    pub tcp_reord_seen: Option<u64>,
+    pub tcp_snd_wnd: Option<u64>,
+    pub tcp_total_rto: Option<u64>,
+    pub tcp_total_rto_recoveries: Option<u64>,
+    pub tcp_total_rto_time_ms: Option<u64>,
     pub tcp_skmem_rmem_alloc: Option<u64>,
     pub tcp_skmem_rmem_max: Option<u64>,
+    pub tcp_skmem_wmem_alloc: Option<u64>,
+    pub tcp_skmem_wmem_max: Option<u64>,
     pub tcp_receive_rate_mbps: Option<f64>,
+    pub tcp_send_rate_mbps: Option<f64>,
     pub tcp_stats_unavailable_reason: Option<String>,
     // SRT metrics
     pub ms_rtt: Option<f64>,
+    pub mbps_send_rate: Option<f64>,
     pub mbps_receive_rate: Option<f64>,
     pub mbps_link_capacity: Option<f64>,
+    pub ms_send_tsb_pd_delay: Option<f64>,
     pub ms_receive_tsb_pd_delay: Option<f64>,
+    pub ms_send_buf: Option<f64>,
     pub ms_receive_buf: Option<f64>,
+    pub packets_sent_loss: Option<u64>,
+    pub packets_sent_drop: Option<u64>,
+    pub packets_sent_retrans: Option<u64>,
     pub packets_sent_nak: Option<u64>,
+    pub packets_received_nak: Option<u64>,
     pub packets_received_loss: Option<u64>,
     pub packets_received_drop: Option<u64>,
     pub packets_received_retrans: Option<u64>,
     pub packets_received_undecrypt: Option<u64>,
+    pub packets_sent_loss_per_sec: Option<f64>,
+    pub packets_sent_drop_per_sec: Option<f64>,
+    pub packets_sent_retrans_per_sec: Option<f64>,
     pub packets_received_loss_per_sec: Option<f64>,
     pub packets_received_drop_per_sec: Option<f64>,
     pub packets_received_retrans_per_sec: Option<f64>,
@@ -109,6 +155,8 @@ pub struct PublisherQuality {
     pub srt_send_buf_avail_bytes: Option<i32>,
     pub srt_recv_buf_avail_bytes: Option<i32>,
     pub srt_flight_size_pkts: Option<i32>,
+    pub srt_flow_window_pkts: Option<i32>,
+    pub srt_congestion_window_pkts: Option<i32>,
     pub srt_bonded: Option<bool>,
     pub srt_group_member_count: Option<u32>,
     pub srt_group_connected_members: Option<u32>,
@@ -194,6 +242,7 @@ pub struct ActiveEgress {
     pub last_error: Arc<std::sync::Mutex<Option<String>>>,
     pub last_error_ms: Arc<AtomicU64>,
     pub failure_phase: Arc<std::sync::Mutex<Option<String>>>,
+    pub quality: Arc<std::sync::Mutex<PublisherQuality>>,
     pub prev_bytes_sent: AtomicU64,
     pub prev_sample_time: std::sync::Mutex<Instant>,
     pub bitrate_kbps: std::sync::Mutex<Option<f64>>,
@@ -344,6 +393,7 @@ impl MediaEngine {
             "lastError": egress.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "lastErrorAt": Self::epoch_ms_to_rfc3339(last_error_ms),
             "failurePhase": egress.failure_phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "quality": egress.quality.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "metrics": egress.metrics.snapshot(),
         });
         if include_target_url {
@@ -905,6 +955,7 @@ impl MediaEngine {
                 last_error: Arc::new(std::sync::Mutex::new(None)),
                 last_error_ms: Arc::new(AtomicU64::new(0)),
                 failure_phase: Arc::new(std::sync::Mutex::new(None)),
+                quality: Arc::new(std::sync::Mutex::new(PublisherQuality::default())),
                 prev_bytes_sent: AtomicU64::new(0),
                 prev_sample_time: std::sync::Mutex::new(now),
                 bitrate_kbps: std::sync::Mutex::new(None),
@@ -956,6 +1007,13 @@ impl MediaEngine {
         }
     }
 
+    pub async fn update_egress_quality(&self, output_id: &str, quality: PublisherQuality) {
+        let egresses = self.active_egresses.read().await;
+        if let Some(egress) = egresses.get(output_id) {
+            *egress.quality.lock().unwrap_or_else(|e| e.into_inner()) = quality;
+        }
+    }
+
     pub async fn record_egress_progress(&self, output_id: &str, bytes: u64) {
         let egresses = self.active_egresses.read().await;
         if let Some(egress) = egresses.get(output_id) {
@@ -988,15 +1046,22 @@ impl MediaEngine {
         let egresses = self.active_egresses.read().await;
         if let Some(egress) = egresses.get(output_id) {
             let message = message.into();
+            let pipeline_id = egress.pipeline_id.clone();
             *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = "failed".to_string();
             *egress
                 .failure_phase
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(phase.to_string());
-            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
             egress
                 .last_error_ms
                 .store(Self::now_epoch_ms(), Ordering::Relaxed);
+            self.event_log.emit(crate::events::EventKind::EgressFailed {
+                pipeline_id,
+                output_id: output_id.to_string(),
+                phase: phase.to_string(),
+                error: message,
+            });
         }
     }
 
@@ -2226,6 +2291,20 @@ mod tests {
             .update_egress_target_addr("out-1", "203.0.113.10:10080".to_string())
             .await;
         engine.update_egress_phase("out-1", "sending").await;
+        engine
+            .update_egress_quality(
+                "out-1",
+                PublisherQuality {
+                    tcp_congestion_algorithm: Some("cubic".to_string()),
+                    mbps_send_rate: Some(3.2),
+                    packets_sent_retrans: Some(2),
+                    srt_bonded: Some(true),
+                    srt_group_member_count: Some(2),
+                    srt_group_active_members: Some(1),
+                    ..PublisherQuality::default()
+                },
+            )
+            .await;
         engine.record_egress_progress("out-1", 1316).await;
         engine
             .record_egress_error("out-1", "send", "synthetic send failure")
@@ -2242,8 +2321,37 @@ mod tests {
         assert_eq!(output["failurePhase"], "send");
         assert_eq!(output["lastError"], "synthetic send failure");
         assert_eq!(output["totalSize"], 1316);
+        assert_eq!(output["quality"]["mbpsSendRate"], 3.2);
+        assert_eq!(output["quality"]["tcpCongestionAlgorithm"], "cubic");
+        assert_eq!(output["quality"]["packetsSentRetrans"], 2);
+        assert_eq!(output["quality"]["srtBonded"], true);
+        assert_eq!(output["quality"]["srtGroupMemberCount"], 2);
+        assert_eq!(output["quality"]["srtGroupActiveMembers"], 1);
         assert!(!output["lastProgressAt"].is_null());
         assert!(!output["lastErrorAt"].is_null());
+    }
+
+    #[tokio::test]
+    async fn egress_failure_event_survives_unregister() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://example.com/live/key")
+            .await;
+        engine
+            .record_egress_error("out-1", "connect", "connection refused")
+            .await;
+        engine.unregister_egress("out-1").await;
+
+        let events = engine.event_log.recent(10, Some("pipe-1"));
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            crate::events::EventKind::EgressFailed {
+                output_id,
+                phase,
+                error,
+                ..
+            } if output_id == "out-1" && phase == "connect" && error == "connection refused"
+        )));
     }
 
     #[tokio::test]

@@ -58,6 +58,14 @@ pub enum EventKind {
         #[serde(rename = "outputId")]
         output_id: String,
     },
+    EgressFailed {
+        #[serde(rename = "pipelineId")]
+        pipeline_id: String,
+        #[serde(rename = "outputId")]
+        output_id: String,
+        phase: String,
+        error: String,
+    },
 }
 
 impl EventKind {
@@ -68,7 +76,8 @@ impl EventKind {
             | Self::StageStarted { pipeline_id, .. }
             | Self::StageStopped { pipeline_id, .. }
             | Self::EgressStarted { pipeline_id, .. }
-            | Self::EgressStopped { pipeline_id, .. } => pipeline_id,
+            | Self::EgressStopped { pipeline_id, .. }
+            | Self::EgressFailed { pipeline_id, .. } => pipeline_id,
         }
     }
 }

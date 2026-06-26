@@ -128,6 +128,7 @@ Active native egresses appear in `pipelines[id].outputs`:
 | `lastProgressAt` | Last successful protocol send or HLS PUT completion |
 | `lastProgressAgeMs` | Age of the last successful send/upload sample |
 | `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure observed while the egress is active |
+| `quality` | Egress transport quality. RTMP/RTMPS expose sender-side `TCP_INFO`/`SO_MEMINFO`; SRT exposes sender-side `srt_bistats()` and bonded group member state when available. |
 
 Stopped configured outputs are absent rather than being emitted with `off`.
 The dashboard merges those definitions from `/config`; active output counters
@@ -139,6 +140,15 @@ and only when the byte counter advances.
 RTMP egress phases cover URL parsing, TCP/TLS connect, RTMP handshake,
 application connect, publish acceptance, and packet send. SRT egress phases
 cover resolve, connect, sender-capacity rejection, and `srt_send()` failures.
+RTMP ingest and RTMP/RTMPS egress quality include the kernel TCP congestion
+control algorithm. RTMP/RTMPS egress quality also includes sender-side RTT,
+bytes sent/acked/retrans, unacked/lost/retrans packet counts,
+congestion/window state, not-sent bytes, pacing and delivery rate,
+send-buffer limitation time, RTO counters, and send-side socket memory.
+
+SRT egress quality includes `srt_bistats()` sender rate, RTT, link capacity,
+send buffer occupancy, flight/flow/congestion windows, sent loss/drop/retrans
+totals and per-second rates, received NAKs, and bonded group member counts.
 HLS PUT egress reports upload progress for segment and playlist PUTs. These
 signals are local sender evidence; they do not prove that a third-party platform
 accepted or played the stream unless a readback/verification probe is also run.
@@ -151,19 +161,40 @@ Implemented egress parity:
 - sender lifecycle phase and structured failure phase/error
 - last successful send/upload timestamp and progress age
 - per-output bytes, bitrate, and StageMetrics output counters
+- RTMP/RTMPS sender-side TCP quality
+- SRT sender-side `srt_bistats()` quality and bonded egress member state
 - graph, health, v1 telemetry, diagnostics, and alert surfacing for failed or
   stale active egresses
+- process-lifetime egress failure events through `GET /api/v1/events`
 
 Remaining egress parity gaps:
 
-- RTMP egress socket quality equivalent to ingest-side `TCP_INFO` /
-  `SO_MEMINFO`
-- SRT egress `srt_bistats()` sender quality, including bonded egress member
-  state
-- durable failure history after an egress unregisters and the active runtime
-  record disappears
+- durable egress failure history across process restarts. The current
+  implementation records `EgressFailed` in the bounded in-memory event log; DB
+  persistence should be a later retention/audit decision with schema and pruning
+  policy.
 - post-egress media metadata, GOP cadence, and timestamp validation
 - optional loopback/readback probe evidence for RTMP/SRT outputs
+
+Post-egress validation should be modeled as readback evidence, not inferred from
+sender counters. For RTMP/SRT, this means optionally routing an egress to a
+readable loopback sink or destination-provided playback endpoint, running
+`ffprobe`/native probes on that read side, and attaching an evidence object such
+as:
+
+```json
+{
+  "outputId": "out-rtmp",
+  "source": "loopback",
+  "protocol": "rtmp",
+  "validatedAt": "...",
+  "video": { "codec": "h264", "width": 1920, "height": 1080, "fps": 30.0 },
+  "audio": [{ "codec": "aac", "sampleRate": 48000, "channels": 2 }],
+  "gop": { "avgMs": 2000, "maxMs": 2200 },
+  "timestamps": { "monotonicDts": true, "maxGapMs": 40 },
+  "result": "pass"
+}
+```
 
 ### Recording State
 

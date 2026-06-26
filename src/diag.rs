@@ -337,6 +337,53 @@ async fn check_active_outputs(
                     failure_phase, error
                 ));
             }
+            let quality = egress
+                .quality
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            match egress.protocol.as_str() {
+                "rtmp" => {
+                    if let Some(reason) = quality.tcp_stats_unavailable_reason {
+                        lines.push(format!("  tcp_quality=unavailable reason={}", reason));
+                    } else if quality.tcp_rtt_ms.is_some()
+                        || quality.tcp_send_rate_mbps.is_some()
+                        || quality.tcp_notsent_bytes.is_some()
+                    {
+                        lines.push(format!(
+                            "  tcp_quality cc={:?} rtt_ms={:?} send_mbps={:?} notsent_bytes={:?} unacked={:?} retrans_total={:?} snd_cwnd={:?}",
+                            quality.tcp_congestion_algorithm,
+                            quality.tcp_rtt_ms,
+                            quality.tcp_send_rate_mbps,
+                            quality.tcp_notsent_bytes,
+                            quality.tcp_unacked,
+                            quality.tcp_total_retrans,
+                            quality.tcp_snd_cwnd
+                        ));
+                    }
+                }
+                "srt" => {
+                    if quality.ms_rtt.is_some()
+                        || quality.mbps_send_rate.is_some()
+                        || quality.srt_bonded.is_some()
+                    {
+                        lines.push(format!(
+                            "  srt_quality rtt_ms={:?} send_mbps={:?} sent_loss={:?} sent_drop={:?} sent_retrans={:?} bonded={:?} members={:?}/{:?} active={:?} broken={:?}",
+                            quality.ms_rtt,
+                            quality.mbps_send_rate,
+                            quality.packets_sent_loss,
+                            quality.packets_sent_drop,
+                            quality.packets_sent_retrans,
+                            quality.srt_bonded,
+                            quality.srt_group_connected_members,
+                            quality.srt_group_member_count,
+                            quality.srt_group_active_members,
+                            quality.srt_group_broken_members
+                        ));
+                    }
+                }
+                _ => {}
+            }
             if egress.status == "failed" || phase == "failed" {
                 issues.push(format!(
                     "Output {} has failed in phase {}. Check target URL: {}",

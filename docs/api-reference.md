@@ -548,6 +548,16 @@ counters, egresses, and transcoder buffer count.
       "lastError": null,
       "lastErrorAt": null,
       "failurePhase": null,
+      "quality": {
+        "tcpCongestionAlgorithm": "cubic",
+        "tcpRttMs": 12.4,
+        "tcpSendRateMbps": 4.8,
+        "tcpNotsentBytes": 0,
+        "tcpSndCwnd": 10,
+        "tcpTotalRetrans": 0,
+        "mbpsSendRate": null,
+        "srtBonded": null
+      },
       "metrics": { ... }
     }
   ],
