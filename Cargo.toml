@@ -89,6 +89,10 @@ name = "stage_metrics"
 harness = false
 
 [[bench]]
+name = "alert_tracker"
+harness = false
+
+[[bench]]
 name = "stage_feeder"
 harness = false
 
