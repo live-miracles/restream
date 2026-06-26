@@ -110,6 +110,59 @@ fn bench_ingest_hot_handle(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_egress_progress_hot_handle(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let engine = Arc::new(MediaEngine::new());
+    runtime.block_on(async {
+        engine
+            .register_egress(
+                "hot-egress-bench",
+                "pipe-bench",
+                "rtmp://127.0.0.1/live/key",
+            )
+            .await;
+    });
+    let (cached_bytes, cached_metrics, cached_progress) = runtime.block_on(async {
+        let egresses = engine.active_egresses.read().await;
+        let egress = &egresses["hot-egress-bench"];
+        (
+            egress.bytes_sent.clone(),
+            egress.metrics.clone(),
+            egress.last_progress_ms.clone(),
+        )
+    });
+    let mut group = c.benchmark_group("data_path/egress_progress");
+
+    group.bench_function("registry_progress_update", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    engine
+                        .record_egress_progress("hot-egress-bench", black_box(1316))
+                        .await;
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    group.bench_function("cached_sampled_progress_update", |b| {
+        let progress_sample_interval = Duration::from_millis(250);
+        let mut last_progress_sample = Instant::now();
+        b.iter(|| {
+            cached_bytes.fetch_add(black_box(1316), Ordering::Relaxed);
+            cached_metrics.record_out(black_box(1316));
+            if last_progress_sample.elapsed() >= progress_sample_interval {
+                cached_progress.store(black_box(1), Ordering::Relaxed);
+                last_progress_sample = Instant::now();
+            }
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_ring_producer(c: &mut Criterion) {
     let payload = Bytes::from(vec![0x47; PACKET_BYTES]);
     let mut group = c.benchmark_group("data_path/ring_producer");
@@ -879,6 +932,7 @@ fn benches(c: &mut Criterion) {
     print_layout_baseline();
     bench_control_plane_lookup(c);
     bench_ingest_hot_handle(c);
+    bench_egress_progress_hot_handle(c);
     bench_ring_producer(c);
     bench_ring_consumer(c);
     bench_fanout_delivery(c);

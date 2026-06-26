@@ -533,7 +533,23 @@ counters, egresses, and transcoder buffer count.
     { "stageKey": "pipe1:video:720p", "pipelineId": "pipe1", "kind": "video:720p", "metrics": { "packetsIn": 100, "packetsOut": 100, "bytesIn": 50000, "bytesOut": 30000, "processingUs": 1200 }, "pipeMetrics": { ... } }
   ],
   "egresses": [
-    { "outputId": "...", "pipelineId": "...", "uptimeSecs": 42.0, "bytesOut": 9876543 }
+    {
+      "outputId": "...",
+      "pipelineId": "...",
+      "protocol": "rtmp",
+      "targetUrl": "rtmp://...",
+      "targetAddr": "203.0.113.10:1935",
+      "status": "running",
+      "phase": "sending",
+      "uptimeSecs": 42.0,
+      "bytesOut": 9876543,
+      "lastProgressAt": "...",
+      "lastProgressAgeMs": 250,
+      "lastError": null,
+      "lastErrorAt": null,
+      "failurePhase": null,
+      "metrics": { ... }
+    }
   ],
   "activeTranscoderBuffers": 2
 }

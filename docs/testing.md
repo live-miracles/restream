@@ -22,6 +22,66 @@ As of June 25, 2026 this runs 441 passing non-doctest tests:
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
+## Scoped Verification Loop
+
+Prefer the smallest test and benchmark set that directly covers the changed
+behavior, then broaden only when the risk calls for it. This keeps agent and
+developer loops fast while still making the verification signal precise.
+
+Good scoped Rust patterns:
+
+```sh
+scripts/resource-limit cargo test --lib <test-name-or-module-filter>
+scripts/resource-limit cargo test --test api <test-name-filter>
+scripts/resource-limit cargo test --test transcoder <test-name-filter>
+```
+
+Good scoped benchmark patterns:
+
+```sh
+scripts/resource-limit cargo bench --bench <bench-name> --profile bench-dev -- <criterion-filter>
+scripts/resource-limit cargo bench --bench high_performance_data_path --profile bench-dev -- egress_progress
+```
+
+Use the full `cargo test` suite, full benchmark suites, or live integration
+modes as a broader confidence pass when a change crosses module boundaries,
+changes a shared contract, affects protocol behavior, or touches a hot path
+whose blast radius is unclear. If an unrelated full-suite test or benchmark
+fails, report it separately from the scoped signal for the current change.
+
+### Composable Verification Stages
+
+Large suites should be broken into named stages that can run independently and
+compose into larger gates. A failure in one stage should identify the affected
+behavior slice instead of turning the entire test or benchmark program into an
+opaque blocker.
+
+| Stage | Purpose | Typical commands |
+|---|---|---|
+| 0. Preflight/static | Prove the environment and cheap invariants before spending runtime. | `scripts/resource-limit cargo fmt --check`, integration `--preflight` |
+| 1. Changed behavior | Fastest proof for the exact code path touched by a change. | `cargo test --lib <filter>`, `cargo test --test api <filter>` |
+| 2. Contract slice | Neighboring API, graph, stage, protocol, or lifecycle contracts that consume the changed behavior. | Filtered package/integration tests by module, endpoint, protocol, or stage kind |
+| 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> --profile bench-dev -- <criterion-filter>` |
+| 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `run-integration.sh --fast --only smoke,ffprobe,hls,lifecycle mixed-scale` |
+| 5. Scale/degradation slice | A bounded load, ramp, restart, queue-pressure, or bonding slice for resource shape. | `N_OUTPUTS=<small>` ramp, `N_PER_GROUP=<small>` mixed-scale, `bonding` |
+| 6. Full confidence gate | Release or milestone pass assembled from the relevant stages above. | Full `cargo test`, selected full benches, full integration modes |
+
+When a suite grows too large, split it along composable axes instead of adding
+more mandatory work to a single command:
+
+- behavior: ingest, egress, HLS, recording, graph, diagnostics, alerts
+- protocol: RTMP, SRT, HLS, RTMPS, SRT bonding
+- codec/media shape: H.264, H.265, B-frames, multi-audio, audio remap/downmix
+- topology: passthrough, one shared stage, mixed presets, package sharing
+- load shape: smoke, small fanout, ramp, soak, downstream restart, queue pressure
+- evidence: unit assertion, API snapshot, graph invariant, ffprobe/readback,
+  resource baseline, Criterion benchmark
+
+Prefer adding selectors, manifest entries, and result artifacts over adding a
+new all-or-nothing suite. A milestone can still require multiple stages, but it
+should state which slices are required and preserve each slice's separate
+pass/fail result.
+
 Unit coverage includes:
 
 - RTMP FLV H.264/AAC parsing and signed composition time

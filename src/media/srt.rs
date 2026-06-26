@@ -2849,13 +2849,20 @@ pub async fn start_srt_egress(
     let streamid = parsed.streamid;
     let bond_addrs = parsed.bond_addrs;
 
+    engine.update_egress_phase(&output_id, "resolving").await;
     let addr = match resolve_host(host_port).await {
         Some(a) => a,
         None => {
             eprintln!("[srt-egress] Failed to resolve target: {}", target_url);
+            engine
+                .record_egress_error(&output_id, "resolve", "failed to resolve target")
+                .await;
             return;
         }
     };
+    engine
+        .update_egress_target_addr(&output_id, addr.to_string())
+        .await;
 
     // Resolve bond addresses
     let mut all_addrs = vec![addr];
@@ -2870,6 +2877,7 @@ pub async fn start_srt_egress(
     let client_sock: SRTSOCKET;
 
     if use_bonding {
+        engine.update_egress_phase(&output_id, "connecting").await;
         // Create a bonding group (backup mode: one active, failover to next)
         // SAFETY: srt_create_group creates a bonding group socket.
         // SRT_GTYPE_BACKUP configures active/passive failover mode.
@@ -2877,6 +2885,9 @@ pub async fn start_srt_egress(
         client_sock = unsafe { srt_create_group(SRT_GTYPE_BACKUP) };
         if client_sock < 0 {
             eprintln!("[srt-egress] Failed to create bonding group");
+            engine
+                .record_egress_error(&output_id, "connect", "failed to create bonding group")
+                .await;
             return;
         }
 
@@ -2885,6 +2896,9 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("[srt-egress] Stream ID contains null bytes");
+                    engine
+                        .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
+                        .await;
                     // SAFETY: Valid group socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
@@ -2892,101 +2906,123 @@ pub async fn start_srt_egress(
                     return;
                 }
             };
-            // SAFETY: srt_create_config allocates a per-member config.
-            // srt_config_add writes the streamid into that config.
-            // Ownership transfers to SRT on successful srt_connect_group;
-            // on failure config is freed via srt_delete_config below.
-            let config = unsafe { srt_create_config() };
-            if !config.is_null() {
-                unsafe {
-                    srt_config_add(
-                        config,
-                        SRTO_STREAMID,
-                        streamid_c.as_ptr() as *const c_void,
-                        streamid.len() as c_int,
-                    );
-                }
-            }
-
-            let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
-            for (i, &peer_addr) in all_addrs.iter().enumerate() {
-                let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
-                // SAFETY: srt_prepare_endpoint creates a group member
-                // descriptor from a sockaddr. The peer_storage is
-                // stack-allocated and valid for this call.
-                let mut member = unsafe {
-                    srt_prepare_endpoint(
-                        std::ptr::null(),
-                        &peer_storage as *const _ as *const libc::sockaddr,
-                        addrlen,
-                    )
-                };
-                member.weight = if i == 0 { 1 } else { 0 };
+            let connect_error = {
+                // SAFETY: srt_create_config allocates a per-member config.
+                // srt_config_add writes the streamid into that config.
+                // Ownership transfers to SRT on successful srt_connect_group;
+                // on failure config is freed via srt_delete_config below.
+                let config = unsafe { srt_create_config() };
                 if !config.is_null() {
-                    member.config = config;
-                }
-                members.push(member);
-            }
-
-            // SAFETY: srt_connect_group opens all member connections.
-            // members is a correctly sized Vec of SrtGroupMemberConfig.
-            // On failure, client_sock and config are cleaned up.
-            let conn_res = unsafe {
-                srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
-            };
-            if conn_res < 0 {
-                // SAFETY: srt_getlasterror_str returns a thread-local
-                // static string valid until the next SRT call.
-                let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
-                eprintln!(
-                    "[srt-egress] Bonded connection failed: {}",
-                    err.to_string_lossy()
-                );
-                // SAFETY: Clean up group socket and per-member config
-                // on connection failure. Order: close socket, then
-                // free config (config must not outlive the socket).
-                unsafe {
-                    srt_close(client_sock);
-                    if !config.is_null() {
-                        srt_delete_config(config);
+                    unsafe {
+                        srt_config_add(
+                            config,
+                            SRTO_STREAMID,
+                            streamid_c.as_ptr() as *const c_void,
+                            streamid.len() as c_int,
+                        );
                     }
                 }
+
+                let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
+                for (i, &peer_addr) in all_addrs.iter().enumerate() {
+                    let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                    // SAFETY: srt_prepare_endpoint creates a group member
+                    // descriptor from a sockaddr. The peer_storage is
+                    // stack-allocated and valid for this call.
+                    let mut member = unsafe {
+                        srt_prepare_endpoint(
+                            std::ptr::null(),
+                            &peer_storage as *const _ as *const libc::sockaddr,
+                            addrlen,
+                        )
+                    };
+                    member.weight = if i == 0 { 1 } else { 0 };
+                    if !config.is_null() {
+                        member.config = config;
+                    }
+                    members.push(member);
+                }
+
+                // SAFETY: srt_connect_group opens all member connections.
+                // members is a correctly sized Vec of SrtGroupMemberConfig.
+                // On failure, client_sock and config are cleaned up.
+                let conn_res = unsafe {
+                    srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
+                };
+                if conn_res < 0 {
+                    // SAFETY: srt_getlasterror_str returns a thread-local
+                    // static string valid until the next SRT call.
+                    let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+                    let message = format!("bonded connection failed: {}", err.to_string_lossy());
+                    eprintln!(
+                        "[srt-egress] Bonded connection failed: {}",
+                        err.to_string_lossy()
+                    );
+                    // SAFETY: Clean up group socket and per-member config
+                    // on connection failure. Order: close socket, then
+                    // free config (config must not outlive the socket).
+                    unsafe {
+                        srt_close(client_sock);
+                        if !config.is_null() {
+                            srt_delete_config(config);
+                        }
+                    }
+                    Some(message)
+                } else {
+                    None
+                }
+            };
+            if let Some(message) = connect_error {
+                engine
+                    .record_egress_error(&output_id, "connect", message)
+                    .await;
                 return;
             }
             // config ownership transfers to SRT on successful connect
         } else {
-            let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
-            for (i, &peer_addr) in all_addrs.iter().enumerate() {
-                let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
-                // SAFETY: srt_prepare_endpoint with NULL source and
-                // stack-allocated sockaddr.
-                let mut member = unsafe {
-                    srt_prepare_endpoint(
-                        std::ptr::null(),
-                        &peer_storage as *const _ as *const libc::sockaddr,
-                        addrlen,
-                    )
-                };
-                member.weight = if i == 0 { 1 } else { 0 };
-                members.push(member);
-            }
-
-            // SAFETY: Connect group without streamid config.
-            // Members array is valid; members.len() is correct.
-            let conn_res = unsafe {
-                srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
-            };
-            if conn_res < 0 {
-                // SAFETY: srt_getlasterror_str is valid until next SRT call.
-                let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
-                eprintln!(
-                    "[srt-egress] Bonded connection failed: {}",
-                    err.to_string_lossy()
-                );
-                // SAFETY: Clean up socket on connection failure.
-                unsafe {
-                    srt_close(client_sock);
+            let connect_error = {
+                let mut members: Vec<SrtGroupMemberConfig> = Vec::new();
+                for (i, &peer_addr) in all_addrs.iter().enumerate() {
+                    let (peer_storage, addrlen) = to_libc_sockaddr(peer_addr);
+                    // SAFETY: srt_prepare_endpoint with NULL source and
+                    // stack-allocated sockaddr.
+                    let mut member = unsafe {
+                        srt_prepare_endpoint(
+                            std::ptr::null(),
+                            &peer_storage as *const _ as *const libc::sockaddr,
+                            addrlen,
+                        )
+                    };
+                    member.weight = if i == 0 { 1 } else { 0 };
+                    members.push(member);
                 }
+
+                // SAFETY: Connect group without streamid config.
+                // Members array is valid; members.len() is correct.
+                let conn_res = unsafe {
+                    srt_connect_group(client_sock, members.as_mut_ptr(), members.len() as c_int)
+                };
+                if conn_res < 0 {
+                    // SAFETY: srt_getlasterror_str is valid until next SRT call.
+                    let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
+                    let message = format!("bonded connection failed: {}", err.to_string_lossy());
+                    eprintln!(
+                        "[srt-egress] Bonded connection failed: {}",
+                        err.to_string_lossy()
+                    );
+                    // SAFETY: Clean up socket on connection failure.
+                    unsafe {
+                        srt_close(client_sock);
+                    }
+                    Some(message)
+                } else {
+                    None
+                }
+            };
+            if let Some(message) = connect_error {
+                engine
+                    .record_egress_error(&output_id, "connect", message)
+                    .await;
                 return;
             }
         }
@@ -2999,6 +3035,7 @@ pub async fn start_srt_egress(
         srt_set_highbitrate_opts(client_sock);
         srt_log_effective_opts(client_sock, "egress-bonded");
     } else {
+        engine.update_egress_phase(&output_id, "connecting").await;
         // SAFETY: srt_create_socket creates a new SRT socket handle.
         // The returned handle is closed on all exit paths below
         // (connection failure, cancel, sender exit).
@@ -3006,6 +3043,9 @@ pub async fn start_srt_egress(
         client_sock = unsafe { srt_create_socket() };
         if client_sock < 0 {
             eprintln!("[srt-egress] Failed to create socket");
+            engine
+                .record_egress_error(&output_id, "connect", "failed to create socket")
+                .await;
             return;
         }
         srt_set_highbitrate_opts(client_sock);
@@ -3015,6 +3055,9 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("[srt-egress] Invalid stream ID (contains null byte)");
+                    engine
+                        .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
+                        .await;
                     // SAFETY: Valid socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
@@ -3068,6 +3111,9 @@ pub async fn start_srt_egress(
         };
         if conn_res < 0 {
             eprintln!("[srt-egress] Connection failed to {}", target_url);
+            engine
+                .record_egress_error(&output_id, "connect", "connection failed")
+                .await;
             // SAFETY: Valid socket, clean up on connection failure.
             unsafe {
                 srt_close(client_sock);
@@ -3082,18 +3128,36 @@ pub async fn start_srt_egress(
     let shared_muxer = engine
         .get_or_create_ts_muxer_stage(&pipeline_id, &encoding, ring_buffer.clone())
         .await;
+    engine.update_egress_phase(&output_id, "sending").await;
 
     let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT
     let out_queue_send = out_queue.clone();
     let oid = output_id.clone();
-    let (egress_bytes_sent, egress_metrics) = {
+    let (
+        egress_bytes_sent,
+        egress_metrics,
+        egress_last_progress_ms,
+        egress_phase,
+        egress_last_error,
+        egress_last_error_ms,
+        egress_failure_phase,
+    ) = {
         let egresses = engine.active_egresses.read().await;
-        egresses
-            .get(&output_id)
-            .map(|e| (e.bytes_sent.clone(), e.metrics.clone()))
-            .unzip()
+        if let Some(e) = egresses.get(&output_id) {
+            (
+                Some(e.bytes_sent.clone()),
+                Some(e.metrics.clone()),
+                Some(e.last_progress_ms.clone()),
+                Some(e.phase.clone()),
+                Some(e.last_error.clone()),
+                Some(e.last_error_ms.clone()),
+                Some(e.failure_phase.clone()),
+            )
+        } else {
+            (None, None, None, None, None, None, None)
+        }
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
@@ -3105,6 +3169,9 @@ pub async fn start_srt_egress(
                 "[srt-egress] Sender thread limit reached — rejecting egress {}",
                 output_id
             );
+            engine
+                .record_egress_error(&output_id, "capacity", "SRT sender thread limit reached")
+                .await;
             // SAFETY: Valid socket, clean up on capacity rejection.
             unsafe {
                 srt_close(client_sock);
@@ -3116,6 +3183,8 @@ pub async fn start_srt_egress(
         let _permit = permit; // dropped when thread exits → releases semaphore slot
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut buf = vec![0u8; 1316];
+            let progress_sample_interval = Duration::from_millis(250);
+            let mut last_progress_sample = Instant::now() - progress_sample_interval;
             loop {
                 let n = out_queue_send.read(&mut buf);
                 if n == 0 {
@@ -3130,6 +3199,23 @@ pub async fn start_srt_egress(
                     let err_str = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) }
                         .to_string_lossy();
                     eprintln!("[srt-egress] srt_send failed for {}: {}", oid, err_str);
+                    if let Some(ref phase) = egress_phase {
+                        *phase.lock().unwrap_or_else(|e| e.into_inner()) = "failed".to_string();
+                    }
+                    if let Some(ref failure_phase) = egress_failure_phase {
+                        *failure_phase.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some("send".to_string());
+                    }
+                    if let Some(ref last_error) = egress_last_error {
+                        *last_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(format!("srt_send failed: {}", err_str));
+                    }
+                    if let Some(ref last_error_ms) = egress_last_error_ms {
+                        last_error_ms.store(
+                            chrono::Utc::now().timestamp_millis().max(0) as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
                     break;
                 }
                 if let Some(ref counter) = egress_bytes_sent {
@@ -3137,6 +3223,15 @@ pub async fn start_srt_egress(
                 }
                 if let Some(ref m) = egress_metrics {
                     m.record_out(sent as u64);
+                }
+                if last_progress_sample.elapsed() >= progress_sample_interval {
+                    if let Some(ref progress) = egress_last_progress_ms {
+                        progress.store(
+                            chrono::Utc::now().timestamp_millis().max(0) as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
+                    last_progress_sample = Instant::now();
                 }
             }
         }));

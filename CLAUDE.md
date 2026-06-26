@@ -146,7 +146,17 @@ SIMD/vectorization:
 
 ## Testing Expectations
 
-- Run the narrowest meaningful test first, then broaden based on risk.
+- Scope verification to the changed behavior first for a fast loop: run filtered
+  unit/integration tests and filtered Criterion benchmarks that exercise the
+  touched code path before using full suites as a broader confidence pass.
+- Treat unrelated full-suite failures as separate findings. Do not let them hide
+  whether the scoped tests/benchmarks for the current change passed or failed.
+- Broaden from scoped tests to package, integration, or full benchmark suites
+  only when the change crosses module boundaries, alters shared contracts, or
+  has enough risk to justify the slower loop.
+- When a benchmark or integration suite has grown into a blocker, split the
+  work into composable named slices by behavior, protocol, codec, topology, load
+  shape, and evidence type; report each slice independently.
 - Use `cargo test av_sync` for timestamp, DTS/PTS, and cross-stream sync changes.
 - Use protocol-matched probes: RTMP changes with RTMP probes, SRT changes with SRT probes.
 - For UI changes, run TypeScript compile and the relevant Playwright tests.

@@ -20,7 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
@@ -1227,9 +1227,16 @@ pub async fn start_rtmp_egress(
         Some(p) => p,
         None => {
             eprintln!("[rtmp-egress] Invalid RTMP URL: {}", target_url);
+            engine
+                .record_egress_error(&output_id, "parse_url", "invalid RTMP URL")
+                .await;
             return;
         }
     };
+    engine.update_egress_phase(&output_id, "connecting").await;
+    engine
+        .update_egress_target_addr(&output_id, format!("{}:{}", parts.host, parts.port))
+        .await;
     println!(
         "[rtmp-egress] Connecting to {}:{} via {} (app: {}, key: {})",
         parts.host,
@@ -1246,11 +1253,15 @@ pub async fn start_rtmp_egress(
                 "[rtmp-egress] Connection failed to {}:{}: {:?}",
                 parts.host, parts.port, e
             );
+            engine
+                .record_egress_error(&output_id, "connect", e.to_string())
+                .await;
             return;
         }
     };
 
     // Perform handshake
+    engine.update_egress_phase(&output_id, "handshaking").await;
     let mut handshake = Handshake::new(PeerType::Client);
     let c0_c1 = match handshake.generate_outbound_p0_and_p1() {
         Ok(bytes) => bytes,
@@ -1259,11 +1270,17 @@ pub async fn start_rtmp_egress(
                 "[rtmp-egress] Handshake outbound generation failed: {:?}",
                 e
             );
+            engine
+                .record_egress_error(&output_id, "handshake", format!("{:?}", e))
+                .await;
             return;
         }
     };
 
     if socket.write_all(&c0_c1).await.is_err() {
+        engine
+            .record_egress_error(&output_id, "handshake", "failed to write handshake")
+            .await;
         return;
     }
 
@@ -1277,7 +1294,12 @@ pub async fn start_rtmp_egress(
             res = socket.read(&mut buffer) => {
                 let n = match res {
                     Ok(n) if n > 0 => n,
-                    _ => return,
+                    _ => {
+                        engine
+                            .record_egress_error(&output_id, "handshake", "remote closed during handshake")
+                            .await;
+                        return;
+                    }
                 };
                 match handshake.process_bytes(&buffer[..n]) {
                     Ok(HandshakeProcessResult::InProgress { response_bytes }) => {
@@ -1292,6 +1314,9 @@ pub async fn start_rtmp_egress(
                     }
                     Err(e) => {
                         eprintln!("[rtmp-egress] Handshake process bytes failed: {:?}", e);
+                        engine
+                            .record_egress_error(&output_id, "handshake", format!("{:?}", e))
+                            .await;
                         return;
                     }
                 }
@@ -1308,23 +1333,42 @@ pub async fn start_rtmp_egress(
     ));
     let (mut session, initial_results) = match ClientSession::new(config) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            engine
+                .record_egress_error(&output_id, "session", format!("{:?}", e))
+                .await;
+            return;
+        }
     };
 
     for res in initial_results {
         if let ClientSessionResult::OutboundResponse(pkt) = res
             && socket.write_all(&pkt.bytes).await.is_err()
         {
+            engine
+                .record_egress_error(&output_id, "session", "failed to write session init")
+                .await;
             return;
         }
     }
 
     // Request connection
+    engine
+        .update_egress_phase(&output_id, "connecting_app")
+        .await;
     let conn_pkt = match session.request_connection(parts.app.clone()) {
         Ok(ClientSessionResult::OutboundResponse(p)) => p,
-        _ => return,
+        _ => {
+            engine
+                .record_egress_error(&output_id, "connect_app", "failed to build connect request")
+                .await;
+            return;
+        }
     };
     if socket.write_all(&conn_pkt.bytes).await.is_err() {
+        engine
+            .record_egress_error(&output_id, "connect_app", "failed to write connect request")
+            .await;
         return;
     }
 
@@ -1341,16 +1385,23 @@ pub async fn start_rtmp_egress(
         }
     }
 
-    let (egress_bytes_sent, egress_metrics) = {
+    let (egress_bytes_sent, egress_metrics, egress_last_progress_ms) = {
         let egresses = engine.active_egresses.read().await;
-        egresses
-            .get(&output_id)
-            .map(|e| (e.bytes_sent.clone(), e.metrics.clone()))
-            .unzip()
+        if let Some(e) = egresses.get(&output_id) {
+            (
+                Some(e.bytes_sent.clone()),
+                Some(e.metrics.clone()),
+                Some(e.last_progress_ms.clone()),
+            )
+        } else {
+            (None, None, None)
+        }
     };
 
     let mut is_publishing = false;
     let mut reader = Reader::new(format!("rtmp_egress:{}", output_id), ring_buffer);
+    let progress_sample_interval = Duration::from_millis(250);
+    let mut last_progress_sample = Instant::now() - progress_sample_interval;
     // Track the last SPS bytes we sent so we can re-send the AVCC decoder
     // config record when the encoder changes resolution or bitrate mid-stream.
     // None = no sequence header sent yet.
@@ -1375,11 +1426,21 @@ pub async fn start_rtmp_egress(
             res = socket.read(&mut buffer) => {
                 let n = match res {
                     Ok(n) if n > 0 => n,
-                    _ => break,
+                    _ => {
+                        engine
+                            .record_egress_error(&output_id, "send", "remote closed connection")
+                            .await;
+                        break;
+                    }
                 };
                 let results = match session.handle_input(&buffer[..n]) {
                     Ok(r) => r,
-                    Err(_) => break,
+                    Err(e) => {
+                        engine
+                            .record_egress_error(&output_id, "send", format!("{:?}", e))
+                            .await;
+                        break;
+                    }
                 };
                 for r in results {
                     match r {
@@ -1389,6 +1450,7 @@ pub async fn start_rtmp_egress(
                         ClientSessionResult::RaisedEvent(event) => {
                             match event {
                                 ClientSessionEvent::ConnectionRequestAccepted => {
+                                    engine.update_egress_phase(&output_id, "publishing").await;
                                     let pub_pkt = match session.request_publishing(parts.stream_key.clone(), PublishRequestType::Live) {
                                         Ok(ClientSessionResult::OutboundResponse(p)) => p,
                                         _ => return,
@@ -1397,6 +1459,7 @@ pub async fn start_rtmp_egress(
                                 }
                                 ClientSessionEvent::PublishRequestAccepted => {
                                     println!("[rtmp-egress] Stream publishing accepted on target");
+                                    engine.update_egress_phase(&output_id, "sending").await;
                                     // Send cached sequence headers before media data.
                                     // For H.265 ingests, video_sh is None (only RTMP ingest
                                     // caches FLV seq headers), so this is a no-op for H.265.
@@ -1426,6 +1489,9 @@ pub async fn start_rtmp_egress(
                                 }
                                 ClientSessionEvent::ConnectionRequestRejected { description } => {
                                     eprintln!("[rtmp-egress] Connection rejected: {}", description);
+                                    engine
+                                        .record_egress_error(&output_id, "connect_app", description)
+                                        .await;
                                     return;
                                 }
                                 _ => {}
@@ -1438,6 +1504,7 @@ pub async fn start_rtmp_egress(
             // Write packets from ring buffer when publishing is active
             _ = reader.wait_for_data(), if is_publishing => {
                 if reader.pull_burst(&mut packets, 32).is_ok() {
+                    let mut burst_made_progress = false;
                     for packet in packets.drain(..) {
                         let ts = match packet.media_type {
                             MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
@@ -1535,11 +1602,26 @@ pub async fn start_rtmp_egress(
                                 if let Some(ref m) = egress_metrics {
                                     m.record_out(p.bytes.len() as u64);
                                 }
+                                burst_made_progress = true;
                             }
                             _ => {
                                 eprintln!("[rtmp-egress] Failed to build publish data packet or get OutboundResponse");
+                                engine
+                                    .record_egress_error(&output_id, "send", "failed to build RTMP publish packet")
+                                    .await;
                             }
                         }
+                    }
+                    if burst_made_progress
+                        && last_progress_sample.elapsed() >= progress_sample_interval
+                    {
+                        if let Some(ref progress) = egress_last_progress_ms {
+                            progress.store(
+                                chrono::Utc::now().timestamp_millis().max(0) as u64,
+                                Ordering::Relaxed,
+                            );
+                        }
+                        last_progress_sample = Instant::now();
                     }
                 }
             }

@@ -11,6 +11,7 @@ use std::time::Duration;
 use reqwest::{Client, Url};
 use tokio_util::sync::CancellationToken;
 
+use crate::media::engine::MediaEngine;
 use crate::media::hls::HlsStore;
 
 const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
@@ -22,15 +23,29 @@ pub async fn start_hls_put_upload(
     pipeline_id: String,
     target_url: String,
     store: Arc<HlsStore>,
+    engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
+    engine.update_egress_phase(&output_id, "uploading").await;
     let playlist_url = match Url::parse(&target_url) {
         Ok(url) => url,
         Err(err) => {
             eprintln!("[hls-upload] Invalid HLS upload URL for output {output_id}: {err}");
+            engine
+                .record_egress_error(&output_id, "parse_url", err.to_string())
+                .await;
             return;
         }
     };
+    if let Some(host) = playlist_url.host_str() {
+        let port = playlist_url
+            .port_or_known_default()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        engine
+            .update_egress_target_addr(&output_id, format!("{host}:{port}"))
+            .await;
+    }
     let client = Client::new();
     let mut uploaded_segments = HashSet::new();
 
@@ -50,25 +65,32 @@ pub async fn start_hls_put_upload(
             }
             let segment_name = format!("seg{}.ts", segment.index);
             let segment_url = derive_hls_upload_url(&playlist_url, &segment_name);
+            let segment_len = segment.data.len() as u64;
             match put_bytes(&client, segment_url, HLS_SEGMENT_CONTENT_TYPE, segment.data).await {
                 Ok(()) => {
                     uploaded_segments.insert(segment.index);
+                    engine.record_egress_progress(&output_id, segment_len).await;
                 }
                 Err(err) => {
                     eprintln!(
                         "[hls-upload] Segment upload failed output={} pipeline={} segment={}: {}",
                         output_id, pipeline_id, segment_name, err
                     );
+                    engine
+                        .record_egress_error(&output_id, "upload_segment", err)
+                        .await;
                     break;
                 }
             }
         }
 
+        let playlist_bytes = snapshot.playlist.into_bytes();
+        let playlist_len = playlist_bytes.len() as u64;
         if let Err(err) = put_bytes(
             &client,
             playlist_url.clone(),
             HLS_PLAYLIST_CONTENT_TYPE,
-            snapshot.playlist.into_bytes(),
+            playlist_bytes,
         )
         .await
         {
@@ -76,6 +98,13 @@ pub async fn start_hls_put_upload(
                 "[hls-upload] Playlist upload failed output={} pipeline={}: {}",
                 output_id, pipeline_id, err
             );
+            engine
+                .record_egress_error(&output_id, "upload_playlist", err)
+                .await;
+        } else {
+            engine
+                .record_egress_progress(&output_id, playlist_len)
+                .await;
         }
     }
 }
@@ -230,11 +259,20 @@ mod tests {
         let store = Arc::new(HlsStore::new());
         store.push_segment(1.2, bytes::Bytes::from_static(b"segment-0"));
         let cancel = CancellationToken::new();
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .register_egress(
+                "out1",
+                "pipe1",
+                &format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
+            )
+            .await;
         let uploader = tokio::spawn(start_hls_put_upload(
             "out1".to_string(),
             "pipe1".to_string(),
             format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
             store,
+            engine,
             cancel.clone(),
         ));
 

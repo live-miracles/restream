@@ -285,14 +285,62 @@ async fn check_active_outputs(
         for (key, egress) in &my_egresses {
             let output_id = key.as_str();
             let bytes_sent = egress.bytes_sent.load(std::sync::atomic::Ordering::Relaxed);
+            let phase = egress
+                .phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let target_addr = egress
+                .target_addr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| "unresolved".to_string());
+            let last_progress_ms = egress
+                .last_progress_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let last_progress = if last_progress_ms > 0 {
+                let age = chrono::Utc::now()
+                    .timestamp_millis()
+                    .max(0)
+                    .saturating_sub(last_progress_ms as i64);
+                format!("{}ms ago", age)
+            } else {
+                "never".to_string()
+            };
+            let last_error = egress
+                .last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             lines.push(format!(
-                "Output {}: status={} target={} bytes_sent={} started_at={}",
-                output_id, egress.status, egress.target_url, bytes_sent, egress.started_at
+                "Output {}: protocol={} status={} phase={} target={} target_addr={} bytes_sent={} last_progress={} started_at={}",
+                output_id,
+                egress.protocol,
+                egress.status,
+                phase,
+                egress.target_url,
+                target_addr,
+                bytes_sent,
+                last_progress,
+                egress.started_at
             ));
-            if egress.status == "failed" {
+            if let Some(error) = last_error {
+                let failure_phase = egress
+                    .failure_phase
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                lines.push(format!(
+                    "  last_error_phase={} last_error={}",
+                    failure_phase, error
+                ));
+            }
+            if egress.status == "failed" || phase == "failed" {
                 issues.push(format!(
-                    "Output {} has failed. Check target URL: {}",
-                    output_id, egress.target_url
+                    "Output {} has failed in phase {}. Check target URL: {}",
+                    output_id, phase, egress.target_url
                 ));
             }
         }

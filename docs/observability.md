@@ -118,9 +118,16 @@ Active native egresses appear in `pipelines[id].outputs`:
 | Field | Source |
 |---|---|
 | `status` | `ActiveEgress.status` (normally `running`) |
+| `protocol` | URL-derived protocol (`rtmp`, `srt`, `hls`, or `unknown`) |
+| `phase` | Current sender lifecycle phase such as `starting`, `connecting`, `handshaking`, `publishing`, `sending`, `uploading`, or `failed` |
+| `targetAddr` | Resolved peer address when known, without credentials |
 | `totalSize` | Atomic bytes-sent counter |
+| `bytesOut` | Same atomic bytes-sent counter, named for v1 telemetry consistency |
 | `bitrateKbps` | Byte delta divided by elapsed sample time; cached between samples |
 | `startedAt` | Egress registration timestamp |
+| `lastProgressAt` | Last successful protocol send or HLS PUT completion |
+| `lastProgressAgeMs` | Age of the last successful send/upload sample |
+| `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure observed while the egress is active |
 
 Stopped configured outputs are absent rather than being emitted with `off`.
 The dashboard merges those definitions from `/config`; active output counters
@@ -128,6 +135,35 @@ come from `/health`.
 
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.
+
+RTMP egress phases cover URL parsing, TCP/TLS connect, RTMP handshake,
+application connect, publish acceptance, and packet send. SRT egress phases
+cover resolve, connect, sender-capacity rejection, and `srt_send()` failures.
+HLS PUT egress reports upload progress for segment and playlist PUTs. These
+signals are local sender evidence; they do not prove that a third-party platform
+accepted or played the stream unless a readback/verification probe is also run.
+
+### Egress Telemetry Parity Status
+
+Implemented egress parity:
+
+- protocol classification and resolved target address where available
+- sender lifecycle phase and structured failure phase/error
+- last successful send/upload timestamp and progress age
+- per-output bytes, bitrate, and StageMetrics output counters
+- graph, health, v1 telemetry, diagnostics, and alert surfacing for failed or
+  stale active egresses
+
+Remaining egress parity gaps:
+
+- RTMP egress socket quality equivalent to ingest-side `TCP_INFO` /
+  `SO_MEMINFO`
+- SRT egress `srt_bistats()` sender quality, including bonded egress member
+  state
+- durable failure history after an egress unregisters and the active runtime
+  record disappears
+- post-egress media metadata, GOP cadence, and timestamp validation
+- optional loopback/readback probe evidence for RTMP/SRT outputs
 
 ### Recording State
 

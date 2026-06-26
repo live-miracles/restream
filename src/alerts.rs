@@ -230,6 +230,75 @@ pub fn derive_alerts(snapshot: &serde_json::Value) -> Vec<Alert> {
                         first_seen: None,
                         last_seen: None,
                     });
+                    continue;
+                }
+
+                let phase = output.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+                if phase == "failed" {
+                    let failure_phase = output
+                        .get("failurePhase")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let last_error = output
+                        .get("lastError")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown error");
+                    alerts.push(Alert {
+                        id: format!("pipeline:{}:output:{}:failed_phase", pipeline_id, output_id),
+                        severity: Severity::Warning,
+                        scope: Scope::Output,
+                        pipeline_id: Some(pipeline_id.clone()),
+                        stage_id: None,
+                        output_id: Some(output_id.clone()),
+                        title: format!("Output '{}' reported an egress failure", output_id),
+                        cause: format!("Output failed during the '{}' phase.", failure_phase),
+                        evidence: vec![
+                            format!("output.phase = {}", phase),
+                            format!("lastError = {}", last_error),
+                        ],
+                        recommended_action:
+                            "Check destination reachability, credentials, and protocol settings."
+                                .into(),
+                        generated_at: generated_at.clone(),
+                        first_seen: None,
+                        last_seen: None,
+                    });
+                    continue;
+                }
+
+                let last_progress_age_ms = output
+                    .get("lastProgressAgeMs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let total_size = output
+                    .get("totalSize")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| {
+                        output.get("bytesOut").and_then(|v| v.as_u64()).unwrap_or(0)
+                    });
+                if total_size > 0 && last_progress_age_ms >= 10_000 {
+                    alerts.push(Alert {
+                        id: format!("pipeline:{}:output:{}:stale_progress", pipeline_id, output_id),
+                        severity: Severity::Warning,
+                        scope: Scope::Output,
+                        pipeline_id: Some(pipeline_id.clone()),
+                        stage_id: None,
+                        output_id: Some(output_id.clone()),
+                        title: format!("Output '{}' has stopped making progress", output_id),
+                        cause:
+                            "The output is still registered but has not completed a send recently."
+                                .into(),
+                        evidence: vec![format!(
+                            "lastProgressAgeMs = {} (threshold 10000)",
+                            last_progress_age_ms
+                        )],
+                        recommended_action:
+                            "Check downstream network health or restart the output if it remains stale."
+                                .into(),
+                        generated_at: generated_at.clone(),
+                        first_seen: None,
+                        last_seen: None,
+                    });
                 }
             }
         }
@@ -481,6 +550,64 @@ mod tests {
         // Only the Critical no_publisher alert, not a Warning for output.
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn failed_output_phase_yields_warning() {
+        let snap = json!({
+            "generatedAt": "2026-06-25T00:00:00Z",
+            "srtListener": { "udpDrops": 0 },
+            "pipelines": {
+                "pipe1": {
+                    "input": { "status": "on", "readerMetrics": [] },
+                    "outputs": {
+                        "out1": {
+                            "status": "running",
+                            "phase": "failed",
+                            "failurePhase": "connect",
+                            "lastError": "connection refused"
+                        }
+                    }
+                }
+            }
+        });
+
+        let alerts = derive_alerts(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].scope, Scope::Output);
+        assert!(alerts[0].id.contains("failed_phase"));
+        assert!(
+            alerts[0]
+                .evidence
+                .iter()
+                .any(|e| e.contains("connection refused"))
+        );
+    }
+
+    #[test]
+    fn stale_output_progress_yields_warning_after_successful_send() {
+        let snap = json!({
+            "generatedAt": "2026-06-25T00:00:00Z",
+            "srtListener": { "udpDrops": 0 },
+            "pipelines": {
+                "pipe1": {
+                    "input": { "status": "on", "readerMetrics": [] },
+                    "outputs": {
+                        "out1": {
+                            "status": "running",
+                            "phase": "sending",
+                            "totalSize": 1316,
+                            "lastProgressAgeMs": 12_000
+                        }
+                    }
+                }
+            }
+        });
+
+        let alerts = derive_alerts(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].scope, Scope::Output);
+        assert!(alerts[0].id.contains("stale_progress"));
     }
 
     #[test]

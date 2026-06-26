@@ -181,12 +181,19 @@ pub struct ActiveIngest {
 pub struct ActiveEgress {
     pub output_id: String,
     pub pipeline_id: String,
+    pub protocol: String,
     pub target_url: String,
+    pub target_addr: Arc<std::sync::Mutex<Option<String>>>,
     pub status: String, // "running" | "stopped" | "failed"
+    pub phase: Arc<std::sync::Mutex<String>>,
     pub started_at: String,
     pub start_instant: Instant,
     pub bytes_sent: Arc<AtomicU64>,
     pub metrics: Arc<StageMetrics>,
+    pub last_progress_ms: Arc<AtomicU64>,
+    pub last_error: Arc<std::sync::Mutex<Option<String>>>,
+    pub last_error_ms: Arc<AtomicU64>,
+    pub failure_phase: Arc<std::sync::Mutex<Option<String>>>,
     pub prev_bytes_sent: AtomicU64,
     pub prev_sample_time: std::sync::Mutex<Instant>,
     pub bitrate_kbps: std::sync::Mutex<Option<f64>>,
@@ -291,6 +298,58 @@ impl MediaEngine {
             pipe_metrics: TokioRwLock::new(HashMap::new()),
             event_log: Arc::new(crate::events::EventLog::new()),
         }
+    }
+
+    fn now_epoch_ms() -> u64 {
+        chrono::Utc::now().timestamp_millis().max(0) as u64
+    }
+
+    fn epoch_ms_to_rfc3339(ms: u64) -> Option<String> {
+        if ms == 0 {
+            return None;
+        }
+        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64).map(|dt| dt.to_rfc3339())
+    }
+
+    fn egress_protocol_from_url(url: &str) -> &'static str {
+        if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
+            "rtmp"
+        } else if url.starts_with("srt://") {
+            "srt"
+        } else if url.starts_with("hls://")
+            || url.starts_with("http://")
+            || url.starts_with("https://")
+        {
+            "hls"
+        } else {
+            "unknown"
+        }
+    }
+
+    fn egress_runtime_json(egress: &ActiveEgress, include_target_url: bool) -> serde_json::Value {
+        let last_progress_ms = egress.last_progress_ms.load(Ordering::Relaxed);
+        let last_error_ms = egress.last_error_ms.load(Ordering::Relaxed);
+        let now_ms = Self::now_epoch_ms();
+        let mut value = serde_json::json!({
+            "outputId": egress.output_id.clone(),
+            "pipelineId": egress.pipeline_id.clone(),
+            "protocol": egress.protocol.clone(),
+            "targetAddr": egress.target_addr.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "status": egress.status.clone(),
+            "phase": egress.phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "uptimeSecs": egress.start_instant.elapsed().as_secs_f64(),
+            "bytesOut": egress.bytes_sent.load(Ordering::Relaxed),
+            "lastProgressAt": Self::epoch_ms_to_rfc3339(last_progress_ms),
+            "lastProgressAgeMs": (last_progress_ms > 0).then(|| now_ms.saturating_sub(last_progress_ms)),
+            "lastError": egress.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "lastErrorAt": Self::epoch_ms_to_rfc3339(last_error_ms),
+            "failurePhase": egress.failure_phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "metrics": egress.metrics.snapshot(),
+        });
+        if include_target_url {
+            value["targetUrl"] = serde_json::Value::String(egress.target_url.clone());
+        }
+        value
     }
 
     /// Register an OS thread JoinHandle so it can be joined at shutdown.
@@ -833,12 +892,19 @@ impl MediaEngine {
             ActiveEgress {
                 output_id: output_id.to_string(),
                 pipeline_id: pipeline_id.to_string(),
+                protocol: Self::egress_protocol_from_url(url).to_string(),
                 target_url: url.to_string(),
+                target_addr: Arc::new(std::sync::Mutex::new(None)),
                 status: "running".to_string(),
+                phase: Arc::new(std::sync::Mutex::new("starting".to_string())),
                 started_at: chrono::Utc::now().to_rfc3339(),
                 start_instant: now,
                 bytes_sent: Arc::new(AtomicU64::new(0)),
                 metrics: Arc::new(StageMetrics::new()),
+                last_progress_ms: Arc::new(AtomicU64::new(0)),
+                last_error: Arc::new(std::sync::Mutex::new(None)),
+                last_error_ms: Arc::new(AtomicU64::new(0)),
+                failure_phase: Arc::new(std::sync::Mutex::new(None)),
                 prev_bytes_sent: AtomicU64::new(0),
                 prev_sample_time: std::sync::Mutex::new(now),
                 bitrate_kbps: std::sync::Mutex::new(None),
@@ -876,6 +942,64 @@ impl MediaEngine {
         }
     }
 
+    pub async fn update_egress_phase(&self, output_id: &str, phase: &str) {
+        let egresses = self.active_egresses.read().await;
+        if let Some(egress) = egresses.get(output_id) {
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = phase.to_string();
+        }
+    }
+
+    pub async fn update_egress_target_addr(&self, output_id: &str, addr: String) {
+        let egresses = self.active_egresses.read().await;
+        if let Some(egress) = egresses.get(output_id) {
+            *egress.target_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+        }
+    }
+
+    pub async fn record_egress_progress(&self, output_id: &str, bytes: u64) {
+        let egresses = self.active_egresses.read().await;
+        if let Some(egress) = egresses.get(output_id) {
+            egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+            egress.metrics.record_out(bytes);
+            egress
+                .last_progress_ms
+                .store(Self::now_epoch_ms(), Ordering::Relaxed);
+            let active_phase = if egress.protocol == "hls" {
+                "uploading"
+            } else {
+                "sending"
+            };
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = active_phase.to_string();
+            *egress
+                .failure_phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            egress.last_error_ms.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub async fn record_egress_error(
+        &self,
+        output_id: &str,
+        phase: &str,
+        message: impl Into<String>,
+    ) {
+        let egresses = self.active_egresses.read().await;
+        if let Some(egress) = egresses.get(output_id) {
+            let message = message.into();
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = "failed".to_string();
+            *egress
+                .failure_phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(phase.to_string());
+            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+            egress
+                .last_error_ms
+                .store(Self::now_epoch_ms(), Ordering::Relaxed);
+        }
+    }
+
     /// Update bytes received counter for an active ingest (lock-free atomic).
     pub async fn update_ingest_bytes(&self, pipeline_id: &str, bytes: u64) {
         let ingests = self.active_ingests.read().await;
@@ -903,6 +1027,9 @@ impl MediaEngine {
         let egresses = self.active_egresses.read().await;
         if let Some(egress) = egresses.get(output_id) {
             egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+            egress
+                .last_progress_ms
+                .store(Self::now_epoch_ms(), Ordering::Relaxed);
         }
     }
 
@@ -1293,15 +1420,12 @@ impl MediaEngine {
                         "stopped"
                     };
 
-                    outputs_json.insert(
-                        output_id.to_string(),
-                        serde_json::json!({
-                            "status": output_status,
-                            "totalSize": bytes_sent,
-                            "bitrateKbps": bitrate_kbps,
-                            "startedAt": egress.started_at,
-                        }),
-                    );
+                    let mut output_json = Self::egress_runtime_json(egress, false);
+                    output_json["status"] = serde_json::Value::String(output_status.to_string());
+                    output_json["totalSize"] = serde_json::json!(bytes_sent);
+                    output_json["bitrateKbps"] = serde_json::json!(bitrate_kbps);
+                    output_json["startedAt"] = serde_json::Value::String(egress.started_at.clone());
+                    outputs_json.insert(output_id.to_string(), output_json);
                 }
             }
 
@@ -1391,15 +1515,8 @@ impl MediaEngine {
             .collect();
 
         let egress_arr: Vec<serde_json::Value> = egresses
-            .iter()
-            .map(|(oid, e)| {
-                serde_json::json!({
-                    "outputId": oid,
-                    "pipelineId": e.pipeline_id,
-                    "uptimeSecs": e.start_instant.elapsed().as_secs_f64(),
-                    "bytesOut": e.bytes_sent.load(Ordering::Relaxed),
-                })
-            })
+            .values()
+            .map(|e| Self::egress_runtime_json(e, true))
             .collect();
 
         serde_json::json!({
@@ -1471,15 +1588,9 @@ impl MediaEngine {
             .collect();
 
         let pipeline_egresses: Vec<serde_json::Value> = egresses
-            .iter()
-            .filter(|(_, e)| e.pipeline_id == pipeline_id)
-            .map(|(oid, e)| {
-                serde_json::json!({
-                    "outputId": oid,
-                    "uptimeSecs": e.start_instant.elapsed().as_secs_f64(),
-                    "bytesOut": e.bytes_sent.load(Ordering::Relaxed),
-                })
-            })
+            .values()
+            .filter(|e| e.pipeline_id == pipeline_id)
+            .map(|e| Self::egress_runtime_json(e, true))
             .collect();
 
         serde_json::json!({
@@ -1692,13 +1803,12 @@ impl MediaEngine {
                 "active": egress.is_some_and(|e| e.status == "running"),
                 "details": egress.map(|e| {
                     let bytes = e.bytes_sent.load(Ordering::Relaxed);
-                    serde_json::json!({
-                        "status": e.status,
-                        "targetUrl": e.target_url,
-                        "totalSize": bytes,
-                        "bitrateKbps": *e.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()),
-                        "startedAt": e.started_at,
-                    })
+                    let mut details = Self::egress_runtime_json(e, true);
+                    details["totalSize"] = serde_json::json!(bytes);
+                    details["bitrateKbps"] =
+                        serde_json::json!(*e.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()));
+                    details["startedAt"] = serde_json::Value::String(e.started_at.clone());
+                    details
                 }),
                 "metrics": egress.map(|e| e.metrics.snapshot()),
             }));
@@ -2100,6 +2210,67 @@ mod tests {
 
         // Non-existent egress returns 0
         assert_eq!(engine.egress_bytes("out-nonexistent").await, 0);
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_exposes_egress_progress_and_error_state() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress(
+                "out-1",
+                "pipe-1",
+                "srt://example.com:10080?streamid=live/key",
+            )
+            .await;
+        engine
+            .update_egress_target_addr("out-1", "203.0.113.10:10080".to_string())
+            .await;
+        engine.update_egress_phase("out-1", "sending").await;
+        engine.record_egress_progress("out-1", 1316).await;
+        engine
+            .record_egress_error("out-1", "send", "synthetic send failure")
+            .await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
+            .await;
+        let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
+
+        assert_eq!(output["protocol"], "srt");
+        assert_eq!(output["targetAddr"], "203.0.113.10:10080");
+        assert_eq!(output["phase"], "failed");
+        assert_eq!(output["failurePhase"], "send");
+        assert_eq!(output["lastError"], "synthetic send failure");
+        assert_eq!(output["totalSize"], 1316);
+        assert!(!output["lastProgressAt"].is_null());
+        assert!(!output["lastErrorAt"].is_null());
+    }
+
+    #[tokio::test]
+    async fn egress_progress_after_error_clears_failed_phase() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress(
+                "out-1",
+                "pipe-1",
+                "https://upload.example.com/live/out.m3u8?token=abc",
+            )
+            .await;
+        engine
+            .record_egress_error("out-1", "upload_segment", "temporary sink outage")
+            .await;
+        engine.record_egress_progress("out-1", 4096).await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
+            .await;
+        let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
+
+        assert_eq!(output["phase"], "uploading");
+        assert!(output["failurePhase"].is_null());
+        assert!(output["lastError"].is_null());
+        assert!(output["lastErrorAt"].is_null());
+        assert_eq!(output["totalSize"], 4096);
     }
 
     #[tokio::test]

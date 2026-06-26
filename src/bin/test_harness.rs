@@ -3310,13 +3310,18 @@ async fn hls_put_correctness() -> Result<Value, String> {
     let youtube_url =
         format!("http://127.0.0.1:{hls_put_port}/upload?cid=dummy&copy=0&file=out.m3u8");
     let akamai_url = format!("http://127.0.0.1:{hls_put_port}/akamai/out.m3u8?token=dummy");
-    let youtube_cancel = CancellationToken::new();
-    let akamai_cancel = CancellationToken::new();
+    let youtube_cancel = engine
+        .register_egress("out-hls-put-youtube", "pipe-hls-put", &youtube_url)
+        .await;
+    let akamai_cancel = engine
+        .register_egress("out-hls-put-akamai", "pipe-hls-put", &akamai_url)
+        .await;
     let youtube_upload = tokio::spawn(restream::media::hls_upload::start_hls_put_upload(
         "out-hls-put-youtube".to_string(),
         "pipe-hls-put".to_string(),
         youtube_url,
         store.clone(),
+        engine.clone(),
         youtube_cancel.clone(),
     ));
     let akamai_upload = tokio::spawn(restream::media::hls_upload::start_hls_put_upload(
@@ -3324,6 +3329,7 @@ async fn hls_put_correctness() -> Result<Value, String> {
         "pipe-hls-put".to_string(),
         akamai_url,
         store,
+        engine.clone(),
         akamai_cancel.clone(),
     ));
 
@@ -3378,6 +3384,18 @@ async fn hls_put_correctness() -> Result<Value, String> {
     let (youtube_recovered, akamai_recovered) =
         wait_for_hls_put_recovery(&sink_dir, requests_before, restart_settle).await?;
     let requests_after = request_line_count(&sink_dir);
+    let hls_telemetry = engine
+        .health_snapshot(
+            &["pipe-hls-put".to_string()],
+            &std::collections::HashMap::new(),
+        )
+        .await;
+    let youtube_telemetry =
+        &hls_telemetry["pipelines"]["pipe-hls-put"]["outputs"]["out-hls-put-youtube"];
+    let akamai_telemetry =
+        &hls_telemetry["pipelines"]["pipe-hls-put"]["outputs"]["out-hls-put-akamai"];
+    let youtube_telemetry_ok = hls_put_telemetry_ok(youtube_telemetry);
+    let akamai_telemetry_ok = hls_put_telemetry_ok(akamai_telemetry);
 
     youtube_cancel.cancel();
     akamai_cancel.cancel();
@@ -3395,7 +3413,9 @@ async fn hls_put_correctness() -> Result<Value, String> {
         && akamai_segment_content_type
         && dimensions_ok
         && youtube_recovered
-        && akamai_recovered;
+        && akamai_recovered
+        && youtube_telemetry_ok
+        && akamai_telemetry_ok;
 
     let mut results = json!({
         "passed": passed,
@@ -3409,6 +3429,8 @@ async fn hls_put_correctness() -> Result<Value, String> {
             "playlistContentTypeObserved": youtube_playlist_content_type,
             "segmentContentTypeObserved": youtube_segment_content_type,
             "recoveredAfterRestart": youtube_recovered,
+            "telemetry": youtube_telemetry,
+            "telemetryOk": youtube_telemetry_ok,
         },
         "akamai": {
             "playlist": artifacts.akamai_playlist,
@@ -3417,6 +3439,8 @@ async fn hls_put_correctness() -> Result<Value, String> {
             "playlistContentTypeAndQueryObserved": akamai_playlist_content_type,
             "segmentContentTypeAndQueryObserved": akamai_segment_content_type,
             "recoveredAfterRestart": akamai_recovered,
+            "telemetry": akamai_telemetry,
+            "telemetryOk": akamai_telemetry_ok,
         },
     });
     if !dimensions_ok {
@@ -3425,6 +3449,8 @@ async fn hls_put_correctness() -> Result<Value, String> {
         ));
     } else if !youtube_recovered || !akamai_recovered {
         results["error"] = json!("HLS PUT upload did not recover for both output URL shapes");
+    } else if !youtube_telemetry_ok || !akamai_telemetry_ok {
+        results["error"] = json!("HLS PUT upload telemetry did not recover to active progress");
     } else if !passed {
         results["error"] =
             json!("HLS PUT upload did not preserve expected content types or signed query shape");
@@ -3443,6 +3469,15 @@ async fn hls_put_correctness() -> Result<Value, String> {
     } else {
         Err(format!("HLS PUT upload scenario failed: {results}"))
     }
+}
+
+fn hls_put_telemetry_ok(output: &Value) -> bool {
+    output["protocol"] == "hls"
+        && output["phase"] == "uploading"
+        && output["bytesOut"].as_u64().unwrap_or(0) > 0
+        && !output["lastProgressAt"].is_null()
+        && output["failurePhase"].is_null()
+        && output["lastError"].is_null()
 }
 
 struct HlsPutArtifacts {

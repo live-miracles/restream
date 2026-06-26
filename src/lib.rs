@@ -650,6 +650,7 @@ pub async fn run_app() {
                                     pipeline_id_c.clone(),
                                     url_c.clone(),
                                     store,
+                                    engine_c.clone(),
                                     cancel_token.clone(),
                                 )
                                 .await;

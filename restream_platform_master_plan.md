@@ -1442,6 +1442,9 @@ Phase 3 completion, 2026-06-26:
 - failure injection
 - performance regression gates
 - agent workflow contract tests
+- composable verification stages so large benchmark/integration suites are
+  decomposed by behavior, protocol, codec, topology, load shape, and evidence
+  type instead of becoming single all-or-nothing blockers
 
 Implementation note, 2026-06-25:
 - the Rust unit and integration suite currently has 471 passing non-doctest
@@ -1675,6 +1678,31 @@ Run benchmark sets for at least the following classes:
 - operator-grade telemetry
 - engineer-grade telemetry
 - full graph + queue/ring instrumentation enabled
+
+### 21.2.1 Composable benchmark stages
+Benchmark and integration coverage should be assembled from independently
+runnable stages, not from one ever-growing command. Each stage should have a
+stable name, a focused scenario matrix, and its own machine-readable result
+artifact so a failure localizes to a behavior slice.
+
+Recommended stage breakdown:
+- **Micro cost:** isolated Criterion groups for touched hot paths.
+- **Component contract:** unit/integration tests for stage identity, graph
+  invariants, API shape, lifecycle, and alert rules.
+- **Protocol smoke:** one ingest/output pair with ffprobe or readback evidence.
+- **Topology slice:** shared-stage, package-stage, multi-output, or mixed-preset
+  graph shape with expected stage counts.
+- **Codec/media slice:** H.264, H.265, B-frames, multi-audio, audio remap, or
+  timestamp-specific coverage.
+- **Load slice:** small fanout, ramp, queue pressure, downstream restart, or
+  soak, each bounded enough to run independently.
+- **Release bundle:** a manifest that composes the required stages for a
+  milestone while preserving each stage's separate pass/fail result.
+
+Adding a new concern should usually add a selector or stage manifest entry
+before it adds a mandatory full-suite step. Full benchmark runs remain useful as
+release confidence checks, but they should be the composition of named stages
+whose individual signal is visible.
 
 ### 21.3 Metrics to capture
 Every run should capture:
