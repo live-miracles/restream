@@ -28,15 +28,63 @@ Default modes: ${DEFAULT_MODES[*]}
 USAGE
 }
 
-case "${1:-}" in
-  -h|--help)
-    usage
-    exit 0
-    ;;
-  --list-modes)
-    printf '%s\n' "${DEFAULT_MODES[@]}"
-    exit 0
-    ;;
-esac
+mode_exists() {
+  local wanted="$1" mode
+  for mode in "${DEFAULT_MODES[@]}"; do
+    [[ "$mode" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+validate_mode_list() {
+  local list="$1" mode count=0
+  IFS=',' read -ra _matrix_modes <<< "$list"
+  for mode in "${_matrix_modes[@]}"; do
+    mode="${mode//[[:space:]]/}"
+    if [[ -z "$mode" ]]; then
+      continue
+    fi
+    count=$((count + 1))
+    if ! mode_exists "$mode"; then
+      echo "Unknown protocol matrix mode: $mode" >&2
+      echo "Known modes: ${DEFAULT_MODES[*]}" >&2
+      exit 2
+    fi
+  done
+  unset _matrix_modes
+  if [[ "$count" -eq 0 ]]; then
+    echo "--only-modes did not include any modes" >&2
+    exit 2
+  fi
+}
+
+args=("$@")
+i=0
+while [[ "$i" -lt "${#args[@]}" ]]; do
+  case "${args[$i]}" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --list-modes)
+      printf '%s\n' "${DEFAULT_MODES[@]}"
+      exit 0
+      ;;
+    --only-modes)
+      if [[ $((i + 1)) -ge "${#args[@]}" ]]; then
+        echo "--only-modes requires a comma-separated mode list" >&2
+        exit 2
+      fi
+      validate_mode_list "${args[$((i + 1))]}"
+      i=$((i + 2))
+      ;;
+    --)
+      break
+      ;;
+    *)
+      i=$((i + 1))
+      ;;
+  esac
+done
 
 exec "$ROOT/scripts/resource-limit" cargo run --quiet --bin protocol_matrix -- "$@"

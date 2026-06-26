@@ -543,8 +543,9 @@ quick agent loop, `--preflight-only` to audit readiness for every selected mode
 without starting live services, `--only-modes hls-put,bframe-rtmp` while
 iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
 for every mode. `--help` and `--list-modes` are handled by the shell wrapper
-without compiling, so agents can inspect the matrix cheaply; real matrix runs
-invoke `cargo run` through `scripts/resource-limit`.
+without compiling, and `--only-modes` is validated before `cargo run`, so
+agents can inspect and slice the matrix cheaply; real matrix runs invoke
+`cargo run` through `scripts/resource-limit`.
 
 Keep new aggregate orchestration in Rust and leave shell wrappers as argument
 parsers/launchers only. `burst-verify`, `hls-put`, and `bframe-rtmp` are
