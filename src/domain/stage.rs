@@ -1,8 +1,10 @@
 //! Typed stage identity and output encoding planning.
 //!
-//! The runtime still serializes stage keys with the legacy strings used by
-//! metrics and cleanup maps. This module centralizes that compatibility layer
-//! so orchestration code can reason in terms of explicit stage kinds.
+//! Every stage in the media graph has a typed `StageKind` that encodes its
+//! function (video preset, audio route, codec edge, infrastructure). The
+//! `StageKey` pairs a `PipelineId` with a `StageKind` for use as a typed
+//! map key in engine registries. No string-based stage identity is used at
+//! runtime.
 
 use std::fmt;
 
@@ -92,9 +94,6 @@ pub enum StageKind {
     },
     Hls,
     Recording,
-    Unknown {
-        key: String,
-    },
 }
 
 impl StageKind {
@@ -122,75 +121,17 @@ impl StageKind {
         }
     }
 
-    pub fn parse_legacy_key(key: &str) -> Self {
-        if key == "source" {
-            return Self::Source;
-        }
-        if key == "hls" {
-            return Self::Hls;
-        }
-        if key == "recording" {
-            return Self::Recording;
-        }
-        if let Some(preset) = key.strip_prefix("video:") {
-            return Self::video_preset(preset);
-        }
-        if let Some(rest) = key.strip_prefix("audio:")
-            && let Some((operation, upstream)) = rest.rsplit_once(":from:")
-        {
-            return Self::audio_route(operation, Self::parse_upstream_ref(upstream));
-        }
-        if let Some(upstream) = key.strip_prefix("hevc_to_h264:from:") {
-            return Self::codec_edge("hevc_to_h264", Self::parse_upstream_ref(upstream));
-        }
-        Self::Unknown {
-            key: key.to_string(),
-        }
+    pub fn hls() -> Self {
+        Self::Hls
     }
 
-    pub fn legacy_key(&self) -> String {
-        match self {
-            Self::Source => "source".to_string(),
-            Self::Hls => "hls".to_string(),
-            Self::Recording => "recording".to_string(),
-            Self::VideoPreset { preset } => format!("video:{preset}"),
-            Self::AudioRoute {
-                operation,
-                upstream,
-            } => {
-                format!("audio:{operation}:from:{}", upstream.legacy_ref())
-            }
-            Self::CodecEdge {
-                operation,
-                upstream,
-            } => {
-                format!("{operation}:from:{}", upstream.legacy_ref())
-            }
-            Self::Unknown { key } => key.clone(),
-        }
-    }
-
-    pub fn legacy_ref(&self) -> String {
-        match self {
-            Self::Source => "source".to_string(),
-            Self::Hls => "hls".to_string(),
-            Self::Recording => "recording".to_string(),
-            // Preserve existing reconciler keys: audio and codec-edge stages refer
-            // to a video stage by preset name, while the stage map stores it as
-            // "video:<preset>".
-            Self::VideoPreset { preset } => preset.clone(),
-            Self::AudioRoute { .. } | Self::CodecEdge { .. } | Self::Unknown { .. } => {
-                self.legacy_key()
-            }
-        }
+    pub fn recording() -> Self {
+        Self::Recording
     }
 
     pub fn graph_node_id(&self, pipeline_id: &str) -> String {
-        format!(
-            "{}_{}_stage",
-            pipeline_id,
-            self.legacy_key().replace([':', '+', ','], "_")
-        )
+        let slug = self.to_string().replace([':', '+', ','], "_");
+        format!("{pipeline_id}_{slug}_stage")
     }
 
     pub fn graph_label(&self) -> String {
@@ -204,7 +145,6 @@ impl StageKind {
                 "hevc_to_h264" => "HEVC -> H.264".to_string(),
                 other => format!("Codec edge: {other}"),
             },
-            Self::Unknown { key } => format!("Stage: {key}"),
         }
     }
 
@@ -215,16 +155,8 @@ impl StageKind {
             Self::Source => "source",
             Self::Hls => "hls",
             Self::Recording => "recording",
-            Self::VideoPreset { .. } | Self::Unknown { .. } => "transcoder",
+            Self::VideoPreset { .. } => "transcoder",
         }
-    }
-
-    pub fn hls() -> Self {
-        Self::Hls
-    }
-
-    pub fn recording() -> Self {
-        Self::Recording
     }
 
     pub fn upstream(&self) -> Option<&StageKind> {
@@ -245,11 +177,31 @@ impl StageKind {
         }
     }
 
-    fn parse_upstream_ref(value: &str) -> Self {
-        if value == "source" || value.starts_with("audio:") || value.starts_with("video:") {
-            Self::parse_legacy_key(value)
-        } else {
-            Self::video_preset(value)
+    /// The video preset name for video stages, used by downstream audio and
+    /// codec-edge stages to refer to their upstream in Display output.
+    pub fn preset_name(&self) -> Option<&str> {
+        match self {
+            Self::VideoPreset { preset } => Some(preset.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for StageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source => f.write_str("source"),
+            Self::Hls => f.write_str("hls"),
+            Self::Recording => f.write_str("recording"),
+            Self::VideoPreset { preset } => write!(f, "video:{preset}"),
+            Self::AudioRoute {
+                operation,
+                upstream,
+            } => write!(f, "audio:{operation}:from:{upstream}"),
+            Self::CodecEdge {
+                operation,
+                upstream,
+            } => write!(f, "{operation}:from:{upstream}"),
         }
     }
 }
@@ -267,19 +219,11 @@ impl StageKey {
             kind,
         }
     }
-
-    pub fn legacy_stage_key(&self) -> String {
-        self.kind.legacy_key()
-    }
-
-    pub fn storage_key(&self) -> String {
-        format!("{}:{}", self.pipeline, self.legacy_stage_key())
-    }
 }
 
 impl fmt::Display for StageKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.storage_key())
+        write!(f, "{}:{}", self.pipeline, self.kind)
     }
 }
 
@@ -326,12 +270,11 @@ impl EncodingStagePlan {
             .map(|kind| StageKey::new(self.pipeline.clone(), kind))
     }
 
-    pub fn terminal_stage_ref(&self) -> String {
+    pub fn terminal_kind(&self) -> &StageKind {
         self.audio_stage
             .as_ref()
             .or(self.video_stage.as_ref())
             .unwrap_or(&self.source)
-            .legacy_ref()
     }
 
     pub fn codec_edge_stage(&self, operation: &str) -> StageKey {
@@ -340,13 +283,6 @@ impl EncodingStagePlan {
             StageKind::codec_edge(operation, self.terminal_kind().clone()),
         )
     }
-
-    fn terminal_kind(&self) -> &StageKind {
-        self.audio_stage
-            .as_ref()
-            .or(self.video_stage.as_ref())
-            .unwrap_or(&self.source)
-    }
 }
 
 #[cfg(test)]
@@ -354,15 +290,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encoding_plan_preserves_legacy_video_and_audio_keys() {
+    fn encoding_plan_produces_typed_video_and_audio_stages() {
         let plan = EncodingStagePlan::from_encoding("pipe", "720p+atrack:0");
 
-        assert_eq!(plan.video_stage().unwrap().storage_key(), "pipe:video:720p");
+        let video = plan.video_stage().unwrap();
+        assert_eq!(video.kind, StageKind::video_preset("720p"));
+        assert_eq!(video.pipeline.as_str(), "pipe");
+
+        let audio = plan.audio_stage().unwrap();
         assert_eq!(
-            plan.audio_stage().unwrap().storage_key(),
-            "pipe:audio:atrack:0:from:720p"
+            audio.kind,
+            StageKind::audio_route("atrack:0", StageKind::video_preset("720p"))
         );
-        assert_eq!(plan.terminal_stage_ref(), "audio:atrack:0:from:720p");
+
+        assert_eq!(
+            *plan.terminal_kind(),
+            StageKind::audio_route("atrack:0", StageKind::video_preset("720p"))
+        );
     }
 
     #[test]
@@ -370,28 +314,66 @@ mod tests {
         let plan = EncodingStagePlan::from_encoding("pipe", "source+remap:0:1");
 
         assert!(plan.video_stage().is_none());
+        let audio = plan.audio_stage().unwrap();
         assert_eq!(
-            plan.audio_stage().unwrap().legacy_stage_key(),
-            "audio:remap:0:1:from:source"
+            audio.kind,
+            StageKind::audio_route("remap:0:1", StageKind::source())
         );
-        assert_eq!(plan.terminal_stage_ref(), "audio:remap:0:1:from:source");
+        assert_eq!(
+            *plan.terminal_kind(),
+            StageKind::audio_route("remap:0:1", StageKind::source())
+        );
     }
 
     #[test]
-    fn codec_edge_uses_terminal_stage_reference() {
+    fn codec_edge_uses_terminal_kind() {
         let plan = EncodingStagePlan::from_encoding("pipe", "720p");
 
+        let edge = plan.codec_edge_stage("hevc_to_h264");
         assert_eq!(
-            plan.codec_edge_stage("hevc_to_h264").storage_key(),
-            "pipe:hevc_to_h264:from:720p"
+            edge.kind,
+            StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
         );
     }
 
     #[test]
-    fn parse_legacy_audio_key_recovers_upstream_kind() {
-        let kind = StageKind::parse_legacy_key("audio:atrack:0:from:720p");
+    fn stage_kind_display_round_trips() {
+        let cases: Vec<(StageKind, &str)> = vec![
+            (StageKind::source(), "source"),
+            (StageKind::hls(), "hls"),
+            (StageKind::recording(), "recording"),
+            (StageKind::video_preset("720p"), "video:720p"),
+            (
+                StageKind::audio_route("atrack:0", StageKind::video_preset("720p")),
+                "audio:atrack:0:from:video:720p",
+            ),
+            (
+                StageKind::codec_edge("hevc_to_h264", StageKind::source()),
+                "hevc_to_h264:from:source",
+            ),
+            (
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p")),
+                "hevc_to_h264:from:video:720p",
+            ),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(kind.to_string(), expected, "Display for {:?}", kind);
+        }
+    }
 
+    #[test]
+    fn stage_key_display() {
+        let key = StageKey::new("pipe", StageKind::video_preset("720p"));
+        assert_eq!(key.to_string(), "pipe:video:720p");
+    }
+
+    #[test]
+    fn audio_route_upstream_is_accessible() {
+        let kind = StageKind::audio_route("atrack:0", StageKind::video_preset("720p"));
         assert_eq!(kind.graph_label(), "Audio: atrack:0");
-        assert_eq!(kind.upstream().unwrap().legacy_key(), "video:720p");
+        assert_eq!(
+            *kind.upstream().unwrap(),
+            StageKind::video_preset("720p")
+        );
     }
 }

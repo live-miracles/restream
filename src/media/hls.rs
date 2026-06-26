@@ -211,8 +211,12 @@ pub async fn start_hls_segmenter(
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
+    let hls_stage_key = crate::domain::stage::StageKey::new(
+        pipeline_id.as_str(),
+        crate::domain::stage::StageKind::hls(),
+    );
     let metrics = engine
-        .get_or_create_stage_metrics(&pipeline_id, "hls")
+        .get_or_create_stage_metrics(hls_stage_key.clone())
         .await;
     engine.event_log.emit(crate::events::EventKind::StageStarted {
         pipeline_id: pipeline_id.clone(),
@@ -325,7 +329,7 @@ pub async fn start_hls_segmenter(
         }
     }
 
-    engine.remove_stage_metrics(&pipeline_id, "hls").await;
+    engine.remove_stage_metrics(&hls_stage_key).await;
     engine.event_log.emit(crate::events::EventKind::StageStopped {
         pipeline_id: pipeline_id.clone(),
         encoding: "hls".to_string(),

@@ -176,6 +176,19 @@ run also passed the Rust anchor before continuing into the still-bash-owned
 configs. Next continuation point: move `h265-srt` into Rust with its
 `MS-tc-spawns` assertion, then migrate the two multi-audio configs.
 
+The `h265-srt` mixed-scale slice has also been moved behind a Rust harness
+entry point, `cargo run --bin test_harness -- mixed-h265-srt`, and is delegated
+by `test/run-integration.sh mixed-scale` by default. The Rust path preserves the
+same group order, `scale.csv`, `rss-summary.csv`, optional non-fatal spot
+checks, `MS-load-h265-srt`, and `MS-tc-spawns` bound (`1..ext_ffmpeg_n + 1`) as
+the bash path; `MIXED_RUST_H265_SRT=0` keeps the legacy bash fallback. A direct
+focused run passed on June 26, 2026 with `ONLY_CHECKS=tc-spawns`,
+`N_PER_GROUP=1`, and `SNAPSHOT_SLEEP_SECS=0`. A wrapper fast path with
+`--only tc-spawns --skip-load` also passed the Rust `mixed-h265-srt` slice
+(`MS-tc-spawns`: `tc_spawns=2`, bound `2`) before continuing into the
+still-bash-owned multi-audio configs. Next continuation point: migrate the two
+multi-audio configs.
+
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z

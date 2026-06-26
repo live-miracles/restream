@@ -459,7 +459,7 @@ pub async fn run_app() {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            &stage.legacy_stage_key(),
+                            stage.kind.clone(),
                             source_buf.clone(),
                             ingest_codec_override,
                         )
@@ -471,31 +471,29 @@ pub async fn run_app() {
                 // Stage 2: optional audio filter (keyed on video stage to prevent
                 // cross-contamination between presets). Shared between RTMP and SRT
                 // egresses on the same preset.
-                let (pre_h264_buf, last_stage_key) = if let Some(stage) = stage_plan.audio_stage() {
-                    let audio_key = stage.legacy_stage_key();
-                    let buf = engine
+                let pre_h264_buf = if let Some(stage) = stage_plan.audio_stage() {
+                    engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            &audio_key,
+                            stage.kind,
                             video_buf.clone(),
                             None,
                         )
-                        .await;
-                    (buf, audio_key)
+                        .await
                 } else {
-                    (video_buf.clone(), stage_plan.terminal_stage_ref())
+                    video_buf.clone()
                 };
 
                 // Stage 3: H.265→H.264 conversion for RTMP only (applied after
                 // audio routing so the converter sees the selected audio tracks).
-                // Keyed by last_stage_key so RTMP-passthrough and RTMP-720p each
+                // Keyed by terminal_kind so RTMP-passthrough and RTMP-720p each
                 // get their own converter, and all RTMP egresses on the same preset
                 // share it.
                 let ring_buf = if needs_rtmp_h264_conv {
                     engine
                         .get_or_create_h264_transcoder(
                             &output.pipeline_id,
-                            &last_stage_key,
+                            stage_plan.terminal_kind().clone(),
                             pre_h264_buf,
                         )
                         .await

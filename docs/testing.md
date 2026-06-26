@@ -167,6 +167,11 @@ the public CLI, manifest, CSV, summary, and JSONL assertion layout intact. Set
 The Rust anchor sends the logged-in session cookie when probing restream's
 protected `/hls/:pipeline_id/index.m3u8` endpoint.
 
+The `h265-srt` config is also Rust-owned by default through
+`cargo run --bin test_harness -- mixed-h265-srt`. It preserves the non-fatal
+spot checks and the `MS-tc-spawns` stage-sharing assertion. Set
+`MIXED_RUST_H265_SRT=0` to force the legacy bash path while bisecting behavior.
+
 ### `bonding` — SRT socket bonding
 
 ```sh

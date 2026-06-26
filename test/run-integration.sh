@@ -931,6 +931,24 @@ run_mixed_scale() {
       || { tail -160 "${WORK_DIR}/mixed-anchor.log" >&2 || true; fail "Rust mixed-anchor harness failed"; }
   fi
 
+  if [[ "${MIXED_RUST_H265_SRT:-1}" != "0" ]]; then
+    echo "  [rust] mixed-h265-srt: h265-srt TC_SPAWNS"
+    TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
+    WORK_DIR="$WORK_DIR" \
+    SCALE_LOG="$SCALE_LOG" \
+    RSS_SUMMARY="$RSS_SUMMARY" \
+    SUMMARY_LOG="$SUMMARY_LOG" \
+    ASSERTION_LOG="$ASSERTION_LOG" \
+    ONLY_CHECKS="$ONLY_CHECKS" \
+    RESUME_FROM="$RESUME_FROM" \
+    SKIP_LOAD="$SKIP_LOAD" \
+    N_PER_GROUP="$N_PER_GROUP" \
+    SNAPSHOT_SLEEP_SECS="${SNAPSHOT_SLEEP_SECS:-3}" \
+    cargo run --quiet --bin test_harness -- mixed-h265-srt \
+      >"${WORK_DIR}/mixed-h265-srt.log" 2>&1 \
+      || { tail -160 "${WORK_DIR}/mixed-h265-srt.log" >&2 || true; fail "Rust mixed-h265-srt harness failed"; }
+  fi
+
   MTX_HLS_ENABLED=yes  # anchor config (h264-srt) probes both HLS endpoints
   start_restream
   start_mediamtx
@@ -1198,7 +1216,9 @@ run_mixed_scale() {
   if [[ "${MIXED_RUST_ANCHOR:-1}" == "0" ]]; then
     run_mixed_config "h264-srt"       srt    h264   0      1       0
   fi
-  run_mixed_config "h265-srt"       srt    h265   0      0       1
+  if [[ "${MIXED_RUST_H265_SRT:-1}" == "0" ]]; then
+    run_mixed_config "h265-srt"       srt    h265   0      0       1
+  fi
   run_mixed_config "h264-srt-multi" srt    h264   1      0       0
   run_mixed_config "h265-srt-multi" srt    h265   1      0       0
 

@@ -40,7 +40,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::stage::{StageKey, StageKind};
+use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::pipe_metrics::PipeMetrics;
@@ -197,6 +197,7 @@ fn audio_filter_complex(routing: &Option<AudioRouting>) -> Option<String> {
 /// This function is called by `engine.get_or_create_transcoder` which ensures
 /// only one stage exists per `(pipeline, encoding)` key. All egress consumers
 /// receive an `Arc<RingBuffer>` pointing to the same `output_buffer`.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_external_transcoder_stage(
     pipeline_id: String,
     encoding: String,
@@ -209,6 +210,7 @@ pub async fn start_external_transcoder_stage(
     // carries H.265 so the stage spawns libx265 and tags its output ring
     // correctly.  None defaults to H.264 (libx264).
     input_codec_override: Option<String>,
+    stage_key: StageKey,
 ) {
     let input_codec = input_codec_override.as_deref().unwrap_or("h264");
     let args = build_stage_ffmpeg_args(&encoding, input_codec);
@@ -279,7 +281,7 @@ pub async fn start_external_transcoder_stage(
 
     // ── stage metrics ─────────────────────────────────────────────────────
     let stage_metrics = engine
-        .get_or_create_stage_metrics(&pipeline_id, &encoding)
+        .get_or_create_stage_metrics(stage_key.clone())
         .await;
 
     // ── pipe metrics ──────────────────────────────────────────────────────
@@ -293,7 +295,6 @@ pub async fn start_external_transcoder_stage(
         );
     }
     let pipe_metrics = Arc::new(PipeMetrics::default());
-    let stage_key = StageKey::new(pipeline_id.as_str(), StageKind::parse_legacy_key(&encoding));
     engine
         .register_pipe_metrics(stage_key.clone(), pipe_metrics.clone())
         .await;
@@ -488,7 +489,7 @@ pub async fn start_external_transcoder_stage(
     let _ = child.wait().await;
     cancel.cancel();
 
-    engine.remove_stage_metrics(&pipeline_id, &encoding).await;
+    engine.remove_stage_metrics(&stage_key).await;
     engine.remove_pipe_metrics(&stage_key).await;
     engine
         .event_log

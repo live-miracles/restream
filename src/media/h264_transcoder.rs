@@ -78,9 +78,8 @@ pub async fn start_h264_transcoder(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
 
-    let stage_name = stage_key.legacy_stage_key();
     let stage_metrics = engine
-        .get_or_create_stage_metrics(&pipeline_id, &stage_name)
+        .get_or_create_stage_metrics(stage_key.clone())
         .await;
 
     let input_queue = Arc::new(MemoryQueue::new());
@@ -150,12 +149,12 @@ pub async fn start_h264_transcoder(
 
     input_queue.close();
     engine.remove_input_queue(&stage_key).await;
-    engine.remove_stage_metrics(&pipeline_id, &stage_name).await;
+    engine.remove_stage_metrics(&stage_key).await;
     engine
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),
-            encoding: stage_name.to_string(),
+            encoding: stage_key.kind.to_string(),
         });
 }
 
