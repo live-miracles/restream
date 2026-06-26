@@ -18,6 +18,7 @@ static int require_decoder(enum AVCodecID id, const char *name) {
 int main(void) {
     int failed = 0;
     failed |= require_encoder("libx264");
+    failed |= require_encoder("libx265");
     failed |= require_encoder("aac");
     failed |= require_encoder("ac3");
     failed |= require_decoder(AV_CODEC_ID_H264, "h264");

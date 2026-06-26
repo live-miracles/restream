@@ -95,7 +95,7 @@ apt-get install -y ffmpeg jq pkg-config clang nasm libsrt-dev \
 Note: distribution FFmpeg and libsrt may not have x86 ASM or bonding enabled.
 Performance and bonding behaviour will differ from the static release build.
 
-**Static release** — builds its own FFmpeg, x264, and SRT from source (see
+**Static release** — builds its own FFmpeg, x264, x265, and SRT from source (see
 [Static Release Build](#static-release-build) below). This is the only path
 that guarantees `--enable-x86asm`, pinned codec versions, and
 `ENABLE_BONDING=ON`.
@@ -176,8 +176,9 @@ prefix (`.build/static/prefix/`). These are **not** taken from the OS:
 
 | Library | Pinned version | Why built from source |
 |---|---|---|
-| **FFmpeg** | n6.1.5 | `--enable-x86asm` — runtime-dispatched SSE/AVX codec paths in H.264/H.265 decode and encode |
+| **FFmpeg** | n8.1.2 | `--enable-x86asm` — runtime-dispatched SSE/AVX codec paths in H.264/H.265 decode and encode |
 | **x264** | b35605ac | Matches FFmpeg's `--enable-libx264`; static PIC build |
+| **x265** | e444744 | Matches FFmpeg's `--enable-libx265`; static PIC build |
 | **libsrt** | v1.5.5 | `ENABLE_BONDING=ON` — OS packages typically ship bonding as disabled stubs |
 
 **FFmpeg components compiled in:**
@@ -188,7 +189,7 @@ prefix (`.build/static/prefix/`). These are **not** taken from the OS:
 | `matroska`, `mov` demuxers | Planned | In-process file ingest (`.mkv`/`.mp4`/`.mov` sources) |
 | `mpegts`, `matroska` muxers | Active / Planned | `CustomOutput`; recording MKV (recording currently writes raw bytes — FFmpeg muxer not yet called) |
 | `h264`, `hevc`, `aac`, `mp3`, `ac3`, `eac3` decoders | Active / Planned | Stream info via `avformat_find_stream_info`; decode loop (transcoder, not yet implemented) |
-| `libx264`, `aac` encoders | Planned | Transcoder H.264 encode + audio re-encode for remap/downmix (not yet implemented) |
+| `libx264`, `libx265`, `aac` encoders | Planned | Transcoder H.264/H.265 encode + audio re-encode for remap/downmix (not yet implemented) |
 | `h264`, `hevc`, `aac`, `ac3` parsers | Active | Required by `avformat_find_stream_info` |
 | `h264_mp4toannexb`, `hevc_mp4toannexb`, `aac_adtstoasc` BSFs | Active | Header conversion in `codec.rs` |
 | `pipe` protocol | Active | AVIO callback bridge for `MemoryQueue` |
@@ -219,9 +220,9 @@ For faster iteration, use thin LTO: `RESTREAM_BUILD_PROFILE=fast-release ./scrip
 (output: `.build/static/cargo-target/fast-release/restream`)
 
 The build script verifies the binary has no dynamic loader dependency, probes
-the required H.264/H.265 and audio codec set, and asserts that FFmpeg's x86
+the required H.264/H.265 encode/decode and audio codec set, and asserts that FFmpeg's x86
 assembly paths are active (2× faster transcoding vs no-asm build). Because
-this build enables x264, redistribution must comply with GPL.
+this build enables x264 and x265, redistribution must comply with GPL.
 
 ### Runtime
 

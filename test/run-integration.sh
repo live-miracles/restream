@@ -388,7 +388,7 @@ write_manifest() {
   "artifacts": {
     "restreamLog": "$(json_escape "$RESTREAM_LOG")",
     "summary": "$(json_escape "$SUMMARY_LOG")",
-    "scaleCsv": "$(json_escape "$SCALE_LOG")"
+    "scaleCsv": "$(json_escape "$SCALE_LOG")"${EXTRA_ARTIFACTS_JSON:-}
   }
 }
 JSON
@@ -419,6 +419,15 @@ check_deps() {
   for cmd in "$@"; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "${cmd} not found" >&2; exit 1; }
   done
+}
+
+check_embedded_ffmpeg_fresh() {
+  [[ -n "${FFMPEG_BIN_PATH:-}" ]] && return 0
+  [[ -x "$RESTREAM_BIN" ]] || return 0
+  local embedded_ffmpeg="$ROOT/public/bin/ffmpeg"
+  if [[ -x "$embedded_ffmpeg" && "$embedded_ffmpeg" -nt "$RESTREAM_BIN" ]]; then
+    fail "RESTREAM_BIN is older than public/bin/ffmpeg; rebuild $RESTREAM_BIN for embedded FFmpeg tests or set FFMPEG_BIN_PATH explicitly for system-FFmpeg diagnosis"
+  fi
 }
 
 cleanup_restream_procs() {
@@ -904,8 +913,11 @@ run_mixed_scale() {
   RESTREAM_LOG="${WORK_DIR}/restream.log"
   SCALE_LOG="${WORK_DIR}/scale.csv"
   SUMMARY_LOG="${WORK_DIR}/summary.txt"
+  MIXED_LOG_INDEX="${WORK_DIR}/mixed-scale-logs.json"
+  EXTRA_ARTIFACTS_JSON=", \"mixedScaleLogs\": \"$(json_escape "$MIXED_LOG_INDEX")\""
   init_run_artifacts
   check_deps cargo ffmpeg ffprobe curl jq mediamtx
+  check_embedded_ffmpeg_fresh
 
   # RSS_SUMMARY is separate from SUMMARY_LOG so log_ok() "ok: ..." lines don't
   # pollute the CSV that the final summary table reads back.
@@ -913,12 +925,34 @@ run_mixed_scale() {
   printf "config,label,cpu_pct,rss_kb,ext_ffmpeg_n,ext_ffmpeg_rss_kb\n" > "$SCALE_LOG"
   : > "$RSS_SUMMARY"
   : > "$SUMMARY_LOG"
+  cat >"$MIXED_LOG_INDEX" <<JSON
+{
+  "mixed-h264-rtmp": {
+    "harnessLog": "$(json_escape "${WORK_DIR}/mixed-h264-rtmp.log")",
+    "restreamLog": "$(json_escape "${WORK_DIR}/mixed-h264-rtmp-restream.log")"
+  },
+  "mixed-anchor": {
+    "harnessLog": "$(json_escape "${WORK_DIR}/mixed-anchor.log")",
+    "restreamLog": "$(json_escape "${WORK_DIR}/mixed-anchor-restream.log")"
+  },
+  "mixed-h265-srt": {
+    "harnessLog": "$(json_escape "${WORK_DIR}/mixed-h265-srt.log")",
+    "restreamLog": "$(json_escape "${WORK_DIR}/mixed-h265-srt-restream.log")"
+  },
+  "mixed-h264-srt-multi": {
+    "harnessLog": "$(json_escape "${WORK_DIR}/mixed-h264-srt-multi.log")",
+    "restreamLog": "$(json_escape "${WORK_DIR}/mixed-h264-srt-multi-restream.log")"
+  },
+  "mixed-h265-srt-multi": {
+    "harnessLog": "$(json_escape "${WORK_DIR}/mixed-h265-srt-multi.log")",
+    "restreamLog": "$(json_escape "${WORK_DIR}/mixed-h265-srt-multi-restream.log")"
+  }
+}
+JSON
 
   run_mixed_rust_slice() {
     local command="$1" label="$2"
-    local ffmpeg_bin="${FFMPEG_BIN_PATH:-$(command -v ffmpeg)}"
     echo "  [rust] ${command}: ${label}"
-    FFMPEG_BIN_PATH="$ffmpeg_bin" \
     TEST_HARNESS_ARTIFACT_DIR="$WORK_DIR" \
     WORK_DIR="$WORK_DIR" \
     SCALE_LOG="$SCALE_LOG" \

@@ -11,6 +11,7 @@ STAMPS="$BUILD_ROOT/stamps"
 SRT_VERSION="${SRT_VERSION:-v1.5.5}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
 X264_COMMIT="${X264_COMMIT:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
+X265_COMMIT="${X265_COMMIT:-e444744c03978c1fb4e037168967020cf2648427}"
 
 mkdir -p "$TOOLS" "$SOURCES" "$PREFIX" "$STAMPS"
 
@@ -74,6 +75,7 @@ clone_commit() {
 clone_tag https://github.com/Haivision/srt.git "$SRT_VERSION" "$SOURCES/srt"
 clone_tag https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_VERSION" "$SOURCES/ffmpeg"
 clone_commit https://code.videolan.org/videolan/x264.git "$X264_COMMIT" "$SOURCES/x264"
+clone_commit https://bitbucket.org/multicoreware/x265_git.git "$X265_COMMIT" "$SOURCES/x265"
 
 fingerprint() {
     sha256sum | cut -d' ' -f1
@@ -100,7 +102,7 @@ write_stamp() {
 #
 MARCH="${RESTREAM_MARCH:-x86-64-v3}"
 
-# These flags apply to all C/C++ dependencies (SRT, x264, FFmpeg):
+# These flags apply to all C/C++ dependencies (SRT, x264, x265, FFmpeg):
 OPT_CFLAGS="-O3 -march=$MARCH"
 OPT_CXXFLAGS="-O3 -march=$MARCH"
 
@@ -192,6 +194,45 @@ else
     echo "Using cached x264 build."
 fi
 
+X265_FINGERPRINT="$(
+    {
+        git -C "$SOURCES/x265" rev-parse HEAD
+        c++ --version | head -n 1
+        cmake --version | head -n 1
+        nasm -v
+        printf '%s\n' \
+            "CFLAGS=$OPT_CFLAGS" \
+            "CXXFLAGS=$OPT_CXXFLAGS" \
+            "-DCMAKE_BUILD_TYPE=Release" \
+            "-DCMAKE_INSTALL_PREFIX=$PREFIX" \
+            "-DENABLE_SHARED=OFF" \
+            "-DENABLE_CLI=OFF" \
+            "-DENABLE_LIBNUMA=OFF" \
+            "-DENABLE_PIC=ON" \
+            "x265.pc:drop-lgcc_s-for-static-link"
+    } | fingerprint
+)"
+X265_STAMP="$STAMPS/x265"
+if ! stamp_matches "$X265_STAMP" "$X265_FINGERPRINT" ||
+    [[ ! -f "$PREFIX/lib/libx265.a" || ! -f "$PREFIX/lib/pkgconfig/x265.pc" ]] ||
+    grep -q -- '-lgcc_s' "$PREFIX/lib/pkgconfig/x265.pc"; then
+    cmake -S "$SOURCES/x265/source" -B "$BUILD_ROOT/x265-build" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="$OPT_CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$OPT_CXXFLAGS" \
+        -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+        -DENABLE_SHARED=OFF \
+        -DENABLE_CLI=OFF \
+        -DENABLE_LIBNUMA=OFF \
+        -DENABLE_PIC=ON
+    cmake --build "$BUILD_ROOT/x265-build" --parallel "${BUILD_JOBS:-$(nproc)}"
+    cmake --install "$BUILD_ROOT/x265-build"
+    perl -0pi -e 's/(?:\s+-lgcc_s)+//g' "$PREFIX/lib/pkgconfig/x265.pc"
+    write_stamp "$X265_STAMP" "$X265_FINGERPRINT"
+else
+    echo "Using cached x265 build."
+fi
+
 FFMPEG_FINGERPRINT="$(
     {
         git -C "$SOURCES/ffmpeg" rev-parse HEAD
@@ -201,6 +242,7 @@ FFMPEG_FINGERPRINT="$(
             "CFLAGS=$OPT_CFLAGS" \
             "CXXFLAGS=$OPT_CXXFLAGS" \
             "$X264_FINGERPRINT" \
+            "$X265_FINGERPRINT" \
             "--prefix=$PREFIX" \
             --pkg-config-flags=--static \
             --enable-static \
@@ -215,6 +257,7 @@ FFMPEG_FINGERPRINT="$(
             --disable-everything \
             --enable-gpl \
             --enable-libx264 \
+            --enable-libx265 \
             --enable-avcodec \
             --enable-avformat \
             --enable-avfilter \
@@ -224,7 +267,7 @@ FFMPEG_FINGERPRINT="$(
             --enable-demuxer=mpegts,matroska,mov \
             --enable-muxer=mpegts,matroska \
             --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-            --enable-encoder=aac,libx264 \
+            --enable-encoder=aac,libx264,libx265 \
             --enable-parser=h264,hevc,aac,ac3 \
             --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
             --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
@@ -251,6 +294,7 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --disable-everything \
         --enable-gpl \
         --enable-libx264 \
+        --enable-libx265 \
         --enable-avcodec \
         --enable-avformat \
         --enable-avfilter \
@@ -260,7 +304,7 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-        --enable-encoder=aac,libx264 \
+        --enable-encoder=aac,libx264,libx265 \
         --enable-parser=h264,hevc,aac,ac3 \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
@@ -312,6 +356,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
         --disable-everything \
         --enable-gpl \
         --enable-libx264 \
+        --enable-libx265 \
         --enable-avcodec \
         --enable-avformat \
         --enable-avfilter \
@@ -321,7 +366,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
         --enable-demuxer=mpegts,matroska,mov \
         --enable-muxer=mpegts,matroska \
         --enable-decoder=h264,hevc,aac,mp3,ac3,eac3 \
-        --enable-encoder=aac,libx264 \
+        --enable-encoder=aac,libx264,libx265 \
         --enable-parser=h264,hevc,aac,ac3 \
         --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
         --enable-filter=scale,crop,transpose,format,aformat,aresample,pan
@@ -355,6 +400,7 @@ NATIVE_BUILD_ID="$(
     sha256sum \
         "$PREFIX/lib/libsrt.a" \
         "$PREFIX/lib/libx264.a" \
+        "$PREFIX/lib/libx265.a" \
         "$PREFIX/lib/libavcodec.a" \
         "$PREFIX/lib/libavformat.a" \
         "$PREFIX/lib/libavfilter.a" \

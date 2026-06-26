@@ -107,6 +107,7 @@ fn main() {
         .expect("libavutil not found or static probe failed");
 
     embed_pkg_version("RESTREAM_BUILD_X264_VERSION", "x264", static_ffmpeg);
+    embed_pkg_version("RESTREAM_BUILD_X265_VERSION", "x265", static_ffmpeg);
     embed_pkg_version("RESTREAM_BUILD_OPENSSL_VERSION", "openssl", static_srt);
 
     if !static_srt {

@@ -369,7 +369,7 @@ Authenticated build/runtime information:
   },
   "nativeLibraries": {
     "ffmpeg": {
-      "version": "6.1.5",
+      "version": "8.1.2",
       "configuration": "... --enable-x86asm ...",
       "license": "GPL version 2 or later",
       "x86Assembly": true
@@ -387,6 +387,10 @@ Authenticated build/runtime information:
     "x264": {
       "version": "0.164.x",
       "versionSource": "linked pkg-config metadata at build time"
+    },
+    "x265": {
+      "version": "3.x",
+      "versionSource": "linked pkg-config metadata at build time"
     }
   },
   "sbom": {
@@ -395,7 +399,7 @@ Authenticated build/runtime information:
     "endpoint": "/api/status/sbom",
     "componentCount": 100,
     "rustComponentCount": 85,
-    "nativeComponentCount": 15,
+    "nativeComponentCount": 16,
     "licensesIncluded": true
   },
   "os": {
@@ -410,8 +414,8 @@ Authenticated build/runtime information:
 ```
 
 Native versions are obtained from the running libraries where they expose a
-runtime API. x264 has no public runtime version call, so its exact linked
-pkg-config version is embedded at build time and labeled accordingly.
+runtime API. x264 and x265 have no public runtime version call, so their exact
+linked pkg-config versions are embedded at build time and labeled accordingly.
 
 ### `GET /api/status/sbom`
 
@@ -421,8 +425,8 @@ content type `application/vnd.cyclonedx+json; version=1.5` and contains:
 - the Restream application component and build identity;
 - every resolved normal/runtime Rust crate from Cargo's locked dependency
   graph, including version, Cargo package URL, source, and declared license;
-- FFmpeg component libraries, SRT, libssl, libcrypto, SQLite, x264, glibc when
-  applicable, Rust's standard library, libstdc++, and libgcc;
+- FFmpeg component libraries, SRT, libssl, libcrypto, SQLite, x264, x265, glibc
+  when applicable, Rust's standard library, libstdc++, and libgcc;
 - runtime-reported versions where an API exists, with explicit provenance for
   build-resolved versions;
 - SPDX license expressions or `NOASSERTION` when upstream metadata does not

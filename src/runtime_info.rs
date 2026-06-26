@@ -222,6 +222,7 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
     let openssl_version = c_string(unsafe { OpenSSL_version(OPENSSL_VERSION) });
     let srt_version = crate::media::srt::linked_srt_version();
     let x264_version = env!("RESTREAM_BUILD_X264_VERSION").to_string();
+    let x265_version = env!("RESTREAM_BUILD_X265_VERSION").to_string();
     let (mut native_components, ffmpeg_configuration, ffmpeg_license) = ffmpeg_components();
 
     native_components.extend([
@@ -274,6 +275,16 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
         native_component(
             "x264",
             x264_version.clone(),
+            "GPL-2.0-or-later",
+            "linked pkg-config metadata at build time",
+            vec![json!({
+                "name": "restream:runtimeDispatch",
+                "value": "x86 assembly enabled"
+            })],
+        ),
+        native_component(
+            "x265",
+            x265_version.clone(),
             "GPL-2.0-or-later",
             "linked pkg-config metadata at build time",
             vec![json!({
@@ -393,6 +404,10 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
             },
             "x264": {
                 "version": x264_version,
+                "versionSource": "linked pkg-config metadata at build time",
+            },
+            "x265": {
+                "version": x265_version,
                 "versionSource": "linked pkg-config metadata at build time",
             }
         },

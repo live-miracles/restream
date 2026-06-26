@@ -168,12 +168,16 @@ harness entry point `mixed-h264-rtmp` and delegated by
 publisher shape, the four output groups, `scale.csv`, `rss-summary.csv`,
 `MS-load-h264-rtmp`, and optional non-fatal spot checks.
 
-For live mixed-scale runs, the wrapper now passes `FFMPEG_BIN_PATH` to the Rust
-harness, defaulting to the system `ffmpeg` found by dependency checks. This is
-required because the embedded standalone `public/bin/ffmpeg` is a minimal static
-binary built with `--enable-libx264` but not `--enable-libx265`; the next native
-build-system slice should add static x265 support to
-`scripts/setup-static-build.sh` and refresh the embedded binary.
+For live mixed-scale runs, the wrapper no longer sets `FFMPEG_BIN_PATH` for the
+Rust-owned slices by default, so the production `restream` child exercises the
+embedded standalone `public/bin/ffmpeg`. Developers can still set
+`FFMPEG_BIN_PATH=/usr/bin/ffmpeg` explicitly for streaming-logic diagnosis
+against the system binary.
+The native build script now builds pinned static x265 and configures both the
+linked FFmpeg libraries and embedded standalone binary with `--enable-libx265`;
+`public/bin/ffmpeg -hide_banner -encoders` reports both `libx264` and
+`libx265`. The wrapper also fails early when `RESTREAM_BIN` is older than
+`public/bin/ffmpeg`, because the binary embeds those asset bytes at build time.
 
 The first `mixed-scale` slice has now moved behind the typed Rust harness:
 `cargo run --bin test_harness -- mixed-anchor` owns the `h264-srt` anchor config
@@ -214,11 +218,17 @@ one external FFmpeg feed. A wrapper fast path also passed with
 delegating the then-current four configs to Rust and printing
 `[rust] all mixed-scale configs delegated; skipping legacy bash runner`.
 The shell fallback body has now been removed; `mixed-scale` is a Rust launcher
-plus summary renderer. A namespaced default-port wrapper run with
-`./test/run-integration.sh --fast --only ffprobe mixed-scale` passed all five
-slices on June 26, 2026 after routing the Rust harness to the system FFmpeg.
-Next continuation point: add x265 to the embedded standalone FFmpeg build, then
-rerun the five-config mixed-scale check without relying on `FFMPEG_BIN_PATH`.
+plus summary renderer. The wrapper writes a `mixed-scale-logs.json` index for
+the five per-slice harness/restream logs, and all selected `ffprobe` checks now
+use fatal JSONL-emitting assertions with `--resume-from` support instead of
+print-only probes.
+
+A namespaced default-port wrapper run with
+`WORK_DIR=test/artifacts/mixed-scale-embedded-x265-ffprobe
+./test/run-integration.sh --fast --only ffprobe mixed-scale` passed all five
+slices on June 26, 2026 after rebuilding `public/bin/ffmpeg` and
+`target/release/restream`; it did not set `FFMPEG_BIN_PATH`, so the live H.265
+720p paths exercised the embedded standalone FFmpeg with `libx265`.
 
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 

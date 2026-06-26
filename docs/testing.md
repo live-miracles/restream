@@ -167,11 +167,18 @@ manifest, CSV, summary, and JSONL assertion layout intact. The multi-audio
 Rust slices preserve the two-audio SRT publisher, RTMP `720p+atrack:0`, and SRT
 `720p+atrack:0,1` route encodings.
 
-The wrapper passes `FFMPEG_BIN_PATH` to the Rust harness, defaulting to the
-system `ffmpeg` found by dependency checks. The embedded standalone
-`public/bin/ffmpeg` is intentionally small today and has `libx264` but not
-`libx265`, so H.265 720p live checks need the system binary until the embedded
-build grows static x265 support.
+The wrapper no longer sets `FFMPEG_BIN_PATH` for Rust-owned mixed-scale slices
+by default, so the production `restream` child uses the embedded standalone
+`public/bin/ffmpeg`. Set `FFMPEG_BIN_PATH=/usr/bin/ffmpeg` explicitly only for
+streaming-logic diagnosis against the system binary. When using the embedded
+path, the wrapper fails early if `RESTREAM_BIN` is older than
+`public/bin/ffmpeg`, because the binary embeds those asset bytes at build time.
+The mixed-scale manifest also includes `mixedScaleLogs`, a JSON index of the
+per-slice harness and restream logs.
+
+The five mixed-scale slices are intentionally non-redundant: `h264-rtmp`,
+`h264-srt`, `h265-srt`, `h264-srt-multi`, and `h265-srt-multi`. All selected
+`ffprobe` checks now emit fatal JSONL assertions and honor `--resume-from`.
 
 ### `bonding` — SRT socket bonding
 

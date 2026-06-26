@@ -1,31 +1,26 @@
 # FFmpeg Version Configuration
 
-This document explains how to build restream with different FFmpeg versions (6.x, 7.x, 8.x).
+This document explains how the static FFmpeg version is selected for restream
+release builds.
 
 ## Quick Start
 
-To switch FFmpeg versions, run the version selector script:
+The current static build default is FFmpeg `n8.1.2`, matching the
+`ffmpeg-next = "8.0"` Rust binding family in `Cargo.toml`.
 
 ```bash
-# Build with FFmpeg 6.1.5 (default, LTS)
-./scripts/set-ffmpeg-version.sh 6.1
-
-# Build with FFmpeg 7.0 (stable)
-./scripts/set-ffmpeg-version.sh 7
-
-# Build with FFmpeg 8.0 (latest)
-./scripts/set-ffmpeg-version.sh 8
+./scripts/setup-static-build.sh
 ```
 
-This updates both:
-1. **External FFmpeg** (subprocess binary): via `FFMPEG_VERSION` in `scripts/setup-static-build.sh`
-2. **Internal FFmpeg** (library): via `ffmpeg-next` crate version in `Cargo.toml`
+To test a different FFmpeg tag, override `FFMPEG_VERSION` for the external
+FFmpeg library and embedded subprocess binary, then update `ffmpeg-next` in
+`Cargo.toml` only when crossing Rust binding families.
 
 ## Build Workflow
 
 ### 1. Select FFmpeg Version
 ```bash
-./scripts/set-ffmpeg-version.sh 8    # Example: switch to FFmpeg 8.x
+FFMPEG_VERSION=n8.1.2 ./scripts/setup-static-build.sh
 ```
 
 ### 2. Build Static FFmpeg Binary
@@ -36,7 +31,8 @@ This downloads, patches, and compiles FFmpeg from source with optimizations:
 - `x86-64-v3` baseline (AVX2 on Haswell 2013+)
 - `-O3 -ffast-math` optimizations
 - x86 ASM enabled via nasm
-- Minimal configuration (only codec/filter/protocol essentials)
+- Minimal configuration (only codec/filter/protocol essentials, including
+  static x264/x265 encoders)
 
 ### 3. Build Rust Binary
 ```bash
@@ -56,19 +52,18 @@ cp .build/static/prefix/bin/ffmpeg public/bin/ffmpeg
 
 ## Version Information
 
-| Version | Release Date | Status | LTS | Notes |
-|---------|--------------|--------|-----|-------|
-| **6.1.5** | 2023-10-29 | Maintained | ✅ | Current default, stable |
-| **7.0** | 2024-07-08 | Stable | ❌ | Latest 7.x, recommended for new deployments |
-| **8.0** | 2025-01-15 | Latest | ❌ | Latest major, cutting-edge features |
+| Version | Role | Notes |
+|---------|------|-------|
+| **8.1.2** | Current default | Static build tag `n8.1.2` |
+| **8.0** | Binding family | Rust crate family used by `ffmpeg-next = "8.0"` |
+| **6.1.5** | Historical validation | Previous static release validation baseline |
 
 ### Compatibility Matrix
 
 | External | Internal | Rust Binary | Notes |
 |----------|----------|-------------|-------|
-| 6.1.5 | ffmpeg-next 6.0 | ✅ Current | Tested & stable |
-| 7.0 | ffmpeg-next 7.0 | ✅ Supported | Should work (not yet tested) |
-| 8.0 | ffmpeg-next 8.0 | ⚠ Beta | Latest, may have edge cases |
+| 8.1.2 | ffmpeg-next 8.0 | ✅ Current | Current build-script default |
+| 6.1.5 | ffmpeg-next 6.0 | Historical | Previous validation baseline |
 
 ## Breaking Changes
 
@@ -87,8 +82,8 @@ cp .build/static/prefix/bin/ffmpeg public/bin/ffmpeg
 When building, you can optionally set these directly (though the script is recommended):
 
 ```bash
-# External FFmpeg version (binary)
-export FFMPEG_VERSION=n8.0
+# External FFmpeg version (library and embedded binary)
+export FFMPEG_VERSION=n8.1.2
 
 # Build root location
 export RESTREAM_BUILD_ROOT=/custom/build/path
@@ -107,7 +102,7 @@ If you prefer to configure manually:
 ### Update External FFmpeg Version
 Edit `scripts/setup-static-build.sh`:
 ```bash
-FFMPEG_VERSION="${FFMPEG_VERSION:-n8.0}"    # Change to desired version
+FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"    # Change to desired tag
 ```
 
 ### Update Internal FFmpeg Version

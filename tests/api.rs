@@ -835,6 +835,7 @@ async fn status_returns_version_info() {
     assert!(json["nativeLibraries"]["openssl"]["version"].is_string());
     assert!(json["nativeLibraries"]["sqlite"]["version"].is_string());
     assert!(json["nativeLibraries"]["x264"]["version"].is_string());
+    assert!(json["nativeLibraries"]["x265"]["version"].is_string());
     assert_eq!(json["sbom"]["format"], "CycloneDX");
     assert_eq!(json["sbom"]["specVersion"], "1.5");
     assert_eq!(json["sbom"]["licensesIncluded"], true);
@@ -917,6 +918,7 @@ async fn status_sbom_is_authenticated_cyclonedx_with_licenses() {
         "libcrypto",
         "SQLite",
         "x264",
+        "x265",
         "libstdc++",
         "libgcc",
         "Rust standard library",

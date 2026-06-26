@@ -1107,7 +1107,8 @@ async fn mixed_h264_rtmp_correctness() -> Result<Value, String> {
     let mut api = RampApi::new(env.restream_http);
     api.login().await?;
 
-    let config = run_mixed_h264_rtmp_config(&env, &api, restream_pid).await;
+    let mut resume = MixedResume::new(env.resume_from.clone());
+    let config = run_mixed_h264_rtmp_config(&env, &api, restream_pid, &mut resume).await;
 
     stop_child(&mut restream).await;
     stop_child(&mut mediamtx).await;
@@ -1154,7 +1155,8 @@ async fn mixed_srt_multi_correctness(
     let mut api = RampApi::new(env.restream_http);
     api.login().await?;
 
-    let config = run_mixed_srt_multi_config(&env, &api, restream_pid, cfg, h265).await;
+    let mut resume = MixedResume::new(env.resume_from.clone());
+    let config = run_mixed_srt_multi_config(&env, &api, restream_pid, cfg, h265, &mut resume).await;
 
     stop_child(&mut restream).await;
     stop_child(&mut mediamtx).await;
@@ -1756,40 +1758,64 @@ async fn run_mixed_h265_srt_config(
     }
 
     if env.check_selected("ffprobe") {
-        check_mixed_stream(
-            &format!("RTMP-src  out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-            "1920x1080",
-            None,
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h265-srt-rtmp-src",
+                label: &format!("RTMP-src  out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("RTMP-720p out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-            "1280x720",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h265-srt-rtmp-720p",
+                label: &format!("RTMP-720p out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-src   out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1920x1080",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h265-srt-srt-src",
+                label: &format!("SRT-src   out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-720p  out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1280x720",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h265-srt-srt-720p",
+                label: &format!("SRT-720p  out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
+        .await?;
     }
 
     if env.check_selected("tc-spawns") && resume.allows("MS-tc-spawns") {
@@ -1864,6 +1890,7 @@ async fn run_mixed_h264_rtmp_config(
     env: &MixedEnv,
     api: &RampApi,
     restream_pid: u32,
+    resume: &mut MixedResume,
 ) -> Result<Value, String> {
     let cfg = "h264-rtmp";
     let n = env.n_per_group;
@@ -2008,40 +2035,64 @@ async fn run_mixed_h264_rtmp_config(
     }
 
     if env.check_selected("ffprobe") {
-        check_mixed_stream(
-            &format!("RTMP-src  out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-            "1920x1080",
-            None,
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h264-rtmp-rtmp-src",
+                label: &format!("RTMP-src  out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("RTMP-720p out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-            "1280x720",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h264-rtmp-rtmp-720p",
+                label: &format!("RTMP-720p out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-src   out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1920x1080",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h264-rtmp-srt-src",
+                label: &format!("SRT-src   out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-720p  out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1280x720",
-            None,
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: "MS-ffprobe-h264-rtmp-srt-720p",
+                label: &format!("SRT-720p  out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
         )
-        .await;
+        .await?;
     }
 
     stop_child(&mut publisher).await;
@@ -2066,6 +2117,7 @@ async fn run_mixed_srt_multi_config(
     restream_pid: u32,
     cfg: &str,
     h265: bool,
+    resume: &mut MixedResume,
 ) -> Result<Value, String> {
     let n = env.n_per_group;
     let total = n * 4;
@@ -2210,54 +2262,79 @@ async fn run_mixed_srt_multi_config(
     }
 
     if env.check_selected("ffprobe") {
-        check_mixed_stream(
-            &format!("RTMP-src  out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-            "1920x1080",
-            None,
-        )
-        .await;
-        check_mixed_stream(
-            &format!("RTMP-720p out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-            "1280x720",
-            None,
-        )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-src   out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1920x1080",
-            None,
-        )
-        .await;
-        check_mixed_stream(
-            &format!("SRT-720p  out{n}"),
-            &format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            "1280x720",
-            None,
-        )
-        .await;
-        verify_mixed_audio_route(
+        verify_mixed_stream(
             env,
-            cfg,
-            "MS-audio-rtmp-720p",
-            &format!("RTMP-720p audio out{n}"),
-            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-            "1280x720",
-            1,
+            MixedProbeSpec {
+                cfg,
+                id: &format!("MS-ffprobe-{cfg}-rtmp-src"),
+                label: &format!("RTMP-src  out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: &format!("MS-ffprobe-{cfg}-rtmp-720p"),
+                label: &format!("RTMP-720p out{n}"),
+                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: &format!("MS-ffprobe-{cfg}-srt-src"),
+                label: &format!("SRT-src   out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1920x1080",
+                cookie: None,
+            },
+            resume,
+        )
+        .await?;
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: &format!("MS-ffprobe-{cfg}-srt-720p"),
+                label: &format!("SRT-720p  out{n}"),
+                url: &format!(
+                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                    env.mtx_srt
+                ),
+                expected: "1280x720",
+                cookie: None,
+            },
+            resume,
         )
         .await?;
         verify_mixed_audio_route(
             env,
             cfg,
-            "MS-audio-srt-720p",
+            &format!("MS-audio-{cfg}-rtmp-720p"),
+            &format!("RTMP-720p audio out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
+            "1280x720",
+            1,
+            resume,
+        )
+        .await?;
+        verify_mixed_audio_route(
+            env,
+            cfg,
+            &format!("MS-audio-{cfg}-srt-720p"),
             &format!("SRT-720p audio out{n}"),
             &format!(
                 "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
@@ -2265,6 +2342,7 @@ async fn run_mixed_srt_multi_config(
             ),
             "1280x720",
             2,
+            resume,
         )
         .await?;
     }
@@ -2698,29 +2776,7 @@ async fn warm_mixed_stream(label: &str, url: &str, expected: &str, cookie: Optio
     );
 }
 
-async fn check_mixed_stream(label: &str, url: &str, expected: &str, cookie: Option<&str>) {
-    let mut last = String::new();
-    for _ in 1..=15 {
-        match probe_dims_ramp_with_cookie(url, cookie).await {
-            Ok(dimensions) if dimensions == expected => {
-                println!("  ok   {label:<45} -> {dimensions}");
-                return;
-            }
-            Ok(dimensions) => {
-                if !dimensions.is_empty() {
-                    last = dimensions;
-                }
-            }
-            Err(_) => {}
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-    println!(
-        "  FAIL {label:<45} expected={expected} got={}",
-        if last.is_empty() { "none" } else { &last }
-    );
-}
-
+#[allow(clippy::too_many_arguments)]
 async fn verify_mixed_audio_route(
     env: &MixedEnv,
     cfg: &str,
@@ -2729,7 +2785,11 @@ async fn verify_mixed_audio_route(
     url: &str,
     expected_dimensions: &str,
     expected_audio_tracks: usize,
+    resume: &mut MixedResume,
 ) -> Result<(), String> {
+    if !resume.allows(id) {
+        return Ok(());
+    }
     let started = Instant::now();
     let mut last_dimensions = String::new();
     let mut last_audio_tracks = None;
