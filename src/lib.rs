@@ -30,6 +30,7 @@ pub mod alerts;
 pub mod api;
 pub mod db;
 pub mod diag;
+pub mod logging;
 pub mod domain;
 pub mod events;
 pub mod ffmpeg_extract;
