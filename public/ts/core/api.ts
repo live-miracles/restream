@@ -330,6 +330,7 @@ export interface MediaFile {
     size: number;
     modifiedAt: string;
     ingestCount?: number;
+    kind?: 'recording' | 'source' | 'library';
 }
 
 export interface IngestConfig {

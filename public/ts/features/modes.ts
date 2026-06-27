@@ -2,12 +2,13 @@ import { escapeHtml, getUrlParam, sanitizeLogMessage, setUrlParam } from '../cor
 import { state } from '../core/state.js';
 import { openDiagnosticsModal } from './diagnostics.js';
 import { fetchProcessingGraph, renderGraphInto } from './graph.js';
+import { renderMediaLibraryMode } from './media-library.js';
 import { isOutputIntentStopped, isOutputRunning, isOutputUnexpectedlyDown, selectPipeline } from './render.js';
 import type { OutputView, PipelineView } from '../types.js';
 
-type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'admin';
+type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'media' | 'admin';
 
-const validModes = new Set(['overview', 'pipeline', 'inspect', 'admin']);
+const validModes = new Set(['overview', 'pipeline', 'inspect', 'media', 'admin']);
 let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
@@ -475,6 +476,7 @@ function applyMode(mode: DashboardMode): void {
         overview: document.getElementById('overview-mode-panel'),
         pipeline: document.getElementById('dashboard-grid'),
         inspect: document.getElementById('inspect-mode-panel'),
+        media: document.getElementById('media-mode-panel'),
         admin: document.getElementById('admin-mode-panel'),
     };
     for (const [name, panel] of Object.entries(panels)) {
@@ -498,9 +500,12 @@ function applyMode(mode: DashboardMode): void {
                   ? 'Pipeline workflow'
                   : mode === 'inspect'
                     ? 'Graph and diagnostics'
-                    : 'Configuration and runtime';
+                    : mode === 'media'
+                      ? 'Recordings and source files'
+                      : 'Configuration and runtime';
     }
     syncInspectGraphAutoRefresh();
+    if (mode === 'media') void renderMediaLibraryMode();
 }
 
 export function setDashboardMode(mode: string): void {

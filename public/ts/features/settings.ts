@@ -1,7 +1,6 @@
 import {
     patchConfig,
     listMediaFiles,
-    deleteMediaFile,
     listIngests,
     createIngest,
     updateIngest,
@@ -69,7 +68,6 @@ function ensureSettingsNav(container: Element): void {
     nav.setAttribute('aria-label', 'Admin sections');
     nav.innerHTML = `
         <div class="flex flex-wrap gap-2">
-            <a class="btn btn-sm btn-ghost" href="#media-library-section">Media Library</a>
             <a class="btn btn-sm btn-ghost" href="#video-ingest-section">Video Ingest</a>
             <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
             <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
@@ -89,27 +87,18 @@ function applySettingsChrome(): void {
         ensureSettingsNav(container);
     }
 
-    const mediaSection = settingsSectionFor('media-list');
     const ingestSection = settingsSectionFor('ingest-list');
     const serverSection = settingsSectionFor('settings-server-name');
-    styleSettingsSection(mediaSection, 'media-library-section');
     styleSettingsSection(ingestSection, 'video-ingest-section');
     styleSettingsSection(serverSection, 'server-settings-section');
     const profilesSection = document.getElementById('transcode-profiles-list')?.closest('.space-y-3');
     if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
-
-    const mediaHeading = mediaSection?.querySelector('h2');
-    if (mediaHeading) mediaHeading.textContent = 'Media Library';
-    if (mediaSection && ingestSection && mediaSection.nextElementSibling !== ingestSection) {
-        ingestSection.parentElement?.insertBefore(mediaSection, ingestSection);
-    }
 
     const ingestForm = document.getElementById('ingest-add-form');
     if (ingestForm) {
         ingestForm.className =
             'border-base-content/10 bg-base-100 mb-4 hidden rounded-lg border p-4';
     }
-    document.getElementById('media-list')?.classList.add('space-y-2');
     document.getElementById('ingest-list')?.classList.add('space-y-2');
 }
 
@@ -228,58 +217,6 @@ function showSavedFeedback(id: string): void {
     setTimeout(() => el.classList.add('hidden'), 2000);
 }
 
-// ── Media Library ─────────────────────────────────────
-
-function formatFileSize(bytes: number): string {
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export async function loadMediaFiles(): Promise<void> {
-    const list = document.getElementById('media-list');
-    if (!list) return;
-
-    const result = await listMediaFiles();
-    const files = result?.files ?? [];
-
-    if (files.length === 0) {
-        list.innerHTML =
-            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No recordings yet.</div>';
-        return;
-    }
-
-    list.innerHTML = files
-        .map((f) => {
-            const hasIngests = (f.ingestCount ?? 0) > 0;
-            const deleteDisabled = hasIngests
-                ? 'disabled title="Remove configured ingests first"'
-                : '';
-            const mediaUrl = withBasePath(`/media/${encodeURIComponent(f.name)}`);
-            const safeName = escapeHtml(f.name);
-            return `
-        <div class="border-base-content/10 bg-base-100 flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2" data-filename="${safeName}">
-            <div class="min-w-0 flex-1">
-                <div class="truncate font-mono text-sm" title="${safeName}">${safeName}</div>
-                <div class="text-base-content/50 mt-0.5 text-xs">${formatFileSize(f.size)}</div>
-            </div>
-            <a href="${mediaUrl}" target="_blank" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>
-            <a href="${mediaUrl}" download="${safeName}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
-            <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${safeName}" ${deleteDisabled}>Delete</button>
-        </div>`;
-        })
-        .join('');
-
-    list.querySelectorAll<HTMLButtonElement>('.js-delete-media').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-            const filename = btn.dataset.filename;
-            if (!filename) return;
-            if (!window.confirm(`Permanently delete "${filename}"?`)) return;
-            const res = await deleteMediaFile(filename);
-            if (res !== null) await loadMediaFiles();
-        });
-    });
-}
-
 // ── Video Ingest ──────────────────────────────────────
 
 let editIngestId: string | null = null;
@@ -387,7 +324,6 @@ export async function saveIngest(): Promise<void> {
         if (result) {
             closeAddIngestForm();
             await loadIngests();
-            await loadMediaFiles();
         }
     }
 }
@@ -471,7 +407,6 @@ export async function loadIngests(): Promise<void> {
             const res = await deleteIngest(id);
             if (res !== null) {
                 await loadIngests();
-                await loadMediaFiles();
             }
         });
     });

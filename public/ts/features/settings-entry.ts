@@ -5,7 +5,6 @@ import {
     saveIngestSecurity,
     saveTranscodeProfiles,
     addTranscodeProfile,
-    loadMediaFiles,
     loadIngests,
     openAddIngestForm,
     closeAddIngestForm,
@@ -22,7 +21,6 @@ async function init(): Promise<void> {
     if (config) state.config = config;
     setServerConfig(state.config?.serverName);
     await loadSettings();
-    await loadMediaFiles();
     await loadIngests();
 }
 

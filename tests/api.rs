@@ -1553,12 +1553,11 @@ async fn media_list_includes_ts_recordings() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     let files = json["files"].as_array().unwrap();
-    assert!(
-        files
-            .iter()
-            .any(|file| file["name"].as_str() == Some("sample-recording.ts")),
-        "TS recordings should be visible in the media library"
-    );
+    let recording = files
+        .iter()
+        .find(|file| file["name"].as_str() == Some("sample-recording.ts"))
+        .expect("TS recordings should be visible in the media library");
+    assert_eq!(recording["kind"].as_str(), Some("recording"));
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
