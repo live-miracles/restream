@@ -2525,12 +2525,10 @@ async fn media_list_handler(
                     .await
                     .unwrap_or_default();
                 let lower_name = name.to_ascii_lowercase();
-                let kind = if !ingests.is_empty() {
-                    "source"
-                } else if lower_name.ends_with(".ts") || lower_name.ends_with(".mkv") {
+                let kind = if lower_name.ends_with(".ts") || lower_name.ends_with(".mkv") {
                     "recording"
                 } else {
-                    "library"
+                    "source"
                 };
                 files.push(serde_json::json!({
                     "name": name,
@@ -4105,12 +4103,10 @@ async fn agent_media_inventory(state: &AppState) -> serde_json::Value {
                     .await
                     .unwrap_or_default();
                 let lower_name = name.to_ascii_lowercase();
-                let kind = if !ingests.is_empty() {
-                    "source"
-                } else if lower_name.ends_with(".ts") || lower_name.ends_with(".mkv") {
+                let kind = if lower_name.ends_with(".ts") || lower_name.ends_with(".mkv") {
                     "recording"
                 } else {
-                    "library"
+                    "source"
                 };
                 files.push(serde_json::json!({
                     "name": name,

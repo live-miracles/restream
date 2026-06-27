@@ -1635,7 +1635,9 @@ async fn media_delete_path_traversal_blocked() {
 async fn media_list_includes_ts_recordings() {
     let (app, cookie, temp_dir) = authenticated_app_with_temp_media().await;
     let recording_path = temp_dir.join("sample-recording.ts");
+    let source_path = temp_dir.join("sample-source.mp4");
     tokio::fs::write(&recording_path, b"ts data").await.unwrap();
+    tokio::fs::write(&source_path, b"mp4 data").await.unwrap();
 
     let resp = app
         .clone()
@@ -1650,6 +1652,11 @@ async fn media_list_includes_ts_recordings() {
         .find(|file| file["name"].as_str() == Some("sample-recording.ts"))
         .expect("TS recordings should be visible in the media library");
     assert_eq!(recording["kind"].as_str(), Some("recording"));
+    let source = files
+        .iter()
+        .find(|file| file["name"].as_str() == Some("sample-source.mp4"))
+        .expect("MP4 files should be visible as source files");
+    assert_eq!(source["kind"].as_str(), Some("source"));
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
