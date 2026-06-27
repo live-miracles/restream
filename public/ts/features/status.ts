@@ -169,20 +169,11 @@ export async function loadStatus(): Promise<void> {
 
     container.innerHTML = [
         section(
-            'Build',
+            'Application Build',
             [
                 row('Version', data.restream?.version),
                 row('Commit', data.restream?.commit),
                 row('Native Build ID', data.restream?.nativeBuildId),
-            ].join(''),
-        ),
-        section(
-            'Toolchain',
-            [
-                row('Rust', data.toolchain?.rustc),
-                row('Target', data.toolchain?.target),
-                row('LLVM', data.toolchain?.llvm),
-                row('GCC Runtime', data.toolchain?.gccRuntime),
             ].join(''),
         ),
         section(
@@ -194,6 +185,15 @@ export async function loadStatus(): Promise<void> {
                 row('Kernel', data.os?.kernelVersion),
                 row('Uptime', formatUptime(data.os?.uptime)),
                 row('Total Memory', formatBytes(data.os?.totalMem)),
+            ].join(''),
+        ),
+        section(
+            'Toolchain',
+            [
+                row('Rust', data.toolchain?.rustc),
+                row('Target', data.toolchain?.target),
+                row('LLVM', data.toolchain?.llvm),
+                row('GCC Runtime', data.toolchain?.gccRuntime),
             ].join(''),
         ),
         section(
