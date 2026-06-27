@@ -200,6 +200,15 @@ new `seg<N>.ts`, then PUTs the playlist URL.
 The current handlers do not expose query filtering even though the DB layer has
 filter support.
 
+## Output Status
+
+### `GET /pipelines/:pipelineId/outputs/:outputId/status`
+
+Returns live egress telemetry for a single active output: `phase`, `bytesOut`,
+`lastProgressAt`, `lastError`, `failurePhase`, `uptimeSecs`, `protocol`,
+`targetAddr`, `quality`, and `metrics`. Returns `404` when the output is not
+actively running.
+
 ## Probe, Graph, and Diagnostics
 
 ### `GET /pipelines/:pipelineId/probe`
@@ -218,15 +227,20 @@ Streams Server-Sent Events. An optional `probe=rtmp|srt` query must match the
 active ingest protocol. Returns `404` without an active ingest and `400` for a
 protocol mismatch.
 
-## Optional Agent Read/Planning Plane
+## Optional Agent Plane
 
-The phase-4 agent plane is behind the `agent-plane` Cargo feature. Normal core
-builds compile it out and return `404` from `/api/v1/agent/*` routes with
-`compiledIn: false`.
+The phase-4 agent read/planning plane is behind the `agent-plane` Cargo feature.
+Normal core builds compile it out and return `404` from `/api/v1/agent/*`
+routes with `compiledIn: false`.
 
 When compiled with `--features agent-plane`, the routes are authenticated,
 read-only, and do not mutate pipeline, output, or runtime state. Execution is
-reserved for the separate phase-6 feature.
+reserved for the separate `agent-execution` phase-6 feature.
+
+The agent capability route catalog intentionally lists only agent-plane routes.
+Core operator APIs may expose raw operator data such as target URLs; agents
+should use `/api/v1/agent/context` and investigation responses for redacted
+state.
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -236,6 +250,22 @@ reserved for the separate phase-6 feature.
 | `POST` | `/api/v1/agent/plans` | Convert intent plus structured proposed changes into a draft plan |
 | `POST` | `/api/v1/agent/plans/validate` | Return only validation results for a draft plan |
 | `POST` | `/api/v1/agent/graph-diff-preview` | Return graph/impact preview for a draft plan |
+
+When compiled with `--features agent-execution`, the API also exposes
+approval-gated operation routes. These routes are still authenticated, and
+operation responses are redacted before they are returned.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/agent/operations` | Create an operation object from an intent, structured changes, and optional idempotency key |
+| `GET` | `/api/v1/agent/operations/:operation_id` | Read operation status, audit log, progress, execution result, and verification result |
+| `POST` | `/api/v1/agent/operations/:operation_id/approve` | Record explicit approval before mutation is allowed |
+| `POST` | `/api/v1/agent/operations/:operation_id/apply` | Apply approved output add/update/remove/start/stop changes through the core DB/runtime primitives |
+| `POST` | `/api/v1/agent/operations/:operation_id/verify` | Verify post-change health, graph convergence, and alert delta |
+| `POST` | `/api/v1/agent/verify` | Verify by body: `{ "operationId": "op_..." }` |
+
+Without `agent-execution`, these operation routes return an authenticated `404`
+with `feature: "agent-execution"` and `compiledIn: false`.
 
 Context responses include:
 
@@ -271,8 +301,39 @@ Plan request:
 }
 ```
 
+Operation create request:
+
+```json
+{
+  "intent": "Attach a stopped RTMP output",
+  "pipelineId": "pipeline_abc",
+  "idempotencyKey": "change-ticket-123",
+  "actor": "agent",
+  "agentId": "ops-agent",
+  "toolIdentity": "agent-execution-api",
+  "incidentId": "incident_123",
+  "incidentLinks": ["alert:egress-stale"],
+  "proposedChanges": [
+    {
+      "kind": "addOutput",
+      "name": "Primary CDN",
+      "url": "rtmp://cdn.example/live/key",
+      "encoding": "source",
+      "desiredState": "stopped"
+    }
+  ]
+}
+```
+
+Operation records include `operationId`, `status`, `approval`, `request`,
+`plan`, `proposedPlanHash`, `incidentId`, `incidentLinks`, `affectedObjects`,
+`stateTransitions`,
+`progressSnapshots`, `auditLog`, `executionResult`, and `verificationResult`.
+`apply` is rejected until approval is recorded.
+
 Plan responses include `planId`, validation errors/warnings, static graph
-preview, and impact notes. `executionEnabled` is always `false` in phase 4.
+preview, and impact notes. `executionEnabled` is `true` only when
+`agent-execution` is compiled in.
 
 The current run contains nine checks; see [Observability](observability.md).
 

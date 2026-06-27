@@ -22,6 +22,8 @@
 //! `std::thread::spawn` calls are wrapped in `catch_unwind` so an FFmpeg panic
 //! (e.g., from a corrupt stream) logs an error instead of taking down the process.
 
+#[cfg(feature = "agent-execution")]
+pub mod agent_execution;
 #[cfg(feature = "agent-plane")]
 pub mod agent_plane;
 pub mod alerts;
@@ -240,6 +242,8 @@ pub async fn run_app() {
         },
         media_dir,
         alert_tracker: crate::alerts::AlertTracker::new(),
+        #[cfg(feature = "agent-execution")]
+        agent_execution: Arc::new(crate::agent_execution::AgentExecutionStore::default()),
     });
 
     // Start Web Server

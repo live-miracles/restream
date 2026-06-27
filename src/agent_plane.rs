@@ -150,8 +150,8 @@ pub fn redacted_context(
         "engine": redact_secrets(status),
         "features": {
             "agentPlane": true,
-            "agentExecution": false,
-            "executionCompiledIn": false
+            "agentExecution": cfg!(feature = "agent-execution"),
+            "executionCompiledIn": cfg!(feature = "agent-execution")
         },
         "configuration": redact_secrets(configuration),
         "state": {
@@ -179,24 +179,22 @@ pub fn redacted_context(
 }
 
 pub fn capabilities() -> AgentCapabilities {
+    let execution_enabled = cfg!(feature = "agent-execution");
     AgentCapabilities {
         generated_at: now(),
         feature: "agent-plane",
         version: 1,
         compiled_in: true,
-        execution_enabled: false,
+        execution_enabled,
         read_tools: vec![
             "get_agent_context",
-            "get_engine_telemetry",
-            "get_pipeline_summary",
-            "get_pipeline_graph",
-            "list_events",
-            "list_alerts",
             "investigate_pipeline_issue",
             "trace_output_path",
             "find_first_unhealthy_node",
             "explain_degradation",
             "estimate_change_impact",
+            "inspect_desired_vs_actual",
+            "inspect_diagnostics_summary",
         ],
         planning_tools: vec![
             "plan_pipeline_change",
@@ -204,14 +202,33 @@ pub fn capabilities() -> AgentCapabilities {
             "preview_graph_diff",
             "estimate_change_impact",
         ],
-        execution_tools: Vec::new(),
+        execution_tools: if execution_enabled {
+            vec![
+                "create_agent_operation",
+                "get_agent_operation",
+                "approve_agent_operation",
+                "apply_agent_operation",
+                "verify_agent_operation",
+            ]
+        } else {
+            Vec::new()
+        },
         routes: route_catalog(),
         schemas: schema_catalog(),
         redaction: redaction_policy(),
-        notes: vec![
-            "Phase 4 is read/planning only.",
-            "Phase 6 execution is intentionally not compiled into this feature.",
-        ],
+        notes: if execution_enabled {
+            vec![
+                "Phase 6 execution is compiled in.",
+                "Operations are approval-gated and emit audit/verification records.",
+                "Core operator routes are intentionally omitted from the agent catalog because their responses are not guaranteed to be redacted.",
+            ]
+        } else {
+            vec![
+                "Phase 4 is read/planning only.",
+                "Phase 6 execution is intentionally not compiled into this feature.",
+                "Core operator routes are intentionally omitted from the agent catalog because their responses are not guaranteed to be redacted.",
+            ]
+        },
     }
 }
 
@@ -238,11 +255,12 @@ pub fn route_catalog() -> Value {
         {"tool": "plan_pipeline_change", "method": "POST", "path": "/api/v1/agent/plans", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "PlanResponse"},
         {"tool": "validate_change", "method": "POST", "path": "/api/v1/agent/plans/validate", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "ValidationResult"},
         {"tool": "preview_graph_diff", "method": "POST", "path": "/api/v1/agent/graph-diff-preview", "auth": "session", "feature": "agent-plane", "mutates": false, "requestSchema": "PlanRequest", "responseSchema": "GraphDiffPreview"},
-        {"tool": "get_core_overview", "method": "GET", "path": "/api/v1/overview", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "Overview"},
-        {"tool": "get_core_pipeline_graph", "method": "GET", "path": "/pipelines/:pipeline_id/graph", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "ProcessingGraph"},
-        {"tool": "get_core_engine_telemetry", "method": "GET", "path": "/api/v1/engine/telemetry", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "EngineTelemetry"},
-        {"tool": "get_core_pipeline_telemetry", "method": "GET", "path": "/api/v1/pipelines/:pipeline_id/telemetry", "auth": "session", "feature": "core", "mutates": false, "responseSchema": "PipelineTelemetry"},
-        {"tool": "run_pipeline_diagnostics_stream", "method": "GET", "path": "/pipelines/:pipeline_id/diagnostics?probe=:probe", "auth": "session", "feature": "core", "mutates": false, "streaming": true, "responseSchema": "DiagnosticsSse"}
+        {"tool": "create_agent_operation", "method": "POST", "path": "/api/v1/agent/operations", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": true, "requestSchema": "OperationCreateRequest", "responseSchema": "OperationRecord"},
+        {"tool": "get_agent_operation", "method": "GET", "path": "/api/v1/agent/operations/:operation_id", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": false, "responseSchema": "OperationRecord"},
+        {"tool": "approve_agent_operation", "method": "POST", "path": "/api/v1/agent/operations/:operation_id/approve", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": true, "requestSchema": "ApprovalRequest", "responseSchema": "OperationRecord"},
+        {"tool": "apply_agent_operation", "method": "POST", "path": "/api/v1/agent/operations/:operation_id/apply", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": true, "responseSchema": "OperationRecord"},
+        {"tool": "verify_agent_operation", "method": "POST", "path": "/api/v1/agent/operations/:operation_id/verify", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": true, "responseSchema": "OperationRecord"},
+        {"tool": "verify_agent_operation_by_body", "method": "POST", "path": "/api/v1/agent/verify", "auth": "session", "feature": "agent-execution", "compiledIn": cfg!(feature = "agent-execution"), "mutates": true, "requestSchema": "VerifyRequest", "responseSchema": "OperationRecord"}
     ])
 }
 
@@ -278,6 +296,40 @@ pub fn schema_catalog() -> Value {
                 "encoding": {"type": "string", "optional": true},
                 "desiredState": {"type": "string", "optional": true, "enum": ["running", "stopped"]}
             }
+        },
+        "OperationCreateRequest": {
+            "type": "object",
+            "required": ["intent"],
+            "fields": {
+                "intent": {"type": "string"},
+                "pipelineId": {"type": "string", "optional": true},
+                "proposedChanges": {"type": "array", "items": "ProposedChange", "default": []},
+                "idempotencyKey": {"type": "string", "optional": true},
+                "actor": {"type": "string", "optional": true},
+                "agentId": {"type": "string", "optional": true},
+                "toolIdentity": {"type": "string", "optional": true},
+                "incidentId": {"type": "string", "optional": true},
+                "incidentLinks": {"type": "array", "items": "string", "default": []}
+            }
+        },
+        "ApprovalRequest": {
+            "type": "object",
+            "required": ["approvedBy"],
+            "fields": {
+                "approvedBy": {"type": "string"},
+                "reason": {"type": "string", "optional": true}
+            }
+        },
+        "VerifyRequest": {
+            "type": "object",
+            "required": ["operationId"],
+            "fields": {
+                "operationId": {"type": "string"}
+            }
+        },
+        "OperationRecord": {
+            "type": "object",
+            "sections": ["operationId", "status", "approval", "request", "plan", "affectedObjects", "stateTransitions", "auditLog", "executionResult", "verificationResult"]
         },
         "AgentContextV1": {
             "type": "object",
@@ -492,12 +544,27 @@ pub fn plan_response(
         }),
     ];
     if validation.valid {
-        steps.push(serde_json::json!({
-            "id": "await-phase-6-execution",
-            "title": "Execution requires the separate phase-6 feature",
-            "phase": "execute",
-            "status": "blocked"
-        }));
+        if cfg!(feature = "agent-execution") {
+            steps.push(serde_json::json!({
+                "id": "create-agent-operation",
+                "title": "Create approval-gated operation for execution",
+                "phase": "execute",
+                "status": "available"
+            }));
+            steps.push(serde_json::json!({
+                "id": "verify-agent-operation",
+                "title": "Verify health, graph convergence, and alert delta after application",
+                "phase": "verify",
+                "status": "available"
+            }));
+        } else {
+            steps.push(serde_json::json!({
+                "id": "await-phase-6-execution",
+                "title": "Execution requires the separate phase-6 feature",
+                "phase": "execute",
+                "status": "blocked"
+            }));
+        }
     }
 
     PlanResponse {
@@ -505,8 +572,12 @@ pub fn plan_response(
         plan_id,
         status: if validation.valid { "draft" } else { "invalid" },
         intent: request.intent,
-        execution_enabled: false,
-        execution_note: "Phase 4 only plans and validates; no runtime mutation is performed.",
+        execution_enabled: cfg!(feature = "agent-execution"),
+        execution_note: if cfg!(feature = "agent-execution") {
+            "Phase 6 can create approval-gated operations; mutation happens only after explicit approval and apply."
+        } else {
+            "Phase 4 only plans and validates; no runtime mutation is performed."
+        },
         steps,
         validation,
         graph_preview,
@@ -566,9 +637,21 @@ pub fn validate_plan(
             _ => {}
         }
 
+        if !matches!(
+            change.kind.as_str(),
+            "addOutput" | "updateOutput" | "removeOutput" | "startOutput" | "stopOutput"
+        ) {
+            errors.push(issue(
+                "error",
+                "unsupportedChangeKind",
+                format!("Unsupported change kind '{}'.", change.kind),
+                Some("kind"),
+            ));
+        }
+
         if matches!(
             change.kind.as_str(),
-            "updateOutput" | "deleteOutput" | "startOutput" | "stopOutput"
+            "updateOutput" | "removeOutput" | "startOutput" | "stopOutput"
         ) {
             match (pipeline_id, change.output_id.as_deref()) {
                 (Some(pid), Some(oid)) if !output_ids.contains(&(pid, oid)) => {
@@ -586,6 +669,33 @@ pub fn validate_plan(
                     Some("outputId"),
                 )),
                 _ => {}
+            }
+        }
+
+        if change.kind == "addOutput" {
+            if change
+                .name
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+            {
+                errors.push(issue(
+                    "error",
+                    "missingOutputName",
+                    "addOutput requires a non-empty name.",
+                    Some("name"),
+                ));
+            }
+            if change
+                .url
+                .as_deref()
+                .is_none_or(|url| url.trim().is_empty())
+            {
+                errors.push(issue(
+                    "error",
+                    "missingOutputUrl",
+                    "addOutput requires a non-empty url.",
+                    Some("url"),
+                ));
             }
         }
 
@@ -617,6 +727,17 @@ pub fn validate_plan(
                     Some("encoding"),
                 ));
             }
+        }
+
+        if let Some(desired_state) = change.desired_state.as_deref()
+            && !matches!(desired_state, "running" | "stopped")
+        {
+            errors.push(issue(
+                "error",
+                "invalidDesiredState",
+                "desiredState must be either 'running' or 'stopped'.",
+                Some("desiredState"),
+            ));
         }
     }
 

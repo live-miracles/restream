@@ -24,6 +24,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -110,6 +111,8 @@ pub struct AppState {
     /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
     pub media_dir: String,
     pub alert_tracker: alerts::AlertTracker,
+    #[cfg(feature = "agent-execution")]
+    pub agent_execution: Arc<crate::agent_execution::AgentExecutionStore>,
 }
 
 impl AppState {
@@ -290,6 +293,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             post(outputs_stop_handler),
         )
         .route(
+            "/pipelines/:pipeline_id/outputs/:output_id/status",
+            get(output_status_handler),
+        )
+        .route(
             "/pipelines/:pipeline_id/outputs/:output_id/history",
             get(outputs_history_handler),
         )
@@ -325,6 +332,27 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/agent/graph-diff-preview",
             post(agent_graph_diff_preview_handler),
         )
+        .route(
+            "/api/v1/agent/operations",
+            post(agent_operation_create_handler),
+        )
+        .route(
+            "/api/v1/agent/operations/:operation_id",
+            get(agent_operation_get_handler),
+        )
+        .route(
+            "/api/v1/agent/operations/:operation_id/approve",
+            post(agent_operation_approve_handler),
+        )
+        .route(
+            "/api/v1/agent/operations/:operation_id/apply",
+            post(agent_operation_apply_handler),
+        )
+        .route(
+            "/api/v1/agent/operations/:operation_id/verify",
+            post(agent_operation_verify_handler),
+        )
+        .route("/api/v1/agent/verify", post(agent_verify_handler))
         .route(
             "/api/v1/pipelines/:pipeline_id/telemetry",
             get(v1_pipeline_telemetry_handler),
@@ -373,6 +401,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
+        .layer(CompressionLayer::new())
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024)) // 4 MB global cap
         // Security headers: applied to all responses from this router.
         // X-Content-Type-Options prevents MIME-sniffing attacks where a
@@ -911,7 +940,7 @@ async fn pipelines_get_handler(
     }
 
     match db::list_pipelines(&state.db).await {
-        Ok(pipelines) => Json(pipelines).into_response(),
+        Ok(pipelines) => Json(serde_json::json!({ "pipelines": pipelines })).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -1351,6 +1380,29 @@ async fn outputs_stop_handler(
     match db::set_output_desired_state(&state.db, &pipeline_id, &output_id, "stopped").await {
         Ok(output) => Json(serde_json::json!({"message": "Output stopped", "desiredState": "stopped", "output": output})).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn output_status_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((_pipeline_id, output_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    match state.engine.output_status(&output_id).await {
+        Some(status) => Json(status).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "output not active"})),
+        )
+            .into_response(),
     }
 }
 
@@ -2784,6 +2836,191 @@ async fn agent_graph_diff_preview_handler(
     agent_plane_unavailable()
 }
 
+#[cfg(feature = "agent-execution")]
+async fn agent_operation_create_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_execution::OperationCreateRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let plan = build_agent_plan(&state, request.plan_request()).await;
+    let pre_alert_count = current_agent_alert_count(&state).await;
+    let result = state.agent_execution.create(request, plan, pre_alert_count);
+    let status = if result.reused {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    (status, Json(result.operation)).into_response()
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_operation_create_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
+#[cfg(feature = "agent-execution")]
+async fn agent_operation_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    match state.agent_execution.get(&operation_id) {
+        Some(record) => Json(crate::agent_execution::public_record(&record)).into_response(),
+        None => (StatusCode::NOT_FOUND, "Operation not found").into_response(),
+    }
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_operation_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
+#[cfg(feature = "agent-execution")]
+async fn agent_operation_approve_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+    Json(request): Json<crate::agent_execution::ApprovalRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    match state.agent_execution.approve(&operation_id, request) {
+        Ok(record) => Json(crate::agent_execution::public_record(&record)).into_response(),
+        Err(err) => agent_operation_store_error(err),
+    }
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_operation_approve_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_operation_id): Path<String>,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
+#[cfg(feature = "agent-execution")]
+async fn agent_operation_apply_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let record = match state.agent_execution.start_apply(&operation_id) {
+        Ok(record) => record,
+        Err(err) => return agent_operation_store_error(err),
+    };
+
+    match execute_agent_operation(&state, &record).await {
+        Ok(result) => match state.agent_execution.complete_apply(
+            &operation_id,
+            result.state_transitions,
+            result.progress_snapshots,
+            result.execution_result,
+        ) {
+            Some(record) => Json(crate::agent_execution::public_record(&record)).into_response(),
+            None => (StatusCode::NOT_FOUND, "Operation not found").into_response(),
+        },
+        Err(err) => match state.agent_execution.fail_apply(&operation_id, err.clone()) {
+            Some(record) => (
+                StatusCode::BAD_REQUEST,
+                Json(crate::agent_execution::public_record(&record)),
+            )
+                .into_response(),
+            None => (StatusCode::BAD_REQUEST, err).into_response(),
+        },
+    }
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_operation_apply_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
+#[cfg(feature = "agent-execution")]
+async fn agent_operation_verify_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    verify_agent_operation_by_id(&state, &operation_id).await
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_operation_verify_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_operation_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
+#[cfg(feature = "agent-execution")]
+async fn agent_verify_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<crate::agent_execution::VerifyRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    verify_agent_operation_by_id(&state, &request.operation_id).await
+}
+
+#[cfg(not(feature = "agent-execution"))]
+async fn agent_verify_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(_request): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    agent_execution_unavailable()
+}
+
 #[cfg(feature = "agent-plane")]
 async fn build_agent_context(state: &AppState) -> serde_json::Value {
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
@@ -2888,6 +3125,488 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         dependencies,
         storage,
     )
+}
+
+#[cfg(feature = "agent-execution")]
+struct AgentOperationApplyOutcome {
+    state_transitions: Vec<serde_json::Value>,
+    progress_snapshots: Vec<serde_json::Value>,
+    execution_result: serde_json::Value,
+}
+
+#[cfg(feature = "agent-execution")]
+async fn execute_agent_operation(
+    state: &AppState,
+    record: &crate::agent_execution::OperationRecord,
+) -> Result<AgentOperationApplyOutcome, String> {
+    let request = record.request.plan_request();
+    let pipelines = db::list_pipelines(&state.db)
+        .await
+        .map_err(|err| format!("failed to list pipelines: {err}"))?;
+    let outputs = db::list_outputs(&state.db)
+        .await
+        .map_err(|err| format!("failed to list outputs: {err}"))?;
+    let validation = crate::agent_plane::validate_plan(&request, &pipelines, &outputs);
+    if !validation.valid {
+        return Err(format!(
+            "operation plan is no longer valid: {}",
+            serde_json::to_string(&validation.errors).unwrap_or_default()
+        ));
+    }
+
+    let mut state_transitions = Vec::new();
+    let mut progress_snapshots = Vec::new();
+    let mut change_results = Vec::new();
+    let total = request.proposed_changes.len();
+
+    for (idx, change) in request.proposed_changes.iter().enumerate() {
+        let pipeline_id = change
+            .pipeline_id
+            .as_deref()
+            .or(request.pipeline_id.as_deref())
+            .ok_or_else(|| "change is missing pipelineId".to_string())?;
+
+        let result = apply_agent_change(state, pipeline_id, change).await?;
+        state_transitions.push(serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "kind": change.kind,
+            "pipelineId": pipeline_id,
+            "outputId": result["outputId"],
+            "from": result["from"],
+            "to": result["to"],
+        }));
+        progress_snapshots.push(serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "completed": idx + 1,
+            "total": total,
+            "currentChange": change.kind,
+            "pipelineId": pipeline_id,
+            "outputId": result["outputId"],
+        }));
+        change_results.push(result);
+    }
+
+    Ok(AgentOperationApplyOutcome {
+        state_transitions,
+        progress_snapshots,
+        execution_result: crate::agent_plane::redact_secrets(serde_json::json!({
+            "success": true,
+            "appliedAt": chrono::Utc::now().to_rfc3339(),
+            "changeCount": total,
+            "changeResults": change_results,
+        })),
+    })
+}
+
+#[cfg(feature = "agent-execution")]
+async fn apply_agent_change(
+    state: &AppState,
+    pipeline_id: &str,
+    change: &crate::agent_plane::ProposedChange,
+) -> Result<serde_json::Value, String> {
+    match change.kind.as_str() {
+        "addOutput" => apply_agent_add_output(state, pipeline_id, change).await,
+        "updateOutput" => apply_agent_update_output(state, pipeline_id, change).await,
+        "removeOutput" => apply_agent_remove_output(state, pipeline_id, change).await,
+        "startOutput" => apply_agent_desired_state(state, pipeline_id, change, "running").await,
+        "stopOutput" => apply_agent_desired_state(state, pipeline_id, change, "stopped").await,
+        other => Err(format!("unsupported change kind '{other}'")),
+    }
+}
+
+#[cfg(feature = "agent-execution")]
+async fn apply_agent_add_output(
+    state: &AppState,
+    pipeline_id: &str,
+    change: &crate::agent_plane::ProposedChange,
+) -> Result<serde_json::Value, String> {
+    let name = required_change_field(change.name.as_deref(), "name")?;
+    let url = required_change_field(change.url.as_deref(), "url")?.trim();
+    let encoding = change.encoding.as_deref().unwrap_or("source").trim();
+    let desired_state = change.desired_state.as_deref().unwrap_or("stopped").trim();
+    validate_output_fields(name, url, encoding, desired_state)?;
+
+    let output_id = change
+        .output_id
+        .clone()
+        .unwrap_or_else(|| format!("output_agent_{}", to_hex(&rand::random::<[u8; 8]>())));
+    let output = db::create_output(
+        &state.db,
+        &output_id,
+        pipeline_id,
+        name.trim(),
+        url,
+        desired_state,
+        encoding,
+    )
+    .await
+    .map_err(|err| format!("failed to create output: {err}"))?;
+
+    Ok(serde_json::json!({
+        "kind": "addOutput",
+        "pipelineId": pipeline_id,
+        "outputId": output.id,
+        "status": "created",
+        "from": null,
+        "to": output,
+    }))
+}
+
+#[cfg(feature = "agent-execution")]
+async fn apply_agent_update_output(
+    state: &AppState,
+    pipeline_id: &str,
+    change: &crate::agent_plane::ProposedChange,
+) -> Result<serde_json::Value, String> {
+    let output_id = required_change_field(change.output_id.as_deref(), "outputId")?;
+    let existing = db::get_output(&state.db, pipeline_id, output_id)
+        .await
+        .map_err(|err| format!("failed to read output: {err}"))?
+        .ok_or_else(|| format!("output '{output_id}' not found on pipeline '{pipeline_id}'"))?;
+    let name = change.name.as_deref().unwrap_or(&existing.name);
+    let url = change.url.as_deref().unwrap_or(&existing.url).trim();
+    let encoding = change
+        .encoding
+        .as_deref()
+        .unwrap_or(&existing.encoding)
+        .trim();
+    let desired_state = change
+        .desired_state
+        .as_deref()
+        .unwrap_or(&existing.desired_state)
+        .trim();
+    validate_output_fields(name, url, encoding, desired_state)?;
+
+    let mut updated = db::update_output(
+        &state.db,
+        pipeline_id,
+        output_id,
+        name.trim(),
+        url,
+        encoding,
+    )
+    .await
+    .map_err(|err| format!("failed to update output: {err}"))?
+    .ok_or_else(|| format!("output '{output_id}' not found on pipeline '{pipeline_id}'"))?;
+    if desired_state != existing.desired_state {
+        updated = db::set_output_desired_state(&state.db, pipeline_id, output_id, desired_state)
+            .await
+            .map_err(|err| format!("failed to update desired state: {err}"))?;
+    }
+
+    Ok(serde_json::json!({
+        "kind": "updateOutput",
+        "pipelineId": pipeline_id,
+        "outputId": output_id,
+        "status": "updated",
+        "from": existing,
+        "to": updated,
+    }))
+}
+
+#[cfg(feature = "agent-execution")]
+async fn apply_agent_remove_output(
+    state: &AppState,
+    pipeline_id: &str,
+    change: &crate::agent_plane::ProposedChange,
+) -> Result<serde_json::Value, String> {
+    let output_id = required_change_field(change.output_id.as_deref(), "outputId")?;
+    let existing = db::get_output(&state.db, pipeline_id, output_id)
+        .await
+        .map_err(|err| format!("failed to read output: {err}"))?
+        .ok_or_else(|| format!("output '{output_id}' not found on pipeline '{pipeline_id}'"))?;
+    state.engine.unregister_egress(output_id).await;
+    let deleted = db::delete_output(&state.db, pipeline_id, output_id)
+        .await
+        .map_err(|err| format!("failed to delete output: {err}"))?;
+    if !deleted {
+        return Err(format!(
+            "output '{output_id}' not found on pipeline '{pipeline_id}'"
+        ));
+    }
+    Ok(serde_json::json!({
+        "kind": "removeOutput",
+        "pipelineId": pipeline_id,
+        "outputId": output_id,
+        "status": "deleted",
+        "from": existing,
+        "to": null,
+    }))
+}
+
+#[cfg(feature = "agent-execution")]
+async fn apply_agent_desired_state(
+    state: &AppState,
+    pipeline_id: &str,
+    change: &crate::agent_plane::ProposedChange,
+    desired_state: &str,
+) -> Result<serde_json::Value, String> {
+    let output_id = required_change_field(change.output_id.as_deref(), "outputId")?;
+    let existing = db::get_output(&state.db, pipeline_id, output_id)
+        .await
+        .map_err(|err| format!("failed to read output: {err}"))?
+        .ok_or_else(|| format!("output '{output_id}' not found on pipeline '{pipeline_id}'"))?;
+    let output = db::set_output_desired_state(&state.db, pipeline_id, output_id, desired_state)
+        .await
+        .map_err(|err| format!("failed to set desired state: {err}"))?;
+    Ok(serde_json::json!({
+        "kind": change.kind,
+        "pipelineId": pipeline_id,
+        "outputId": output_id,
+        "status": "desiredStateUpdated",
+        "from": existing,
+        "to": output,
+    }))
+}
+
+#[cfg(feature = "agent-execution")]
+fn required_change_field<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str, String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("change is missing required field '{field}'"))
+}
+
+#[cfg(feature = "agent-execution")]
+fn validate_output_fields(
+    name: &str,
+    url: &str,
+    encoding: &str,
+    desired_state: &str,
+) -> Result<(), String> {
+    validate_len("name", name, MAX_NAME_LEN)?;
+    validate_len("url", url, MAX_URL_LEN)?;
+    validate_len("encoding", encoding, MAX_ENCODING_LEN)?;
+    if is_custom_output_encoding(encoding) {
+        return Err(CUSTOM_OUTPUT_ENCODING_ERROR.to_string());
+    }
+    if !is_supported_output_url(url) {
+        return Err(OUTPUT_URL_SCHEME_ERROR.to_string());
+    }
+    if !matches!(desired_state, "running" | "stopped") {
+        return Err("desiredState must be either 'running' or 'stopped'".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "agent-execution")]
+fn validate_len(field: &str, value: &str, max: usize) -> Result<(), String> {
+    if value.len() > max {
+        Err(format!("{field} exceeds maximum length of {max} bytes"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "agent-execution")]
+async fn verify_agent_operation_by_id(
+    state: &AppState,
+    operation_id: &str,
+) -> axum::response::Response {
+    let record = match state.agent_execution.get(operation_id) {
+        Some(record) => record,
+        None => return (StatusCode::NOT_FOUND, "Operation not found").into_response(),
+    };
+    let verification = verify_agent_operation(state, &record).await;
+    match state
+        .agent_execution
+        .complete_verify(operation_id, verification)
+    {
+        Some(record) => Json(crate::agent_execution::public_record(&record)).into_response(),
+        None => (StatusCode::NOT_FOUND, "Operation not found").into_response(),
+    }
+}
+
+#[cfg(feature = "agent-execution")]
+async fn verify_agent_operation(
+    state: &AppState,
+    record: &crate::agent_execution::OperationRecord,
+) -> serde_json::Value {
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let pipeline_ids: Vec<String> = pipelines
+        .iter()
+        .map(|pipeline| pipeline.id.clone())
+        .collect();
+    let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
+    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+    let health = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    let alerts = alerts::derive_alerts(&health);
+    let mut checks = Vec::new();
+    let mut success = true;
+
+    for change in &record.request.proposed_changes {
+        let pipeline_id = change
+            .pipeline_id
+            .as_deref()
+            .or(record.request.pipeline_id.as_deref())
+            .unwrap_or_default();
+        let output_id = agent_change_output_id(record, change);
+        let output = output_id.as_deref().and_then(|oid| {
+            outputs
+                .iter()
+                .find(|output| output.pipeline_id == pipeline_id && output.id == oid)
+        });
+        let runtime = output_id
+            .as_deref()
+            .map(|oid| &health["pipelines"][pipeline_id]["outputs"][oid]);
+        let (passed, reason) = match change.kind.as_str() {
+            "addOutput" | "updateOutput" => {
+                if let Some(output) = output {
+                    if let Some(desired) = change.desired_state.as_deref()
+                        && output.desired_state != desired
+                    {
+                        (false, "desiredStateMismatch")
+                    } else if change.desired_state.as_deref() == Some("running") {
+                        let status = runtime.and_then(|runtime| runtime["status"].as_str());
+                        let input_status = health["pipelines"][pipeline_id]["input"]["status"]
+                            .as_str()
+                            .unwrap_or("off");
+                        if status == Some("running") {
+                            (true, "running")
+                        } else if input_status != "on" {
+                            (false, "pendingInput")
+                        } else {
+                            (false, "notRunning")
+                        }
+                    } else if change.desired_state.as_deref() == Some("stopped") {
+                        let status = runtime.and_then(|runtime| runtime["status"].as_str());
+                        if status != Some("running") {
+                            (true, "stopped")
+                        } else {
+                            (false, "stillRunning")
+                        }
+                    } else {
+                        (true, "persisted")
+                    }
+                } else {
+                    (false, "outputMissing")
+                }
+            }
+            "removeOutput" => {
+                if output.is_none() {
+                    (true, "removed")
+                } else {
+                    (false, "stillPresent")
+                }
+            }
+            "startOutput" => {
+                let status = runtime.and_then(|runtime| runtime["status"].as_str());
+                let input_status = health["pipelines"][pipeline_id]["input"]["status"]
+                    .as_str()
+                    .unwrap_or("off");
+                if output.is_some_and(|output| output.desired_state == "running")
+                    && status == Some("running")
+                {
+                    (true, "running")
+                } else if input_status != "on" {
+                    (false, "pendingInput")
+                } else {
+                    (false, "notRunning")
+                }
+            }
+            "stopOutput" => {
+                let status = runtime.and_then(|runtime| runtime["status"].as_str());
+                if output.is_some_and(|output| output.desired_state == "stopped")
+                    && status != Some("running")
+                {
+                    (true, "stopped")
+                } else {
+                    (false, "stillRunning")
+                }
+            }
+            _ => (false, "unsupportedChangeKind"),
+        };
+        success &= passed;
+        checks.push(serde_json::json!({
+            "kind": change.kind,
+            "pipelineId": pipeline_id,
+            "outputId": output_id,
+            "passed": passed,
+            "reason": reason,
+            "runtime": runtime.cloned().unwrap_or(serde_json::Value::Null),
+        }));
+    }
+
+    let mut graphs = Vec::new();
+    for pipeline_id in &pipeline_ids {
+        graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
+    }
+    let active_graph_nodes = graphs
+        .iter()
+        .filter_map(|graph| graph["nodes"].as_array())
+        .flatten()
+        .filter(|node| node["active"].as_bool().unwrap_or(false))
+        .count();
+    let alert_delta = alerts.len() as isize - record.pre_apply_alert_count.unwrap_or(0) as isize;
+
+    crate::agent_plane::redact_secrets(serde_json::json!({
+        "success": success,
+        "verifiedAt": chrono::Utc::now().to_rfc3339(),
+        "postChangeHealth": health,
+        "freshnessRecovery": {
+            "checked": true,
+            "pipelineCount": pipeline_ids.len(),
+        },
+        "graphConvergence": {
+            "checked": true,
+            "graphCount": graphs.len(),
+            "activeNodes": active_graph_nodes,
+        },
+        "incidentDelta": {
+            "preApplyAlertCount": record.pre_apply_alert_count,
+            "postApplyAlertCount": alerts.len(),
+            "delta": alert_delta,
+        },
+        "checks": checks,
+        "explanation": if success {
+            "All operation checks matched persisted state and runtime expectations."
+        } else {
+            "One or more operation checks did not match persisted state or runtime expectations."
+        },
+    }))
+}
+
+#[cfg(feature = "agent-execution")]
+fn agent_change_output_id(
+    record: &crate::agent_execution::OperationRecord,
+    change: &crate::agent_plane::ProposedChange,
+) -> Option<String> {
+    if let Some(output_id) = &change.output_id {
+        return Some(output_id.clone());
+    }
+    let change_results = record
+        .execution_result
+        .as_ref()
+        .and_then(|result| result["changeResults"].as_array())?;
+    change_results
+        .iter()
+        .find(|result| {
+            result["kind"].as_str() == Some(change.kind.as_str())
+                && result["pipelineId"].as_str()
+                    == change
+                        .pipeline_id
+                        .as_deref()
+                        .or(record.request.pipeline_id.as_deref())
+        })
+        .and_then(|result| result["outputId"].as_str())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "agent-execution")]
+async fn current_agent_alert_count(state: &AppState) -> usize {
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    let pipeline_ids: Vec<String> = pipelines
+        .iter()
+        .map(|pipeline| pipeline.id.clone())
+        .collect();
+    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+    let health = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    alerts::derive_alerts(&health).len()
 }
 
 #[cfg(feature = "agent-plane")]
@@ -3311,6 +4030,62 @@ fn agent_plane_unavailable() -> axum::response::Response {
         Json(serde_json::json!({
             "error": "agent-plane feature is not compiled in",
             "feature": "agent-plane",
+            "compiledIn": false
+        })),
+    )
+        .into_response()
+}
+
+#[cfg(feature = "agent-execution")]
+fn agent_operation_store_error(
+    err: crate::agent_execution::OperationStoreError,
+) -> axum::response::Response {
+    use crate::agent_execution::OperationStoreError;
+
+    let (status, code, message) = match err {
+        OperationStoreError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "operationNotFound",
+            "Operation not found",
+        ),
+        OperationStoreError::Invalid => (
+            StatusCode::CONFLICT,
+            "operationInvalid",
+            "Operation is invalid and cannot advance",
+        ),
+        OperationStoreError::RequiresApproval => (
+            StatusCode::CONFLICT,
+            "approvalRequired",
+            "Operation must be approved before apply",
+        ),
+        OperationStoreError::AlreadyApplying => (
+            StatusCode::CONFLICT,
+            "alreadyApplying",
+            "Operation is already applying",
+        ),
+        OperationStoreError::AlreadyTerminal => (
+            StatusCode::CONFLICT,
+            "alreadyTerminal",
+            "Operation has already reached a terminal state",
+        ),
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": message,
+            "code": code,
+        })),
+    )
+        .into_response()
+}
+
+#[cfg(not(feature = "agent-execution"))]
+fn agent_execution_unavailable() -> axum::response::Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "agent-execution feature is not compiled in",
+            "feature": "agent-execution",
             "compiledIn": false
         })),
     )

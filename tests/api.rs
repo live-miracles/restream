@@ -39,6 +39,8 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
         },
         media_dir: "media".to_string(),
         alert_tracker: restream::alerts::AlertTracker::new(),
+        #[cfg(feature = "agent-execution")]
+        agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
     });
 
     (api::create_router(state), pool, engine)
@@ -1158,6 +1160,8 @@ async fn health_shows_registered_egress() {
             },
             media_dir: "media".to_string(),
             alert_tracker: restream::alerts::AlertTracker::new(),
+            #[cfg(feature = "agent-execution")]
+            agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
         });
         api::create_router(state)
     };
@@ -1527,7 +1531,7 @@ async fn ingest_start_requires_matching_pipeline() {
     let cookie = login(&app).await;
 
     let create_body = serde_json::json!({
-        "filename": "colorbar-timer.mp4",
+        "filename": "colorbar-timer-2v16a.mp4",
         "streamKey": "no-such-pipeline",
     });
     let resp = app
@@ -1973,7 +1977,7 @@ async fn agent_capabilities_reports_read_planning_only() {
     let body = body_json(resp).await;
     assert_eq!(body["feature"], "agent-plane");
     assert_eq!(body["compiledIn"], true);
-    assert_eq!(body["executionEnabled"], false);
+    assert_eq!(body["executionEnabled"], cfg!(feature = "agent-execution"));
     assert!(body["readTools"].as_array().unwrap().len() >= 5);
     assert!(body["planningTools"].as_array().unwrap().len() >= 3);
     assert!(
@@ -1983,6 +1987,21 @@ async fn agent_capabilities_reports_read_planning_only() {
             .iter()
             .any(|route| route["path"] == "/api/v1/agent/context" && route["mutates"] == false)
     );
+    assert!(
+        body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|route| route["feature"] != "core")
+    );
+    assert!(body["readTools"].as_array().unwrap().iter().all(|tool| {
+        !tool.as_str().unwrap_or_default().starts_with("get_core_")
+            && !tool.as_str().unwrap_or_default().contains("pipeline_graph")
+            && !tool
+                .as_str()
+                .unwrap_or_default()
+                .contains("engine_telemetry")
+    }));
     assert!(body["schemas"]["PlanRequest"].is_object());
     assert_eq!(body["redaction"]["policy"], "agentContextV1");
 }
@@ -2066,7 +2085,10 @@ async fn agent_context_returns_redacted_state_bundle() {
 
     assert_eq!(body["readOnly"], true);
     assert_eq!(body["features"]["agentPlane"], true);
-    assert_eq!(body["features"]["agentExecution"], false);
+    assert_eq!(
+        body["features"]["agentExecution"],
+        cfg!(feature = "agent-execution")
+    );
     assert!(body["state"]["pipelines"].is_array());
     assert!(body["state"]["outputs"].is_array());
     assert!(body["runtime"]["health"].is_object());
@@ -2210,7 +2232,7 @@ async fn agent_plan_validates_and_previews_stage_impact() {
 
     let body = body_json(resp).await;
     assert!(body["planId"].as_str().unwrap().starts_with("plan_"));
-    assert_eq!(body["executionEnabled"], false);
+    assert_eq!(body["executionEnabled"], cfg!(feature = "agent-execution"));
     assert_eq!(body["validation"]["valid"], true);
     let added_nodes = body["graphPreview"]["addedNodes"].as_array().unwrap();
     assert!(
@@ -2265,4 +2287,204 @@ async fn agent_plan_validate_reports_invalid_changes() {
     assert!(codes.contains(&"pipelineNotFound"));
     assert!(codes.contains(&"unsupportedOutputUrl"));
     assert!(codes.contains(&"customEncodingUnsupported"));
+    assert!(codes.contains(&"missingOutputName"));
+}
+
+#[cfg(all(feature = "agent-plane", not(feature = "agent-execution")))]
+#[tokio::test]
+async fn agent_execution_routes_return_404_when_compiled_out() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/operations",
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "intent": "Attach output",
+                    "pipelineId": "p1",
+                    "proposedChanges": []
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["feature"], "agent-execution");
+    assert_eq!(body["compiledIn"], false);
+}
+
+#[cfg(feature = "agent-execution")]
+#[tokio::test]
+async fn agent_operation_lifecycle_is_approval_gated_redacted_and_verified() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+    let raw_output_url = "rtmp://example.com/live/agent-secret-key";
+
+    let create_pipeline = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "name": "agent-exec",
+                    "streamKey": "agent-exec-key"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_pipeline.status(), StatusCode::CREATED);
+    let pipeline = body_json(create_pipeline).await;
+    let pipeline_id = pipeline["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let request = serde_json::json!({
+        "intent": "Create a stopped CDN output for approval-gated execution",
+        "pipelineId": pipeline_id,
+        "idempotencyKey": "agent-op-test-1",
+        "actor": "test-agent",
+        "agentId": "codex-test-agent",
+        "toolIdentity": "api-test",
+        "incidentId": "incident-api-test",
+        "incidentLinks": ["alert:test-output"],
+        "proposedChanges": [{
+            "kind": "addOutput",
+            "name": "Agent CDN",
+            "url": raw_output_url,
+            "encoding": "source",
+            "desiredState": "stopped"
+        }]
+    });
+
+    let create_operation = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/operations",
+            &cookie,
+            Some(&request.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_operation.status(), StatusCode::CREATED);
+    let created = body_json(create_operation).await;
+    let operation_id = created["operationId"].as_str().unwrap().to_string();
+    assert_eq!(created["status"], "awaitingApproval");
+    assert_eq!(created["approvalRequired"], true);
+    assert_eq!(created["incidentId"], "incident-api-test");
+    assert_eq!(created["incidentLinks"][0], "alert:test-output");
+    assert_eq!(created["plan"]["executionEnabled"], true);
+    assert!(
+        created["proposedPlanHash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    let raw = serde_json::to_string(&created).unwrap();
+    assert!(!raw.contains("agent-secret-key"));
+    assert!(raw.contains("urlFingerprint"));
+
+    let reused = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/operations",
+            &cookie,
+            Some(&request.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(reused.status(), StatusCode::OK);
+    let reused_body = body_json(reused).await;
+    assert_eq!(reused_body["operationId"], operation_id);
+
+    let apply_before_approval = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/agent/operations/{operation_id}/apply"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(apply_before_approval.status(), StatusCode::CONFLICT);
+    let conflict = body_json(apply_before_approval).await;
+    assert_eq!(conflict["code"], "approvalRequired");
+
+    let approved = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/agent/operations/{operation_id}/approve"),
+            &cookie,
+            Some(
+                &serde_json::json!({
+                    "approvedBy": "human-test",
+                    "reason": "unit test approval"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    let approved_body = body_json(approved).await;
+    assert_eq!(approved_body["status"], "approved");
+    assert_eq!(approved_body["approval"]["approvedBy"], "human-test");
+
+    let applied = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/agent/operations/{operation_id}/apply"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(applied.status(), StatusCode::OK);
+    let applied_body = body_json(applied).await;
+    assert_eq!(applied_body["status"], "applied");
+    assert_eq!(applied_body["executionResult"]["success"], true);
+    assert_eq!(
+        applied_body["executionResult"]["changeResults"][0]["status"],
+        "created"
+    );
+    let output_id = applied_body["executionResult"]["changeResults"][0]["outputId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let output = db::get_output(&pool, &pipeline_id, &output_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.url, raw_output_url);
+    assert_eq!(output.desired_state, "stopped");
+
+    let verified = app
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/agent/operations/{operation_id}/verify"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(verified.status(), StatusCode::OK);
+    let verified_body = body_json(verified).await;
+    assert_eq!(verified_body["status"], "verified");
+    assert_eq!(verified_body["verificationResult"]["success"], true);
+    assert_eq!(
+        verified_body["verificationResult"]["checks"][0]["reason"],
+        "stopped"
+    );
+    assert!(verified_body["auditLog"].as_array().unwrap().len() >= 4);
 }
