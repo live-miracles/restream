@@ -33,7 +33,7 @@ fn log_rss(label: &str, output_id: &str) {
         for line in status.lines() {
             if let Some(val) = line.strip_prefix("VmRSS:") {
                 let rss_kb = val.trim().trim_end_matches(" kB").trim();
-                error!("{label} output={output_id} rss={rss_kb} kB");
+                debug!(rss_kb, label, output_id, "RSS sample");
                 return;
             }
         }
@@ -684,7 +684,7 @@ pub async fn start_rtmp_server_on(
                         handle_rtmp_client(socket, addr, db_clone, security_clone, engine_clone)
                             .await
                     {
-                        error!("Error handling client {}: {:?}", addr, e);
+                        warn!("error handling client {}: {:?}", addr, e);
                     }
                 });
             }
@@ -855,7 +855,7 @@ async fn handle_rtmp_client(
                 )
                 .await
                 {
-                    error!("session result error: {}", e);
+                    warn!("session result error: {}", e);
                     break;
                 }
             }
@@ -987,7 +987,7 @@ async fn handle_session_results(
                         .await {
                             Ok(Some(p)) => p,
                             Ok(None) => {
-                                error!("publish stream key not found: {:?}", stream_key);
+                                warn!("publish stream key not found: {:?}", stream_key);
                                 security.record_failure(client_ip);
                                 let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
                                 return Err("Invalid stream key");

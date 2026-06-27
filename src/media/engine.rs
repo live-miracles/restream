@@ -993,7 +993,7 @@ impl MediaEngine {
         let mut buffers = self.transcoder_buffers.write().await;
         buffers.retain(|key, (_rb, token)| {
             if !active_keys.contains(key) {
-                info!("Sweeping unused transcoder stage: {}", key);
+                debug!("Sweeping unused transcoder stage: {}", key);
                 token.cancel();
                 false
             } else {
@@ -1042,7 +1042,7 @@ impl MediaEngine {
             let in_use = has_readers;
 
             if !in_use {
-                info!("Sweeping unused TS muxer stage: {}", key);
+                debug!("Sweeping unused TS muxer stage: {}", key);
                 stage.cancel.cancel();
                 false
             } else {

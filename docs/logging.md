@@ -41,11 +41,31 @@ Levels follow RFC 5424 severity ordering, narrowed to five:
 
 | Level | Used for |
 |---|---|
-| `error` | Unrecoverable faults: socket failures that stop a task, FFmpeg crashes, DB write failures |
-| `warn` | Recoverable problems: retries, dropped SSE subscriber, bounded channel full |
-| `info` | Lifecycle transitions: server start, ingest connect/disconnect, egress start/stop, shutdown |
-| `debug` | Per-connection diagnostics: reconnect attempts, bond membership changes, ring buffer fills |
+| `error` | A task or delivery path has stopped due to a fault that is not the remote client's fault — socket allocation failure, FFmpeg crash, DB write failure, panic in an egress task |
+| `warn` | Recoverable or expected-from-clients problems — invalid stream key, auth rejection, client disconnect mid-session, resource limits reached, transient accept errors |
+| `info` | Lifecycle transitions an operator cares about — server start, ingest connect/disconnect, egress start/stop, codec discovered, ring reader registered/deregistered |
+| `debug` | Internal diagnostics useful during investigation — ring buffer creation, AVIO queue creation, stage sweeping, FFmpeg stdout close on normal shutdown |
 | `trace` | Reserved — not used in production. Available for one-off local investigation only. |
+
+### Deciding between `error` and `warn`
+
+The key question is: **who is at fault and does the process continue?**
+
+- **`error`**: system cannot continue delivering for this pipeline/output — e.g., egress
+  socket creation failed, FFmpeg child crashed, DB write failed. Something that would
+  page an on-call engineer.
+- **`warn`**: a remote client did something unexpected, or a transient condition that the
+  process will recover from automatically — e.g., client sent an invalid stream key,
+  connection was rejected by the destination (retry will follow), accept loop got a
+  transient error.
+
+### Deciding between `info` and `debug`
+
+- **`info`**: an operator reading logs should see it — state changes that matter for
+  understanding what the system was doing at a point in time.
+- **`debug`**: implementation detail useful when actively investigating an issue — fires
+  frequently enough (e.g., every reconciler tick) that it would obscure `info` events
+  in production, or is an internal mechanism the operator doesn't need unless debugging.
 
 ### Compile-time stripping
 
@@ -350,6 +370,108 @@ Never log inside packet-level loops in `src/media/ring_buffer.rs` or
 `src/media/avio.rs` (push, pull, read). Control operations such as
 creation, resize, or reader registration are not hot and may use `debug!`
 or `info!`.
+
+## Callsite Audit
+
+This section records the reasoning for non-obvious level choices across the
+codebase. Update it when changing a callsite's level.
+
+### `src/lib.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| axum server error | `error` | Web server stopped — all API traffic dead |
+| RTMP/SRT server task exited | `error` | Protocol listener down — ingest impossible |
+| Ctrl+C signal error | `warn` | Signal handler glitch; shutdown proceeds anyway |
+| DB error reading outputs/pipelines | `warn` | Reconciler will retry next tick |
+| Output exceeded max retries | `warn` | Reconciler marks it failed; controlled outcome |
+| Panic in egress task | `error` | Unexpected process fault, not a client error |
+| HLS segmenter token missing | `warn` | Race condition, task already cleaned up; reconciler retries |
+
+### `src/media/rtmp.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| RSS sample (`log_rss`) | `debug` | Diagnostic probe, not an error state |
+| Failed to bind TCP listener | `error` | Server cannot start — unrecoverable |
+| Error handling client | `warn` | Per-client error; could be normal disconnect |
+| Accept error (TCP) | `error` | Listener-level failure, not a single client |
+| Session result error | `warn` | Often client-side protocol violation |
+| Publish stream key not found | `warn` | Client misconfiguration; expected from bad publishers |
+| Publish stream key DB query failed | `error` | DB unavailability — system fault |
+| Connection rejected (egress) | `error` | Destination refused delivery — egress cannot function |
+| Connection request rejected (egress) | `error` | Same — destination-side rejection during setup |
+| Handshake failed (egress) | `error` | Protocol fault during egress setup |
+
+### `src/media/srt.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| Kernel buffer size too small | `warn` | Configuration advisory; server runs but may drop under load |
+| Failed to create/bind/listen socket | `error` | Server cannot start — unrecoverable |
+| Accept error in accept loop | `warn` | Transient; loop continues with sleep |
+| Accept thread panicked | `error` | Entire ingest listener is down |
+| Duplicate publisher rejected | `error` | Protocol invariant violated — real system problem |
+| Unauthorized stream key | `warn` | Expected from misconfigured or probing clients |
+| Receive ended (ingest error) | `error` | Ingest disrupted — pipeline goes dark |
+| Bonded group member state unavailable | `warn` | Cosmetic — bond accepted, stats not yet populated |
+| No active ingest for play | `warn` | Subscriber timing issue; not a system fault |
+| Sender thread limit reached | `warn` | Capacity limit; clean rejection, server healthy |
+| Play sender thread panicked | `error` | Unexpected fault in egress sender |
+| SRT egress connection failed | `error` | Cannot deliver to destination |
+| `srt_send` failed | `error` | Active stream delivery broken |
+| Sender thread panicked (egress) | `error` | Unexpected fault |
+
+### `src/media/engine.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| FFmpeg initialization failed | `error` | Fatal — no transcoding possible |
+| Adaptive ring resize | `info` | Happens once per ingest; operators care about buffer sizing |
+| Spawning transcoder/audio-router stage | `info` | Lifecycle: new processing stage started |
+| Spawning H.265→H.264 transcoder | `info` | Lifecycle |
+| Sweeping unused transcoder/TS-muxer stage | `debug` | Fires every reconciler tick for idle stages |
+
+### `src/media/external_transcoder.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| FFmpeg spawn/stdin/stdout errors | `error` | Cannot start or feed the transcoder |
+| FFmpeg stdout closed | `debug` | Normal path on every clean FFmpeg exit |
+| FFmpeg stderr output | `error` | FFmpeg wrote to stderr before crashing; indicates fault |
+| Transcoder thread failed/panicked | `error` | Stage is down |
+
+### `src/media/ring_buffer.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| Ring buffer created | `debug` | Internal; multiple rings per pipeline |
+| Codec hint set | `info` | Key stream property; operators want to see codec |
+| Audio tracks set | `info` | Key stream property |
+| Reader registered / deregistered | `info` | Consumer lifecycle — which outputs are reading the ring |
+| Reader overflowed | `warn` | Consumer fell a full ring capacity behind; glitch likely |
+
+### `src/media/avio.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| Memory queue created/closed | `debug` | Internal FFmpeg I/O plumbing; not operator-facing |
+
+### `src/media/recording.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| Recording started | `info` | Lifecycle |
+| TS writer failed/panicked | `error` | Recording thread is down |
+| Deleted short recording | `info` | Operator needs to know a file was discarded |
+
+### `src/media/hls_upload.rs`
+
+| Callsite | Level | Reasoning |
+|---|---|---|
+| Invalid HLS upload URL | `error` | Configuration fault — egress cannot start |
+| Segment upload failed | `error` | Delivery broken; egress stops |
+| Playlist upload failed | `error` | Delivery broken |
 
 ## Invariants
 

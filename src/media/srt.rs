@@ -415,8 +415,8 @@ fn check_sysctl_limits() {
             && let Ok(val) = s.trim().parse::<usize>()
             && val < need
         {
-            error!(
-                "[srt] WARNING: {} = {} but we need {}. \
+            warn!(
+                "{} = {} but we need {}. \
                          Run: sudo sysctl -w {}={}",
                 path, val, need, label, need,
             );
@@ -1244,7 +1244,7 @@ impl SrtServer {
                         // SAFETY: srt_getlasterror_str returns a thread-local
                         // static string valid until the next SRT call.
                         let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
-                        error!("Accept error: {}", err.to_string_lossy());
+                        warn!("accept error: {}", err.to_string_lossy());
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     }
@@ -1343,7 +1343,7 @@ impl SrtServer {
         .await {
             Ok(Some(p)) => p,
             _ => {
-                error!("Unauthorized connection for stream key: {}", stream_key);
+                warn!("unauthorized connection for stream key: {}", stream_key);
                 self.security.record_failure(&client_ip);
                 // SAFETY: client_sock is a valid accepted socket not yet closed.
                 unsafe { srt_close(client_sock); }
@@ -1740,7 +1740,7 @@ impl SrtServer {
             .await
             .contains_key(pipeline_id)
         {
-            error!("No active ingest for play: {}", pipeline_id);
+            warn!("no active ingest for play: {}", pipeline_id);
             // SAFETY: client_sock is a valid accepted socket not yet closed.
             unsafe {
                 srt_close(client_sock);
@@ -1765,8 +1765,8 @@ impl SrtServer {
         let permit = match self.engine.srt_sender_semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                error!(
-                    "[srt] Sender thread limit reached — rejecting play for {}",
+                warn!(
+                    "sender thread limit reached — rejecting play for {}",
                     pipeline_id
                 );
                 // SAFETY: Valid socket, clean up on capacity rejection.

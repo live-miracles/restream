@@ -485,7 +485,7 @@ pub async fn start_external_transcoder_stage(
                         let idle_us = out_timing_clock.delta_us(t0);
                         match result {
                             Ok(0) | Err(_) => {
-                                error!("stdout closed ({})", label_out);
+                                debug!("stdout closed ({})", label_out);
                                 break;
                             }
                             Ok(n) => {
