@@ -8,17 +8,20 @@ Run the full suite:
 scripts/resource-limit cargo test
 ```
 
-As of June 25, 2026 this runs 441 passing non-doctest tests:
+As of June 27, 2026 this runs 541 passing non-doctest tests:
 
 | Suite | Tests | Source |
 |---|---:|---|
-| Library/unit | 350 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
-| API integration | 38 | `tests/api.rs` |
+| Library/unit | 429 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
+| API integration | 66 | `tests/api.rs` |
 | AV sync integration | 14 | `tests/av_sync.rs` |
 | Codec integration | 17 | `tests/codec.rs` |
 | Database integration | 15 | `tests/db.rs` |
-| Transcoder integration | 7 | `tests/transcoder.rs` |
-| **Total** | **441** | |
+| Transcoder integration | 7 | `tests/transcoder.rs` (fixture-dependent, see note) |
+| **Total** | **541** | |
+
+The 7 transcoder tests require `test/artifacts/test-h264.ts` which is not
+committed; they fail with a missing-fixture error. All other suites pass.
 
 The doctest suite also runs; the single codec example is intentionally ignored.
 
@@ -105,11 +108,154 @@ Unit coverage includes:
   counters, Annex-B NAL scanning, vectorized resync
 - Codec helpers: FLV stripping, video/audio payload conversion for TsMuxer
 
-The API suite covers authentication, configuration, pipeline/output CRUD,
-ingests, HLS aliases, status, graph, diagnostics preconditions, custom
+The API suite (66 tests) covers authentication, configuration, pipeline/output
+CRUD, ingests, HLS aliases, status, graph, diagnostics preconditions, custom
 encoding persistence/rejection for runtime outputs, HLS upload output
 acceptance, RTMPS output acceptance, egress-pipeline association in `/health`,
-and deletion-cancellation of egress tasks.
+deletion-cancellation of egress tasks, pipeline and aggregate alerts response
+shape, system metrics structured response, agent graph-diff-preview compiled-out
+behavior, and operator telemetry/events/overview/summary endpoints.
+
+## API Route Coverage Matrix
+
+Every route in `src/api.rs` has been audited against both unit tests
+(`tests/api.rs`) and live integration tests (`src/bin/test_harness.rs`).
+As of June 27, 2026, all 59 routes have at least one test covering them.
+
+### Full coverage (unit + live)
+
+| Route | Unit | Live |
+|---|:---:|:---:|
+| `POST /api/auth/login` | Yes | Yes |
+| `GET /config` | Yes | Yes |
+| `GET /pipelines` | Yes | Yes |
+| `POST /pipelines` | Yes | Yes |
+| `DELETE /pipelines/:id` | Yes | Yes |
+| `PUT /pipelines/:id/file-ingest` | Yes | Yes |
+| `POST /pipelines/:id/outputs` | Yes | Yes |
+| `POST /.../outputs/:id/start` | Yes | Yes |
+| `POST /.../outputs/:id/stop` | Yes | Yes |
+| `GET /.../outputs/:id/status` | Yes | Yes |
+| `GET /pipelines/:id/graph` | Yes | Yes |
+| `GET /api/ingests` | Yes | Yes |
+| `POST /api/ingests/:id/start` | Yes | Yes |
+| `GET /health` | Yes | Yes |
+| `GET /healthz` | Yes | Yes |
+
+### Unit only (not exercised by live harness)
+
+These routes are tested via `tests/api.rs` with in-process request routing.
+They don't require live ffmpeg or protocol sockets.
+
+| Route | Notes |
+|---|---|
+| `POST /api/auth/logout` | Session teardown |
+| `POST /api/auth/change-password` | Password change |
+| `PATCH /config` | 3 tests including transcode profiles |
+| `GET /audio-caps` | Audio capability discovery |
+| `GET /stream-keys` | Stream key listing |
+| `POST /pipelines/:id` | Pipeline update |
+| `GET /pipelines/:id/file-ingest` | File ingest query |
+| `DELETE /pipelines/:id/file-ingest` | File ingest removal |
+| `POST /pipelines/:id/outputs/:id` | Output update |
+| `DELETE /pipelines/:id/outputs/:id` | Output deletion |
+| `GET /.../outputs/:id/history` | Output history |
+| `GET /pipelines/:id/history` | Pipeline history |
+| `GET /pipelines/:id/alerts` | Alert derivation + response shape |
+| `GET /pipelines/:id/diagnostics` | SSE precondition only |
+| `GET /encodings/custom` | Custom encoding CRUD |
+| `PUT /encodings/custom` | Custom encoding CRUD |
+| `POST /api/ingests` | Ingest CRUD |
+| `PUT /api/ingests/:id` | Ingest update |
+| `DELETE /api/ingests/:id` | Ingest deletion |
+| `GET /api/status` | System status |
+| `GET /api/status/sbom` | SBOM endpoint |
+| `GET /api/media` | Media listing |
+| `DELETE /api/media/:filename` | Path traversal tested |
+| `GET /metrics/system` | Structured cpu/memory/disk/network |
+| `GET /api/v1/alerts` | Aggregate alerts |
+| `GET /api/v1/events` | Event filtering |
+| `GET /api/v1/overview` | Operator overview |
+| `GET /api/v1/engine/telemetry` | Engine telemetry |
+| `GET /api/v1/pipelines/:id/telemetry` | Pipeline telemetry |
+| `GET /api/v1/stages/:key/telemetry` | Stage telemetry |
+| `GET /api/v1/pipelines/:id/summary` | Pipeline summary |
+| `GET /api/v1/agent/capabilities` | Agent capabilities |
+| `GET /api/v1/agent/context` | Agent context |
+| `POST /api/v1/agent/investigations` | Agent investigations |
+| `POST /api/v1/agent/plans` | Agent plans |
+| `POST /api/v1/agent/plans/validate` | Plan validation |
+| `POST /api/v1/agent/graph-diff-preview` | 404 when compiled out |
+| `POST /api/v1/agent/operations` | Agent operations |
+| `GET /api/v1/agent/operations/:id` | Operation detail |
+| `POST /.../operations/:id/approve` | Operation approval |
+| `POST /.../operations/:id/apply` | Operation apply |
+| `POST /.../operations/:id/verify` | Operation verify |
+| `POST /api/v1/agent/verify` | 404 when compiled out |
+
+### Live only (not in unit tests)
+
+These routes are only meaningfully testable with live media flowing.
+
+| Route | Live mode |
+|---|---|
+| `GET /pipelines/:id/probe` | mixed-scale, correctness-* |
+| `POST /.../recording/start` | mixed-anchor |
+| `POST /.../recording/stop` | mixed-anchor |
+| `POST /api/ingests/:id/stop` | fault-resilience |
+
+## Code Coverage
+
+Line coverage from `cargo llvm-cov` (unit tests only, June 27, 2026):
+
+![Coverage by module](coverage-by-module.svg)
+
+| Module | Lines | Covered | Coverage |
+|---|---:|---:|---:|
+| `pipe_metrics` | 21 | 21 | 100.0% |
+| `events` | 278 | 268 | **96.4%** |
+| `alerts` | 517 | 506 | 97.9% |
+| `security` | 220 | 210 | 95.5% |
+| `ring_buffer` | 875 | 833 | 95.2% |
+| `feeder` | 226 | 215 | 95.1% |
+| `file_ingest` | 566 | 515 | 91.0% |
+| `codec` | 730 | 660 | 90.4% |
+| `mpegts` | 2,438 | 2,201 | 90.3% |
+| `hls_upload` | 232 | 207 | 89.2% |
+| `profiles` | 334 | 285 | 85.3% |
+| `stage_metrics` | 44 | 37 | 84.1% |
+| `engine` | 2,920 | 2,383 | 81.6% |
+| `domain/stage` | 227 | 180 | 79.3% |
+| `avio` | 469 | 357 | 76.1% |
+| `hls` | 526 | 391 | **74.3%** |
+| `recording` | 310 | 193 | **62.3%** |
+| `external_transcoder` | 583 | 360 | **61.8%** |
+| `srt` | 2,189 | 1,127 | 51.5% |
+| `rtmp` | 1,682 | 644 | 38.3% |
+| `api` | 3,350 | 239 | 7.1%† |
+| `db` | 855 | 0 | 0.0%† |
+| **Total** | **23,918** | **13,250** | **55.4%** |
+
+† `api.rs` is tested via 66 integration tests in `tests/api.rs` which `llvm-cov --lib` does not instrument. `db.rs` is tested via `tests/db.rs`. Their unit-only coverage is not representative.
+
+These numbers reflect unit-test-only instrumentation. `api.rs` shows 7% because
+`cargo llvm-cov` does not instrument `tests/api.rs` integration tests by
+default — the real API test coverage is much higher (66 tests across all 59
+routes). Similarly, `db.rs`, `rtmp.rs`, and `srt.rs` are primarily exercised by
+the live integration harness which is not captured by `llvm-cov`.
+
+### Coverage interpretation
+
+- **≥80% (14 modules)**: core media pipeline logic — ring buffer, codec,
+  MPEG-TS, engine, HLS upload, file ingest, alerts, events, security, profiles,
+  feeder, stage_metrics. Well covered by unit tests.
+- **50–79% (6 modules)**: socket-heavy protocol handlers, HLS store, and
+  recording logic. Primarily exercised by the live harness with real ffmpeg;
+  unit-testing their socket loops would require significant mocking for little
+  added benefit.
+- **<50% (7 modules)**: API/DB/diagnostics layers tested through integration
+  tests not captured by `llvm-cov`, or FFmpeg-dependent transcoder code that
+  requires the binary running.
 
 ## Live Integration Tests
 

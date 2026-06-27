@@ -1,0 +1,179 @@
+<svg viewBox="0 0 680 760" xmlns="http://www.w3.org/2000/svg" role="img" font-family="ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace" font-size="12">
+  <title>Unit-test line coverage by module (June 27, 2026)</title>
+  <desc>Horizontal bar chart showing line coverage percentage for 27 source modules, ranging from 0% (db, main, h264_transcoder) to 100% (pipe_metrics). Overall coverage is 55.4%.</desc>
+
+  <style>
+    rect.bar-high   { fill: #1baf7a; }
+    rect.bar-mid    { fill: #eda100; }
+    rect.bar-low    { fill: #e34948; }
+    text.label      { fill: #52514e; font-size: 11px; }
+    text.pct        { fill: #0b0b0b; font-size: 11px; font-weight: 500; }
+    text.pct-zero   { fill: #e34948; font-size: 11px; font-weight: 500; }
+    text.title      { fill: #0b0b0b; font-size: 14px; font-weight: 500; }
+    text.subtitle   { fill: #52514e; font-size: 12px; }
+    line.grid       { stroke: #e1e0d9; stroke-width: 0.5; }
+    text.axis       { fill: #898781; font-size: 10px; }
+    text.legend     { fill: #52514e; font-size: 11px; }
+    rect.legend-box { rx: 2; ry: 2; }
+  </style>
+
+  <!-- title -->
+  <text x="160" y="22" class="title">Unit-test line coverage by module</text>
+  <text x="160" y="40" class="subtitle">cargo llvm-cov — lib tests only — June 27, 2026 — overall 55.4%</text>
+
+  <!-- grid lines at 0%, 25%, 50%, 75%, 100% -->
+  <!-- chart area: x=160 to x=630, y=55 to y=715, bar step=24px -->
+  <line x1="160" y1="55" x2="160" y2="720" class="grid" stroke="#c3c2b7" stroke-width="0.8"/>
+  <line x1="277.5" y1="55" x2="277.5" y2="720" class="grid"/>
+  <line x1="395" y1="55" x2="395" y2="720" class="grid"/>
+  <line x1="512.5" y1="55" x2="512.5" y2="720" class="grid"/>
+  <line x1="630" y1="55" x2="630" y2="720" class="grid" stroke="#c3c2b7" stroke-width="0.8"/>
+
+  <!-- axis labels -->
+  <text x="160" y="732" class="axis" text-anchor="middle">0%</text>
+  <text x="277.5" y="732" class="axis" text-anchor="middle">25%</text>
+  <text x="395" y="732" class="axis" text-anchor="middle">50%</text>
+  <text x="512.5" y="732" class="axis" text-anchor="middle">75%</text>
+  <text x="630" y="732" class="axis" text-anchor="middle">100%</text>
+
+  <!-- bars: x_start=160, max_width=470 (100%), bar_height=16, row_step=24, first_y=55 -->
+  <!-- row 0: pipe_metrics 100% -->
+  <text x="155" y="68" class="label" text-anchor="end">pipe_metrics</text>
+  <rect x="160" y="55" width="470" height="16" class="bar-high"/>
+  <text x="636" y="68" class="pct">100%</text>
+
+  <!-- row 1: events 96.4% -->
+  <text x="155" y="92" class="label" text-anchor="end">events</text>
+  <rect x="160" y="79" width="453" height="16" class="bar-high"/>
+  <text x="636" y="92" class="pct">96.4%</text>
+
+  <!-- row 2: alerts 97.9% -->
+  <text x="155" y="116" class="label" text-anchor="end">alerts</text>
+  <rect x="160" y="103" width="460" height="16" class="bar-high"/>
+  <text x="636" y="116" class="pct">97.9%</text>
+
+  <!-- row 3: security 95.5% -->
+  <text x="155" y="140" class="label" text-anchor="end">security</text>
+  <rect x="160" y="127" width="449" height="16" class="bar-high"/>
+  <text x="636" y="140" class="pct">95.5%</text>
+
+  <!-- row 4: ring_buffer 95.2% -->
+  <text x="155" y="164" class="label" text-anchor="end">ring_buffer</text>
+  <rect x="160" y="151" width="447" height="16" class="bar-high"/>
+  <text x="636" y="164" class="pct">95.2%</text>
+
+  <!-- row 5: feeder 95.1% -->
+  <text x="155" y="188" class="label" text-anchor="end">feeder</text>
+  <rect x="160" y="175" width="447" height="16" class="bar-high"/>
+  <text x="636" y="188" class="pct">95.1%</text>
+
+  <!-- row 6: file_ingest 91.0% -->
+  <text x="155" y="212" class="label" text-anchor="end">file_ingest</text>
+  <rect x="160" y="199" width="428" height="16" class="bar-high"/>
+  <text x="636" y="212" class="pct">91.0%</text>
+
+  <!-- row 7: codec 90.4% -->
+  <text x="155" y="236" class="label" text-anchor="end">codec</text>
+  <rect x="160" y="223" width="425" height="16" class="bar-high"/>
+  <text x="636" y="236" class="pct">90.4%</text>
+
+  <!-- row 8: mpegts 90.3% -->
+  <text x="155" y="260" class="label" text-anchor="end">mpegts</text>
+  <rect x="160" y="247" width="424" height="16" class="bar-high"/>
+  <text x="636" y="260" class="pct">90.3%</text>
+
+  <!-- row 9: hls_upload 89.2% -->
+  <text x="155" y="284" class="label" text-anchor="end">hls_upload</text>
+  <rect x="160" y="271" width="419" height="16" class="bar-high"/>
+  <text x="636" y="284" class="pct">89.2%</text>
+
+  <!-- row 10: profiles 85.3% -->
+  <text x="155" y="308" class="label" text-anchor="end">profiles</text>
+  <rect x="160" y="295" width="401" height="16" class="bar-high"/>
+  <text x="636" y="308" class="pct">85.3%</text>
+
+  <!-- row 11: engine 81.6% -->
+  <text x="155" y="332" class="label" text-anchor="end">engine</text>
+  <rect x="160" y="319" width="384" height="16" class="bar-high"/>
+  <text x="636" y="332" class="pct">81.6%</text>
+
+  <!-- row 12: hls 74.3% -->
+  <text x="155" y="356" class="label" text-anchor="end">hls</text>
+  <rect x="160" y="343" width="349" height="16" class="bar-mid"/>
+  <text x="636" y="356" class="pct">74.3%</text>
+
+  <!-- row 13: domain/stage 79.3% -->
+  <text x="155" y="380" class="label" text-anchor="end">domain/stage</text>
+  <rect x="160" y="367" width="373" height="16" class="bar-mid"/>
+  <text x="636" y="380" class="pct">79.3%</text>
+
+  <!-- row 14: avio 76.1% -->
+  <text x="155" y="404" class="label" text-anchor="end">avio</text>
+  <rect x="160" y="391" width="358" height="16" class="bar-mid"/>
+  <text x="636" y="404" class="pct">76.1%</text>
+
+  <!-- row 15: stage_metrics 84.1% -->
+  <text x="155" y="428" class="label" text-anchor="end">stage_metrics</text>
+  <rect x="160" y="415" width="395" height="16" class="bar-high"/>
+  <text x="636" y="428" class="pct">84.1%</text>
+
+  <!-- row 16: recording 62.3% -->
+  <text x="155" y="452" class="label" text-anchor="end">recording</text>
+  <rect x="160" y="439" width="293" height="16" class="bar-mid"/>
+  <text x="636" y="452" class="pct">62.3%</text>
+
+  <!-- row 17: external_transcoder 61.8% -->
+  <text x="155" y="476" class="label" text-anchor="end">external_transcoder</text>
+  <rect x="160" y="463" width="290" height="16" class="bar-mid"/>
+  <text x="636" y="476" class="pct">61.8%</text>
+
+  <!-- row 18: srt 51.5% -->
+  <text x="155" y="500" class="label" text-anchor="end">srt</text>
+  <rect x="160" y="487" width="242" height="16" class="bar-mid"/>
+  <text x="636" y="500" class="pct">51.5%</text>
+
+  <!-- row 19: rtmp 38.3% -->
+  <text x="155" y="524" class="label" text-anchor="end">rtmp</text>
+  <rect x="160" y="511" width="180" height="16" class="bar-low"/>
+  <text x="636" y="524" class="pct">38.3%</text>
+
+  <!-- row 20: ffmpeg_extract 10.6% -->
+  <text x="155" y="548" class="label" text-anchor="end">ffmpeg_extract</text>
+  <rect x="160" y="535" width="50" height="16" class="bar-low"/>
+  <text x="636" y="548" class="pct">10.6%</text>
+
+  <!-- row 21: api 7.1% -->
+  <text x="155" y="572" class="label" text-anchor="end">api</text>
+  <rect x="160" y="559" width="33" height="16" class="bar-low"/>
+  <text x="636" y="572" class="pct">7.1%</text>
+
+  <!-- row 22: lib 5.9% -->
+  <text x="155" y="596" class="label" text-anchor="end">lib</text>
+  <rect x="160" y="583" width="28" height="16" class="bar-low"/>
+  <text x="636" y="596" class="pct">5.9%</text>
+
+  <!-- row 23: diag 3.8% -->
+  <text x="155" y="620" class="label" text-anchor="end">diag</text>
+  <rect x="160" y="607" width="18" height="16" class="bar-low"/>
+  <text x="636" y="620" class="pct">3.8%</text>
+
+  <!-- row 24: h264_transcoder 0% -->
+  <text x="155" y="644" class="label" text-anchor="end">h264_transcoder</text>
+  <text x="636" y="644" class="pct-zero">0%</text>
+
+  <!-- row 25: db 0% -->
+  <text x="155" y="668" class="label" text-anchor="end">db</text>
+  <text x="636" y="668" class="pct-zero">0%</text>
+
+  <!-- row 26: main 0% -->
+  <text x="155" y="692" class="label" text-anchor="end">main</text>
+  <text x="636" y="692" class="pct-zero">0%</text>
+
+  <!-- legend -->
+  <rect x="160" y="740" width="10" height="10" class="bar-high legend-box"/>
+  <text x="175" y="750" class="legend">≥80% (14 modules)</text>
+  <rect x="295" y="740" width="10" height="10" class="bar-mid legend-box"/>
+  <text x="310" y="750" class="legend">50–79% (6 modules)</text>
+  <rect x="430" y="740" width="10" height="10" class="bar-low legend-box"/>
+  <text x="445" y="750" class="legend">&lt;50% (7 modules)</text>
+</svg>
