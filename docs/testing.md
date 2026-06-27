@@ -887,3 +887,85 @@ Below is the structured data of parent and child process resources collected dir
 #### 4. Verification and Correctness
 * **Result:** Correctness checks successfully verified all 4 output streams (RTMP source, RTMP 720p, SRT source, SRT 720p) for every test case.
 * **Fix details:** Setting a GOP size of 30 frames (`-g 30`) on the publisher allowed `ffprobe` to receive keyframes and sequence headers immediately, validating the stream resolution on all egress types.
+
+---
+
+## Memory Optimization Findings (2026-06-27)
+
+### Ring and Queue Sizing
+
+Rings are the dominant memory consumer in `restream`. Each slot holds an `Arc<MediaPacket>` that persists until the slot is overwritten — so the full ring capacity is always resident once the ring has wrapped. The right mental model is: **ring RSS ≈ capacity × avg_packet_payload**.
+
+The scale test now samples `/api/v1/engine/telemetry` → `memoryAccounting` every 5 s to track retained payload per ring type.
+
+**Optimizations applied (on top of commit `7c8c343` which dropped rings from 4096→1024):**
+
+| Component | Before | After | Rationale |
+|---|---|---|---|
+| Source ring (ingest) | 1024 slots | 1024 slots (unchanged) | Must cover 5 s @ 170 pkt/s (4K60); 1024/170 = 6 s ✓ |
+| Transcoder ring (output) | 1024 slots | **512 slots** | Transcoder output is always single-stream 720p30 (~80 pkt/s); 512/80 = 6.4 s ✓ |
+| Shared TS mux ring | 1024 chunks | **256 chunks** | SRT protocol's own 12 MB send buffer is the real jitter absorber; ring only bridges mux→socket (sub-ms) |
+| AVIO queue | 2 MB | **512 KB** | Peak measured HWM = 398 KB at 8 Mbps RTMP; 0 blocked_writes across all 15 test cases |
+
+**Measured savings (15-case scale test, 0 ring overflows):**
+
+| Config | RSS before | RSS after | Saved | Ring payload before | After |
+|---|---|---|---|---|---|
+| h265-srt 4M | 278 MB | 205 MB | **−73 MB** | 94 MB | 47 MB |
+| h265-srt-multi 8M | 259 MB | 237 MB | −22 MB | 108 MB | 77 MB |
+| h264-rtmp 8M | 127 MB | 116 MB | −11 MB | 42 MB | 35 MB |
+| **All 15 cases** | — | — | **−205 MB total** | — | **−175 MB total** |
+
+### Adaptive Ring Sizing for Multi-Track Streams
+
+The source ring is created at the default (1024 slots) before the stream format is known. After the SRT probe fires (~2–3 s), `adapt_pipeline_ring()` computes the needed capacity:
+
+```
+needed = ceil((video_fps + audio_track_count × 50) × 6.0)
+```
+
+If `needed > current_capacity`, it swaps in a larger ring and cancels any egress connections that attached to the old ring (so the reconciler restarts them on the correctly-sized one within ~1 s). At stream start this reconnect is invisible to viewers.
+
+**Example:** 2v16a (H.264 30 fps + 16 AAC tracks) → 830 pkt/s → 4980 slots (6.0 s headroom). Without adaptation: 1024/830 = 1.2 s — below the 5 s resilience requirement.
+
+4K 60 fps single-track → 110 pkt/s → 1024/110 = 9.3 s — the default already covers it, no resize.
+
+Telemetry: `GET /api/v1/pipelines/{id}/telemetry` → `sourceRing.bufferDepthSecs` and `sourceRing.estimatedPktRatePerSec`.
+
+### CPU Profile
+
+Profiled with `perf record -e task-clock -F 999` for 30 s under RTMP 8 Mbps → RTMP source + SRT source + SRT 720p transcode (bench binary, WSL2 kernel 6.18 — hardware PMU not available, software sampling used).
+
+| Self % | Function | Notes |
+|---|---|---|
+| 3.28% | `__memmove_avx_unaligned_erms` | TS mux accumulator: FFmpeg AVIO output → `ts_accum` BytesMut copy |
+| 2.60% | `pthread_mutex_lock` | SRT internal queues + MemoryQueue mutex |
+| 1.55% | `__libc_recvmsg` | SRT UDP receive syscall |
+| 1.24% | `srt::CRcvQueue::worker` | SRT receive queue OS thread |
+| 1.18% | `__vdso_clock_gettime` | SRT latency tracking (called per-packet) |
+| 0.87% | `_int_malloc` | Per-packet `Arc::new(MediaPacket)` heap allocation |
+| 0.56% | `arc_swap::debt::Debt::pay_all` | Ring slot Arc reference cleanup on read |
+| 0.43% | `VecDeque::extend` | AVIO queue byte write |
+| 0.43% | `TsMuxer::mux_packet` | MPEG-TS packetization |
+
+**Top optimization opportunity (not yet implemented):** 3.7% self-time in `memmove` + `VecDeque::extend` traces to a two-copy path: FFmpeg writes to its internal AVIO buffer (32 KB fixed) → we `extend_from_slice` into `ts_accum` (BytesMut) → push to TsChunkRing. Eliminating one copy (have FFmpeg write directly into pre-sized BytesMut) would save ~2% CPU but requires refactoring the AVIO→TsMux interface.
+
+### Profiling Setup on WSL2
+
+Hardware PMU counters (`cycles`, `instructions`, `cache-misses`) are not available under Hyper-V. Use software sampling instead:
+
+```bash
+sudo sh -c 'echo -1 > /proc/sys/kernel/perf_event_paranoid'
+sudo apt-get install -y linux-tools-generic
+PERF=/usr/lib/linux-tools/6.8.0-124-generic/perf
+
+$PERF record -F 999 -p <restream_pid> --call-graph dwarf -o /tmp/perf.data -- sleep 30
+$PERF report -i /tmp/perf.data --stdio --demangle --no-children --sort=sym 2>&1 | \
+  grep -v '\[k\]\|unknown' | awk '($1+0) >= 0.3 {print}' | head -30
+```
+
+**Build safety on WSL2:** never run `cargo build/clippy/test` while restream + FFmpeg processes are running. The debug binary + FFmpeg children + compiler (`clippy-driver` ~690 MB) can push `Committed_AS` past 8 GB causing a kernel panic. Kill all media processes first:
+
+```bash
+pkill -x restream; pkill -x mediamtx; pkill -x ffmpeg
+```
