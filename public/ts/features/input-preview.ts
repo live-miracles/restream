@@ -1,15 +1,62 @@
 import { formatChannelCount, formatCodecName } from '../core/utils.js';
 import type { AudioTrack, PipelineView } from '../types.js';
 import { withBasePath } from '../core/base-path.js';
-import { audioTrackIdentifier, getAudioTrackLabel } from './audio-track-labels.js';
+import { getAudioTrackLabel } from './audio-track-labels.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
 const HLS_READY_RETRY_MS = 1000;
 
 const hlsInstances = new WeakMap<HTMLVideoElement, Hls>();
-
+const previewControllers = new WeakMap<HTMLElement, AbortController>();
+const hlsSourceObjectUrls = new WeakMap<HTMLVideoElement, string>();
 function buildInputPreviewUrl(pipelineId: string): string {
     return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/index.m3u8`);
+}
+
+function quoteHlsAttribute(value: string): string {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function buildHlsJsSourceUrl(video: HTMLVideoElement, pipe: PipelineView, mediaPlaylistUrl: string): string {
+    const tracks = pipe.input.audioTracks || [];
+    if (tracks.length <= 1) return mediaPlaylistUrl;
+
+    const groupId = 'source-audio';
+    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+    tracks.forEach((track, index) => {
+        const attrs = [
+            'TYPE=AUDIO',
+            `GROUP-ID=${quoteHlsAttribute(groupId)}`,
+            `NAME=${quoteHlsAttribute(getAudioTrackLabel(pipe.id, track, index))}`,
+            `DEFAULT=${index === 0 ? 'YES' : 'NO'}`,
+            'AUTOSELECT=YES',
+        ];
+        if (track.language?.trim()) {
+            attrs.push(`LANGUAGE=${quoteHlsAttribute(track.language.trim())}`);
+        }
+        if (track.channels) {
+            attrs.push(`CHANNELS=${quoteHlsAttribute(String(track.channels))}`);
+        }
+        lines.push(`#EXT-X-MEDIA:${attrs.join(',')}`);
+    });
+
+    const streamAttrs = ['BANDWIDTH=8000000', `AUDIO=${quoteHlsAttribute(groupId)}`];
+    if (pipe.input.video?.width && pipe.input.video?.height) {
+        streamAttrs.push(`RESOLUTION=${pipe.input.video.width}x${pipe.input.video.height}`);
+    }
+    if (pipe.input.video?.fps) {
+        streamAttrs.push(`FRAME-RATE=${Number(pipe.input.video.fps).toFixed(3)}`);
+    }
+    lines.push(`#EXT-X-STREAM-INF:${streamAttrs.join(',')}`);
+    lines.push(new URL(mediaPlaylistUrl, window.location.href).toString());
+
+    const previousUrl = hlsSourceObjectUrls.get(video);
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    const objectUrl = URL.createObjectURL(
+        new Blob([`${lines.join('\n')}\n`], { type: 'application/vnd.apple.mpegurl' }),
+    );
+    hlsSourceObjectUrls.set(video, objectUrl);
+    return objectUrl;
 }
 
 function formatPreviewSampleRate(rate: number | null | undefined): string | null {
@@ -33,6 +80,30 @@ function getPreviewAudioMetadata(pipe: PipelineView, position: number): AudioTra
         tracks.find((_, index) => index === position) ||
         null
     );
+}
+
+function buildPreviewTrackIdentifier(
+    track: AudioTrack | null | undefined,
+    position: number,
+    displayLabel: string,
+): string | null {
+    if (!track) return null;
+    const parts: string[] = [];
+    if (Number.isFinite(track.pid as number)) {
+        parts.push(`PID 0x${Number(track.pid).toString(16).toUpperCase()}`);
+    }
+    if (Number.isFinite(track.index as number)) {
+        parts.push(`Track ${Number(track.index) + 1}`);
+    } else {
+        parts.push(`Track ${position + 1}`);
+    }
+    if (
+        track.language?.trim() &&
+        track.language.trim().toUpperCase() !== displayLabel.trim().toUpperCase()
+    ) {
+        parts.push(track.language.trim().toUpperCase());
+    }
+    return parts.join(' / ');
 }
 
 function sleep(ms: number): Promise<void> {
@@ -65,12 +136,18 @@ function buildPreviewAudioDetail(
     nativeTrack: PreviewAudioTrack,
 ): string {
     const metadata = getPreviewAudioMetadata(pipe, position);
+    const displayLabel = getAudioTrackLabel(pipe.id, metadata, position);
+    const friendlyName = getFriendlyAudioTrackName(nativeTrack.label);
+    const nativeLabel =
+        friendlyName && friendlyName.toLowerCase() !== displayLabel.toLowerCase()
+            ? friendlyName
+            : null;
     const detailParts = [
         formatCodecName(metadata?.codec),
         metadata?.channels ? formatChannelCount(metadata.channels) : null,
         formatPreviewSampleRate(metadata?.sample_rate),
-        metadata ? audioTrackIdentifier(metadata, position) : null,
-        getFriendlyAudioTrackName(nativeTrack.label),
+        buildPreviewTrackIdentifier(metadata, position, displayLabel),
+        nativeLabel,
     ].filter(Boolean);
 
     return detailParts.join(' / ') || 'Audio track';
@@ -82,10 +159,17 @@ function destroyHls(video: HTMLVideoElement): void {
         hls.destroy();
         hlsInstances.delete(video);
     }
+    const sourceObjectUrl = hlsSourceObjectUrls.get(video);
+    if (sourceObjectUrl) {
+        URL.revokeObjectURL(sourceObjectUrl);
+        hlsSourceObjectUrls.delete(video);
+    }
 }
 
 export function clearInputPreview(playerElem: HTMLElement | null): void {
     if (!playerElem) return;
+    previewControllers.get(playerElem)?.abort();
+    previewControllers.delete(playerElem);
     const existingVideo = playerElem.querySelector<HTMLVideoElement>(
         INPUT_PREVIEW_VIDEO_SELECTOR,
     );
@@ -98,6 +182,9 @@ export function clearInputPreview(playerElem: HTMLElement | null): void {
     }
     playerElem.replaceChildren();
     delete playerElem.dataset.previewSrc;
+    document
+        .querySelectorAll('[data-role="input-preview-audio-menu"]')
+        .forEach((menu) => menu.remove());
 }
 
 function setPreviewMessage(playerElem: HTMLElement, message: string): void {
@@ -122,6 +209,8 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     }
 
     clearInputPreview(playerElem);
+    const previewController = new AbortController();
+    previewControllers.set(playerElem, previewController);
 
     const shell = document.createElement('div');
     shell.style.position = 'relative';
@@ -171,12 +260,31 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     audioPickerButton.setAttribute('aria-expanded', 'false');
 
     const audioPickerMenu = document.createElement('div');
+    audioPickerMenu.dataset.role = 'input-preview-audio-menu';
     audioPickerMenu.className =
-        'absolute right-0 top-full mt-1 hidden max-h-72 w-72 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 shadow-xl';
+        'fixed hidden max-h-96 w-96 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 text-xs shadow-xl';
+    audioPickerMenu.style.zIndex = '1000';
+    audioPickerMenu.style.scrollbarGutter = 'stable';
     audioPickerMenu.setAttribute('role', 'listbox');
     audioPickerMenu.setAttribute('aria-label', 'Preview audio track');
 
-    audioPicker.append(audioPickerButton, audioPickerMenu);
+    audioPicker.append(audioPickerButton);
+    document.body.appendChild(audioPickerMenu);
+
+    function positionAudioTrackPicker(): void {
+        const rect = audioPickerButton.getBoundingClientRect();
+        const viewportMargin = 8;
+        const menuWidth = Math.min(384, window.innerWidth - viewportMargin * 2);
+        const left = Math.max(
+            viewportMargin,
+            Math.min(window.innerWidth - menuWidth - viewportMargin, rect.right - menuWidth),
+        );
+        const top = Math.min(rect.bottom + 4, window.innerHeight - viewportMargin);
+        audioPickerMenu.style.width = `${menuWidth}px`;
+        audioPickerMenu.style.left = `${left}px`;
+        audioPickerMenu.style.top = `${top}px`;
+        audioPickerMenu.style.maxHeight = `${Math.max(120, window.innerHeight - top - viewportMargin)}px`;
+    }
 
     function closeAudioTrackPicker(): void {
         audioPickerMenu.classList.add('hidden');
@@ -207,7 +315,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             const item = document.createElement('button');
             item.type = 'button';
             item.className =
-                'flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left hover:bg-base-200';
+                'flex w-full items-start gap-2 rounded-btn py-2 pl-2 pr-4 text-left hover:bg-base-200';
             if (track.switchable === false) {
                 item.className += ' cursor-default opacity-70 hover:bg-transparent';
             }
@@ -219,14 +327,14 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             selectedMark.textContent = track.enabled ? '>' : '';
 
             const text = document.createElement('span');
-            text.className = 'min-w-0';
+            text.className = 'min-w-0 flex-1 pr-2';
 
             const title = document.createElement('span');
             title.className = 'block font-semibold';
             title.textContent = getAudioTrackLabel(pipe.id, getPreviewAudioMetadata(pipe, i), i);
 
             const detail = document.createElement('span');
-            detail.className = 'block truncate opacity-70';
+            detail.className = 'block whitespace-normal break-words leading-snug opacity-70';
             detail.textContent = buildPreviewAudioDetail(pipe, i, track);
 
             text.append(title, detail);
@@ -247,45 +355,33 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         audioPicker.style.display = '';
     }
 
-    function buildMetadataAudioTrackPicker(): void {
-        const tracks = pipe.input.audioTracks || [];
-        if (tracks.length <= 1) return;
-        const fakeTrackList: PreviewAudioTrackList = {
-            length: tracks.length,
-            onaddtrack: null,
-            onchange: null,
-            onremovetrack: null,
-        };
-        tracks.forEach((track, index) => {
-            fakeTrackList[index] = {
-                id: String(track.pid ?? track.index ?? index),
-                kind: 'metadata',
-                label: getAudioTrackLabel(pipe.id, track, index),
-                language: track.language || '',
-                enabled: index === 0,
-                switchable: false,
-            };
-        });
-        buildAudioTrackPicker(fakeTrackList);
-    }
-
     audioPickerButton.addEventListener('click', (event) => {
         event.stopPropagation();
         const shouldOpen = audioPickerMenu.classList.contains('hidden');
+        if (shouldOpen) positionAudioTrackPicker();
         audioPickerMenu.classList.toggle('hidden', !shouldOpen);
         audioPickerButton.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-    });
+    }, { signal: previewController.signal });
 
     audioPickerMenu.addEventListener('click', (event) => {
         event.stopPropagation();
-    });
+    }, { signal: previewController.signal });
 
     function handleAudioPickerDocumentClick(): void {
         if (video.dataset.previewDisposed === 'true') return;
         closeAudioTrackPicker();
     }
 
-    document.addEventListener('click', handleAudioPickerDocumentClick);
+    document.addEventListener('click', handleAudioPickerDocumentClick, {
+        signal: previewController.signal,
+    });
+    window.addEventListener('resize', positionAudioTrackPicker, {
+        signal: previewController.signal,
+    });
+    window.addEventListener('scroll', positionAudioTrackPicker, {
+        capture: true,
+        signal: previewController.signal,
+    });
 
     const spinner = document.createElement('span');
     spinner.style.cssText =
@@ -372,14 +468,11 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         });
         hlsInstances.set(video, hls);
 
-        hls.loadSource(previewSrc);
+        hls.loadSource(buildHlsJsSourceUrl(video, pipe, previewSrc));
         hls.attachMedia(video);
 
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
             if (video.dataset.previewDisposed === 'true') return;
-            if (!hls.audioTracks || hls.audioTracks.length <= 1) {
-                buildMetadataAudioTrackPicker();
-            }
             attemptPlayback();
         });
 
@@ -431,8 +524,6 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
                 buildAudioTrackPicker(video.audioTracks);
                 video.audioTracks.onaddtrack = () => buildAudioTrackPicker(video.audioTracks);
                 video.audioTracks.onchange = () => buildAudioTrackPicker(video.audioTracks);
-            } else {
-                buildMetadataAudioTrackPicker();
             }
             attemptPlayback();
         });

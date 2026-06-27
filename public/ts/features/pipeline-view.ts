@@ -16,7 +16,6 @@ import { clearInputPreview, renderInputPreview } from './input-preview.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { AudioTrack, PipelineView, OutputView } from '../types.js';
 import {
-    audioTrackIdentifier,
     audioTrackKey,
     getAudioTrackLabel,
     getAudioTrackStoredLabel,
@@ -60,6 +59,7 @@ const ingestUiState = {
 };
 
 const audioLabelEditKeys = new Set<string>();
+const audioLabelDrafts = new Map<string, string>();
 
 function formatProgressFps(value: number | null | undefined): string | null {
     if (!Number.isFinite(value) || (value as number) <= 0) return null;
@@ -70,6 +70,17 @@ function formatSampleRate(value: number | null | undefined): string {
     if (!Number.isFinite(value) || (value as number) <= 0) return '--';
     const khz = (value as number) / 1000;
     return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
+}
+
+function formatAudioTrackIdentity(track: AudioTrack, label: string): string {
+    const parts: string[] = [];
+    if (Number.isFinite(track.pid as number)) {
+        parts.push(`PID 0x${Number(track.pid).toString(16).toUpperCase()}`);
+    }
+    if (track.language?.trim() && track.language.trim().toUpperCase() !== label.trim().toUpperCase()) {
+        parts.push(track.language.trim().toUpperCase());
+    }
+    return parts.join(' / ') || 'Metadata';
 }
 
 function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void {
@@ -87,10 +98,11 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
             const codec = formatCodecName(track.codec) || track.codec || '--';
             const label = getAudioTrackLabel(pipelineId, track, index);
             const storedLabel = getAudioTrackStoredLabel(pipelineId, track, index);
-            const identity = audioTrackIdentifier(track, index);
+            const identity = formatAudioTrackIdentity(track, label);
             const key = audioTrackKey(track, index);
             const editKey = `${pipelineId}:${key}`;
             const isEditing = audioLabelEditKeys.has(editKey);
+            const draftLabel = audioLabelDrafts.get(editKey) ?? storedLabel;
             const channelLabel =
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
@@ -103,7 +115,7 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                         class="input input-bordered input-xs mt-1 w-full"
                         data-audio-label-input="${escapeHtml(key)}"
                         data-audio-label-index="${index}"
-                        value="${escapeHtml(storedLabel)}"
+                        value="${escapeHtml(draftLabel)}"
                         placeholder="${escapeHtml(label)}"
                         aria-label="Audio track name"
                     />
@@ -154,14 +166,22 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                 const action = button.dataset.audioLabelAction;
                 if (action === 'edit') {
                     audioLabelEditKeys.add(editKey);
+                    audioLabelDrafts.set(editKey, getAudioTrackStoredLabel(pipelineId, track, index));
                 } else if (action === 'cancel') {
                     audioLabelEditKeys.delete(editKey);
+                    audioLabelDrafts.delete(editKey);
                 } else if (action === 'save') {
                     const input = audioTracksContainer.querySelector<HTMLInputElement>(
                         `input[data-audio-label-index="${index}"]`,
                     );
-                    setAudioTrackStoredLabel(pipelineId, track, index, input?.value || '');
+                    setAudioTrackStoredLabel(
+                        pipelineId,
+                        track,
+                        index,
+                        audioLabelDrafts.get(editKey) ?? input?.value ?? '',
+                    );
                     audioLabelEditKeys.delete(editKey);
+                    audioLabelDrafts.delete(editKey);
                 }
                 renderAudioTracksTable(pipelineId, tracks);
             });
@@ -171,14 +191,25 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
         .forEach((input) => {
             const index = Number(input.dataset.audioLabelIndex);
             if (!Number.isFinite(index)) return;
+            const editKey = `${pipelineId}:${audioTrackKey(tracks[index], index)}`;
+            input.addEventListener('input', () => {
+                audioLabelDrafts.set(editKey, input.value);
+            });
             input.addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') {
-                    setAudioTrackStoredLabel(pipelineId, tracks[index], index, input.value);
-                    audioLabelEditKeys.delete(`${pipelineId}:${audioTrackKey(tracks[index], index)}`);
+                    setAudioTrackStoredLabel(
+                        pipelineId,
+                        tracks[index],
+                        index,
+                        audioLabelDrafts.get(editKey) ?? input.value,
+                    );
+                    audioLabelEditKeys.delete(editKey);
+                    audioLabelDrafts.delete(editKey);
                     renderAudioTracksTable(pipelineId, tracks);
                 }
                 if (event.key === 'Escape') {
-                    audioLabelEditKeys.delete(`${pipelineId}:${audioTrackKey(tracks[index], index)}`);
+                    audioLabelEditKeys.delete(editKey);
+                    audioLabelDrafts.delete(editKey);
                     renderAudioTracksTable(pipelineId, tracks);
                 }
             });

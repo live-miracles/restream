@@ -962,18 +962,6 @@ impl TsMuxer {
     }
 
     fn write_pmt(&mut self) {
-        let mut ts = [0xFFu8; TS_PACKET_SIZE];
-        ts[0] = TS_SYNC_BYTE;
-        ts[1] = 0x40 | ((self.pmt_pid >> 8) as u8 & 0x1F);
-        ts[2] = self.pmt_pid as u8;
-        ts[3] = 0x10 | (self.pmt_cc & 0x0F);
-        self.pmt_cc = (self.pmt_cc + 1) & 0x0F;
-
-        ts[4] = 0x00; // pointer field
-
-        let pmt = &mut ts[5..];
-        pmt[0] = 0x02; // table_id
-        // section body: program_number(2) + version(1) + section(1) + last_section(1) + pcr_pid(2) + program_info_length(2) + stream entries + crc(4)
         let stream_descriptors: Vec<Vec<u8>> = self
             .streams
             .iter()
@@ -989,42 +977,68 @@ impl TsMuxer {
             .map(|(_, descriptors)| 5 + descriptors.len())
             .sum();
         let section_len = 9 + entry_size + 4; // 9 fixed + entries + CRC
-        pmt[1] = 0xB0 | ((section_len >> 8) as u8 & 0x0F);
-        pmt[2] = section_len as u8;
-        pmt[3] = 0x00;
-        pmt[4] = 0x01; // program_number = 1
-        pmt[5] = 0xC1; // version=0, current
-        pmt[6] = 0x00;
-        pmt[7] = 0x00;
-        pmt[8] = 0xE0 | ((self.pcr_pid >> 8) as u8 & 0x1F);
-        pmt[9] = self.pcr_pid as u8;
-        pmt[10] = 0xF0;
-        pmt[11] = 0x00; // program_info_length = 0
-
-        let mut pos = 12;
-        for (s, descriptors) in self.streams.iter().zip(stream_descriptors.iter()) {
-            pmt[pos] = s.stream_type;
-            pmt[pos + 1] = 0xE0 | ((s.pid >> 8) as u8 & 0x1F);
-            pmt[pos + 2] = s.pid as u8;
-            pmt[pos + 3] = 0xF0 | ((descriptors.len() >> 8) as u8 & 0x0F);
-            pmt[pos + 4] = descriptors.len() as u8;
-            if !descriptors.is_empty() {
-                let desc_start = pos + 5;
-                pmt[desc_start..desc_start + descriptors.len()].copy_from_slice(descriptors);
-            }
-            pos += 5 + descriptors.len();
+        if section_len > 1021 {
+            eprintln!(
+                "[mpegts] PMT too large: section_len={} streams={}",
+                section_len,
+                self.streams.len()
+            );
+            return;
         }
 
-        let crc_start = 5;
-        let crc_end = 5 + section_len - 4 + 3; // table_id through last entry
-        let crc = crc32_mpeg2(&ts[crc_start..crc_end]);
-        let crc_pos = crc_end;
-        ts[crc_pos] = (crc >> 24) as u8;
-        ts[crc_pos + 1] = (crc >> 16) as u8;
-        ts[crc_pos + 2] = (crc >> 8) as u8;
-        ts[crc_pos + 3] = crc as u8;
+        let mut section = Vec::with_capacity(3 + section_len);
+        section.push(0x02); // table_id
+        section.push(0xB0 | ((section_len >> 8) as u8 & 0x0F));
+        section.push(section_len as u8);
+        section.push(0x00);
+        section.push(0x01); // program_number = 1
+        section.push(0xC1); // version=0, current
+        section.push(0x00);
+        section.push(0x00);
+        section.push(0xE0 | ((self.pcr_pid >> 8) as u8 & 0x1F));
+        section.push(self.pcr_pid as u8);
+        section.push(0xF0);
+        section.push(0x00); // program_info_length = 0
 
-        self.output.extend_from_slice(&ts);
+        for (s, descriptors) in self.streams.iter().zip(stream_descriptors.iter()) {
+            section.push(s.stream_type);
+            section.push(0xE0 | ((s.pid >> 8) as u8 & 0x1F));
+            section.push(s.pid as u8);
+            section.push(0xF0 | ((descriptors.len() >> 8) as u8 & 0x0F));
+            section.push(descriptors.len() as u8);
+            section.extend_from_slice(descriptors);
+        }
+
+        let crc = crc32_mpeg2(&section);
+        section.push((crc >> 24) as u8);
+        section.push((crc >> 16) as u8);
+        section.push((crc >> 8) as u8);
+        section.push(crc as u8);
+
+        let mut offset = 0usize;
+        let mut first = true;
+        while offset < section.len() {
+            let mut ts = [0xFFu8; TS_PACKET_SIZE];
+            ts[0] = TS_SYNC_BYTE;
+            ts[1] = ((self.pmt_pid >> 8) as u8 & 0x1F) | if first { 0x40 } else { 0x00 };
+            ts[2] = self.pmt_pid as u8;
+            ts[3] = 0x10 | (self.pmt_cc & 0x0F);
+            self.pmt_cc = (self.pmt_cc + 1) & 0x0F;
+
+            let payload_start = if first {
+                ts[4] = 0x00; // pointer field
+                5
+            } else {
+                4
+            };
+            let capacity = TS_PACKET_SIZE - payload_start;
+            let n = capacity.min(section.len() - offset);
+            ts[payload_start..payload_start + n].copy_from_slice(&section[offset..offset + n]);
+            offset += n;
+            first = false;
+
+            self.output.extend_from_slice(&ts);
+        }
     }
 
     fn write_sdt(&mut self) {
@@ -2494,6 +2508,84 @@ mod tests {
         assert_eq!(probe.audio_tracks[0].language.as_deref(), Some("eng"));
         assert_eq!(probe.audio_tracks[1].pid, Some(0x102));
         assert_eq!(probe.audio_tracks[1].language.as_deref(), Some("spa"));
+    }
+
+    #[test]
+    fn mux_demux_32_audio_tracks_spans_pmt_packets() {
+        let video = VideoMeta {
+            codec: "h264".to_string(),
+            width: 640,
+            height: 360,
+            fps: 30.0,
+            bw: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let languages = [
+            "eng", "spa", "fra", "deu", "ita", "por", "nld", "swe", "nor", "dan", "fin", "pol",
+            "ces", "slk", "hun", "ron", "bul", "ell", "tur", "rus", "ukr", "ara", "heb", "hin",
+            "tam", "tel", "jpn", "kor", "zho", "vie", "tha", "ind",
+        ];
+        let audio_tracks = languages
+            .iter()
+            .enumerate()
+            .map(|(index, language)| AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 1,
+                channel_layout: None,
+                track_index: index as u32,
+                pid: None,
+                language: Some((*language).to_string()),
+                title: None,
+                profile: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut muxer = TsMuxer::new(Some(&video), &audio_tracks);
+        let mut all_ts = Vec::new();
+        let video_payload = vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x88];
+        let audio_payload = vec![0xFF, 0xF1, 0x4C, 0x40, 0x02, 0x1F, 0xFC, 0x21, 0x10];
+
+        all_ts.extend_from_slice(muxer.mux_packet(MediaType::Video, 0, 0, 0, true, &video_payload));
+        for index in 0..audio_tracks.len() {
+            all_ts.extend_from_slice(muxer.mux_packet(
+                MediaType::Audio,
+                index as u32,
+                0,
+                0,
+                false,
+                &audio_payload,
+            ));
+        }
+
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&all_ts);
+        demuxer.flush();
+        let packets = demuxer.drain();
+        let probe = demuxer
+            .take_probe()
+            .expect("32-track round-trip should produce a probe");
+
+        assert_eq!(probe.video.as_ref().and_then(|v| v.pid), Some(0x100));
+        assert_eq!(probe.audio_tracks.len(), 32);
+        assert_eq!(probe.audio_tracks[0].pid, Some(0x101));
+        assert_eq!(probe.audio_tracks[0].language.as_deref(), Some("eng"));
+        assert_eq!(probe.audio_tracks[31].pid, Some(0x120));
+        assert_eq!(probe.audio_tracks[31].language.as_deref(), Some("ind"));
+        assert_eq!(
+            packets
+                .iter()
+                .filter(|packet| packet.media_type == MediaType::Audio)
+                .map(|packet| packet.track_index)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            32
+        );
     }
 
     #[test]
