@@ -97,7 +97,7 @@ export async function saveDashboardPassword(): Promise<void> {
 
 export async function logoutUser(): Promise<void> {
     await logout();
-    window.location.href = '/login';
+    window.location.href = withBasePath('/login');
 }
 
 // ── Ingest Security ───────────────────────────────────

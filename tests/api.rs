@@ -164,6 +164,40 @@ async fn unauthenticated_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn unauthenticated_app_pages_redirect_to_login() {
+    let (app, _) = test_app().await;
+    for uri in ["/", "/settings.html"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(resp.status().is_redirection(), "{uri} should redirect");
+        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/login");
+    }
+}
+
+#[tokio::test]
+async fn unauthenticated_static_assets_remain_available() {
+    let (app, _) = test_app().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/output.css")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
 // --- Pipeline CRUD via API ---
 
 #[tokio::test]
@@ -194,7 +228,7 @@ async fn pipeline_crud_via_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json["pipelines"].as_array().unwrap().len(), 1);
 
     // Update
     let uri = format!("/pipelines/{}", pipeline_id);

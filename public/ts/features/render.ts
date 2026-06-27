@@ -1,10 +1,7 @@
 import {
-    formatChannelCount,
-    formatCodecName,
+    escapeHtml,
     getStatusColor,
     getUrlParam,
-    msToHHMMSS,
-    setInnerText,
     setServerConfig,
     setUrlParam,
     writeSelectedPipelineHint,
@@ -12,7 +9,7 @@ import {
 import { renderPipelineInfoColumn, renderOutsColumn } from './pipeline-view.js';
 import { renderHealthBanner, renderServerMetrics } from './metrics.js';
 import { state } from '../core/state.js';
-import type { AudioTrack, OutputView, PipelineView } from '../types.js';
+import type { OutputView, PipelineView } from '../types.js';
 
 function isOutputIntentStopped(output: OutputView | null | undefined): boolean {
     return output?.desiredState === 'stopped';
@@ -26,50 +23,22 @@ function isOutputUnexpectedlyDown(output: OutputView | null | undefined): boolea
     return !isOutputIntentStopped(output) && !isOutputRunning(output);
 }
 
+function formatBitrate(kbps: number | null | undefined): string {
+    if (!Number.isFinite(kbps as number) || (kbps as number) < 0) return '--';
+    const value = kbps as number;
+    return value >= 1000 ? `${(value / 1000).toFixed(1)} Mb/s` : `${value.toFixed(0)} Kb/s`;
+}
+
 function renderPipelinesList(selectedPipe: string | null): void {
-    const inputOn = state.pipelines.filter((p) => p.input.status === 'on').length;
-    const inputWarning = state.pipelines.filter((p) => p.input.status === 'warning').length;
-    const inputError = state.pipelines.filter((p) => p.input.status === 'error').length;
-    const inputOff = state.pipelines.filter((p) => p.input.status === 'off').length;
-
-    setInnerText('pipe-cnt', state.pipelines.length);
-    setInnerText('pipe-oks', inputOn);
-    setInnerText('pipe-warnings', inputWarning);
-    setInnerText('pipe-errors', inputError);
-    setInnerText('pipe-offs', inputOff);
-
-    const outputTotal = state.pipelines.reduce((sum, p) => sum + p.outs.length, 0);
-    const outputOn = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => o.status === 'on' || o.status === 'running').length,
-        0,
-    );
-    const outputWarning = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => o.status === 'warning').length,
-        0,
-    );
-    const outputError = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length,
-        0,
-    );
-    const outputOff = state.pipelines.reduce(
-        (sum, p) => sum + p.outs.filter((o) => isOutputIntentStopped(o)).length,
-        0,
-    );
-
-    setInnerText('out-cnt', outputTotal);
-    setInnerText('out-oks', outputOn);
-    setInnerText('out-warnings', outputWarning);
-    setInnerText('out-errors', outputError);
-    setInnerText('out-offs', outputOff);
-
     const sortedPipelines = [...state.pipelines].sort((a, b) => a.name.localeCompare(b.name));
     const pipelinesList = document.getElementById('pipelines');
     if (!pipelinesList) return;
 
-    const badge = (val: number, cls: string, title = '') =>
-        val
-            ? `<div class="badge badge-sm ${cls} px-2"${title ? ` title="${title}"` : ''}>${val}</div>`
-            : '';
+    if (sortedPipelines.length === 0) {
+        pipelinesList.innerHTML =
+            '<li><div class="text-base-content/60 px-2 py-3 text-sm">No pipelines configured.</div></li>';
+        return;
+    }
 
     pipelinesList.innerHTML = sortedPipelines
         .map((p: PipelineView) => {
@@ -80,22 +49,26 @@ function renderPipelinesList(selectedPipe: string | null): void {
 
             const inputColor = getStatusColor(p.input.status);
             const outColor = getStatusColor(outStatus);
-            const selected = p.id === selectedPipe ? 'bg-base-100' : '';
-
-            const outOks = p.outs.filter((o) => o.status === 'on' || o.status === 'running').length;
-            const outWarnings = p.outs.filter((o) => o.status === 'warning').length;
-            const outErrors = p.outs.filter((o) => isOutputUnexpectedlyDown(o)).length;
-            const outOffs = p.outs.filter((o) => isOutputIntentStopped(o)).length;
+            const selected =
+                p.id === selectedPipe ? 'bg-base-100 border-base-content/10 border' : 'border border-transparent';
+            const runningOutputs = p.outs.filter(isOutputRunning).length;
+            const outputSummary = `${runningOutputs}/${p.outs.length}`;
+            const inputRate = formatBitrate(p.stats.inputBitrateKbps);
+            const outputRate = formatBitrate(p.stats.outputBitrateKbps);
 
             return `<li>
-                <div class="flex items-center gap-2 ${selected} js-select-pipeline" data-pipeline-id="${p.id}">
-                    <div class="rounded-box h-5 w-5" style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></div>
-                    ${badge(outOks, 'badge-success')}
-                    ${badge(outWarnings, 'badge-warning')}
-                    ${badge(outErrors, 'badge-error', 'Unexpectedly down outputs')}
-                    ${badge(outOffs, 'badge-ghost', 'Outputs intentionally stopped')}
-                    <a class="active">${p.name}</a>
-                </div>
+                <button type="button" class="${selected} hover:bg-base-100 flex w-full items-start gap-3 rounded-lg px-3 py-2 text-left js-select-pipeline" data-pipeline-id="${escapeHtml(p.id)}">
+                    <span class="mt-1 h-3 w-3 shrink-0 rounded-full" style="background: linear-gradient(90deg, ${inputColor}, ${inputColor} 45%, #242933 45%, #242933 55%, ${outColor} 55%)"></span>
+                    <span class="min-w-0 flex-1">
+                        <span class="block truncate text-sm font-semibold">${escapeHtml(p.name)}</span>
+                        <span class="text-base-content/60 mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs">
+                            <span>${escapeHtml(p.input.status)}</span>
+                            <span>${outputSummary} outputs</span>
+                            <span>${escapeHtml(inputRate)} in</span>
+                            <span>${escapeHtml(outputRate)} out</span>
+                        </span>
+                    </span>
+                </button>
             </li>`;
         })
         .join('');
@@ -116,165 +89,18 @@ function renderStatsColumn(selectedPipe: string | null): void {
         statsCol?.classList.remove('hidden');
     }
 
-    const activeInputs = state.pipelines;
-    const activeOuts = state.pipelines.flatMap((p) => p.outs);
-    const statsTable = document.getElementById('stats-table');
-    if (!statsTable) return;
-
-    const colCount = 10;
-
-    const sectionHeader = (label: string, count: number) =>
-        `<tr class="bg-base-100"><th colspan="${colCount}">${label} <span class="badge mx-1">${count}</span></th></tr>`;
-
-    const formatSampleRate = (value: number | null | undefined) => {
-        if (!Number.isFinite(value) || (value as number) <= 0) return '--';
-        const khz = (value as number) / 1000;
-        return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
-    };
-
-    const audioCells = (track: AudioTrack, index: number) =>
-        `<td>${index + 1}</td>` +
-        `<td>${formatCodecName(track.codec) || '--'}</td>` +
-        `<td>${track.channels ? formatChannelCount(track.channels) : '--'}</td>` +
-        `<td>${formatSampleRate(track.sample_rate)}</td>`;
-
-    const emptyAudioCells = '<td>--</td><td>--</td><td>--</td><td>--</td>';
-
-    let html = sectionHeader('Inputs', activeInputs.length);
-    activeInputs.forEach((p) => {
-        const video = p.input.video || {};
-        const tracks = p.input.audioTracks || [];
-        const bitrateMbps =
-            p.input.bitrateKbps != null ? (p.input.bitrateKbps / 1000).toFixed(2) : '--';
-        const rowCount = Math.max(tracks.length, 1);
-        const rowClass = p.input.status === 'warning' ? ' class="bg-warning/10"' : '';
-        const rs = rowCount > 1 ? ` rowspan="${rowCount}"` : '';
-
-        const sharedCells =
-            `<td${rs}>${p.input.time != null ? (msToHHMMSS(p.input.time) ?? '--') : '--'}</td>` +
-            `<td${rs}>${p.name}</td>` +
-            `<td${rs}>${bitrateMbps}</td>` +
-            `<td${rs}>${formatCodecName(video.codec) || '--'}</td>` +
-            `<td${rs}>${video.width && video.height ? `${video.width}x${video.height}` : '--'}</td>` +
-            `<td${rs}>${video.fps != null ? String(video.fps) : '--'}</td>`;
-
-        if (tracks.length === 0) {
-            html += `<tr${rowClass}>${sharedCells}${emptyAudioCells}</tr>`;
-        } else {
-            html += `<tr${rowClass}>${sharedCells}${audioCells(tracks[0], 0)}</tr>`;
-            for (let i = 1; i < tracks.length; i++) {
-                html += `<tr${rowClass}>${audioCells(tracks[i], i)}</tr>`;
-            }
-        }
-    });
-
-    html += sectionHeader('Outputs', activeOuts.length);
-    state.pipelines.forEach((p) => {
-        p.outs.forEach((o) => {
-            const isActive = o.status === 'on' || o.status === 'running' || o.status === 'warning';
-            const isUnexpectedlyDown = isOutputUnexpectedlyDown(o);
-            const bitrateMbps =
-                isActive && o.bitrateKbps != null && o.bitrateKbps >= 0
-                    ? (o.bitrateKbps / 1000).toFixed(2)
-                    : '--';
-
-            let videoCodec = '--';
-            let videoSize = '--';
-            let videoFps = '--';
-            let outTracks: AudioTrack[] = [];
-
-            if (isActive) {
-                const video = p.input.video || {};
-                const [videoPreset, audioRouting] = o.encoding.split('+');
-
-                if (videoPreset === '720p') {
-                    videoSize = '1280x720';
-                    videoCodec = 'H.264';
-                } else if (videoPreset === '1080p') {
-                    videoSize = '1920x1080';
-                    videoCodec = 'H.264';
-                } else if (videoPreset === '2160p' || videoPreset === '4k') {
-                    videoSize = '3840x2160';
-                    videoCodec = 'H.264';
-                } else if (videoPreset === '480p') {
-                    videoSize = '854x480';
-                    videoCodec = 'H.264';
-                } else {
-                    videoCodec = formatCodecName(video.codec) || '--';
-                    videoSize = video.width && video.height ? `${video.width}x${video.height}` : '--';
-                }
-                videoFps = video.fps != null ? String(video.fps) : '--';
-
-                let audioRoutingPart = audioRouting || '';
-                if (!audioRoutingPart && (videoPreset.startsWith('atrack:') || videoPreset.startsWith('downmix:') || videoPreset.startsWith('remap:'))) {
-                    audioRoutingPart = videoPreset;
-                }
-
-                if (audioRoutingPart) {
-                    const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(audioRoutingPart);
-                    const downmixMatch = /^downmix:(\d+)$/.exec(audioRoutingPart);
-                    const remapMatch = /^remap:(\d+):(\d+)(?::(\d+))?$/.exec(audioRoutingPart);
-
-                    if (atrackMatch) {
-                        const trackIndexes = atrackMatch[1].split(',').map(Number);
-                        outTracks = trackIndexes
-                            .map((idx) => p.input.audioTracks[idx])
-                            .filter(Boolean);
-                    } else if (downmixMatch) {
-                        const idx = Number(downmixMatch[1]);
-                        const origTrack = p.input.audioTracks[idx];
-                        if (origTrack) {
-                            outTracks = [{
-                                ...origTrack,
-                                channels: 2,
-                            }];
-                        }
-                    } else if (remapMatch) {
-                        let trackIdx = 0;
-                        if (remapMatch[3] !== undefined) {
-                            trackIdx = Number(remapMatch[1]);
-                        }
-                        const origTrack = p.input.audioTracks[trackIdx];
-                        if (origTrack) {
-                            outTracks = [{
-                                ...origTrack,
-                                channels: 2,
-                            }];
-                        }
-                    }
-                } else {
-                    outTracks = p.input.audioTracks.length > 0 ? [p.input.audioTracks[0]] : [];
-                }
-            }
-
-            const rowCount = Math.max(outTracks.length, 1);
-            const rowClass = isUnexpectedlyDown
-                ? ' class="bg-error/10"'
-                : o.status === 'warning'
-                  ? ' class="bg-warning/10"'
-                  : '';
-            const rs = rowCount > 1 ? ` rowspan="${rowCount}"` : '';
-
-            const sharedCells =
-                `<td${rs}>${o.time != null ? (msToHHMMSS(o.time) ?? '--') : '--'}</td>` +
-                `<td${rs}>${o.pipe}: ${o.name}</td>` +
-                `<td${rs}>${bitrateMbps}</td>` +
-                `<td${rs}>${videoCodec}</td>` +
-                `<td${rs}>${videoSize}</td>` +
-                `<td${rs}>${videoFps}</td>`;
-
-            if (outTracks.length === 0) {
-                html += `<tr${rowClass}>${sharedCells}${emptyAudioCells}</tr>`;
-            } else {
-                html += `<tr${rowClass}>${sharedCells}${audioCells(outTracks[0], 0)}</tr>`;
-                for (let i = 1; i < outTracks.length; i++) {
-                    html += `<tr${rowClass}>${audioCells(outTracks[i], i)}</tr>`;
-                }
-            }
-        });
-    });
-
-    statsTable.innerHTML = html;
+    if (statsCol) {
+        statsCol.innerHTML = `<section class="flex min-h-[22rem] items-center justify-center">
+            <div class="max-w-md text-center">
+                <h2 class="text-lg font-semibold">${state.pipelines.length ? 'No pipeline selected' : 'No pipelines configured'}</h2>
+                <p class="text-base-content/60 mt-2 text-sm">${state.pipelines.length ? 'Pipeline details, ingest preview, outputs, and controls appear here.' : 'Create a pipeline to start configuring ingest and outputs.'}</p>
+                <button type="button" class="btn btn-sm btn-accent btn-outline mt-4" id="pipeline-empty-add-btn">Add Pipeline</button>
+            </div>
+        </section>`;
+        const addBtn = document.getElementById('pipeline-empty-add-btn');
+        if (addBtn) addBtn.onclick = () => void window.addPipeBtn();
+    }
+    return;
 }
 
 function getRenderableSelectedPipe(): string | null {

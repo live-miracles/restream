@@ -515,10 +515,20 @@ async fn css_handler() -> impl IntoResponse {
     serve_embedded("output.css")
 }
 
-async fn spa_fallback_handler(uri: axum::http::Uri) -> impl IntoResponse {
+async fn spa_fallback_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
     if !path.is_empty() && path.contains('.') {
+        if path.ends_with(".html") && !request_is_authenticated(&state, &headers).await {
+            return Redirect::to("/login").into_response();
+        }
         return serve_embedded(path).into_response();
+    }
+    if !request_is_authenticated(&state, &headers).await {
+        return Redirect::to("/login").into_response();
     }
     serve_embedded("index.html").into_response()
 }

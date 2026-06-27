@@ -74,7 +74,7 @@ async function apiRequest<T = unknown>(
     }
 
     if (response.status === 401) {
-        window.location.href = '/login';
+        window.location.href = withBasePath('/login');
         return null;
     }
 

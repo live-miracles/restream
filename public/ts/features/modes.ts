@@ -12,6 +12,9 @@ let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
 let inspectGraphInFlight: Promise<void> | null = null;
+let inspectGraphAutoRefresh = true;
+let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
+const INSPECT_GRAPH_REFRESH_MS = 5000;
 
 function normalizeMode(mode: string | null): DashboardMode {
     if (mode && validModes.has(mode)) return mode as DashboardMode;
@@ -180,8 +183,19 @@ function renderInspect(): void {
     renderInspectSummary(pipe);
     renderInspectDiagnostics(pipe);
 
-    const refreshBtn = document.getElementById('inspect-refresh-graph-btn');
-    if (refreshBtn) refreshBtn.onclick = () => void refreshInspectGraph();
+    const refreshBtn = document.getElementById('inspect-refresh-graph-btn') as HTMLButtonElement | null;
+    if (refreshBtn) {
+        refreshBtn.textContent = inspectGraphAutoRefresh ? 'Stop Refresh' : 'Auto Refresh';
+        refreshBtn.classList.toggle('btn-accent', inspectGraphAutoRefresh);
+        refreshBtn.classList.toggle('btn-outline', !inspectGraphAutoRefresh);
+        refreshBtn.setAttribute('aria-pressed', inspectGraphAutoRefresh ? 'true' : 'false');
+        refreshBtn.onclick = () => {
+            inspectGraphAutoRefresh = !inspectGraphAutoRefresh;
+            syncInspectGraphAutoRefresh();
+            renderInspect();
+            if (inspectGraphAutoRefresh) void refreshInspectGraph();
+        };
+    }
     const diagBtn = document.getElementById('inspect-open-diagnostics-btn') as HTMLButtonElement | null;
     if (diagBtn) {
         diagBtn.disabled = !pipe || pipe.input.status !== 'on';
@@ -193,6 +207,7 @@ function renderInspect(): void {
     if (pipe && inspectGraphPipelineId !== pipe.id && !inspectGraphInFlight) {
         void refreshInspectGraph();
     }
+    syncInspectGraphAutoRefresh();
 }
 
 function renderInspectSummary(pipe: PipelineView | null): void {
@@ -291,6 +306,17 @@ async function refreshInspectGraph(): Promise<void> {
     }
 }
 
+function syncInspectGraphAutoRefresh(): void {
+    if (inspectGraphTimer) {
+        clearInterval(inspectGraphTimer);
+        inspectGraphTimer = null;
+    }
+    if (!inspectGraphAutoRefresh || currentMode !== 'inspect' || !getInspectPipeline()) return;
+    inspectGraphTimer = setInterval(() => {
+        if (!document.hidden) void refreshInspectGraph();
+    }, INSPECT_GRAPH_REFRESH_MS);
+}
+
 function renderAdmin(): void {
     const container = document.getElementById('admin-mode-content');
     if (!container) return;
@@ -361,6 +387,7 @@ function applyMode(mode: DashboardMode): void {
                     ? 'Graph and diagnostics'
                     : 'Configuration and runtime';
     }
+    syncInspectGraphAutoRefresh();
 }
 
 export function setDashboardMode(mode: string): void {
