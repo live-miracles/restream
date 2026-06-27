@@ -272,4 +272,171 @@ mod tests {
         // The first seq in the log should be > 1 (oldest evicted)
         assert!(events[0].seq > 1);
     }
+
+    #[test]
+    fn event_type_returns_correct_string_for_all_variants() {
+        assert_eq!(
+            EventKind::IngestConnected {
+                pipeline_id: "p".into(),
+                protocol: "rtmp".into(),
+                stream_key: "k".into()
+            }
+            .event_type(),
+            "ingest.connected"
+        );
+        assert_eq!(
+            EventKind::IngestDisconnected {
+                pipeline_id: "p".into(),
+                protocol: "srt".into()
+            }
+            .event_type(),
+            "ingest.disconnected"
+        );
+        assert_eq!(
+            EventKind::StageStarted {
+                pipeline_id: "p".into(),
+                encoding: "720p".into()
+            }
+            .event_type(),
+            "stage.started"
+        );
+        assert_eq!(
+            EventKind::StageStopped {
+                pipeline_id: "p".into(),
+                encoding: "720p".into()
+            }
+            .event_type(),
+            "stage.stopped"
+        );
+        assert_eq!(
+            EventKind::EgressStarted {
+                pipeline_id: "p".into(),
+                output_id: "o1".into()
+            }
+            .event_type(),
+            "egress.started"
+        );
+        assert_eq!(
+            EventKind::EgressStopped {
+                pipeline_id: "p".into(),
+                output_id: "o1".into()
+            }
+            .event_type(),
+            "egress.stopped"
+        );
+        assert_eq!(
+            EventKind::EgressFailed {
+                pipeline_id: "p".into(),
+                output_id: "o1".into(),
+                phase: "sending".into(),
+                error: "timeout".into()
+            }
+            .event_type(),
+            "egress.failed"
+        );
+    }
+
+    #[test]
+    fn output_id_is_some_for_egress_variants_and_none_for_ingest() {
+        let egress_started = EventKind::EgressStarted {
+            pipeline_id: "p".into(),
+            output_id: "out-1".into(),
+        };
+        assert_eq!(egress_started.output_id(), Some("out-1"));
+
+        let egress_stopped = EventKind::EgressStopped {
+            pipeline_id: "p".into(),
+            output_id: "out-2".into(),
+        };
+        assert_eq!(egress_stopped.output_id(), Some("out-2"));
+
+        let egress_failed = EventKind::EgressFailed {
+            pipeline_id: "p".into(),
+            output_id: "out-3".into(),
+            phase: "connecting".into(),
+            error: "refused".into(),
+        };
+        assert_eq!(egress_failed.output_id(), Some("out-3"));
+
+        let ingest = EventKind::IngestConnected {
+            pipeline_id: "p".into(),
+            protocol: "rtmp".into(),
+            stream_key: "k".into(),
+        };
+        assert!(ingest.output_id().is_none());
+
+        let stage = EventKind::StageStarted {
+            pipeline_id: "p".into(),
+            encoding: "source".into(),
+        };
+        assert!(stage.output_id().is_none());
+    }
+
+    #[test]
+    fn message_contains_identifying_info_for_all_variants() {
+        assert!(EventKind::IngestConnected {
+            pipeline_id: "p".into(),
+            protocol: "rtmp".into(),
+            stream_key: "k".into()
+        }
+        .message()
+        .contains("RTMP"));
+
+        assert!(EventKind::IngestDisconnected {
+            pipeline_id: "p".into(),
+            protocol: "srt".into()
+        }
+        .message()
+        .contains("SRT"));
+
+        assert!(EventKind::StageStarted {
+            pipeline_id: "p".into(),
+            encoding: "720p".into()
+        }
+        .message()
+        .contains("720p"));
+
+        assert!(EventKind::StageStopped {
+            pipeline_id: "p".into(),
+            encoding: "source".into()
+        }
+        .message()
+        .contains("source"));
+
+        assert!(EventKind::EgressStarted {
+            pipeline_id: "p".into(),
+            output_id: "out-abc".into()
+        }
+        .message()
+        .contains("out-abc"));
+
+        assert!(EventKind::EgressStopped {
+            pipeline_id: "p".into(),
+            output_id: "out-abc".into()
+        }
+        .message()
+        .contains("out-abc"));
+
+        let failed_msg = EventKind::EgressFailed {
+            pipeline_id: "p".into(),
+            output_id: "out-abc".into(),
+            phase: "sending".into(),
+            error: "connection reset".into(),
+        }
+        .message();
+        assert!(failed_msg.contains("out-abc"));
+        assert!(failed_msg.contains("sending"));
+        assert!(failed_msg.contains("connection reset"));
+    }
+
+    #[test]
+    fn set_sink_receives_emitted_events() {
+        let log = EventLog::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        log.set_sink(tx);
+        log.emit(connected("p1"));
+
+        let event = rx.try_recv().expect("event in channel");
+        assert_eq!(event.kind.pipeline_id(), "p1");
+    }
 }

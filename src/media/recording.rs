@@ -387,6 +387,50 @@ mod tests {
     // never explicitly closed by the caller (e.g., async fn cancelled/panicked).
     // Simulate by dropping the guard and verifying the writer exits.
     #[test]
+    fn sanitize_name_trims_leading_trailing_underscores() {
+        assert_eq!(sanitize_name("///name///"), "name");
+        assert_eq!(sanitize_name("   name   "), "name");
+    }
+
+    #[test]
+    fn sanitize_name_all_special_chars_becomes_empty_or_underscore() {
+        // All slashes collapse to a single underscore, then get trimmed
+        let result = sanitize_name("///");
+        assert!(result.is_empty() || result == "_");
+    }
+
+    #[test]
+    fn build_recording_service_metadata_uses_publisher_when_source_empty() {
+        let meta = build_recording_service_metadata("Test", "pid", Some(""), "2026-06-27");
+        assert!(meta.service_name.contains("source=publisher"));
+    }
+
+    #[test]
+    fn build_recording_service_metadata_trims_whitespace_from_source() {
+        let meta = build_recording_service_metadata("Test", "pid", Some("  "), "2026-06-27");
+        assert!(meta.service_name.contains("source=publisher"));
+    }
+
+    #[test]
+    fn ts_writer_drains_data_written_before_close() {
+        let queue = Arc::new(MemoryQueue::new());
+        let token = CancellationToken::new();
+        let temp = std::env::temp_dir().join("test_drain.ts");
+        let path = temp.to_string_lossy().to_string();
+
+        // Write multiple chunks then close
+        queue.write_sync(b"chunk-one-");
+        queue.write_sync(b"chunk-two");
+        queue.close();
+
+        let res = run_ts_writer(queue, &path, token);
+        assert!(res.is_ok());
+        let content = std::fs::read(&temp).unwrap();
+        assert_eq!(content, b"chunk-one-chunk-two");
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
     fn queue_close_guard_unblocks_writer_thread() {
         let queue = Arc::new(MemoryQueue::new());
 

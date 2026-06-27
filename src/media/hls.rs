@@ -631,4 +631,101 @@ mod tests {
         assert!(playlist.contains("seg0.ts"));
         assert!(playlist.contains(&format!("seg{}.ts", n - 1)));
     }
+
+    #[test]
+    fn snapshot_returns_none_when_empty() {
+        let store = HlsStore::new();
+        assert!(store.snapshot().is_none());
+    }
+
+    #[test]
+    fn snapshot_contains_playlist_and_all_segments() {
+        let store = HlsStore::new();
+        store.push_segment(2.0, Bytes::from_static(b"data0"));
+        store.push_segment(3.0, Bytes::from_static(b"data1"));
+
+        let snap = store.snapshot().expect("snapshot");
+        assert!(snap.playlist.contains("seg0.ts"));
+        assert!(snap.playlist.contains("seg1.ts"));
+        assert_eq!(snap.segments.len(), 2);
+        assert_eq!(snap.segments[0].data.as_ref(), b"data0");
+        assert_eq!(snap.segments[1].data.as_ref(), b"data1");
+    }
+
+    #[test]
+    fn stream_metadata_roundtrip() {
+        let store = HlsStore::new();
+
+        let (v, a) = store.stream_metadata();
+        assert!(v.is_none());
+        assert!(a.is_empty());
+
+        let video = crate::media::engine::VideoMeta {
+            codec: "h264".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            bw: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let audio = crate::media::engine::AudioMeta {
+            codec: "aac".into(),
+            sample_rate: 48000,
+            channels: 2,
+            track_index: 0,
+            ..Default::default()
+        };
+        store.set_stream_metadata(Some(video.clone()), vec![audio.clone()]);
+
+        let (v2, a2) = store.stream_metadata();
+        assert!(v2.is_some());
+        assert_eq!(v2.unwrap().codec, "h264");
+        assert_eq!(a2.len(), 1);
+        assert_eq!(a2[0].codec, "aac");
+    }
+
+    #[test]
+    fn hls_config_from_env_uses_defaults_when_unset() {
+        // Safety: single-threaded test context; no other thread reads these vars.
+        unsafe {
+            std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
+            std::env::remove_var("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES");
+            std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
+        }
+        let cfg = HlsConfig::from_env();
+        let defaults = HlsConfig::default();
+        assert_eq!(cfg.min_segment_secs, defaults.min_segment_secs);
+        assert_eq!(cfg.segment_capacity, defaults.segment_capacity);
+        assert_eq!(cfg.max_segments, defaults.max_segments);
+    }
+
+    #[test]
+    fn hls_config_from_env_reads_env_vars() {
+        // Safety: single-threaded test context; no other thread reads these vars.
+        unsafe {
+            std::env::set_var("RESTREAM_HLS_MIN_SEGMENT_MS", "500");
+            std::env::set_var("RESTREAM_HLS_MAX_SEGMENTS", "5");
+        }
+        let cfg = HlsConfig::from_env();
+        unsafe {
+            std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
+            std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
+        }
+        assert!((cfg.min_segment_secs - 0.5).abs() < 0.001);
+        assert_eq!(cfg.max_segments, 5);
+    }
+
+    #[test]
+    fn put_variant_segment_ignored_for_unknown_source_index() {
+        let store = HlsStore::new();
+        store.push_segment(2.0, Bytes::from_static(b"seg0"));
+        // index 99 doesn't exist — the put should be silently dropped
+        store.put_variant_segment(99, HlsSegmentVariant::Audio(0), Bytes::from_static(b"v"));
+        assert!(store.get_variant_segment(99, HlsSegmentVariant::Audio(0)).is_none());
+    }
 }

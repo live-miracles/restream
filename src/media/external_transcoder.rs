@@ -708,6 +708,108 @@ mod tests {
         assert_eq!(args[cv_pos + 1], "copy");
     }
 
+    #[test]
+    fn stage_args_empty_preset_copies_video_and_audio() {
+        let args = build_stage_ffmpeg_args("", "h264");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
+        let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[ca_pos + 1], "copy");
+    }
+
+    #[test]
+    fn stage_args_custom_preset_copies_video_and_audio() {
+        let args = build_stage_ffmpeg_args("custom", "h264");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
+        let ca_pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[ca_pos + 1], "copy");
+    }
+
+    #[test]
+    fn stage_audio_routing_remap_is_some() {
+        let r = stage_audio_routing("audio:remap:0:1:0:from:source");
+        assert!(r.is_some());
+        assert!(matches!(r, Some(AudioRouting::Remap { .. })));
+    }
+
+    #[test]
+    fn stage_audio_routing_downmix_is_some() {
+        let r = stage_audio_routing("audio:downmix:0:from:source");
+        assert!(r.is_some());
+        assert!(matches!(r, Some(AudioRouting::Downmix(_))));
+    }
+
+    #[test]
+    fn stage_audio_routing_atrack_returns_none() {
+        let r = stage_audio_routing("audio:atrack:0:from:720p");
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn stage_audio_routing_video_preset_returns_none() {
+        assert!(stage_audio_routing("720p").is_none());
+        assert!(stage_audio_routing("source").is_none());
+    }
+
+    #[test]
+    fn audio_filter_complex_remap_format() {
+        let routing = Some(AudioRouting::Remap {
+            left: 1,
+            right: 0,
+            track: 2,
+        });
+        let filter = audio_filter_complex(&routing).unwrap();
+        assert_eq!(filter, "[0:a:2]pan=stereo|c0=c1|c1=c0[aout]");
+    }
+
+    #[test]
+    fn audio_filter_complex_downmix_format() {
+        let routing = Some(AudioRouting::Downmix(1));
+        let filter = audio_filter_complex(&routing).unwrap();
+        assert_eq!(filter, "[0:a:1]aresample=out_chlayout=stereo[aout]");
+    }
+
+    #[test]
+    fn audio_filter_complex_none_for_no_routing() {
+        assert!(audio_filter_complex(&None).is_none());
+    }
+
+    #[test]
+    fn stage_args_profile_with_crf_when_bitrate_zero() {
+        {
+            let mut cache = crate::media::profiles::cache().blocking_write();
+            cache.insert(
+                "crf_test".to_string(),
+                crate::media::profiles::TranscodeProfile {
+                    preset: "veryfast".to_string(),
+                    tune: String::new(),
+                    crf: 28,
+                    gop: 60,
+                    bframes: 0,
+                    bitrate: 0,
+                    max_bitrate: 0,
+                    width: 1280,
+                    height: 720,
+                },
+            );
+        }
+        let args = build_stage_ffmpeg_args("crf_test", "h264");
+        assert!(args.windows(2).any(|w| w == ["-crf", "28"]));
+        assert!(!args.iter().any(|a| a == "-b:v"));
+        assert!(!args.iter().any(|a| a == "-maxrate"));
+    }
+
+    #[test]
+    fn stage_args_audio_stage_strips_prefix_and_copies_video() {
+        // audio:atrack:0:from:720p → treated as "source" for video (copy)
+        let args = build_stage_ffmpeg_args("audio:atrack:0:from:720p", "h264");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "copy");
+        // no scale filter
+        assert!(!args.iter().any(|a| a == "-vf"));
+    }
+
     // H4: verify that kill() + wait() on a child that has no stdin piped
     // completes without hanging or panicking. This is the exact pattern used
     // in the early-return error paths added by the H4 fix.
