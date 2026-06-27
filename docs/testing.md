@@ -118,91 +118,127 @@ behavior, and operator telemetry/events/overview/summary endpoints.
 
 ## API Route Coverage Matrix
 
-Every route in `src/api.rs` has been audited against both unit tests
-(`tests/api.rs`) and live integration tests (`src/bin/test_harness.rs`).
-As of June 27, 2026, all 59 routes have at least one test covering them.
+Every route in `src/api.rs` audited against unit tests (`tests/api.rs`) and
+live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
+59 routes have at least one test. Legend: ✓ = covered, — = not covered,
+~ = precondition only.
 
-### Full coverage (unit + live)
+**Auth**
 
-| Route | Unit | Live |
-|---|:---:|:---:|
-| `POST /api/auth/login` | Yes | Yes |
-| `GET /config` | Yes | Yes |
-| `GET /pipelines` | Yes | Yes |
-| `POST /pipelines` | Yes | Yes |
-| `DELETE /pipelines/:id` | Yes | Yes |
-| `PUT /pipelines/:id/file-ingest` | Yes | Yes |
-| `POST /pipelines/:id/outputs` | Yes | Yes |
-| `POST /.../outputs/:id/start` | Yes | Yes |
-| `POST /.../outputs/:id/stop` | Yes | Yes |
-| `GET /.../outputs/:id/status` | Yes | Yes |
-| `GET /pipelines/:id/graph` | Yes | Yes |
-| `GET /api/ingests` | Yes | Yes |
-| `POST /api/ingests/:id/start` | Yes | Yes |
-| `GET /health` | Yes | Yes |
-| `GET /healthz` | Yes | Yes |
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `POST` | `/api/auth/login` | ✓ | ✓ | |
+| `POST` | `/api/auth/logout` | ✓ | — | |
+| `POST` | `/api/auth/change-password` | ✓ | — | |
 
-### Unit only (not exercised by live harness)
+**Config**
 
-These routes are tested via `tests/api.rs` with in-process request routing.
-They don't require live ffmpeg or protocol sockets.
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/config` | ✓ | ✓ | |
+| `PATCH` | `/config` | ✓ | — | 3 tests incl. transcode profiles |
+| `GET` | `/audio-caps` | ✓ | — | |
+| `GET` | `/stream-keys` | ✓ | — | |
 
-| Route | Notes |
-|---|---|
-| `POST /api/auth/logout` | Session teardown |
-| `POST /api/auth/change-password` | Password change |
-| `PATCH /config` | 3 tests including transcode profiles |
-| `GET /audio-caps` | Audio capability discovery |
-| `GET /stream-keys` | Stream key listing |
-| `POST /pipelines/:id` | Pipeline update |
-| `GET /pipelines/:id/file-ingest` | File ingest query |
-| `DELETE /pipelines/:id/file-ingest` | File ingest removal |
-| `POST /pipelines/:id/outputs/:id` | Output update |
-| `DELETE /pipelines/:id/outputs/:id` | Output deletion |
-| `GET /.../outputs/:id/history` | Output history |
-| `GET /pipelines/:id/history` | Pipeline history |
-| `GET /pipelines/:id/alerts` | Alert derivation + response shape |
-| `GET /pipelines/:id/diagnostics` | SSE precondition only |
-| `GET /encodings/custom` | Custom encoding CRUD |
-| `PUT /encodings/custom` | Custom encoding CRUD |
-| `POST /api/ingests` | Ingest CRUD |
-| `PUT /api/ingests/:id` | Ingest update |
-| `DELETE /api/ingests/:id` | Ingest deletion |
-| `GET /api/status` | System status |
-| `GET /api/status/sbom` | SBOM endpoint |
-| `GET /api/media` | Media listing |
-| `DELETE /api/media/:filename` | Path traversal tested |
-| `GET /metrics/system` | Structured cpu/memory/disk/network |
-| `GET /api/v1/alerts` | Aggregate alerts |
-| `GET /api/v1/events` | Event filtering |
-| `GET /api/v1/overview` | Operator overview |
-| `GET /api/v1/engine/telemetry` | Engine telemetry |
-| `GET /api/v1/pipelines/:id/telemetry` | Pipeline telemetry |
-| `GET /api/v1/stages/:key/telemetry` | Stage telemetry |
-| `GET /api/v1/pipelines/:id/summary` | Pipeline summary |
-| `GET /api/v1/agent/capabilities` | Agent capabilities |
-| `GET /api/v1/agent/context` | Agent context |
-| `POST /api/v1/agent/investigations` | Agent investigations |
-| `POST /api/v1/agent/plans` | Agent plans |
-| `POST /api/v1/agent/plans/validate` | Plan validation |
-| `POST /api/v1/agent/graph-diff-preview` | 404 when compiled out |
-| `POST /api/v1/agent/operations` | Agent operations |
-| `GET /api/v1/agent/operations/:id` | Operation detail |
-| `POST /.../operations/:id/approve` | Operation approval |
-| `POST /.../operations/:id/apply` | Operation apply |
-| `POST /.../operations/:id/verify` | Operation verify |
-| `POST /api/v1/agent/verify` | 404 when compiled out |
+**Pipelines**
 
-### Live only (not in unit tests)
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/pipelines` | ✓ | ✓ | |
+| `POST` | `/pipelines` | ✓ | ✓ | Create |
+| `POST` | `/pipelines/:id` | ✓ | — | Update |
+| `DELETE` | `/pipelines/:id` | ✓ | ✓ | fault-resilience SRT test |
 
-These routes are only meaningfully testable with live media flowing.
+**File ingest**
 
-| Route | Live mode |
-|---|---|
-| `GET /pipelines/:id/probe` | mixed-scale, correctness-* |
-| `POST /.../recording/start` | mixed-anchor |
-| `POST /.../recording/stop` | mixed-anchor |
-| `POST /api/ingests/:id/stop` | fault-resilience |
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/pipelines/:id/file-ingest` | ✓ | — | |
+| `PUT` | `/pipelines/:id/file-ingest` | ✓ | ✓ | |
+| `DELETE` | `/pipelines/:id/file-ingest` | ✓ | — | |
+
+**Outputs**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `POST` | `/pipelines/:id/outputs` | ✓ | ✓ | Create |
+| `POST` | `/pipelines/:id/outputs/:oid` | ✓ | — | Update |
+| `DELETE` | `/pipelines/:id/outputs/:oid` | ✓ | — | |
+| `POST` | `/.../outputs/:oid/start` | ✓ | ✓ | |
+| `POST` | `/.../outputs/:oid/stop` | ✓ | ✓ | |
+| `GET` | `/.../outputs/:oid/status` | ✓ | ✓ | |
+| `GET` | `/.../outputs/:oid/history` | ✓ | — | |
+
+**Pipeline detail**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/pipelines/:id/history` | ✓ | — | |
+| `GET` | `/pipelines/:id/probe` | — | ✓ | mixed-scale, correctness-* |
+| `GET` | `/pipelines/:id/graph` | ✓ | ✓ | |
+| `GET` | `/pipelines/:id/alerts` | ✓ | — | auth + response shape |
+| `GET` | `/pipelines/:id/diagnostics` | ~ | — | SSE; precondition only |
+| `POST` | `/.../recording/start` | — | ✓ | mixed-anchor |
+| `POST` | `/.../recording/stop` | — | ✓ | mixed-anchor |
+
+**Encodings**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/encodings/custom` | ✓ | — | |
+| `PUT` | `/encodings/custom` | ✓ | — | |
+
+**Ingests**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/api/ingests` | ✓ | ✓ | |
+| `POST` | `/api/ingests` | ✓ | — | |
+| `PUT` | `/api/ingests/:id` | ✓ | — | |
+| `DELETE` | `/api/ingests/:id` | ✓ | — | |
+| `POST` | `/api/ingests/:id/start` | ✓ | ✓ | |
+| `POST` | `/api/ingests/:id/stop` | — | ✓ | fault-resilience |
+
+**Status and health**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/api/status` | ✓ | — | |
+| `GET` | `/api/status/sbom` | ✓ | — | |
+| `GET` | `/api/media` | ✓ | — | |
+| `DELETE` | `/api/media/:filename` | ✓ | — | Path traversal tested |
+| `GET` | `/health` | ✓ | ✓ | |
+| `GET` | `/healthz` | ✓ | ✓ | |
+| `GET` | `/metrics/system` | ✓ | — | Structured cpu/memory/disk/network |
+
+**V1 operator API**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/api/v1/alerts` | ✓ | — | Aggregate across all pipelines |
+| `GET` | `/api/v1/events` | ✓ | — | Filtering tested |
+| `GET` | `/api/v1/overview` | ✓ | — | |
+| `GET` | `/api/v1/engine/telemetry` | ✓ | — | |
+| `GET` | `/api/v1/pipelines/:id/telemetry` | ✓ | — | |
+| `GET` | `/api/v1/stages/:key/telemetry` | ✓ | — | |
+| `GET` | `/api/v1/pipelines/:id/summary` | ✓ | — | |
+
+**Agent API**
+
+| Method | Route | Unit | Live | Notes |
+|---|---|:---:|:---:|---|
+| `GET` | `/api/v1/agent/capabilities` | ✓ | — | |
+| `GET` | `/api/v1/agent/context` | ✓ | — | |
+| `POST` | `/api/v1/agent/investigations` | ✓ | — | |
+| `POST` | `/api/v1/agent/plans` | ✓ | — | |
+| `POST` | `/api/v1/agent/plans/validate` | ✓ | — | |
+| `POST` | `/api/v1/agent/graph-diff-preview` | ✓ | — | 404 when compiled out |
+| `POST` | `/api/v1/agent/operations` | ✓ | — | |
+| `GET` | `/api/v1/agent/operations/:id` | ✓ | — | |
+| `POST` | `/.../operations/:id/approve` | ✓ | — | |
+| `POST` | `/.../operations/:id/apply` | ✓ | — | |
+| `POST` | `/.../operations/:id/verify` | ✓ | — | |
+| `POST` | `/api/v1/agent/verify` | ✓ | — | 404 when compiled out |
 
 ## Code Coverage
 
