@@ -26,6 +26,7 @@
 //! - `width/height: 0` → passthrough (match source resolution)
 
 use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -182,20 +183,20 @@ pub async fn load_from_db(pool: &sqlx::SqlitePool) {
     let profiles = match crate::db::get_meta(pool, META_KEY).await {
         Ok(Some(json_str)) => match serde_json::from_str::<TranscodeProfiles>(&json_str) {
             Ok(p) if !p.is_empty() => {
-                println!("[profiles] Loaded {} profiles from DB", p.len());
+                info!(count = p.len(), "loaded profiles from DB");
                 p
             }
             Ok(_) => {
-                eprintln!("[profiles] DB has empty profiles, using defaults");
+                warn!("DB has empty profiles, using defaults");
                 built_in_defaults()
             }
             Err(e) => {
-                eprintln!("[profiles] Failed to parse DB profiles: {e}, using defaults");
+                warn!(err = %e, "failed to parse DB profiles, using defaults");
                 built_in_defaults()
             }
         },
         _ => {
-            println!("[profiles] No DB profiles found, using built-in defaults");
+            info!("no DB profiles found, using built-in defaults");
             built_in_defaults()
         }
     };
@@ -217,10 +218,7 @@ pub async fn save_to_db(
 
     let mut cache = cache().write().await;
     *cache = effective_profiles(profiles);
-    println!(
-        "[profiles] Updated {} profiles in DB + cache",
-        profiles.len()
-    );
+    info!(count = profiles.len(), "updated profiles in DB + cache");
     Ok(())
 }
 

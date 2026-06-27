@@ -13,6 +13,7 @@
 //! so the external transcoder and other consumers don't need environment variables.
 
 use crate::api::EmbeddedAssets;
+use tracing::{debug, error, info, warn};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -35,17 +36,13 @@ pub fn ensure_ffmpeg_extracted() -> &'static Path {
     let path = if let Ok(user_path) = std::env::var("FFMPEG_BIN_PATH") {
         let path = PathBuf::from(&user_path);
         if path.exists() && path.is_file() {
-            println!(
+            info!(
                 "[startup] FFMPEG_BIN_PATH is set — using external FFmpeg: {}",
                 path.display()
             );
             path
         } else {
-            eprintln!(
-                "[startup] FFMPEG_BIN_PATH='{}' is set but the file does not exist; \
-                 extracting embedded FFmpeg instead",
-                user_path
-            );
+            warn!(path = %user_path, "FFMPEG_BIN_PATH set but file does not exist; using embedded FFmpeg");
             extract_embedded()
         }
     } else {
@@ -83,7 +80,7 @@ fn extract_embedded() -> PathBuf {
         std::fs::set_permissions(&ffmpeg_path, perms).expect("Failed to make FFmpeg executable");
     }
 
-    println!(
+    info!(
         "[startup] Extracted embedded FFmpeg to {}",
         ffmpeg_path.display()
     );

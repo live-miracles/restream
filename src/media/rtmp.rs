@@ -8,6 +8,7 @@
 //! `RingBuffer` via a `Reader`. Cancellation via `CancellationToken`.
 
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
+use tracing::{debug, error, info, warn};
 use rml_rtmp::sessions::{
     ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
     PublishRequestType, ServerSession, ServerSessionConfig, ServerSessionEvent,
@@ -32,7 +33,7 @@ fn log_rss(label: &str, output_id: &str) {
         for line in status.lines() {
             if let Some(val) = line.strip_prefix("VmRSS:") {
                 let rss_kb = val.trim().trim_end_matches(" kB").trim();
-                eprintln!("[mem] {label} output={output_id} rss={rss_kb} kB");
+                error!("{label} output={output_id} rss={rss_kb} kB");
                 return;
             }
         }
@@ -666,11 +667,11 @@ pub async fn start_rtmp_server_on(
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[rtmp] Failed to bind TCP listener on {}: {:?}", addr, e);
+            error!("Failed to bind TCP listener on {}: {:?}", addr, e);
             return;
         }
     };
-    println!("[rtmp] Server listening on {}", addr);
+    info!("Server listening on {}", addr);
 
     loop {
         match listener.accept().await {
@@ -683,12 +684,12 @@ pub async fn start_rtmp_server_on(
                         handle_rtmp_client(socket, addr, db_clone, security_clone, engine_clone)
                             .await
                     {
-                        eprintln!("[rtmp] Error handling client {}: {:?}", addr, e);
+                        error!("Error handling client {}: {:?}", addr, e);
                     }
                 });
             }
             Err(e) => {
-                eprintln!("[rtmp] Accept error: {:?}", e);
+                error!("Accept error: {:?}", e);
             }
         }
     }
@@ -854,7 +855,7 @@ async fn handle_rtmp_client(
                 )
                 .await
                 {
-                    eprintln!("[rtmp] session result error: {}", e);
+                    error!("session result error: {}", e);
                     break;
                 }
             }
@@ -907,7 +908,7 @@ async fn handle_rtmp_client(
 
     // Clean up active ingest on disconnect
     if let Some(active) = &active_ingest {
-        println!(
+        info!(
             "[rtmp] Publisher disconnected for pipeline: {}",
             active.pipeline_id
         );
@@ -986,13 +987,13 @@ async fn handle_session_results(
                         .await {
                             Ok(Some(p)) => p,
                             Ok(None) => {
-                                eprintln!("[rtmp] publish stream key not found: {:?}", stream_key);
+                                error!("publish stream key not found: {:?}", stream_key);
                                 security.record_failure(client_ip);
                                 let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
                                 return Err("Invalid stream key");
                             }
                             Err(e) => {
-                                eprintln!("[rtmp] publish stream key DB query failed: {:?}", e);
+                                error!("publish stream key DB query failed: {:?}", e);
                                 security.record_failure(client_ip);
                                 let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
                                 return Err("Invalid stream key");
@@ -1058,7 +1059,7 @@ async fn handle_session_results(
                             )
                             .await;
                         security.record_success(client_ip);
-                        println!(
+                        info!(
                             "[rtmp] Ingest successfully started on pipeline: {}",
                             pipeline.id
                         );
@@ -1103,7 +1104,7 @@ async fn handle_session_results(
                                 if meta.width > 0 {
                                     probe.video_done = true;
                                 }
-                                println!(
+                                info!(
                                     "[rtmp] Probed video: {} {}x{} profile={:?} level={:?}",
                                     meta.codec, meta.width, meta.height, meta.profile, meta.level
                                 );
@@ -1157,7 +1158,7 @@ async fn handle_session_results(
                                     && let Some(meta) = parse_flv_audio_meta(&data)
                                 {
                                     probe.audio_done = true;
-                                    println!(
+                                    info!(
                                         "[rtmp] Probed audio: {} {}Hz {}ch",
                                         meta.codec, meta.sample_rate, meta.channels
                                     );
@@ -1244,7 +1245,7 @@ async fn handle_session_results(
                             }
                         }
 
-                        println!(
+                        info!(
                             "[rtmp] Play subscriber connected for pipeline: {} (stream_id={})",
                             pipeline.id, stream_id
                         );
@@ -1317,7 +1318,7 @@ async fn handle_session_results(
                                 match result {
                                     Ok(packet) => {
                                         if socket.write_all(&packet.bytes).await.is_err() {
-                                            println!(
+                                            info!(
                                                 "[rtmp] Play subscriber disconnected for pipeline: {}",
                                                 pipeline.id
                                             );
@@ -1363,7 +1364,7 @@ pub async fn start_rtmp_egress(
     let parts = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
-            eprintln!("[rtmp-egress] Invalid RTMP URL: {}", target_url);
+            error!("Invalid RTMP URL: {}", target_url);
             engine
                 .record_egress_error(&output_id, "parse_url", "invalid RTMP URL")
                 .await;
@@ -1374,7 +1375,7 @@ pub async fn start_rtmp_egress(
     engine
         .update_egress_target_addr(&output_id, format!("{}:{}", parts.host, parts.port))
         .await;
-    println!(
+    info!(
         "[rtmp-egress] Connecting to {}:{} via {} (app: {}, key: {})",
         parts.host,
         parts.port,
@@ -1386,7 +1387,7 @@ pub async fn start_rtmp_egress(
     let mut socket = match connect_rtmp_egress_stream(&parts).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
+            error!(
                 "[rtmp-egress] Connection failed to {}:{}: {:?}",
                 parts.host, parts.port, e
             );
@@ -1403,7 +1404,7 @@ pub async fn start_rtmp_egress(
     let c0_c1 = match handshake.generate_outbound_p0_and_p1() {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!(
+            error!(
                 "[rtmp-egress] Handshake outbound generation failed: {:?}",
                 e
             );
@@ -1450,7 +1451,7 @@ pub async fn start_rtmp_egress(
                         handshake_completed = true;
                     }
                     Err(e) => {
-                        eprintln!("[rtmp-egress] Handshake process bytes failed: {:?}", e);
+                        error!("Handshake process bytes failed: {:?}", e);
                         engine
                             .record_egress_error(&output_id, "handshake", format!("{:?}", e))
                             .await;
@@ -1602,7 +1603,7 @@ pub async fn start_rtmp_egress(
                                     if socket.write_all(&pub_pkt.bytes).await.is_err() { return; }
                                 }
                                 ClientSessionEvent::PublishRequestAccepted => {
-                                    println!("[rtmp-egress] Stream publishing accepted on target");
+                                    info!("Stream publishing accepted on target");
                                     engine.update_egress_phase(&output_id, "sending").await;
                                     // Send cached sequence headers before media data.
                                     // For H.265 ingests, video_sh is None (only RTMP ingest
@@ -1632,7 +1633,7 @@ pub async fn start_rtmp_egress(
                                     is_publishing = true;
                                 }
                                 ClientSessionEvent::ConnectionRequestRejected { description } => {
-                                    eprintln!("[rtmp-egress] Connection rejected: {}", description);
+                                    error!("Connection rejected: {}", description);
                                     engine
                                         .record_egress_error(&output_id, "connect_app", description)
                                         .await;
@@ -1672,7 +1673,7 @@ pub async fn start_rtmp_egress(
                                         let first_nalu_type_h265 =
                                             (packet.payload[0] >> 1) & 0x3F;
                                         if matches!(first_nalu_type_h265, 32..=34) {
-                                            eprintln!(
+                                            error!(
                                                 "[rtmp-egress] H.265 packet on Raw RTMP path \
                                                  for output {} — dropping until hevc_to_h264 \
                                                  stage is ready",
@@ -1749,7 +1750,7 @@ pub async fn start_rtmp_egress(
                                 burst_made_progress = true;
                             }
                             _ => {
-                                eprintln!("[rtmp-egress] Failed to build publish data packet or get OutboundResponse");
+                                error!("Failed to build publish data packet or get OutboundResponse");
                                 engine
                                     .record_egress_error(&output_id, "send", "failed to build RTMP publish packet")
                                     .await;
@@ -1804,7 +1805,7 @@ where
                         .map_err(|_| "Socket write error")?;
                 }
                 ClientSessionEvent::ConnectionRequestRejected { description } => {
-                    eprintln!("[rtmp-egress] Connection request rejected: {}", description);
+                    error!("Connection request rejected: {}", description);
                     return Err("Connection request rejected");
                 }
                 _ => {}

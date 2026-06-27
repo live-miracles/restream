@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use tracing::{debug, error, info, warn};
 
 use crate::media::engine::{AudioMeta, VideoMeta};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat};
@@ -984,7 +985,7 @@ impl TsMuxer {
             .sum();
         let section_len = 9 + entry_size + 4; // 9 fixed + entries + CRC
         if section_len > 1021 {
-            eprintln!(
+            error!(
                 "[mpegts] PMT too large: section_len={} streams={}",
                 section_len,
                 self.streams.len()

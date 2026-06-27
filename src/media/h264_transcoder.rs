@@ -13,6 +13,7 @@
 //! passthrough audio — exactly what the RTMP egress reader expects.
 
 use bytes::Bytes;
+use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -102,7 +103,7 @@ pub async fn start_h264_transcoder(
             run_ffmpeg_h264_stage(iq_clone, out_clone, cancel_clone, &pid)
         }));
         if result.is_err() {
-            eprintln!("[h264-tc] FFmpeg stage panicked for pipeline {pid}");
+            error!("FFmpeg stage panicked for pipeline {pid}");
         }
         cancel_on_exit.cancel();
     });
@@ -178,7 +179,7 @@ fn run_ffmpeg_h264_stage(
     let mut custom = match CustomInput::new(&*in_queue) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[h264-tc] CustomInput: {e}");
+            error!("CustomInput: {e}");
             return;
         }
     };
@@ -195,7 +196,7 @@ fn run_ffmpeg_h264_stage(
     {
         Some(i) => i,
         None => {
-            eprintln!("[h264-tc] no video stream");
+            error!("no video stream");
             return;
         }
     };
@@ -225,14 +226,14 @@ fn run_ffmpeg_h264_stage(
     let dec_ctx = match ffmpeg_next::codec::Context::from_parameters(dec_params) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[h264-tc] decoder context: {e}");
+            error!("decoder context: {e}");
             return;
         }
     };
     let mut decoder = match dec_ctx.decoder().video() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[h264-tc] decoder open: {e}");
+            error!("decoder open: {e}");
             return;
         }
     };
@@ -240,7 +241,7 @@ fn run_ffmpeg_h264_stage(
     let enc_codec = match ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264) {
         Some(c) => c,
         None => {
-            eprintln!("[h264-tc] no H.264 encoder");
+            error!("no H.264 encoder");
             return;
         }
     };
@@ -346,7 +347,7 @@ fn run_ffmpeg_h264_stage(
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[h264-tc] scaler: {e}");
+                        error!("scaler: {e}");
                         return;
                     }
                 };
@@ -375,7 +376,7 @@ fn run_ffmpeg_h264_stage(
                         enc_codec.as_ptr() as *mut ffmpeg_next::ffi::AVCodec
                     );
                     if ptr.is_null() {
-                        eprintln!("[h264-tc] failed to allocate encoder context");
+                        error!("failed to allocate encoder context");
                         return;
                     }
                     ffmpeg_next::codec::Context::wrap(ptr, None)
@@ -383,7 +384,7 @@ fn run_ffmpeg_h264_stage(
                 let mut enc_video = match enc_ctx.encoder().video() {
                     Ok(e) => e,
                     Err(e) => {
-                        eprintln!("[h264-tc] encoder ctx: {e}");
+                        error!("encoder ctx: {e}");
                         return;
                     }
                 };
@@ -409,7 +410,7 @@ fn run_ffmpeg_h264_stage(
                     opts.set("crf", &profile.crf.to_string());
                 }
 
-                println!(
+                info!(
                     "[h264-tc] encoder: {}x{} preset={} tune={} crf={} bitrate={}",
                     out_w, out_h, profile.preset, profile.tune, profile.crf, profile.bitrate
                 );
@@ -417,7 +418,7 @@ fn run_ffmpeg_h264_stage(
                 let opened = match enc_video.open_as_with(enc_codec, opts) {
                     Ok(e) => e,
                     Err(e) => {
-                        eprintln!("[h264-tc] encoder open: {e}");
+                        error!("encoder open: {e}");
                         return;
                     }
                 };

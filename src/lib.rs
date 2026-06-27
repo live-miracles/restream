@@ -22,6 +22,10 @@
 //! `std::thread::spawn` calls are wrapped in `catch_unwind` so an FFmpeg panic
 //! (e.g., from a corrupt stream) logs an error instead of taking down the process.
 
+// Prevent regression to raw print macros — use tracing macros instead.
+// bin/test_harness.rs is exempt (test output is intentional).
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
+
 #[cfg(feature = "agent-execution")]
 pub mod agent_execution;
 #[cfg(feature = "agent-plane")]
@@ -42,6 +46,7 @@ pub mod types;
 use crate::domain::stage::{EncodingStagePlan, StageKey};
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
+use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -174,12 +179,9 @@ fn set_rlimit(limit: u64) {
             rlim_max: limit,
         };
         if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
-            eprintln!("[system] Failed to raise RLIMIT_NOFILE limit");
+            warn!("failed to raise RLIMIT_NOFILE limit");
         } else {
-            println!(
-                "[system] Successfully raised file descriptor limit to {}",
-                limit.rlim_cur
-            );
+            info!(limit = limit.rlim_cur, "raised file descriptor limit");
         }
     }
 }
@@ -269,10 +271,7 @@ pub async fn run_app() {
     let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
         .unwrap_or_else(|_| panic!("Failed to bind TCP listener on port {}", ports.http));
-    println!(
-        "[web] Dashboard API server listening on http://{}",
-        http_addr
-    );
+    info!(addr = %http_addr, "dashboard API server listening");
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(
@@ -281,7 +280,7 @@ pub async fn run_app() {
         )
         .await
         {
-            eprintln!("[web] Axum server error: {:?}", e);
+            error!(err = ?e, "axum server error");
         }
     });
 
@@ -293,7 +292,7 @@ pub async fn run_app() {
     let rtmp_handle = tokio::spawn(async move {
         crate::media::rtmp::start_rtmp_server_on(db_clone, security_clone, engine_clone, rtmp_port)
             .await;
-        eprintln!("[rtmp] Server task exited unexpectedly");
+        error!("RTMP server task exited unexpectedly");
     });
 
     // Start SRT server — pass security for rate limiting (H1).
@@ -305,7 +304,7 @@ pub async fn run_app() {
     let srt_port = ports.srt;
     let srt_handle = tokio::spawn(async move {
         srt_server.run(srt_port).await;
-        eprintln!("[srt] Server task exited unexpectedly");
+        error!("SRT server task exited unexpectedly");
     });
 
     // ── Graceful shutdown ────────────────────────────────────────────────────
@@ -323,7 +322,7 @@ pub async fn run_app() {
                         .expect("Failed to install SIGTERM handler");
                 tokio::select! {
                     res = tokio::signal::ctrl_c() => {
-                        if let Err(e) = res { eprintln!("[shutdown] Ctrl+C error: {e}"); }
+                        if let Err(e) = res { warn!(err = %e, "Ctrl+C error"); }
                     }
                     _ = sigterm.recv() => {}
                 }
@@ -331,10 +330,10 @@ pub async fn run_app() {
             #[cfg(not(unix))]
             {
                 if let Err(e) = tokio::signal::ctrl_c().await {
-                    eprintln!("[shutdown] Ctrl+C error: {e}");
+                    warn!(err = %e, "Ctrl+C error");
                 }
             }
-            println!("[shutdown] Signal received — stopping reconciler");
+            info!("signal received — stopping reconciler");
             shutdown_c.cancel();
         });
     }
@@ -377,7 +376,7 @@ pub async fn run_app() {
                         .retain(|t| live_set.contains(t));
                 }
                 Err(e) => {
-                    eprintln!("[reconciler] Failed to list sessions for prune: {e}");
+                    warn!(err = %e, "failed to list sessions for prune");
                 }
             }
         }
@@ -385,10 +384,7 @@ pub async fn run_app() {
         let outputs = match db::list_outputs(&pool).await {
             Ok(o) => o,
             Err(e) => {
-                eprintln!(
-                    "[reconciler] DB error reading outputs (tick {}): {}",
-                    reconciler_tick, e
-                );
+                warn!(tick = reconciler_tick, err = %e, "DB error reading outputs");
                 continue;
             }
         };
@@ -408,9 +404,11 @@ pub async fn run_app() {
                     if retries >= tuning.output_max_retries {
                         lf.remove(&output.id);
                         drop(lf);
-                        eprintln!(
-                            "[reconciler] Output {} ({}) exceeded {} retries — marking failed",
-                            output.name, output.id, tuning.output_max_retries
+                        warn!(
+                            output_id = %output.id,
+                            output_name = %output.name,
+                            max_retries = tuning.output_max_retries,
+                            "output exceeded max retries — marking failed",
                         );
                         let _ = db::set_output_desired_state(
                             &pool,
@@ -430,9 +428,13 @@ pub async fn run_app() {
                 lf.remove(&output.id);
                 drop(lf);
 
-                println!(
-                    "[reconciler] Starting output job: {} ({})",
-                    output.name, output.id
+                info!(
+                    output_id = %output.id,
+                    output_name = %output.name,
+                    pipeline_id = %output.pipeline_id,
+                    event_class = "lifecycle",
+                    event_type = "lifecycle.start",
+                    "output job started",
                 );
 
                 // Get source pipeline ring buffer
@@ -638,10 +640,7 @@ pub async fn run_app() {
                                 let Some(hls_cancel) =
                                     engine_c.get_hls_cancel_token(&pipeline_id_c).await
                                 else {
-                                    eprintln!(
-                                        "[reconciler] HLS segmenter token missing for {} — skipping",
-                                        pipeline_id_c
-                                    );
+                                    warn!(pipeline_id = %pipeline_id_c, "HLS segmenter token missing — skipping");
                                     return;
                                 };
                                 let eng2 = engine_c.clone();
@@ -686,10 +685,7 @@ pub async fn run_app() {
                     .is_err();
 
                     if panicked {
-                        eprintln!(
-                            "[egress] Panic in egress task for output {} (pipeline {})",
-                            output_id_c, pipeline_id_c
-                        );
+                        error!(output_id = %output_id_c, pipeline_id = %pipeline_id_c, "panic in egress task");
                     }
 
                     // Cleanup always runs — even after a panic in the egress fn.
@@ -729,9 +725,13 @@ pub async fn run_app() {
                     }
                 });
             } else if output.desired_state == "stopped" && is_active {
-                println!(
-                    "[reconciler] Stopping output job: {} ({})",
-                    output.name, output.id
+                info!(
+                    output_id = %output.id,
+                    output_name = %output.name,
+                    pipeline_id = %output.pipeline_id,
+                    event_class = "lifecycle",
+                    event_type = "lifecycle.stop",
+                    "output job stopped",
                 );
                 engine.unregister_egress(&output.id).await;
             }
@@ -779,10 +779,7 @@ pub async fn run_app() {
         let pipelines = match db::list_pipelines(&pool).await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!(
-                    "[reconciler] DB error reading pipelines (tick {}): {}",
-                    reconciler_tick, e
-                );
+                warn!(tick = reconciler_tick, err = %e, "DB error reading pipelines");
                 continue;
             }
         };
@@ -856,7 +853,7 @@ pub async fn run_app() {
     // segmenters.  Previously only egress tokens were cancelled, leaving ingest
     // OS threads, recording FFmpeg threads, and HLS segmenters alive until the
     // runtime forcibly dropped them.
-    println!("[shutdown] Cancelling all active tasks...");
+    info!("shutdown: cancelling all active tasks");
     {
         let egress = engine.egress_cancel_tokens.read().await;
         for token in egress.values() {
@@ -915,7 +912,7 @@ pub async fn run_app() {
     // This must come after join_os_threads() above, which guarantees all
     // SRT sender threads have exited and called srt_close() on their sockets.
     crate::media::srt::teardown_srt();
-    println!("[shutdown] Done");
+    info!("shutdown complete");
 }
 
 #[cfg(test)]

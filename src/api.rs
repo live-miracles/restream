@@ -4,6 +4,7 @@
 //! disk-first fallback for development hot-reload.
 
 use axum::extract::DefaultBodyLimit;
+use tracing::{debug, error, info, warn};
 use axum::http::HeaderValue;
 use axum::{
     Json, Router,
@@ -704,7 +705,7 @@ async fn logout_handler(
         let token_hash = hash_session_token(&token);
         state.sessions.write().await.remove(&token_hash);
         if let Err(e) = db::delete_session(&state.db, &token_hash).await {
-            eprintln!("[logout] Failed to delete session from DB: {}", e);
+            warn!(err = %e, "failed to delete session from DB");
         }
     }
     let cookie = clear_session_cookie();
@@ -981,7 +982,7 @@ async fn config_patch_handler(
             }
         }
         if let Err(e) = crate::media::profiles::save_to_db(&state.db, profiles).await {
-            eprintln!("[api] Failed to save transcode profiles: {e}");
+            warn!(err = %e, "failed to save transcode profiles");
             return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save profiles").into_response();
         }
     }
@@ -2272,10 +2273,7 @@ async fn log_file_ingest_stderr(
                     all.extend_from_slice(&buf[..n.min(remaining)]);
                 } else if !truncated {
                     truncated = true;
-                    eprintln!(
-                        "[file-ingest] ffmpeg stderr ({}) truncated at {} bytes",
-                        ingest_id, STDERR_CAP
-                    );
+                    warn!(ingest_id = %ingest_id, cap = STDERR_CAP, "ffmpeg stderr truncated");
                 }
             }
             Err(e) => return Err(e),
@@ -2283,11 +2281,7 @@ async fn log_file_ingest_stderr(
     }
 
     if !all.is_empty() {
-        eprintln!(
-            "[file-ingest] ffmpeg stderr ({}): {}",
-            ingest_id,
-            String::from_utf8_lossy(&all).trim()
-        );
+        warn!(ingest_id = %ingest_id, stderr = %String::from_utf8_lossy(&all).trim(), "ffmpeg stderr");
     }
 
     Ok(())
@@ -2333,28 +2327,19 @@ async fn run_file_ingest_task(
         if let Err(err) = stdout_res
             && !cancel.is_cancelled()
         {
-            eprintln!(
-                "[file-ingest] stdout reader failed ({}): {}",
-                ingest.id, err
-            );
+            error!(ingest_id = %ingest.id, err = %err, "file-ingest stdout reader failed");
         }
         if let Err(err) = stderr_res
             && !cancel.is_cancelled()
         {
-            eprintln!(
-                "[file-ingest] stderr reader failed ({}): {}",
-                ingest.id, err
-            );
+            error!(ingest_id = %ingest.id, err = %err, "file-ingest stderr reader failed");
         }
 
         if let Some(status) = exit_status
             && !status.success()
             && !cancel.is_cancelled()
         {
-            eprintln!(
-                "[file-ingest] ffmpeg exited unsuccessfully ({}): {}",
-                ingest.id, status
-            );
+            warn!(ingest_id = %ingest.id, status = %status, "ffmpeg exited unsuccessfully");
         }
 
         if cancel.is_cancelled() || !ingest.loop_flag {
@@ -2364,7 +2349,7 @@ async fn run_file_ingest_task(
         match spawn_file_ingest_child(&ingest, &file_path) {
             Ok(next) => spawned = next,
             Err(err) => {
-                eprintln!("[file-ingest] restart failed ({}): {}", ingest.id, err);
+                error!(ingest_id = %ingest.id, err = %err, "file-ingest restart failed");
                 break;
             }
         }

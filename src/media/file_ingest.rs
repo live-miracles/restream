@@ -1,4 +1,5 @@
 use crate::media::avio::{CustomOutput, MemoryQueue};
+use tracing::{debug, error, info, warn};
 use crate::media::engine::{MediaEngine, StageMetrics};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::ring_buffer::{MediaPacket, MediaType, RingBuffer};
@@ -162,13 +163,13 @@ pub fn spawn_internal_file_ingest(
 
         match result {
             Ok(Err(err)) if !cancel.is_cancelled() => {
-                eprintln!(
+                error!(
                     "[file-ingest] internal ingest failed ({}): {}",
                     ingest_id_for_thread, err
                 );
             }
             Err(_) if !cancel.is_cancelled() => {
-                eprintln!(
+                error!(
                     "[file-ingest] internal ingest panicked ({})",
                     ingest_id_for_thread
                 );

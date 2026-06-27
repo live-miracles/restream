@@ -46,6 +46,7 @@
 //!     obtained from a `sockaddr_storage` cast, with the family field set first.
 
 use std::net::SocketAddr;
+use tracing::{debug, error, info, warn};
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -414,7 +415,7 @@ fn check_sysctl_limits() {
             && let Ok(val) = s.trim().parse::<usize>()
             && val < need
         {
-            eprintln!(
+            error!(
                 "[srt] WARNING: {} = {} but we need {}. \
                          Run: sudo sysctl -w {}={}",
                 path, val, need, label, need,
@@ -597,7 +598,7 @@ fn srt_log_effective_opts(sock: SRTSOCKET, label: &str) {
             &mut lossmaxttl as *mut _ as *mut c_void,
             &mut len,
         );
-        println!(
+        info!(
             "[srt] {} config: latency={}ms lossmaxttl={} UDP snd={}KB rcv={}KB, SRT snd={}KB rcv={}KB, FC={}",
             label,
             latency,
@@ -609,7 +610,7 @@ fn srt_log_effective_opts(sock: SRTSOCKET, label: &str) {
             fc,
         );
         if udp_snd < DESIRED_UDP_BUF {
-            eprintln!(
+            error!(
                 "[srt] WARNING: {} UDP send buffer clamped to {}KB (wanted {}KB). \
                  Raise net.core.wmem_max",
                 label,
@@ -618,7 +619,7 @@ fn srt_log_effective_opts(sock: SRTSOCKET, label: &str) {
             );
         }
         if udp_rcv < DESIRED_UDP_BUF {
-            eprintln!(
+            error!(
                 "[srt] WARNING: {} UDP recv buffer clamped to {}KB (wanted {}KB). \
                  Raise net.core.rmem_max",
                 label,
@@ -1033,7 +1034,7 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
         }
 
         if drops > prev_drops {
-            eprintln!(
+            error!(
                 "[srt] ALERT: kernel dropped {} UDP packets on listener :{}  \
                  (total drops: {}, rx_queue: {}KB / {}KB). \
                  Increase net.core.rmem_max and restart, or reduce ingest count.",
@@ -1048,7 +1049,7 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
         }
 
         if rx_queue > crit_threshold {
-            eprintln!(
+            error!(
                 "[srt] ALERT: listener :{} UDP recv queue at {}KB / {}KB ({:.0}%) — \
                  imminent packet loss. Consider reducing concurrent ingest streams \
                  or increasing net.core.rmem_max.",
@@ -1059,7 +1060,7 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
             );
             warned = true;
         } else if rx_queue > warn_threshold && !warned {
-            eprintln!(
+            error!(
                 "[srt] WARNING: listener :{} UDP recv queue at {}KB / {}KB ({:.0}%)",
                 port,
                 rx_queue / 1024,
@@ -1105,7 +1106,7 @@ impl SrtServer {
         // explicitly on bind/listen failure below. Balanced by srt_close.
         let server_sock = unsafe { srt_create_socket() };
         if server_sock < 0 {
-            eprintln!("[srt] Failed to create socket");
+            error!("Failed to create socket");
             return;
         }
 
@@ -1127,14 +1128,14 @@ impl SrtServer {
                     .srt_listener_stats
                     .bonding_available
                     .store(true, Ordering::Relaxed);
-                println!("[srt] Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)")
+                info!("Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)", )
             }
             Err(error) => {
                 self.engine
                     .srt_listener_stats
                     .bonding_available
                     .store(false, Ordering::Relaxed);
-                eprintln!(
+                error!(
                     "[srt] WARNING: bonded ingest is unavailable: linked libsrt rejected \
                  SRTO_GROUPCONNECT ({error}). Install/build libsrt with ENABLE_BONDING=ON. \
                  Single-link SRT ingest remains available."
@@ -1148,7 +1149,7 @@ impl SrtServer {
         let addr = match addr_str.parse::<SocketAddr>() {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("[srt] Invalid address: {:?}", e);
+                error!("Invalid address: {:?}", e);
                 return;
             }
         };
@@ -1165,7 +1166,7 @@ impl SrtServer {
             )
         };
         if bind_res < 0 {
-            eprintln!("[srt] Bind failed");
+            error!("Bind failed");
             // SAFETY: server_sock is a valid socket not yet closed.
             unsafe {
                 srt_close(server_sock);
@@ -1178,7 +1179,7 @@ impl SrtServer {
         // is closed explicitly.
         let listen_res = unsafe { srt_listen(server_sock, 1024) };
         if listen_res < 0 {
-            eprintln!("[srt] Listen failed");
+            error!("Listen failed");
             // SAFETY: Valid socket, not yet closed.
             unsafe {
                 srt_close(server_sock);
@@ -1186,7 +1187,7 @@ impl SrtServer {
             return;
         }
 
-        println!("[srt] Server listening on srt://{}", addr_str);
+        info!("Server listening on srt://{}", addr_str);
 
         // Monitor the shared listener socket's kernel UDP buffer occupancy
         let listener_stats = self.engine.srt_listener_stats.clone();
@@ -1243,7 +1244,7 @@ impl SrtServer {
                         // SAFETY: srt_getlasterror_str returns a thread-local
                         // static string valid until the next SRT call.
                         let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
-                        eprintln!("[srt] Accept error: {}", err.to_string_lossy());
+                        error!("Accept error: {}", err.to_string_lossy());
                         std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     }
@@ -1263,7 +1264,7 @@ impl SrtServer {
                 }
             }));
             if result.is_err() {
-                eprintln!("[srt] Accept thread panicked — ingest listener is down");
+                error!("Accept thread panicked — ingest listener is down");
             }
         });
         self.engine.register_os_thread(accept_handle);
@@ -1284,7 +1285,7 @@ impl SrtServer {
 
         // Rate-limit check — same gate as RTMP (H1 fix)
         if let Some(remaining) = self.security.is_ip_banned(&client_ip) {
-            eprintln!(
+            error!(
                 "[srt] Rejecting banned IP {} (ban expires in {:.1}s)",
                 client_ip,
                 remaining.as_secs_f64()
@@ -1318,7 +1319,7 @@ impl SrtServer {
             "".to_string()
         };
 
-        println!(
+        info!(
             "[srt] {} accepted (id={}). StreamID: {}",
             if is_group {
                 "Bonded group"
@@ -1342,7 +1343,7 @@ impl SrtServer {
         .await {
             Ok(Some(p)) => p,
             _ => {
-                eprintln!("[srt] Unauthorized connection for stream key: {}", stream_key);
+                error!("Unauthorized connection for stream key: {}", stream_key);
                 self.security.record_failure(&client_ip);
                 // SAFETY: client_sock is a valid accepted socket not yet closed.
                 unsafe { srt_close(client_sock); }
@@ -1353,7 +1354,7 @@ impl SrtServer {
         // Clear failure state on successful authentication.
         self.security.record_success(&client_ip);
 
-        println!(
+        info!(
             "[srt] Authenticated stream key: {} for pipeline: {} (mode={})",
             stream_key,
             pipeline.id,
@@ -1371,7 +1372,7 @@ impl SrtServer {
             .try_register_ingest(&pipeline.id, stream_key, "srt")
             .await
         else {
-            eprintln!(
+            error!(
                 "[srt] Rejecting duplicate publisher for pipeline {}",
                 pipeline.id
             );
@@ -1384,18 +1385,15 @@ impl SrtServer {
             .await;
         if is_group {
             match srt_group_summary(client_sock) {
-                Some(summary) => println!(
-                    "[srt] Bonded ingest group {}: members={} connected={} active={} broken={}",
-                    client_sock,
-                    summary.member_count,
-                    summary.connected_members,
-                    summary.active_members,
-                    summary.broken_members
+                Some(summary) => info!(
+                    sock = client_sock,
+                    members = summary.member_count,
+                    connected = summary.connected_members,
+                    active = summary.active_members,
+                    broken = summary.broken_members,
+                    "bonded ingest group accepted",
                 ),
-                None => eprintln!(
-                    "[srt] Bonded ingest group {} accepted, but member state is not available yet",
-                    client_sock
-                ),
+                None => warn!(sock = client_sock, "bonded ingest group accepted but member state not available"),
             }
         }
 
@@ -1407,7 +1405,7 @@ impl SrtServer {
             opt.unzip()
         };
         let Some(bytes_received) = bytes_received else {
-            eprintln!(
+            error!(
                 "[srt] Ingest vanished before receive loop for pipeline {}",
                 pipeline.id
             );
@@ -1451,7 +1449,7 @@ impl SrtServer {
         // dropped at an await point before reaching the cleanup block.
         let eid = unsafe { srt_epoll_create() };
         if eid < 0 {
-            eprintln!("[srt] Failed to create epoll instance");
+            error!("Failed to create epoll instance");
             self.engine.unregister_ingest(&pipeline.id).await;
             // SAFETY: Valid socket, clean up on epoll failure.
             unsafe { srt_close(client_sock) };
@@ -1462,7 +1460,7 @@ impl SrtServer {
         // instance. eid and client_sock are valid handles. epoll_events
         // pointer references a live stack variable.
         if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
-            eprintln!("[srt] Failed to add socket to epoll");
+            error!("Failed to add socket to epoll");
             self.engine.unregister_ingest(&pipeline.id).await;
             // SAFETY: eid and client_sock are valid handles. Clean up in
             // reverse creation order: release epoll, then close socket.
@@ -1617,7 +1615,7 @@ impl SrtServer {
                         }
                     }
                     SrtReceiveErrorAction::Disconnect => {
-                        eprintln!(
+                        error!(
                             "[srt] Receive ended for pipeline {}: code={} {}",
                             pipeline.id, error_code, error_message
                         );
@@ -1651,13 +1649,13 @@ impl SrtServer {
                 let video_fps = probe.video.as_ref().map(|v| v.fps).unwrap_or(30.0);
                 let audio_track_count = probe.audio_tracks.len();
                 if let Some(ref v) = probe.video {
-                    println!(
+                    info!(
                         "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
                         v.codec, v.width, v.height, v.fps, v.profile
                     );
                 }
                 for a in &probe.audio_tracks {
-                    println!(
+                    info!(
                         "[srt] Probed audio track {}: {} {}Hz {}ch",
                         a.track_index, a.codec, a.sample_rate, a.channels
                     );
@@ -1716,7 +1714,7 @@ impl SrtServer {
             ring_buffer.push_batch(packets.drain(..));
         }
 
-        println!("[srt] Ingest stream finished for pipeline: {}", pipeline.id);
+        info!("Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine.unregister_ingest(&pipeline.id).await;
 
         // Signal the epoll_waiter task to stop and wait for it to release eid.
@@ -1742,7 +1740,7 @@ impl SrtServer {
             .await
             .contains_key(pipeline_id)
         {
-            eprintln!("[srt] No active ingest for play: {}", pipeline_id);
+            error!("No active ingest for play: {}", pipeline_id);
             // SAFETY: client_sock is a valid accepted socket not yet closed.
             unsafe {
                 srt_close(client_sock);
@@ -1767,7 +1765,7 @@ impl SrtServer {
         let permit = match self.engine.srt_sender_semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                eprintln!(
+                error!(
                     "[srt] Sender thread limit reached — rejecting play for {}",
                     pipeline_id
                 );
@@ -1799,12 +1797,12 @@ impl SrtServer {
                 }
             }));
             if result.is_err() {
-                eprintln!(
+                error!(
                     "[srt] Play sender thread panicked for pipeline: {}",
                     pid_log
                 );
             } else {
-                println!(
+                info!(
                     "[srt] Play subscriber disconnected for pipeline: {}",
                     pid_log
                 );
@@ -1853,7 +1851,7 @@ impl SrtServer {
             }
         }
 
-        println!("[srt-play] Feed loop exited for pipeline={}", pipeline_id);
+        info!("Feed loop exited for pipeline={}", pipeline_id);
         out_queue.close();
     }
 }
@@ -2361,10 +2359,7 @@ mod tests {
                      SRTO_GROUPCONNECT: {error}. Rebuild libsrt with ENABLE_BONDING=ON."
                 );
             }
-            eprintln!(
-                "bonding prerequisite unavailable; set RESTREAM_REQUIRE_SRT_BONDING=1 \
-                 in bonding-enabled CI to make this a required live test ({error})"
-            );
+            warn!(err = %error, "bonding prerequisite unavailable; set RESTREAM_REQUIRE_SRT_BONDING=1 in bonding-enabled CI");
             return;
         }
         unsafe {
@@ -2476,10 +2471,10 @@ mod tests {
 
     #[tokio::test]
     async fn benchmark_srt_sharing() {
-        println!("\n=== SRT EGRESS SHARING BENCHMARK ===");
+        info!("\n=== SRT EGRESS SHARING BENCHMARK ===");
         let n_connections = 10;
         let n_packets = 2000;
-        println!("Clients (N): {}, Packets (M): {}", n_connections, n_packets);
+        info!("Clients (N): {}, Packets (M): {}", n_connections, n_packets);
 
         let video_meta = VideoMeta {
             codec: "h264".to_string(),
@@ -2634,16 +2629,16 @@ mod tests {
         }
         let elapsed_new = start_new.elapsed();
 
-        println!("Old Architecture Time: {:?}", elapsed_old);
-        println!("New Architecture Time: {:?}", elapsed_new);
-        println!("Old Total Bytes Muxed: {}", total_bytes_old);
-        println!("New Total Bytes Muxed: {}", total_bytes_new);
+        info!("Old Architecture Time: {:?}", elapsed_old);
+        info!("New Architecture Time: {:?}", elapsed_new);
+        info!("Old Total Bytes Muxed: {}", total_bytes_old);
+        info!("New Total Bytes Muxed: {}", total_bytes_new);
 
         assert_eq!(total_bytes_old, total_bytes_new);
 
         let ratio = elapsed_old.as_secs_f64() / elapsed_new.as_secs_f64();
-        println!("Performance Gain Ratio: {:.2}x", ratio);
-        println!("=====================================");
+        info!("Performance Gain Ratio: {:.2}x", ratio);
+        info!("=====================================");
     }
 
     /// Verify that when EpollStopGuard drops (simulating a cancelled async
@@ -2926,7 +2921,7 @@ pub fn start_shared_ts_muxer(
                 .await
                 .contains_key(&pipeline_id_str)
             {
-                eprintln!(
+                error!(
                     "[srt-shared-muxer] Ingest gone while waiting for probe: {}",
                     pipeline_id_str
                 );
@@ -2939,7 +2934,7 @@ pub fn start_shared_ts_muxer(
             let ring_codec = source_ring.codec_hint_str();
             let ingest_codec = video_meta.as_ref().map(|v| v.codec.as_str()).unwrap_or("");
             if !ring_codec.is_empty() && ring_codec != ingest_codec {
-                eprintln!(
+                error!(
                     "[srt-shared-muxer] codec_hint override: ingest={} ring={}",
                     ingest_codec, ring_codec
                 );
@@ -3122,7 +3117,7 @@ pub async fn start_srt_egress(
     let addr = match resolve_host(host_port).await {
         Some(a) => a,
         None => {
-            eprintln!("[srt-egress] Failed to resolve target: {}", target_url);
+            error!("Failed to resolve target: {}", target_url);
             engine
                 .record_egress_error(&output_id, "resolve", "failed to resolve target")
                 .await;
@@ -3138,7 +3133,7 @@ pub async fn start_srt_egress(
     for bond_hp in &bond_addrs {
         match resolve_host(bond_hp).await {
             Some(a) => all_addrs.push(a),
-            None => eprintln!("[srt-egress] Failed to resolve bond address: {}", bond_hp),
+            None => error!(addr = %bond_hp, "failed to resolve bond address"),
         }
     }
 
@@ -3153,7 +3148,7 @@ pub async fn start_srt_egress(
         // The returned handle is closed on all exit paths below.
         client_sock = unsafe { srt_create_group(SRT_GTYPE_BACKUP) };
         if client_sock < 0 {
-            eprintln!("[srt-egress] Failed to create bonding group");
+            error!("Failed to create bonding group");
             engine
                 .record_egress_error(&output_id, "connect", "failed to create bonding group")
                 .await;
@@ -3164,7 +3159,7 @@ pub async fn start_srt_egress(
             let streamid_c = match std::ffi::CString::new(streamid.as_str()) {
                 Ok(c) => c,
                 Err(_) => {
-                    eprintln!("[srt-egress] Stream ID contains null bytes");
+                    error!("Stream ID contains null bytes");
                     engine
                         .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
                         .await;
@@ -3223,7 +3218,7 @@ pub async fn start_srt_egress(
                     // static string valid until the next SRT call.
                     let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
                     let message = format!("bonded connection failed: {}", err.to_string_lossy());
-                    eprintln!(
+                    error!(
                         "[srt-egress] Bonded connection failed: {}",
                         err.to_string_lossy()
                     );
@@ -3275,7 +3270,7 @@ pub async fn start_srt_egress(
                     // SAFETY: srt_getlasterror_str is valid until next SRT call.
                     let err = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) };
                     let message = format!("bonded connection failed: {}", err.to_string_lossy());
-                    eprintln!(
+                    error!(
                         "[srt-egress] Bonded connection failed: {}",
                         err.to_string_lossy()
                     );
@@ -3296,7 +3291,7 @@ pub async fn start_srt_egress(
             }
         }
 
-        println!(
+        info!(
             "[srt-egress] Bonded connection ({} links) to {}",
             all_addrs.len(),
             target_url
@@ -3311,7 +3306,7 @@ pub async fn start_srt_egress(
         // Single connection (original path)
         client_sock = unsafe { srt_create_socket() };
         if client_sock < 0 {
-            eprintln!("[srt-egress] Failed to create socket");
+            error!("Failed to create socket");
             engine
                 .record_egress_error(&output_id, "connect", "failed to create socket")
                 .await;
@@ -3323,7 +3318,7 @@ pub async fn start_srt_egress(
             let streamid_c = match std::ffi::CString::new(streamid.as_str()) {
                 Ok(c) => c,
                 Err(_) => {
-                    eprintln!("[srt-egress] Invalid stream ID (contains null byte)");
+                    error!("Invalid stream ID (contains null byte)");
                     engine
                         .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
                         .await;
@@ -3379,7 +3374,7 @@ pub async fn start_srt_egress(
             )
         };
         if conn_res < 0 {
-            eprintln!("[srt-egress] Connection failed to {}", target_url);
+            error!("Connection failed to {}", target_url);
             engine
                 .record_egress_error(&output_id, "connect", "connection failed")
                 .await;
@@ -3390,7 +3385,7 @@ pub async fn start_srt_egress(
             return;
         }
 
-        println!("[srt-egress] Connected to {}", target_url);
+        info!("Connected to {}", target_url);
         srt_log_effective_opts(client_sock, "egress");
     }
 
@@ -3439,7 +3434,7 @@ pub async fn start_srt_egress(
     let permit = match engine.srt_sender_semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
-            eprintln!(
+            error!(
                 "[srt-egress] Sender thread limit reached — rejecting egress {}",
                 output_id
             );
@@ -3475,7 +3470,7 @@ pub async fn start_srt_egress(
                     // static string for error diagnostics.
                     let err_str = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) }
                         .to_string_lossy();
-                    eprintln!("[srt-egress] srt_send failed for {}: {}", oid, err_str);
+                    error!("srt_send failed for {}: {}", oid, err_str);
                     if let Some(ref phase) = egress_phase {
                         *phase.lock().unwrap_or_else(|e| e.into_inner()) = "failed".to_string();
                     }
@@ -3537,9 +3532,9 @@ pub async fn start_srt_egress(
             }
         }));
         if result.is_err() {
-            eprintln!("[srt-egress] Sender thread panicked for {}", oid);
+            error!("Sender thread panicked for {}", oid);
         } else {
-            println!("[srt-egress] Sender thread finished for {}", oid);
+            info!("Sender thread finished for {}", oid);
         }
         // SAFETY: client_sock was created/connected in start_srt_egress
         // and passed to this sender thread. Closed exactly once here

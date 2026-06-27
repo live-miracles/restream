@@ -9,6 +9,7 @@
 //! context and is tracked as a roadmap item.
 
 use crate::media::engine::MediaEngine;
+use tracing::{debug, error, info, warn};
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
@@ -88,7 +89,7 @@ pub async fn start_recording(
     );
     let started_at = std::time::Instant::now();
 
-    println!("[recording] Started: {}", filename);
+    info!(filename = %filename, "recording started");
 
     let rec_stage_key = crate::domain::stage::StageKey::new(
         pipeline_id.as_str(),
@@ -126,8 +127,8 @@ pub async fn start_recording(
             run_ts_writer(queue_clone, &file_path_clone, cancel_token_clone)
         }));
         match result {
-            Ok(Err(e)) => eprintln!("[recording] TS writer failed: {:?}", e),
-            Err(_) => eprintln!("[recording] TS writer panicked"),
+            Ok(Err(e)) => error!(err = ?e, "TS writer failed"),
+            Err(_) => error!("TS writer panicked"),
             _ => {}
         }
     });
@@ -199,14 +200,14 @@ pub async fn start_recording(
     // check the duration and potentially delete it.  Joining also surfaces
     // any panic that escaped catch_unwind (shouldn't happen, but be explicit).
     if let Err(e) = muxer_handle.join() {
-        eprintln!(
+        error!(
             "[recording] TS writer thread join failed for {}: {:?}",
             filename, e
         );
     }
 
     let duration = started_at.elapsed();
-    println!(
+    info!(
         "[recording] Ended: {} (duration: {:.1}s)",
         filename,
         duration.as_secs_f64()
@@ -214,7 +215,7 @@ pub async fn start_recording(
 
     if duration.as_secs() < MIN_DURATION_SECS {
         let _ = fs::remove_file(&file_path);
-        println!("[recording] Deleted short recording: {}", filename);
+        info!(filename = %filename, "deleted short recording");
     }
 
     engine.remove_stage_metrics(&rec_stage_key).await;

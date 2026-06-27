@@ -4,6 +4,7 @@
 //! to build the JSON returned by `/health`.
 
 use ffmpeg_next as ffmpeg;
+use tracing::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -336,12 +337,7 @@ impl MediaEngine {
         // and exit — a panic here produces an unreadable backtrace with no
         // context about what went wrong or which library is missing.
         if let Err(e) = ffmpeg::init() {
-            eprintln!(
-                "[media] Fatal: FFmpeg initialization failed ({}). \
-                 Ensure the system has compatible FFmpeg libraries installed \
-                 and RESTREAM_FFMPEG_PATH is set correctly if using a custom build.",
-                e
-            );
+            error!(err = %e, "fatal: FFmpeg initialization failed; check library paths");
             std::process::exit(1);
         }
 
@@ -594,9 +590,7 @@ impl MediaEngine {
         children.retain(|id, child| match child.try_wait() {
             Ok(None) => true,
             _ => {
-                println!(
-                    "[engine] File ingest child process {} has exited/stopped",
-                    id
+                info!("File ingest child process {} has exited/stopped", id
                 );
                 stopped.push(id.clone());
                 false
@@ -710,11 +704,9 @@ impl MediaEngine {
             0
         };
 
-        println!(
-            "[engine] Adaptive ring resize: pipeline={} {:.0} pkt/s \
+        info!("Adaptive ring resize: pipeline={} {:.0} pkt/s \
              (video={:.0} fps, audio={} tracks) → {} slots ({:.1} s headroom)\
-             {}",
-            pipeline_id, pkt_rate, video_fps, audio_track_count,
+             {}", pipeline_id, pkt_rate, video_fps, audio_track_count,
             needed, needed as f64 / pkt_rate,
             if n_cancelled > 0 {
                 format!("; cancelled {n_cancelled} egress(es) for reconnect")
@@ -813,10 +805,7 @@ impl MediaEngine {
         output_buf.set_audio_tracks(output_tracks);
 
         let encoding_str = stage_kind.to_string();
-        println!(
-            "[transcoder] Spawning stage: pipeline={} encoding={}",
-            pipeline_id, encoding_str
-        );
+        info!(pipeline_id = %pipeline_id, encoding = %encoding_str, "spawning transcoder stage");
         self.event_log.emit(crate::events::EventKind::StageStarted {
             pipeline_id: pipeline_id.to_string(),
             encoding: encoding_str.clone(),
@@ -839,10 +828,7 @@ impl MediaEngine {
             let routing =
                 crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
             if backend_policy.select_backend(&stage_kind) == StageBackend::AudioRouter {
-                println!(
-                    "[audio-router] Spawning stage: pipeline={} encoding={}",
-                    pipeline_id, encoding_str
-                );
+                info!(pipeline_id = %pipeline_id, encoding = %encoding_str, "spawning audio-router stage");
                 tokio::spawn(async move {
                     crate::media::transcoder::start_audio_router(
                         pid,
@@ -862,24 +848,11 @@ impl MediaEngine {
 
         let backend = backend_policy.select_backend(&stage_kind);
 
-        println!(
-            "[transcoder] Spawning stage: pipeline={} encoding={} backend={}",
-            pipeline_id,
-            encoding_str,
-            match backend {
-                StageBackend::AudioRouter => "audio-router",
-                StageBackend::InternalFfmpeg => "internal",
-                StageBackend::ExternalFfmpeg => "external",
-            }
-        );
+        info!(pipeline_id = %pipeline_id, encoding = %encoding_str, "spawning transcoder stage");
 
         if backend == StageBackend::InternalFfmpeg {
             if stage_kind.is_video_preset() {
-                println!(
-                    "[transcoder] Info: RESTREAM_USE_INTERNAL_TRANSCODER=1 with video \
-                     preset '{}' — using in-process decode->scale->encode loop.",
-                    encoding_str
-                );
+                info!(encoding = %encoding_str, "using in-process decode->scale->encode loop");
             }
             let int_stage_key = key.clone();
             tokio::spawn(async move {
@@ -964,10 +937,7 @@ impl MediaEngine {
         buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         drop(buffers); // release write lock before spawning
 
-        println!(
-            "[h264-tc] Spawning shared H.265→H.264 transcoder for pipeline {}",
-            pipeline_id
-        );
+        info!(pipeline_id = %pipeline_id, "spawning shared H.265→H.264 transcoder");
         self.event_log.emit(crate::events::EventKind::StageStarted {
             pipeline_id: pipeline_id.to_string(),
             encoding: key.kind.to_string(),
@@ -1032,7 +1002,7 @@ impl MediaEngine {
         let mut buffers = self.transcoder_buffers.write().await;
         buffers.retain(|key, (_rb, token)| {
             if !active_keys.contains(key) {
-                println!("[engine] Sweeping unused transcoder stage: {}", key);
+                info!("Sweeping unused transcoder stage: {}", key);
                 token.cancel();
                 false
             } else {
@@ -1081,7 +1051,7 @@ impl MediaEngine {
             let in_use = has_readers;
 
             if !in_use {
-                println!("[engine] Sweeping unused TS muxer stage: {}", key);
+                info!("Sweeping unused TS muxer stage: {}", key);
                 stage.cancel.cancel();
                 false
             } else {

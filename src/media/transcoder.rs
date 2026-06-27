@@ -6,6 +6,7 @@
 //! are parsed to select/remap audio streams.
 
 use crate::domain::stage::StageKey;
+use tracing::{debug, error, info, warn};
 use crate::media::engine::AudioMeta;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
@@ -69,7 +70,7 @@ pub async fn start_audio_router(
         output_buffer.set_codec_hint(hint);
     }
 
-    eprintln!(
+    error!(
         "[audio-router] start pipeline={} routing={:?} input_codec='{}' output_codec='{}'",
         pipeline_id,
         std::mem::discriminant(&routing),
@@ -140,7 +141,7 @@ pub async fn start_audio_router(
                     if let Some(p) = out {
                         stage_metrics.record_out(p.payload.len() as u64);
                         if !first_push_logged {
-                            println!(
+                            info!(
                                 "[audio-router] first push pipeline={} type={:?} track={} codec_out='{}'",
                                 pipeline_id, p.media_type, p.track_index,
                                 output_buffer.codec_hint_str()
@@ -329,14 +330,8 @@ pub async fn start_transcoder(
             }
         }));
         match result {
-            Ok(Err(e)) => eprintln!(
-                "[transcoder] FFmpeg transcode thread failed for {} ({}): {:?}",
-                pipeline_id_clone, preset_clone, e
-            ),
-            Err(_) => eprintln!(
-                "[transcoder] FFmpeg transcode thread panicked for {} ({})",
-                pipeline_id_clone, preset_clone
-            ),
+            Ok(Err(e)) => error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, err = ?e, "FFmpeg transcode thread failed"),
+            Err(_) => error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, "FFmpeg transcode thread panicked"),
             _ => {}
         }
         cancel_on_exit.cancel();

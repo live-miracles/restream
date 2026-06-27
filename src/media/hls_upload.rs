@@ -5,6 +5,7 @@
 //! segments beside it. This module supports both shapes.
 
 use std::collections::HashSet;
+use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,7 +31,7 @@ pub async fn start_hls_put_upload(
     let playlist_url = match Url::parse(&target_url) {
         Ok(url) => url,
         Err(err) => {
-            eprintln!("[hls-upload] Invalid HLS upload URL for output {output_id}: {err}");
+            error!(output_id = %output_id, err = %err, "invalid HLS upload URL");
             engine
                 .record_egress_error(&output_id, "parse_url", err.to_string())
                 .await;
@@ -72,7 +73,7 @@ pub async fn start_hls_put_upload(
                     engine.record_egress_progress(&output_id, segment_len).await;
                 }
                 Err(err) => {
-                    eprintln!(
+                    error!(
                         "[hls-upload] Segment upload failed output={} pipeline={} segment={}: {}",
                         output_id, pipeline_id, segment_name, err
                     );
@@ -94,7 +95,7 @@ pub async fn start_hls_put_upload(
         )
         .await
         {
-            eprintln!(
+            error!(
                 "[hls-upload] Playlist upload failed output={} pipeline={}: {}",
                 output_id, pipeline_id, err
             );

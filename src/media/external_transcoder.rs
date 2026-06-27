@@ -35,6 +35,7 @@
 //! via Rust FFI; prefer the external backend until the FFI layer hardens.
 
 use std::process::Stdio;
+use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -253,7 +254,7 @@ pub async fn start_external_transcoder_stage(
 ) {
     let input_codec = input_codec_override.as_deref().unwrap_or("h264");
     let args = build_stage_ffmpeg_args(&encoding, input_codec);
-    println!(
+    info!(
         "[ext-transcoder] stage start  pipeline={} encoding={}",
         pipeline_id, encoding
     );
@@ -268,7 +269,7 @@ pub async fn start_external_transcoder_stage(
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
+            error!(
                 "[ext-transcoder] failed to spawn ffmpeg ({}:{}): {}",
                 pipeline_id, encoding, e
             );
@@ -287,7 +288,7 @@ pub async fn start_external_transcoder_stage(
     let mut stdin = match child.stdin.take() {
         Some(s) => s,
         None => {
-            eprintln!(
+            error!(
                 "[ext-transcoder] ffmpeg stdin unavailable ({}:{})",
                 pipeline_id, encoding
             );
@@ -306,7 +307,7 @@ pub async fn start_external_transcoder_stage(
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
-            eprintln!(
+            error!(
                 "[ext-transcoder] ffmpeg stdout unavailable ({}:{})",
                 pipeline_id, encoding
             );
@@ -325,7 +326,7 @@ pub async fn start_external_transcoder_stage(
     let stderr = match child.stderr.take() {
         Some(s) => s,
         None => {
-            eprintln!(
+            error!(
                 "[ext-transcoder] ffmpeg stderr unavailable ({}:{})",
                 pipeline_id, encoding
             );
@@ -350,7 +351,7 @@ pub async fn start_external_transcoder_stage(
     // Trigger TSC calibration eagerly (200 µs busy-wait, once per process).
     // Logs which path was chosen so operators can see it in the stage output.
     if !timing::calibrate() {
-        println!(
+        info!(
             "[ext-transcoder] pipe timing: Instant fallback \
              (invariant TSC absent or calibration out of bounds)"
         );
@@ -385,7 +386,7 @@ pub async fn start_external_transcoder_stage(
                             all.extend_from_slice(&chunk[..n.min(remaining)]);
                         } else if !truncated {
                             truncated = true;
-                            eprintln!(
+                            error!(
                                 "[ext-transcoder] ffmpeg stderr ({}) truncated at 1 MB — \
                                  further output discarded",
                                 label
@@ -395,7 +396,7 @@ pub async fn start_external_transcoder_stage(
                 }
             }
             if !all.is_empty() {
-                eprintln!(
+                error!(
                     "[ext-transcoder] ffmpeg stderr ({}): {}",
                     label,
                     String::from_utf8_lossy(&all).trim()
@@ -484,7 +485,7 @@ pub async fn start_external_transcoder_stage(
                         let idle_us = out_timing_clock.delta_us(t0);
                         match result {
                             Ok(0) | Err(_) => {
-                                eprintln!("[ext-transcoder] stdout closed ({})", label_out);
+                                error!("stdout closed ({})", label_out);
                                 break;
                             }
                             Ok(n) => {
@@ -539,7 +540,7 @@ pub async fn start_external_transcoder_stage(
                     if feeder.extend_ts_for_packet(&pkt, &mut ts_batch) {
                         let t0 = timing_clock.now();
                         if stdin.write_all(&ts_batch).await.is_err() {
-                            eprintln!(
+                            error!(
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
                                 pipeline_id, encoding
                             );
@@ -570,7 +571,7 @@ pub async fn start_external_transcoder_stage(
             encoding: encoding.clone(),
         });
 
-    println!(
+    info!(
         "[ext-transcoder] stage exit   pipeline={} encoding={}",
         pipeline_id, encoding
     );
