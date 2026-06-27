@@ -2,6 +2,14 @@ import type { AudioTrack } from '../types.js';
 
 const STORAGE_KEY = 'restream.audioTrackLabels.v1';
 
+// ISO 639-2 codes that convey no language information and should be hidden.
+const MEANINGLESS_LANG = new Set(['und', 'unk', 'zxx']);
+
+function isMeaningfulLanguage(lang: string | null | undefined): boolean {
+    const t = lang?.trim();
+    return !!t && !MEANINGLESS_LANG.has(t.toLowerCase());
+}
+
 type AudioTrackLabels = Record<string, Record<string, string>>;
 
 function readLabels(): AudioTrackLabels {
@@ -43,7 +51,7 @@ export function audioTrackIdentifier(track: AudioTrack | null | undefined, posit
     } else {
         parts.push(`Track ${position + 1}`);
     }
-    if (track?.language) {
+    if (isMeaningfulLanguage(track?.language)) {
         parts.push(String(track.language).toUpperCase());
     }
     return parts.join(' / ');
@@ -57,7 +65,7 @@ export function getAudioTrackLabel(
     const stored = readLabels()[pipelineId]?.[audioTrackKey(track, position)]?.trim();
     if (stored) return stored;
     if (track?.title?.trim()) return track.title.trim();
-    if (track?.language?.trim()) return track.language.trim().toUpperCase();
+    if (isMeaningfulLanguage(track?.language)) return track.language!.trim().toUpperCase();
     if (Number.isFinite(track?.index as number)) return `Track ${Number(track?.index) + 1}`;
     return `Track ${position + 1}`;
 }
