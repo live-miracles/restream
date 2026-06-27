@@ -331,6 +331,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/pipelines/:pipeline_id/alerts",
             get(pipeline_alerts_handler),
         )
+        .route("/api/logs", get(logs_handler))
+        .route("/api/logs/stream", get(logs_stream_handler))
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
         .route("/api/v1/events", get(v1_events_handler))
         .route("/api/v1/overview", get(v1_overview_handler))
@@ -1620,6 +1622,190 @@ async fn pipeline_history_handler(
         "pipelineId": pipeline_id,
         "logs": history_logs_json(logs)
     }))
+    .into_response()
+}
+
+// ── /api/logs — paginated query ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct LogsQuery {
+    level: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    target: Option<String>,
+    pipeline_id: Option<String>,
+    output_id: Option<String>,
+    limit: Option<i64>,
+    order: Option<String>,
+}
+
+async fn logs_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<LogsQuery>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let filters = AppLogFilters {
+        level: query.level,
+        since: query.since,
+        until: query.until,
+        target: query.target,
+        pipeline_id: query.pipeline_id,
+        output_id: query.output_id,
+        limit: query.limit,
+        order: query.order,
+    };
+
+    let logs = db::list_app_logs(&state.db, &filters).await.unwrap_or_default();
+    let has_more = logs.len() >= filters.limit.unwrap_or(200).clamp(1, 1000) as usize;
+
+    Json(serde_json::json!({
+        "logs": logs,
+        "total": logs.len(),
+        "hasMore": has_more,
+    }))
+    .into_response()
+}
+
+// ── /api/logs/stream — SSE live tail ─────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct LogsStreamQuery {
+    level: Option<String>,
+    target: Option<String>,
+    pipeline_id: Option<String>,
+    output_id: Option<String>,
+    last_event_id: Option<i64>,
+}
+
+async fn logs_stream_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<LogsStreamQuery>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    // Last-Event-ID from header takes priority over query param (browser reconnect path).
+    let resume_from: Option<i64> = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .or(query.last_event_id);
+
+    let min_level = query.level.unwrap_or_else(|| "info".to_string());
+    let filter_target = query.target;
+    let filter_pipeline = query.pipeline_id;
+    let filter_output = query.output_id;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+
+    let db_pool = state.db.clone();
+    let mut broadcast_rx = state.log_broadcast.subscribe();
+
+    tokio::spawn(async move {
+        let level_passes = |level: &str| -> bool {
+            match min_level.as_str() {
+                "error" => level == "ERROR",
+                "warn"  => matches!(level, "ERROR" | "WARN"),
+                "debug" => matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG"),
+                _       => matches!(level, "ERROR" | "WARN" | "INFO"),
+            }
+        };
+        // 1. Backfill entries missed since last_event_id.
+        if let Some(since_id) = resume_from {
+            let backfill = db::list_app_logs(
+                &db_pool,
+                &AppLogFilters {
+                    level: Some(min_level.clone()),
+                    since: None,
+                    until: None,
+                    target: filter_target.clone(),
+                    pipeline_id: filter_pipeline.clone(),
+                    output_id: filter_output.clone(),
+                    limit: Some(200),
+                    order: Some("asc".to_string()),
+                },
+            )
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.id > since_id);
+
+            for row in backfill {
+                let data = serde_json::json!({
+                    "id": row.id, "ts": row.ts, "level": row.level,
+                    "target": row.target, "message": row.message,
+                    "fields": row.fields, "pipelineId": row.pipeline_id,
+                    "outputId": row.output_id,
+                });
+                let frame = format!("id: {}\nevent: log\ndata: {}\n\n", row.id, data);
+                if tx.send(frame).await.is_err() { return; }
+            }
+        }
+
+        // 2. Live tail from broadcast channel + heartbeat every 20 s.
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(20));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                entry = broadcast_rx.recv() => {
+                    match entry {
+                        Ok(e) => {
+                            if !level_passes(&e.level) { continue; }
+                            if let Some(ref t) = filter_target {
+                                if !e.target.starts_with(t.as_str()) { continue; }
+                            }
+                            if let Some(ref p) = filter_pipeline {
+                                if e.pipeline_id.as_deref() != Some(p.as_str()) { continue; }
+                            }
+                            if let Some(ref o) = filter_output {
+                                if e.output_id.as_deref() != Some(o.as_str()) { continue; }
+                            }
+                            let data = serde_json::to_string(&e).unwrap_or_default();
+                            let frame = format!("id: {}\nevent: log\ndata: {}\n\n", e.id, data);
+                            if tx.send(frame).await.is_err() { return; }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            // Receiver fell behind — close; client will reconnect with Last-Event-ID.
+                            return;
+                        }
+                        Err(_) => return,
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    if tx.send(": ping\n\n".to_string()).await.is_err() { return; }
+                }
+            }
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = axum::body::Body::from_stream(futures_util::StreamExt::map(stream, |s| {
+        Ok::<_, std::convert::Infallible>(s)
+    }));
+
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        body,
+    )
     .into_response()
 }
 
