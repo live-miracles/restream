@@ -41,7 +41,9 @@ rust-embed = "8"
 tokio-rustls = "0.24"
 webpki-roots = "0.25"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-
+tracing = { version = "0.1", features = ["max_level_debug"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 
 [build-dependencies]
 pkg-config = "0.3"
@@ -128,6 +130,14 @@ incremental = true
 debug = 1
 split-debuginfo = "unpacked"
 codegen-units = 16
+
+# Strip debug + trace at compile time in release/bench profiles so those call
+# sites become dead code and the optimizer removes them entirely.
+[profile.release.package.tracing]
+features = ["release_max_level_info"]
+
+[profile.bench.package.tracing]
+features = ["release_max_level_info"]
 
 [profile.release]
 opt-level = 3
