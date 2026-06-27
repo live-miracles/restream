@@ -5,13 +5,13 @@ import { fetchProcessingGraph, renderGraphInto } from './graph.js';
 import { isOutputIntentStopped, isOutputRunning, isOutputUnexpectedlyDown, selectPipeline } from './render.js';
 import type { OutputView, PipelineView } from '../types.js';
 
-type DashboardMode = 'overview' | 'pipeline' | 'engineer' | 'admin';
+type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'admin';
 
-const validModes = new Set(['overview', 'pipeline', 'engineer', 'admin']);
+const validModes = new Set(['overview', 'pipeline', 'inspect', 'admin']);
 let currentMode: DashboardMode | null = null;
-let engineerPipelineId: string | null = null;
-let engineerGraphPipelineId: string | null = null;
-let engineerGraphInFlight: Promise<void> | null = null;
+let inspectPipelineId: string | null = null;
+let inspectGraphPipelineId: string | null = null;
+let inspectGraphInFlight: Promise<void> | null = null;
 
 function normalizeMode(mode: string | null): DashboardMode {
     if (mode && validModes.has(mode)) return mode as DashboardMode;
@@ -138,35 +138,35 @@ function overviewMetric(label: string, value: string, note: string): string {
     </section>`;
 }
 
-function getEngineerPipeline(): PipelineView | null {
+function getInspectPipeline(): PipelineView | null {
     const selectedFromUrl = getUrlParam('p');
-    if (engineerPipelineId && state.pipelines.some((pipe) => pipe.id === engineerPipelineId)) {
-        return state.pipelines.find((pipe) => pipe.id === engineerPipelineId) || null;
+    if (inspectPipelineId && state.pipelines.some((pipe) => pipe.id === inspectPipelineId)) {
+        return state.pipelines.find((pipe) => pipe.id === inspectPipelineId) || null;
     }
     if (selectedFromUrl && state.pipelines.some((pipe) => pipe.id === selectedFromUrl)) {
-        engineerPipelineId = selectedFromUrl;
+        inspectPipelineId = selectedFromUrl;
         return state.pipelines.find((pipe) => pipe.id === selectedFromUrl) || null;
     }
-    engineerPipelineId = state.pipelines[0]?.id || null;
+    inspectPipelineId = state.pipelines[0]?.id || null;
     return state.pipelines[0] || null;
 }
 
-function renderEngineer(): void {
-    const pipe = getEngineerPipeline();
-    const select = document.getElementById('engineer-pipeline-select') as HTMLSelectElement | null;
+function renderInspect(): void {
+    const pipe = getInspectPipeline();
+    const select = document.getElementById('inspect-pipeline-select') as HTMLSelectElement | null;
     if (select) {
         select.innerHTML = state.pipelines
             .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
             .join('');
         select.value = pipe?.id || '';
         select.onchange = () => {
-            engineerPipelineId = select.value || null;
-            renderEngineer();
-            void refreshEngineerGraph();
+            inspectPipelineId = select.value || null;
+            renderInspect();
+            void refreshInspectGraph();
         };
     }
 
-    const openBtn = document.getElementById('engineer-open-pipeline-btn') as HTMLButtonElement | null;
+    const openBtn = document.getElementById('inspect-open-pipeline-btn') as HTMLButtonElement | null;
     if (openBtn) {
         openBtn.disabled = !pipe;
         openBtn.onclick = () => {
@@ -177,12 +177,12 @@ function renderEngineer(): void {
         };
     }
 
-    renderEngineerSummary(pipe);
-    renderEngineerDiagnostics(pipe);
+    renderInspectSummary(pipe);
+    renderInspectDiagnostics(pipe);
 
-    const refreshBtn = document.getElementById('engineer-refresh-graph-btn');
-    if (refreshBtn) refreshBtn.onclick = () => void refreshEngineerGraph();
-    const diagBtn = document.getElementById('engineer-open-diagnostics-btn') as HTMLButtonElement | null;
+    const refreshBtn = document.getElementById('inspect-refresh-graph-btn');
+    if (refreshBtn) refreshBtn.onclick = () => void refreshInspectGraph();
+    const diagBtn = document.getElementById('inspect-open-diagnostics-btn') as HTMLButtonElement | null;
     if (diagBtn) {
         diagBtn.disabled = !pipe || pipe.input.status !== 'on';
         diagBtn.onclick = () => {
@@ -190,13 +190,13 @@ function renderEngineer(): void {
         };
     }
 
-    if (pipe && engineerGraphPipelineId !== pipe.id && !engineerGraphInFlight) {
-        void refreshEngineerGraph();
+    if (pipe && inspectGraphPipelineId !== pipe.id && !inspectGraphInFlight) {
+        void refreshInspectGraph();
     }
 }
 
-function renderEngineerSummary(pipe: PipelineView | null): void {
-    const container = document.getElementById('engineer-pipeline-summary');
+function renderInspectSummary(pipe: PipelineView | null): void {
+    const container = document.getElementById('inspect-pipeline-summary');
     if (!container) return;
     if (!pipe) {
         container.innerHTML = '<div class="text-base-content/60 text-sm">No pipeline selected.</div>';
@@ -234,8 +234,8 @@ function renderEngineerSummary(pipe: PipelineView | null): void {
     </section>`;
 }
 
-function renderEngineerDiagnostics(pipe: PipelineView | null): void {
-    const container = document.getElementById('engineer-diagnostics-summary');
+function renderInspectDiagnostics(pipe: PipelineView | null): void {
+    const container = document.getElementById('inspect-diagnostics-summary');
     if (!container) return;
     if (!pipe) {
         container.innerHTML = '<div class="text-base-content/60 text-sm">Select a pipeline to inspect diagnostics.</div>';
@@ -263,16 +263,16 @@ function renderEngineerDiagnostics(pipe: PipelineView | null): void {
     </div>`;
 }
 
-async function refreshEngineerGraph(): Promise<void> {
-    const pipe = getEngineerPipeline();
-    const status = document.getElementById('engineer-graph-status');
-    const container = document.getElementById('engineer-graph-container');
+async function refreshInspectGraph(): Promise<void> {
+    const pipe = getInspectPipeline();
+    const status = document.getElementById('inspect-graph-status');
+    const container = document.getElementById('inspect-graph-container');
     if (!pipe || !container) return;
-    if (engineerGraphInFlight) return engineerGraphInFlight;
+    if (inspectGraphInFlight) return inspectGraphInFlight;
     if (status) status.textContent = 'Loading graph...';
-    engineerGraphInFlight = (async () => {
+    inspectGraphInFlight = (async () => {
         const graph = await fetchProcessingGraph(pipe.id);
-        engineerGraphPipelineId = pipe.id;
+        inspectGraphPipelineId = pipe.id;
         if (!graph || !container) {
             if (status) status.textContent = 'Graph unavailable.';
             return;
@@ -285,9 +285,9 @@ async function refreshEngineerGraph(): Promise<void> {
         }
     })();
     try {
-        await engineerGraphInFlight;
+        await inspectGraphInFlight;
     } finally {
-        engineerGraphInFlight = null;
+        inspectGraphInFlight = null;
     }
 }
 
@@ -335,7 +335,7 @@ function applyMode(mode: DashboardMode): void {
     const panels: Record<DashboardMode, HTMLElement | null> = {
         overview: document.getElementById('overview-mode-panel'),
         pipeline: document.getElementById('dashboard-grid'),
-        engineer: document.getElementById('engineer-mode-panel'),
+        inspect: document.getElementById('inspect-mode-panel'),
         admin: document.getElementById('admin-mode-panel'),
     };
     for (const [name, panel] of Object.entries(panels)) {
@@ -357,7 +357,7 @@ function applyMode(mode: DashboardMode): void {
                 ? `${counts.liveInputs} live inputs / ${counts.runningOutputs} running outputs`
                 : mode === 'pipeline'
                   ? 'Pipeline workflow'
-                  : mode === 'engineer'
+                  : mode === 'inspect'
                     ? 'Graph and diagnostics'
                     : 'Configuration and runtime';
     }
@@ -373,16 +373,16 @@ export function setDashboardMode(mode: string): void {
     refreshActiveMode();
 }
 
-export function openEngineerGraph(pipeId: string): void {
-    engineerPipelineId = pipeId;
+export function openInspectGraph(pipeId: string): void {
+    inspectPipelineId = pipeId;
     setUrlParam('p', pipeId);
-    setDashboardMode('engineer');
-    void refreshEngineerGraph();
+    setDashboardMode('inspect');
+    void refreshInspectGraph();
 }
 
 export function renderDashboardModes(): void {
     renderOverview();
-    renderEngineer();
+    renderInspect();
     renderAdmin();
     applyMode(normalizeMode(getUrlParam('mode')));
 }

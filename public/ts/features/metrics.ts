@@ -31,18 +31,44 @@ function renderServerMetrics(): void {
         const el = document.getElementById(id);
         if (el) el.textContent = text;
     };
+    const setTitle = (id: string, text: string): void => {
+        const el = document.getElementById(id);
+        if (el) el.title = text;
+    };
+    const setMeter = (name: 'cpu' | 'ram' | 'disk', value: number | null | undefined): void => {
+        const card = document.getElementById(`navbar-${name}-card`);
+        const bar = document.getElementById(`navbar-${name}-bar`) as HTMLElement | null;
+        const pctValue = Number(value);
+        const safePct = Number.isFinite(pctValue) ? Math.max(0, Math.min(100, pctValue)) : 0;
+        if (bar) {
+            bar.style.width = `${safePct}%`;
+            bar.classList.remove('bg-success', 'bg-warning', 'bg-error');
+            bar.classList.add(safePct >= 95 ? 'bg-error' : safePct >= 85 ? 'bg-warning' : 'bg-success');
+        }
+        if (card) {
+            card.classList.remove('border-warning/50', 'bg-warning/10', 'border-error/60', 'bg-error/10');
+            if (safePct >= 95) card.classList.add('border-error/60', 'bg-error/10');
+            else if (safePct >= 85) card.classList.add('border-warning/50', 'bg-warning/10');
+            card.title =
+                safePct >= 95
+                    ? `${name.toUpperCase()} is at ${Math.round(safePct)}% of provisioned capacity`
+                    : safePct >= 85
+                      ? `${name.toUpperCase()} is nearing provisioned capacity`
+                      : '';
+        }
+    };
 
     if (!state.metrics || Object.keys(state.metrics).length === 0) {
-        setText('navbar-cpu-value', 'CPU ...');
-        setText('navbar-ram-value', 'RAM ...');
-        setText('navbar-disk-value', 'Disk ...');
+        setText('navbar-cpu-value', '...');
+        setText('navbar-ram-value', '...');
+        setText('navbar-disk-value', '...');
         setText('navbar-down-value', '↓ ...');
         setText('navbar-up-value', '↑ ...');
+        setMeter('cpu', null);
+        setMeter('ram', null);
+        setMeter('disk', null);
         return;
     }
-
-    const toGiB = (bytes: number | null | undefined): string =>
-        (Number(bytes || 0) / (1024 * 1024 * 1024)).toFixed(1);
 
     const pct = (v: number | null | undefined): string =>
         v != null ? `${Math.round(Number(v))}%` : '--';
@@ -52,31 +78,30 @@ function renderServerMetrics(): void {
         return Number.isFinite(v) && v >= 0 ? `${(v / 1000).toFixed(2)} Mb/s` : '--';
     };
 
-    const cores = state.metrics?.cpu?.cores;
-    const cpuStr =
-        cores != null
-            ? `${cores}c CPU: ${pct(state.metrics?.cpu?.usagePercent)}`
-            : `CPU: ${pct(state.metrics?.cpu?.usagePercent)}`;
+    const cpuPct = state.metrics?.cpu?.usagePercent;
+    const ramPct = state.metrics?.memory?.usedPercent;
+    const diskPct = state.metrics?.disk?.usedPercent;
+    const ifaceNames = state.metrics?.network?.interfaces?.map((iface) => iface.name).join(', ');
+    const ignored = state.metrics?.network?.ignoredInterfaces?.join(', ');
 
-    const totalRamGiB =
-        state.metrics?.memory?.totalBytes != null ? toGiB(state.metrics.memory.totalBytes) : null;
-    const ramStr =
-        totalRamGiB != null
-            ? `${totalRamGiB}G RAM: ${pct(state.metrics?.memory?.usedPercent)}`
-            : `RAM: ${pct(state.metrics?.memory?.usedPercent)}`;
-
-    const totalDiskGiB =
-        state.metrics?.disk?.totalBytes != null ? toGiB(state.metrics.disk.totalBytes) : null;
-    const diskStr =
-        totalDiskGiB != null
-            ? `${totalDiskGiB}G Disk: ${pct(state.metrics?.disk?.usedPercent)}`
-            : `Disk: ${pct(state.metrics?.disk?.usedPercent)}`;
-
-    setText('navbar-cpu-value', cpuStr);
-    setText('navbar-ram-value', ramStr);
-    setText('navbar-disk-value', diskStr);
+    setText('navbar-cpu-value', pct(cpuPct));
+    setText('navbar-ram-value', pct(ramPct));
+    setText('navbar-disk-value', pct(diskPct));
     setText('navbar-down-value', `↓ ${toMbps(state.metrics?.network?.downloadKbps)}`);
     setText('navbar-up-value', `↑ ${toMbps(state.metrics?.network?.uploadKbps)}`);
+    setMeter('cpu', cpuPct);
+    setMeter('ram', ramPct);
+    setMeter('disk', diskPct);
+    setTitle(
+        'navbar-net-card',
+        [
+            'Network bitrate from external interfaces only.',
+            ifaceNames ? `Included: ${ifaceNames}.` : 'No active external interfaces in the sample.',
+            ignored ? `Ignored local/virtual: ${ignored}.` : '',
+        ]
+            .filter(Boolean)
+            .join(' '),
+    );
 }
 
 function renderHealthBanner(): void {

@@ -14,7 +14,8 @@ interface GraphNode {
         processingUs: number;
         avgUsPerPacket: number;
         packetsPerSec: number;
-        uptimeSec: number;
+        uptimeSec?: number;
+        uptimeSecs?: number;
     };
 }
 
@@ -45,6 +46,11 @@ function formatBytes(b: number): string {
 function formatRate(pps: number): string {
     if (pps < 1000) return `${pps.toFixed(0)}/s`;
     return `${(pps / 1000).toFixed(1)}k/s`;
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
 }
 
 const NODE_W = 220;
@@ -184,10 +190,13 @@ export function renderGraphInto(container: HTMLElement, data: GraphData): void {
         // Metrics
         if (node.metrics && node.metrics.packetsIn > 0) {
             const m = node.metrics;
+            const packetsPerSec = finiteNumber(m.packetsPerSec);
+            const avgUsPerPacket = finiteNumber(m.avgUsPerPacket);
+            const uptimeSecs = finiteNumber(m.uptimeSecs ?? m.uptimeSec);
             const my = pos.y + NODE_H - 10;
-            svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">in: ${formatRate(m.packetsPerSec)} pkt | ${formatBytes(m.bytesIn)}</text>`;
-            svg += `<text x="${pos.x + 10}" y="${my + 24}" fill="#9ca3af" font-size="10">out: ${formatBytes(m.bytesOut)} | avg: ${m.avgUsPerPacket.toFixed(0)}us/pkt</text>`;
-            svg += `<text x="${pos.x + 10}" y="${my + 38}" fill="#9ca3af" font-size="10">uptime: ${m.uptimeSec.toFixed(0)}s</text>`;
+            svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">in: ${formatRate(packetsPerSec)} pkt | ${formatBytes(finiteNumber(m.bytesIn))}</text>`;
+            svg += `<text x="${pos.x + 10}" y="${my + 24}" fill="#9ca3af" font-size="10">out: ${formatBytes(finiteNumber(m.bytesOut))} | avg: ${avgUsPerPacket.toFixed(0)}us/pkt</text>`;
+            svg += `<text x="${pos.x + 10}" y="${my + 38}" fill="#9ca3af" font-size="10">uptime: ${uptimeSecs.toFixed(0)}s</text>`;
         } else if (node.details) {
             const my = pos.y + NODE_H - 10;
             if (node.type === 'ring_buffer' && node.details.fillPercent !== undefined) {

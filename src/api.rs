@@ -2133,10 +2133,16 @@ async fn status_sbom_get_handler(
         .load(std::sync::atomic::Ordering::Relaxed);
     let (_, sbom) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/vnd.cyclonedx+json; version=1.5",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.cyclonedx+json; version=1.5",
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"restream-sbom.cdx.json\"",
+            ),
+        ],
         Json(sbom),
     )
         .into_response()
@@ -2299,18 +2305,59 @@ async fn metrics_system_handler(
         0.0
     };
 
-    // Collect a 1-second network sample
+    fn is_external_interface(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        if lower == "lo" || lower.starts_with("lo:") {
+            return false;
+        }
+        let virtual_prefixes = [
+            "docker",
+            "br-",
+            "veth",
+            "virbr",
+            "vmnet",
+            "zt",
+            "tailscale",
+            "tun",
+            "tap",
+            "wg",
+        ];
+        !virtual_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+    }
+
+    // Collect a short network sample. The navbar reports external interfaces so
+    // local RTMP/SRT test traffic on loopback does not drown out host egress.
     let nets1 = Networks::new_with_refreshed_list();
     tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
     let nets2 = Networks::new_with_refreshed_list();
     let mut total_rx = 0u64;
     let mut total_tx = 0u64;
+    let mut external_interfaces = Vec::new();
+    let mut ignored_interfaces = Vec::new();
     for (iface, n2) in nets2.iter() {
         if let Some(n1) = nets1.get(iface) {
-            total_rx += n2.total_received().saturating_sub(n1.total_received());
-            total_tx += n2
+            let rx = n2.total_received().saturating_sub(n1.total_received());
+            let tx = n2
                 .total_transmitted()
                 .saturating_sub(n1.total_transmitted());
+            let active = rx > 0 || tx > 0;
+            if is_external_interface(iface) {
+                total_rx += rx;
+                total_tx += tx;
+                if active {
+                    external_interfaces.push(serde_json::json!({
+                        "name": iface,
+                        "downloadBytesPerSec": rx * 4,
+                        "uploadBytesPerSec": tx * 4,
+                        "downloadKbps": (rx * 4 * 8) as f64 / 1000.0,
+                        "uploadKbps": (tx * 4 * 8) as f64 / 1000.0,
+                    }));
+                }
+            } else if active {
+                ignored_interfaces.push(iface.to_string());
+            }
         }
     }
     // Scale 250ms sample to per-second
@@ -2340,10 +2387,14 @@ async fn metrics_system_handler(
             "usedPercent": disk_pct
         },
         "network": {
+            "scope": "external",
             "downloadBytesPerSec": dl_bytes_sec,
             "uploadBytesPerSec": ul_bytes_sec,
             "downloadKbps": dl_kbps,
-            "uploadKbps": ul_kbps
+            "uploadKbps": ul_kbps,
+            "interfaces": external_interfaces,
+            "ignoredInterfaces": ignored_interfaces,
+            "sampleMs": 250
         }
     }))
     .into_response()

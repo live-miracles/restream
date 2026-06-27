@@ -5,6 +5,7 @@
     <title data-name="Status">Status</title>
     <link rel="icon" type="image/png" href="logo.png" />
     <link rel="stylesheet" type="text/css" href="output.css" />
+    <script src="base-path.js"></script>
     <script type="module" src="js/features/status-entry.js"></script>
   </head>
   <body class="bg-base-100 text-base-content flex h-screen flex-col">
@@ -32,6 +33,9 @@
             d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <span id="error-msg"></span>
+      </div>
+      <div id="copied-notification" role="alert" class="alert alert-success hidden w-fit shadow-lg" style="pointer-events: auto">
+        <span>Copied</span>
       </div>
     </div>
 

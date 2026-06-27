@@ -4,7 +4,7 @@ import { openOutputHistoryModal, openPipelineHistoryModal } from '../history/con
 import { setPipelineViewDependencies } from './pipeline-view.js';
 import { openDiagnosticsModal } from './diagnostics.js';
 import { openPublisherHealthModal, renderPublisherHealthModal } from './publisher-health.js';
-import { initDashboardModes, openEngineerGraph, renderDashboardModes } from './modes.js';
+import { initDashboardModes, openInspectGraph, renderDashboardModes } from './modes.js';
 
 setDashboardHooks({
     afterRender: () => {
@@ -24,7 +24,7 @@ setPipelineViewDependencies({
     deleteOutBtn,
     refreshDashboard,
     openDiagnosticsModal,
-    openGraphExplorer: openEngineerGraph,
+    openGraphExplorer: openInspectGraph,
 });
 
 initDashboardModes();

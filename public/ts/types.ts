@@ -167,7 +167,18 @@ export interface SystemMetrics {
     cpu?: { usagePercent?: number | null; cores?: number | null; load1?: number | null };
     memory?: { usedBytes?: number | null; totalBytes?: number | null; usedPercent?: number | null };
     disk?: { usedPercent?: number | null; totalBytes?: number | null };
-    network?: { downloadKbps?: number | null; uploadKbps?: number | null };
+    network?: {
+        scope?: 'external' | string;
+        downloadKbps?: number | null;
+        uploadKbps?: number | null;
+        interfaces?: Array<{
+            name: string;
+            downloadKbps?: number | null;
+            uploadKbps?: number | null;
+        }>;
+        ignoredInterfaces?: string[];
+        sampleMs?: number | null;
+    };
 }
 
 export interface InputView {
