@@ -186,7 +186,7 @@ Benchmarks measure speed, not correctness; they are not a third test tier. Two c
 
 ## Phased rollout
 
-Phases 0–4 are complete.
+Phases 0–5 are complete.
 
 0. **Re-tier** — done. Unit tests cover burst accounting, DTS enforcement, and fault
    injection. `simd_alternatives` marked as a decision bench.
@@ -201,3 +201,10 @@ Phases 0–4 are complete.
    - `hls-put-probe` (HLS PUT upload: playlist, content types, segment decode via harness
      HTTP PUT sink)
    - `burst-graph` (ring buffer burst stats via `/pipelines/:id/graph` API)
+5. **Fault resilience + file ingest coverage** — done. New test modes:
+   - `fault-resilience`: publisher disconnect detection (RTMP kill → input off, SRT kill →
+     input off, file-ingest stop → input off) and egress sink disappearance (RTMP sink
+     gone → output error/reconnect, SRT sink gone → output error/reconnect).
+   - `mixed-file-h264`: file-ingest as input source with RTMP+SRT egress mixed-scale load.
+   - `wait_for_api_input_off()` helper verifies `/health` transitions to `"off"` within
+     a timeout after publisher disconnects.

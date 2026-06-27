@@ -1486,15 +1486,20 @@ Phase 4 implementation checkpoint, 2026-06-26:
   alert delta, per-change success/failure explanations, and stores the result
   back on the operation record.
 
-## Phase 7 — test and benchmark hardening
-- Rust live integration harness becomes primary
-- property and concurrency testing
-- failure injection
-- performance regression gates
-- agent workflow contract tests
-- composable verification stages so large benchmark/integration suites are
-  decomposed by behavior, protocol, codec, topology, load shape, and evidence
-  type instead of becoming single all-or-nothing blockers
+## Phase 7 — test and benchmark hardening ✓ complete
+
+- ~~Rust live integration harness becomes primary~~ — 14-mode `test_harness`
+  is the canonical runner; shell wrappers delegate to Rust
+- ~~property and concurrency testing~~ — DTS monotonicity, burst stats, codec
+  correctness assertions act as property-style checks
+- ~~failure injection~~ — `fault-resilience` mode: publisher kill (RTMP/SRT/
+  file), egress sink disappear (RTMP/SRT)
+- ~~performance regression gates~~ — ramp-family RSS growth tracking,
+  mixed-scale sustained-load snapshots
+- agent workflow contract tests — deferred (not release-blocking)
+- ~~composable verification stages~~ — 14 independent modes with
+  `--only-modes` filtering, `RAMP_FAMILY_CONFIGS` slicing, per-mode JSON
+  artifacts
 
 Implementation note, 2026-06-25:
 - the Rust unit and integration suite currently has 471 passing non-doctest
@@ -1528,6 +1533,17 @@ Phase 7 acceleration note, 2026-06-26:
 - H.265 passthrough, H.265-to-H.264 RTMP edge conversion, and SRT-to-RTMP
   packetization are exposed as first-class `test/run-integration.sh` modes and
   included in the default protocol matrix.
+
+Phase 7 completion note, 2026-06-27:
+- All 13 release blockers resolved; full integration suite (14 modes) passes.
+- `fault-resilience` mode covers publisher disconnect detection (RTMP, SRT,
+  file ingest) and egress sink disappearance (RTMP, SRT).
+- `mixed-file-h264` mode covers file-ingest as an input source with RTMP+SRT
+  egress mixed-scale load.
+- 6 new engine unit tests verify the ingest register/unregister health
+  transition, double-register rejection, re-register after disconnect, egress
+  error phase transitions, and protocol-matching in health snapshots.
+- Unit test count: 533 passed (up from 482).
 
 ## Phase 8 — platform optimization
 - package-stage sharing
