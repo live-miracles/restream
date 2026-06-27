@@ -4769,6 +4769,33 @@ async fn v1_pipeline_summary_handler(
     }
 
     let pip = &snapshot["pipelines"][&pipeline_id];
+    let pipeline_outputs = db::list_outputs(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|output| output.pipeline_id == pipeline_id)
+        .collect::<Vec<_>>();
+    let graph = state
+        .engine
+        .processing_graph(&pipeline_id, &pipeline_outputs)
+        .await;
+    let graph_nodes = graph["nodes"]
+        .as_array()
+        .map(|nodes| nodes.len())
+        .unwrap_or(0);
+    let graph_edges = graph["edges"]
+        .as_array()
+        .map(|edges| edges.len())
+        .unwrap_or(0);
+    let graph_active_nodes = graph["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|node| node["active"].as_bool().unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
 
     let mut alert_list = alerts::derive_alerts(&snapshot);
     state
@@ -4803,6 +4830,7 @@ async fn v1_pipeline_summary_handler(
     Json(serde_json::json!({
         "generatedAt": generated_at,
         "pipelineId": pipeline_id,
+        "input": pip["input"],
         "source": {
             "status": input_status,
             "bitrateKbps": bitrate_kbps,
@@ -4816,6 +4844,13 @@ async fn v1_pipeline_summary_handler(
         },
         "recording": pip["recording"],
         "hlsPreview": pip["hlsPreview"],
+        "graph": {
+            "nodes": graph_nodes,
+            "edges": graph_edges,
+            "activeNodes": graph_active_nodes,
+            "inactiveNodes": graph_nodes.saturating_sub(graph_active_nodes),
+            "hasGraph": graph_nodes > 0,
+        },
         "alerts": alert_list,
     }))
     .into_response()

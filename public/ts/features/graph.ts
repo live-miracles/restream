@@ -59,6 +59,14 @@ function formatKbps(value: unknown): string {
     return `${kbps.toFixed(0)} kbps`;
 }
 
+function formatAgeMs(value: unknown): string {
+    const ms = Number(value);
+    if (!Number.isFinite(ms) || ms < 0) return 'no progress';
+    if (ms < 1000) return `${ms.toFixed(0)} ms ago`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s ago`;
+    return `${(ms / 60_000).toFixed(1)} min ago`;
+}
+
 function finiteNumber(value: unknown, fallback = 0): number {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
@@ -219,8 +227,17 @@ export function renderGraphInto(container: HTMLElement, data: GraphData): void {
             const bitrate = Number(node.details.bitrateKbps);
             const bitrateLabel = Number.isFinite(bitrate) ? ` | ${bitrate.toFixed(0)} kbps` : '';
             detailLines.push(`received: ${formatBytes(node.details.bytesReceived as number)}${bitrateLabel}`);
-        } else if (node.type === 'egress' && node.details?.bitrateKbps !== undefined) {
+        } else if (node.type === 'egress' && node.details) {
+            const status = String(node.details.status || (node.active ? 'running' : 'inactive'));
+            const phase = String(node.details.phase || 'unknown');
+            detailLines.push(`${status} | ${phase}`);
             detailLines.push(`${formatKbps(node.details.bitrateKbps)} | ${formatBytes(node.details.totalSize)}`);
+            const lastError = typeof node.details.lastError === 'string' ? node.details.lastError : '';
+            if (lastError) {
+                detailLines.push(`error: ${truncate(lastError, 30)}`);
+            } else if (node.details.lastProgressAgeMs !== undefined) {
+                detailLines.push(`progress: ${formatAgeMs(node.details.lastProgressAgeMs)}`);
+            }
         }
 
         // Metrics

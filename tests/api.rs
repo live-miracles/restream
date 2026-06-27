@@ -113,6 +113,33 @@ async fn login(app: &axum::Router) -> String {
     cookie.split(';').next().unwrap().to_string()
 }
 
+#[tokio::test]
+async fn base_path_script_is_served_as_static_asset() {
+    let (app, _) = test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/base-path.js")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/javascript"))
+    );
+    let body = String::from_utf8(body_bytes(resp).await.to_vec()).unwrap();
+    assert!(body.contains("__RESTREAM_BASE_PATH__"));
+}
+
 fn auth_req(
     method: &str,
     uri: &str,
@@ -134,6 +161,10 @@ fn auth_req(
 async fn body_json(resp: axum::http::Response<axum::body::Body>) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn body_bytes(resp: axum::http::Response<axum::body::Body>) -> bytes::Bytes {
+    resp.into_body().collect().await.unwrap().to_bytes()
 }
 
 // --- Auth tests ---
@@ -2010,8 +2041,13 @@ async fn v1_pipeline_summary_returns_operator_fields() {
     let body = body_json(resp).await;
     assert_eq!(body["pipelineId"].as_str().unwrap(), pid);
     assert!(body["source"]["status"].is_string());
+    assert_eq!(body["input"]["status"], body["source"]["status"]);
     assert!(body["outputs"]["total"].is_number());
     assert!(body["outputs"]["running"].is_number());
+    assert_eq!(body["graph"]["hasGraph"], true);
+    assert!(body["graph"]["nodes"].as_u64().unwrap() > 0);
+    assert!(body["graph"]["edges"].is_number());
+    assert!(body["graph"]["activeNodes"].is_number());
     assert!(body["alerts"].is_array());
     assert!(body["generatedAt"].is_string());
 }
