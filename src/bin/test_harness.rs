@@ -3044,6 +3044,72 @@ async fn run_mixed_srt_multi_config(
 
     let mut publisher = spawn_mixed_srt_multi_publisher(env, &stream_key, cfg, h265).await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+
+    // Give the probe time to fire and adaptive ring resize to complete (≤ 5 s).
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // Verify adaptive ring sizing: 2-audio-track SRT stream → 100+ pkt/s →
+    // ring must have grown beyond the 1024-slot default and hold ≥ 5 s of depth.
+    let ring_check_id = format!("MS-adaptive-ring-{cfg}");
+    if env.check_selected("ffprobe") || resume.allows(&ring_check_id) {
+        let started = std::time::Instant::now();
+        let telem_path = format!("/api/v1/pipelines/{pipeline_id}/telemetry");
+        match api.get_json(&telem_path).await {
+            Ok(telem) => {
+                let cap = telem["sourceRing"]["capacity"].as_u64().unwrap_or(0);
+                let depth = telem["sourceRing"]["bufferDepthSecs"].as_f64().unwrap_or(0.0);
+                let overflows: u64 = telem["sourceRing"]["readers"]
+                    .as_array()
+                    .map(|rs| {
+                        rs.iter()
+                            .map(|r| r["overflowCount"].as_u64().unwrap_or(0))
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                // 2 audio tracks × 50 pkt/s + video ≈ 130 pkt/s → needed ≈ 780
+                // Any capacity > 1024 confirms adaptive resize fired correctly
+                let resized = cap > 1024;
+                let adequate = depth >= 5.0 || cap >= 780;
+                let no_overflow = overflows == 0;
+                let passed = adequate && no_overflow;
+                emit_mixed_result(
+                    env,
+                    cfg,
+                    &ring_check_id,
+                    if passed { "pass" } else { "fail" },
+                    started.elapsed(),
+                    Some(json!({
+                        "ringCapacity": cap,
+                        "bufferDepthSecs": depth,
+                        "ringResized": resized,
+                        "adequate": adequate,
+                        "overflows": overflows,
+                    })),
+                )?;
+                if passed {
+                    log_mixed_ok(
+                        env,
+                        &format!(
+                            "adaptive-ring {cfg}: cap={cap} depth={depth:.1}s \
+                             overflows={overflows}{}",
+                            if resized { " [resized]" } else { "" }
+                        ),
+                    )?;
+                } else {
+                    return Err(format!(
+                        "adaptive ring check failed for {cfg}: cap={cap} depth={depth:.1}s overflows={overflows}"
+                    ));
+                }
+            }
+            Err(e) => {
+                emit_mixed_result(
+                    env, cfg, &ring_check_id, "fail", started.elapsed(),
+                    Some(json!({"error": e})),
+                )?;
+            }
+        }
+    }
+
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
         snapshot_mixed(env, restream_pid, cfg, "baseline (input live, 0 outputs)").await?;

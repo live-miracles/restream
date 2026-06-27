@@ -1574,4 +1574,43 @@ mod tests {
         assert_eq!(stats.min_payload_bytes, 4);
         assert_eq!(stats.max_payload_bytes, 10);
     }
+
+    #[test]
+    fn active_reader_count_tracks_live_readers() {
+        let rb = Arc::new(RingBuffer::new(16));
+        assert_eq!(rb.active_reader_count(), 0, "empty ring has no readers");
+
+        let r1 = Reader::new("r1".to_string(), rb.clone());
+        assert_eq!(rb.active_reader_count(), 1);
+
+        let r2 = Reader::new("r2".to_string(), rb.clone());
+        assert_eq!(rb.active_reader_count(), 2);
+
+        drop(r1);
+        // active_reader_count prunes dead Weak refs on each call
+        assert_eq!(rb.active_reader_count(), 1);
+
+        drop(r2);
+        assert_eq!(rb.active_reader_count(), 0);
+    }
+
+    #[test]
+    fn buffer_depth_secs_requires_estimated_pkt_rate() {
+        let rb = RingBuffer::new(1024);
+        assert_eq!(rb.buffer_depth_secs(), None, "no rate set yet");
+
+        rb.set_estimated_pkt_rate(80.0); // 1080p30 + 1 audio
+        let depth = rb.buffer_depth_secs().expect("rate is set");
+        // 1024 slots / 80 pkt/s = 12.8 s
+        assert!((depth - 12.8).abs() < 0.1, "depth={depth}");
+    }
+
+    #[test]
+    fn buffer_depth_secs_multi_track_stream() {
+        let rb = RingBuffer::new(4980); // adaptive size for 830 pkt/s × 6 s
+        rb.set_estimated_pkt_rate(830.0); // 30fps video + 16 audio tracks × 50
+        let depth = rb.buffer_depth_secs().unwrap();
+        // 4980 / 830 ≈ 6.0 s
+        assert!((depth - 6.0).abs() < 0.1, "depth={depth}");
+    }
 }

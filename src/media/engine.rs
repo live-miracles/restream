@@ -620,16 +620,7 @@ impl MediaEngine {
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
         let mut pipelines = self.pipelines.write().await;
         if let Some(rb) = pipelines.get(pipeline_id) {
-            // If egress readers are still active, reuse the ring so they don't
-            // lose their position.  If the ring was adaptively oversized from a
-            // previous heavier stream *and* all readers have gone, reset it to
-            // the default so the next probe can re-adapt cleanly — preventing
-            // both wasted memory (lighter stream keeps big ring) and under-sized
-            // rings (a new heavier stream couldn't resize with active readers).
-            if rb.active_reader_count() > 0 || rb.capacity() <= default_ring_capacity() {
-                return rb.clone();
-            }
-            // Fall through: oversized ring, no active readers — reset below.
+            return rb.clone();
         }
         let rb = Arc::new(RingBuffer::new(default_ring_capacity()));
         pipelines.insert(pipeline_id.to_string(), rb.clone());
@@ -4013,6 +4004,105 @@ mod tests {
             engine.output_status("out-1").await.is_none(),
             "output_status must return None after unregister"
         );
+    }
+
+    // ── adaptive ring sizing ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn adapt_pipeline_ring_no_op_when_default_is_sufficient() {
+        // 1080p30 + 1 audio = 80 pkt/s → needed = ceil(80 × 6) = 480 < default 1024
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+
+        let result = engine.adapt_pipeline_ring("p", 30.0, 1).await;
+        assert!(result.is_none(), "no resize needed for single-track 1080p30");
+
+        let ring = engine.get_or_create_pipeline("p").await;
+        assert_eq!(ring.capacity(), default_ring_capacity());
+        let depth = ring.buffer_depth_secs().unwrap();
+        assert!(depth >= 12.0 && depth <= 13.0, "depth={depth}");
+    }
+
+    #[tokio::test]
+    async fn adapt_pipeline_ring_resizes_for_multi_track_stream() {
+        // 2v16a: 30 fps + 16 audio × 50 = 830 pkt/s → needed = ceil(830 × 6) = 4980
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+
+        let new_ring = engine
+            .adapt_pipeline_ring("p", 30.0, 16)
+            .await
+            .expect("ring must be resized for 830 pkt/s");
+
+        assert_eq!(new_ring.capacity(), 4980);
+        let depth = new_ring.buffer_depth_secs().unwrap();
+        assert!((depth - 6.0).abs() < 0.1, "depth={depth}");
+        assert_eq!(engine.get_or_create_pipeline("p").await.capacity(), 4980);
+    }
+
+    #[tokio::test]
+    async fn adapt_pipeline_ring_4k60_single_audio_no_resize() {
+        // 4K 60fps + 1 audio = 110 pkt/s → needed = 660 < default 1024
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+
+        let result = engine.adapt_pipeline_ring("p", 60.0, 1).await;
+        assert!(result.is_none(), "default 1024 already covers 4K60 single-track");
+    }
+
+    #[tokio::test]
+    async fn adapt_pipeline_ring_4k60_multi_audio_resizes() {
+        // 4K 60fps + 16 audio = 860 pkt/s → needed = ceil(860 × 6) = 5160
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+
+        let new_ring = engine
+            .adapt_pipeline_ring("p", 60.0, 16)
+            .await
+            .expect("resize needed for 4K60 + 16 audio");
+
+        assert_eq!(new_ring.capacity(), 5160);
+        let depth = new_ring.buffer_depth_secs().unwrap();
+        assert!((depth - 6.0).abs() < 0.1, "depth={depth}");
+    }
+
+    #[tokio::test]
+    async fn get_or_create_pipeline_preserves_adapted_ring_across_calls() {
+        // The adapted ring must be returned by all subsequent get_or_create_pipeline
+        // calls so egress readers and TS mux stages attach to the correctly-sized ring.
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+        let new_ring = engine
+            .adapt_pipeline_ring("p", 30.0, 16)
+            .await
+            .expect("should resize for 830 pkt/s");
+        assert_eq!(new_ring.capacity(), 4980);
+
+        let ring2 = engine.get_or_create_pipeline("p").await;
+        assert_eq!(ring2.capacity(), 4980, "adapted ring must persist across calls");
+
+        let _reader = crate::media::ring_buffer::Reader::new("hold".to_string(), ring2.clone());
+        let ring3 = engine.get_or_create_pipeline("p").await;
+        assert_eq!(ring3.capacity(), 4980, "ring must not change with active reader");
+    }
+
+    #[tokio::test]
+    async fn adapt_pipeline_ring_lighter_republish_updates_rate_not_capacity() {
+        // A lighter re-publish (1v1a after 2v16a) does not shrink the ring —
+        // it just updates estimated_pkt_rate so bufferDepthSecs is correct.
+        let engine = MediaEngine::new();
+        engine.get_or_create_pipeline("p").await;
+        engine.adapt_pipeline_ring("p", 30.0, 16).await; // → 4980 for 830 pkt/s
+
+        // Lighter re-publish: 1v1a = 80 pkt/s → needed = 480 < 4980 → no resize.
+        let result = engine.adapt_pipeline_ring("p", 30.0, 1).await;
+        assert!(result.is_none(), "no resize when ring is already large enough");
+
+        let ring = engine.get_or_create_pipeline("p").await;
+        assert_eq!(ring.capacity(), 4980, "capacity preserved from heavier session");
+        let depth = ring.buffer_depth_secs().unwrap();
+        // telemetry now reflects the lighter stream's real depth: 4980/80 ≈ 62 s
+        assert!(depth > 60.0, "4980/80 ≈ 62.3 s; got {depth}");
     }
 
     #[tokio::test]

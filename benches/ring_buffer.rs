@@ -434,11 +434,48 @@ fn benchmark_ts_chunk_burst_alloc(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure `active_reader_count()` — prunes dead Weak refs and returns the count.
+/// Called inside `adapt_pipeline_ring` and `get_or_create_pipeline` on every
+/// publisher connect, so must be cheap even with many accumulated dead refs.
+fn benchmark_active_reader_count(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ring_buffer/active_reader_count");
+
+    // 0 readers — fastest path (empty readers vec).
+    group.bench_function("no_readers", |b| {
+        let buf = Arc::new(RingBuffer::new(1024));
+        b.iter(|| black_box(buf.active_reader_count()))
+    });
+
+    // 4 live readers — typical egress fan-out (RTMP src, RTMP 720p, SRT src, SRT 720p).
+    group.bench_function("4_live_readers", |b| {
+        let buf = Arc::new(RingBuffer::new(1024));
+        let _readers: Vec<_> = (0..4)
+            .map(|i| Reader::new(format!("r{i}"), buf.clone()))
+            .collect();
+        b.iter(|| black_box(buf.active_reader_count()))
+    });
+
+    // 4 dead Weak refs left after readers drop — prune cost.
+    group.bench_function("4_dead_refs", |b| {
+        let buf = Arc::new(RingBuffer::new(1024));
+        {
+            let _readers: Vec<_> = (0..4)
+                .map(|i| Reader::new(format!("r{i}"), buf.clone()))
+                .collect();
+            // readers drop here, leaving dead Weak entries in buf.readers
+        }
+        b.iter(|| black_box(buf.active_reader_count()))
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
     benchmark_pull_burst,
     benchmark_reader_lag,
+    benchmark_active_reader_count,
     benchmark_vec_capacity,
     benchmark_vec_loop_reuse,
     benchmark_burst_drain_alloc,
