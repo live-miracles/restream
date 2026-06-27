@@ -145,7 +145,7 @@ SRT/RTMP packet loops, HLS segmenting, and transcoder data paths.
 
 - Benchmark before and after hot-path changes with the relevant `benches/` suite.
 - Avoid per-packet allocation, logging, serialization, locks, async channel sends, and system calls.
-- Never add logging to `src/media/ring_buffer.rs` or `src/media/avio.rs` — these are zero-overhead hot paths.
+- Do not add logging inside packet-level loops in `src/media/ring_buffer.rs` or `src/media/avio.rs` (push, pull, read). Control operations such as creation, resize, or reader registration are not in the hot path and may log at `debug!` or `info!`.
 - Use burst APIs such as `push_batch`, `pull_burst`, and `write_batch` where available.
 - Hoist reusable buffers outside loops and call `.clear()` inside the loop.
 - Prefer `Bytes`/`BytesMut` ownership transfer and ref-counting over payload copies.

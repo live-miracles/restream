@@ -346,14 +346,16 @@ info!(
 );
 ```
 
-`src/media/ring_buffer.rs` and `src/media/avio.rs` carry no logging.
-These modules stay logging-free.
+Never log inside packet-level loops in `src/media/ring_buffer.rs` or
+`src/media/avio.rs` (push, pull, read). Control operations such as
+creation, resize, or reader registration are not hot and may use `debug!`
+or `info!`.
 
 ## Invariants
 
 - No `println!` or `eprintln!` in `src/` after migration (enforced by a
   `clippy::print_stdout` / `clippy::print_stderr` deny in `src/lib.rs`).
-- No logging macros inside `ring_buffer.rs` or `avio.rs`.
+- No logging macros inside packet-level loops in `ring_buffer.rs` or `avio.rs` (push/pull/read). Control-plane paths (creation, resize, reader registration) may log.
 - `DbLayer::on_event()` and `BroadcastLayer::on_event()` must not block.
   Both use `try_send` / non-blocking broadcast send only.
 - `WorkerGuard` for the file sink must outlive all log calls — hold it in
