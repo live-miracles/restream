@@ -3542,4 +3542,110 @@ mod tests {
         let p = source_reader.pull().unwrap().unwrap();
         assert_eq!(p.pts, 0);
     }
+
+    // ── fault resilience: ingest lifecycle ──────────────────────────────
+
+    #[tokio::test]
+    async fn health_input_on_after_register_off_after_unregister() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
+
+        engine.try_register_ingest("p1", "key", "rtmp").await.unwrap();
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
+
+        engine.unregister_ingest("p1").await;
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
+    }
+
+    #[tokio::test]
+    async fn double_register_ingest_rejected() {
+        let engine = MediaEngine::new();
+        let first = engine.try_register_ingest("p1", "key", "rtmp").await;
+        assert!(first.is_some());
+
+        let second = engine.try_register_ingest("p1", "key2", "srt").await;
+        assert!(second.is_none(), "second register must be rejected while first is active");
+    }
+
+    #[tokio::test]
+    async fn re_register_ingest_after_unregister() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        let t1 = engine.try_register_ingest("p1", "key", "rtmp").await.unwrap();
+        engine.unregister_ingest("p1").await;
+        assert!(t1.is_cancelled());
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
+
+        let t2 = engine.try_register_ingest("p1", "key", "srt").await;
+        assert!(t2.is_some(), "re-register after unregister must succeed");
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
+        assert_eq!(snap["pipelines"]["p1"]["input"]["publisher"]["protocol"], "srt");
+    }
+
+    // ── fault resilience: egress error transitions ─────────────────────
+
+    #[tokio::test]
+    async fn egress_error_during_sending_transitions_to_failed() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine.update_egress_phase("out-1", "sending").await;
+        engine.record_egress_progress("out-1", 5000).await;
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["phase"], "sending");
+
+        engine
+            .record_egress_error("out-1", "send", "connection reset by peer")
+            .await;
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["failurePhase"], "send");
+        assert_eq!(status["lastError"], "connection reset by peer");
+    }
+
+    #[tokio::test]
+    async fn egress_cleaned_up_after_unregister() {
+        let engine = MediaEngine::new();
+        let token = engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+
+        assert!(engine.output_status("out-1").await.is_some());
+
+        engine.unregister_egress("out-1").await;
+        assert!(token.is_cancelled());
+        assert!(
+            engine.output_status("out-1").await.is_none(),
+            "output_status must return None after unregister"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_input_protocol_matches_registration() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        for proto in ["rtmp", "srt", "file"] {
+            engine.try_register_ingest("p1", "key", proto).await.unwrap();
+            let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+            assert_eq!(
+                snap["pipelines"]["p1"]["input"]["publisher"]["protocol"], proto,
+                "protocol mismatch for {proto}"
+            );
+            engine.unregister_ingest("p1").await;
+        }
+    }
 }

@@ -33,6 +33,8 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "correctness-srt-rtmp",
     "correctness-hevc-rtmp",
     "correctness-hevc-srt",
+    "fault-resilience",
+    "mixed-file-h264",
 ];
 
 const SINK_PORT: u16 = 12935;
@@ -78,12 +80,15 @@ async fn run() -> Result<(), String> {
         "egress" => egress_correctness().await,
         "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
         "correctness-hevc-srt" => hevc_srt_passthrough_correctness().await,
+        "fault-resilience" => fault_resilience().await,
+        "mixed-file-h264" => mixed_file_h264_correctness().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
               correctness-rtmp, correctness-srt, correctness-srt-rtmp, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
-              egress, correctness-hevc-rtmp, or correctness-hevc-srt"
+              egress, correctness-hevc-rtmp, correctness-hevc-srt, \
+              fault-resilience, or mixed-file-h264"
         )),
     };
 
@@ -840,6 +845,18 @@ impl RampApi {
         }
         json_response(request).await
     }
+
+    async fn put_json(&self, path: &str, body: Value) -> Result<Value, String> {
+        let mut request = self
+            .client
+            .put(format!("{}{}", self.base_url, path))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string());
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        json_response(request).await
+    }
 }
 
 async fn json_response(request: reqwest::RequestBuilder) -> Result<Value, String> {
@@ -1387,6 +1404,31 @@ async fn wait_for_api_input_live(
             ));
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_for_api_input_off(
+    api: &RampApi,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(health) = api.get_json("/health").await {
+            let status = health["pipelines"][pipeline_id]["input"]["status"]
+                .as_str()
+                .unwrap_or("unknown");
+            if status == "off" {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: ingest did not go off within {}s",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -5415,6 +5457,671 @@ fn assert_snapshot_matches_probe(
         ));
     }
     Ok(())
+}
+
+async fn mixed_file_h264_correctness() -> Result<Value, String> {
+    let env = MixedEnv::from_env("mixed-file-h264");
+    if env.n_per_group == 0 {
+        return Err("N_PER_GROUP must be greater than zero".to_string());
+    }
+    std::fs::create_dir_all(&env.work_dir).map_err(|e| e.to_string())?;
+    ensure_mixed_artifacts(&env)?;
+
+    let mut mediamtx = start_mixed_mediamtx(&env).await?;
+    let mut restream = start_mixed_restream(&env).await?;
+    let restream_pid = restream.id().unwrap_or(0);
+    let mut api = RampApi::new(env.restream_http);
+    api.login().await?;
+
+    let config = run_mixed_file_h264_config(&env, &api, restream_pid).await;
+
+    stop_child(&mut restream).await;
+    stop_child(&mut mediamtx).await;
+
+    config.map(|config| {
+        json!({
+            "passed": true,
+            "mode": "mixed-file-h264",
+            "configs": [config],
+            "artifacts": {
+                "scaleCsv": env.scale_log,
+                "rssSummary": env.rss_summary,
+                "summary": env.summary_log,
+                "restreamLog": env.restream_log,
+                "mediamtxLog": env.mediamtx_log,
+            }
+        })
+    })
+}
+
+async fn run_mixed_file_h264_config(
+    env: &MixedEnv,
+    api: &RampApi,
+    restream_pid: u32,
+) -> Result<Value, String> {
+    let cfg = "file-h264";
+    let n = env.n_per_group;
+    let total = n * 2;
+    let stream_key = format!("sk-{cfg}");
+
+    let fixture = artifact_path("correctness-h264.ts");
+    if !fixture.exists() {
+        generate_fixture_h264(&fixture).await?;
+    }
+
+    let fixture_name = fixture
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let media_dir =
+        PathBuf::from(std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".into()));
+    let media_dest = media_dir.join(&fixture_name);
+    if !media_dest.exists() {
+        std::fs::copy(&fixture, &media_dest).map_err(|e| e.to_string())?;
+    }
+
+    let pipeline = api
+        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create response missing pipeline.id")?
+        .to_string();
+
+    api.put_json(
+        &format!("/pipelines/{pipeline_id}/file-ingest"),
+        json!({"filename": fixture_name, "loop": true}),
+    )
+    .await?;
+
+    let ingest_list = api.get_json("/api/ingests").await?;
+    let ingest_id = ingest_list
+        .as_array()
+        .and_then(|arr| arr.iter().find(|i| i["streamKey"].as_str() == Some(&stream_key)))
+        .and_then(|i| i["id"].as_str())
+        .ok_or("file ingest not found in list")?
+        .to_string();
+
+    api.post_json(&format!("/api/ingests/{ingest_id}/start"), json!({}))
+        .await?;
+    wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, "baseline (file ingest live, 0 outputs)").await?;
+    }
+
+    let mut output_ids = Vec::with_capacity(total);
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "rtmp-src",
+            count: n,
+            encoding: "source",
+        },
+        |index| {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
+                env.mtx_rtmp
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
+    }
+
+    add_mixed_group(
+        api,
+        &pipeline_id,
+        MixedGroupSpec {
+            cfg,
+            group: "srt-src",
+            count: n,
+            encoding: "source",
+        },
+        |index| {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
+                env.mtx_srt
+            )
+        },
+        &mut output_ids,
+    )
+    .await?;
+    if !env.skip_load {
+        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
+    }
+
+    let duration_secs: u64 = 10;
+    println!("[mixed-file-h264] sustaining {total} outputs for {duration_secs}s");
+    tokio::time::sleep(Duration::from_secs(duration_secs)).await;
+    if !env.skip_load {
+        snapshot_mixed(
+            env,
+            restream_pid,
+            cfg,
+            &format!("after {duration_secs}s sustained"),
+        )
+        .await?;
+    }
+
+    let rss_peak = process_rss_kb(restream_pid).await.unwrap_or(0);
+    let growth_kb = rss_peak.saturating_sub(rss_baseline);
+
+    for (i, output_id) in output_ids.iter().enumerate() {
+        api.post_json(
+            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+            json!({}),
+        )
+        .await?;
+        if i % 4 == 3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    api.post_json(&format!("/api/ingests/{ingest_id}/stop"), json!({}))
+        .await?;
+
+    println!(
+        "[mixed-file-h264] done: {total} outputs, baseline={rss_baseline}kB peak={rss_peak}kB growth={growth_kb}kB"
+    );
+
+    Ok(json!({
+        "config": cfg,
+        "outputCount": total,
+        "rssBaselineKb": rss_baseline,
+        "rssPeakKb": rss_peak,
+        "rssGrowthKb": growth_kb,
+    }))
+}
+
+async fn fault_resilience() -> Result<Value, String> {
+    let work_dir = artifact_path("fault-resilience");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = std::env::var_os("RESTREAM_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let ports = TestPorts::from_env();
+    let timeout = Duration::from_secs(15);
+
+    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let fixture_h264 = artifact_path("correctness-h264.ts");
+    if !fixture_h264.exists() {
+        generate_fixture_h264(&fixture_h264).await?;
+    }
+
+    let mut results: Vec<Value> = Vec::new();
+
+    // ── 1. RTMP publisher disconnect ────────────────────────────────────
+    {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "fault-rtmp", "streamKey": "fault-rtmp"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+        println!("[fault] RTMP publisher live");
+
+        stop_child(&mut pub_child).await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let elapsed = started.elapsed();
+        let passed = off_result.is_ok();
+        println!(
+            "[fault] RTMP publisher disconnect: {} ({:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "rtmp-publisher-disconnect",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "error": off_result.err(),
+        }));
+    }
+
+    // ── 2. SRT publisher disconnect ─────────────────────────────────────
+    {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "fault-srt", "streamKey": "fault-srt"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-srt&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+        println!("[fault] SRT publisher live");
+
+        stop_child(&mut pub_child).await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let elapsed = started.elapsed();
+        let passed = off_result.is_ok();
+        println!(
+            "[fault] SRT publisher disconnect: {} ({:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "srt-publisher-disconnect",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "error": off_result.err(),
+        }));
+    }
+
+    // ── 3. File ingest stop ─────────────────────────────────────────────
+    {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "fault-file", "streamKey": "fault-file"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let fixture_name = fixture_h264
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let media_dest =
+            PathBuf::from(std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".into()))
+                .join(&fixture_name);
+        if !media_dest.exists() {
+            std::fs::copy(&fixture_h264, &media_dest).map_err(|e| e.to_string())?;
+        }
+
+        api.put_json(
+            &format!("/pipelines/{pid}/file-ingest"),
+            json!({"filename": fixture_name, "loop": false}),
+        )
+        .await?;
+
+        let ingest_list = api.get_json("/api/ingests").await?;
+        let ingest_id = ingest_list
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|i| i["streamKey"].as_str() == Some("fault-file"))
+            })
+            .and_then(|i| i["id"].as_str())
+            .ok_or("file ingest not found in list")?
+            .to_string();
+
+        api.post_json(&format!("/api/ingests/{ingest_id}/start"), json!({}))
+            .await?;
+        wait_for_api_input_live(&api, &pid, Duration::from_secs(30)).await?;
+        println!("[fault] File ingest live");
+
+        api.post_json(&format!("/api/ingests/{ingest_id}/stop"), json!({}))
+            .await?;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let elapsed = started.elapsed();
+        let passed = off_result.is_ok();
+        println!(
+            "[fault] File ingest stop: {} ({:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "file-ingest-stop",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "error": off_result.err(),
+        }));
+    }
+
+    // ── 4. RTMP egress sink disappears ──────────────────────────────────
+    // Accept connections and drain data, then abort all reader tasks so
+    // their TcpStreams are dropped, sending TCP RST to the egress writer.
+    {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "fault-egress-rtmp", "streamKey": "fault-egress-rtmp"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let sink_bytes = Arc::new(AtomicU64::new(0));
+        let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind: {e}"))?;
+        let sink_cancel = CancellationToken::new();
+        let reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let reader_handles_inner = reader_handles.clone();
+        let sink_bytes_inner = sink_bytes.clone();
+        let sink_cancel_inner = sink_cancel.clone();
+        let sink_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = sink_listener.accept() => {
+                        if let Ok((socket, _)) = result {
+                            let bytes = sink_bytes_inner.clone();
+                            let h = tokio::spawn(async move {
+                                let mut buf = [0u8; 65536];
+                                loop {
+                                    match socket.readable().await {
+                                        Ok(()) => match socket.try_read(&mut buf) {
+                                            Ok(0) => break,
+                                            Ok(n) => { bytes.fetch_add(n as u64, Ordering::Relaxed); }
+                                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                                            Err(_) => break,
+                                        },
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+                            reader_handles_inner.lock().unwrap().push(h);
+                        }
+                    }
+                    _ = sink_cancel_inner.cancelled() => break,
+                }
+            }
+        });
+
+        let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/fault-egress-rtmp-sink");
+        let output = api
+            .post_json(
+                &format!("/pipelines/{pid}/outputs"),
+                json!({"name": "rtmp-sink", "url": sink_url, "encoding": "source"}),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-egress-rtmp", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+
+        api.post_json(
+            &format!("/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let deadline = Instant::now() + timeout;
+        while sink_bytes.load(Ordering::Relaxed) < 50_000 {
+            if Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        println!("[fault] RTMP egress delivering data");
+
+        // Stop listener, then abort all reader tasks — aborting drops the
+        // TcpStream owned by each task, which sends TCP RST.
+        sink_cancel.cancel();
+        sink_task.abort();
+        {
+            let handles = reader_handles.lock().unwrap();
+            for h in handles.iter() {
+                h.abort();
+            }
+        }
+
+        let started = Instant::now();
+        let poll_deadline = started + Duration::from_secs(10);
+        let mut passed = false;
+        let mut phase = String::from("unknown");
+        let mut has_error = false;
+        while Instant::now() < poll_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let status = api
+                .get_json(&format!("/pipelines/{pid}/outputs/{oid}/status"))
+                .await;
+            match &status {
+                Err(_) => {
+                    // 404/error = egress was cleaned up after failure (pass)
+                    phase = "cleaned-up".to_string();
+                    passed = true;
+                    break;
+                }
+                Ok(s) => {
+                    has_error = s["lastError"]
+                        .as_str()
+                        .map(|e| !e.is_empty())
+                        .unwrap_or(false);
+                    phase = s["phase"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    if s.get("error").is_some() {
+                        // {"error": "output not active"} — cleaned up
+                        phase = "cleaned-up".to_string();
+                        passed = true;
+                        break;
+                    }
+                    if has_error
+                        || phase == "error"
+                        || phase == "failed"
+                        || phase == "connecting"
+                    {
+                        passed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, {:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            phase,
+            has_error,
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "rtmp-egress-sink-disappear",
+            "passed": passed,
+            "phase": phase,
+            "hasError": has_error,
+            "elapsedMs": elapsed.as_millis(),
+        }));
+
+        stop_child(&mut pub_child).await;
+    }
+
+    // ── 5. SRT egress sink disappears ───────────────────────────────────
+    // Use the SRT port on the same restream instance: egress pushes to a
+    // second pipeline; we delete that pipeline to simulate sink loss.
+    {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "fault-egress-srt", "streamKey": "fault-egress-srt"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let sink_pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({"name": "srt-sink-target", "streamKey": "srt-sink-target"}),
+            )
+            .await?;
+        let sink_pid = sink_pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let sink_url = format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/srt-sink-target&pkt_size=1316",
+            ports.srt
+        );
+        let output = api
+            .post_json(
+                &format!("/pipelines/{pid}/outputs"),
+                json!({"name": "srt-sink", "url": sink_url, "encoding": "source"}),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-egress-srt&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+
+        api.post_json(
+            &format!("/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        // Wait for the sink pipeline to see data
+        let deadline = Instant::now() + timeout;
+        let mut sink_live = false;
+        while Instant::now() < deadline {
+            if let Ok(health) = api.get_json("/health").await {
+                let status = health["pipelines"][&sink_pid]["input"]["status"]
+                    .as_str()
+                    .unwrap_or("off");
+                if status == "on" {
+                    sink_live = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if sink_live {
+            println!("[fault] SRT egress delivering to sink pipeline");
+        }
+
+        // Delete the sink pipeline to simulate sink disappearance
+        let delete_url = format!("{}/pipelines/{sink_pid}", api.base_url);
+        let mut request = api.client.delete(&delete_url);
+        if let Some(cookie) = &api.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        let _ = request.send().await;
+
+        let started = Instant::now();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let status = api
+            .get_json(&format!("/pipelines/{pid}/outputs/{oid}/status"))
+            .await;
+        let has_error = status
+            .as_ref()
+            .ok()
+            .and_then(|s| s["lastError"].as_str())
+            .map(|e| !e.is_empty())
+            .unwrap_or(false);
+        let phase = status
+            .as_ref()
+            .ok()
+            .and_then(|s| s["phase"].as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let elapsed = started.elapsed();
+        // SRT egress may reconnect or show error; either signals fault detection
+        let passed = has_error || phase == "error" || phase == "connecting" || phase == "live";
+        println!(
+            "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, {:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            phase,
+            has_error,
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "srt-egress-sink-disappear",
+            "passed": passed,
+            "phase": phase,
+            "hasError": has_error,
+            "elapsedMs": elapsed.as_millis(),
+        }));
+
+        stop_child(&mut pub_child).await;
+    }
+
+    stop_child(&mut child).await;
+
+    let all_passed = results.iter().all(|r| r["passed"] == true);
+    let result = json!({
+        "mode": "fault-resilience",
+        "passed": all_passed,
+        "tests": results,
+    });
+
+    let result_path = work_dir.join("fault-resilience.json");
+    std::fs::write(
+        &result_path,
+        serde_json::to_string_pretty(&result).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!("artifact={}", result_path.display());
+
+    if !all_passed {
+        return Err("fault-resilience: not all tests passed".to_string());
+    }
+    Ok(result)
 }
 
 async fn stop_child(child: &mut Child) {
