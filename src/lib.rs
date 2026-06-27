@@ -203,6 +203,11 @@ pub async fn run_app() {
         .await
         .expect("Failed to set up SQLite schema");
 
+    // Init logging before any other tasks so all subsequent tracing macros route
+    // through the subscriber. Must be called after the DB pool is ready because
+    // the DbLayer drain task needs it.
+    let logging_handles = crate::logging::init(pool.clone());
+
     let now_rfc = chrono::Utc::now().to_rfc3339();
     db::reset_running_jobs(&pool, &now_rfc)
         .await
@@ -253,6 +258,7 @@ pub async fn run_app() {
         },
         media_dir,
         alert_tracker: crate::alerts::AlertTracker::new(),
+        log_broadcast: logging_handles.broadcast_tx.clone(),
         #[cfg(feature = "agent-execution")]
         agent_execution: Arc::new(crate::agent_execution::AgentExecutionStore::default()),
     });
@@ -353,6 +359,11 @@ pub async fn run_app() {
         if reconciler_tick.is_multiple_of(session_prune_every_ticks) {
             // DB prune
             let _ = db::prune_expired_sessions(&pool, 30 * 24 * 60 * 60 * 1000).await;
+            let log_retention_days = std::env::var("RESTREAM_LOG_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(7);
+            let _ = db::delete_app_logs_older_than(&pool, log_retention_days).await;
             // In-memory prune: remove tokens that no longer exist in DB.
             // Skip the retain if the DB call fails — an empty result would
             // incorrectly log out every active session.

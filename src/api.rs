@@ -122,6 +122,8 @@ pub struct AppState {
     /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
     pub media_dir: String,
     pub alert_tracker: alerts::AlertTracker,
+    /// Broadcast sender for the /api/logs/stream SSE endpoint.
+    pub log_broadcast: tokio::sync::broadcast::Sender<crate::logging::LogBroadcast>,
     #[cfg(feature = "agent-execution")]
     pub agent_execution: Arc<crate::agent_execution::AgentExecutionStore>,
 }
