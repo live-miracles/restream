@@ -177,6 +177,12 @@ pub struct VideoMeta {
     pub fps: f64,
     pub bw: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
@@ -194,6 +200,12 @@ pub struct AudioMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_layout: Option<String>,
     pub track_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
 }
@@ -1497,6 +1509,13 @@ impl MediaEngine {
                     "remoteAddr": ingest.remote_addr,
                     "quality": ingest.quality,
                 });
+                let audio_tracks = ingest
+                    .audio_tracks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
 
                 serde_json::json!({
                     "status": "on",
@@ -1508,6 +1527,7 @@ impl MediaEngine {
                     "bitrateKbps": bitrate_kbps,
                     "video": ingest.video,
                     "audio": ingest.audio,
+                    "audioTracks": audio_tracks,
                     "publisher": publisher_json,
                     "unexpectedReaders": { "count": 0 }
                 })
@@ -2247,6 +2267,56 @@ mod tests {
             snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
             "stopped"
         );
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_includes_all_ingest_audio_tracks() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-audio", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_audio_tracks(
+                "pipeline-audio",
+                vec![
+                    AudioMeta {
+                        codec: "aac".to_string(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        channel_layout: None,
+                        track_index: 0,
+                        pid: Some(0x101),
+                        language: Some("eng".to_string()),
+                        title: None,
+                        profile: None,
+                    },
+                    AudioMeta {
+                        codec: "aac".to_string(),
+                        sample_rate: 44_100,
+                        channels: 1,
+                        channel_layout: None,
+                        track_index: 1,
+                        pid: Some(0x102),
+                        language: None,
+                        title: None,
+                        profile: None,
+                    },
+                ],
+            )
+            .await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-audio".to_string()], &HashMap::new())
+            .await;
+        let tracks = snapshot["pipelines"]["pipeline-audio"]["input"]["audioTracks"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["pid"], 0x101);
+        assert_eq!(tracks[0]["language"], "eng");
+        assert_eq!(tracks[1]["trackIndex"], 1);
     }
 
     #[tokio::test]
@@ -3164,6 +3234,9 @@ mod tests {
                 sample_rate: 48000,
                 channels: 2,
                 track_index: 0,
+                pid: None,
+                language: None,
+                title: None,
                 profile: None,
                 channel_layout: None,
             },
@@ -3172,6 +3245,9 @@ mod tests {
                 sample_rate: 48000,
                 channels: 6,
                 track_index: 1,
+                pid: None,
+                language: None,
+                title: None,
                 profile: None,
                 channel_layout: None,
             },
@@ -3196,6 +3272,9 @@ mod tests {
             sample_rate: 44100,
             channels: 1,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             channel_layout: None,
         }];
@@ -3221,6 +3300,9 @@ mod tests {
             sample_rate: 48000,
             channels: 2,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             channel_layout: None,
         }]);

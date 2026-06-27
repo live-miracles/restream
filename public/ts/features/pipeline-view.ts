@@ -15,6 +15,13 @@ import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
 import { startRecording, stopRecording } from '../core/api.js';
 import type { AudioTrack, PipelineView, OutputView } from '../types.js';
+import {
+    audioTrackIdentifier,
+    audioTrackKey,
+    getAudioTrackLabel,
+    getAudioTrackStoredLabel,
+    setAudioTrackStoredLabel,
+} from './audio-track-labels.js';
 
 interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
@@ -63,7 +70,7 @@ function formatSampleRate(value: number | null | undefined): string {
     return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
 }
 
-function renderAudioTracksTable(tracks: AudioTrack[]): void {
+function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void {
     const audioTracksContainer = document.getElementById('input-audio-tracks');
     if (!audioTracksContainer) return;
 
@@ -78,14 +85,27 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
     audioTracksContainer.innerHTML = tracks
         .map((track, index) => {
             const codec = formatCodecName(track.codec) || track.codec || '--';
+            const label = getAudioTrackLabel(pipelineId, track, index);
+            const storedLabel = getAudioTrackStoredLabel(pipelineId, track, index);
+            const identity = audioTrackIdentifier(track, index);
+            const key = audioTrackKey(track, index);
             const channelLabel =
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
                     : '--';
             return `<div class="stats border-base-content/10 bg-base-100 flex w-full flex-wrap overflow-hidden border">
-                <div class="stat min-w-[3.5rem] flex-1 basis-[3.5rem] p-2">
-                    <div class="stat-title">Track</div>
-                    <div class="stat-value text-sm">${index + 1}</div>
+                <div class="stat min-w-[11rem] flex-[2] basis-[11rem] p-2">
+                    <div class="stat-title">Name</div>
+                    <input
+                        type="text"
+                        class="input input-bordered input-xs mt-1 w-full"
+                        data-audio-label-key="${escapeHtml(key)}"
+                        data-audio-label-index="${index}"
+                        value="${escapeHtml(storedLabel)}"
+                        placeholder="${escapeHtml(label)}"
+                        aria-label="Audio track name"
+                    />
+                    <div class="mt-1 truncate text-xs opacity-60">${escapeHtml(identity)}</div>
                 </div>
                 <div class="stat min-w-[4.25rem] flex-1 basis-[4.25rem] p-2">
                     <div class="stat-title">Codec</div>
@@ -106,6 +126,51 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
             </div>`;
         })
         .join('');
+
+    audioTracksContainer
+        .querySelectorAll<HTMLInputElement>('input[data-audio-label-index]')
+        .forEach((input) => {
+            const index = Number(input.dataset.audioLabelIndex);
+            if (!Number.isFinite(index)) return;
+            input.addEventListener('change', () => {
+                setAudioTrackStoredLabel(pipelineId, tracks[index], index, input.value);
+                renderAudioTracksTable(pipelineId, tracks);
+            });
+        });
+}
+
+function renderVideoTrackDetails(video: Partial<NonNullable<PipelineView['input']['video']>>): void {
+    const detailsEl = document.getElementById('input-video-details');
+    if (!detailsEl) return;
+    const rows: Array<[string, string]> = [];
+    if (Number.isFinite(video.pid as number)) {
+        rows.push(['PID', `0x${Number(video.pid).toString(16).toUpperCase()}`]);
+    }
+    if (video.language) rows.push(['Language', String(video.language).toUpperCase()]);
+    if (video.title) rows.push(['Title', String(video.title)]);
+
+    if (rows.length === 0) {
+        detailsEl.innerHTML = '';
+        detailsEl.classList.add('hidden');
+        return;
+    }
+
+    detailsEl.classList.remove('hidden');
+    detailsEl.innerHTML = `<details class="collapse collapse-arrow border-base-content/10 bg-base-100 mt-2 border">
+        <summary class="collapse-title min-h-0 px-3 py-2 text-sm font-medium">Track details</summary>
+        <div class="collapse-content px-3 pb-3 pt-0">
+            <div class="grid gap-2 sm:grid-cols-3">
+                ${rows
+                    .map(
+                        ([label, value]) => `<div>
+                            <div class="text-xs uppercase opacity-50">${escapeHtml(label)}</div>
+                            <div class="text-sm">${escapeHtml(value)}</div>
+                        </div>`,
+                    )
+                    .join('')}
+            </div>
+        </div>
+    </details>`;
 }
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
@@ -338,8 +403,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         );
         setTextContent('input-video-level', video.level || '--');
         setTextContent('input-video-profile', video.profile || '--');
+        renderVideoTrackDetails(video);
 
-        renderAudioTracksTable(pipe.input.audioTracks || []);
+        renderAudioTracksTable(pipe.id, pipe.input.audioTracks || []);
 
         setBitrateWithSubtleUnit('input-total-bw', stats.inputBitrateKbps);
         setBitrateWithSubtleUnit('output-total-bw', stats.outputBitrateKbps);

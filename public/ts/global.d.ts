@@ -5,6 +5,7 @@ declare global {
         label: string;
         language: string;
         enabled: boolean;
+        switchable?: boolean;
     }
 
     interface PreviewAudioTrackList {
@@ -42,7 +43,6 @@ declare global {
             LEVEL_LOADED: string;
             FRAG_LOADED: string;
         };
-        readonly audioTrack: number;
         readonly audioTracks: Array<{ id: number; name: string; lang?: string; groupId?: string }>;
         audioTrack: number;
         loadSource(url: string): void;

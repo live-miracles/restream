@@ -9,6 +9,9 @@ export interface VideoTrack {
     width?: number;
     height?: number;
     fps?: number;
+    pid?: number | null;
+    language?: string | null;
+    title?: string | null;
     profile?: string;
     level?: string;
     bw?: number | null;
@@ -16,9 +19,12 @@ export interface VideoTrack {
 
 export interface AudioTrack {
     index?: number | null;
+    pid?: number | null;
     codec?: string;
     channels?: number;
     sample_rate?: number;
+    language?: string | null;
+    title?: string | null;
     profile?: string;
 }
 

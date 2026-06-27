@@ -181,6 +181,9 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: index,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         }
     }
@@ -192,6 +195,9 @@ mod tests {
             height: 1080,
             fps: 30.0,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,

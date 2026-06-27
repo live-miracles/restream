@@ -90,11 +90,13 @@ impl PesAccumulator {
 #[derive(Debug)]
 struct StreamInfo {
     /// The MPEG-TS elementary stream PID for this stream.
-    /// Retained for future diagnostics — packet dispatch uses the
+    /// Packet dispatch uses the
     /// `pid_to_stream` index table instead of a linear scan.
-    _pid: u16,
+    pid: u16,
     kind: StreamKind,
     track_index: u32,
+    language: Option<String>,
+    title: Option<String>,
     continuity: u8, // CC_UNSET (u8::MAX) = not yet seen; valid CC values are 0–15
     pes: PesAccumulator,
 }
@@ -104,6 +106,41 @@ struct StreamInfo {
 pub struct DemuxProbe {
     pub video: Option<VideoMeta>,
     pub audio_tracks: Vec<AudioMeta>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StreamDescriptors {
+    language: Option<String>,
+    title: Option<String>,
+}
+
+fn parse_stream_descriptors(data: &[u8]) -> StreamDescriptors {
+    let mut descriptors = StreamDescriptors::default();
+    let mut pos = 0usize;
+
+    while pos + 2 <= data.len() {
+        let tag = data[pos];
+        let len = data[pos + 1] as usize;
+        let start = pos + 2;
+        let end = start.saturating_add(len);
+        if end > data.len() {
+            break;
+        }
+
+        let payload = &data[start..end];
+        if tag == 0x0A && payload.len() >= 3 {
+            if let Ok(language) = std::str::from_utf8(&payload[..3]) {
+                let language = language.trim().to_ascii_lowercase();
+                if !language.is_empty() {
+                    descriptors.language = Some(language);
+                }
+            }
+        }
+
+        pos = end;
+    }
+
+    descriptors
 }
 
 /// Streaming MPEG-TS demuxer. Feed it chunks of TS data and drain packets.
@@ -459,7 +496,7 @@ impl TsDemuxer {
         // next IDR.  PIDs that disappear are simply dropped.  New PIDs get a
         // fresh accumulator.
         let mut old_pes: std::collections::HashMap<u16, PesAccumulator> =
-            self.streams.drain(..).map(|s| (s._pid, s.pes)).collect();
+            self.streams.drain(..).map(|s| (s.pid, s.pes)).collect();
         self.pid_to_stream.fill(NO_STREAM);
         self.audio_track_counter = 0;
         self.probe_payloads.clear();
@@ -472,6 +509,11 @@ impl TsDemuxer {
             let stream_type = data[pos];
             let es_pid = ((data[pos + 1] as u16 & 0x1F) << 8) | data[pos + 2] as u16;
             let es_info_len = ((data[pos + 3] as usize & 0x0F) << 8) | data[pos + 4] as usize;
+            let desc_start = pos + 5;
+            let desc_end = desc_start
+                .saturating_add(es_info_len)
+                .min(end.saturating_sub(4));
+            let descriptors = parse_stream_descriptors(&data[desc_start..desc_end]);
             pos += 5 + es_info_len;
 
             if let Some(kind) = StreamKind::from_stream_type(stream_type) {
@@ -497,9 +539,11 @@ impl TsDemuxer {
                 // (e.g. language descriptor) while keeping the same PIDs.
                 let pes = old_pes.remove(&es_pid).unwrap_or_else(PesAccumulator::new);
                 self.streams.push(StreamInfo {
-                    _pid: es_pid,
+                    pid: es_pid,
                     kind,
                     track_index,
+                    language: descriptors.language.clone(),
+                    title: descriptors.title.clone(),
                     continuity: CC_UNSET,
                     pes,
                 });
@@ -533,11 +577,24 @@ impl TsDemuxer {
             match stream.kind.media_type() {
                 MediaType::Video => {
                     if video_meta.is_none() {
-                        video_meta = Some(probe_video(stream.kind, data));
+                        video_meta = Some(probe_video(
+                            stream.kind,
+                            stream.pid,
+                            stream.language.clone(),
+                            stream.title.clone(),
+                            data,
+                        ));
                     }
                 }
                 MediaType::Audio => {
-                    audio_tracks.push(probe_audio(stream.kind, stream.track_index, data));
+                    audio_tracks.push(probe_audio(
+                        stream.kind,
+                        stream.track_index,
+                        stream.pid,
+                        stream.language.clone(),
+                        stream.title.clone(),
+                        data,
+                    ));
                 }
             }
         }
@@ -594,6 +651,22 @@ fn ts_sync_candidate_is_valid(data: &[u8], candidate: usize) -> bool {
         || data.get(candidate + TS_PACKET_SIZE * 2) == Some(&TS_SYNC_BYTE)
 }
 
+fn iso639_language_descriptor(language: Option<&str>) -> Vec<u8> {
+    let Some(language) = language else {
+        return Vec::new();
+    };
+    let mut code = [0u8; 3];
+    let mut count = 0usize;
+    for byte in language.bytes().filter(|b| b.is_ascii_alphabetic()).take(3) {
+        code[count] = byte.to_ascii_lowercase();
+        count += 1;
+    }
+    if count != 3 {
+        return Vec::new();
+    }
+    vec![0x0A, 0x04, code[0], code[1], code[2], 0x00]
+}
+
 // --- MPEG-TS muxer ---
 
 /// MPEG-TS stream configuration for the muxer.
@@ -603,6 +676,7 @@ pub struct MuxStreamConfig {
     pub pid: u16,
     pub media_type: MediaType,
     pub track_index: u32,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -652,6 +726,7 @@ impl TsMuxer {
                 pid,
                 media_type: MediaType::Video,
                 track_index: 0,
+                language: None,
             });
             pid += 1;
         }
@@ -666,6 +741,7 @@ impl TsMuxer {
                 pid,
                 media_type: MediaType::Audio,
                 track_index: a.track_index,
+                language: a.language.clone(),
             });
             pid += 1;
         }
@@ -898,7 +974,20 @@ impl TsMuxer {
         let pmt = &mut ts[5..];
         pmt[0] = 0x02; // table_id
         // section body: program_number(2) + version(1) + section(1) + last_section(1) + pcr_pid(2) + program_info_length(2) + stream entries + crc(4)
-        let entry_size = 5 * self.streams.len();
+        let stream_descriptors: Vec<Vec<u8>> = self
+            .streams
+            .iter()
+            .map(|s| match s.media_type {
+                MediaType::Audio => iso639_language_descriptor(s.language.as_deref()),
+                MediaType::Video => Vec::new(),
+            })
+            .collect();
+        let entry_size: usize = self
+            .streams
+            .iter()
+            .zip(stream_descriptors.iter())
+            .map(|(_, descriptors)| 5 + descriptors.len())
+            .sum();
         let section_len = 9 + entry_size + 4; // 9 fixed + entries + CRC
         pmt[1] = 0xB0 | ((section_len >> 8) as u8 & 0x0F);
         pmt[2] = section_len as u8;
@@ -913,13 +1002,17 @@ impl TsMuxer {
         pmt[11] = 0x00; // program_info_length = 0
 
         let mut pos = 12;
-        for s in &self.streams {
+        for (s, descriptors) in self.streams.iter().zip(stream_descriptors.iter()) {
             pmt[pos] = s.stream_type;
             pmt[pos + 1] = 0xE0 | ((s.pid >> 8) as u8 & 0x1F);
             pmt[pos + 2] = s.pid as u8;
-            pmt[pos + 3] = 0xF0;
-            pmt[pos + 4] = 0x00; // es_info_length = 0
-            pos += 5;
+            pmt[pos + 3] = 0xF0 | ((descriptors.len() >> 8) as u8 & 0x0F);
+            pmt[pos + 4] = descriptors.len() as u8;
+            if !descriptors.is_empty() {
+                let desc_start = pos + 5;
+                pmt[desc_start..desc_start + descriptors.len()].copy_from_slice(descriptors);
+            }
+            pos += 5 + descriptors.len();
         }
 
         let crc_start = 5;
@@ -1122,13 +1215,22 @@ fn crc32_mpeg2(data: &[u8]) -> u32 {
 
 // --- Codec probing ---
 
-fn probe_video(kind: StreamKind, pes_payload: &[u8]) -> VideoMeta {
+fn probe_video(
+    kind: StreamKind,
+    pid: u16,
+    language: Option<String>,
+    title: Option<String>,
+    pes_payload: &[u8],
+) -> VideoMeta {
     let mut meta = VideoMeta {
         codec: kind.codec_name().to_string(),
         width: 0,
         height: 0,
         fps: 0.0,
         bw: None,
+        pid: Some(pid),
+        language,
+        title,
         profile: None,
         level: None,
         pixel_format: None,
@@ -1152,13 +1254,23 @@ fn probe_video(kind: StreamKind, pes_payload: &[u8]) -> VideoMeta {
     meta
 }
 
-fn probe_audio(kind: StreamKind, track_index: u32, pes_payload: &[u8]) -> AudioMeta {
+fn probe_audio(
+    kind: StreamKind,
+    track_index: u32,
+    pid: u16,
+    language: Option<String>,
+    title: Option<String>,
+    pes_payload: &[u8],
+) -> AudioMeta {
     let mut meta = AudioMeta {
         codec: kind.codec_name().to_string(),
         sample_rate: 0,
         channels: 0,
         channel_layout: None,
         track_index,
+        pid: Some(pid),
+        language,
+        title,
         profile: None,
     };
 
@@ -2016,6 +2128,9 @@ mod tests {
             height: 720,
             fps: 30.0,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -2168,6 +2283,9 @@ mod tests {
             height: 360,
             fps: 30.0,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: Some("High".to_string()),
             level: Some("3.0".to_string()),
             pixel_format: None,
@@ -2179,6 +2297,9 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         };
 
@@ -2205,6 +2326,9 @@ mod tests {
             height: 240,
             fps: 30.0,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -2216,6 +2340,9 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         };
 
@@ -2272,6 +2399,9 @@ mod tests {
             height: 240,
             fps: 30.0,
             bw: None,
+            pid: Some(0x100),
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -2282,6 +2412,9 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: Some("eng".to_string()),
+            title: None,
             profile: None,
         };
         let audio1 = AudioMeta {
@@ -2290,6 +2423,9 @@ mod tests {
             channels: 1,
             channel_layout: None,
             track_index: 1,
+            pid: None,
+            language: Some("spa".to_string()),
+            title: None,
             profile: None,
         };
 
@@ -2348,6 +2484,16 @@ mod tests {
             audio_track_indices.contains(&1),
             "track_index 1 must be present"
         );
+
+        let probe = demuxer
+            .take_probe()
+            .expect("round-trip should produce a probe");
+        assert_eq!(probe.video.as_ref().and_then(|v| v.pid), Some(0x100));
+        assert_eq!(probe.audio_tracks.len(), 2);
+        assert_eq!(probe.audio_tracks[0].pid, Some(0x101));
+        assert_eq!(probe.audio_tracks[0].language.as_deref(), Some("eng"));
+        assert_eq!(probe.audio_tracks[1].pid, Some(0x102));
+        assert_eq!(probe.audio_tracks[1].language.as_deref(), Some("spa"));
     }
 
     #[test]
@@ -2505,6 +2651,9 @@ mod tests {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         };
         let mut muxer = TsMuxer::new(None, &[audio]);
@@ -2617,16 +2766,16 @@ mod tests {
         assert!(demuxer.has_streams());
         assert_eq!(demuxer.streams.len(), 2);
         assert_eq!(demuxer.streams[0].kind, StreamKind::H264);
-        assert_eq!(demuxer.streams[0]._pid, 0x100);
+        assert_eq!(demuxer.streams[0].pid, 0x100);
         assert_eq!(demuxer.streams[1].kind, StreamKind::AacAdts);
-        assert_eq!(demuxer.streams[1]._pid, 0x101);
+        assert_eq!(demuxer.streams[1].pid, 0x101);
     }
 
     #[test]
     fn adts_probe() {
         // Valid ADTS header: 48kHz, mono
         let adts = [0xFF, 0xF1, 0x4C, 0x40, 0x02, 0x1F, 0xFC];
-        let meta = probe_audio(StreamKind::AacAdts, 0, &adts);
+        let meta = probe_audio(StreamKind::AacAdts, 0, 0x101, None, None, &adts);
         assert_eq!(meta.sample_rate, 48000);
         assert_eq!(meta.channels, 1);
     }

@@ -1,6 +1,7 @@
 import { formatChannelCount, formatCodecName } from '../core/utils.js';
 import type { AudioTrack, PipelineView } from '../types.js';
 import { withBasePath } from '../core/base-path.js';
+import { audioTrackIdentifier, getAudioTrackLabel } from './audio-track-labels.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
 const HLS_READY_RETRY_MS = 1000;
@@ -19,7 +20,9 @@ function formatPreviewSampleRate(rate: number | null | undefined): string | null
 
 function getFriendlyAudioTrackName(name: string | null | undefined): string | null {
     const trimmedName = (name || '').trim();
-    if (!trimmedName || /^audio\d+$/i.test(trimmedName)) return null;
+    if (!trimmedName || /^audio\d+$/i.test(trimmedName) || /^track\s+\d+$/i.test(trimmedName)) {
+        return null;
+    }
     return trimmedName;
 }
 
@@ -66,6 +69,7 @@ function buildPreviewAudioDetail(
         formatCodecName(metadata?.codec),
         metadata?.channels ? formatChannelCount(metadata.channels) : null,
         formatPreviewSampleRate(metadata?.sample_rate),
+        metadata ? audioTrackIdentifier(metadata, position) : null,
         getFriendlyAudioTrackName(nativeTrack.label),
     ].filter(Boolean);
 
@@ -179,7 +183,10 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         audioPickerButton.setAttribute('aria-expanded', 'false');
     }
 
-    function buildAudioTrackPicker(tracks: PreviewAudioTrackList): void {
+    function buildAudioTrackPicker(
+        tracks: PreviewAudioTrackList,
+        onSelect?: (index: number, track: PreviewAudioTrack) => void,
+    ): void {
         if (tracks.length <= 1) {
             audioPicker.style.display = 'none';
             closeAudioTrackPicker();
@@ -191,7 +198,8 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             if (tracks[i].enabled) { enabledIndex = i; break; }
         }
         const selectedIndex = Math.max(0, enabledIndex);
-        audioPickerButton.textContent = `Audio: Track ${selectedIndex + 1}`;
+        const selectedMetadata = getPreviewAudioMetadata(pipe, selectedIndex);
+        audioPickerButton.textContent = `Audio: ${getAudioTrackLabel(pipe.id, selectedMetadata, selectedIndex)}`;
         audioPickerMenu.replaceChildren();
 
         for (let i = 0; i < tracks.length; i++) {
@@ -200,6 +208,9 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             item.type = 'button';
             item.className =
                 'flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left hover:bg-base-200';
+            if (track.switchable === false) {
+                item.className += ' cursor-default opacity-70 hover:bg-transparent';
+            }
             item.setAttribute('role', 'option');
             item.setAttribute('aria-selected', track.enabled ? 'true' : 'false');
 
@@ -212,7 +223,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
 
             const title = document.createElement('span');
             title.className = 'block font-semibold';
-            title.textContent = `Track ${i + 1}`;
+            title.textContent = getAudioTrackLabel(pipe.id, getPreviewAudioMetadata(pipe, i), i);
 
             const detail = document.createElement('span');
             detail.className = 'block truncate opacity-70';
@@ -221,17 +232,41 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
             text.append(title, detail);
             item.append(selectedMark, text);
             item.onclick = () => {
+                if (track.switchable === false) return;
+                onSelect?.(i, track);
                 for (let j = 0; j < tracks.length; j++) {
                     tracks[j].enabled = false;
                 }
                 track.enabled = true;
-                buildAudioTrackPicker(tracks);
+                buildAudioTrackPicker(tracks, onSelect);
                 closeAudioTrackPicker();
             };
             audioPickerMenu.appendChild(item);
         }
 
         audioPicker.style.display = '';
+    }
+
+    function buildMetadataAudioTrackPicker(): void {
+        const tracks = pipe.input.audioTracks || [];
+        if (tracks.length <= 1) return;
+        const fakeTrackList: PreviewAudioTrackList = {
+            length: tracks.length,
+            onaddtrack: null,
+            onchange: null,
+            onremovetrack: null,
+        };
+        tracks.forEach((track, index) => {
+            fakeTrackList[index] = {
+                id: String(track.pid ?? track.index ?? index),
+                kind: 'metadata',
+                label: getAudioTrackLabel(pipe.id, track, index),
+                language: track.language || '',
+                enabled: index === 0,
+                switchable: false,
+            };
+        });
+        buildAudioTrackPicker(fakeTrackList);
     }
 
     audioPickerButton.addEventListener('click', (event) => {
@@ -342,6 +377,9 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
 
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
             if (video.dataset.previewDisposed === 'true') return;
+            if (!hls.audioTracks || hls.audioTracks.length <= 1) {
+                buildMetadataAudioTrackPicker();
+            }
             attemptPlayback();
         });
 
@@ -363,9 +401,12 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
                     label: t.name || `Track ${i + 1}`,
                     language: t.lang || '',
                     enabled: hls.audioTrack === t.id,
+                    switchable: true,
                 };
             }
-            buildAudioTrackPicker(fakeTrackList);
+            buildAudioTrackPicker(fakeTrackList, (_index, track) => {
+                hls.audioTrack = Number(track.id);
+            });
         });
 
         hls.on(window.Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; response?: { code?: number } }) => {
@@ -390,6 +431,8 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
                 buildAudioTrackPicker(video.audioTracks);
                 video.audioTracks.onaddtrack = () => buildAudioTrackPicker(video.audioTracks);
                 video.audioTracks.onchange = () => buildAudioTrackPicker(video.audioTracks);
+            } else {
+                buildMetadataAudioTrackPicker();
             }
             attemptPlayback();
         });

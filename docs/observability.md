@@ -67,6 +67,7 @@ Active input fields:
 | `bitrateKbps` | Average bytes received over total ingest uptime |
 | `video` | RTMP FLV parser or SRT native TsDemuxer metadata |
 | `audio` | Primary audio metadata |
+| `audioTracks` | Full active audio track list, including PID/language/title when available |
 | `publisher.protocol` | `rtmp`, `srt`, or `file` |
 | `publisher.remoteAddr` | Accepted peer address when available |
 | `publisher.quality` | Protocol-specific live transport snapshot |

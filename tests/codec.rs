@@ -267,6 +267,9 @@ fn flv_video_through_ts_muxer_produces_valid_ts() {
         channels: 2,
         track_index: 0,
         channel_layout: None,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
     };
     let mut muxer = TsMuxer::new(Some(&video_meta), &[audio_meta]);

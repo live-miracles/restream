@@ -213,8 +213,11 @@ actively running.
 
 ### `GET /pipelines/:pipelineId/probe`
 
-Returns active native ingest metadata, audio tracks, bitrate, GOP observations,
-and ingest identity. Returns `404` without an active ingest.
+Returns active native ingest metadata, bitrate, GOP observations, and ingest
+identity. Video and audio metadata include MPEG-TS `pid`, `language`, and
+`title` when the source descriptors provide them. `audioTracks` lists every
+active audio track; `audio` remains the primary/first track for older clients.
+Returns `404` without an active ingest.
 
 ### `GET /pipelines/:pipelineId/graph`
 

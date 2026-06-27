@@ -69,9 +69,12 @@ function parsePipelinesInfo(
         const rawInputAudioTracks = healthByPipeline[p.id]?.input?.audioTracks || [];
         const mapAudioTrack = (track: any): AudioTrack => ({
             index: track.index !== undefined ? track.index : track.trackIndex,
+            pid: track.pid ?? null,
             codec: track.codec,
             channels: track.channels,
             sample_rate: track.sampleRate !== undefined ? track.sampleRate : track.sample_rate,
+            language: track.language ?? null,
+            title: track.title ?? null,
             profile: track.profile,
         });
         const inputAudioTracks: AudioTrack[] =

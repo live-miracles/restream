@@ -540,6 +540,9 @@ mod tests {
                 channels: 2,
                 channel_layout: None,
                 track_index: 0,
+                pid: Some(0x101),
+                language: Some("eng".to_string()),
+                title: None,
                 profile: None,
             },
             AudioMeta {
@@ -548,6 +551,9 @@ mod tests {
                 channels: 1,
                 channel_layout: None,
                 track_index: 1,
+                pid: Some(0x102),
+                language: Some("spa".to_string()),
+                title: None,
                 profile: None,
             },
         ];
@@ -566,6 +572,9 @@ mod tests {
                 channels: 2,
                 channel_layout: None,
                 track_index: 0,
+                pid: Some(0x101),
+                language: Some("eng".to_string()),
+                title: None,
                 profile: None,
             },
             AudioMeta {
@@ -574,6 +583,9 @@ mod tests {
                 channels: 1,
                 channel_layout: None,
                 track_index: 1,
+                pid: Some(0x102),
+                language: Some("spa".to_string()),
+                title: None,
                 profile: None,
             },
             AudioMeta {
@@ -582,6 +594,9 @@ mod tests {
                 channels: 1,
                 channel_layout: None,
                 track_index: 2,
+                pid: Some(0x103),
+                language: None,
+                title: None,
                 profile: None,
             },
         ];
@@ -696,6 +711,9 @@ mod tests {
                 sample_rate: 48000,
                 track_index: 0,
                 channel_layout: None,
+                pid: Some(0x101),
+                language: Some("eng".to_string()),
+                title: None,
                 profile: None,
             },
             AudioMeta {
@@ -704,6 +722,9 @@ mod tests {
                 sample_rate: 48000,
                 track_index: 1,
                 channel_layout: None,
+                pid: Some(0x102),
+                language: Some("spa".to_string()),
+                title: None,
                 profile: None,
             },
             AudioMeta {
@@ -712,6 +733,9 @@ mod tests {
                 sample_rate: 48000,
                 track_index: 2,
                 channel_layout: None,
+                pid: Some(0x103),
+                language: None,
+                title: None,
                 profile: None,
             },
         ];

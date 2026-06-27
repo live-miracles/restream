@@ -168,7 +168,7 @@ most battle-tested path for production deployments.
 | SRT H.264/AAC | Native ingest/read/egress with MPEG-TS demux/remux |
 | SRT H.265 | Codec mapping implemented; full E2E matrix remains a gate |
 | RTMP H.265 | Enhanced RTMP ingest (H.265 arriving over RTMP) is not implemented. RTMP *egress* with H.265 source works: `hevc_to_h264` stage does full libavcodec decode→encode |
-| Multi-track audio | SRT ingest preserves audio track indices |
+| Multi-track audio | SRT ingest preserves audio track indices plus MPEG-TS PID/language metadata where present |
 | Audio remap/downmix | Channel-level DSP routes use an external FFmpeg audio stage (`pan` for remap, stereo resample for downmix); `atrack` remains packet-only |
 | HLS pull routes/store | Implemented and tested; live segment generation uses native TsMuxer |
 | HLS upload | Implemented; HTTP/HTTPS output URLs PUT new segments plus playlist to the target |
@@ -549,6 +549,11 @@ Read endpoints must emit media payload only. The pipeline selects the first
 video stream and preserves all audio tracks. Subtitles, private data, second
 video PIDs, and unknown stream types are excluded. The MPEG-TS remuxer rejects
 unknown codec metadata rather than guessing H.264/AAC.
+
+The control plane surfaces MPEG-TS stream identity metadata separately from the
+media payload: video and audio metadata may include PID, language, and title
+fields when descriptors are present, and audio tracks can be assigned local
+operator-friendly labels in the dashboard.
 
 ### Timestamp semantics
 
