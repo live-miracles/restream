@@ -34,6 +34,7 @@ const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
     engineCpu: [],
     engineMemory: [],
 };
+let lastOverviewMetricsSampleKey: string | null = null;
 
 function normalizeMode(mode: string | null): DashboardMode {
     if (mode && validModes.has(mode)) return mode as DashboardMode;
@@ -68,28 +69,57 @@ function pushOverviewMetric(key: OverviewMetricKey, value: number | null | undef
 }
 
 function recordOverviewMetricSamples(counts: SummaryCounts): void {
+    if (!state.metrics.generatedAt) return;
+    const engineMemory = state.metrics.engine?.totalMemoryBytes ?? state.metrics.engine?.memoryBytes;
+    const sampleKey =
+        state.metrics.generatedAt;
+    if (sampleKey === lastOverviewMetricsSampleKey) return;
+    lastOverviewMetricsSampleKey = sampleKey;
+
     pushOverviewMetric('inputs', counts.liveInputs);
     pushOverviewMetric('outputs', counts.runningOutputs);
     pushOverviewMetric('inputKbps', counts.inputKbps);
     pushOverviewMetric('outputKbps', counts.outputKbps);
-    pushOverviewMetric('engineCpu', state.metrics.engine?.cpuPercent);
-    pushOverviewMetric('engineMemory', state.metrics.engine?.totalMemoryBytes ?? state.metrics.engine?.memoryBytes);
+    if (state.metrics.engine?.cpuSampleReady !== false) {
+        pushOverviewMetric('engineCpu', state.metrics.engine?.cpuPercent);
+    }
+    pushOverviewMetric('engineMemory', engineMemory);
 }
 
 function overviewSparkline(key: OverviewMetricKey): string {
     const values = overviewMetricHistory[key];
     if (values.length < 2) return '';
-    const max = Math.max(...values, 1);
+    const tone = overviewMetricTone(key);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(max - min, max * 0.1, 1);
     const points = values
         .map((value, index) => {
             const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 100;
-            const y = 38 - (value / max) * 32;
+            const y = 38 - ((value - min) / range) * 32;
             return `${x.toFixed(1)},${y.toFixed(1)}`;
         })
         .join(' ');
-    return `<svg class="pointer-events-none absolute inset-x-2 bottom-2 h-12 opacity-25" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+    return `<svg class="${tone.sparklineClass} pointer-events-none absolute inset-x-0 bottom-0 h-full w-full opacity-25" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
         <polyline fill="none" stroke="currentColor" stroke-width="2.5" vector-effect="non-scaling-stroke" points="${points}"></polyline>
     </svg>`;
+}
+
+function overviewMetricTone(key: OverviewMetricKey): { borderClass: string; sparklineClass: string } {
+    switch (key) {
+        case 'engineCpu':
+            return { borderClass: 'border-t-warning', sparklineClass: 'text-warning' };
+        case 'engineMemory':
+            return { borderClass: 'border-t-info', sparklineClass: 'text-info' };
+        case 'inputs':
+            return { borderClass: 'border-t-success', sparklineClass: 'text-success' };
+        case 'outputs':
+            return { borderClass: 'border-t-secondary', sparklineClass: 'text-secondary' };
+        case 'inputKbps':
+            return { borderClass: 'border-t-accent', sparklineClass: 'text-accent' };
+        case 'outputKbps':
+            return { borderClass: 'border-t-primary', sparklineClass: 'text-primary' };
+    }
 }
 
 function badgeClassForTone(tone: StatusTone): string {
@@ -211,8 +241,13 @@ function renderOverview(): void {
     const engine = state.metrics.engine || {};
     const ffmpegCount = Number(engine.externalFfmpegCount || 0);
     const ffmpegMemory = Number(engine.externalFfmpegMemoryBytes || 0);
-    const restreamMemory = Number(engine.memoryBytes || 0);
+    const restreamMemory = Number(engine.restreamMemoryBytes ?? engine.memoryBytes ?? 0);
     const engineMemory = Number(engine.totalMemoryBytes || restreamMemory + ffmpegMemory);
+    const ffmpegCpuDetail =
+        ffmpegCount > 0
+            ? `FFmpeg ${formatPercent(engine.externalFfmpegCpuPercent)} (${ffmpegCount})`
+            : 'no FFmpeg';
+    const engineCpuDetail = `Restream ${formatPercent(engine.restreamCpuPercent)} / ${ffmpegCpuDetail}`;
     const pipelineRows = [...state.pipelines]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((pipe) => {
@@ -234,13 +269,13 @@ function renderOverview(): void {
         .join('');
 
     container.innerHTML = `
-        <div class="mb-4 grid gap-3 md:grid-cols-3 2xl:grid-cols-6">
+        <div class="mb-4 grid gap-3 md:grid-cols-3">
+            ${overviewMetric('Engine CPU', formatPercent(engine.cpuPercent), engineCpuDetail, 'engineCpu')}
             ${overviewMetric('Inputs Live', `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : 'All quiet', 'inputs')}
-            ${overviewMetric('Outputs Running', `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, 'outputs')}
             ${overviewMetric('Throughput In', formatBitrate(counts.inputKbps), 'Across active publishers', 'inputKbps')}
-            ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`, 'outputKbps')}
-            ${overviewMetric('Engine CPU', formatPercent(engine.cpuPercent), `Host ${formatPercent(state.metrics.cpu?.usagePercent)} / FFmpeg ${ffmpegCount}`, 'engineCpu')}
             ${overviewMetric('Engine Memory', formatBytes(engineMemory), `Restream ${formatBytes(restreamMemory)} / FFmpeg ${formatBytes(ffmpegMemory)}`, 'engineMemory')}
+            ${overviewMetric('Outputs Running', `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, 'outputs')}
+            ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`, 'outputKbps')}
         </div>
         <section class="border-base-content/10 bg-base-200/80 rounded-lg border">
             <div class="border-base-content/10 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
@@ -280,7 +315,8 @@ function renderOverview(): void {
 }
 
 function overviewMetric(label: string, value: string, note: string, historyKey: OverviewMetricKey): string {
-    return `<section class="border-base-content/10 bg-base-200 relative min-h-30 overflow-hidden rounded-lg border p-4">
+    const tone = overviewMetricTone(historyKey);
+    return `<section class="${tone.borderClass} border-base-content/10 bg-base-200 relative min-h-30 overflow-hidden rounded-lg border border-t-2 p-4">
         <div class="relative z-10 text-base-content/60 text-xs font-semibold uppercase">${escapeHtml(label)}</div>
         <div class="relative z-10 mt-2 text-2xl font-semibold tabular-nums">${escapeHtml(value)}</div>
         <div class="relative z-10 text-base-content/60 mt-1 text-sm">${escapeHtml(note)}</div>

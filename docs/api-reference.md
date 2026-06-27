@@ -476,8 +476,11 @@ Public liveness response:
 
 ### `GET /metrics/system`
 
-Authenticated JSON containing CPU, memory, disk, and host-wide network rates.
-This is not Prometheus text format.
+Authenticated JSON containing host CPU, host memory, disk, host-wide network
+rates, and an `engine` object for restream self metrics. `engine.cpuPercent`
+and `engine.totalMemoryBytes` include the restream process plus child FFmpeg
+processes launched by restream; `restream*` and `externalFfmpeg*` fields provide
+the breakdown. This is not Prometheus text format.
 
 ### `GET /api/status`
 

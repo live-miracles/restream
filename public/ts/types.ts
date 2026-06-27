@@ -170,11 +170,16 @@ export interface HealthData {
 }
 
 export interface SystemMetrics {
+    generatedAt?: string;
     cpu?: { usagePercent?: number | null; cores?: number | null; load1?: number | null };
     memory?: { usedBytes?: number | null; totalBytes?: number | null; usedPercent?: number | null };
     engine?: {
         cpuPercent?: number | null;
+        cpuSampleReady?: boolean;
+        restreamCpuPercent?: number | null;
+        externalFfmpegCpuPercent?: number | null;
         memoryBytes?: number | null;
+        restreamMemoryBytes?: number | null;
         totalMemoryBytes?: number | null;
         externalFfmpegCount?: number | null;
         externalFfmpegMemoryBytes?: number | null;

@@ -50,7 +50,8 @@ pub const MAX_PASSWORD_LEN: usize = 1024;
 #[derive(Clone, Copy)]
 struct EngineCpuSample {
     total_ticks: u64,
-    process_ticks: u64,
+    restream_ticks: u64,
+    external_ffmpeg_ticks: u64,
 }
 
 static ENGINE_CPU_SAMPLE: OnceLock<Mutex<Option<EngineCpuSample>>> = OnceLock::new();
@@ -2900,6 +2901,7 @@ fn engine_metrics(sys: &System, core_count: usize) -> serde_json::Value {
     let mut external_ffmpeg_count = 0u64;
     let mut external_ffmpeg_memory = 0u64;
     let mut total_memory = 0u64;
+    let mut external_ffmpeg_ticks = 0u64;
 
     for pid in &pids {
         if let Some(process) = sys.process(sysinfo::Pid::from_u32(*pid)) {
@@ -2908,34 +2910,51 @@ fn engine_metrics(sys: &System, core_count: usize) -> serde_json::Value {
             if *pid != own_pid && process.name().to_ascii_lowercase().contains("ffmpeg") {
                 external_ffmpeg_count += 1;
                 external_ffmpeg_memory = external_ffmpeg_memory.saturating_add(memory);
+                external_ffmpeg_ticks =
+                    external_ffmpeg_ticks.saturating_add(proc_process_ticks(*pid).unwrap_or(0));
             }
         }
     }
 
-    let process_ticks = pids.iter().filter_map(|pid| proc_process_ticks(*pid)).sum::<u64>();
+    let restream_ticks = proc_process_ticks(own_pid).unwrap_or(0);
     let total_ticks = proc_total_ticks();
-    let cpu_percent = total_ticks.and_then(|total_ticks| {
-        let sample = EngineCpuSample {
-            total_ticks,
-            process_ticks,
-        };
-        let lock = ENGINE_CPU_SAMPLE.get_or_init(|| Mutex::new(None));
-        let mut previous = lock.lock().ok()?;
-        let cpu = previous.and_then(|prev| {
-            let total_delta = sample.total_ticks.saturating_sub(prev.total_ticks);
-            let process_delta = sample.process_ticks.saturating_sub(prev.process_ticks);
-            if total_delta == 0 {
-                return None;
-            }
-            Some((process_delta as f64 / total_delta as f64) * core_count.max(1) as f64 * 100.0)
-        });
-        *previous = Some(sample);
-        cpu
-    });
+    let mut cpu_sample_ready = false;
+    let (cpu_percent, restream_cpu_percent, external_ffmpeg_cpu_percent) = total_ticks
+        .and_then(|total_ticks| {
+            let sample = EngineCpuSample {
+                total_ticks,
+                restream_ticks,
+                external_ffmpeg_ticks,
+            };
+            let lock = ENGINE_CPU_SAMPLE.get_or_init(|| Mutex::new(None));
+            let mut previous = lock.lock().ok()?;
+            let cpu = previous.map(|prev| {
+                cpu_sample_ready = true;
+                let total_delta = sample.total_ticks.saturating_sub(prev.total_ticks);
+                if total_delta == 0 {
+                    return (0.0, 0.0, 0.0);
+                }
+                let scale = core_count.max(1) as f64 * 100.0 / total_delta as f64;
+                let restream_delta = sample.restream_ticks.saturating_sub(prev.restream_ticks);
+                let ffmpeg_delta = sample
+                    .external_ffmpeg_ticks
+                    .saturating_sub(prev.external_ffmpeg_ticks);
+                let restream_cpu = restream_delta as f64 * scale;
+                let ffmpeg_cpu = ffmpeg_delta as f64 * scale;
+                (restream_cpu + ffmpeg_cpu, restream_cpu, ffmpeg_cpu)
+            });
+            *previous = Some(sample);
+            cpu
+        })
+        .unwrap_or((0.0, 0.0, 0.0));
 
     serde_json::json!({
         "cpuPercent": cpu_percent,
+        "cpuSampleReady": cpu_sample_ready,
+        "restreamCpuPercent": restream_cpu_percent,
+        "externalFfmpegCpuPercent": external_ffmpeg_cpu_percent,
         "memoryBytes": restream_memory,
+        "restreamMemoryBytes": restream_memory,
         "totalMemoryBytes": total_memory,
         "externalFfmpegCount": external_ffmpeg_count,
         "externalFfmpegMemoryBytes": external_ffmpeg_memory,
