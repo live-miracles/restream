@@ -21,6 +21,8 @@ use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 pub use crate::media::pipe_metrics::PipeMetrics;
 pub use crate::media::stage_metrics::StageMetrics;
 
+const EGRESS_PROGRESS_STALE_MS: u64 = 10_000;
+
 /// Tracks HLS consumers for a pipeline. Persistent consumers (egress outputs)
 /// register/unregister explicitly. Transient consumers (browser preview) keep
 /// the segmenter alive via playlist fetch heartbeats.
@@ -430,16 +432,52 @@ impl MediaEngine {
         }
     }
 
-    fn egress_runtime_json(egress: &ActiveEgress, include_target_url: bool) -> serde_json::Value {
+    fn egress_effective_status(egress: &ActiveEgress, has_ingest: bool) -> String {
+        if !has_ingest {
+            return "stopped".to_string();
+        }
+
+        let phase = egress
+            .phase
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if phase == "failed" {
+            return "failed".to_string();
+        }
+        if egress.status != "running" {
+            return egress.status.clone();
+        }
+
+        let last_progress_ms = egress.last_progress_ms.load(Ordering::Relaxed);
+        let now_ms = Self::now_epoch_ms();
+        let no_progress_too_long = last_progress_ms == 0
+            && egress.start_instant.elapsed().as_millis() as u64 >= EGRESS_PROGRESS_STALE_MS;
+        let stale_progress = last_progress_ms > 0
+            && now_ms.saturating_sub(last_progress_ms) >= EGRESS_PROGRESS_STALE_MS;
+        if no_progress_too_long || stale_progress {
+            return "stalled".to_string();
+        }
+
+        "running".to_string()
+    }
+
+    fn egress_runtime_json(
+        egress: &ActiveEgress,
+        include_target_url: bool,
+        has_ingest: bool,
+    ) -> serde_json::Value {
         let last_progress_ms = egress.last_progress_ms.load(Ordering::Relaxed);
         let last_error_ms = egress.last_error_ms.load(Ordering::Relaxed);
         let now_ms = Self::now_epoch_ms();
+        let status = Self::egress_effective_status(egress, has_ingest);
         let mut value = serde_json::json!({
             "outputId": egress.output_id.clone(),
             "pipelineId": egress.pipeline_id.clone(),
             "protocol": egress.protocol.clone(),
             "targetAddr": egress.target_addr.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            "status": egress.status.clone(),
+            "status": status,
+            "rawStatus": egress.status.clone(),
             "phase": egress.phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "uptimeSecs": egress.start_instant.elapsed().as_secs_f64(),
             "bytesOut": egress.bytes_sent.load(Ordering::Relaxed),
@@ -461,7 +499,7 @@ impl MediaEngine {
         let egresses = self.active_egresses.read().await;
         egresses
             .get(output_id)
-            .map(|e| Self::egress_runtime_json(e, false))
+            .map(|e| Self::egress_runtime_json(e, false, true))
     }
 
     /// Register an OS thread JoinHandle so it can be joined at shutdown.
@@ -1577,14 +1615,8 @@ impl MediaEngine {
                     };
 
                     let has_ingest = ingests.contains_key(pipeline_id.as_str());
-                    let output_status = if has_ingest {
-                        egress.status.as_str()
-                    } else {
-                        "stopped"
-                    };
 
-                    let mut output_json = Self::egress_runtime_json(egress, false);
-                    output_json["status"] = serde_json::Value::String(output_status.to_string());
+                    let mut output_json = Self::egress_runtime_json(egress, false, has_ingest);
                     output_json["totalSize"] = serde_json::json!(bytes_sent);
                     output_json["bitrateKbps"] = serde_json::json!(bitrate_kbps);
                     output_json["startedAt"] = serde_json::Value::String(egress.started_at.clone());
@@ -1679,7 +1711,9 @@ impl MediaEngine {
 
         let egress_arr: Vec<serde_json::Value> = egresses
             .values()
-            .map(|e| Self::egress_runtime_json(e, true))
+            .map(|e| {
+                Self::egress_runtime_json(e, true, ingests.contains_key(e.pipeline_id.as_str()))
+            })
             .collect();
 
         serde_json::json!({
@@ -1753,7 +1787,7 @@ impl MediaEngine {
         let pipeline_egresses: Vec<serde_json::Value> = egresses
             .values()
             .filter(|e| e.pipeline_id == pipeline_id)
-            .map(|e| Self::egress_runtime_json(e, true))
+            .map(|e| Self::egress_runtime_json(e, true, ingests.contains_key(pipeline_id)))
             .collect();
 
         serde_json::json!({
@@ -1998,10 +2032,10 @@ impl MediaEngine {
                 "id": output_node_id,
                 "type": "egress",
                 "label": format!("{} sender: {}", protocol_label, output.name.as_str()),
-                "active": egress.is_some_and(|e| e.status == "running"),
+                "active": egress.is_some_and(|e| Self::egress_effective_status(e, ingest.is_some()) == "running"),
                 "details": egress.map(|e| {
                     let bytes = e.bytes_sent.load(Ordering::Relaxed);
-                    let mut details = Self::egress_runtime_json(e, true);
+                    let mut details = Self::egress_runtime_json(e, true, ingest.is_some());
                     details["totalSize"] = serde_json::json!(bytes);
                     details["bitrateKbps"] =
                         serde_json::json!(*e.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()));
@@ -2270,6 +2304,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn health_snapshot_marks_failed_egress_status_when_input_is_live() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-1", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .register_egress("output-1", "pipeline-1", "rtmp://example/live/test")
+            .await;
+        engine
+            .record_egress_error("output-1", "send", "connection refused")
+            .await;
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
+            .await;
+
+        let output = &snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"];
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["rawStatus"], "running");
+        assert_eq!(output["phase"], "failed");
+        assert_eq!(output["failurePhase"], "send");
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_marks_live_output_stalled_without_progress() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-1", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .register_egress("output-1", "pipeline-1", "rtmp://example/live/test")
+            .await;
+        {
+            let mut egresses = engine.active_egresses.write().await;
+            let egress = egresses.get_mut("output-1").unwrap();
+            egress.start_instant = Instant::now()
+                .checked_sub(std::time::Duration::from_millis(
+                    EGRESS_PROGRESS_STALE_MS + 1,
+                ))
+                .unwrap();
+        }
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
+            .await;
+
+        assert_eq!(
+            snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
+            "stalled"
+        );
+    }
+
+    #[tokio::test]
     async fn health_snapshot_includes_all_ingest_audio_tracks() {
         let engine = MediaEngine::new();
         engine
@@ -2501,6 +2590,10 @@ mod tests {
     async fn health_snapshot_exposes_egress_progress_and_error_state() {
         let engine = MediaEngine::new();
         engine
+            .try_register_ingest("pipe-1", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
             .register_egress(
                 "out-1",
                 "pipe-1",
@@ -2536,6 +2629,7 @@ mod tests {
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
 
         assert_eq!(output["protocol"], "srt");
+        assert_eq!(output["status"], "failed");
         assert_eq!(output["targetAddr"], "203.0.113.10:10080");
         assert_eq!(output["phase"], "failed");
         assert_eq!(output["failurePhase"], "send");
@@ -2754,6 +2848,43 @@ mod tests {
             !edges.iter().any(|edge| edge["label"] == "FLV passthrough"),
             "SRT egress must not be labeled as FLV passthrough"
         );
+    }
+
+    #[tokio::test]
+    async fn processing_graph_marks_failed_egress_inactive() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-failed-output-graph";
+        engine
+            .try_register_ingest(pipeline_id, "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .register_egress("out-failed", pipeline_id, "rtmp://example/live/test")
+            .await;
+        engine
+            .record_egress_error("out-failed", "send", "connection refused")
+            .await;
+
+        let output = crate::types::Output {
+            id: "out-failed".to_string(),
+            pipeline_id: pipeline_id.to_string(),
+            name: "Failed Target".to_string(),
+            url: "rtmp://example/live/test".to_string(),
+            desired_state: "running".to_string(),
+            encoding: "source".to_string(),
+        };
+
+        let graph = engine.processing_graph(pipeline_id, &[output]).await;
+        let nodes = graph["nodes"].as_array().unwrap();
+        let egress = nodes
+            .iter()
+            .find(|node| node["type"] == "egress")
+            .expect("egress node");
+
+        assert_eq!(egress["active"], false);
+        assert_eq!(egress["details"]["status"], "failed");
+        assert_eq!(egress["details"]["phase"], "failed");
+        assert_eq!(egress["details"]["failurePhase"], "send");
     }
 
     #[tokio::test]
@@ -3553,7 +3684,10 @@ mod tests {
         let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
 
-        engine.try_register_ingest("p1", "key", "rtmp").await.unwrap();
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
         let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
 
@@ -3569,7 +3703,10 @@ mod tests {
         assert!(first.is_some());
 
         let second = engine.try_register_ingest("p1", "key2", "srt").await;
-        assert!(second.is_none(), "second register must be rejected while first is active");
+        assert!(
+            second.is_none(),
+            "second register must be rejected while first is active"
+        );
     }
 
     #[tokio::test]
@@ -3577,7 +3714,10 @@ mod tests {
         let engine = MediaEngine::new();
         let pipelines = vec!["p1".to_string()];
 
-        let t1 = engine.try_register_ingest("p1", "key", "rtmp").await.unwrap();
+        let t1 = engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
         engine.unregister_ingest("p1").await;
         assert!(t1.is_cancelled());
 
@@ -3589,7 +3729,10 @@ mod tests {
 
         let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
-        assert_eq!(snap["pipelines"]["p1"]["input"]["publisher"]["protocol"], "srt");
+        assert_eq!(
+            snap["pipelines"]["p1"]["input"]["publisher"]["protocol"],
+            "srt"
+        );
     }
 
     // ── fault resilience: egress error transitions ─────────────────────
@@ -3639,7 +3782,10 @@ mod tests {
         let pipelines = vec!["p1".to_string()];
 
         for proto in ["rtmp", "srt", "file"] {
-            engine.try_register_ingest("p1", "key", proto).await.unwrap();
+            engine
+                .try_register_ingest("p1", "key", proto)
+                .await
+                .unwrap();
             let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
             assert_eq!(
                 snap["pipelines"]["p1"]["input"]["publisher"]["protocol"], proto,

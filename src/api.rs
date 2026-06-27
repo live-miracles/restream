@@ -3194,7 +3194,7 @@ async fn v1_overview_handler(
             if has_alerts {
                 degraded += 1;
             }
-            if let Some(outputs) = pip["outputs"].as_object() {
+            if is_live && let Some(outputs) = pip["outputs"].as_object() {
                 for output in outputs.values() {
                     if output["status"].as_str().unwrap_or("") != "running" {
                         failed_outputs += 1;
