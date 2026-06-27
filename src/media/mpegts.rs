@@ -7,6 +7,7 @@ use memchr::memchr;
 const TS_PACKET_SIZE: usize = 188;
 const TS_SYNC_BYTE: u8 = 0x47;
 const PAT_PID: u16 = 0x0000;
+const SDT_PID: u16 = 0x0011;
 const PES_START_CODE: [u8; 3] = [0x00, 0x00, 0x01];
 const MAX_PES_BUFFER: usize = 512 * 1024;
 const PID_COUNT: usize = 1 << 13;
@@ -604,15 +605,23 @@ pub struct MuxStreamConfig {
     pub track_index: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TsServiceMetadata {
+    pub provider_name: String,
+    pub service_name: String,
+}
+
 /// Streaming MPEG-TS muxer. Accepts MediaPackets and produces TS bytes.
 pub struct TsMuxer {
     streams: Vec<MuxStreamConfig>,
     continuity: Vec<u8>,
     pat_cc: u8,
     pmt_cc: u8,
+    sdt_cc: u8,
     pmt_pid: u16,
     pcr_pid: u16,
     last_pat_pmt_dts: Option<i64>,
+    service_metadata: TsServiceMetadata,
     output: Vec<u8>,
 }
 
@@ -621,6 +630,14 @@ impl TsMuxer {
     ///
     /// `flv_payloads`: if true, payloads have FLV wrappers that need stripping.
     pub fn new(video: Option<&VideoMeta>, audio_tracks: &[AudioMeta]) -> Self {
+        Self::new_with_metadata(video, audio_tracks, TsServiceMetadata::default())
+    }
+
+    pub fn new_with_metadata(
+        video: Option<&VideoMeta>,
+        audio_tracks: &[AudioMeta],
+        service_metadata: TsServiceMetadata,
+    ) -> Self {
         let mut streams = Vec::new();
         let mut pid = 0x100u16;
 
@@ -661,9 +678,11 @@ impl TsMuxer {
             continuity,
             pat_cc: 0,
             pmt_cc: 0,
+            sdt_cc: 0,
             pmt_pid: 0x1000,
             pcr_pid,
             last_pat_pmt_dts: None,
+            service_metadata,
             output: Vec::with_capacity(TS_PACKET_SIZE * 8),
         }
     }
@@ -708,6 +727,7 @@ impl TsMuxer {
         if should_insert_tables {
             self.write_pat();
             self.write_pmt();
+            self.write_sdt();
             self.last_pat_pmt_dts = Some(dts_ms);
         }
 
@@ -913,6 +933,84 @@ impl TsMuxer {
 
         self.output.extend_from_slice(&ts);
     }
+
+    fn write_sdt(&mut self) {
+        let provider = truncate_utf8_bytes(&self.service_metadata.provider_name, 48);
+        let service = truncate_utf8_bytes(&self.service_metadata.service_name, 110);
+        let descriptor_len = 3 + provider.len() + service.len();
+        let service_loop_len = 5 + 2 + descriptor_len;
+        let section_len = 12 + service_loop_len;
+
+        let mut ts = [0xFFu8; TS_PACKET_SIZE];
+        ts[0] = TS_SYNC_BYTE;
+        ts[1] = 0x40 | ((SDT_PID >> 8) as u8 & 0x1F);
+        ts[2] = SDT_PID as u8;
+        ts[3] = 0x10 | (self.sdt_cc & 0x0F);
+        self.sdt_cc = (self.sdt_cc + 1) & 0x0F;
+        ts[4] = 0x00; // pointer field
+
+        let sdt = &mut ts[5..];
+        sdt[0] = 0x42; // service_description_section - actual TS
+        sdt[1] = 0xF0 | ((section_len >> 8) as u8 & 0x0F);
+        sdt[2] = section_len as u8;
+        sdt[3] = 0x00; // transport_stream_id
+        sdt[4] = 0x01;
+        sdt[5] = 0xC1; // version=0, current_next_indicator=1
+        sdt[6] = 0x00; // section_number
+        sdt[7] = 0x00; // last_section_number
+        sdt[8] = 0x00; // original_network_id
+        sdt[9] = 0x01;
+        sdt[10] = 0xFF; // reserved_future_use
+
+        let mut pos = 11;
+        sdt[pos] = 0x00;
+        sdt[pos + 1] = 0x01; // service_id = program 1
+        sdt[pos + 2] = 0xFC; // reserved + EIT flags = false
+        sdt[pos + 3] = 0x80 | ((descriptor_len >> 8) as u8 & 0x0F); // running=4, free_ca=false
+        sdt[pos + 4] = descriptor_len as u8;
+        pos += 5;
+
+        sdt[pos] = 0x48; // service_descriptor
+        sdt[pos + 1] = descriptor_len as u8;
+        sdt[pos + 2] = 0x01; // digital television service
+        sdt[pos + 3] = provider.len() as u8;
+        pos += 4;
+        sdt[pos..pos + provider.len()].copy_from_slice(provider.as_bytes());
+        pos += provider.len();
+        sdt[pos] = service.len() as u8;
+        pos += 1;
+        sdt[pos..pos + service.len()].copy_from_slice(service.as_bytes());
+
+        let crc_start = 5;
+        let crc_end = 5 + 3 + section_len - 4;
+        let crc = crc32_mpeg2(&ts[crc_start..crc_end]);
+        ts[crc_end] = (crc >> 24) as u8;
+        ts[crc_end + 1] = (crc >> 16) as u8;
+        ts[crc_end + 2] = (crc >> 8) as u8;
+        ts[crc_end + 3] = crc as u8;
+
+        self.output.extend_from_slice(&ts);
+    }
+}
+
+impl Default for TsServiceMetadata {
+    fn default() -> Self {
+        Self {
+            provider_name: "Restream".to_string(),
+            service_name: "Restream Recording".to_string(),
+        }
+    }
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 // --- Timestamp helpers ---
@@ -1908,6 +2006,42 @@ mod tests {
         assert_eq!(demuxer.drain_into(&mut output), 0);
         assert!(output.is_empty());
         assert!(output.capacity() >= 4);
+    }
+
+    #[test]
+    fn muxer_writes_service_metadata_sdt_packet() {
+        let video = VideoMeta {
+            codec: "h264".to_string(),
+            width: 1280,
+            height: 720,
+            fps: 30.0,
+            bw: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let metadata = TsServiceMetadata {
+            provider_name: "Restream pipeline_id=pipe-1".to_string(),
+            service_name: "pipeline=Main; source=publisher; recorded_at=2026-06-27T00:00:00Z"
+                .to_string(),
+        };
+        let mut muxer = TsMuxer::new_with_metadata(Some(&video), &[], metadata);
+        let payload = [0x00, 0x00, 0x01, 0x09, 0x10];
+        let ts = muxer.mux_packet(MediaType::Video, 0, 0, 0, true, &payload);
+
+        assert!(
+            ts.chunks(TS_PACKET_SIZE).any(|pkt| {
+                pkt.len() == TS_PACKET_SIZE
+                    && pkt[0] == TS_SYNC_BYTE
+                    && ((((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16) == SDT_PID
+            }),
+            "first table burst should contain an SDT packet"
+        );
+        let text = String::from_utf8_lossy(ts);
+        assert!(text.contains("Restream pipeline_id=pipe-1"));
+        assert!(text.contains("pipeline=Main"));
+        assert!(text.contains("source=publisher"));
+        assert!(text.contains("recorded_at=2026-06-27T00:00:00Z"));
     }
 
     #[test]

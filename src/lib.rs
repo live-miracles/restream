@@ -831,12 +831,14 @@ pub async fn run_app() {
                 let engine_c = engine.clone();
                 let pid = pipeline.id.clone();
                 let pipe_name = pipeline.name.clone();
+                let input_source = pipeline.input_source.clone();
                 let engine_rec = engine_c.clone();
                 let media_dir_rec = reconciler_media_dir.clone();
                 tokio::spawn(async move {
                     crate::media::recording::start_recording(
                         pipe_name,
                         pid.clone(),
+                        input_source,
                         media_dir_rec,
                         ring_buf,
                         engine_rec,

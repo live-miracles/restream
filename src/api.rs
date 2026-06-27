@@ -4793,12 +4793,14 @@ async fn recording_start_handler(
         let engine = state.engine.clone();
         let pid = pipeline_id.clone();
         let pipe_name = pipeline.name.clone();
+        let input_source = pipeline.input_source.clone();
         let engine_rec = engine.clone();
         let media_dir = state.media_dir.clone();
         tokio::spawn(async move {
             crate::media::recording::start_recording(
                 pipe_name,
                 pid.clone(),
+                input_source,
                 media_dir,
                 ring_buf,
                 engine_rec,

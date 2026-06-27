@@ -10,6 +10,7 @@
 
 use crate::media::engine::MediaEngine;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
+use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
 use std::fs;
 use std::sync::Arc;
@@ -35,9 +36,29 @@ fn build_filename(pipe_name: &str) -> String {
     )
 }
 
+fn build_recording_service_metadata(
+    pipeline_name: &str,
+    pipeline_id: &str,
+    input_source: Option<&str>,
+    recorded_at: &str,
+) -> TsServiceMetadata {
+    let source = input_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("publisher");
+    TsServiceMetadata {
+        provider_name: format!("Restream pipeline_id={pipeline_id}"),
+        service_name: format!(
+            "pipeline={}; source={}; recorded_at={}",
+            pipeline_name, source, recorded_at
+        ),
+    }
+}
+
 pub async fn start_recording(
     pipeline_name: String,
     pipeline_id: String,
+    input_source: Option<String>,
     media_dir: String,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
@@ -46,6 +67,13 @@ pub async fn start_recording(
     let _ = fs::create_dir_all(&media_dir);
     let filename = build_filename(&pipeline_name);
     let file_path = format!("{}/{}", media_dir, filename);
+    let recorded_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let service_metadata = build_recording_service_metadata(
+        &pipeline_name,
+        &pipeline_id,
+        input_source.as_deref(),
+        &recorded_at,
+    );
     let started_at = std::time::Instant::now();
 
     println!("[recording] Started: {}", filename);
@@ -125,7 +153,8 @@ pub async fn start_recording(
                                     video,
                                     tracks,
                                     PacketFeedConfig {
-                                        video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+                                    video_sequence_header: video_sequence_header.as_ref().map(|v| v.to_vec()),
+                                        service_metadata: Some(service_metadata.clone()),
                                         ..PacketFeedConfig::default()
                                     },
                                 ));
@@ -277,6 +306,28 @@ mod tests {
             name.contains("My Pipe_"),
             "expected sanitized name in: {name}"
         );
+    }
+
+    #[test]
+    fn recording_service_metadata_describes_pipeline_source_and_time() {
+        let metadata = build_recording_service_metadata(
+            "Main Program",
+            "pipe_123",
+            Some("file:clip.mp4"),
+            "2026-06-27T12:34:56Z",
+        );
+        assert_eq!(metadata.provider_name, "Restream pipeline_id=pipe_123");
+        assert!(metadata.service_name.contains("pipeline=Main Program"));
+        assert!(metadata.service_name.contains("source=file:clip.mp4"));
+        assert!(
+            metadata
+                .service_name
+                .contains("recorded_at=2026-06-27T12:34:56Z")
+        );
+
+        let publisher =
+            build_recording_service_metadata("Live", "pipe_live", None, "2026-06-27T12:34:56Z");
+        assert!(publisher.service_name.contains("source=publisher"));
     }
 
     #[test]

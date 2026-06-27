@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::media::codec::{audio_for_ts_into, video_for_ts_into};
 use crate::media::engine::{AudioMeta, VideoMeta};
-use crate::media::mpegts::TsMuxer;
+use crate::media::mpegts::{TsMuxer, TsServiceMetadata};
 use crate::media::ring_buffer::{DtsEnforcer, MediaPacket, MediaType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,7 @@ pub struct PacketFeedConfig {
     pub track_policy: TrackPolicy,
     pub write_mode: FeedWriteMode,
     pub video_sequence_header: Option<Vec<u8>>,
+    pub service_metadata: Option<TsServiceMetadata>,
 }
 
 impl Default for PacketFeedConfig {
@@ -46,6 +47,7 @@ impl Default for PacketFeedConfig {
             track_policy: TrackPolicy::All,
             write_mode: FeedWriteMode::Batch,
             video_sequence_header: None,
+            service_metadata: None,
         }
     }
 }
@@ -73,9 +75,10 @@ impl TsPacketFeeder {
             .map(parse_video_sequence_header)
             .unwrap_or((4, Vec::new()));
         let num_streams = video.is_some() as usize + audio_tracks.len();
+        let service_metadata = config.service_metadata.unwrap_or_default();
 
         Self {
-            muxer: TsMuxer::new(video, &audio_tracks),
+            muxer: TsMuxer::new_with_metadata(video, &audio_tracks, service_metadata),
             dts_enforcer: DtsEnforcer::new(num_streams),
             audio_tracks,
             has_video: video.is_some(),
