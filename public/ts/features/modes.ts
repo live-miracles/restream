@@ -12,6 +12,7 @@ let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
 let inspectGraphInFlight: Promise<void> | null = null;
+let inspectGraphRequestSeq = 0;
 let inspectGraphAutoRefresh = true;
 let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
 const INSPECT_GRAPH_REFRESH_MS = 5000;
@@ -142,6 +143,11 @@ function recordingOverviewPill(pipe: PipelineView): string {
     return statusPill('Off', 'neutral');
 }
 
+function rateOverviewPill(kbps: number | null | undefined): string {
+    const value = formatBitrate(kbps);
+    return statusPill(value, value === '--' ? 'neutral' : 'info');
+}
+
 function renderOverview(): void {
     const container = document.getElementById('overview-mode-content');
     if (!container) return;
@@ -153,16 +159,15 @@ function renderOverview(): void {
             const health = pipelineHealthLabel(pipe);
             return `<tr class="border-base-content/5 hover:bg-base-100/60 border-t">
                 <td class="min-w-56 py-3">
-                    <button type="button" class="group flex max-w-xs flex-col text-left js-open-pipeline" data-pipeline-id="${escapeHtml(pipe.id)}">
+                    <button type="button" class="group flex max-w-xs text-left js-open-pipeline" data-pipeline-id="${escapeHtml(pipe.id)}">
                         <span class="group-hover:text-accent truncate font-semibold">${escapeHtml(pipe.name)}</span>
-                        <span class="text-base-content/45 truncate text-xs">${escapeHtml(pipe.key || pipe.id)}</span>
                     </button>
                 </td>
                 <td>${statusPill(health.label, health.tone, health.detail)}</td>
                 <td>${inputOverviewPill(pipe)}</td>
                 <td>${outputsOverviewPill(pipe)}</td>
-                <td class="font-mono text-sm tabular-nums">${formatBitrate(pipe.stats.inputBitrateKbps)}</td>
-                <td class="font-mono text-sm tabular-nums">${formatBitrate(pipe.stats.outputBitrateKbps)}</td>
+                <td>${rateOverviewPill(pipe.stats.inputBitrateKbps)}</td>
+                <td>${rateOverviewPill(pipe.stats.outputBitrateKbps)}</td>
                 <td>${recordingOverviewPill(pipe)}</td>
             </tr>`;
         })
@@ -243,9 +248,13 @@ function renderInspect(): void {
         select.value = pipe?.id || '';
         select.onchange = () => {
             inspectPipelineId = select.value || null;
+            resetInspectGraphForSelection(inspectPipelineId);
             renderInspect();
             void refreshInspectGraph();
         };
+    }
+    if (!pipe && inspectGraphPipelineId !== null) {
+        resetInspectGraphForSelection(null);
     }
 
     const openBtn = document.getElementById('inspect-open-pipeline-btn') as HTMLButtonElement | null;
@@ -283,10 +292,23 @@ function renderInspect(): void {
         };
     }
 
-    if (pipe && inspectGraphPipelineId !== pipe.id && !inspectGraphInFlight) {
+    if (pipe && inspectGraphPipelineId !== pipe.id) {
         void refreshInspectGraph();
     }
     syncInspectGraphAutoRefresh();
+}
+
+function resetInspectGraphForSelection(pipeId: string | null): void {
+    inspectGraphRequestSeq++;
+    inspectGraphPipelineId = pipeId;
+    const status = document.getElementById('inspect-graph-status');
+    const container = document.getElementById('inspect-graph-container');
+    if (status) status.textContent = pipeId ? 'Loading graph...' : 'Select a pipeline.';
+    if (container) {
+        container.innerHTML = `<div class="text-base-content/60 flex h-full min-h-72 items-center justify-center text-sm">
+            ${pipeId ? 'Loading graph...' : 'Select a pipeline to inspect its graph.'}
+        </div>`;
+    }
 }
 
 function renderInspectSummary(pipe: PipelineView | null): void {
@@ -362,13 +384,23 @@ async function refreshInspectGraph(): Promise<void> {
     const status = document.getElementById('inspect-graph-status');
     const container = document.getElementById('inspect-graph-container');
     if (!pipe || !container) return;
-    if (inspectGraphInFlight) return inspectGraphInFlight;
+    const requestPipeId = pipe.id;
+    const requestSeq = ++inspectGraphRequestSeq;
+    inspectGraphPipelineId = requestPipeId;
     if (status) status.textContent = 'Loading graph...';
+    container.innerHTML = `<div class="text-base-content/60 flex h-full min-h-72 items-center justify-center text-sm">
+        Loading graph...
+    </div>`;
     inspectGraphInFlight = (async () => {
-        const graph = await fetchProcessingGraph(pipe.id);
-        inspectGraphPipelineId = pipe.id;
-        if (!graph || !container) {
+        const graph = await fetchProcessingGraph(requestPipeId);
+        if (requestSeq !== inspectGraphRequestSeq || getInspectPipeline()?.id !== requestPipeId) {
+            return;
+        }
+        inspectGraphPipelineId = requestPipeId;
+        if (!graph || !container || graph.pipelineId !== requestPipeId) {
             if (status) status.textContent = 'Graph unavailable.';
+            container.innerHTML =
+                '<div class="text-base-content/60 flex h-full min-h-72 items-center justify-center text-sm">Graph unavailable.</div>';
             return;
         }
         renderGraphInto(container, graph as Parameters<typeof renderGraphInto>[1]);
@@ -381,7 +413,9 @@ async function refreshInspectGraph(): Promise<void> {
     try {
         await inspectGraphInFlight;
     } finally {
-        inspectGraphInFlight = null;
+        if (requestSeq === inspectGraphRequestSeq) {
+            inspectGraphInFlight = null;
+        }
     }
 }
 
@@ -481,6 +515,7 @@ export function setDashboardMode(mode: string): void {
 
 export function openInspectGraph(pipeId: string): void {
     inspectPipelineId = pipeId;
+    resetInspectGraphForSelection(pipeId);
     setUrlParam('p', pipeId);
     setDashboardMode('inspect');
     void refreshInspectGraph();

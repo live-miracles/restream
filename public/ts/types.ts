@@ -169,6 +169,17 @@ export interface SystemMetrics {
     disk?: {
         usedPercent?: number | null;
         totalBytes?: number | null;
+        usedBytes?: number | null;
+        freeBytes?: number | null;
+        scope?: string;
+        mountPoint?: string | null;
+        root?: string;
+    };
+    mediaDisk?: {
+        usedPercent?: number | null;
+        totalBytes?: number | null;
+        usedBytes?: number | null;
+        freeBytes?: number | null;
         scope?: string;
         mountPoint?: string | null;
         mediaDir?: string;

@@ -167,6 +167,13 @@ const SRT_GST_BROKEN: c_int = 3;
 
 // SRT epoll event flags
 const SRT_EPOLL_IN: c_int = 0x1;
+const SRT_EPOLL_ERR: c_int = 0x8;
+
+const SRT_ESCLOSED: c_int = 1005;
+const SRT_ECONNLOST: c_int = 2001;
+const SRT_ENOCONN: c_int = 2002;
+const SRT_EASYNCRCV: c_int = 6002;
+const SRT_ETIMEOUT: c_int = 6003;
 
 #[repr(C)]
 pub struct SrtSockOptConfig {
@@ -264,6 +271,7 @@ unsafe extern "C" {
         optval: *mut c_void,
         optlen: *mut c_int,
     ) -> c_int;
+    pub fn srt_getlasterror(locp: *mut c_int) -> c_int;
     pub fn srt_getlasterror_str() -> *const c_char;
     pub fn srt_bistats(
         u: SRTSOCKET,
@@ -299,6 +307,31 @@ pub fn linked_srt_version() -> String {
         (version >> 8) & 0xff,
         version & 0xff
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SrtReceiveErrorAction {
+    WaitForReadiness,
+    Disconnect,
+}
+
+fn classify_srt_receive_error(error_code: c_int) -> SrtReceiveErrorAction {
+    match error_code {
+        SRT_EASYNCRCV | SRT_ETIMEOUT => SrtReceiveErrorAction::WaitForReadiness,
+        SRT_ESCLOSED | SRT_ECONNLOST | SRT_ENOCONN => SrtReceiveErrorAction::Disconnect,
+        _ => SrtReceiveErrorAction::Disconnect,
+    }
+}
+
+fn last_srt_error() -> (c_int, String) {
+    let mut location = 0;
+    // SAFETY: srt_getlasterror writes the optional source-location code to
+    // `location`; srt_getlasterror_str returns a thread-local static string.
+    let code = unsafe { srt_getlasterror(&mut location) };
+    let message = unsafe { std::ffi::CStr::from_ptr(srt_getlasterror_str()) }
+        .to_string_lossy()
+        .into_owned();
+    (code, message)
 }
 
 // SRT socket options — values from srt.h SRT_SOCKOPT enum
@@ -1358,6 +1391,7 @@ impl SrtServer {
                 "[srt] Ingest vanished before receive loop for pipeline {}",
                 pipeline.id
             );
+            self.engine.unregister_ingest(&pipeline.id).await;
             // SAFETY: Valid socket, clean up on early return.
             unsafe { srt_close(client_sock) };
             return;
@@ -1398,16 +1432,18 @@ impl SrtServer {
         let eid = unsafe { srt_epoll_create() };
         if eid < 0 {
             eprintln!("[srt] Failed to create epoll instance");
+            self.engine.unregister_ingest(&pipeline.id).await;
             // SAFETY: Valid socket, clean up on epoll failure.
             unsafe { srt_close(client_sock) };
             return;
         }
-        let epoll_events = SRT_EPOLL_IN as c_int;
+        let epoll_events = (SRT_EPOLL_IN | SRT_EPOLL_ERR) as c_int;
         // SAFETY: srt_epoll_add_usock registers client_sock with the epoll
         // instance. eid and client_sock are valid handles. epoll_events
         // pointer references a live stack variable.
         if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
             eprintln!("[srt] Failed to add socket to epoll");
+            self.engine.unregister_ingest(&pipeline.id).await;
             // SAFETY: eid and client_sock are valid handles. Clean up in
             // reverse creation order: release epoll, then close socket.
             unsafe {
@@ -1550,10 +1586,23 @@ impl SrtServer {
             } else if n == 0 {
                 break; // connection closed
             } else {
-                // n == -1: non-blocking mode returns EAGAIN when no data.
-                // Wait for the long-lived epoll waiter to signal readiness.
-                if !data_ready.swap(false, Ordering::Acquire) {
-                    notify.notified().await;
+                let (error_code, error_message) = last_srt_error();
+                match classify_srt_receive_error(error_code) {
+                    SrtReceiveErrorAction::WaitForReadiness => {
+                        if !data_ready.swap(false, Ordering::Acquire) {
+                            tokio::select! {
+                                _ = notify.notified() => {}
+                                _ = token.cancelled() => break,
+                            }
+                        }
+                    }
+                    SrtReceiveErrorAction::Disconnect => {
+                        eprintln!(
+                            "[srt] Receive ended for pipeline {}: code={} {}",
+                            pipeline.id, error_code, error_message
+                        );
+                        break;
+                    }
                 }
                 continue;
             }
@@ -1863,6 +1912,29 @@ mod tests {
         assert_eq!(quality.packets_received_drop_per_sec, Some(3.0));
         assert_eq!(quality.packets_received_retrans_per_sec, Some(10.0));
         assert_eq!(quality.packets_received_undecrypt_per_sec, Some(1.0));
+    }
+
+    #[test]
+    fn receive_error_classifier_waits_only_for_transient_readiness() {
+        assert_eq!(
+            classify_srt_receive_error(SRT_EASYNCRCV),
+            SrtReceiveErrorAction::WaitForReadiness
+        );
+        assert_eq!(
+            classify_srt_receive_error(SRT_ETIMEOUT),
+            SrtReceiveErrorAction::WaitForReadiness
+        );
+    }
+
+    #[test]
+    fn receive_error_classifier_disconnects_closed_publishers() {
+        for code in [SRT_ESCLOSED, SRT_ECONNLOST, SRT_ENOCONN, -1, 0] {
+            assert_eq!(
+                classify_srt_receive_error(code),
+                SrtReceiveErrorAction::Disconnect,
+                "code={code}"
+            );
+        }
     }
 
     #[test]

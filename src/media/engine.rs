@@ -378,6 +378,46 @@ impl MediaEngine {
         }
     }
 
+    fn graph_protocol_label(protocol: &str) -> String {
+        if protocol.is_empty() || protocol == "unknown" {
+            "Unknown".to_string()
+        } else {
+            protocol.to_uppercase()
+        }
+    }
+
+    fn graph_slug(value: &str) -> String {
+        let slug: String = value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        slug.trim_matches('_').to_string()
+    }
+
+    fn source_buffer_format(protocol: Option<&str>) -> &'static str {
+        match protocol {
+            Some("rtmp") => "FLV media packets",
+            Some("srt") => "Demuxed MPEG-TS media packets",
+            Some("file") => "Demuxed file media packets",
+            _ => "Media packets",
+        }
+    }
+
+    fn source_to_egress_label(protocol: &str) -> &'static str {
+        match protocol {
+            "rtmp" => "RTMP publish packets",
+            "srt" => "MPEG-TS packetization",
+            "hls" => "HLS segment input",
+            _ => "media packets",
+        }
+    }
+
     fn egress_runtime_json(egress: &ActiveEgress, include_target_url: bool) -> serde_json::Value {
         let last_progress_ms = egress.last_progress_ms.load(Ordering::Relaxed);
         let last_error_ms = egress.last_error_ms.load(Ordering::Relaxed);
@@ -1762,6 +1802,7 @@ impl MediaEngine {
         let all_stage_metrics = self.stage_metrics.read().await;
         let all_input_queues = self.input_queues.read().await;
         let all_pipe_metrics = self.pipe_metrics.read().await;
+        let ts_muxers = self.ts_muxer_stages.read().await;
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -1769,6 +1810,7 @@ impl MediaEngine {
         // Node: ingest
         let ingest = ingests.get(pipeline_id);
         let ingest_node_id = format!("{}_ingest", pipeline_id);
+        let ingest_protocol = ingest.map(|i| i.protocol.as_str());
         nodes.push(serde_json::json!({
             "id": ingest_node_id,
             "type": "ingest",
@@ -1795,6 +1837,24 @@ impl MediaEngine {
                     "bitrateKbps": bitrate_kbps,
                 })
             }),
+            "metrics": ingest.map(|i| i.metrics.snapshot()),
+        }));
+
+        // Node: protocol demux/probe. This is the boundary where wire/container
+        // packets become MediaPacket entries with stream metadata for downstream
+        // buffers, transcoders, muxers, and senders.
+        let demux_node_id = format!("{}_ingest_demux", pipeline_id);
+        nodes.push(serde_json::json!({
+            "id": demux_node_id,
+            "type": "demux",
+            "label": ingest.map(|i| format!("{} demux/probe", Self::graph_protocol_label(&i.protocol))).unwrap_or_else(|| "Demux/probe idle".to_string()),
+            "active": ingest.is_some(),
+            "details": ingest.map(|i| serde_json::json!({
+                "protocol": i.protocol,
+                "video": i.video,
+                "audio": i.audio,
+                "audioTracks": i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect::<Vec<_>>(),
+            })),
             "metrics": ingest.map(|i| i.metrics.snapshot()),
         }));
 
@@ -1831,12 +1891,17 @@ impl MediaEngine {
                 "fill": fill,
                 "capacity": cap,
                 "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
-                "format": "FLV (interleaved A+V)",
+                "format": Self::source_buffer_format(ingest_protocol),
                 "readers": readers,
             })),
         }));
         edges.push(serde_json::json!({
             "from": ingest_node_id,
+            "to": demux_node_id,
+            "label": ingest_protocol.map(Self::graph_protocol_label).unwrap_or_else(|| "input".to_string()),
+        }));
+        edges.push(serde_json::json!({
+            "from": demux_node_id,
             "to": rb_node_id,
             "label": "push(MediaPacket)",
         }));
@@ -1896,23 +1961,23 @@ impl MediaEngine {
             .iter()
             .filter(|o| o.pipeline_id == pipeline_id)
             .collect();
+        let ingest_is_hevc = ingest
+            .and_then(|i| i.video.as_ref())
+            .map(|v| v.codec == "hevc" || v.codec == "h265")
+            .unwrap_or(false);
+        let mut added_packetizers = HashSet::new();
 
         for output in &pipeline_outputs {
             let egress = egresses.get(&output.id);
             let output_node_id = format!("{}_output_{}", pipeline_id, output.id);
 
-            let protocol = if output.url.starts_with("rtmp://") {
-                "RTMP"
-            } else if output.url.starts_with("srt://") {
-                "SRT"
-            } else {
-                "HLS"
-            };
+            let protocol = Self::egress_protocol_from_url(&output.url);
+            let protocol_label = Self::graph_protocol_label(protocol);
 
             nodes.push(serde_json::json!({
                 "id": output_node_id,
                 "type": "egress",
-                "label": format!("{}: {}", protocol, output.name),
+                "label": format!("{} sender: {}", protocol_label, output.name.as_str()),
                 "active": egress.is_some_and(|e| e.status == "running"),
                 "details": egress.map(|e| {
                     let bytes = e.bytes_sent.load(Ordering::Relaxed);
@@ -1929,23 +1994,60 @@ impl MediaEngine {
             // Edge: from the appropriate stage to this egress
             // Mirror the reconciler's stage-key logic
             let stage_plan = EncodingStagePlan::from_encoding(pipeline_id, &output.encoding);
-            if let Some(stage) = stage_plan.audio_stage() {
+            let terminal_kind = if protocol == "rtmp" && ingest_is_hevc {
+                StageKind::codec_edge("hevc_to_h264", stage_plan.terminal_kind().clone())
+            } else {
+                stage_plan.terminal_kind().clone()
+            };
+            let terminal_node_id = if matches!(terminal_kind, StageKind::Source) {
+                rb_node_id.clone()
+            } else {
+                terminal_kind.graph_node_id(pipeline_id)
+            };
+
+            if protocol == "srt" {
+                let mux_slug = Self::graph_slug(output.encoding.as_str());
+                let mux_node_id = format!(
+                    "{}_ts_mux_{}",
+                    pipeline_id,
+                    if mux_slug.is_empty() {
+                        "source"
+                    } else {
+                        mux_slug.as_str()
+                    }
+                );
+                let mux_key = format!("{}:{}", pipeline_id, output.encoding.as_str());
+                let mux_active = ts_muxers
+                    .get(&mux_key)
+                    .is_some_and(|stage| !stage.cancel.is_cancelled());
+                if added_packetizers.insert(mux_node_id.clone()) {
+                    nodes.push(serde_json::json!({
+                        "id": mux_node_id.clone(),
+                        "type": "packetizer",
+                        "label": format!("MPEG-TS mux: {}", output.encoding.as_str()),
+                        "active": mux_active,
+                        "details": serde_json::json!({
+                            "protocol": "srt",
+                            "encoding": output.encoding.as_str(),
+                            "stageKey": mux_key,
+                        }),
+                    }));
+                    edges.push(serde_json::json!({
+                        "from": terminal_node_id,
+                        "to": mux_node_id.clone(),
+                        "label": "media packets",
+                    }));
+                }
                 edges.push(serde_json::json!({
-                    "from": stage.kind.graph_node_id(pipeline_id),
+                    "from": mux_node_id,
                     "to": output_node_id,
-                    "label": "MPEG-TS",
-                }));
-            } else if let Some(stage) = stage_plan.video_stage() {
-                edges.push(serde_json::json!({
-                    "from": stage.kind.graph_node_id(pipeline_id),
-                    "to": output_node_id,
-                    "label": "MPEG-TS",
+                    "label": "SRT send",
                 }));
             } else {
                 edges.push(serde_json::json!({
-                    "from": rb_node_id,
+                    "from": terminal_node_id,
                     "to": output_node_id,
-                    "label": "FLV passthrough",
+                    "label": Self::source_to_egress_label(protocol),
                 }));
             }
         }
@@ -2542,6 +2644,46 @@ mod tests {
             .find(|node| node["type"] == "hls")
             .expect("HLS node should remain visible while its store exists");
         assert_eq!(hls["active"], false);
+    }
+
+    #[tokio::test]
+    async fn processing_graph_routes_srt_egress_through_ts_mux() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipeline-srt-graph";
+        let _source = engine.get_or_create_pipeline(pipeline_id).await;
+        let output = crate::types::Output {
+            id: "out-srt".to_string(),
+            pipeline_id: pipeline_id.to_string(),
+            name: "SRT Target".to_string(),
+            url: "srt://example.com:9000?streamid=publish:live/test".to_string(),
+            desired_state: "running".to_string(),
+            encoding: "source".to_string(),
+        };
+
+        let graph = engine.processing_graph(pipeline_id, &[output]).await;
+        let nodes = graph["nodes"].as_array().unwrap();
+        let edges = graph["edges"].as_array().unwrap();
+
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["type"] == "demux" && node["label"] == "Demux/probe idle"),
+            "graph should expose the ingest demux/probe boundary"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["type"] == "packetizer" && node["label"] == "MPEG-TS mux: source"),
+            "SRT egress should expose MPEG-TS packetization"
+        );
+        assert!(
+            edges.iter().any(|edge| edge["label"] == "SRT send"),
+            "SRT egress should include an explicit sender edge"
+        );
+        assert!(
+            !edges.iter().any(|edge| edge["label"] == "FLV passthrough"),
+            "SRT egress must not be labeled as FLV passthrough"
+        );
     }
 
     #[tokio::test]

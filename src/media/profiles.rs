@@ -160,6 +160,21 @@ pub fn cache() -> &'static Arc<RwLock<TranscodeProfiles>> {
     PROFILES.get_or_init(|| Arc::new(RwLock::new(built_in_defaults())))
 }
 
+/// Return built-ins whenever the configured profile map is empty.
+pub fn effective_profiles(profiles: &TranscodeProfiles) -> TranscodeProfiles {
+    if profiles.is_empty() {
+        built_in_defaults()
+    } else {
+        profiles.clone()
+    }
+}
+
+/// Get the profile set currently exposed to API consumers and transcoders.
+pub async fn current_effective() -> TranscodeProfiles {
+    let cache = cache().read().await;
+    effective_profiles(&cache)
+}
+
 /// Load profiles from the DB `meta` table and update the runtime cache.
 /// Called at startup and when the settings API patches the config.
 pub async fn load_from_db(pool: &sqlx::SqlitePool) {
@@ -200,7 +215,7 @@ pub async fn save_to_db(
         .map_err(|e| e.to_string())?;
 
     let mut cache = cache().write().await;
-    *cache = profiles.clone();
+    *cache = effective_profiles(profiles);
     println!(
         "[profiles] Updated {} profiles in DB + cache",
         profiles.len()
@@ -294,6 +309,15 @@ mod tests {
         assert!(profiles.contains_key("h264"));
         assert!(profiles.contains_key("720p"));
         assert!(profiles.contains_key("1080p"));
+    }
+
+    #[test]
+    fn empty_profiles_resolve_to_built_ins() {
+        let profiles = TranscodeProfiles::new();
+        let effective = effective_profiles(&profiles);
+        assert!(effective.contains_key("h264"));
+        assert!(effective.contains_key("720p"));
+        assert!(effective.contains_key("1080p"));
     }
 
     #[test]

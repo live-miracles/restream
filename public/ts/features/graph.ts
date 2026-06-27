@@ -64,6 +64,8 @@ function nodeColor(type: string, active: boolean): string {
     switch (type) {
         case 'ingest':
             return '#10b981';
+        case 'demux':
+            return '#14b8a6';
         case 'ring_buffer':
             return '#6366f1';
         case 'transcoder':
@@ -74,6 +76,8 @@ function nodeColor(type: string, active: boolean): string {
             return '#ec4899';
         case 'egress':
             return '#3b82f6';
+        case 'packetizer':
+            return '#06b6d4';
         case 'recording':
             return '#ef4444';
         case 'hls':

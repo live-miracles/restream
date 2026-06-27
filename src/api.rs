@@ -840,8 +840,8 @@ async fn config_get_handler(
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
 
-    // Transcode profiles from runtime cache
-    let transcode_profiles = crate::media::profiles::cache().read().await.clone();
+    // Transcode profiles from runtime cache, with built-ins exposed when unset.
+    let transcode_profiles = crate::media::profiles::current_effective().await;
 
     Json(serde_json::json!({
         "serverName": server_name,
@@ -926,7 +926,7 @@ async fn config_patch_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let sec = state.security.get_config();
-    let transcode_profiles = crate::media::profiles::cache().read().await.clone();
+    let transcode_profiles = crate::media::profiles::current_effective().await;
 
     Json(serde_json::json!({
         "serverName": server_name,
@@ -2397,35 +2397,69 @@ async fn metrics_system_handler(
         std::fs::canonicalize(&absolute).unwrap_or(absolute)
     };
     let disks = Disks::new_with_refreshed_list();
-    let selected_disk = disks
-        .iter()
-        .filter_map(|disk| {
-            let mount = disk.mount_point();
-            media_root
-                .starts_with(mount)
-                .then_some((disk, mount.components().count()))
-        })
-        .max_by_key(|(_, depth)| *depth)
-        .map(|(disk, _)| disk);
-    let (total_disk, used_disk, disk_mount) = if let Some(disk) = selected_disk {
-        let total = disk.total_space();
-        let used = total.saturating_sub(disk.available_space());
-        (total, used, Some(disk.mount_point().display().to_string()))
-    } else {
-        let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
-            (
-                t + d.total_space(),
-                u + (d.total_space() - d.available_space()),
-            )
-        });
-        (total, used, None)
+
+    fn disk_usage_for_path(disks: &Disks, path: &FsPath) -> Option<(u64, u64, String)> {
+        disks
+            .iter()
+            .filter_map(|disk| {
+                let mount = disk.mount_point();
+                path.starts_with(mount)
+                    .then_some((disk, mount.components().count()))
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(disk, _)| {
+                let total = disk.total_space();
+                let used = total.saturating_sub(disk.available_space());
+                (total, used, disk.mount_point().display().to_string())
+            })
+    }
+
+    let system_root = {
+        #[cfg(unix)]
+        {
+            PathBuf::from("/")
+        }
+        #[cfg(not(unix))]
+        {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
     };
+    let (total_disk, used_disk, disk_mount) =
+        if let Some((total, used, mount)) = disk_usage_for_path(&disks, &system_root) {
+            (total, used, Some(mount))
+        } else {
+            let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
+                (
+                    t + d.total_space(),
+                    u + (d.total_space() - d.available_space()),
+                )
+            });
+            (total, used, None)
+        };
     let free_disk = total_disk.saturating_sub(used_disk);
     let disk_pct = if total_disk > 0 {
         (used_disk as f64 / total_disk as f64) * 100.0
     } else {
         0.0
     };
+    let media_disk = disk_usage_for_path(&disks, &media_root).map(|(total, used, mount)| {
+        let free = total.saturating_sub(used);
+        let used_pct = if total > 0 {
+            (used as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "totalBytes": total,
+            "usedBytes": used,
+            "freeBytes": free,
+            "usedPercent": used_pct,
+            "scope": "mediaDir",
+            "mountPoint": mount,
+            "mediaDir": state.media_dir,
+            "mediaRoot": media_root.display().to_string()
+        })
+    });
 
     fn is_external_interface(name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
@@ -2507,11 +2541,11 @@ async fn metrics_system_handler(
             "usedBytes": used_disk,
             "freeBytes": free_disk,
             "usedPercent": disk_pct,
-            "scope": "mediaDir",
+            "scope": "systemRoot",
             "mountPoint": disk_mount,
-            "mediaDir": state.media_dir,
-            "mediaRoot": media_root.display().to_string()
+            "root": system_root.display().to_string()
         },
+        "mediaDisk": media_disk,
         "network": {
             "scope": "external",
             "downloadBytesPerSec": dl_bytes_sec,

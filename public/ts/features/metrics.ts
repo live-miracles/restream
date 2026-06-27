@@ -82,7 +82,9 @@ function renderServerMetrics(): void {
     const ramPct = state.metrics?.memory?.usedPercent;
     const diskPct = state.metrics?.disk?.usedPercent;
     const diskMount = state.metrics?.disk?.mountPoint;
-    const mediaRoot = state.metrics?.disk?.mediaRoot;
+    const diskRoot = state.metrics?.disk?.root;
+    const mediaDiskMount = state.metrics?.mediaDisk?.mountPoint;
+    const mediaRoot = state.metrics?.mediaDisk?.mediaRoot;
     const ifaceNames = state.metrics?.network?.interfaces?.map((iface) => iface.name).join(', ');
     const ignored = state.metrics?.network?.ignoredInterfaces?.join(', ');
 
@@ -97,8 +99,10 @@ function renderServerMetrics(): void {
     setTitle(
         'navbar-disk-card',
         [
-            'Disk usage for the media directory backing mount.',
+            'System disk usage.',
             diskMount ? `Mount: ${diskMount}.` : '',
+            diskRoot ? `Root: ${diskRoot}.` : '',
+            mediaDiskMount ? `Media mount: ${mediaDiskMount}.` : '',
             mediaRoot ? `Media root: ${mediaRoot}.` : '',
         ]
             .filter(Boolean)
