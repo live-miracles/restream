@@ -92,11 +92,11 @@ def api_request(method, path, data=None):
     headers = {"Content-Type": "application/json"}
     if "cookie" in COOKIE_JAR:
         headers["Cookie"] = COOKIE_JAR["cookie"]
-        
+
     req = urllib.request.Request(url, headers=headers, method=method)
     if data:
         req.data = json.dumps(data).encode("utf-8")
-        
+
     try:
         with urllib.request.urlopen(req) as r:
             cookies = r.info().get_all("Set-Cookie")
@@ -109,6 +109,64 @@ def api_request(method, path, data=None):
     except Exception as e:
         print(f"Request Error: {e}")
         return None
+
+def sample_memory_telemetry():
+    """Poll /api/v1/engine/telemetry and return per-component memory breakdown."""
+    t = api_request("GET", "/api/v1/engine/telemetry")
+    if not t:
+        return None
+    ma = t.get("memoryAccounting", {})
+    retained = ma.get("retainedPayloadBytes", 0)
+
+    # Ring payload breakdown
+    ring_bytes = {
+        "src": sum(r.get("payloadStats", {}).get("payloadBytes", 0)
+                   for r in ma.get("sourceRings", [])),
+        "xcode": sum(r.get("payloadStats", {}).get("payloadBytes", 0)
+                     for r in ma.get("transcoderRings", [])),
+        "tsmux": sum(r.get("payloadStats", {}).get("payloadBytes", 0)
+                     for r in ma.get("tsMuxerRings", [])),
+    }
+
+    # AVIO queue breakdown (new: tracks actual fill vs capacity)
+    avio = ma.get("avioQueues", {})
+    avio_len = avio.get("totalLenBytes", 0)
+    avio_cap = avio.get("totalCapacityBytes", 0)
+    avio_hwm = sum(
+        q.get("highWaterBytes", 0)
+        for q in list(avio.get("inputQueues", [])) + list(avio.get("egressQueues", []))
+    )
+    # Also capture per-queue high-water marks for sizing decisions
+    avio_queue_details = []
+    for q in list(avio.get("inputQueues", [])) + list(avio.get("egressQueues", [])):
+        avio_queue_details.append({
+            "id": q.get("stageKey", q.get("outputId", "?")),
+            "len": q.get("lenBytes", 0),
+            "cap": q.get("capacityBytes", 0),
+            "hwm": q.get("highWaterBytes", 0),
+            "blocked_writes": q.get("blockedWrites", 0),
+        })
+
+    # Ring overflow counts via pipeline telemetry
+    overflows = 0
+    health = api_request("GET", "/health")
+    if health:
+        for pid in health.get("pipelines", {}):
+            pt = api_request("GET", f"/api/v1/pipelines/{pid}/telemetry")
+            if pt:
+                for reader in pt.get("sourceRing", {}).get("readers", []):
+                    if isinstance(reader, dict):
+                        overflows += reader.get("overflowCount", 0)
+
+    return {
+        "retained_bytes": retained,
+        "ring_bytes": ring_bytes,
+        "avio_len_bytes": avio_len,
+        "avio_cap_bytes": avio_cap,
+        "avio_hwm_bytes": avio_hwm,
+        "avio_queue_details": avio_queue_details,
+        "overflows": overflows,
+    }
 
 def probe_dims(url):
     cmd = [
@@ -288,10 +346,54 @@ def run_test_case(config_name, ingest_proto, ingest_codec, multi_audio, bitrate_
                 api_request("POST", f"/pipelines/{pipe_id}/outputs/{oid}/start")
                 out_ids.append(oid)
 
-    # Let outputs stabilize
-    print("  Waiting 15s for streams to stabilize...")
-    time.sleep(15)
-    
+    # Let outputs stabilize while sampling memory telemetry every 5s.
+    # 30s window: gives enough data to spot any growth trend.
+    print("  Stabilizing outputs (30s) and sampling memory telemetry every 5s...")
+    mem_samples = []
+    stabilize_end = time.time() + 30
+    while time.time() < stabilize_end:
+        sample = sample_memory_telemetry()
+        if sample:
+            mem_samples.append((time.time(), sample))
+            retained_kb = sample["retained_bytes"] // 1024
+            rb = sample["ring_bytes"]
+            avio_hwm_kb = sample["avio_hwm_bytes"] // 1024
+            avio_cap_kb = sample["avio_cap_bytes"] // 1024
+            overflows = sample["overflows"]
+            print(f"    [{time.strftime('%H:%M:%S')}] "
+                  f"rings={retained_kb}KB "
+                  f"(src={rb['src']//1024}K xcode={rb['xcode']//1024}K tsmux={rb['tsmux']//1024}K) "
+                  f"avio_hwm={avio_hwm_kb}K/{avio_cap_kb}K  overflows={overflows}")
+        time.sleep(5)
+
+    # Derive growth rate, overflow count, and AVIO HWM from samples
+    retained_payload_kbs = [s["retained_bytes"] // 1024 for _, s in mem_samples]
+    retained_min = min(retained_payload_kbs) if retained_payload_kbs else 0
+    retained_max = max(retained_payload_kbs) if retained_payload_kbs else 0
+    retained_final = retained_payload_kbs[-1] if retained_payload_kbs else 0
+    total_overflows = sum(s["overflows"] for _, s in mem_samples)
+    avio_peak_hwm_bytes = max((s["avio_hwm_bytes"] for _, s in mem_samples), default=0)
+    # Per-queue HWM peak (last sample is fine; HWM is monotone increasing)
+    last_avio_queues = mem_samples[-1][1]["avio_queue_details"] if mem_samples else []
+    # Growth rate: (final - min) / elapsed minutes
+    if len(mem_samples) >= 2:
+        elapsed_min = (mem_samples[-1][0] - mem_samples[0][0]) / 60.0
+        growth_kb_per_min = (retained_final - retained_min) / max(elapsed_min, 0.001)
+    else:
+        growth_kb_per_min = 0.0
+
+    if retained_max > 0:
+        print(f"  Ring payload: min={retained_min}KB max={retained_max}KB "
+              f"final={retained_final}KB growth={growth_kb_per_min:.1f}KB/min")
+    print(f"  AVIO queues peak HWM: {avio_peak_hwm_bytes//1024}KB "
+          f"(capacity={mem_samples[-1][1]['avio_cap_bytes']//1024 if mem_samples else 0}KB)")
+    if last_avio_queues:
+        for q in last_avio_queues:
+            blocked = q["blocked_writes"]
+            print(f"    {q['id'][-30:]}: hwm={q['hwm']//1024}KB  blocked_writes={blocked}")
+    if total_overflows > 0:
+        print(f"  WARNING: {total_overflows} ring overflow(s) — ring capacity may be too small")
+
     # Correctness Check with ffprobe for ALL output types
     srt_tout = "&timeout=30000000"
     checks = [
@@ -352,6 +454,12 @@ def run_test_case(config_name, ingest_proto, ingest_codec, multi_audio, bitrate_
         "ffmpeg_n": ff_n,
         "ffmpeg_rss_kb": ff_rss,
         "total_rss_kb": rss_final + ff_rss,
+        "retained_payload_min_kb": retained_min,
+        "retained_payload_max_kb": retained_max,
+        "retained_payload_final_kb": retained_final,
+        "retained_growth_kb_per_min": growth_kb_per_min,
+        "avio_peak_hwm_kb": avio_peak_hwm_bytes // 1024,
+        "ring_overflows": total_overflows,
         "correct": correct
     }
 
@@ -381,9 +489,18 @@ def main():
     # Save results to CSV
     csv_path = os.path.join(WORK_DIR, "bitrate_scale_results.csv")
     with open(csv_path, "w") as f:
-        f.write("config,bitrate_mbps,restream_rss_kb,restream_delta_kb,restream_cpu,ffmpeg_n,ffmpeg_rss_kb,total_rss_kb,correct\n")
+        f.write("config,bitrate_mbps,restream_rss_kb,restream_delta_kb,restream_cpu,"
+                "ffmpeg_n,ffmpeg_rss_kb,total_rss_kb,"
+                "retained_payload_min_kb,retained_payload_max_kb,retained_payload_final_kb,"
+                "retained_growth_kb_per_min,avio_peak_hwm_kb,ring_overflows,correct\n")
         for r in results:
-            f.write(f"{r['config']},{r['bitrate_val']},{r['restream_rss_kb']},{r['restream_delta_kb']},{r['restream_cpu']},{r['ffmpeg_n']},{r['ffmpeg_rss_kb']},{r['total_rss_kb']},{r['correct']}\n")
+            f.write(
+                f"{r['config']},{r['bitrate_val']},{r['restream_rss_kb']},{r['restream_delta_kb']},"
+                f"{r['restream_cpu']},{r['ffmpeg_n']},{r['ffmpeg_rss_kb']},{r['total_rss_kb']},"
+                f"{r['retained_payload_min_kb']},{r['retained_payload_max_kb']},"
+                f"{r['retained_payload_final_kb']},{r['retained_growth_kb_per_min']:.2f},"
+                f"{r.get('avio_peak_hwm_kb',0)},{r['ring_overflows']},{r['correct']}\n"
+            )
             
     print(f"\nResults saved to {csv_path}")
     
@@ -427,6 +544,36 @@ def main():
     cpu_plot_path = os.path.join(WORK_DIR, "cpu_vs_bitrate.png")
     plt.savefig(cpu_plot_path)
     print(f"CPU plot saved to {cpu_plot_path}")
+
+    # Plot 3: Retained ring payload vs bitrate (from engine telemetry)
+    plt.figure(figsize=(12, 8))
+    has_payload_data = any(r.get("retained_payload_final_kb", 0) > 0 for r in results)
+    if has_payload_data:
+        for config_name in config_names:
+            cfg_res = [r for r in results if r["config"] == config_name]
+            bitrate_vals = [r["bitrate_val"] for r in cfg_res]
+            payload_kbs = [r.get("retained_payload_final_kb", 0) / 1024.0 for r in cfg_res]
+            plt.plot(bitrate_vals, payload_kbs, marker='D', label=f"{config_name} retained payload")
+        plt.title("Retained Ring Payload vs Ingest Bitrate")
+        plt.xlabel("Ingest Bitrate (Mbps)")
+        plt.ylabel("Retained Payload (MB)")
+        plt.grid(True)
+        plt.legend()
+    else:
+        plt.text(0.5, 0.5, "No payload telemetry data collected", ha="center", va="center",
+                 transform=plt.gca().transAxes)
+    payload_plot_path = os.path.join(WORK_DIR, "retained_payload_vs_bitrate.png")
+    plt.savefig(payload_plot_path)
+    print(f"Retained payload plot saved to {payload_plot_path}")
+
+    # Print overflow summary
+    overflowed = [r for r in results if r.get("ring_overflows", 0) > 0]
+    if overflowed:
+        print("\nWARNING: Ring overflows detected in the following test cases:")
+        for r in overflowed:
+            print(f"  {r['config']} at {r['bitrate_str']}: {r['ring_overflows']} overflow(s)")
+    else:
+        print("\nNo ring overflows detected across all test cases.")
 
 if __name__ == "__main__":
     main()

@@ -16,8 +16,10 @@ in SQLite.
 | External transcoder and file-ingest executable | Embedded `public/bin/ffmpeg`, extracted to `/tmp/restream-ffmpeg/ffmpeg` at startup | `FFMPEG_BIN_PATH` |
 | SQLite database | `data.db` | `RESTREAM_DB_PATH` |
 | Media directory | `media/` | `RESTREAM_MEDIA_DIR` |
-| Media packet ring depth | `1024` packets | `RESTREAM_RING_CAPACITY` |
-| Shared SRT TS ring depth | `1024` packets | `RESTREAM_TS_RING_CAPACITY` |
+| Media packet ring depth (source/ingest) | `1024` packets | `RESTREAM_RING_CAPACITY` |
+| Media packet ring depth (transcoder output) | `512` packets | `RESTREAM_TRANSCODER_RING_CAPACITY` (720p30 output ≈ 80 pkt/s → 512 slots ≈ 6.4 s jitter headroom; lower than source ring because I-frame payloads are large) |
+| Shared SRT TS ring depth | `256` chunks | `RESTREAM_TS_RING_CAPACITY` (SRT protocol's own send buffer absorbs network jitter; this ring only bridges muxer → socket write, typically sub-millisecond) |
+| AVIO queue capacity (async↔OS-thread bridge) | `524288` bytes (512 KiB) | `RESTREAM_AVIO_QUEUE_CAPACITY` (measured peak HWM = 398 KiB at 8 Mb/s RTMP with zero blocked writes; raise only for very high-latency SRT links) |
 | File descriptor limit | `65536` | `RESTREAM_NOFILE_LIMIT` |
 | Output reconciliation interval | 1 second | `RESTREAM_RECONCILE_INTERVAL_MS` |
 | Failed-output max retries | `10` | `RESTREAM_OUTPUT_MAX_RETRIES` |

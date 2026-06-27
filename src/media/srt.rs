@@ -57,8 +57,13 @@ use crate::media::engine::{MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
 
-const DEFAULT_TS_RING_CAPACITY: usize = 1024;
-const MIN_TS_RING_CAPACITY: usize = 64;
+// 256 slots covers the mux wakeup → SRT socket-write latency (sub-millisecond
+// to single-digit milliseconds in practice). The SRT protocol's own send buffer
+// (~12 MB at 250 ms latency × 8 Mb/s) is the actual jitter absorber; this ring
+// only bridges the gap between the muxer thread and the SRT socket write.
+// At ~400 chunks/s for an 8 Mb/s stream, 256 slots ≈ 640 ms of absorption.
+const DEFAULT_TS_RING_CAPACITY: usize = 256;
+const MIN_TS_RING_CAPACITY: usize = 32;
 const MAX_TS_RING_CAPACITY: usize = 16_384;
 static TS_RING_CAPACITY: OnceLock<usize> = OnceLock::new();
 
@@ -1360,7 +1365,7 @@ impl SrtServer {
             return;
         }
 
-        let ring_buffer = self.engine.get_or_create_pipeline(&pipeline.id).await;
+        let mut ring_buffer = self.engine.get_or_create_pipeline(&pipeline.id).await;
         let Some(token) = self
             .engine
             .try_register_ingest(&pipeline.id, stream_key, "srt")
@@ -1643,6 +1648,8 @@ impl SrtServer {
             // Send probe metadata once ready
             if !probe_sent && let Some(probe) = demuxer.take_probe() {
                 probe_sent = true;
+                let video_fps = probe.video.as_ref().map(|v| v.fps).unwrap_or(30.0);
+                let audio_track_count = probe.audio_tracks.len();
                 if let Some(ref v) = probe.video {
                     println!(
                         "[srt] Probed video: {} {}x{} {:.1}fps profile={:?}",
@@ -1663,6 +1670,15 @@ impl SrtServer {
                     self.engine
                         .update_ingest_audio_tracks(&pipeline.id, probe.audio_tracks)
                         .await;
+                }
+                // Adapt ring capacity for the detected packet rate.
+                // If the ring was resized, update the local reference so
+                // subsequent push_batch() calls write to the new ring.
+                if let Some(new_ring) = self.engine
+                    .adapt_pipeline_ring(&pipeline.id, video_fps, audio_track_count)
+                    .await
+                {
+                    ring_buffer = new_ring;
                 }
             }
 
@@ -3384,6 +3400,9 @@ pub async fn start_srt_egress(
     engine.update_egress_phase(&output_id, "sending").await;
 
     let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
+    engine
+        .register_egress_queue(&output_id, out_queue.clone())
+        .await;
 
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT
     let out_queue_send = out_queue.clone();
@@ -3559,4 +3578,5 @@ pub async fn start_srt_egress(
     }
 
     out_queue.close();
+    engine.remove_egress_queue(&output_id).await;
 }

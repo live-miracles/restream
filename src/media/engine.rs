@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
 use crate::media::hls::HlsStore;
-use crate::media::ring_buffer::{RingBuffer, default_ring_capacity};
+use crate::media::ring_buffer::{RingBuffer, default_ring_capacity, default_transcoder_ring_capacity};
 use crate::media::ts_chunk_ring::TsChunkRing;
 use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 
@@ -314,6 +314,9 @@ pub struct MediaEngine {
     // Keyed by the same typed stage identity as transcoder_buffers.
     // Used by processing_graph() to surface queue depth/HWM in the engineer view.
     pub input_queues: TokioRwLock<HashMap<StageKey, Arc<MemoryQueue>>>,
+    // Out-queues bridging the async TS-chunk reader → blocking SRT sender thread,
+    // one per active SRT push-egress connection. Keyed by output_id.
+    pub egress_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
     // Pipe back-pressure metrics for external-subprocess stages.
     // Keyed by the same typed stage identity as transcoder_buffers.
     pub pipe_metrics: TokioRwLock<HashMap<StageKey, Arc<PipeMetrics>>>,
@@ -361,6 +364,7 @@ impl MediaEngine {
             ts_muxer_stages: TokioRwLock::new(HashMap::new()),
             diag_semaphores: TokioRwLock::new(HashMap::new()),
             input_queues: TokioRwLock::new(HashMap::new()),
+            egress_queues: TokioRwLock::new(HashMap::new()),
             pipe_metrics: TokioRwLock::new(HashMap::new()),
             event_log: Arc::new(crate::events::EventLog::new()),
         }
@@ -543,6 +547,17 @@ impl MediaEngine {
         self.input_queues.write().await.remove(key);
     }
 
+    pub async fn register_egress_queue(&self, output_id: &str, queue: Arc<MemoryQueue>) {
+        self.egress_queues
+            .write()
+            .await
+            .insert(output_id.to_string(), queue);
+    }
+
+    pub async fn remove_egress_queue(&self, output_id: &str) {
+        self.egress_queues.write().await.remove(output_id);
+    }
+
     pub async fn register_pipe_metrics(&self, key: StageKey, metrics: Arc<PipeMetrics>) {
         self.pipe_metrics.write().await.insert(key, metrics);
     }
@@ -611,12 +626,87 @@ impl MediaEngine {
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
         let mut pipelines = self.pipelines.write().await;
         if let Some(rb) = pipelines.get(pipeline_id) {
-            rb.clone()
-        } else {
-            let rb = Arc::new(RingBuffer::new(default_ring_capacity()));
-            pipelines.insert(pipeline_id.to_string(), rb.clone());
-            rb
+            // If egress readers are still active, reuse the ring so they don't
+            // lose their position.  If the ring was adaptively oversized from a
+            // previous heavier stream *and* all readers have gone, reset it to
+            // the default so the next probe can re-adapt cleanly — preventing
+            // both wasted memory (lighter stream keeps big ring) and under-sized
+            // rings (a new heavier stream couldn't resize with active readers).
+            if rb.active_reader_count() > 0 || rb.capacity() <= default_ring_capacity() {
+                return rb.clone();
+            }
+            // Fall through: oversized ring, no active readers — reset below.
         }
+        let rb = Arc::new(RingBuffer::new(default_ring_capacity()));
+        pipelines.insert(pipeline_id.to_string(), rb.clone());
+        rb
+    }
+
+    /// Called after stream probe: sets packet rate on the ring and, if no egress
+    /// readers have attached yet, swaps in a correctly-sized ring for 5 s jitter.
+    ///
+    /// Formula: `needed = ceil(pkt_rate × HEADROOM_SECS)`, clamped to
+    /// `[default_ring_capacity(), MAX_RING_CAPACITY]`.  At 30 fps + 1 audio the
+    /// default (1024) already covers 12 s — no swap occurs.  At 16 audio tracks
+    /// + 1 video the rate is ~830 pkt/s → 4980 slots needed; the ring is swapped
+    /// before any readers attach.
+    /// Returns `Some(new_ring)` if the ring was resized so the caller can
+    /// update its local `ring_buffer` reference (the old Arc is now stale).
+    pub async fn adapt_pipeline_ring(
+        &self,
+        pipeline_id: &str,
+        video_fps: f64,
+        audio_track_count: usize,
+    ) -> Option<Arc<RingBuffer>> {
+        const AUDIO_PKT_RATE: f64 = 50.0; // AAC 48 kHz, 960 samples/frame
+        const HEADROOM_SECS: f64 = 6.0;   // 20 % margin above the 5 s requirement
+        const MAX_RING_CAPACITY: usize = 16_384;
+
+        let pkt_rate = video_fps.max(0.0) + audio_track_count as f64 * AUDIO_PKT_RATE;
+        let needed = ((pkt_rate * HEADROOM_SECS).ceil() as usize)
+            .max(default_ring_capacity())
+            .min(MAX_RING_CAPACITY);
+
+        let mut pipelines = self.pipelines.write().await;
+        if let Some(rb) = pipelines.get(pipeline_id) {
+            // Always record the packet rate for buffer-depth telemetry.
+            rb.set_estimated_pkt_rate(pkt_rate);
+
+            if needed <= rb.capacity() {
+                return None; // already large enough
+            }
+
+            // Only safe to resize before readers attach (window between probe
+            // completion and the reconciler starting egress connections, ≈ 0–1 s).
+            if rb.active_reader_count() == 0 {
+                let new_rb = Arc::new(RingBuffer::new(needed));
+                new_rb.set_estimated_pkt_rate(pkt_rate);
+                if let Some(hint) = rb.codec_hint.get() {
+                    new_rb.set_codec_hint(hint);
+                }
+                let new_rb_clone = new_rb.clone();
+                pipelines.insert(pipeline_id.to_string(), new_rb);
+                println!(
+                    "[engine] Adaptive ring resize: pipeline={} {:.0} pkt/s \
+                     (video={:.0} fps, audio={} tracks) → {} slots ({:.1} s headroom)",
+                    pipeline_id, pkt_rate, video_fps, audio_track_count,
+                    needed, needed as f64 / pkt_rate
+                );
+                // Return the new ring so the ingest loop can switch its
+                // local `ring_buffer` reference — the old Arc is now stale.
+                return Some(new_rb_clone);
+            } else {
+                println!(
+                    "[engine] Ring undersized for pipeline={}: {:.0} pkt/s needs {} slots \
+                     ({:.1} s headroom) but {} slots allocated and {} reader(s) active; \
+                     set RESTREAM_RING_CAPACITY>={} to fix",
+                    pipeline_id, pkt_rate, needed,
+                    needed as f64 / pkt_rate, rb.capacity(),
+                    rb.active_reader_count(), needed
+                );
+            }
+        }
+        None
     }
 
     /// Get or create a shared transcoder stage for a pipeline + encoding combo.
@@ -651,7 +741,7 @@ impl MediaEngine {
         }
         // Cancelled stage — fall through and replace it
 
-        let output_buf = Arc::new(RingBuffer::new(default_ring_capacity()));
+        let output_buf = Arc::new(RingBuffer::new(default_transcoder_ring_capacity()));
         let cancel = CancellationToken::new();
         buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         drop(buffers); // release write lock before spawning
@@ -828,7 +918,7 @@ impl MediaEngine {
             return rb.clone();
         }
 
-        let output_buf = Arc::new(RingBuffer::new(default_ring_capacity()));
+        let output_buf = Arc::new(RingBuffer::new(default_transcoder_ring_capacity()));
         // hevc_to_h264 stage always produces H.264 — tag the ring so consumers
         // can initialize their TsMuxer / PMT with the correct codec.
         output_buf.set_codec_hint("h264");
@@ -1684,6 +1774,8 @@ impl MediaEngine {
         let buffers = self.transcoder_buffers.read().await;
         let pipelines = self.pipelines.read().await;
         let ts_muxers = self.ts_muxer_stages.read().await;
+        let input_queues = self.input_queues.read().await;
+        let egress_queues = self.egress_queues.read().await;
 
         let ingest_arr: Vec<serde_json::Value> = ingests
             .iter()
@@ -1759,6 +1851,48 @@ impl MediaEngine {
             .filter_map(|entry| entry["payloadStats"]["payloadBytes"].as_u64())
             .sum::<u64>();
 
+        let avio_input_queues: Vec<serde_json::Value> = input_queues
+            .iter()
+            .map(|(key, q)| {
+                let s = q.stats();
+                serde_json::json!({
+                    "stageKey": key.to_string(),
+                    "pipelineId": key.pipeline.as_str(),
+                    "lenBytes": s.len,
+                    "capacityBytes": s.capacity,
+                    "highWaterBytes": s.high_water_bytes,
+                    "blockedWrites": s.blocked_writes,
+                    "blockedWriteUs": s.blocked_write_us,
+                })
+            })
+            .collect();
+        let avio_egress_queues: Vec<serde_json::Value> = egress_queues
+            .iter()
+            .map(|(oid, q)| {
+                let s = q.stats();
+                serde_json::json!({
+                    "outputId": oid,
+                    "lenBytes": s.len,
+                    "capacityBytes": s.capacity,
+                    "highWaterBytes": s.high_water_bytes,
+                    "blockedWrites": s.blocked_writes,
+                    "blockedWriteUs": s.blocked_write_us,
+                })
+            })
+            .collect();
+        let avio_total_len_bytes: usize = avio_input_queues
+            .iter()
+            .chain(avio_egress_queues.iter())
+            .filter_map(|e| e["lenBytes"].as_u64())
+            .map(|v| v as usize)
+            .sum();
+        let avio_total_capacity_bytes: usize = avio_input_queues
+            .iter()
+            .chain(avio_egress_queues.iter())
+            .filter_map(|e| e["capacityBytes"].as_u64())
+            .map(|v| v as usize)
+            .sum();
+
         serde_json::json!({
             "generatedAt": generated_at,
             "ingests": ingest_arr,
@@ -1770,6 +1904,12 @@ impl MediaEngine {
                 "sourceRings": source_rings,
                 "transcoderRings": transcoder_rings,
                 "tsMuxerRings": ts_muxer_rings,
+                "avioQueues": {
+                    "totalLenBytes": avio_total_len_bytes,
+                    "totalCapacityBytes": avio_total_capacity_bytes,
+                    "inputQueues": avio_input_queues,
+                    "egressQueues": avio_egress_queues,
+                },
             },
         })
     }
@@ -1832,6 +1972,9 @@ impl MediaEngine {
             serde_json::json!({
                 "fill": fill,
                 "capacity": cap,
+                "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
+                "estimatedPktRatePerSec": rb.estimated_pkt_rate.load(std::sync::atomic::Ordering::Relaxed),
+                "bufferDepthSecs": rb.buffer_depth_secs(),
                 "payloadStats": Self::ring_payload_stats_json(rb),
                 "readers": readers,
             })

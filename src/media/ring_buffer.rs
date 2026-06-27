@@ -66,6 +66,25 @@ pub fn default_ring_capacity() -> usize {
     })
 }
 
+// Transcoder output rings hold demuxed frames from the FFmpeg child process.
+// At 720p30 with one audio track, the packet rate is ~80 pkt/s; 512 slots
+// ≈ 6.4 s of jitter headroom (above the 5 s requirement). I-frames from the
+// CRF23 encoder are large (~30–50 KB each), so the per-slot payload size is
+// much larger than the source ring — 512 slots already dominate memory at high
+// bitrates. Scale-test evidence: no transcoder ring overflows across 15 cases.
+pub const DEFAULT_TRANSCODER_RING_CAPACITY: usize = 512;
+static TRANSCODER_RING_CAPACITY: OnceLock<usize> = OnceLock::new();
+
+pub fn default_transcoder_ring_capacity() -> usize {
+    *TRANSCODER_RING_CAPACITY.get_or_init(|| {
+        std::env::var("RESTREAM_TRANSCODER_RING_CAPACITY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_TRANSCODER_RING_CAPACITY)
+            .clamp(MIN_RING_CAPACITY, MAX_RING_CAPACITY)
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MediaType {
@@ -260,6 +279,9 @@ pub struct RingBuffer {
     pub codec_hint: std::sync::OnceLock<String>,
     /// Audio tracks metadata of packets in this ring.
     pub audio_tracks: std::sync::OnceLock<Vec<crate::media::engine::AudioMeta>>,
+    /// Estimated packet rate (pkt/s) set once after stream probe.
+    /// Used by telemetry to compute buffer depth in seconds.
+    pub estimated_pkt_rate: std::sync::atomic::AtomicU32,
 }
 
 impl RingBuffer {
@@ -288,7 +310,39 @@ impl RingBuffer {
             readers: std::sync::Mutex::new(Vec::new()),
             codec_hint: std::sync::OnceLock::new(),
             audio_tracks: std::sync::OnceLock::new(),
+            estimated_pkt_rate: std::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Number of readers whose `Arc<ReaderInfo>` is still alive.
+    pub fn active_reader_count(&self) -> usize {
+        self.readers
+            .lock()
+            .map(|mut g| {
+                g.retain(|w| w.upgrade().is_some());
+                g.len()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Store the probed packet rate so telemetry can show buffer depth in seconds.
+    pub fn set_estimated_pkt_rate(&self, pkt_per_sec: f64) {
+        self.estimated_pkt_rate
+            .store(pkt_per_sec.round() as u32, Ordering::Relaxed);
+    }
+
+    /// Buffer depth in seconds: how long the ring can absorb an ingest interruption.
+    /// Returns `None` if the packet rate hasn't been set yet.
+    pub fn buffer_depth_secs(&self) -> Option<f64> {
+        let rate = self.estimated_pkt_rate.load(Ordering::Relaxed);
+        if rate == 0 {
+            return None;
+        }
+        Some(self.capacity as f64 / rate as f64)
     }
 
     /// Set the video codec hint for this ring.  Called once by the producer

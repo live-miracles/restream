@@ -20,6 +20,24 @@ use tokio::sync::Notify;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
 
+// 512 KB absorbs bursts between the async TS reader and the blocking SRT/RTMP
+// sender thread. Scale-test evidence: max per-queue HWM = 398 KB at 8 Mb/s
+// across all config×bitrate combinations, 0 blocked_writes throughout.
+// Operators running very high latency links (> 1 s) can raise this with
+// RESTREAM_AVIO_QUEUE_CAPACITY (bytes).
+const DEFAULT_AVIO_QUEUE_CAPACITY: usize = 512 * 1024;
+
+fn default_avio_queue_capacity() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("RESTREAM_AVIO_QUEUE_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_AVIO_QUEUE_CAPACITY)
+            .clamp(64 * 1024, 16 * 1024 * 1024)
+    })
+}
+
 pub struct MemoryQueue {
     inner: Mutex<MemoryQueueInner>,
     cvar: Condvar,
@@ -54,7 +72,7 @@ impl Default for MemoryQueue {
 
 impl MemoryQueue {
     pub fn new() -> Self {
-        Self::new_with_capacity(2 * 1024 * 1024)
+        Self::new_with_capacity(default_avio_queue_capacity())
     }
 
     pub fn new_with_capacity(capacity: usize) -> Self {
