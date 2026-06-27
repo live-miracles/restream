@@ -6,7 +6,7 @@ jobs = 8
 # mold is ~10× faster than ld for linking. All profiles benefit.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "link-arg=-Wl,-z,relro,-z,now"]
 
 # Point ffmpeg-sys-next's build.rs at the repo-managed static prefix so it
 # detects the correct FFmpeg version (≥ 8.0) and emits the right cfg flags.

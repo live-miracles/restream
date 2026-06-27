@@ -1,0 +1,196 @@
+name: SBOM Security
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  sbom-scan:
+    name: SBOM Generation & Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config clang mold
+
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: sbom-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sbom-${{ runner.os }}-
+
+      - name: Build binary
+        run: scripts/resource-limit cargo build --profile bench
+
+      - name: Install syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (runtime endpoint or syft fallback)
+        run: |
+          export PORT=13030
+          RESTREAM_HTTP_PORT=$PORT ./target/bench/restream &
+          RESTREAM_PID=$!
+
+          SBOM_OK=false
+          for i in $(seq 1 10); do
+            sleep 1
+            if curl -sf "http://localhost:$PORT/api/status/sbom" -o restream.cdx.json 2>/dev/null; then
+              SBOM_OK=true
+              break
+            fi
+          done
+
+          kill $RESTREAM_PID 2>/dev/null || true
+          wait $RESTREAM_PID 2>/dev/null || true
+
+          if [ "$SBOM_OK" != "true" ]; then
+            echo "Runtime SBOM endpoint unavailable; falling back to syft"
+            syft packages ./target/bench/restream -o cyclonedx-json=restream.cdx.json
+          fi
+
+      - name: Install grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run grype
+        run: |
+          grype sbom:restream.cdx.json \
+            --output sarif=grype-results.sarif \
+            --output json=grype-results.json || true
+
+      - name: Install trivy
+        run: |
+          sudo apt-get install -y -qq wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | \
+            sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq trivy
+
+      - name: Run trivy
+        run: |
+          trivy sbom restream.cdx.json \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity HIGH,CRITICAL || true
+
+      - name: Upload grype SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: grype-results.sarif
+          category: grype
+
+      - name: Upload trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: File issue for HIGH/CRITICAL findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f grype-results.json ]; then
+            echo "No grype results JSON; skipping issue creation."
+            exit 0
+          fi
+
+          FINDINGS=$(python3 - <<'PYEOF'
+          import json, sys
+          with open("grype-results.json") as f:
+              data = json.load(f)
+          matches = data.get("matches", [])
+          high_crit = [
+              m for m in matches
+              if m.get("vulnerability", {}).get("severity", "").upper() in ("HIGH", "CRITICAL")
+          ]
+          if not high_crit:
+              print("NONE")
+              sys.exit(0)
+          lines = []
+          for m in high_crit:
+              v = m.get("vulnerability", {})
+              art = m.get("artifact", {})
+              lines.append(f"- **{v.get('id','')}** ({v.get('severity','')}) in `{art.get('name','')} {art.get('version','')}`: {v.get('description','')[:120]}")
+          print("\n".join(lines))
+          PYEOF
+          )
+
+          if [ "$FINDINGS" = "NONE" ]; then
+            echo "No HIGH/CRITICAL findings; skipping issue."
+            exit 0
+          fi
+
+          DATE=$(date +%Y-%m-%d)
+          EXISTING=$(gh issue list --label security-sbom --state open --json number --jq '.[0].number // empty')
+
+          BODY="## SBOM Vulnerability Findings — $DATE
+
+          The nightly SBOM scan found the following HIGH or CRITICAL vulnerabilities:
+
+          $FINDINGS
+
+          **Scan artifacts:** grype-results.json, trivy-results.sarif (uploaded to GitHub Security tab)
+          "
+
+          if [ -z "$EXISTING" ]; then
+            gh issue create \
+              --title "SBOM Security Findings $DATE" \
+              --label security-sbom \
+              --body "$BODY"
+          else
+            gh issue comment "$EXISTING" --body "$BODY"
+          fi
+
+  cargo-audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo deny
+        run: cargo deny check advisories licenses bans

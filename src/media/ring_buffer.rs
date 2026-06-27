@@ -47,7 +47,7 @@
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -600,7 +600,7 @@ impl Drop for Reader {
             Some(info) => !Arc::ptr_eq(&info, &self.info),
             None => false,
         });
-        debug!(reader = %self.info.name, overflows = self.info.overflow_count.load(Ordering::Relaxed), "ring reader deregistered");
+        info!(reader = %self.info.name, overflows = self.info.overflow_count.load(Ordering::Relaxed), "ring reader deregistered");
     }
 }
 
@@ -615,7 +615,7 @@ impl Reader {
             r.push(Arc::downgrade(&info));
         }
 
-        debug!(reader = %name, start_idx, "ring reader registered");
+        info!(reader = %name, start_idx, "ring reader registered");
         Self {
             buffer,
             info,
@@ -632,7 +632,7 @@ impl Reader {
             r.push(Arc::downgrade(&info));
         }
 
-        debug!(reader = %name, start_idx = current_write, "ring reader registered (live edge)");
+        info!(reader = %name, start_idx = current_write, "ring reader registered (live edge)");
         Self {
             buffer,
             info,

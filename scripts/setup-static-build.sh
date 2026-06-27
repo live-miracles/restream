@@ -111,6 +111,12 @@ MARCH="${RESTREAM_MARCH:-x86-64-v3}"
 OPT_CFLAGS="-O3 -march=$MARCH"
 OPT_CXXFLAGS="-O3 -march=$MARCH"
 
+# Security hardening: ~1-2% overhead on metadata/alloc paths; zero on SIMD codec loops.
+SEC_CFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC"
+SEC_CXXFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC"
+BUILD_CFLAGS="$OPT_CFLAGS $SEC_CFLAGS"
+BUILD_CXXFLAGS="$OPT_CXXFLAGS $SEC_CXXFLAGS"
+
 SRT_FINGERPRINT="$(
     {
         git -C "$SOURCES/srt" rev-parse HEAD
@@ -118,8 +124,9 @@ SRT_FINGERPRINT="$(
         cmake --version | head -n 1
         pkg-config --modversion openssl
         printf '%s\n' \
-            "CFLAGS=$OPT_CFLAGS" \
-            "CXXFLAGS=$OPT_CXXFLAGS" \
+            "CFLAGS=$BUILD_CFLAGS" \
+            "CXXFLAGS=$BUILD_CXXFLAGS" \
+            "SEC_CFLAGS=$SEC_CFLAGS" \
             "-DCMAKE_BUILD_TYPE=Release" \
             "-DCMAKE_INSTALL_PREFIX=$PREFIX" \
             "-DENABLE_BONDING=ON" \
@@ -137,8 +144,8 @@ if ! stamp_matches "$SRT_STAMP" "$SRT_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libsrt.a" ]]; then
     cmake -S "$SOURCES/srt" -B "$BUILD_ROOT/srt-build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS="$OPT_CFLAGS" \
-        -DCMAKE_CXX_FLAGS="$OPT_CXXFLAGS" \
+        -DCMAKE_C_FLAGS="$BUILD_CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$BUILD_CXXFLAGS" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DENABLE_BONDING=ON \
         -DENABLE_SHARED=OFF \
@@ -173,7 +180,8 @@ X264_FINGERPRINT="$(
         cc --version | head -n 1
         nasm -v
         printf '%s\n' \
-            "CFLAGS=$OPT_CFLAGS" \
+            "CFLAGS=$BUILD_CFLAGS" \
+            "SEC_CFLAGS=$SEC_CFLAGS" \
             "--prefix=$PREFIX" \
             --enable-static \
             --enable-pic \
@@ -185,7 +193,7 @@ X264_STAMP="$STAMPS/x264"
 if ! stamp_matches "$X264_STAMP" "$X264_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libx264.a" ]]; then
     pushd "$SOURCES/x264" >/dev/null
-    CFLAGS="$OPT_CFLAGS" ./configure \
+    CFLAGS="$BUILD_CFLAGS" ./configure \
         --prefix="$PREFIX" \
         --enable-static \
         --enable-pic \
@@ -206,8 +214,9 @@ X265_FINGERPRINT="$(
         cmake --version | head -n 1
         nasm -v
         printf '%s\n' \
-            "CFLAGS=$OPT_CFLAGS" \
-            "CXXFLAGS=$OPT_CXXFLAGS" \
+            "CFLAGS=$BUILD_CFLAGS" \
+            "CXXFLAGS=$BUILD_CXXFLAGS" \
+            "SEC_CFLAGS=$SEC_CFLAGS" \
             "-DCMAKE_BUILD_TYPE=Release" \
             "-DCMAKE_INSTALL_PREFIX=$PREFIX" \
             "-DENABLE_SHARED=OFF" \
@@ -223,8 +232,8 @@ if ! stamp_matches "$X265_STAMP" "$X265_FINGERPRINT" ||
     grep -q -- '-lgcc_s' "$PREFIX/lib/pkgconfig/x265.pc"; then
     cmake -S "$SOURCES/x265/source" -B "$BUILD_ROOT/x265-build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS="$OPT_CFLAGS" \
-        -DCMAKE_CXX_FLAGS="$OPT_CXXFLAGS" \
+        -DCMAKE_C_FLAGS="$BUILD_CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$BUILD_CXXFLAGS" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DENABLE_SHARED=OFF \
         -DENABLE_CLI=OFF \
@@ -244,8 +253,9 @@ FFMPEG_FINGERPRINT="$(
         cc --version | head -n 1
         nasm -v
         printf '%s\n' \
-            "CFLAGS=$OPT_CFLAGS" \
-            "CXXFLAGS=$OPT_CXXFLAGS" \
+            "CFLAGS=$BUILD_CFLAGS" \
+            "CXXFLAGS=$BUILD_CXXFLAGS" \
+            "SEC_CFLAGS=$SEC_CFLAGS" \
             "$X264_FINGERPRINT" \
             "$X265_FINGERPRINT" \
             "--prefix=$PREFIX" \
@@ -282,7 +292,7 @@ FFMPEG_STAMP="$STAMPS/ffmpeg"
 if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
     [[ ! -f "$PREFIX/lib/libavcodec.a" ]]; then
     pushd "$SOURCES/ffmpeg" >/dev/null
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$OPT_CFLAGS" CXXFLAGS="$OPT_CXXFLAGS" ./configure \
+    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$BUILD_CFLAGS" CXXFLAGS="$BUILD_CXXFLAGS" ./configure \
         --prefix="$PREFIX" \
         --pkg-config-flags=--static \
         --enable-static \
@@ -294,8 +304,8 @@ if ! stamp_matches "$FFMPEG_STAMP" "$FFMPEG_FINGERPRINT" ||
         --disable-autodetect \
         --disable-network \
         --enable-x86asm \
-        --extra-cflags="$OPT_CFLAGS" \
-        --extra-cxxflags="$OPT_CXXFLAGS" \
+        --extra-cflags="$BUILD_CFLAGS" \
+        --extra-cxxflags="$BUILD_CXXFLAGS" \
         --disable-everything \
         --enable-gpl \
         --enable-libx264 \
@@ -346,7 +356,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
     mkdir -p "$FFMPEG_BIN_BDIR"
     pushd "$FFMPEG_BIN_BDIR" > /dev/null
 
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$OPT_CFLAGS" CXXFLAGS="$OPT_CXXFLAGS" \
+    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$BUILD_CFLAGS" CXXFLAGS="$BUILD_CXXFLAGS" \
     "$SOURCES/ffmpeg/configure" \
         --prefix="$FFMPEG_BIN_BDIR/out" \
         --pkg-config-flags=--static \
@@ -360,7 +370,7 @@ if ! stamp_matches "$FFMPEG_BIN_STAMP" "$FFMPEG_FINGERPRINT" ||
         --disable-autodetect \
         --disable-network \
         --enable-x86asm \
-        --extra-cflags="$OPT_CFLAGS -I$PREFIX/include" \
+        --extra-cflags="$BUILD_CFLAGS -I$PREFIX/include" \
         --extra-ldflags="-static -L$PREFIX/lib" \
         --disable-everything \
         --enable-gpl \

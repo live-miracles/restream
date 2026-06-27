@@ -1,0 +1,33 @@
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "deny"
+notice = "warn"
+ignore = []
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFL-1.0",
+  "Zlib",
+  "OpenSSL",
+]
+copyleft = "warn"
+
+[bans]
+multiple-versions = "warn"
+skip = [
+  { name = "base64" },
+  { name = "hashbrown" },
+  { name = "thiserror" },
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
