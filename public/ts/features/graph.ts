@@ -36,16 +36,27 @@ export async function fetchProcessingGraph(pipeId: string): Promise<GraphData | 
     return data;
 }
 
-function formatBytes(b: number): string {
-    if (b < 1024) return `${b} B`;
+function formatBytes(value: unknown): string {
+    const b = Number(value);
+    if (!Number.isFinite(b) || b < 0) return '--';
+    if (b < 1024) return `${b.toFixed(0)} B`;
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KiB`;
     if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MiB`;
     return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
-function formatRate(pps: number): string {
+function formatRate(value: unknown): string {
+    const pps = Number(value);
+    if (!Number.isFinite(pps) || pps < 0) return '--';
     if (pps < 1000) return `${pps.toFixed(0)}/s`;
     return `${(pps / 1000).toFixed(1)}k/s`;
+}
+
+function formatKbps(value: unknown): string {
+    const kbps = Number(value);
+    if (!Number.isFinite(kbps) || kbps < 0) return '--';
+    if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+    return `${kbps.toFixed(0)} kbps`;
 }
 
 function finiteNumber(value: unknown, fallback = 0): number {
@@ -209,7 +220,7 @@ export function renderGraphInto(container: HTMLElement, data: GraphData): void {
             const bitrateLabel = Number.isFinite(bitrate) ? ` | ${bitrate.toFixed(0)} kbps` : '';
             detailLines.push(`received: ${formatBytes(node.details.bytesReceived as number)}${bitrateLabel}`);
         } else if (node.type === 'egress' && node.details?.bitrateKbps !== undefined) {
-            detailLines.push(`${(node.details.bitrateKbps as number).toFixed(0)} kbps | ${formatBytes(node.details.totalSize as number)}`);
+            detailLines.push(`${formatKbps(node.details.bitrateKbps)} | ${formatBytes(node.details.totalSize)}`);
         }
 
         // Metrics
