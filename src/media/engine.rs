@@ -448,6 +448,9 @@ impl MediaEngine {
         if egress.status != "running" {
             return egress.status.clone();
         }
+        if egress.target_url.starts_with("hls://") && phase == "segmenting" {
+            return "running".to_string();
+        }
 
         let last_progress_ms = egress.last_progress_ms.load(Ordering::Relaxed);
         let now_ms = Self::now_epoch_ms();
@@ -2356,6 +2359,37 @@ mod tests {
             snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
             "stalled"
         );
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_keeps_local_hls_segmenter_running_without_bytes_out() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-1", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .register_egress("output-1", "pipeline-1", "hls://localhost/hls/test")
+            .await;
+        engine.update_egress_phase("output-1", "segmenting").await;
+        {
+            let mut egresses = engine.active_egresses.write().await;
+            let egress = egresses.get_mut("output-1").unwrap();
+            egress.start_instant = Instant::now()
+                .checked_sub(std::time::Duration::from_millis(
+                    EGRESS_PROGRESS_STALE_MS + 1,
+                ))
+                .unwrap();
+        }
+
+        let snapshot = engine
+            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
+            .await;
+
+        let output = &snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"];
+        assert_eq!(output["status"], "running");
+        assert_eq!(output["phase"], "segmenting");
+        assert_eq!(output["bytesOut"], 0);
     }
 
     #[tokio::test]

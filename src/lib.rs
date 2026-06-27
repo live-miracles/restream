@@ -684,6 +684,7 @@ pub async fn run_app() {
                                 )
                                 .await;
                             } else {
+                                engine_c.update_egress_phase(&output_id_c, "segmenting").await;
                                 cancel_token.cancelled().await;
                             }
                             // remove_hls_persistent_consumer is intentionally called
