@@ -2813,3 +2813,134 @@ async fn agent_operation_lifecycle_is_approval_gated_redacted_and_verified() {
     );
     assert!(verified_body["auditLog"].as_array().unwrap().len() >= 4);
 }
+
+// ── coverage gap: alerts ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn pipeline_alerts_requires_auth_and_returns_array() {
+    let (app, cookie) = authenticated_app().await;
+
+    let unauth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/pipelines/nonexistent/alerts")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    let pipeline = body_json(
+        app.clone()
+            .oneshot(auth_req(
+                "POST",
+                "/pipelines",
+                &cookie,
+                Some(r#"{"name":"alert-test","streamKey":"sk-alert"}"#),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let pid = pipeline["pipeline"]["id"].as_str().unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/pipelines/{pid}/alerts"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["alerts"].is_array());
+    assert!(body["generatedAt"].is_string());
+}
+
+#[tokio::test]
+async fn aggregate_alerts_requires_auth_and_returns_array() {
+    let (app, cookie) = authenticated_app().await;
+
+    let unauth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/alerts")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/alerts", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["alerts"].is_array());
+    assert!(body["generatedAt"].is_string());
+}
+
+// ── coverage gap: metrics/system ────────────────────────────────────────
+
+#[tokio::test]
+async fn metrics_system_requires_auth_and_returns_structured_data() {
+    let (app, cookie) = authenticated_app().await;
+
+    let unauth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics/system")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/metrics/system", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["cpu"]["usagePercent"].is_number());
+    assert!(body["cpu"]["cores"].is_number());
+    assert!(body["memory"]["totalBytes"].is_number());
+    assert!(body["memory"]["usedBytes"].is_number());
+    assert!(body["disk"]["totalBytes"].is_number());
+    assert!(body["generatedAt"].is_string());
+}
+
+// ── coverage gap: agent graph-diff-preview ──────────────────────────────
+
+#[tokio::test]
+async fn agent_graph_diff_preview_returns_404_when_compiled_out() {
+    let (app, cookie) = authenticated_app().await;
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/agent/graph-diff-preview",
+            &cookie,
+            Some(r#"{"changes":[]}"#),
+        ))
+        .await
+        .unwrap();
+    // When agent-plane feature is off, returns 404
+    assert!(
+        resp.status() == StatusCode::NOT_FOUND || resp.status() == StatusCode::OK,
+        "expected 404 (compiled out) or 200, got {}",
+        resp.status()
+    );
+}
