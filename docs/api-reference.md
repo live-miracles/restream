@@ -534,7 +534,17 @@ Authenticated build/runtime information:
     "hostname": "host",
     "kernelVersion": "6.x",
     "uptime": 12345,
-    "totalMem": 17179869184
+    "totalMem": 17179869184,
+    "cpu": {
+      "modelName": "13th Gen Intel(R) Core(TM) i9-13900H",
+      "logicalCpus": 20,
+      "physicalCores": 10,
+      "threadsPerCore": 2.0,
+      "virtualization": "VT-x",
+      "hypervisorDetected": true,
+      "hypervisorVendor": "Microsoft",
+      "flags": ["sse4_1", "sse4_2", "avx", "avx2", "fma", "aes", "vmx", "hypervisor"]
+    }
   }
 }
 ```
@@ -542,6 +552,11 @@ Authenticated build/runtime information:
 Native versions are obtained from the running libraries where they expose a
 runtime API. x264 and x265 have no public runtime version call, so their exact
 linked pkg-config versions are embedded at build time and labeled accordingly.
+
+The `os.cpu` object is intentionally a production-debug subset rather than an
+`lscpu` clone. It identifies the CPU model, core/thread topology, virtualization
+context, and acceleration features that can explain codec throughput, WSL/cloud
+behavior, and native-library performance differences.
 
 ### `GET /api/status/sbom`
 

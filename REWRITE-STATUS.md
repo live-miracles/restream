@@ -278,6 +278,22 @@ slices on June 26, 2026 after rebuilding `public/bin/ffmpeg` and
 `target/release/restream`; it did not set `FFMPEG_BIN_PATH`, so the live H.265
 720p paths exercised the embedded standalone FFmpeg with `libx265`.
 
+A manual dashboard live environment was refreshed on June 27, 2026 from commit
+`3ea12f9` after rebuilding the embedded frontend and `target/debug/restream`.
+It used a fresh SQLite DB under `/tmp/restream-live-current`, Restream on
+HTTP/RTMP/SRT ports `39280`/`32080`/`31280`, and MediaMTX only as an external
+sink on RTMP/SRT/HLS ports `33080`/`34080`/`35080`. One combined FFmpeg process
+published three looping inputs: RTMP H.264 1080p50 at about 8 Mbps, SRT H.264
+4K60 at about 21 Mbps with two AAC tracks, and SRT HEVC 4K60 at about 22 Mbps
+with two AAC tracks. Six configured outputs were live and sending bytes:
+RTMP+SRT sinks for the 1080p50 H.264 input, RTMP+SRT sinks for the 4K60 H.264
+input, and SRT HEVC passthrough plus RTMP H.264 compatibility output for the
+4K60 HEVC input. ffprobe readback confirmed the SRT sinks at the expected
+codecs/resolutions/frame rates and the RTMP sinks as H.264. The RTMP output
+from the HEVC input probed as H.264 around 30 fps, which is useful live
+evidence for the compatibility path but is not a claim that 4K60 HEVC-to-RTMP
+conversion is production-certified.
+
 Earlier focused HLS PUT integration evidence from June 25, 2026:
 
 - `WORK_DIR=test/artifacts/hls-put-dual-20260625T142444Z
@@ -458,7 +474,9 @@ Removed with MediaMTX:
 
 Changed:
 
-- `/api/status` now reports Restream, linked FFmpeg, and host information.
+- `/api/status` now reports Restream, linked FFmpeg, SBOM summary, and a
+  production-debug System section: OS/kernel, uptime, memory, CPU
+  model/topology/features, and virtualization context.
 - `/stream-keys` is read-only and returns 20 built-in keys.
 - HLS uses `/hls/...`; `/preview/hls/...` remains as a compatibility alias.
 - `/health` is public native state rather than a cached MediaMTX merge.

@@ -174,6 +174,45 @@ scripts/resource-limit ./test/run-integration.sh --preflight --json /tmp/restrea
 scripts/resource-limit ./test/run-integration.sh --fast --json /tmp/restream-mixed.jsonl --only smoke,hls,lifecycle mixed-scale
 ```
 
+### Manual Dashboard Live Env
+
+For UI/debug sessions it is useful to run a long-lived dashboard plus an
+independent MediaMTX sink outside the integration wrapper. This is not a
+release certification gate; it is an operator-facing smoke setup that makes the
+dashboard, processing graph, status page, HLS preview, output history, and
+media library easy to inspect while real traffic is flowing.
+
+Current local shape used on June 27, 2026:
+
+| Component | Ports / paths |
+|---|---|
+| Restream dashboard/API | `http://127.0.0.1:39280` |
+| Restream RTMP ingest | `rtmp://127.0.0.1:32080/live/<streamKey>` |
+| Restream SRT ingest | `srt://127.0.0.1:31280?streamid=publish:live/<streamKey>` |
+| MediaMTX RTMP sink | `rtmp://127.0.0.1:33080/live/<path>` |
+| MediaMTX SRT sink | `srt://127.0.0.1:34080?streamid=publish:live/<path>` |
+| MediaMTX HLS sink | `http://127.0.0.1:35080/<path>/index.m3u8` |
+| Runtime work dir | `/tmp/restream-live-current` |
+
+The live traffic is published by one combined FFmpeg process with three looping
+inputs and multiple outputs:
+
+| Pipeline | Ingest | Expected input | Sink outputs |
+|---|---|---|---|
+| `RTMP 1080p50 H264` | RTMP | H.264 `1920x1080` 50 fps, at least 8 Mbps | RTMP source sink, SRT source sink |
+| `SRT 4K60 H264` | SRT | H.264 `3840x2160` 60 fps, at least 20 Mbps, two AAC tracks | SRT source sink, RTMP source sink |
+| `SRT 4K60 H265` | SRT | HEVC `3840x2160` 60 fps, at least 20 Mbps, two AAC tracks | SRT HEVC passthrough sink, RTMP H.264 compatibility sink |
+
+Expected sink-probe behavior:
+
+- SRT sinks should preserve the source codec, dimensions, and frame rate.
+- RTMP sinks from H.264 sources should remain H.264 at source dimensions.
+- RTMP from the H.265 source uses the `hevc_to_h264` compatibility stage. It is
+  expected to probe as H.264, not HEVC, and may not preserve the source frame
+  rate exactly while that compatibility path is under active tuning.
+- MediaMTX accepting these streams is interop evidence for the live setup, not
+  proof that every protocol-matrix release gate has passed.
+
 ### `ramp` — Sequential output ramp
 
 ```sh
