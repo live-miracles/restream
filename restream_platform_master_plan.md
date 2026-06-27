@@ -891,6 +891,9 @@ Output:
 
 ### Execute
 - `POST /api/v1/agent/operations`
+- `GET /api/v1/agent/operations/{operation_id}`
+- `POST /api/v1/agent/operations/{operation_id}/approve`
+- `POST /api/v1/agent/operations/{operation_id}/apply`
 
 Output:
 - operation ID
@@ -902,6 +905,7 @@ Output:
 
 ### Verify
 - `GET /api/v1/agent/operations/{operation_id}`
+- `POST /api/v1/agent/operations/{operation_id}/verify`
 - `POST /api/v1/agent/verify`
 
 Output:
@@ -1452,15 +1456,35 @@ Phase 4 implementation checkpoint, 2026-06-26:
   can remain separately gated and removable.
 
 ## Phase 5 — UI reset
-- overview, pipeline, engineer, admin modes
-- operator-first design
-- graph explorer and diagnostics deep dive
+- Added a mode-based dashboard shell with Overview, Pipeline, Engineer, and
+  Admin workspaces. The existing pipeline workflow remains available as the
+  canonical manual operations surface.
+- Added an operator-first overview that summarizes live inputs, running outputs,
+  throughput, recording state, and pipeline health without exposing graph
+  internals by default.
+- Added an engineer workspace with pipeline selection, redacted output
+  summaries, inline processing-graph rendering, graph modal access, and
+  diagnostics readiness/deep-dive controls.
+- Added an admin workspace for configuration/runtime navigation and compact
+  configuration state.
+- Updated the frontend build path so `npm run build:frontend` compiles both
+  TypeScript modules and Tailwind/DaisyUI CSS before Rust embeds static assets.
 
 ## Phase 6 — safe agent execution and verification
-- operation objects
-- approval-gated actions
-- post-change verification
-- audit log and incident linkage
+- Added a separately removable `agent-execution` Cargo feature that depends on
+  `agent-plane`; core builds and read/planning-only builds keep execution
+  compiled out.
+- Added a modular `src/agent_execution.rs` operation store with idempotency,
+  approval state, status transitions, progress snapshots, redacted public
+  records, and audit events.
+- Wired authenticated operation routes for create/get/approve/apply/verify plus
+  `POST /api/v1/agent/verify`.
+- Execution is approval-gated: create only records an operation, apply rejects
+  until explicit approval, and apply uses the same DB/runtime primitives as the
+  core output APIs for add/update/remove/start/stop output changes.
+- Verification records post-change health, graph convergence, freshness checks,
+  alert delta, per-change success/failure explanations, and stores the result
+  back on the operation record.
 
 ## Phase 7 — test and benchmark hardening
 - Rust live integration harness becomes primary
