@@ -188,5 +188,6 @@ SIMD/vectorization:
 - Testing: `docs/testing.md`
 - Configuration: `docs/configuration.md`
 - Observability: `docs/observability.md`
-- Logging: `docs/logging.md`
+- Logging: `docs/logging.md` (level policy, callsite audit, sink architecture)
+- Log audit skill: `.claude/skills/log-audit.md` — run with `/log-audit` to audit and fix callsite levels
 - API: `docs/api-reference.md`
