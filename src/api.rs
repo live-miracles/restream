@@ -267,6 +267,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/login", get(login_get_handler))
         .route("/login.html", get(login_html_redirect_handler))
+        .route("/settings.html", get(settings_html_redirect_handler))
+        .route("/status.html", get(status_html_redirect_handler))
         .route("/logo.png", get(logo_handler))
         .route("/output.css", get(css_handler))
         .route("/api/auth/login", post(login_post_handler))
@@ -559,6 +561,14 @@ async fn login_get_handler(
 
 async fn login_html_redirect_handler() -> impl IntoResponse {
     Redirect::to("/login")
+}
+
+async fn settings_html_redirect_handler() -> impl IntoResponse {
+    Redirect::to("/?mode=settings")
+}
+
+async fn status_html_redirect_handler() -> impl IntoResponse {
+    Redirect::to("/?mode=status")
 }
 
 async fn logo_handler() -> impl IntoResponse {

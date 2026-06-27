@@ -313,6 +313,10 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
     if let Some(component) = libc_component() {
         native_components.push(component);
     }
+    let native_component_names: Vec<String> = native_components
+        .iter()
+        .filter_map(|component| component["name"].as_str().map(str::to_string))
+        .collect();
 
     let mut components = rust_components();
     let rust_component_count = components.len();
@@ -388,22 +392,27 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
             "srt": {
                 "version": srt_version,
                 "buildVersion": env!("RESTREAM_BUILD_SRT_VERSION"),
+                "license": "MPL-2.0",
                 "bondingAvailable": bonding_available,
             },
             "openssl": {
                 "version": openssl_version,
                 "buildVersion": env!("RESTREAM_BUILD_OPENSSL_VERSION"),
+                "license": "Apache-2.0",
             },
             "sqlite": {
                 "version": sqlite_version,
                 "sourceId": sqlite_source_id,
+                "license": "blessing",
             },
             "x264": {
                 "version": x264_version,
+                "license": "GPL-2.0-or-later",
                 "versionSource": "linked pkg-config metadata at build time",
             },
             "x265": {
                 "version": x265_version,
+                "license": "GPL-2.0-or-later",
                 "versionSource": "linked pkg-config metadata at build time",
             }
         },
@@ -414,6 +423,7 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
             "componentCount": rust_component_count + native_component_count,
             "rustComponentCount": rust_component_count,
             "nativeComponentCount": native_component_count,
+            "nativeComponents": native_component_names,
             "licensesIncluded": true,
         }
     });

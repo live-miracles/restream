@@ -506,19 +506,23 @@ Authenticated build/runtime information:
     "srt": {
       "version": "1.5.5",
       "buildVersion": "1.5.5",
+      "license": "MPL-2.0",
       "bondingAvailable": true
     },
     "openssl": {
       "version": "OpenSSL 3.0.x ...",
-      "buildVersion": "3.0.x"
+      "buildVersion": "3.0.x",
+      "license": "Apache-2.0"
     },
-    "sqlite": { "version": "3.x", "sourceId": "..." },
+    "sqlite": { "version": "3.x", "sourceId": "...", "license": "blessing" },
     "x264": {
       "version": "0.164.x",
+      "license": "GPL-2.0-or-later",
       "versionSource": "linked pkg-config metadata at build time"
     },
     "x265": {
       "version": "3.x",
+      "license": "GPL-2.0-or-later",
       "versionSource": "linked pkg-config metadata at build time"
     }
   },
@@ -529,6 +533,7 @@ Authenticated build/runtime information:
     "componentCount": 100,
     "rustComponentCount": 85,
     "nativeComponentCount": 16,
+    "nativeComponents": ["libavcodec", "..."],
     "licensesIncluded": true
   },
   "os": {
@@ -551,6 +556,11 @@ Authenticated build/runtime information:
   }
 }
 ```
+
+For native libraries that expose both `version` and `buildVersion`, `version` is
+queried from the library loaded by the running process and `buildVersion` is the
+version resolved by the build script at compile time. They should normally
+match; a mismatch is a packaging/linking diagnostic.
 
 Native versions are obtained from the running libraries where they expose a
 runtime API. x264 and x265 have no public runtime version call, so their exact

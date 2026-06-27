@@ -23,22 +23,27 @@ interface StatusData {
         srt?: {
             version?: string;
             buildVersion?: string;
+            license?: string;
             bondingAvailable?: boolean;
         };
         openssl?: {
             version?: string;
             buildVersion?: string;
+            license?: string;
         };
         sqlite?: {
             version?: string;
             sourceId?: string;
+            license?: string;
         };
         x264?: {
             version?: string;
+            license?: string;
             versionSource?: string;
         };
         x265?: {
             version?: string;
+            license?: string;
             versionSource?: string;
         };
     };
@@ -47,6 +52,7 @@ interface StatusData {
         componentCount?: number;
         rustComponentCount?: number;
         nativeComponentCount?: number;
+        nativeComponents?: string[];
         licensesIncluded?: boolean;
     };
     os?: {
@@ -76,7 +82,10 @@ function valueOrDash(value: unknown): string {
 }
 
 function row(label: string, value: unknown): string {
-    return `<tr><td class="font-medium pr-6 py-1.5 whitespace-nowrap">${escapeHtml(label)}</td><td class="font-mono text-sm py-1.5 break-all">${escapeHtml(valueOrDash(value))}</td></tr>`;
+    return `<tr>
+        <td class="text-base-content/65 py-1.5 pr-4 align-top font-medium whitespace-nowrap">${escapeHtml(label)}</td>
+        <td class="py-1.5 align-top font-mono text-sm break-all">${escapeHtml(valueOrDash(value))}</td>
+    </tr>`;
 }
 
 function formatBytes(value: unknown): string {
@@ -116,6 +125,11 @@ function formatFlags(value: unknown): string {
     return value.map((flag) => String(flag)).join(', ');
 }
 
+function formatList(value: unknown): string {
+    if (!Array.isArray(value) || value.length === 0) return '--';
+    return value.map((item) => String(item)).join(', ');
+}
+
 function formatVirtualization(cpu: StatusData['os']['cpu'] | undefined): string {
     if (!cpu) return '--';
     const parts = [];
@@ -124,6 +138,16 @@ function formatVirtualization(cpu: StatusData['os']['cpu'] | undefined): string 
         parts.push(cpu.hypervisorVendor ? `${cpu.hypervisorVendor} hypervisor` : 'hypervisor detected');
     }
     return parts.length ? parts.join(' / ') : 'bare metal or not exposed';
+}
+
+function versionRows(label: string, runtimeVersion: unknown, buildVersion?: unknown): string {
+    const rows = [row(`${label} Version`, runtimeVersion)];
+    const runtime = valueOrDash(runtimeVersion);
+    const build = valueOrDash(buildVersion);
+    if (build !== '--' && build !== runtime) {
+        rows.push(row(`${label} Build-Time Version`, buildVersion));
+    }
+    return rows.join('');
 }
 
 function formatUptime(value: unknown): string {
@@ -143,7 +167,13 @@ function section(title: string, rows: string): string {
     return `<section>
         <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">${escapeHtml(title)}</h3>
         <div class="overflow-x-auto">
-            <table class="text-sm"><tbody>${rows}</tbody></table>
+            <table class="w-full min-w-[36rem] table-fixed text-sm">
+                <colgroup>
+                    <col class="w-48 sm:w-56" />
+                    <col />
+                </colgroup>
+                <tbody>${rows}</tbody>
+            </table>
         </div>
     </section>`;
 }
@@ -254,14 +284,19 @@ export async function loadStatus(): Promise<void> {
                 row('FFmpeg', ffmpeg?.version),
                 row('FFmpeg License', ffmpeg?.license),
                 row('FFmpeg x86 Assembly', ffmpeg?.x86Assembly),
-                row('libsrt', srt?.version),
-                row('libsrt Build', srt?.buildVersion),
+                versionRows('libsrt', srt?.version, srt?.buildVersion),
+                row('libsrt License', srt?.license),
                 row('SRT Bonding Available', srt?.bondingAvailable),
-                row('OpenSSL', openssl?.version),
-                row('OpenSSL Build', openssl?.buildVersion),
-                row('SQLite', sqlite?.version),
-                row('x264', data.nativeLibraries?.x264?.version),
-                row('x265', data.nativeLibraries?.x265?.version),
+                versionRows('OpenSSL', openssl?.version, openssl?.buildVersion),
+                row('OpenSSL License', openssl?.license),
+                row('SQLite Version', sqlite?.version),
+                row('SQLite License', sqlite?.license),
+                row('x264 Version', data.nativeLibraries?.x264?.version),
+                row('x264 License', data.nativeLibraries?.x264?.license),
+                row('x264 Version Source', data.nativeLibraries?.x264?.versionSource),
+                row('x265 Version', data.nativeLibraries?.x265?.version),
+                row('x265 License', data.nativeLibraries?.x265?.license),
+                row('x265 Version Source', data.nativeLibraries?.x265?.versionSource),
             ].join(''),
         ),
         section(
@@ -271,6 +306,7 @@ export async function loadStatus(): Promise<void> {
                 row('Components', data.sbom?.componentCount),
                 row('Rust Components', data.sbom?.rustComponentCount),
                 row('Native Components', data.sbom?.nativeComponentCount),
+                row('Native Component Names', formatList(data.sbom?.nativeComponents)),
                 row('Licenses Included', data.sbom?.licensesIncluded),
             ].join(''),
         ),
