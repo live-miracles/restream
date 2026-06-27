@@ -30,37 +30,9 @@ interface GraphData {
     edges: GraphEdge[];
 }
 
-let refreshInterval: ReturnType<typeof setInterval> | null = null;
-
-function getModal(): HTMLDialogElement | null {
-    return document.getElementById('graph-modal') as HTMLDialogElement | null;
-}
-
-export function openGraphModal(pipeId: string): void {
-    const modal = getModal();
-    if (!modal) return;
-
-    const title = document.getElementById('graph-title');
-    if (title) title.textContent = 'Processing Graph';
-
-    modal.showModal();
-    fetchAndRender(pipeId);
-
-    refreshInterval = setInterval(() => fetchAndRender(pipeId), 2000);
-
-    const cleanup = () => {
-        if (refreshInterval) {
-            clearInterval(refreshInterval);
-            refreshInterval = null;
-        }
-    };
-    modal.addEventListener('close', cleanup, { once: true });
-}
-
-async function fetchAndRender(pipeId: string): Promise<void> {
+export async function fetchProcessingGraph(pipeId: string): Promise<GraphData | null> {
     const data = (await getProcessingGraph(pipeId)) as GraphData | null;
-    if (!data) return;
-    renderGraph(data);
+    return data;
 }
 
 function formatBytes(b: number): string {
@@ -103,10 +75,7 @@ function nodeColor(type: string, active: boolean): string {
     }
 }
 
-function renderGraph(data: GraphData): void {
-    const container = document.getElementById('graph-container');
-    if (!container) return;
-
+export function renderGraphInto(container: HTMLElement, data: GraphData): void {
     // Build adjacency for layout
     const childrenOf = new Map<string, string[]>();
     const parentOf = new Map<string, string[]>();
@@ -224,7 +193,9 @@ function renderGraph(data: GraphData): void {
             if (node.type === 'ring_buffer' && node.details.fillPercent !== undefined) {
                 svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">fill: ${node.details.fillPercent}% (${node.details.fill}/${node.details.capacity})</text>`;
             } else if (node.type === 'ingest' && node.details.bytesReceived !== undefined) {
-                svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">received: ${formatBytes(node.details.bytesReceived as number)}</text>`;
+                const bitrate = Number(node.details.bitrateKbps);
+                const bitrateLabel = Number.isFinite(bitrate) ? ` | ${bitrate.toFixed(0)} kbps` : '';
+                svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">received: ${formatBytes(node.details.bytesReceived as number)}${bitrateLabel}</text>`;
             } else if (node.type === 'egress' && node.details.bitrateKbps !== undefined) {
                 svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">${(node.details.bitrateKbps as number).toFixed(0)} kbps | ${formatBytes(node.details.totalSize as number)}</text>`;
             }

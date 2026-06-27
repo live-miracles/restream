@@ -14,9 +14,6 @@
       </div>
       <div class="flex flex-1 justify-end">
         <ul class="menu menu-horizontal px-1">
-          <li><a href="/">Dashboard</a></li>
-          <li><a href="/settings.html">Settings</a></li>
-          <li><a href="/status.html">Status</a></li>
           <li><a href="https://github.com/live-miracles/restream">GitHub</a></li>
         </ul>
       </div>
@@ -42,22 +39,11 @@
       <div class="mx-auto max-w-4xl space-y-8">
         <h1 class="text-2xl font-bold">Status</h1>
 
-        <!-- Version Info -->
-        <section class="bg-base-200 rounded-xl p-5 shadow">
-          <h2 class="mb-4 text-lg font-semibold">Version Info</h2>
-          <table class="text-sm">
-            <tbody id="status-versions">
-              <tr>
-                <td class="py-1.5 opacity-60" colspan="2">Loading...</td>
-              </tr>
-            </tbody>
-          </table>
-        </section>
-
-        <!-- MediaMTX Config -->
-        <section class="bg-base-200 rounded-xl p-5 shadow">
-          <h2 class="mb-4 text-lg font-semibold">MediaMTX Configuration</h2>
-          <pre id="mediamtx-config" class="bg-base-300 max-h-[600px] overflow-auto rounded-lg p-4 font-mono text-sm whitespace-pre">Loading...</pre>
+        <section class="bg-base-200 rounded-lg p-5 shadow">
+          <h2 class="mb-4 text-lg font-semibold">Runtime</h2>
+          <div id="status-versions" class="space-y-5">
+            <p class="text-sm opacity-60">Loading...</p>
+          </div>
         </section>
       </div>
     </div>

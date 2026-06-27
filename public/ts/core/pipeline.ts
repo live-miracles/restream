@@ -9,7 +9,6 @@ import type {
 } from '../types.js';
 
 const throughputState = {
-    inputBytes: new Map<string, { ts: number; bytes: number }>(),
     outputBytes: new Map<string, { ts: number; bytes: number }>(),
 };
 
@@ -81,7 +80,10 @@ function parsePipelinesInfo(
                 : rawInputAudio
                   ? [mapAudioTrack(rawInputAudio)]
                   : [];
-        const inputKbps = computeKbps(throughputState.inputBytes, p.id, inputBytesReceived, nowMs);
+        const rawInputKbps = healthByPipeline[p.id]?.input?.bitrateKbps;
+        const inputKbps = Number.isFinite(rawInputKbps as number)
+            ? Number((rawInputKbps as number).toFixed(1))
+            : null;
 
         if (inputVideo) inputVideo.bw = inputKbps;
 

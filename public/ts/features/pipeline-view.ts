@@ -31,7 +31,7 @@ interface PipelineViewDependencies {
     deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
     refreshDashboard: (() => Promise<void>) | null;
     openDiagnosticsModal: ((pipeId: string) => void) | null;
-    openGraphModal: ((pipeId: string) => void) | null;
+    openGraphExplorer: ((pipeId: string) => void) | null;
 }
 
 const pipelineViewDependencies: PipelineViewDependencies = {
@@ -45,7 +45,7 @@ const pipelineViewDependencies: PipelineViewDependencies = {
     deleteOutBtn: null,
     refreshDashboard: null,
     openDiagnosticsModal: null,
-    openGraphModal: null,
+    openGraphExplorer: null,
 };
 
 const ingestUiState = {
@@ -162,12 +162,11 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
 
     const graphBtn = document.getElementById('graph-pipe-btn') as HTMLButtonElement | null;
     if (graphBtn) {
-        const inputOn = pipe.input.status === 'on';
-        graphBtn.disabled = !inputOn;
-        graphBtn.classList.toggle('btn-disabled', !inputOn);
-        graphBtn.title = inputOn ? '' : 'Input must be online to view graph';
+        graphBtn.disabled = false;
+        graphBtn.classList.remove('btn-disabled');
+        graphBtn.title = '';
         graphBtn.onclick = () => {
-            pipelineViewDependencies.openGraphModal?.(pipe.id);
+            pipelineViewDependencies.openGraphExplorer?.(pipe.id);
         };
     }
 

@@ -75,6 +75,7 @@ declare global {
         __RESTREAM_BASE_PATH__?: string;
         copyData: (id: string) => void;
         selectPipeline: (id: string | null) => void;
+        setDashboardMode: (mode: string) => void;
         pipeFormBtn: (event: Event) => Promise<void>;
         editOutFormBtn: (event: Event) => Promise<void>;
         addOutBtn: () => Promise<void>;

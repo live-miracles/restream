@@ -3,6 +3,7 @@ import type { AudioTrack, PipelineView } from '../types.js';
 import { withBasePath } from '../core/base-path.js';
 
 const INPUT_PREVIEW_VIDEO_SELECTOR = '[data-role="input-preview-video"]';
+const HLS_READY_RETRY_MS = 1000;
 
 const hlsInstances = new WeakMap<HTMLVideoElement, Hls>();
 
@@ -29,6 +30,30 @@ function getPreviewAudioMetadata(pipe: PipelineView, position: number): AudioTra
         tracks.find((_, index) => index === position) ||
         null
     );
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForHlsManifest(video: HTMLVideoElement, previewSrc: string): Promise<boolean> {
+    while (video.dataset.previewDisposed !== 'true') {
+        try {
+            const response = await fetch(previewSrc, { cache: 'no-store' });
+            if (response.status === 401) {
+                window.location.href = withBasePath('/login');
+                return false;
+            }
+            if (response.ok) {
+                const body = await response.text();
+                if (body.includes('#EXTM3U')) return true;
+            }
+        } catch (_err) {
+            // Keep the spinner up while the HLS writer catches up.
+        }
+        await sleep(HLS_READY_RETRY_MS);
+    }
+    return false;
 }
 
 function buildPreviewAudioDetail(
@@ -291,6 +316,21 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         setOverlayButtonState({ buttonText: 'Play preview', buttonDisabled: false });
     };
 
+    const retryPreviewLoad = (): void => {
+        if (video.dataset.previewDisposed === 'true') return;
+        previewStarted = false;
+        video.dataset.previewLoaded = 'false';
+        video.controls = false;
+        destroyHls(video);
+        video.removeAttribute('src');
+        video.load();
+        audioPicker.style.display = 'none';
+        closeAudioTrackPicker();
+        setOverlayVisible(true);
+        setOverlayButtonState({ buttonText: 'Loading...', buttonDisabled: true });
+        window.setTimeout(() => void primePreviewSource(), HLS_READY_RETRY_MS);
+    };
+
     function setupHlsJsPlayback(): void {
         const hls = new window.Hls({
             startLevel: -1,
@@ -331,6 +371,10 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         hls.on(window.Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; response?: { code?: number } }) => {
             if (video.dataset.previewDisposed === 'true') return;
             if (data.fatal) {
+                if (!previewStarted) {
+                    retryPreviewLoad();
+                    return;
+                }
                 resetPreviewLoadState();
             }
         });
@@ -359,15 +403,23 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         setOverlayVisible(true);
         setOverlayButtonState({ buttonText: 'Loading...', buttonDisabled: true });
 
-        if (window.Hls && window.Hls.isSupported()) {
-            setupHlsJsPlayback();
-            return;
-        }
-
+        const canUseHlsJs = Boolean(window.Hls && window.Hls.isSupported());
         const canNative = Boolean(
             video.canPlayType('application/vnd.apple.mpegurl') ||
             video.canPlayType('application/x-mpegURL'),
         );
+        if (!canUseHlsJs && !canNative) {
+            setOverlayButtonState({ buttonText: 'HLS not supported', buttonDisabled: false });
+            return;
+        }
+
+        const manifestReady = await waitForHlsManifest(video, previewSrc);
+        if (!manifestReady || video.dataset.previewDisposed === 'true') return;
+
+        if (window.Hls && window.Hls.isSupported()) {
+            setupHlsJsPlayback();
+            return;
+        }
         if (canNative) {
             setupNativeHlsPlayback();
             return;
@@ -390,7 +442,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
     video.addEventListener('error', () => {
         if (video.dataset.previewDisposed === 'true') return;
         if (previewStarted) return;
-        resetPreviewLoadState();
+        retryPreviewLoad();
     });
 
     overlay.appendChild(spinner);

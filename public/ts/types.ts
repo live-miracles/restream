@@ -137,6 +137,7 @@ export interface InputHealth {
     bytesReceived?: number;
     bytesSent?: number;
     readers?: number;
+    bitrateKbps?: number | null;
     publishStartedAt?: string;
     video?: VideoTrack;
     audio?: AudioTrack;
