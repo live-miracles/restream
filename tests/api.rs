@@ -1176,6 +1176,8 @@ async fn status_returns_version_info() {
     assert!(json["sbom"]["componentCount"].as_u64().unwrap() > 20);
     assert!(json["os"]["platform"].is_string());
     assert!(json["os"]["hostname"].is_string());
+    assert!(json["os"]["cpu"]["logicalCpus"].as_u64().unwrap() > 0);
+    assert!(json["os"]["cpu"]["flags"].is_array());
 }
 
 #[tokio::test]

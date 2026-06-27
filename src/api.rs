@@ -15,7 +15,7 @@ use axum::{
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -2445,16 +2445,251 @@ async fn status_get_handler(
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
     let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
-    status["os"] = serde_json::json!({
+    status["os"] = system_status(&sys);
+
+    Json(status).into_response()
+}
+
+fn system_status(sys: &System) -> serde_json::Value {
+    serde_json::json!({
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "hostname": System::host_name().unwrap_or_default(),
         "kernelVersion": System::kernel_version(),
         "uptime": System::uptime(),
         "totalMem": sys.total_memory(),
-    });
+        "cpu": cpu_status(sys),
+    })
+}
 
-    Json(status).into_response()
+fn cpu_status(sys: &System) -> serde_json::Value {
+    let cpuinfo = read_cpuinfo_summary();
+    let first_cpu = sys.cpus().first();
+    let logical_cpus = sys.cpus().len();
+    let physical_cores = sys.physical_core_count();
+    let threads_per_core = physical_cores
+        .filter(|cores| *cores > 0)
+        .map(|cores| logical_cpus as f64 / cores as f64);
+    let flags = cpuinfo
+        .get("flags")
+        .map(|value| selected_cpu_flags(value))
+        .unwrap_or_default();
+    let hypervisor_detected = flags.iter().any(|flag| flag == "hypervisor");
+    let virtualization = if flags.iter().any(|flag| flag == "vmx") {
+        Some("VT-x")
+    } else if flags.iter().any(|flag| flag == "svm") {
+        Some("AMD-V")
+    } else {
+        None
+    };
+
+    serde_json::json!({
+        "modelName": cpuinfo
+            .get("model name")
+            .or_else(|| cpuinfo.get("hardware"))
+            .or_else(|| cpuinfo.get("processor"))
+            .cloned()
+            .or_else(|| first_cpu.map(|cpu| cpu.brand().to_string())),
+        "vendorId": cpuinfo
+            .get("vendor_id")
+            .or_else(|| cpuinfo.get("cpu implementer"))
+            .cloned()
+            .or_else(|| first_cpu.map(|cpu| cpu.vendor_id().to_string())),
+        "family": cpuinfo.get("cpu family").cloned(),
+        "model": cpuinfo.get("model").cloned(),
+        "stepping": cpuinfo.get("stepping").cloned(),
+        "logicalCpus": logical_cpus,
+        "physicalCores": physical_cores,
+        "threadsPerCore": threads_per_core,
+        "frequencyMhz": first_cpu.map(|cpu| cpu.frequency()),
+        "virtualization": virtualization,
+        "hypervisorDetected": hypervisor_detected,
+        "hypervisorVendor": if hypervisor_detected { detect_hypervisor_vendor() } else { None },
+        "systemVendor": read_trimmed_file("/sys/class/dmi/id/sys_vendor"),
+        "productName": read_trimmed_file("/sys/class/dmi/id/product_name"),
+        "cache": read_cpu_cache_summary(),
+        "flags": flags,
+    })
+}
+
+fn read_cpuinfo_summary() -> HashMap<String, String> {
+    let mut summary = HashMap::new();
+    let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") else {
+        return summary;
+    };
+    for line in text.lines() {
+        if line.trim().is_empty() && !summary.is_empty() {
+            break;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        summary
+            .entry(key.trim().to_ascii_lowercase())
+            .or_insert_with(|| value.trim().to_string());
+    }
+    summary
+}
+
+fn selected_cpu_flags(flags: &str) -> Vec<String> {
+    const USEFUL_FLAGS: &[&str] = &[
+        "sse4_1",
+        "sse4_2",
+        "avx",
+        "avx2",
+        "avx512f",
+        "avx_vnni",
+        "fma",
+        "aes",
+        "sha_ni",
+        "vaes",
+        "vpclmulqdq",
+        "bmi1",
+        "bmi2",
+        "vmx",
+        "svm",
+        "hypervisor",
+    ];
+    let available = flags.split_whitespace().collect::<BTreeSet<_>>();
+    USEFUL_FLAGS
+        .iter()
+        .filter(|flag| available.contains(**flag))
+        .map(|flag| (*flag).to_string())
+        .collect()
+}
+
+fn read_cpu_cache_summary() -> serde_json::Value {
+    let mut cache = serde_json::Map::new();
+    let mut seen = HashSet::new();
+    let mut sums: HashMap<&'static str, u64> = HashMap::new();
+    let mut counts: HashMap<&'static str, u64> = HashMap::new();
+    let Ok(cpus) = std::fs::read_dir("/sys/devices/system/cpu") else {
+        return serde_json::Value::Object(cache);
+    };
+    for cpu in cpus.flatten() {
+        let cpu_name = cpu.file_name().to_string_lossy().to_string();
+        if !cpu_name
+            .strip_prefix("cpu")
+            .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(cpu.path().join("cache")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let level = read_trimmed_file(path.join("level")).unwrap_or_default();
+            let kind = read_trimmed_file(path.join("type")).unwrap_or_default();
+            let size = read_trimmed_file(path.join("size")).unwrap_or_default();
+            let shared_cpus = read_trimmed_file(path.join("shared_cpu_list"))
+                .unwrap_or_else(|| path.display().to_string());
+            if level.is_empty() || kind.is_empty() || size.is_empty() {
+                continue;
+            }
+            let Some(size_kib) = parse_cache_size_kib(&size) else {
+                continue;
+            };
+            let key = match (level.as_str(), kind.as_str()) {
+                ("1", "Data") => "l1d",
+                ("1", "Instruction") => "l1i",
+                ("2", "Unified") => "l2",
+                ("3", "Unified") => "l3",
+                _ => continue,
+            };
+            if !seen.insert(format!("{level}:{kind}:{shared_cpus}")) {
+                continue;
+            }
+            *sums.entry(key).or_default() += size_kib;
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    for key in ["l1d", "l1i", "l2", "l3"] {
+        let Some(size_kib) = sums.get(key) else {
+            continue;
+        };
+        cache.insert(
+            key.to_string(),
+            serde_json::Value::String(format_cache_size_kib(
+                *size_kib,
+                counts.get(key).copied().unwrap_or_default(),
+            )),
+        );
+    }
+    if !cache.is_empty() {
+        cache.insert(
+            "scope".to_string(),
+            serde_json::Value::String("summed unique sysfs cache groups".to_string()),
+        );
+    }
+    serde_json::Value::Object(cache)
+}
+
+fn parse_cache_size_kib(size: &str) -> Option<u64> {
+    let trimmed = size.trim();
+    let digits = trimmed
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    let value = digits.parse::<u64>().ok()?;
+    let unit = trimmed[digits.len()..].trim().to_ascii_lowercase();
+    match unit.as_str() {
+        "k" | "kb" | "kib" => Some(value),
+        "m" | "mb" | "mib" => Some(value * 1024),
+        "" => Some(value / 1024),
+        _ => None,
+    }
+}
+
+fn format_cache_size_kib(size_kib: u64, count: u64) -> String {
+    let size = if size_kib >= 1024 {
+        let mib = size_kib as f64 / 1024.0;
+        if (mib.fract() - 0.0).abs() < f64::EPSILON {
+            format!("{mib:.0} MiB")
+        } else {
+            format!("{mib:.1} MiB")
+        }
+    } else {
+        format!("{size_kib} KiB")
+    };
+    if count > 0 {
+        format!("{size} ({count} instances)")
+    } else {
+        size
+    }
+}
+
+fn detect_hypervisor_vendor() -> Option<String> {
+    for path in [
+        "/sys/hypervisor/type",
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/product_name",
+    ] {
+        let Some(value) = read_trimmed_file(path) else {
+            continue;
+        };
+        let lower = value.to_ascii_lowercase();
+        if lower.contains("microsoft") {
+            return Some("Microsoft".to_string());
+        }
+        if lower.contains("vmware") {
+            return Some("VMware".to_string());
+        }
+        if lower.contains("kvm") || lower.contains("qemu") {
+            return Some("KVM/QEMU".to_string());
+        }
+        if lower.contains("virtualbox") {
+            return Some("VirtualBox".to_string());
+        }
+    }
+    None
+}
+
+fn read_trimmed_file(path: impl AsRef<FsPath>) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 async fn status_sbom_get_handler(
@@ -3537,13 +3772,8 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
     let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
-    status["os"] = serde_json::json!({
-        "platform": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "hostname": System::host_name().unwrap_or_default(),
-        "kernelVersion": System::kernel_version(),
-        "uptime": System::uptime(),
-    });
+    let sys = System::new_all();
+    status["os"] = system_status(&sys);
 
     let server_name = db::get_meta(&state.db, "server_name")
         .await
