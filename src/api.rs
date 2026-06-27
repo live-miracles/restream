@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Redirect},
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post, put},
 };
 use rust_embed::RustEmbed;
@@ -33,6 +33,8 @@ use crate::db;
 use crate::diag;
 use crate::events;
 use crate::media::engine::MediaEngine;
+use crate::media::hls::{HlsSegmentVariant, HlsStore};
+use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
 use crate::types::*;
 
@@ -428,12 +430,49 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(
             Router::new()
                 .route("/hls/:pipeline_id", get(hls_playlist_handler))
+                .route("/hls/:pipeline_id/master.m3u8", get(hls_master_handler))
                 .route("/hls/:pipeline_id/index.m3u8", get(hls_playlist_handler))
+                .route(
+                    "/hls/:pipeline_id/video/index.m3u8",
+                    get(hls_video_playlist_handler),
+                )
+                .route(
+                    "/hls/:pipeline_id/video/:segment",
+                    get(hls_video_segment_handler),
+                )
+                .route(
+                    "/hls/:pipeline_id/audio/:track_index/index.m3u8",
+                    get(hls_audio_playlist_handler),
+                )
+                .route(
+                    "/hls/:pipeline_id/audio/:track_index/:segment",
+                    get(hls_audio_segment_handler),
+                )
                 .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
                 .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
                 .route(
+                    "/preview/hls/:pipeline_id/master.m3u8",
+                    get(hls_master_handler),
+                )
+                .route(
                     "/preview/hls/:pipeline_id/index.m3u8",
                     get(hls_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/video/index.m3u8",
+                    get(hls_video_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/video/:segment",
+                    get(hls_video_segment_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/audio/:track_index/index.m3u8",
+                    get(hls_audio_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/audio/:track_index/:segment",
+                    get(hls_audio_segment_handler),
                 )
                 .route(
                     "/preview/hls/:pipeline_id/:segment",
@@ -4960,31 +4999,25 @@ async fn recording_stop_handler(
     Json(serde_json::json!({ "enabled": false, "active": false })).into_response()
 }
 
-async fn hls_playlist_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pipeline_id): Path<String>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    // Auto-start segmenter on first request if ingest is active
+async fn get_or_start_hls_store(
+    state: &Arc<AppState>,
+    pipeline_id: &str,
+) -> Result<Arc<HlsStore>, Response> {
     let has_ingest = state
         .engine
         .active_ingests
         .read()
         .await
-        .contains_key(&pipeline_id);
+        .contains_key(pipeline_id);
     if has_ingest {
-        let (store, already_running) = state.engine.ensure_hls_segmenter(&pipeline_id).await;
+        let (store, already_running) = state.engine.ensure_hls_segmenter(pipeline_id).await;
         if !already_running {
             let engine_c = state.engine.clone();
-            let pid = pipeline_id.clone();
-            let ring_buf = state.engine.get_or_create_pipeline(&pipeline_id).await;
+            let pid = pipeline_id.to_string();
+            let ring_buf = state.engine.get_or_create_pipeline(pipeline_id).await;
             let cancel_token = state
                 .engine
-                .get_hls_cancel_token(&pipeline_id)
+                .get_hls_cancel_token(pipeline_id)
                 .await
                 .unwrap();
             let store_c = store.clone();
@@ -5000,31 +5033,217 @@ async fn hls_playlist_handler(
                 engine_c.shutdown_hls_segmenter(&pid).await;
             });
         }
-        state.engine.touch_hls(&pipeline_id).await;
-        match store.get_playlist() {
-            Some(playlist) => (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
-                playlist,
-            )
-                .into_response(),
-            None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+        state.engine.touch_hls(pipeline_id).await;
+        return Ok(store);
+    }
+
+    let Some(store) = state.engine.get_hls_store(pipeline_id).await else {
+        return Err((StatusCode::NOT_FOUND, "No HLS stream").into_response());
+    };
+    state.engine.touch_hls(pipeline_id).await;
+    Ok(store)
+}
+
+fn quote_hls_attr(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn hls_track_name(track: &crate::media::engine::AudioMeta, position: usize) -> String {
+    let base = track
+        .title
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            track
+                .language
+                .as_ref()
+                .filter(|value| !value.trim().is_empty() && value.trim() != "und")
+                .map(|value| value.trim().to_ascii_uppercase())
+        })
+        .unwrap_or_else(|| "Track".to_string());
+    format!("{} {}", base, position + 1)
+}
+
+fn build_hls_master_playlist(
+    video: Option<&crate::media::engine::VideoMeta>,
+    audio_tracks: &[crate::media::engine::AudioMeta],
+) -> String {
+    let mut playlist = "#EXTM3U\n#EXT-X-VERSION:3\n".to_string();
+    let group_id = "source-audio";
+
+    for (position, track) in audio_tracks.iter().enumerate() {
+        let mut attrs = vec![
+            "TYPE=AUDIO".to_string(),
+            format!("GROUP-ID={}", quote_hls_attr(group_id)),
+            format!("NAME={}", quote_hls_attr(&hls_track_name(track, position))),
+            format!("DEFAULT={}", if position == 0 { "YES" } else { "NO" }),
+            "AUTOSELECT=YES".to_string(),
+        ];
+        if let Some(language) = track
+            .language
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            attrs.push(format!("LANGUAGE={}", quote_hls_attr(language.trim())));
         }
-    } else {
-        // No ingest — serve from existing store if any
-        let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
-            return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
-        };
-        state.engine.touch_hls(&pipeline_id).await;
-        match store.get_playlist() {
-            Some(playlist) => (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
-                playlist,
-            )
-                .into_response(),
-            None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+        if track.channels > 0 {
+            attrs.push(format!(
+                "CHANNELS={}",
+                quote_hls_attr(&track.channels.to_string())
+            ));
         }
+        attrs.push(format!(
+            "URI={}",
+            quote_hls_attr(&format!("audio/{}/index.m3u8", track.track_index))
+        ));
+        playlist.push_str(&format!("#EXT-X-MEDIA:{}\n", attrs.join(",")));
+    }
+
+    let mut stream_attrs = vec!["BANDWIDTH=8000000".to_string()];
+    if let Some(video) = video {
+        if video.width > 0 && video.height > 0 {
+            stream_attrs.push(format!("RESOLUTION={}x{}", video.width, video.height));
+        }
+        if video.fps.is_finite() && video.fps > 0.0 {
+            stream_attrs.push(format!("FRAME-RATE={:.3}", video.fps));
+        }
+    }
+    if !audio_tracks.is_empty() {
+        stream_attrs.push(format!("AUDIO={}", quote_hls_attr(group_id)));
+    }
+    playlist.push_str(&format!("#EXT-X-STREAM-INF:{}\n", stream_attrs.join(",")));
+    playlist.push_str("video/index.m3u8\n");
+    playlist
+}
+
+fn parse_hls_segment_name(segment: &str) -> Option<u64> {
+    segment
+        .strip_prefix("seg")
+        .and_then(|s| s.strip_suffix(".ts"))
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
+fn hls_variant_segment_response(
+    store: &HlsStore,
+    index: u64,
+    variant: HlsSegmentVariant,
+    view: TsSegmentView,
+) -> Response {
+    if let Some(data) = store.get_variant_segment(index, variant) {
+        return (StatusCode::OK, [(header::CONTENT_TYPE, "video/mp2t")], data).into_response();
+    }
+
+    let Some(source) = store.get_segment(index) else {
+        return (StatusCode::NOT_FOUND, "Segment not found").into_response();
+    };
+    let (video, audio_tracks) = store.stream_metadata();
+    let Some(data) = remux_segment_view(&source, video.as_ref(), &audio_tracks, view) else {
+        return (StatusCode::NOT_FOUND, "Variant segment not found").into_response();
+    };
+    store.put_variant_segment(index, variant, data.clone());
+    (StatusCode::OK, [(header::CONTENT_TYPE, "video/mp2t")], data).into_response()
+}
+
+async fn hls_playlist_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pipeline_id): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    match store.get_playlist() {
+        Some(playlist) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            playlist,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+    }
+}
+
+async fn hls_master_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pipeline_id): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    if store.get_playlist().is_none() {
+        return (StatusCode::NOT_FOUND, "No segments yet").into_response();
+    }
+    let (video, audio_tracks) = store.stream_metadata();
+    let playlist = build_hls_master_playlist(video.as_ref(), &audio_tracks);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+        playlist,
+    )
+        .into_response()
+}
+
+async fn hls_video_playlist_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pipeline_id): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    match store.get_playlist_with_segment_uri(|index| format!("seg{index}.ts")) {
+        Some(playlist) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            playlist,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
+    }
+}
+
+async fn hls_audio_playlist_handler(
+    State(state): State<Arc<AppState>>,
+    Path((pipeline_id, track_index)): Path<(String, u32)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let (_, audio_tracks) = store.stream_metadata();
+    if !audio_tracks
+        .iter()
+        .any(|track| track.track_index == track_index)
+    {
+        return (StatusCode::NOT_FOUND, "Audio track not found").into_response();
+    }
+    match store.get_playlist_with_segment_uri(|index| format!("seg{index}.ts")) {
+        Some(playlist) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
+            playlist,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "No segments yet").into_response(),
     }
 }
 
@@ -5056,6 +5275,52 @@ async fn hls_segment_handler(
     }
 }
 
+async fn hls_video_segment_handler(
+    State(state): State<Arc<AppState>>,
+    Path((pipeline_id, segment)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    state.engine.touch_hls(&pipeline_id).await;
+    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+        return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
+    };
+    let Some(index) = parse_hls_segment_name(&segment) else {
+        return (StatusCode::BAD_REQUEST, "Invalid segment name").into_response();
+    };
+    hls_variant_segment_response(
+        &store,
+        index,
+        HlsSegmentVariant::Video,
+        TsSegmentView::Video,
+    )
+}
+
+async fn hls_audio_segment_handler(
+    State(state): State<Arc<AppState>>,
+    Path((pipeline_id, track_index, segment)): Path<(String, u32, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !request_is_authenticated(&state, &headers).await {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    state.engine.touch_hls(&pipeline_id).await;
+    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+        return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
+    };
+    let Some(index) = parse_hls_segment_name(&segment) else {
+        return (StatusCode::BAD_REQUEST, "Invalid segment name").into_response();
+    };
+    hls_variant_segment_response(
+        &store,
+        index,
+        HlsSegmentVariant::Audio(track_index),
+        TsSegmentView::Audio(track_index),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5066,6 +5331,60 @@ mod tests {
         assert!(check_field_len("name", "hello", MAX_NAME_LEN).is_none());
         assert!(check_field_len("url", "rtmp://host/app/key", MAX_URL_LEN).is_none());
         assert!(check_field_len("encoding", "720p", MAX_ENCODING_LEN).is_none());
+    }
+
+    #[test]
+    fn hls_master_playlist_uses_audio_rendition_uris() {
+        let video = crate::media::engine::VideoMeta {
+            codec: "h264".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            bw: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let audio_tracks = vec![
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 1,
+                channel_layout: None,
+                track_index: 0,
+                pid: Some(0x101),
+                language: Some("eng".to_string()),
+                title: None,
+                profile: None,
+            },
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 15,
+                pid: Some(0x110),
+                language: Some("spa".to_string()),
+                title: None,
+                profile: None,
+            },
+        ];
+
+        let playlist = build_hls_master_playlist(Some(&video), &audio_tracks);
+
+        assert!(playlist.contains("#EXT-X-MEDIA:TYPE=AUDIO"));
+        assert!(playlist.contains("GROUP-ID=\"source-audio\""));
+        assert!(playlist.contains("DEFAULT=YES"));
+        assert!(playlist.contains("DEFAULT=NO"));
+        assert!(playlist.contains("URI=\"audio/0/index.m3u8\""));
+        assert!(playlist.contains("URI=\"audio/15/index.m3u8\""));
+        assert!(playlist.contains("#EXT-X-STREAM-INF:"));
+        assert!(playlist.contains("RESOLUTION=1920x1080"));
+        assert!(playlist.contains("AUDIO=\"source-audio\""));
+        assert!(playlist.ends_with("video/index.m3u8\n"));
     }
 
     #[test]

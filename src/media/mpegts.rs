@@ -699,6 +699,12 @@ pub struct TsMuxer {
     output: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TsSegmentView {
+    Video,
+    Audio(u32),
+}
+
 impl TsMuxer {
     /// Create a new muxer from stream metadata.
     ///
@@ -1098,6 +1104,59 @@ impl TsMuxer {
 
         self.output.extend_from_slice(&ts);
     }
+}
+
+pub fn remux_segment_view(
+    segment: &[u8],
+    video: Option<&VideoMeta>,
+    audio_tracks: &[AudioMeta],
+    view: TsSegmentView,
+) -> Option<Bytes> {
+    let (mux_video, mux_audio) = match view {
+        TsSegmentView::Video => (video, Vec::new()),
+        TsSegmentView::Audio(track_index) => {
+            let audio = audio_tracks
+                .iter()
+                .find(|track| track.track_index == track_index)
+                .cloned()?;
+            (None, vec![audio])
+        }
+    };
+
+    let mut demuxer = TsDemuxer::new();
+    demuxer.feed(segment);
+    demuxer.flush();
+
+    let mut muxer = TsMuxer::new(mux_video, &mux_audio);
+    let mut output = Vec::with_capacity(segment.len().min(256 * 1024));
+    let mut wrote_media = false;
+
+    for packet in demuxer.drain() {
+        let include = match view {
+            TsSegmentView::Video => packet.media_type == MediaType::Video,
+            TsSegmentView::Audio(track_index) => {
+                packet.media_type == MediaType::Audio && packet.track_index == track_index
+            }
+        };
+        if !include {
+            continue;
+        }
+
+        let data = muxer.mux_packet(
+            packet.media_type,
+            packet.track_index,
+            packet.pts,
+            packet.dts,
+            packet.is_keyframe,
+            &packet.payload,
+        );
+        if !data.is_empty() {
+            wrote_media = true;
+            output.extend_from_slice(data);
+        }
+    }
+
+    wrote_media.then(|| Bytes::from(output))
 }
 
 impl Default for TsServiceMetadata {
@@ -2585,6 +2644,112 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             32
+        );
+    }
+
+    #[test]
+    fn remux_segment_view_splits_video_and_selected_audio() {
+        let video = VideoMeta {
+            codec: "h264".to_string(),
+            width: 640,
+            height: 360,
+            fps: 30.0,
+            bw: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        };
+        let audio_tracks = (0..16)
+            .map(|index| AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: index,
+                pid: None,
+                language: None,
+                title: None,
+                profile: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut muxer = TsMuxer::new(Some(&video), &audio_tracks);
+        let mut source = Vec::new();
+        let video_payload = vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x88];
+        let audio_payload = vec![0xFF, 0xF1, 0x4C, 0x80, 0x02, 0x1F, 0xFC, 0x21, 0x10];
+
+        for frame in 0..3 {
+            let pts = frame * 33;
+            source.extend_from_slice(muxer.mux_packet(
+                MediaType::Video,
+                0,
+                pts,
+                pts,
+                frame == 0,
+                &video_payload,
+            ));
+            for track_index in 0..audio_tracks.len() {
+                source.extend_from_slice(muxer.mux_packet(
+                    MediaType::Audio,
+                    track_index as u32,
+                    pts,
+                    pts,
+                    false,
+                    &audio_payload,
+                ));
+            }
+        }
+
+        let video_only =
+            remux_segment_view(&source, Some(&video), &audio_tracks, TsSegmentView::Video)
+                .expect("video rendition should contain media");
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&video_only);
+        demuxer.flush();
+        let packets = demuxer.drain();
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video)
+        );
+        assert!(
+            packets
+                .iter()
+                .all(|packet| packet.media_type == MediaType::Video)
+        );
+
+        let audio_only = remux_segment_view(
+            &source,
+            Some(&video),
+            &audio_tracks,
+            TsSegmentView::Audio(15),
+        )
+        .expect("audio rendition should contain media");
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&audio_only);
+        demuxer.flush();
+        let packets = demuxer.drain();
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Audio)
+        );
+        assert!(
+            packets
+                .iter()
+                .all(|packet| packet.media_type == MediaType::Audio)
+        );
+        assert_eq!(
+            packets
+                .iter()
+                .map(|packet| packet.track_index)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            1,
+            "audio rendition should expose exactly one logical track"
         );
     }
 

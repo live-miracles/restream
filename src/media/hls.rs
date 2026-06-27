@@ -9,14 +9,14 @@
 //! RingBuffer → TsMuxer (inline) → segment accumulator → HlsStore
 //! ```
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use tokio_util::sync::CancellationToken;
 
-use crate::media::engine::MediaEngine;
+use crate::media::engine::{AudioMeta, MediaEngine, VideoMeta};
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
 
@@ -95,6 +95,15 @@ struct HlsStoreInner {
     segments: VecDeque<HlsSegment>,
     next_index: u64,
     target_duration: f64,
+    video: Option<VideoMeta>,
+    audio_tracks: Vec<AudioMeta>,
+    variant_segments: HashMap<(u64, HlsSegmentVariant), Bytes>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HlsSegmentVariant {
+    Video,
+    Audio(u32),
 }
 
 impl Default for HlsStore {
@@ -114,6 +123,9 @@ impl HlsStore {
                 segments: VecDeque::new(),
                 next_index: 0,
                 target_duration: TARGET_DURATION_SECS,
+                video: None,
+                audio_tracks: Vec::new(),
+                variant_segments: HashMap::new(),
             }),
             config,
         }
@@ -143,11 +155,22 @@ impl HlsStore {
             data,
         });
         while inner.segments.len() > self.config.max_segments {
-            inner.segments.pop_front();
+            if let Some(segment) = inner.segments.pop_front() {
+                inner
+                    .variant_segments
+                    .retain(|(segment_index, _), _| *segment_index != segment.index);
+            }
         }
     }
 
     pub fn get_playlist(&self) -> Option<String> {
+        self.get_playlist_with_segment_uri(|index| format!("seg{index}.ts"))
+    }
+
+    pub fn get_playlist_with_segment_uri<F>(&self, mut segment_uri: F) -> Option<String>
+    where
+        F: FnMut(u64) -> String,
+    {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.segments.is_empty() {
             return None;
@@ -160,10 +183,8 @@ impl HlsStore {
             target_dur, first_seq
         );
         for seg in &inner.segments {
-            m3u8.push_str(&format!(
-                "#EXTINF:{:.3},\nseg{}.ts\n",
-                seg.duration, seg.index
-            ));
+            let uri = segment_uri(seg.index);
+            m3u8.push_str(&format!("#EXTINF:{:.3},\n{}\n", seg.duration, uri));
         }
         Some(m3u8)
     }
@@ -175,6 +196,29 @@ impl HlsStore {
             .iter()
             .find(|s| s.index == index)
             .map(|s| s.data.clone())
+    }
+
+    pub fn set_stream_metadata(&self, video: Option<VideoMeta>, audio_tracks: Vec<AudioMeta>) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.video = video;
+        inner.audio_tracks = audio_tracks;
+    }
+
+    pub fn stream_metadata(&self) -> (Option<VideoMeta>, Vec<AudioMeta>) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        (inner.video.clone(), inner.audio_tracks.clone())
+    }
+
+    pub fn get_variant_segment(&self, index: u64, variant: HlsSegmentVariant) -> Option<Bytes> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.variant_segments.get(&(index, variant)).cloned()
+    }
+
+    pub fn put_variant_segment(&self, index: u64, variant: HlsSegmentVariant, data: Bytes) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.segments.iter().any(|segment| segment.index == index) {
+            inner.variant_segments.insert((index, variant), data);
+        }
     }
 
     pub fn snapshot(&self) -> Option<HlsStoreSnapshot> {
@@ -308,6 +352,7 @@ pub async fn start_hls_segmenter(
                                 }
                                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             };
+                            let audio_tracks_vec = audio_tracks.as_ref().clone();
                             feeder = Some(TsPacketFeeder::new(
                                 video.as_ref(),
                                 audio_tracks,
@@ -316,6 +361,7 @@ pub async fn start_hls_segmenter(
                                     ..PacketFeedConfig::default()
                                 },
                             ));
+                            store.set_stream_metadata(video.clone(), audio_tracks_vec);
                         }
 
                         let Some(ref mut feeder) = feeder else {
@@ -369,6 +415,49 @@ mod tests {
         assert_eq!(
             store.get_segment(1).as_deref(),
             Some(b"segment-one".as_slice())
+        );
+    }
+
+    #[test]
+    fn playlist_can_reference_variant_segment_paths() {
+        let store = HlsStore::new();
+        store.push_segment(2.25, Bytes::from_static(b"segment-zero"));
+        store.push_segment(3.5, Bytes::from_static(b"segment-one"));
+
+        let playlist = store
+            .get_playlist_with_segment_uri(|index| format!("audio/15/seg{index}.ts"))
+            .expect("playlist");
+
+        assert!(playlist.contains("#EXTINF:2.250,\naudio/15/seg0.ts"));
+        assert!(playlist.contains("#EXTINF:3.500,\naudio/15/seg1.ts"));
+    }
+
+    #[test]
+    fn variant_cache_evicts_with_source_segments() {
+        let store = HlsStore::with_config(HlsConfig {
+            max_segments: 1,
+            ..HlsConfig::default()
+        });
+        store.push_segment(2.0, Bytes::from_static(b"source-zero"));
+        store.put_variant_segment(
+            0,
+            HlsSegmentVariant::Audio(3),
+            Bytes::from_static(b"variant-zero"),
+        );
+        assert_eq!(
+            store
+                .get_variant_segment(0, HlsSegmentVariant::Audio(3))
+                .as_deref(),
+            Some(b"variant-zero".as_slice())
+        );
+
+        store.push_segment(2.0, Bytes::from_static(b"source-one"));
+
+        assert!(store.get_segment(0).is_none());
+        assert!(
+            store
+                .get_variant_segment(0, HlsSegmentVariant::Audio(3))
+                .is_none()
         );
     }
 

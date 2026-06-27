@@ -8,55 +8,8 @@ const HLS_READY_RETRY_MS = 1000;
 
 const hlsInstances = new WeakMap<HTMLVideoElement, Hls>();
 const previewControllers = new WeakMap<HTMLElement, AbortController>();
-const hlsSourceObjectUrls = new WeakMap<HTMLVideoElement, string>();
 function buildInputPreviewUrl(pipelineId: string): string {
-    return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/index.m3u8`);
-}
-
-function quoteHlsAttribute(value: string): string {
-    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function buildHlsJsSourceUrl(video: HTMLVideoElement, pipe: PipelineView, mediaPlaylistUrl: string): string {
-    const tracks = pipe.input.audioTracks || [];
-    if (tracks.length <= 1) return mediaPlaylistUrl;
-
-    const groupId = 'source-audio';
-    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
-    tracks.forEach((track, index) => {
-        const attrs = [
-            'TYPE=AUDIO',
-            `GROUP-ID=${quoteHlsAttribute(groupId)}`,
-            `NAME=${quoteHlsAttribute(getAudioTrackLabel(pipe.id, track, index))}`,
-            `DEFAULT=${index === 0 ? 'YES' : 'NO'}`,
-            'AUTOSELECT=YES',
-        ];
-        if (track.language?.trim()) {
-            attrs.push(`LANGUAGE=${quoteHlsAttribute(track.language.trim())}`);
-        }
-        if (track.channels) {
-            attrs.push(`CHANNELS=${quoteHlsAttribute(String(track.channels))}`);
-        }
-        lines.push(`#EXT-X-MEDIA:${attrs.join(',')}`);
-    });
-
-    const streamAttrs = ['BANDWIDTH=8000000', `AUDIO=${quoteHlsAttribute(groupId)}`];
-    if (pipe.input.video?.width && pipe.input.video?.height) {
-        streamAttrs.push(`RESOLUTION=${pipe.input.video.width}x${pipe.input.video.height}`);
-    }
-    if (pipe.input.video?.fps) {
-        streamAttrs.push(`FRAME-RATE=${Number(pipe.input.video.fps).toFixed(3)}`);
-    }
-    lines.push(`#EXT-X-STREAM-INF:${streamAttrs.join(',')}`);
-    lines.push(new URL(mediaPlaylistUrl, window.location.href).toString());
-
-    const previousUrl = hlsSourceObjectUrls.get(video);
-    if (previousUrl) URL.revokeObjectURL(previousUrl);
-    const objectUrl = URL.createObjectURL(
-        new Blob([`${lines.join('\n')}\n`], { type: 'application/vnd.apple.mpegurl' }),
-    );
-    hlsSourceObjectUrls.set(video, objectUrl);
-    return objectUrl;
+    return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/master.m3u8`);
 }
 
 function formatPreviewSampleRate(rate: number | null | undefined): string | null {
@@ -158,11 +111,6 @@ function destroyHls(video: HTMLVideoElement): void {
     if (hls) {
         hls.destroy();
         hlsInstances.delete(video);
-    }
-    const sourceObjectUrl = hlsSourceObjectUrls.get(video);
-    if (sourceObjectUrl) {
-        URL.revokeObjectURL(sourceObjectUrl);
-        hlsSourceObjectUrls.delete(video);
     }
 }
 
@@ -468,7 +416,7 @@ export function renderInputPreview(playerElem: HTMLElement | null, pipe: Pipelin
         });
         hlsInstances.set(video, hls);
 
-        hls.loadSource(buildHlsJsSourceUrl(video, pipe, previewSrc));
+        hls.loadSource(previewSrc);
         hls.attachMedia(video);
 
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
