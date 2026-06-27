@@ -642,16 +642,18 @@ impl MediaEngine {
         rb
     }
 
-    /// Called after stream probe: sets packet rate on the ring and, if no egress
-    /// readers have attached yet, swaps in a correctly-sized ring for 5 s jitter.
+    /// Called after stream probe: sizes the source ring for 5 s jitter headroom.
     ///
     /// Formula: `needed = ceil(pkt_rate × HEADROOM_SECS)`, clamped to
-    /// `[default_ring_capacity(), MAX_RING_CAPACITY]`.  At 30 fps + 1 audio the
-    /// default (1024) already covers 12 s — no swap occurs.  At 16 audio tracks
-    /// + 1 video the rate is ~830 pkt/s → 4980 slots needed; the ring is swapped
-    /// before any readers attach.
-    /// Returns `Some(new_ring)` if the ring was resized so the caller can
-    /// update its local `ring_buffer` reference (the old Arc is now stale).
+    /// `[default_ring_capacity(), MAX_RING_CAPACITY]`.  If the ring is already
+    /// large enough no action is taken.  Otherwise the ring is always swapped in,
+    /// even if egress readers are already attached — those readers are cancelled so
+    /// the reconciler restarts them (within ~1 s) onto the new correctly-sized ring.
+    /// Cancelling early readers is safe: the probe fires at ~2–3 s, before any
+    /// viewer has meaningfully started watching, and the reconnect is invisible.
+    ///
+    /// Returns `Some(new_ring)` when resized so the SRT ingest loop can update its
+    /// local `ring_buffer` Arc (the old one is stale and receives no further data).
     pub async fn adapt_pipeline_ring(
         &self,
         pipeline_id: &str,
@@ -668,45 +670,60 @@ impl MediaEngine {
             .min(MAX_RING_CAPACITY);
 
         let mut pipelines = self.pipelines.write().await;
-        if let Some(rb) = pipelines.get(pipeline_id) {
-            // Always record the packet rate for buffer-depth telemetry.
-            rb.set_estimated_pkt_rate(pkt_rate);
+        let Some(rb) = pipelines.get(pipeline_id) else {
+            return None;
+        };
 
-            if needed <= rb.capacity() {
-                return None; // already large enough
-            }
+        // Always record the packet rate for buffer-depth telemetry.
+        rb.set_estimated_pkt_rate(pkt_rate);
 
-            // Only safe to resize before readers attach (window between probe
-            // completion and the reconciler starting egress connections, ≈ 0–1 s).
-            if rb.active_reader_count() == 0 {
-                let new_rb = Arc::new(RingBuffer::new(needed));
-                new_rb.set_estimated_pkt_rate(pkt_rate);
-                if let Some(hint) = rb.codec_hint.get() {
-                    new_rb.set_codec_hint(hint);
-                }
-                let new_rb_clone = new_rb.clone();
-                pipelines.insert(pipeline_id.to_string(), new_rb);
-                println!(
-                    "[engine] Adaptive ring resize: pipeline={} {:.0} pkt/s \
-                     (video={:.0} fps, audio={} tracks) → {} slots ({:.1} s headroom)",
-                    pipeline_id, pkt_rate, video_fps, audio_track_count,
-                    needed, needed as f64 / pkt_rate
-                );
-                // Return the new ring so the ingest loop can switch its
-                // local `ring_buffer` reference — the old Arc is now stale.
-                return Some(new_rb_clone);
-            } else {
-                println!(
-                    "[engine] Ring undersized for pipeline={}: {:.0} pkt/s needs {} slots \
-                     ({:.1} s headroom) but {} slots allocated and {} reader(s) active; \
-                     set RESTREAM_RING_CAPACITY>={} to fix",
-                    pipeline_id, pkt_rate, needed,
-                    needed as f64 / pkt_rate, rb.capacity(),
-                    rb.active_reader_count(), needed
-                );
-            }
+        if needed <= rb.capacity() {
+            return None; // already large enough
         }
-        None
+
+        let new_rb = Arc::new(RingBuffer::new(needed));
+        new_rb.set_estimated_pkt_rate(pkt_rate);
+        if let Some(hint) = rb.codec_hint.get() {
+            new_rb.set_codec_hint(hint);
+        }
+        let new_rb_clone = new_rb.clone();
+        let n_readers = rb.active_reader_count();
+        pipelines.insert(pipeline_id.to_string(), new_rb);
+        drop(pipelines); // release before taking egress_cancel_tokens lock
+
+        // Cancel any egress connections still on the old ring so the reconciler
+        // restarts them onto the new ring within ~1 s.
+        let n_cancelled = if n_readers > 0 {
+            let tokens = self.egress_cancel_tokens.read().await;
+            let egresses = self.active_egresses.read().await;
+            let mut count = 0;
+            for (output_id, egress) in egresses.iter() {
+                if egress.pipeline_id == pipeline_id {
+                    if let Some(tok) = tokens.get(output_id.as_str()) {
+                        tok.cancel();
+                        count += 1;
+                    }
+                }
+            }
+            count
+        } else {
+            0
+        };
+
+        println!(
+            "[engine] Adaptive ring resize: pipeline={} {:.0} pkt/s \
+             (video={:.0} fps, audio={} tracks) → {} slots ({:.1} s headroom)\
+             {}",
+            pipeline_id, pkt_rate, video_fps, audio_track_count,
+            needed, needed as f64 / pkt_rate,
+            if n_cancelled > 0 {
+                format!("; cancelled {n_cancelled} egress(es) for reconnect")
+            } else {
+                String::new()
+            }
+        );
+
+        Some(new_rb_clone)
     }
 
     /// Get or create a shared transcoder stage for a pipeline + encoding combo.
