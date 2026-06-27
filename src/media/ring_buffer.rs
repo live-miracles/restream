@@ -47,6 +47,7 @@
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
+use tracing::{debug, warn};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -293,6 +294,7 @@ impl RingBuffer {
                 published_at_us: AtomicU64::new(0),
             });
         }
+        debug!(capacity, "ring buffer created");
         Self {
             slots,
             write_idx: AlignedAtomicUsize {
@@ -348,7 +350,9 @@ impl RingBuffer {
     /// Set the video codec hint for this ring.  Called once by the producer
     /// (e.g. external transcoder, hevc_to_h264 stage).  No-op if already set.
     pub fn set_codec_hint(&self, codec: &str) {
-        let _ = self.codec_hint.set(codec.to_string());
+        if self.codec_hint.set(codec.to_string()).is_ok() {
+            debug!(codec, "ring codec hint set");
+        }
     }
 
     /// Return the codec hint if set, or empty string.
@@ -357,7 +361,10 @@ impl RingBuffer {
     }
 
     pub fn set_audio_tracks(&self, tracks: Vec<crate::media::engine::AudioMeta>) {
-        let _ = self.audio_tracks.set(tracks);
+        let count = tracks.len();
+        if self.audio_tracks.set(tracks).is_ok() {
+            debug!(count, "ring audio tracks set");
+        }
     }
 
     pub fn audio_tracks(&self) -> Option<&[crate::media::engine::AudioMeta]> {
@@ -593,6 +600,7 @@ impl Drop for Reader {
             Some(info) => !Arc::ptr_eq(&info, &self.info),
             None => false,
         });
+        debug!(reader = %self.info.name, overflows = self.info.overflow_count.load(Ordering::Relaxed), "ring reader deregistered");
     }
 }
 
@@ -600,13 +608,14 @@ impl Reader {
     pub fn new(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
         let start_idx = buffer.fast_forward(current_write);
-        let info = Arc::new(ReaderInfo::new(name, start_idx));
+        let info = Arc::new(ReaderInfo::new(name.clone(), start_idx));
 
         {
             let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
             r.push(Arc::downgrade(&info));
         }
 
+        debug!(reader = %name, start_idx, "ring reader registered");
         Self {
             buffer,
             info,
@@ -616,13 +625,14 @@ impl Reader {
 
     pub fn new_live(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
-        let info = Arc::new(ReaderInfo::new(name, current_write));
+        let info = Arc::new(ReaderInfo::new(name.clone(), current_write));
 
         {
             let mut r = buffer.readers.lock().unwrap_or_else(|e| e.into_inner());
             r.push(Arc::downgrade(&info));
         }
 
+        debug!(reader = %name, start_idx = current_write, "ring reader registered (live edge)");
         Self {
             buffer,
             info,
@@ -635,9 +645,11 @@ impl Reader {
 
         if write_idx > self.read_idx && write_idx - self.read_idx >= self.buffer.capacity {
             let new_idx = self.buffer.fast_forward(write_idx);
+            let lag = write_idx.saturating_sub(self.read_idx);
             self.read_idx = new_idx;
             self.info.read_idx.store(new_idx, Ordering::Relaxed);
             self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
+            warn!(reader = %self.info.name, lag_packets = lag, "ring reader overflowed — fast-forwarding to keyframe");
             return Err("Overflow: reader lagged and was fast-forwarded");
         }
 
@@ -650,9 +662,11 @@ impl Reader {
         if post_write_idx > self.read_idx && post_write_idx - self.read_idx >= self.buffer.capacity
         {
             let new_idx = self.buffer.fast_forward(post_write_idx);
+            let lag = post_write_idx.saturating_sub(self.read_idx);
             self.read_idx = new_idx;
             self.info.read_idx.store(new_idx, Ordering::Relaxed);
             self.info.overflow_count.fetch_add(1, Ordering::Relaxed);
+            warn!(reader = %self.info.name, lag_packets = lag, "ring reader overflowed mid-read — fast-forwarding to keyframe");
             return Err("Overflow: reader lagged and was fast-forwarded");
         }
 

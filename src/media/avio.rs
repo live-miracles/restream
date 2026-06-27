@@ -12,6 +12,7 @@
 
 use ffmpeg_next as ffmpeg;
 use std::collections::VecDeque;
+use tracing::debug;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -76,6 +77,7 @@ impl MemoryQueue {
     }
 
     pub fn new_with_capacity(capacity: usize) -> Self {
+        debug!(capacity_bytes = capacity, "memory queue created");
         Self {
             inner: Mutex::new(MemoryQueueInner {
                 buf: VecDeque::new(),
@@ -179,6 +181,9 @@ impl MemoryQueue {
         inner.closed = true;
         self.cvar.notify_all();
         self.space_available.notify_waiters();
+        let high = self.high_water_bytes.load(Ordering::Relaxed);
+        let blocked = self.blocked_writes.load(Ordering::Relaxed);
+        debug!(high_water_bytes = high, blocked_writes = blocked, "memory queue closed");
     }
 
     pub fn is_closed(&self) -> bool {
