@@ -800,6 +800,30 @@ pub async fn get_ingest(pool: &SqlitePool, id: &str) -> Result<Option<Ingest>, s
     .await
 }
 
+pub async fn get_ingest_by_stream_key(
+    pool: &SqlitePool,
+    stream_key: &str,
+) -> Result<Option<Ingest>, sqlx::Error> {
+    sqlx::query_as::<_, Ingest>(
+        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE stream_key = ? ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(stream_key)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn list_ingests_for_stream_key(
+    pool: &SqlitePool,
+    stream_key: &str,
+) -> Result<Vec<Ingest>, sqlx::Error> {
+    sqlx::query_as::<_, Ingest>(
+        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE stream_key = ? ORDER BY rowid ASC",
+    )
+    .bind(stream_key)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn list_ingests(pool: &SqlitePool) -> Result<Vec<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
         "SELECT id, filename, stream_key, loop, start_time FROM ingests ORDER BY rowid ASC",

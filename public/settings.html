@@ -40,52 +40,6 @@
       <div class="mx-auto max-w-3xl space-y-8">
         <h1 class="text-2xl font-bold">Settings</h1>
 
-        <!-- Video Ingest -->
-        <section class="bg-base-200 rounded-xl p-5 shadow">
-          <div class="mb-4 flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Video Ingest</h2>
-            <button class="btn btn-accent btn-sm" onclick="openAddIngestForm()">Add</button>
-          </div>
-
-          <!-- Add form -->
-          <div id="ingest-add-form" class="bg-base-300 mb-4 hidden rounded-lg p-4">
-            <div class="flex flex-wrap items-end gap-3">
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Video File</legend>
-                <select id="ingest-file" class="select select-sm w-48">
-                  <option value="">Loading...</option>
-                </select>
-              </fieldset>
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Stream Key</legend>
-                <select id="ingest-stream-key" class="select select-sm w-40">
-                  <option value="">Loading...</option>
-                </select>
-              </fieldset>
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Start Time</legend>
-                <input type="text" id="ingest-start-time" class="input input-sm w-28" placeholder="e.g. 00:01:30" />
-              </fieldset>
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Loop</legend>
-                <input type="checkbox" id="ingest-loop" class="checkbox checkbox-sm" />
-              </fieldset>
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend invisible">_</legend>
-                <div class="flex items-center gap-2">
-                  <button id="ingest-save-btn" class="btn btn-accent btn-sm" onclick="saveIngest()">Save</button>
-                  <button class="btn btn-ghost btn-sm" onclick="closeAddIngestForm()">Cancel</button>
-                </div>
-              </fieldset>
-            </div>
-          </div>
-
-          <!-- Ingest list -->
-          <div id="ingest-list">
-            <p class="text-sm opacity-70">Loading...</p>
-          </div>
-        </section>
-
         <!-- Server Settings -->
         <section class="bg-base-200 space-y-4 rounded-xl p-5 shadow">
           <h2 class="text-lg font-semibold">Server</h2>

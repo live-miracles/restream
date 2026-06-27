@@ -8,7 +8,12 @@ import {
     createOutput,
     updateOutput,
     deleteOutput,
+    listMediaFiles,
+    getPipelineFileIngest,
+    putPipelineFileIngest,
+    deletePipelineFileIngest,
 } from '../core/api.js';
+import type { MediaFile, PipelineFileIngestConfig } from '../core/api.js';
 import {
     getUrlParam,
     isValidOutput,
@@ -25,6 +30,8 @@ import {
     formatMaskedStreamKey,
     formatChannelCount,
     formatCodecName,
+    escapeHtml,
+    showErrorAlert,
     OUTPUT_SERVER_PRESETS,
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
@@ -639,17 +646,42 @@ export async function stopOutBtn(
     }
 }
 
-async function populatePipelineKeySelect(selectedKey = ''): Promise<void> {
+type PipeModalMode = 'create' | 'edit';
+
+let currentPipeModalMode: PipeModalMode = 'edit';
+let currentPipeModalPipeline: PipelineView | null = null;
+
+function getSuggestedPipelineName(): string {
+    const numbers = state.pipelines
+        .filter((p) => p.name.startsWith('Pipeline '))
+        .map((p) => parseInt(p.name.split(' ')[1], 10))
+        .filter((n) => Number.isFinite(n));
+    const nextNumber = Math.max(...numbers, 0) + 1;
+    return `Pipeline ${nextNumber}`;
+}
+
+async function populatePipelineKeySelect(selectedKey = ''): Promise<string> {
     const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
-    if (!keySelect) return;
+    if (!keySelect) return selectedKey;
     const keys = await loadStreamKeysOnce();
+    const usedKeys = new Set(state.pipelines.map((pipeline) => pipeline.key).filter(Boolean));
+    const fallbackKey =
+        selectedKey ||
+        keys.find((key) => !usedKeys.has(key.key))?.key ||
+        keys[0]?.key ||
+        '';
 
     keySelect.innerHTML = keys
         .map(
-            (key) =>
-                `<option value="${key.key}"${key.key === selectedKey ? ' selected' : ''}>${formatMaskedStreamKey(key.key)}</option>`,
+            (key) => {
+                const isSelected = key.key === fallbackKey;
+                const isUsedElsewhere = usedKeys.has(key.key) && key.key !== selectedKey;
+                return `<option value="${escapeHtml(key.key)}"${isSelected ? ' selected' : ''}${isUsedElsewhere ? ' disabled' : ''}>${escapeHtml(formatMaskedStreamKey(key.key))}</option>`;
+            },
         )
         .join('');
+    keySelect.value = fallbackKey;
+    return fallbackKey;
 }
 
 let streamKeysCache: StreamKey[] | null = null;
@@ -670,21 +702,91 @@ async function loadStreamKeysOnce(): Promise<StreamKey[]> {
     return streamKeysRequest;
 }
 
-async function openPipeModal(pipe: PipelineView): Promise<void> {
-    (document.getElementById('pipe-id-input') as HTMLInputElement).value = pipe.id;
-    (document.getElementById('pipe-name-input') as HTMLInputElement).value = pipe?.name;
-    (document.getElementById('pipe-input-source-input') as HTMLInputElement).value =
-        pipe.inputSource || '';
+function filenameFromInputSource(inputSource: string | null | undefined): string {
+    const source = (inputSource || '').trim();
+    if (!source) return '';
+    return source.startsWith('file:') ? source.slice('file:'.length) : source;
+}
 
-    await populatePipelineKeySelect(pipe.key ?? '');
+function setPipeSourceUi(sourceType: 'publisher' | 'file'): void {
+    const sourceSelect = document.getElementById('pipe-source-type-input') as HTMLSelectElement | null;
+    const fileFields = document.getElementById('pipe-file-fields');
+    if (sourceSelect) sourceSelect.value = sourceType;
+    fileFields?.classList.toggle('hidden', sourceType !== 'file');
+}
+
+async function populatePipeFileSelect(selectedFilename = ''): Promise<void> {
+    const fileSelect = document.getElementById('pipe-file-input') as HTMLSelectElement | null;
+    if (!fileSelect) return;
+
+    const mediaResult = await listMediaFiles();
+    const files = mediaResult?.files ?? [];
+    const options = files.map((file: MediaFile) => {
+        const labelParts = [file.name];
+        if (file.kind === 'recording') labelParts.push('recording');
+        return `<option value="${escapeHtml(file.name)}">${escapeHtml(labelParts.join(' - '))}</option>`;
+    });
+
+    const hasSelectedFile = selectedFilename && files.some((file) => file.name === selectedFilename);
+    if (selectedFilename && !hasSelectedFile) {
+        options.unshift(
+            `<option value="${escapeHtml(selectedFilename)}">${escapeHtml(selectedFilename)} (missing)</option>`,
+        );
+    }
+
+    fileSelect.innerHTML =
+        '<option value="">Select file...</option>' + options.join('');
+    fileSelect.value = selectedFilename;
+}
+
+function resetPipeFileOptions(fileIngest: PipelineFileIngestConfig | null, fallbackFilename = ''): void {
+    const filename = fileIngest?.configured ? fileIngest.filename || '' : fallbackFilename;
+    const loopCheck = document.getElementById('pipe-file-loop-input') as HTMLInputElement | null;
+    const startInput = document.getElementById('pipe-file-start-time-input') as HTMLInputElement | null;
+    if (loopCheck) loopCheck.checked = fileIngest?.configured ? !!fileIngest.loop : false;
+    if (startInput) startInput.value = fileIngest?.configured ? fileIngest.startTime || '' : '00:00:00';
+    void populatePipeFileSelect(filename);
+}
+
+async function openPipeModal(mode: PipeModalMode, pipe: PipelineView | null = null): Promise<void> {
+    currentPipeModalMode = mode;
+    currentPipeModalPipeline = pipe;
+    (document.getElementById('pipe-mode-input') as HTMLInputElement).value = mode;
+    (document.getElementById('pipe-id-input') as HTMLInputElement).value = pipe?.id || '';
+    (document.getElementById('pipe-name-input') as HTMLInputElement).value =
+        pipe?.name || getSuggestedPipelineName();
+    const title = document.getElementById('pipe-modal-title');
+    if (title) title.textContent = mode === 'create' ? 'Add Pipeline' : 'Edit Pipeline';
+    const submitBtn = document.getElementById('pipe-submit-btn');
+    if (submitBtn) submitBtn.textContent = mode === 'create' ? 'Create' : 'Update';
+
+    await populatePipelineKeySelect(pipe?.key ?? '');
     const keySelect = document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null;
     const keyHint = document.getElementById('pipe-stream-key-locked-hint');
-    const keyLocked = isPipelineKeyChangeLocked(pipe);
+    const keyLocked = pipe ? isPipelineKeyChangeLocked(pipe) : false;
     if (keySelect) keySelect.disabled = keyLocked;
     if (keyHint) keyHint.classList.toggle('hidden', !keyLocked);
 
     const nameInput = document.getElementById('pipe-name-input') as HTMLInputElement | null;
     nameInput?.classList.remove('input-error');
+    const fileSelect = document.getElementById('pipe-file-input') as HTMLSelectElement | null;
+    fileSelect?.classList.remove('select-error');
+
+    const fallbackFilename = filenameFromInputSource(pipe?.inputSource);
+    let fileIngest: PipelineFileIngestConfig | null = null;
+    if (mode === 'edit' && pipe?.id) {
+        fileIngest = await getPipelineFileIngest(pipe.id);
+    }
+    const sourceType = fileIngest?.configured || fallbackFilename ? 'file' : 'publisher';
+    setPipeSourceUi(sourceType);
+    resetPipeFileOptions(fileIngest, fallbackFilename);
+
+    const sourceSelect = document.getElementById('pipe-source-type-input') as HTMLSelectElement | null;
+    if (sourceSelect) {
+        sourceSelect.onchange = () => {
+            setPipeSourceUi(sourceSelect.value === 'file' ? 'file' : 'publisher');
+        };
+    }
 
     (document.getElementById('edit-pipe-modal') as HTMLDialogElement).showModal();
 }
@@ -700,10 +802,14 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     const pipeId = (document.getElementById('pipe-id-input') as HTMLInputElement).value;
     const nameInput = document.getElementById('pipe-name-input') as HTMLInputElement | null;
     const name = nameInput?.value.trim() || '';
-    const inputSource =
-        (
-            document.getElementById('pipe-input-source-input') as HTMLInputElement | null
-        )?.value.trim() || null;
+    const sourceType =
+        (document.getElementById('pipe-source-type-input') as HTMLSelectElement | null)?.value ===
+        'file'
+            ? 'file'
+            : 'publisher';
+    const fileSelect = document.getElementById('pipe-file-input') as HTMLSelectElement | null;
+    const filename = fileSelect?.value?.trim() || '';
+    const inputSource = sourceType === 'file' ? `file:${filename}` : null;
 
     if (!name) {
         nameInput?.classList.add('input-error');
@@ -711,12 +817,55 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     }
     nameInput?.classList.remove('input-error');
 
+    if (sourceType === 'file' && !filename) {
+        fileSelect?.classList.add('select-error');
+        showErrorAlert('Select a file for file ingest');
+        return;
+    }
+    fileSelect?.classList.remove('select-error');
+
     const streamKey =
         (document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null)?.value || '';
-    const response = await updatePipeline(pipeId, { name, streamKey, inputSource });
-    if (response === null) return;
+    const loopFlag =
+        (document.getElementById('pipe-file-loop-input') as HTMLInputElement | null)?.checked ??
+        false;
+    const startTime =
+        (
+            document.getElementById('pipe-file-start-time-input') as HTMLInputElement | null
+        )?.value.trim() || '';
+
+    let savedPipeId = pipeId;
+    if (currentPipeModalMode === 'edit' && currentPipeModalPipeline?.key !== streamKey && pipeId) {
+        await deletePipelineFileIngest(pipeId);
+    }
+
+    if (currentPipeModalMode === 'create') {
+        const response = (await createPipeline({ name, streamKey, inputSource })) as {
+            pipeline?: { id: string };
+        } | null;
+        if (response === null) return;
+        savedPipeId = response.pipeline?.id || '';
+    } else {
+        const response = await updatePipeline(pipeId, { name, streamKey, inputSource });
+        if (response === null) return;
+    }
+
+    if (!savedPipeId) return;
+    if (sourceType === 'file') {
+        const response = await putPipelineFileIngest(savedPipeId, {
+            filename,
+            loopFlag,
+            startTime,
+        });
+        if (response === null) return;
+    } else {
+        await deletePipelineFileIngest(savedPipeId);
+    }
 
     modal?.close();
+    if (currentPipeModalMode === 'create') {
+        setUrlParam('p', savedPipeId);
+    }
     await refreshDashboard();
 }
 
@@ -1024,19 +1173,7 @@ export async function addOutBtn(): Promise<void> {
 }
 
 export async function addPipeBtn(): Promise<void> {
-    const numbers = state.pipelines
-        .filter((p) => p.name.startsWith('Pipeline '))
-        .map((p) => parseInt(p.name.split(' ')[1]));
-    const nextNumber = Math.max(...numbers, 0) + 1;
-
-    const response = (await createPipeline({
-        name: 'Pipeline ' + nextNumber,
-        streamKey: '',
-    })) as { pipeline?: { id: string } } | null;
-    if (response === null) return;
-
-    setUrlParam('p', response.pipeline?.id || null);
-    await refreshDashboard();
+    await openPipeModal('create');
 }
 
 export async function editPipeBtn(): Promise<void> {
@@ -1052,7 +1189,7 @@ export async function editPipeBtn(): Promise<void> {
         return;
     }
 
-    await openPipeModal(pipe);
+    await openPipeModal('edit', pipe);
 }
 
 export async function deletePipeBtn(): Promise<void> {

@@ -277,6 +277,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             post(pipelines_update_handler).delete(pipelines_delete_handler),
         )
         .route(
+            "/pipelines/:pipeline_id/file-ingest",
+            get(pipeline_file_ingest_get_handler)
+                .put(pipeline_file_ingest_put_handler)
+                .delete(pipeline_file_ingest_delete_handler),
+        )
+        .route(
             "/pipelines/:pipeline_id/outputs",
             post(outputs_create_handler),
         )
@@ -960,7 +966,7 @@ async fn pipelines_get_handler(
 struct PipelinePayload {
     name: String,
     stream_key: Option<String>,
-    input_source: Option<String>,
+    input_source: Option<Option<String>>,
     encoding: Option<String>,
 }
 
@@ -982,6 +988,11 @@ async fn pipelines_post_handler(
     }
     if let Some(ref k) = payload.stream_key
         && let Some(r) = check_field_len("stream_key", k, MAX_STREAM_KEY_LEN)
+    {
+        return r;
+    }
+    if let Some(Some(ref source)) = payload.input_source
+        && let Some(r) = check_field_len("input_source", source, MAX_URL_LEN)
     {
         return r;
     }
@@ -1030,12 +1041,17 @@ async fn pipelines_post_handler(
 
     let id = format!("pipeline_{}", to_hex(&rand::random::<[u8; 8]>()));
 
+    let input_source = payload
+        .input_source
+        .as_ref()
+        .and_then(|source| source.as_deref());
+
     match db::create_pipeline(
         &state.db,
         &id,
         &payload.name,
         &stream_key,
-        payload.input_source.as_deref(),
+        input_source,
         payload.encoding.as_deref(),
     )
     .await
@@ -1073,13 +1089,39 @@ async fn pipelines_update_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
+    if let Some(r) = check_field_len("name", &payload.name, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(ref k) = payload.stream_key
+        && let Some(r) = check_field_len("stream_key", k, MAX_STREAM_KEY_LEN)
+    {
+        return r;
+    }
+    if let Some(Some(ref source)) = payload.input_source
+        && let Some(r) = check_field_len("input_source", source, MAX_URL_LEN)
+    {
+        return r;
+    }
+    if let Some(ref e) = payload.encoding
+        && let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN)
+    {
+        return r;
+    }
+    if payload.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Pipeline name cannot be empty"})),
+        )
+            .into_response();
+    }
+
     let existing = match db::get_pipeline(&state.db, &id).await {
         Ok(Some(p)) => p,
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
     let stream_key = payload.stream_key.unwrap_or(existing.stream_key);
-    let input_source = payload.input_source.or(existing.input_source);
+    let input_source = payload.input_source.unwrap_or(existing.input_source);
     let encoding = payload.encoding.or(existing.encoding);
 
     if let Ok(active_pipelines) = db::list_pipelines(&state.db).await
@@ -1618,8 +1660,36 @@ async fn ingests_get_handler(
 struct IngestPayload {
     filename: String,
     stream_key: String,
+    #[serde(alias = "loop")]
     loop_flag: Option<bool>,
     start_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineFileIngestPayload {
+    filename: String,
+    #[serde(alias = "loop")]
+    loop_flag: Option<bool>,
+    start_time: Option<String>,
+}
+
+fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> serde_json::Value {
+    match ingest {
+        Some(ingest) => serde_json::json!({
+            "configured": true,
+            "id": ingest.id,
+            "filename": ingest.filename,
+            "streamKey": ingest.stream_key,
+            "loop": ingest.loop_flag,
+            "startTime": ingest.start_time,
+            "running": running
+        }),
+        None => serde_json::json!({
+            "configured": false,
+            "running": false
+        }),
+    }
 }
 
 struct SpawnedFileIngestChild {
@@ -1697,6 +1767,188 @@ async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &st
     if let Ok(Some(pipeline)) = db::get_pipeline_by_stream_key(&state.db, stream_key).await {
         state.engine.unregister_ingest(&pipeline.id).await;
     }
+}
+
+async fn stop_file_ingests_for_stream_key(state: &AppState, stream_key: &str) {
+    unregister_file_ingest_for_stream_key(state, stream_key).await;
+    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, stream_key).await {
+        for ingest in ingests {
+            stop_file_ingest_child(&state.engine, &ingest.id).await;
+            state.engine.clear_file_ingest_running(&ingest.id).await;
+        }
+    }
+}
+
+async fn pipeline_file_ingest_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let pipeline = match db::get_pipeline(&state.db, &pipeline_id).await {
+        Ok(Some(pipeline)) => pipeline,
+        _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
+    };
+
+    let ingest = match db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key).await {
+        Ok(ingest) => ingest,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let running = match ingest.as_ref() {
+        Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
+        None => false,
+    };
+
+    Json(file_ingest_response(ingest, running)).into_response()
+}
+
+async fn pipeline_file_ingest_put_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+    Json(payload): Json<PipelineFileIngestPayload>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) {
+        return r;
+    }
+    if let Some(ref start_time) = payload.start_time
+        && let Some(r) = check_field_len("start_time", start_time, 64)
+    {
+        return r;
+    }
+    if payload.filename.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Filename cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    let pipeline = match db::get_pipeline(&state.db, &pipeline_id).await {
+        Ok(Some(pipeline)) => pipeline,
+        _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
+    };
+
+    stop_file_ingests_for_stream_key(&state, &pipeline.stream_key).await;
+
+    let loop_val = payload.loop_flag.unwrap_or(false);
+    let start_time = payload.start_time.unwrap_or_default();
+    let existing = match db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key).await {
+        Ok(ingest) => ingest,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let saved = match existing {
+        Some(ingest) => match db::update_ingest(
+            &state.db,
+            &ingest.id,
+            &payload.filename,
+            &pipeline.stream_key,
+            loop_val,
+            &start_time,
+        )
+        .await
+        {
+            Ok(Some(updated)) => updated,
+            _ => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        None => {
+            let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
+            match db::create_ingest(
+                &state.db,
+                &id,
+                &payload.filename,
+                &pipeline.stream_key,
+                loop_val,
+                &start_time,
+            )
+            .await
+            {
+                Ok(created) => created,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+    };
+
+    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, &pipeline.stream_key).await {
+        for ingest in ingests.into_iter().filter(|ingest| ingest.id != saved.id) {
+            let _ = db::delete_ingest(&state.db, &ingest.id).await;
+        }
+    }
+
+    let input_source = format!("file:{}", payload.filename);
+    if db::update_pipeline(
+        &state.db,
+        &pipeline.id,
+        &pipeline.name,
+        &pipeline.stream_key,
+        Some(&input_source),
+        pipeline.encoding.as_deref(),
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(file_ingest_response(Some(saved), false)).into_response()
+}
+
+async fn pipeline_file_ingest_delete_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(pipeline_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let pipeline = match db::get_pipeline(&state.db, &pipeline_id).await {
+        Ok(Some(pipeline)) => pipeline,
+        _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
+    };
+
+    stop_file_ingests_for_stream_key(&state, &pipeline.stream_key).await;
+    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, &pipeline.stream_key).await {
+        for ingest in ingests {
+            let _ = db::delete_ingest(&state.db, &ingest.id).await;
+        }
+    }
+
+    if db::update_pipeline(
+        &state.db,
+        &pipeline.id,
+        &pipeline.name,
+        &pipeline.stream_key,
+        None,
+        pipeline.encoding.as_deref(),
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(serde_json::json!({"deleted": true})).into_response()
 }
 
 async fn pump_file_ingest_stdout(

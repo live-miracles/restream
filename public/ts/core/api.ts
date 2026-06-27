@@ -342,6 +342,16 @@ export interface IngestConfig {
     running: boolean;
 }
 
+export interface PipelineFileIngestConfig {
+    configured: boolean;
+    id?: string;
+    filename?: string;
+    streamKey?: string;
+    loop?: boolean;
+    startTime?: string;
+    running: boolean;
+}
+
 async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
     return apiRequest<{ files: MediaFile[] }>('/api/media');
 }
@@ -393,6 +403,29 @@ async function stopIngest(id: string): Promise<IngestConfig | null> {
     });
 }
 
+async function getPipelineFileIngest(pipeId: string): Promise<PipelineFileIngestConfig | null> {
+    return apiRequest<PipelineFileIngestConfig>(
+        `/pipelines/${encodeURIComponent(pipeId)}/file-ingest`,
+    );
+}
+
+async function putPipelineFileIngest(
+    pipeId: string,
+    data: { filename: string; loopFlag: boolean; startTime: string },
+): Promise<PipelineFileIngestConfig | null> {
+    return apiRequest<PipelineFileIngestConfig>(
+        `/pipelines/${encodeURIComponent(pipeId)}/file-ingest`,
+        { method: 'PUT', body: data },
+    );
+}
+
+async function deletePipelineFileIngest(pipeId: string): Promise<{ deleted: boolean } | null> {
+    return apiRequest<{ deleted: boolean }>(
+        `/pipelines/${encodeURIComponent(pipeId)}/file-ingest`,
+        { method: 'DELETE' },
+    );
+}
+
 async function logout(): Promise<{ ok: boolean } | null> {
     return apiRequest<{ ok: boolean }>('/api/auth/logout', { method: 'POST' });
 }
@@ -438,6 +471,9 @@ export {
     deleteIngest,
     startIngest,
     stopIngest,
+    getPipelineFileIngest,
+    putPipelineFileIngest,
+    deletePipelineFileIngest,
     logout,
     changePassword,
     getProcessingGraph,

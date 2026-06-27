@@ -95,9 +95,6 @@ declare global {
         saveIngestSecurity: () => Promise<void>;
         saveTranscodeProfiles: () => Promise<void>;
         addTranscodeProfile: () => void;
-        openAddIngestForm: () => void;
-        closeAddIngestForm: () => void;
-        saveIngest: () => Promise<void>;
         saveDashboardPassword: () => Promise<void>;
         logoutUser: () => Promise<void>;
     }

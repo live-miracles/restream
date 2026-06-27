@@ -1,19 +1,11 @@
 import {
     patchConfig,
-    listMediaFiles,
-    listIngests,
-    createIngest,
-    updateIngest,
-    deleteIngest,
-    startIngest,
-    stopIngest,
     logout,
     changePassword,
-    type IngestConfig,
     type TranscodeProfile,
     type TranscodeProfiles,
 } from '../core/api.js';
-import { showErrorAlert, formatMaskedStreamKey } from '../core/utils.js';
+import { showErrorAlert } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { withBasePath } from '../core/base-path.js';
 
@@ -68,7 +60,6 @@ function ensureSettingsNav(container: Element): void {
     nav.setAttribute('aria-label', 'Admin sections');
     nav.innerHTML = `
         <div class="flex flex-wrap gap-2">
-            <a class="btn btn-sm btn-ghost" href="#video-ingest-section">Video Ingest</a>
             <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
             <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
         </div>`;
@@ -87,19 +78,10 @@ function applySettingsChrome(): void {
         ensureSettingsNav(container);
     }
 
-    const ingestSection = settingsSectionFor('ingest-list');
     const serverSection = settingsSectionFor('settings-server-name');
-    styleSettingsSection(ingestSection, 'video-ingest-section');
     styleSettingsSection(serverSection, 'server-settings-section');
     const profilesSection = document.getElementById('transcode-profiles-list')?.closest('.space-y-3');
     if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
-
-    const ingestForm = document.getElementById('ingest-add-form');
-    if (ingestForm) {
-        ingestForm.className =
-            'border-base-content/10 bg-base-100 mb-4 hidden rounded-lg border p-4';
-    }
-    document.getElementById('ingest-list')?.classList.add('space-y-2');
 }
 
 // ── Server Name ───────────────────────────────────────
@@ -215,201 +197,6 @@ function showSavedFeedback(id: string): void {
     if (!el) return;
     el.classList.remove('hidden');
     setTimeout(() => el.classList.add('hidden'), 2000);
-}
-
-// ── Video Ingest ──────────────────────────────────────
-
-let editIngestId: string | null = null;
-let currentIngests: IngestConfig[] = [];
-
-export function openAddIngestForm(): void {
-    editIngestId = null;
-    const saveBtn = document.getElementById('ingest-save-btn');
-    if (saveBtn) saveBtn.textContent = 'Save';
-    resetIngestForm();
-    const form = document.getElementById('ingest-add-form');
-    if (!form) return;
-    form.classList.remove('hidden');
-    void populateIngestFormDropdowns(null);
-}
-
-async function openEditIngestForm(ingest: IngestConfig): Promise<void> {
-    editIngestId = ingest.id;
-    const saveBtn = document.getElementById('ingest-save-btn');
-    if (saveBtn) saveBtn.textContent = 'Update';
-    const form = document.getElementById('ingest-add-form');
-    if (!form) return;
-    form.classList.remove('hidden');
-    await populateIngestFormDropdowns(ingest);
-}
-
-export function closeAddIngestForm(): void {
-    editIngestId = null;
-    const form = document.getElementById('ingest-add-form');
-    if (!form) return;
-    form.classList.add('hidden');
-    resetIngestForm();
-}
-
-function resetIngestForm(): void {
-    const fileSelect = document.getElementById('ingest-file') as HTMLSelectElement | null;
-    const keySelect = document.getElementById('ingest-stream-key') as HTMLSelectElement | null;
-    const loopCheck = document.getElementById('ingest-loop') as HTMLInputElement | null;
-    const startInput = document.getElementById('ingest-start-time') as HTMLInputElement | null;
-    if (fileSelect) fileSelect.selectedIndex = 0;
-    if (keySelect) keySelect.selectedIndex = 0;
-    if (loopCheck) loopCheck.checked = false;
-    if (startInput) startInput.value = '00:00:00';
-}
-
-async function populateIngestFormDropdowns(prefill: IngestConfig | null): Promise<void> {
-    const fileSelect = document.getElementById('ingest-file') as HTMLSelectElement | null;
-    const keySelect = document.getElementById('ingest-stream-key') as HTMLSelectElement | null;
-    if (!fileSelect || !keySelect) return;
-
-    const mediaResult = await listMediaFiles();
-    const files = mediaResult?.files ?? [];
-    fileSelect.innerHTML =
-        '<option value="">Select video...</option>' +
-        files.map((f) => `<option value="${f.name}">${f.name}</option>`).join('');
-
-    const pipelines = state.config?.pipelines ?? [];
-    keySelect.innerHTML =
-        '<option value="">Select stream key...</option>' +
-        pipelines
-            .map(
-                (p) =>
-                    `<option value="${p.streamKey}">${formatMaskedStreamKey(p.streamKey)}</option>`,
-            )
-            .join('');
-
-    if (prefill) {
-        if (fileSelect) fileSelect.value = prefill.filename;
-        if (keySelect) keySelect.value = prefill.streamKey;
-        const loopCheck = document.getElementById('ingest-loop') as HTMLInputElement | null;
-        const startInput = document.getElementById('ingest-start-time') as HTMLInputElement | null;
-        if (loopCheck) loopCheck.checked = prefill.loop;
-        if (startInput) startInput.value = prefill.startTime;
-    }
-}
-
-export async function saveIngest(): Promise<void> {
-    const fileSelect = document.getElementById('ingest-file') as HTMLSelectElement | null;
-    const keySelect = document.getElementById('ingest-stream-key') as HTMLSelectElement | null;
-    const loopCheck = document.getElementById('ingest-loop') as HTMLInputElement | null;
-    const startInput = document.getElementById('ingest-start-time') as HTMLInputElement | null;
-
-    const filename = fileSelect?.value?.trim() ?? '';
-    const streamKey = keySelect?.value?.trim() ?? '';
-    const loop = loopCheck?.checked ?? false;
-    const startTime = startInput?.value?.trim() ?? '';
-
-    if (!filename) {
-        showErrorAlert('Select a video file');
-        return;
-    }
-    if (!streamKey) {
-        showErrorAlert('Select a stream key');
-        return;
-    }
-
-    if (editIngestId) {
-        const result = await updateIngest(editIngestId, { filename, streamKey, loop, startTime });
-        if (result) {
-            closeAddIngestForm();
-            await loadIngests();
-        }
-    } else {
-        const result = await createIngest({ filename, streamKey, loop, startTime });
-        if (result) {
-            closeAddIngestForm();
-            await loadIngests();
-        }
-    }
-}
-
-function renderIngest(ingest: IngestConfig): string {
-    const { id, filename, loop, startTime, running } = ingest;
-    const maskedKey = escapeHtml(formatMaskedStreamKey(ingest.streamKey));
-    const safeId = escapeHtml(id);
-    const safeFilename = escapeHtml(filename);
-    const stateBadge = running
-        ? '<span class="badge badge-sm badge-success">Running</span>'
-        : '<span class="badge badge-sm badge-ghost">Stopped</span>';
-    const loopBadge = loop ? '<span class="badge badge-sm badge-info">Loop</span>' : '';
-    const startBadge = startTime
-        ? `<span class="badge badge-sm badge-ghost">From ${escapeHtml(startTime)}</span>`
-        : '';
-    const toggleBtn = running
-        ? `<button class="btn btn-xs btn-accent btn-outline js-ingest-toggle" data-id="${safeId}" data-running="1">Stop</button>`
-        : `<button class="btn btn-xs btn-accent js-ingest-toggle" data-id="${safeId}" data-running="0">Start</button>`;
-
-    return `
-        <div class="border-base-content/10 bg-base-100 flex w-full items-center gap-3 rounded-lg border px-3 py-2">
-            <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-2">
-                    ${stateBadge}
-                    <span class="max-w-72 truncate font-mono text-sm" title="${safeFilename}">${safeFilename}</span>
-                    ${loopBadge}${startBadge}
-                </div>
-                <div class="text-base-content/50 mt-1 truncate font-mono text-xs">${maskedKey}</div>
-            </div>
-            <div class="flex shrink-0 items-center gap-2">
-                ${toggleBtn}
-                <button class="btn btn-xs btn-accent btn-outline js-ingest-edit" data-id="${safeId}" ${running ? 'disabled title="Stop before editing"' : ''}>Edit</button>
-                <button class="btn btn-xs btn-error btn-outline js-ingest-delete" data-id="${safeId}" ${running ? 'disabled' : ''}>Delete</button>
-            </div>
-        </div>`;
-}
-
-export async function loadIngests(): Promise<void> {
-    const list = document.getElementById('ingest-list');
-    if (!list) return;
-
-    const ingests = await listIngests();
-    if (!ingests) return;
-    currentIngests = ingests;
-
-    if (ingests.length === 0) {
-        list.innerHTML =
-            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No ingests configured.</div>';
-        return;
-    }
-
-    list.innerHTML = ingests.map(renderIngest).join('');
-
-    list.querySelectorAll<HTMLButtonElement>('.js-ingest-toggle').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-            const id = btn.dataset.id;
-            if (!id) return;
-            if (btn.dataset.running === '1') {
-                await stopIngest(id);
-            } else {
-                await startIngest(id);
-            }
-            await loadIngests();
-        });
-    });
-
-    list.querySelectorAll<HTMLButtonElement>('.js-ingest-edit').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            const id = btn.dataset.id;
-            const ingest = currentIngests.find((i) => i.id === id);
-            if (ingest) void openEditIngestForm(ingest);
-        });
-    });
-
-    list.querySelectorAll<HTMLButtonElement>('.js-ingest-delete').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-            const id = btn.dataset.id;
-            if (!id) return;
-            if (!window.confirm('Delete this ingest configuration?')) return;
-            const res = await deleteIngest(id);
-            if (res !== null) {
-                await loadIngests();
-            }
-        });
-    });
 }
 
 // ── Transcode Profiles ─────────────────────────────────

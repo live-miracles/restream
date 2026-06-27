@@ -766,6 +766,98 @@ async fn ingest_crud_via_api() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    let create_pipeline = serde_json::json!({
+        "name": "File Pipeline",
+        "streamKey": "key01_6c71124cde80358ca7c13081"
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/pipelines",
+            &cookie,
+            Some(&create_pipeline.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let json = body_json(resp).await;
+    let pipeline_id = json["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let file_ingest = serde_json::json!({
+        "filename": "clip.mp4",
+        "loop": true,
+        "startTime": "00:00:05"
+    });
+    let uri = format!("/pipelines/{pipeline_id}/file-ingest");
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PUT",
+            &uri,
+            &cookie,
+            Some(&file_ingest.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["configured"], true);
+    assert_eq!(json["filename"], "clip.mp4");
+    assert_eq!(json["streamKey"], "key01_6c71124cde80358ca7c13081");
+    assert_eq!(json["loop"], true);
+    assert_eq!(json["startTime"], "00:00:05");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", &uri, &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["configured"], true);
+    assert_eq!(json["filename"], "clip.mp4");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["pipelines"][0]["inputSource"], "file:clip.mp4");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("DELETE", &uri, &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", &uri, &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["configured"], false);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["pipelines"][0]["inputSource"].is_null());
+}
+
 // --- Lifecycle history ---
 
 #[tokio::test]

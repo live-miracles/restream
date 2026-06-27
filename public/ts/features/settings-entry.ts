@@ -5,10 +5,6 @@ import {
     saveIngestSecurity,
     saveTranscodeProfiles,
     addTranscodeProfile,
-    loadIngests,
-    openAddIngestForm,
-    closeAddIngestForm,
-    saveIngest,
     saveDashboardPassword,
     logoutUser,
 } from './settings.js';
@@ -21,7 +17,6 @@ async function init(): Promise<void> {
     if (config) state.config = config;
     setServerConfig(state.config?.serverName);
     await loadSettings();
-    await loadIngests();
 }
 
 void init();
@@ -31,8 +26,5 @@ window.saveIngestHost = saveIngestHost;
 window.saveIngestSecurity = saveIngestSecurity;
 window.saveTranscodeProfiles = saveTranscodeProfiles;
 window.addTranscodeProfile = addTranscodeProfile;
-window.openAddIngestForm = openAddIngestForm;
-window.closeAddIngestForm = closeAddIngestForm;
-window.saveIngest = saveIngest;
 window.saveDashboardPassword = saveDashboardPassword;
 window.logoutUser = logoutUser;

@@ -111,32 +111,59 @@
     </div>
 
     <dialog id="edit-pipe-modal" class="modal">
-      <div class="modal-box w-fit">
+      <div class="modal-box max-w-2xl">
+        <input type="text" id="pipe-mode-input" class="hidden" />
         <input type="text" id="pipe-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 w-full max-w-150 space-y-3 px-4">
-          <h2 class="text-xl font-bold">Edit Pipeline</h2>
-          <fieldset class="fieldset inline-block w-56">
+        <div class="focus mx-auto mt-2 w-full space-y-4 px-4">
+          <h2 class="text-xl font-bold" id="pipe-modal-title">Edit Pipeline</h2>
+          <div class="grid gap-3 sm:grid-cols-[1fr_14rem]">
+          <fieldset class="fieldset">
             <legend class="fieldset-legend">Pipeline Name</legend>
             <input type="text" id="pipe-name-input" class="input w-full" placeholder="Type here" />
           </fieldset>
 
-          <fieldset class="fieldset ml-2 inline-block w-42">
+          <fieldset class="fieldset">
             <legend class="fieldset-legend">Stream Key</legend>
             <select class="select w-full" id="pipe-stream-key-input"></select>
             <p id="pipe-stream-key-locked-hint" class="text-warning hidden text-sm">Stop all outputs before changing the stream key.</p>
           </fieldset>
+          </div>
 
-          <fieldset class="fieldset block w-full">
-            <legend class="fieldset-legend">Source URL</legend>
-            <input type="text" id="pipe-input-source-input" class="input w-full" placeholder="Leave empty for publisher ingest" />
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">Source</legend>
+            <select class="select w-full" id="pipe-source-type-input">
+              <option value="publisher">Publisher</option>
+              <option value="file">File</option>
+            </select>
           </fieldset>
+
+          <div id="pipe-file-fields" class="border-base-content/10 bg-base-200 hidden rounded-lg border p-3">
+            <div class="grid gap-3 sm:grid-cols-[1fr_9rem_5rem]">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">File</legend>
+                <select class="select w-full" id="pipe-file-input">
+                  <option value="">Loading...</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Start Time</legend>
+                <input type="text" id="pipe-file-start-time-input" class="input w-full" placeholder="00:00:00" />
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Loop</legend>
+                <label class="flex h-10 items-center">
+                  <input type="checkbox" id="pipe-file-loop-input" class="checkbox checkbox-sm" />
+                </label>
+              </fieldset>
+            </div>
+          </div>
         </div>
 
         <div class="modal-action">
           <form method="dialog">
             <button class="btn mx-2">Cancel</button>
-            <button type="button" class="btn btn-accent" onclick="pipeFormBtn(event)">Update</button>
+            <button type="button" id="pipe-submit-btn" class="btn btn-accent" onclick="pipeFormBtn(event)">Update</button>
           </form>
         </div>
       </div>
