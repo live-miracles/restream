@@ -98,6 +98,18 @@ scripts/resource-limit ./test/run-integration.sh bonding
 
 Integration tests run in a private loopback namespace by default. Use `--host` only when host networking is required.
 
+### Build Safety on Memory-Limited Systems (WSL2)
+
+**Never run `cargo build`, `cargo test`, or `cargo clippy` while a live pipeline is running.**
+
+The bench binary (`target/release/restream`) combined with its FFmpeg child processes commits a large virtual address space due to statically-linked FFmpeg libraries (~3.9 GB VSZ for restream alone). On an 8 GB WSL2 system without swap, adding a `clippy-driver`/`rustc` invocation (~690 MB RSS) on top of 4 running FFmpeg transcoders (~460 MB) can push `Committed_AS` past 8 GB, causing the WSL2 kernel to panic and restart.
+
+Before any `cargo` command, kill the live setup:
+
+```sh
+pkill -x restream; pkill -x mediamtx; pkill -x ffmpeg
+```
+
 ## Configuration Defaults
 
 - HTTP: `3030` (`RESTREAM_HTTP_PORT`)
