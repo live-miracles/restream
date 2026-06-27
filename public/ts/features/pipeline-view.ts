@@ -95,46 +95,49 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
                     : '--';
-            const metrics = [
-                ['Codec', codec],
-                ['Freq', formatSampleRate(track.sample_rate)],
-                ['Channels', channelLabel],
-                ['Profile', track.profile || '--'],
-            ];
-            const title = isEditing
-                ? `<div class="flex min-w-0 flex-1 items-center gap-2">
+            const trackStat = isEditing
+                ? `<div class="stat min-w-0 p-2.5">
+                    <div class="stat-title">Track ${index + 1}</div>
                     <input
                         type="text"
-                        class="input input-bordered input-xs min-w-0 flex-1"
+                        class="input input-bordered input-xs mt-1 w-full"
                         data-audio-label-input="${escapeHtml(key)}"
                         data-audio-label-index="${index}"
                         value="${escapeHtml(storedLabel)}"
                         placeholder="${escapeHtml(label)}"
                         aria-label="Audio track name"
                     />
-                    <button type="button" class="btn btn-xs btn-accent" data-audio-label-action="save" data-audio-label-index="${index}">Save</button>
-                    <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="cancel" data-audio-label-index="${index}">Cancel</button>
+                    <div class="mt-1 flex gap-1">
+                        <button type="button" class="btn btn-xs btn-accent" data-audio-label-action="save" data-audio-label-index="${index}">Save</button>
+                        <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="cancel" data-audio-label-index="${index}">Cancel</button>
+                    </div>
                 </div>`
-                : `<div class="min-w-0 flex-1">
-                    <div class="truncate text-sm font-semibold">${escapeHtml(label)}</div>
-                    <div class="text-base-content/55 mt-0.5 truncate text-xs">${escapeHtml(identity)}</div>
-                </div>
-                <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="edit" data-audio-label-index="${index}">Rename</button>`;
+                : `<div class="stat min-w-0 p-2.5">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="stat-title">Track ${index + 1}</div>
+                        <button type="button" class="btn btn-xs btn-ghost min-h-0 h-5 px-1.5 text-[0.65rem]" data-audio-label-action="edit" data-audio-label-index="${index}">Rename</button>
+                    </div>
+                    <div class="stat-value truncate text-sm">${escapeHtml(label)}</div>
+                    <div class="stat-desc truncate">${escapeHtml(identity)}</div>
+                </div>`;
 
-            return `<div class="border-base-content/10 bg-base-100 rounded-lg border p-3">
-                <div class="flex min-w-0 items-start gap-2">
-                    <span class="badge badge-sm badge-outline mt-0.5 shrink-0">${index + 1}</span>
-                    ${title}
+            return `<div class="stats border-base-content/10 bg-base-100 grid w-full grid-cols-[minmax(0,1.25fr)_minmax(3.1rem,.55fr)_minmax(5rem,.85fr)_minmax(7rem,1.35fr)_minmax(3.1rem,.55fr)] overflow-hidden border">
+                ${trackStat}
+                <div class="stat min-w-0 p-2.5">
+                    <div class="stat-title">Codec</div>
+                    <div class="stat-value truncate text-sm">${escapeHtml(codec)}</div>
                 </div>
-                <div class="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                    ${metrics
-                        .map(
-                            ([metricLabel, value]) => `<div class="bg-base-200/60 rounded-md px-2 py-1.5">
-                                <div class="text-base-content/50 text-[0.65rem] uppercase leading-none">${escapeHtml(metricLabel)}</div>
-                                <div class="mt-1 truncate text-xs font-medium">${escapeHtml(value)}</div>
-                            </div>`,
-                        )
-                        .join('')}
+                <div class="stat min-w-0 p-2.5">
+                    <div class="stat-title">Freq</div>
+                    <div class="stat-value truncate text-sm">${escapeHtml(formatSampleRate(track.sample_rate))}</div>
+                </div>
+                <div class="stat min-w-0 p-2.5">
+                    <div class="stat-title">Channels</div>
+                    <div class="stat-value truncate text-sm">${escapeHtml(channelLabel)}</div>
+                </div>
+                <div class="stat min-w-0 p-2.5">
+                    <div class="stat-title">Profile</div>
+                    <div class="stat-value truncate text-sm">${escapeHtml(track.profile || '--')}</div>
                 </div>
             </div>`;
         })
@@ -185,32 +188,13 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
 }
 
 function renderVideoTrackDetails(video: Partial<NonNullable<PipelineView['input']['video']>>): void {
-    const detailsEl = document.getElementById('input-video-details');
-    if (!detailsEl) return;
-    const rows: Array<[string, string]> = [];
-    if (Number.isFinite(video.pid as number)) {
-        rows.push(['PID', `0x${Number(video.pid).toString(16).toUpperCase()}`]);
+    const pidStat = document.getElementById('input-video-pid-stat');
+    const pidValue = document.getElementById('input-video-pid');
+    const hasPid = Number.isFinite(video.pid as number);
+    pidStat?.classList.toggle('hidden', !hasPid);
+    if (pidValue) {
+        pidValue.textContent = hasPid ? `0x${Number(video.pid).toString(16).toUpperCase()}` : '';
     }
-    if (video.language) rows.push(['Language', String(video.language).toUpperCase()]);
-    if (video.title) rows.push(['Title', String(video.title)]);
-
-    if (rows.length === 0) {
-        detailsEl.innerHTML = '';
-        detailsEl.classList.add('hidden');
-        return;
-    }
-
-    detailsEl.classList.remove('hidden');
-    detailsEl.innerHTML = `<div class="mt-2 flex flex-wrap gap-1.5">
-        ${rows
-            .map(
-                ([label, value]) => `<span class="badge badge-sm badge-outline border-base-content/15 gap-1">
-                    <span class="text-base-content/50">${escapeHtml(label)}</span>
-                    <span>${escapeHtml(value)}</span>
-                </span>`,
-            )
-            .join('')}
-    </div>`;
 }
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
