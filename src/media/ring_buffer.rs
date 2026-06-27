@@ -1222,6 +1222,172 @@ mod tests {
         assert_eq!(std::mem::size_of::<PayloadFormat>(), 1);
     }
 
+    // ── Fault injection ─────────────────────────────────────────────
+
+    #[test]
+    fn fault_injection_empty_payload_does_not_panic() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 0,
+            dts: 0,
+            is_keyframe: true,
+            format: PayloadFormat::Raw,
+            payload: Bytes::new(),
+        });
+        let mut reader = Reader::new("empty".to_string(), rb);
+        let pkt = reader.pull().unwrap().unwrap();
+        assert!(pkt.payload.is_empty());
+    }
+
+    #[test]
+    fn fault_injection_reordered_dts_does_not_corrupt_ring() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(video_packet(100, 100, true));
+        rb.push(video_packet(50, 50, false)); // backwards DTS
+        rb.push(video_packet(200, 200, false));
+
+        let mut reader = Reader::new("reorder".to_string(), rb);
+        let p1 = reader.pull().unwrap().unwrap();
+        assert_eq!(p1.dts, 100);
+        let p2 = reader.pull().unwrap().unwrap();
+        assert_eq!(p2.dts, 50);
+        let p3 = reader.pull().unwrap().unwrap();
+        assert_eq!(p3.dts, 200);
+    }
+
+    #[test]
+    fn fault_injection_large_timestamp_gap_handled() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(video_packet(0, 0, true));
+        rb.push(video_packet(i64::MAX - 1, i64::MAX - 1, false));
+        rb.push(video_packet(i64::MIN, i64::MIN, false));
+
+        let mut reader = Reader::new("gap".to_string(), rb);
+        assert!(reader.pull().unwrap().is_some());
+        assert!(reader.pull().unwrap().is_some());
+        assert!(reader.pull().unwrap().is_some());
+        assert!(reader.pull().unwrap().is_none());
+    }
+
+    #[test]
+    fn fault_injection_negative_timestamps_handled() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(video_packet(-100, -100, true));
+        rb.push(audio_packet(-50, -50));
+        rb.push(video_packet(0, 0, false));
+
+        let mut reader = Reader::new("negative".to_string(), rb);
+        let p1 = reader.pull().unwrap().unwrap();
+        assert_eq!(p1.pts, -100);
+        let p2 = reader.pull().unwrap().unwrap();
+        assert_eq!(p2.pts, -50);
+        let p3 = reader.pull().unwrap().unwrap();
+        assert_eq!(p3.pts, 0);
+    }
+
+    #[test]
+    fn fault_injection_rapid_overflow_recovery() {
+        let rb = Arc::new(RingBuffer::new(4));
+        rb.push(video_packet(0, 0, true));
+        let mut reader = Reader::new("overflow_recovery".to_string(), rb.clone());
+
+        for i in 1..20 {
+            rb.push(video_packet(i * 33, i * 33, i == 10));
+        }
+
+        let err = reader.pull().unwrap_err();
+        assert!(err.contains("Overflow"));
+
+        rb.push(video_packet(1000, 1000, true));
+        rb.push(video_packet(1033, 1033, false));
+
+        let pkt = reader.pull().unwrap().unwrap();
+        assert!(pkt.pts >= 1000);
+    }
+
+    #[test]
+    fn fault_injection_mixed_format_payloads() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 0,
+            dts: 0,
+            is_keyframe: true,
+            format: PayloadFormat::Flv,
+            payload: Bytes::from_static(&[0x17, 0x01, 0, 0, 0]),
+        });
+        rb.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 33,
+            dts: 33,
+            is_keyframe: false,
+            format: PayloadFormat::Raw,
+            payload: Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+        });
+
+        let mut reader = Reader::new("mixed_fmt".to_string(), rb);
+        let p1 = reader.pull().unwrap().unwrap();
+        assert_eq!(p1.format, PayloadFormat::Flv);
+        let p2 = reader.pull().unwrap().unwrap();
+        assert_eq!(p2.format, PayloadFormat::Raw);
+    }
+
+    #[test]
+    fn fault_injection_high_track_index() {
+        let rb = Arc::new(RingBuffer::new(16));
+        rb.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: u32::MAX,
+            pts: 0,
+            dts: 0,
+            is_keyframe: true,
+            format: PayloadFormat::Raw,
+            payload: Bytes::from_static(&[0; 4]),
+        });
+        let mut reader = Reader::new("high_track".to_string(), rb);
+        let pkt = reader.pull().unwrap().unwrap();
+        assert_eq!(pkt.track_index, u32::MAX);
+    }
+
+    #[test]
+    fn fault_injection_push_batch_with_no_keyframes() {
+        let rb = Arc::new(RingBuffer::new(16));
+        // Create reader before push so it starts at write_idx=0 and sees all packets.
+        let mut reader = Reader::new_live("no_kf".to_string(), rb.clone());
+        let count = rb.push_batch([
+            video_packet(10, 10, false),
+            video_packet(20, 20, false),
+            video_packet(30, 30, false),
+        ]);
+        assert_eq!(count, 3);
+        let mut out = Vec::new();
+        let n = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn dts_enforcer_fault_injection_extreme_backwards_jump() {
+        let mut e = DtsEnforcer::new(1);
+        assert_eq!(e.enforce(0, 1_000_000, 1_000_000), (1_000_000, 1_000_000));
+        let (pts, dts) = e.enforce(0, 0, 0);
+        assert!(dts > 1_000_000, "DTS must be bumped past previous value");
+        assert!(pts >= dts, "PTS must be >= DTS");
+    }
+
+    #[test]
+    fn dts_enforcer_fault_injection_negative_pts_dts() {
+        let mut e = DtsEnforcer::new(1);
+        let (pts, dts) = e.enforce(0, -100, -100);
+        assert_eq!((pts, dts), (-100, -100));
+        let (pts2, dts2) = e.enforce(0, -200, -200);
+        assert!(dts2 > -100, "DTS must be bumped past -100");
+        assert!(pts2 >= dts2);
+    }
+
     #[test]
     fn vec_with_capacity_reuses_allocation_across_cycles() {
         let cap = 65536;

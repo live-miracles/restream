@@ -93,17 +93,18 @@ fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
             );
             meta.level = Some(format!("{}.{}", level_idc / 10, level_idc % 10));
 
-            // Parse SPS for resolution
+            // Parse SPS for resolution and timing info.
             if avc_config.len() > 8 {
                 let num_sps = (avc_config[5] & 0x1F) as usize;
                 if num_sps > 0 && avc_config.len() > 8 {
                     let sps_len = ((avc_config[6] as usize) << 8) | (avc_config[7] as usize);
                     if avc_config.len() >= 8 + sps_len
                         && sps_len > 1
-                        && let Some((w, h)) = parse_sps_resolution(&avc_config[8..8 + sps_len])
+                        && let Some(info) = parse_sps_video_info(&avc_config[8..8 + sps_len])
                     {
-                        meta.width = w;
-                        meta.height = h;
+                        meta.width = info.width;
+                        meta.height = info.height;
+                        meta.fps = info.fps;
                     }
                 }
             }
@@ -126,7 +127,14 @@ fn flv_video_composition_time_ms(data: &[u8]) -> i32 {
     }
 }
 
-fn parse_sps_resolution(sps_nalu: &[u8]) -> Option<(u32, u32)> {
+#[derive(Debug, Clone, Copy, Default)]
+struct SpsVideoInfo {
+    width: u32,
+    height: u32,
+    fps: f64,
+}
+
+fn parse_sps_video_info(sps_nalu: &[u8]) -> Option<SpsVideoInfo> {
     if sps_nalu.is_empty() {
         return None;
     }
@@ -227,8 +235,53 @@ fn parse_sps_resolution(sps_nalu: &[u8]) -> Option<(u32, u32)> {
 
     let width = (pic_width + 1) * 16 - crop_left * 2 - crop_right * 2;
     let height = (2 - frame_mbs_only) * (pic_height + 1) * 16 - crop_top * 2 - crop_bottom * 2;
+    let mut info = SpsVideoInfo {
+        width,
+        height,
+        fps: 0.0,
+    };
 
-    Some((width, height))
+    if let Some(vui_present) = reader.read_bits(1)
+        && vui_present == 1
+    {
+        if reader.read_bits(1)? == 1 {
+            let sar_idx = reader.read_bits(8)?;
+            if sar_idx == 255 {
+                reader.skip(32)?;
+            }
+        }
+        if reader.read_bits(1)? == 1 {
+            reader.skip(1)?;
+        }
+        if reader.read_bits(1)? == 1 {
+            reader.skip(3)?;
+            reader.skip(1)?;
+            if reader.read_bits(1)? == 1 {
+                reader.skip(24)?;
+            }
+        }
+        if reader.read_bits(1)? == 1 {
+            reader.read_exp_golomb()?;
+            reader.read_exp_golomb()?;
+        }
+        if reader.read_bits(1)? == 1 {
+            let num_units_in_tick = reader.read_bits(32)?;
+            let time_scale = reader.read_bits(32)?;
+            let fixed_frame_rate_flag = reader.read_bits(1)?;
+            if num_units_in_tick > 0 && time_scale > 0 {
+                let fps = time_scale as f64 / (2.0 * num_units_in_tick as f64);
+                if fps.is_finite() && fps > 0.0 {
+                    info.fps = if fixed_frame_rate_flag == 1 {
+                        fps
+                    } else {
+                        fps.max(0.0)
+                    };
+                }
+            }
+        }
+    }
+
+    Some(info)
 }
 
 struct BitReader<'a> {
@@ -2008,10 +2061,10 @@ mod tests {
         ];
         // This is a simplified test — the SPS bitstream encoding is complex
         // so we verify the parser doesn't crash on valid-looking data
-        let result = parse_sps_resolution(sps);
+        let result = parse_sps_video_info(sps);
         // May or may not parse correctly depending on the exact bitstream
         // The important thing is it doesn't panic
-        assert!(result.is_none() || result.unwrap().0 > 0);
+        assert!(result.is_none() || result.unwrap().width > 0);
     }
 
     #[test]
@@ -2177,6 +2230,26 @@ mod tests {
         assert_eq!(meta.profile.as_deref(), Some("High"));
         assert_eq!(meta.level.as_deref(), Some("3.1"));
         assert_eq!(meta.width, 0); // SPS not parsed, no panic
+    }
+
+    #[test]
+    fn parse_flv_video_meta_h264_seq_header_extracts_fps_from_sps_vui() {
+        // libx264 AVCDecoderConfigurationRecord carrying a 1920x1080@50 SPS.
+        #[rustfmt::skip]
+        let data = [
+            0x17u8, 0x00, 0x00, 0x00, 0x00, // keyframe, AVC sequence header
+            0x01, 0x42, 0xc0, 0x2a, 0xff, 0xe1, 0x00, 0x18,
+            0x67, 0x42, 0xc0, 0x2a, 0xda, 0x01, 0xe0, 0x08,
+            0x9f, 0x97, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00,
+            0x10, 0x00, 0x00, 0x06, 0x48, 0xf1, 0x83, 0x2a,
+            0x01, 0x00, 0x04, 0x68, 0xce, 0x0f, 0xc8,
+        ];
+
+        let meta = parse_flv_video_meta(&data).unwrap();
+        assert_eq!(meta.codec, "h264");
+        assert_eq!(meta.width, 1920);
+        assert_eq!(meta.height, 1080);
+        assert!((meta.fps - 50.0).abs() < 0.01, "fps={}", meta.fps);
     }
 
     // --- FLV audio meta: malformed / truncated / non-AAC codecs ---
