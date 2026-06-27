@@ -58,27 +58,13 @@ interface StatusData {
         totalMem?: number;
         cpu?: {
             modelName?: string | null;
-            vendorId?: string | null;
-            family?: string | null;
-            model?: string | null;
-            stepping?: string | null;
             logicalCpus?: number;
             physicalCores?: number | null;
             threadsPerCore?: number | null;
-            frequencyMhz?: number | null;
             virtualization?: string | null;
             hypervisorDetected?: boolean;
             hypervisorVendor?: string | null;
-            systemVendor?: string | null;
-            productName?: string | null;
             flags?: string[];
-            cache?: {
-                l1d?: string;
-                l1i?: string;
-                l2?: string;
-                l3?: string;
-                scope?: string;
-            };
         };
     };
 }
@@ -102,22 +88,42 @@ function formatBytes(value: unknown): string {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
-function formatMhz(value: unknown): string {
-    const mhz = Number(value);
-    if (!Number.isFinite(mhz) || mhz <= 0) return '--';
-    if (mhz >= 1000) return `${(mhz / 1000).toFixed(2)} GHz`;
-    return `${mhz.toFixed(0)} MHz`;
-}
-
 function formatThreadsPerCore(value: unknown): string {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return '--';
     return Number.isInteger(n) ? n.toFixed(0) : n.toFixed(1);
 }
 
+function formatCpuCapacity(cpu: StatusData['os']['cpu'] | undefined): string {
+    if (!cpu) return '--';
+    const logical = Number(cpu.logicalCpus);
+    const parts = [];
+    if (Number.isFinite(logical) && logical > 0) {
+        parts.push(`${logical.toFixed(0)} logical`);
+    }
+    if (cpu.physicalCores) {
+        parts.push(`${cpu.physicalCores} physical`);
+    }
+    const threads = formatThreadsPerCore(cpu.threadsPerCore);
+    if (threads !== '--') {
+        parts.push(`${threads} threads/core`);
+    }
+    return parts.length ? parts.join(' / ') : '--';
+}
+
 function formatFlags(value: unknown): string {
     if (!Array.isArray(value) || value.length === 0) return '--';
     return value.map((flag) => String(flag)).join(', ');
+}
+
+function formatVirtualization(cpu: StatusData['os']['cpu'] | undefined): string {
+    if (!cpu) return '--';
+    const parts = [];
+    if (cpu.virtualization) parts.push(cpu.virtualization);
+    if (cpu.hypervisorDetected) {
+        parts.push(cpu.hypervisorVendor ? `${cpu.hypervisorVendor} hypervisor` : 'hypervisor detected');
+    }
+    return parts.length ? parts.join(' / ') : 'bare metal or not exposed';
 }
 
 function formatUptime(value: unknown): string {
@@ -228,27 +234,9 @@ export async function loadStatus(): Promise<void> {
                 row('Uptime', formatUptime(data.os?.uptime)),
                 row('Total Memory', formatBytes(data.os?.totalMem)),
                 row('CPU', data.os?.cpu?.modelName),
-                row('CPU Vendor', data.os?.cpu?.vendorId),
-                row('CPU Family / Model / Stepping', [
-                    data.os?.cpu?.family,
-                    data.os?.cpu?.model,
-                    data.os?.cpu?.stepping,
-                ].filter(Boolean).join(' / ')),
-                row('Logical CPUs', data.os?.cpu?.logicalCpus),
-                row('Physical Cores', data.os?.cpu?.physicalCores),
-                row('Threads per Core', formatThreadsPerCore(data.os?.cpu?.threadsPerCore)),
-                row('Reported Frequency', formatMhz(data.os?.cpu?.frequencyMhz)),
-                row('Virtualization', data.os?.cpu?.virtualization),
-                row('Hypervisor', data.os?.cpu?.hypervisorDetected),
-                row('Hypervisor Vendor', data.os?.cpu?.hypervisorVendor),
-                row('System Vendor', data.os?.cpu?.systemVendor),
-                row('Product', data.os?.cpu?.productName),
-                row('Cache L1d', data.os?.cpu?.cache?.l1d),
-                row('Cache L1i', data.os?.cpu?.cache?.l1i),
-                row('Cache L2', data.os?.cpu?.cache?.l2),
-                row('Cache L3', data.os?.cpu?.cache?.l3),
-                row('Cache Scope', data.os?.cpu?.cache?.scope),
-                row('CPU Features', formatFlags(data.os?.cpu?.flags)),
+                row('CPU Capacity', formatCpuCapacity(data.os?.cpu)),
+                row('Virtualization', formatVirtualization(data.os?.cpu)),
+                row('Acceleration Features', formatFlags(data.os?.cpu?.flags)),
             ].join(''),
         ),
         section(

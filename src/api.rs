@@ -2490,24 +2490,12 @@ fn cpu_status(sys: &System) -> serde_json::Value {
             .or_else(|| cpuinfo.get("processor"))
             .cloned()
             .or_else(|| first_cpu.map(|cpu| cpu.brand().to_string())),
-        "vendorId": cpuinfo
-            .get("vendor_id")
-            .or_else(|| cpuinfo.get("cpu implementer"))
-            .cloned()
-            .or_else(|| first_cpu.map(|cpu| cpu.vendor_id().to_string())),
-        "family": cpuinfo.get("cpu family").cloned(),
-        "model": cpuinfo.get("model").cloned(),
-        "stepping": cpuinfo.get("stepping").cloned(),
         "logicalCpus": logical_cpus,
         "physicalCores": physical_cores,
         "threadsPerCore": threads_per_core,
-        "frequencyMhz": first_cpu.map(|cpu| cpu.frequency()),
         "virtualization": virtualization,
         "hypervisorDetected": hypervisor_detected,
         "hypervisorVendor": if hypervisor_detected { detect_hypervisor_vendor() } else { None },
-        "systemVendor": read_trimmed_file("/sys/class/dmi/id/sys_vendor"),
-        "productName": read_trimmed_file("/sys/class/dmi/id/product_name"),
-        "cache": read_cpu_cache_summary(),
         "flags": flags,
     })
 }
@@ -2556,107 +2544,6 @@ fn selected_cpu_flags(flags: &str) -> Vec<String> {
         .filter(|flag| available.contains(**flag))
         .map(|flag| (*flag).to_string())
         .collect()
-}
-
-fn read_cpu_cache_summary() -> serde_json::Value {
-    let mut cache = serde_json::Map::new();
-    let mut seen = HashSet::new();
-    let mut sums: HashMap<&'static str, u64> = HashMap::new();
-    let mut counts: HashMap<&'static str, u64> = HashMap::new();
-    let Ok(cpus) = std::fs::read_dir("/sys/devices/system/cpu") else {
-        return serde_json::Value::Object(cache);
-    };
-    for cpu in cpus.flatten() {
-        let cpu_name = cpu.file_name().to_string_lossy().to_string();
-        if !cpu_name
-            .strip_prefix("cpu")
-            .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
-        {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(cpu.path().join("cache")) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let level = read_trimmed_file(path.join("level")).unwrap_or_default();
-            let kind = read_trimmed_file(path.join("type")).unwrap_or_default();
-            let size = read_trimmed_file(path.join("size")).unwrap_or_default();
-            let shared_cpus = read_trimmed_file(path.join("shared_cpu_list"))
-                .unwrap_or_else(|| path.display().to_string());
-            if level.is_empty() || kind.is_empty() || size.is_empty() {
-                continue;
-            }
-            let Some(size_kib) = parse_cache_size_kib(&size) else {
-                continue;
-            };
-            let key = match (level.as_str(), kind.as_str()) {
-                ("1", "Data") => "l1d",
-                ("1", "Instruction") => "l1i",
-                ("2", "Unified") => "l2",
-                ("3", "Unified") => "l3",
-                _ => continue,
-            };
-            if !seen.insert(format!("{level}:{kind}:{shared_cpus}")) {
-                continue;
-            }
-            *sums.entry(key).or_default() += size_kib;
-            *counts.entry(key).or_default() += 1;
-        }
-    }
-    for key in ["l1d", "l1i", "l2", "l3"] {
-        let Some(size_kib) = sums.get(key) else {
-            continue;
-        };
-        cache.insert(
-            key.to_string(),
-            serde_json::Value::String(format_cache_size_kib(
-                *size_kib,
-                counts.get(key).copied().unwrap_or_default(),
-            )),
-        );
-    }
-    if !cache.is_empty() {
-        cache.insert(
-            "scope".to_string(),
-            serde_json::Value::String("summed unique sysfs cache groups".to_string()),
-        );
-    }
-    serde_json::Value::Object(cache)
-}
-
-fn parse_cache_size_kib(size: &str) -> Option<u64> {
-    let trimmed = size.trim();
-    let digits = trimmed
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    let value = digits.parse::<u64>().ok()?;
-    let unit = trimmed[digits.len()..].trim().to_ascii_lowercase();
-    match unit.as_str() {
-        "k" | "kb" | "kib" => Some(value),
-        "m" | "mb" | "mib" => Some(value * 1024),
-        "" => Some(value / 1024),
-        _ => None,
-    }
-}
-
-fn format_cache_size_kib(size_kib: u64, count: u64) -> String {
-    let size = if size_kib >= 1024 {
-        let mib = size_kib as f64 / 1024.0;
-        if (mib.fract() - 0.0).abs() < f64::EPSILON {
-            format!("{mib:.0} MiB")
-        } else {
-            format!("{mib:.1} MiB")
-        }
-    } else {
-        format!("{size_kib} KiB")
-    };
-    if count > 0 {
-        format!("{size} ({count} instances)")
-    } else {
-        size
-    }
 }
 
 fn detect_hypervisor_vendor() -> Option<String> {
