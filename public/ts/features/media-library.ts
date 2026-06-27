@@ -30,7 +30,7 @@ function mediaKind(file: MediaFile): MediaKind {
     }
     const name = file.name.toLowerCase();
     if ((file.ingestCount ?? 0) > 0) return 'source';
-    if (name.endsWith('.ts') || name.endsWith('.mkv')) return 'recording';
+    if (name.includes('recording')) return 'recording';
     return 'source';
 }
 

@@ -653,7 +653,9 @@ let currentPipeModalPipeline: PipelineView | null = null;
 const BUILT_IN_PROFILE_ORDER = ['h264', '720p', '1080p'];
 
 function orderedTranscodeProfileNames(): string[] {
-    const names = Object.keys(state.config?.transcodeProfiles || {});
+    const names = Array.from(
+        new Set([...BUILT_IN_PROFILE_ORDER, ...Object.keys(state.config?.transcodeProfiles || {})]),
+    );
     return names.sort((a, b) => {
         const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
         const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);

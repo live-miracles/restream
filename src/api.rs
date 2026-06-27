@@ -403,6 +403,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/status/sbom", get(status_sbom_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
+        .route("/media/:filename", get(media_file_handler))
         // HLS routes are registered with CORS headers in the merged sub-router below.
         // Deprecated compatibility aliases. New clients should use /hls/.
         .route("/health", get(health_get_handler))
@@ -2686,7 +2687,7 @@ async fn media_list_handler(
                     .await
                     .unwrap_or_default();
                 let lower_name = name.to_ascii_lowercase();
-                let kind = if lower_name.ends_with(".ts") || lower_name.ends_with(".mkv") {
+                let kind = if lower_name.contains("recording") {
                     "recording"
                 } else {
                     "source"
@@ -2703,6 +2704,65 @@ async fn media_list_handler(
     }
 
     Json(serde_json::json!({ "files": files })).into_response()
+}
+
+fn media_content_type(filename: &str) -> &'static str {
+    match filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ts" => "video/mp2t",
+        "mkv" => "video/x-matroska",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    }
+}
+
+fn media_path_under_root(
+    media_dir: &str,
+    filename: &str,
+) -> Result<std::path::PathBuf, StatusCode> {
+    let _ = std::fs::create_dir_all(media_dir);
+    let media_root =
+        std::fs::canonicalize(media_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = std::path::Path::new(media_dir).join(filename);
+    let canonical_path = std::fs::canonicalize(&path).map_err(|_| StatusCode::NOT_FOUND)?;
+    if !canonical_path.starts_with(&media_root) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(canonical_path)
+}
+
+async fn media_file_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(filename): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let path = match media_path_under_root(&state.media_dir, &filename) {
+        Ok(path) => path,
+        Err(status) => return status.into_response(),
+    };
+    match tokio::fs::read(path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, media_content_type(&filename))],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    }
 }
 
 async fn media_delete_handler(
@@ -2729,21 +2789,16 @@ async fn media_delete_handler(
             .into_response();
     }
 
-    let _ = std::fs::create_dir_all(&state.media_dir);
-    let media_root = match std::fs::canonicalize(&state.media_dir) {
-        Ok(p) => p,
-        Err(_) => {
+    let canonical_path = match media_path_under_root(&state.media_dir, &filename) {
+        Ok(path) => path,
+        Err(StatusCode::INTERNAL_SERVER_ERROR) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response();
         }
+        Err(StatusCode::NOT_FOUND) => {
+            return (StatusCode::NOT_FOUND, "File not found").into_response();
+        }
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
     };
-    let path = std::path::Path::new(&state.media_dir).join(&filename);
-    let canonical_path = match std::fs::canonicalize(&path) {
-        Ok(p) => p,
-        Err(_) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
-    };
-    if !canonical_path.starts_with(&media_root) {
-        return (StatusCode::BAD_REQUEST, "Invalid path").into_response();
-    }
 
     match tokio::fs::remove_file(canonical_path).await {
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),

@@ -19,21 +19,33 @@ use tokio_util::sync::CancellationToken;
 const MIN_DURATION_SECS: u64 = 5;
 
 fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
-        .collect()
+    let mut sanitized = String::with_capacity(name.len());
+    let mut last_was_sep = false;
+    for c in name.chars() {
+        let is_allowed = c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
+        let next = if is_allowed { c } else { '_' };
+        if next == '_' {
+            if last_was_sep {
+                continue;
+            }
+            last_was_sep = true;
+        } else {
+            last_was_sep = false;
+        }
+        sanitized.push(next);
+    }
+    sanitized.trim_matches('_').to_string()
 }
 
 fn build_filename(pipe_name: &str) -> String {
     let now = chrono::Local::now();
-    format!(
-        "{} {}.ts",
-        now.format("%Y-%m-%d %H-%M-%S"),
-        sanitize_name(pipe_name)
-    )
+    let safe_name = sanitize_name(pipe_name);
+    let safe_name = if safe_name.is_empty() {
+        "pipeline"
+    } else {
+        safe_name.as_str()
+    };
+    format!("recording_{}_{}.ts", now.format("%Y%m%dT%H%M%S"), safe_name)
 }
 
 fn build_recording_service_metadata(
@@ -289,6 +301,11 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_name_collapses_spaces_for_filenames() {
+        assert_eq!(sanitize_name("Main Program  01"), "Main_Program_01");
+    }
+
+    #[test]
     fn sanitize_name_empty_string() {
         assert_eq!(sanitize_name(""), "");
     }
@@ -297,13 +314,15 @@ mod tests {
     fn build_filename_has_ts_extension() {
         let name = build_filename("test-pipe");
         assert!(name.ends_with(".ts"));
+        assert!(name.starts_with("recording_"));
+        assert!(!name.contains(' '));
     }
 
     #[test]
     fn build_filename_contains_sanitized_name() {
         let name = build_filename("My Pipe?");
         assert!(
-            name.contains("My Pipe_"),
+            name.contains("My_Pipe"),
             "expected sanitized name in: {name}"
         );
     }

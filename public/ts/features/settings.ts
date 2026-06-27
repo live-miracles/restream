@@ -47,7 +47,7 @@ function settingsSectionFor(childId: string): HTMLElement | null {
 function styleSettingsSection(section: HTMLElement | null, id: string): void {
     if (!section) return;
     section.id = id;
-    section.className = 'border-base-content/10 bg-base-200 rounded-lg border p-4 shadow-none';
+    section.className = 'border-base-content/10 bg-base-200 space-y-5 rounded-lg border p-5 shadow-none';
     section.querySelector('h2')?.classList.add('text-base', 'font-semibold');
 }
 
@@ -69,7 +69,7 @@ function ensureSettingsNav(container: Element): void {
 function applySettingsChrome(): void {
     const container = document.querySelector('.flex-1.overflow-y-auto > div');
     if (container instanceof HTMLElement) {
-        container.className = 'mx-auto max-w-7xl space-y-4';
+        container.className = 'mx-auto max-w-5xl space-y-5';
         const title = container.querySelector('h1');
         if (title) {
             title.textContent = 'Admin';
@@ -80,7 +80,7 @@ function applySettingsChrome(): void {
 
     const serverSection = settingsSectionFor('settings-server-name');
     styleSettingsSection(serverSection, 'server-settings-section');
-    const profilesSection = document.getElementById('transcode-profiles-list')?.closest('.space-y-3');
+    const profilesSection = document.getElementById('transcode-profiles-list')?.parentElement;
     if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
 }
 
@@ -204,6 +204,45 @@ function showSavedFeedback(id: string): void {
 const PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'];
 const TUNE_OPTIONS = ['zerolatency', 'fastdecode', 'film', 'animation', 'grain', 'stillimage', 'psnr', 'ssim'];
 const BUILT_IN_PROFILE_ORDER = ['h264', '720p', '1080p'];
+const BUILT_IN_TRANSCODE_PROFILES: TranscodeProfiles = {
+    h264: {
+        preset: 'ultrafast',
+        tune: 'zerolatency',
+        crf: 23,
+        gop: 60,
+        bframes: 0,
+        bitrate: 0,
+        maxBitrate: 0,
+        width: 0,
+        height: 0,
+    },
+    '720p': {
+        preset: 'ultrafast',
+        tune: 'zerolatency',
+        crf: 23,
+        gop: 60,
+        bframes: 0,
+        bitrate: 0,
+        maxBitrate: 0,
+        width: 1280,
+        height: 720,
+    },
+    '1080p': {
+        preset: 'ultrafast',
+        tune: 'zerolatency',
+        crf: 23,
+        gop: 60,
+        bframes: 0,
+        bitrate: 0,
+        maxBitrate: 0,
+        width: 1920,
+        height: 1080,
+    },
+};
+
+function effectiveTranscodeProfiles(): TranscodeProfiles {
+    return { ...BUILT_IN_TRANSCODE_PROFILES, ...(state.config?.transcodeProfiles ?? {}) };
+}
 
 function renderProfileRow(name: string, profile: TranscodeProfile): string {
     const presetOpts = PRESET_OPTIONS.map((p) => `<option value="${p}" ${profile.preset === p ? 'selected' : ''}>${p}</option>`).join('');
@@ -245,7 +284,7 @@ function renderProfileRow(name: string, profile: TranscodeProfile): string {
 export function loadTranscodeProfiles(): void {
     const list = document.getElementById('transcode-profiles-list');
     if (!list) return;
-    const profiles = state.config?.transcodeProfiles ?? {};
+    const profiles = effectiveTranscodeProfiles();
     const entries = Object.entries(profiles).sort(([a], [b]) => {
         const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
         const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);
@@ -273,8 +312,22 @@ export function loadTranscodeProfiles(): void {
 export function addTranscodeProfile(): void {
     const list = document.getElementById('transcode-profiles-list');
     if (!list) return;
+    if (!list.querySelector('[data-profile-name]')) {
+        list.innerHTML = '';
+    }
+    const existing = new Set(
+        Array.from(list.querySelectorAll<HTMLInputElement>('.js-profile-name')).map((input) =>
+            input.value.trim(),
+        ),
+    );
+    let nextName = 'new_profile';
+    let suffix = 2;
+    while (existing.has(nextName)) {
+        nextName = `new_profile_${suffix}`;
+        suffix += 1;
+    }
     const div = document.createElement('div');
-    div.innerHTML = renderProfileRow('new_profile', {
+    div.innerHTML = renderProfileRow(nextName, {
         preset: 'ultrafast',
         tune: 'zerolatency',
         crf: 23,
