@@ -69,7 +69,7 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
 
     if (tracks.length === 0) {
         audioTracksContainer.innerHTML =
-            '<div class="stats w-full shadow"><div class="stat p-3"><div class="stat-title">Audio</div><div class="stat-value text-sm">No tracks</div></div></div>';
+            '<div class="stats border-base-content/10 bg-base-100 w-full border"><div class="stat p-3"><div class="stat-title">Audio</div><div class="stat-value text-sm">No tracks</div></div></div>';
         return;
     }
 
@@ -82,7 +82,7 @@ function renderAudioTracksTable(tracks: AudioTrack[]): void {
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
                     : '--';
-            return `<div class="stats flex w-full flex-wrap overflow-hidden shadow">
+            return `<div class="stats border-base-content/10 bg-base-100 flex w-full flex-wrap overflow-hidden border">
                 <div class="stat min-w-[3.5rem] flex-1 basis-[3.5rem] p-2">
                     <div class="stat-title">Track</div>
                     <div class="stat-value text-sm">${index + 1}</div>
@@ -136,14 +136,23 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         };
     }
 
-
+    const mediaBtn = document.getElementById('pipe-media-btn');
+    if (mediaBtn) {
+        mediaBtn.onclick = () => {
+            const url = new URL(window.location.href);
+            url.searchParams.set('mode', 'admin');
+            url.searchParams.delete('p');
+            window.history.replaceState({}, '', url.toString());
+            window.dispatchEvent(new PopStateEvent('popstate'));
+        };
+    }
 
     const recordBtn = document.getElementById('record-pipe-btn') as HTMLButtonElement | null;
     if (recordBtn) {
         const isRecordingEnabled = pipe.recording.enabled;
         const inputOn = pipe.input.status === 'on';
         const canStart = inputOn || isRecordingEnabled;
-        recordBtn.textContent = isRecordingEnabled ? '⏹ Stop Rec' : '⏺ Record';
+        recordBtn.textContent = isRecordingEnabled ? 'Stop Rec' : 'Record';
         recordBtn.classList.toggle('btn-error', isRecordingEnabled);
         recordBtn.classList.toggle('btn-accent', !isRecordingEnabled);
         recordBtn.classList.toggle('btn-outline', !isRecordingEnabled);
@@ -158,6 +167,16 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
             }
             await pipelineViewDependencies.refreshDashboard?.();
         };
+    }
+
+    const recordingMeta = document.getElementById('pipeline-recording-meta');
+    if (recordingMeta) {
+        const recordingLabel = pipe.recording.active
+            ? '<span class="badge badge-sm badge-error">Recording active</span>'
+            : pipe.recording.enabled
+              ? '<span class="badge badge-sm badge-warning">Recording armed</span>'
+              : '<span class="badge badge-sm badge-ghost">Recording off</span>';
+        recordingMeta.innerHTML = `${recordingLabel}<span>Files are saved in the media library.</span>`;
     }
 
     const graphBtn = document.getElementById('graph-pipe-btn') as HTMLButtonElement | null;
@@ -415,8 +434,8 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         return;
     }
 
-    const metricBadge = (text: string, title: string, extraAttrs = ''): string =>
-        `<span class="badge badge-sm whitespace-nowrap" title="${title}" ${extraAttrs}>${text}</span>`;
+    const metricPill = (label: string, text: string, title: string): string =>
+        `<span class="border-base-content/10 bg-base-200/70 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs" title="${title}"><span class="text-base-content/50">${label}</span><span class="font-mono tabular-nums">${text}</span></span>`;
 
     const outputsList = document.getElementById('outputs-list');
     if (!outputsList) return;
@@ -435,21 +454,20 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             const isStopped = o.desiredState === 'stopped';
             const isActive = o.status === 'on' || o.status === 'running' || o.status === 'warning';
             const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(pipe.id, o.id);
-            const badges: string[] = [];
+            const metrics: string[] = [];
 
             if (isActive && o.time !== null) {
-                badges.push(
-                    metricBadge(msToHHMMSS(o.time) ?? '', 'Output uptime in the current session'),
-                );
+                metrics.push(metricPill('up', msToHHMMSS(o.time) ?? '', 'Output uptime'));
             }
 
-            badges.push(metricBadge(o.encoding, 'Selected encoding'));
+            metrics.push(metricPill('enc', escapeHtml(o.encoding), 'Selected encoding'));
 
             if (isActive) {
                 const outputTotalSizeBytes = Number(o.totalSize);
                 if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-                    badges.push(
-                        metricBadge(
+                    metrics.push(
+                        metricPill(
+                            'sent',
                             `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
                             'Output total size from FFmpeg progress',
                         ),
@@ -462,36 +480,41 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                         kbps >= 1000
                             ? `${(kbps / 1000).toFixed(1)} Mb/s`
                             : `${kbps.toFixed(1)} Kb/s`;
-                    badges.push(metricBadge(bitrateText, 'Output bitrate from FFmpeg progress'));
+                    metrics.push(
+                        metricPill('rate', bitrateText, 'Output bitrate from FFmpeg progress'),
+                    );
                 }
             }
 
             return `
-            <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full flex gap-2 items-start">
-                <div class="min-w-0 flex-1 flex flex-col gap-1">
-                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <div class="flex items-center gap-2 shrink-0 font-semibold">
-                            <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                            <button class="btn btn-xs ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
-                                data-action="toggle-output"
-                                data-output-index="${outputIndex}"
-                                ${toggleBusy ? 'disabled' : ''}>
-                                ${isStopped ? 'Start' : 'Stop'}
-                            </button>
-                            <span>${o.name}</span>
+            <div class="border-base-content/10 bg-base-100 flex w-full items-start gap-3 rounded-lg border px-3 py-3">
+                <div class="pt-1"><div aria-label="status" class="status status-lg ${statusColor}"></div></div>
+                <div class="flex min-w-0 flex-1 flex-col gap-2">
+                    <div class="flex min-w-0 items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <div class="truncate font-semibold">${escapeHtml(o.name)}</div>
+                            <code class="text-base-content/60 block truncate text-xs font-normal" data-output-url="${outputIndex}">
+                                ${sanitizeLogMessage(o.url, true)}
+                            </code>
                         </div>
-                        <code class="text-sm font-normal opacity-70 truncate shrink min-w-0" style="max-width:min(28rem,40%)" data-output-url="${outputIndex}">
-                            ${sanitizeLogMessage(o.url, true)}
-                        </code>
+                        <button class="btn btn-xs shrink-0 ${isStopped ? 'btn-accent' : 'btn-accent btn-outline'} ${toggleBusy ? 'btn-disabled' : ''}"
+                            data-action="toggle-output"
+                            data-output-index="${outputIndex}"
+                            ${toggleBusy ? 'disabled' : ''}>
+                            ${isStopped ? 'Start' : 'Stop'}
+                        </button>
                     </div>
-                    <div class="flex flex-wrap items-center gap-1 pl-1">
-                        ${badges.join('')}
+                    <div class="flex flex-wrap items-center gap-1">
+                        ${metrics.join('')}
                     </div>
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
-                    <button class="btn btn-xs btn-accent btn-outline" data-action="history-output" data-output-index="${outputIndex}">History</button>
-                    <button class="btn btn-xs btn-accent btn-outline" data-action="edit-output" data-output-index="${outputIndex}">&#9998;</button>
-                    <button class="btn btn-xs btn-error btn-outline ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">&#128473;</button>
+                <div class="dropdown dropdown-end shrink-0">
+                    <button type="button" tabindex="0" class="btn btn-xs btn-ghost" aria-label="Output actions">More</button>
+                    <ul tabindex="0" class="dropdown-content menu bg-base-100 border-base-content/10 z-20 mt-2 w-32 rounded-lg border p-1 shadow">
+                        <li><button type="button" data-action="history-output" data-output-index="${outputIndex}">History</button></li>
+                        <li><button type="button" data-action="edit-output" data-output-index="${outputIndex}">Edit</button></li>
+                        <li><button type="button" class="text-error ${isStopped ? '' : 'btn-disabled'}" data-action="delete-output" data-output-index="${outputIndex}">Delete</button></li>
+                    </ul>
                 </div>
             </div>`;
         })

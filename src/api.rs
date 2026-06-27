@@ -2174,7 +2174,10 @@ async fn media_list_handler(
     if let Ok(mut entries) = tokio::fs::read_dir(&state.media_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
-            if (name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov"))
+            if (name.ends_with(".ts")
+                || name.ends_with(".mkv")
+                || name.ends_with(".mp4")
+                || name.ends_with(".mov"))
                 && let Ok(metadata) = entry.metadata().await
             {
                 let modified = metadata
@@ -3676,7 +3679,10 @@ async fn agent_media_inventory(state: &AppState) -> serde_json::Value {
     if let Ok(mut entries) = tokio::fs::read_dir(&state.media_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
-            if (name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".mov"))
+            if (name.ends_with(".ts")
+                || name.ends_with(".mkv")
+                || name.ends_with(".mp4")
+                || name.ends_with(".mov"))
                 && let Ok(metadata) = entry.metadata().await
             {
                 let modified = metadata

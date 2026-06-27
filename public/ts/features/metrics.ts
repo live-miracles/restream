@@ -62,8 +62,8 @@ function renderServerMetrics(): void {
         setText('navbar-cpu-value', '...');
         setText('navbar-ram-value', '...');
         setText('navbar-disk-value', '...');
-        setText('navbar-down-value', '↓ ...');
-        setText('navbar-up-value', '↑ ...');
+        setText('navbar-down-value', 'RX ...');
+        setText('navbar-up-value', 'TX ...');
         setMeter('cpu', null);
         setMeter('ram', null);
         setMeter('disk', null);
@@ -87,8 +87,8 @@ function renderServerMetrics(): void {
     setText('navbar-cpu-value', pct(cpuPct));
     setText('navbar-ram-value', pct(ramPct));
     setText('navbar-disk-value', pct(diskPct));
-    setText('navbar-down-value', `↓ ${toMbps(state.metrics?.network?.downloadKbps)}`);
-    setText('navbar-up-value', `↑ ${toMbps(state.metrics?.network?.uploadKbps)}`);
+    setText('navbar-down-value', `RX ${toMbps(state.metrics?.network?.downloadKbps)}`);
+    setText('navbar-up-value', `TX ${toMbps(state.metrics?.network?.uploadKbps)}`);
     setMeter('cpu', cpuPct);
     setMeter('ram', ramPct);
     setMeter('disk', diskPct);
