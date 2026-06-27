@@ -32,6 +32,7 @@ import {
     formatCodecName,
     escapeHtml,
     showErrorAlert,
+    confirmInApp,
     OUTPUT_SERVER_PRESETS,
 } from '../core/utils.js';
 import type { MatchedPreset, SrtFields } from '../core/utils.js';
@@ -1182,7 +1183,14 @@ export async function deleteOutBtn(pipeId: string, outId: string): Promise<void>
         return;
     }
 
-    if (!confirm('Are you sure you want to delete output "' + output.name + '"?')) {
+    if (
+        !(await confirmInApp({
+            title: 'Delete Output',
+            message: `Delete output "${output.name}"?`,
+            confirmLabel: 'Delete',
+            destructive: true,
+        }))
+    ) {
         return;
     }
 
@@ -1244,8 +1252,14 @@ export async function deletePipeBtn(): Promise<void> {
         return;
     }
 
-    const confirmDelete = confirm('Are you sure you want to delete pipeline "' + pipe.name + '"?');
-    if (!confirmDelete) {
+    if (
+        !(await confirmInApp({
+            title: 'Delete Pipeline',
+            message: `Delete pipeline "${pipe.name}"?`,
+            confirmLabel: 'Delete',
+            destructive: true,
+        }))
+    ) {
         return;
     }
 

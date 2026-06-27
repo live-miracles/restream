@@ -8,9 +8,9 @@ import { loadStatus } from './status.js';
 import { isOutputIntentStopped, isOutputRunning, isOutputUnexpectedlyDown, selectPipeline } from './render.js';
 import type { OutputView, PipelineView } from '../types.js';
 
-type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'media' | 'settings' | 'status' | 'admin';
+type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'media' | 'settings' | 'status';
 
-const validModes = new Set(['overview', 'pipeline', 'inspect', 'media', 'settings', 'status', 'admin']);
+const validModes = new Set(['overview', 'pipeline', 'inspect', 'media', 'settings', 'status']);
 let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
@@ -37,6 +37,7 @@ const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
 let lastOverviewMetricsSampleKey: string | null = null;
 
 function normalizeMode(mode: string | null): DashboardMode {
+    if (mode === 'admin') return 'settings';
     if (mode && validModes.has(mode)) return mode as DashboardMode;
     return getUrlParam('p') ? 'pipeline' : 'overview';
 }
@@ -61,6 +62,14 @@ function formatPercent(value: number | null | undefined): string {
     return `${(value as number).toFixed((value as number) >= 10 ? 0 : 1)}%`;
 }
 
+function hasMetricValue(value: number | null | undefined): boolean {
+    return Number.isFinite(value as number) && (value as number) >= 0;
+}
+
+function joinMetricDetails(parts: string[], fallback = 'warming...'): string {
+    return parts.filter((part) => part.trim().length > 0).join(' / ') || fallback;
+}
+
 function pushOverviewMetric(key: OverviewMetricKey, value: number | null | undefined): void {
     if (!Number.isFinite(value as number)) return;
     const history = overviewMetricHistory[key];
@@ -71,8 +80,7 @@ function pushOverviewMetric(key: OverviewMetricKey, value: number | null | undef
 function recordOverviewMetricSamples(counts: SummaryCounts): void {
     if (!state.metrics.generatedAt) return;
     const engineMemory = state.metrics.engine?.totalMemoryBytes ?? state.metrics.engine?.memoryBytes;
-    const sampleKey =
-        state.metrics.generatedAt;
+    const sampleKey = state.metrics.generatedAt;
     if (sampleKey === lastOverviewMetricsSampleKey) return;
     lastOverviewMetricsSampleKey = sampleKey;
 
@@ -92,15 +100,20 @@ function overviewSparkline(key: OverviewMetricKey): string {
     const tone = overviewMetricTone(key);
     const min = Math.min(...values);
     const max = Math.max(...values);
-    const range = Math.max(max - min, max * 0.1, 1);
+    const rawRange = max - min;
+    const midpoint = (max + min) / 2;
+    const stableRange = Math.max(Math.abs(midpoint) * 0.05, 1);
     const points = values
         .map((value, index) => {
             const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 100;
-            const y = 38 - ((value - min) / range) * 32;
+            const y =
+                rawRange < stableRange
+                    ? 20 - ((value - midpoint) / stableRange) * 16
+                    : 36 - ((value - min) / rawRange) * 32;
             return `${x.toFixed(1)},${y.toFixed(1)}`;
         })
         .join(' ');
-    return `<svg class="${tone.sparklineClass} pointer-events-none absolute inset-x-0 bottom-0 h-full w-full opacity-25" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+    return `<svg class="${tone.sparklineClass} h-12 w-full opacity-70" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
         <polyline fill="none" stroke="currentColor" stroke-width="2.5" vector-effect="non-scaling-stroke" points="${points}"></polyline>
     </svg>`;
 }
@@ -243,11 +256,21 @@ function renderOverview(): void {
     const ffmpegMemory = Number(engine.externalFfmpegMemoryBytes || 0);
     const restreamMemory = Number(engine.restreamMemoryBytes ?? engine.memoryBytes ?? 0);
     const engineMemory = Number(engine.totalMemoryBytes || restreamMemory + ffmpegMemory);
-    const ffmpegCpuDetail =
-        ffmpegCount > 0
+    const engineCpuDetail = joinMetricDetails([
+        hasMetricValue(engine.restreamCpuPercent) ? `Restream ${formatPercent(engine.restreamCpuPercent)}` : '',
+        ffmpegCount > 0 && hasMetricValue(engine.externalFfmpegCpuPercent)
             ? `FFmpeg ${formatPercent(engine.externalFfmpegCpuPercent)} (${ffmpegCount})`
-            : 'no FFmpeg';
-    const engineCpuDetail = `Restream ${formatPercent(engine.restreamCpuPercent)} / ${ffmpegCpuDetail}`;
+            : '',
+    ]);
+    const engineMemoryDetail = joinMetricDetails(
+        [
+            hasMetricValue(restreamMemory) && restreamMemory > 0 ? `Restream ${formatBytes(restreamMemory)}` : '',
+            ffmpegCount > 0 && hasMetricValue(ffmpegMemory) && ffmpegMemory > 0
+                ? `FFmpeg ${formatBytes(ffmpegMemory)}`
+                : '',
+        ],
+        'No engine memory sample',
+    );
     const pipelineRows = [...state.pipelines]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((pipe) => {
@@ -273,7 +296,7 @@ function renderOverview(): void {
             ${overviewMetric('Engine CPU', formatPercent(engine.cpuPercent), engineCpuDetail, 'engineCpu')}
             ${overviewMetric('Inputs Live', `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : 'All quiet', 'inputs')}
             ${overviewMetric('Throughput In', formatBitrate(counts.inputKbps), 'Across active publishers', 'inputKbps')}
-            ${overviewMetric('Engine Memory', formatBytes(engineMemory), `Restream ${formatBytes(restreamMemory)} / FFmpeg ${formatBytes(ffmpegMemory)}`, 'engineMemory')}
+            ${overviewMetric('Engine Memory', formatBytes(engineMemory), engineMemoryDetail, 'engineMemory')}
             ${overviewMetric('Outputs Running', `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, 'outputs')}
             ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`, 'outputKbps')}
         </div>
@@ -316,12 +339,31 @@ function renderOverview(): void {
 
 function overviewMetric(label: string, value: string, note: string, historyKey: OverviewMetricKey): string {
     const tone = overviewMetricTone(historyKey);
-    return `<section class="${tone.borderClass} border-base-content/10 bg-base-200 relative min-h-30 overflow-hidden rounded-lg border border-t-2 p-4">
-        <div class="relative z-10 text-base-content/60 text-xs font-semibold uppercase">${escapeHtml(label)}</div>
-        <div class="relative z-10 mt-2 text-2xl font-semibold tabular-nums">${escapeHtml(value)}</div>
-        <div class="relative z-10 text-base-content/60 mt-1 text-sm">${escapeHtml(note)}</div>
-        ${overviewSparkline(historyKey)}
+    return `<section class="${tone.borderClass} border-base-content/10 bg-base-200 min-h-30 overflow-hidden rounded-lg border border-t-2 p-4">
+        <div class="text-base-content/60 text-xs font-semibold uppercase">${escapeHtml(label)}</div>
+        <div class="mt-2 grid grid-cols-[minmax(0,max-content)_minmax(5rem,1fr)] items-end gap-3">
+            <div class="min-w-0">${overviewMetricHero(value)}</div>
+            <div class="min-w-0">${overviewSparkline(historyKey)}</div>
+        </div>
+        <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(note)}</div>
     </section>`;
+}
+
+function overviewMetricHero(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === '--') {
+        return '<span class="text-2xl font-semibold tabular-nums">--</span>';
+    }
+    const compactUnit = trimmed.match(/^(-?\d+(?:\.\d+)?)(%)$/);
+    const spacedUnit = trimmed.match(/^(.+?)\s+([A-Za-z][A-Za-z/]+)$/);
+    const match = compactUnit || spacedUnit;
+    if (!match) {
+        return `<span class="text-2xl font-semibold tabular-nums">${escapeHtml(trimmed)}</span>`;
+    }
+    return `<span class="inline-flex min-w-0 items-baseline gap-1">
+        <span class="truncate text-2xl font-semibold tabular-nums">${escapeHtml(match[1])}</span>
+        <span class="text-base-content/55 shrink-0 text-sm font-semibold">${escapeHtml(match[2])}</span>
+    </span>`;
 }
 
 function getInspectPipeline(): PipelineView | null {
@@ -529,54 +571,6 @@ function syncInspectGraphAutoRefresh(): void {
     }, INSPECT_GRAPH_REFRESH_MS);
 }
 
-function renderAdmin(): void {
-    const container = document.getElementById('admin-mode-content');
-    if (!container) return;
-    const security = state.config.ingestSecurity;
-    const profileCount = Object.keys(state.config.transcodeProfiles || {}).length;
-    container.innerHTML = `<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]">
-        <section class="border-base-content/10 bg-base-200 rounded-lg border p-4">
-            <h1 class="text-lg font-semibold">Admin</h1>
-            <div class="mt-4 grid gap-3 md:grid-cols-3">
-                ${adminModeButton('Settings', 'settings', 'Server name, ingest host, security, and encoding profiles.')}
-                ${adminModeButton('Status', 'status', 'Runtime build, native libraries, and system health.')}
-                ${adminLink('GitHub', 'https://github.com/live-miracles/restream', 'Source repository and release history.')}
-            </div>
-        </section>
-        <aside class="border-base-content/10 bg-base-200 rounded-lg border p-4">
-            <h2 class="font-semibold">Configuration Snapshot</h2>
-            <dl class="mt-3 grid gap-2 text-sm">
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Server</dt><dd>${escapeHtml(state.config.serverName || 'Restream')}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Ingest Host</dt><dd>${escapeHtml(state.config.ingestHost || 'localhost')}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Profiles</dt><dd>${profileCount}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Failure Limit</dt><dd>${security?.failureLimit ?? '--'}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Tracked IP Limit</dt><dd>${security?.trackedIpLimit ?? '--'}</dd></div>
-            </dl>
-        </aside>
-    </div>`;
-    bindAdminNavigation(container);
-}
-
-function adminModeButton(label: string, mode: DashboardMode, description: string): string {
-    return `<button type="button" class="border-base-content/10 bg-base-100 hover:bg-base-300 rounded-lg border p-3 text-left" data-admin-mode="${mode}">
-        <div class="font-semibold">${escapeHtml(label)}</div>
-        <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(description)}</div>
-    </button>`;
-}
-
-function adminLink(label: string, href: string, description: string): string {
-    return `<a class="border-base-content/10 bg-base-100 hover:bg-base-300 rounded-lg border p-3" href="${escapeHtml(href)}">
-        <div class="font-semibold">${escapeHtml(label)}</div>
-        <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(description)}</div>
-    </a>`;
-}
-
-function bindAdminNavigation(container: HTMLElement): void {
-    container.querySelectorAll<HTMLButtonElement>('[data-admin-mode]').forEach((button) => {
-        button.onclick = () => setDashboardMode(button.dataset.adminMode || 'admin');
-    });
-}
-
 function renderSettingsMode(): void {
     const container = document.getElementById('settings-mode-content');
     if (!container) return;
@@ -595,7 +589,7 @@ function renderStatusMode(): void {
             <div class="mx-auto max-w-5xl space-y-5">
                 <div class="flex flex-wrap items-end justify-between gap-3">
                     <div>
-                        <h1 class="text-xl font-semibold">Status</h1>
+                        <h1 class="text-lg font-semibold">Status</h1>
                         <p class="text-base-content/60 mt-1 text-sm">Runtime build, native libraries, and system details.</p>
                     </div>
                     <button type="button" class="btn btn-sm btn-outline" id="refresh-status-btn">Refresh</button>
@@ -626,7 +620,6 @@ function applyMode(mode: DashboardMode): void {
         media: document.getElementById('media-mode-panel'),
         settings: document.getElementById('settings-mode-panel'),
         status: document.getElementById('status-mode-panel'),
-        admin: document.getElementById('admin-mode-panel'),
     };
     for (const [name, panel] of Object.entries(panels)) {
         panel?.classList.toggle('hidden', name !== mode);
@@ -653,9 +646,7 @@ function applyMode(mode: DashboardMode): void {
                       ? 'Recordings and source files'
                       : mode === 'settings'
                         ? 'Server configuration'
-                        : mode === 'status'
-                          ? 'Runtime status'
-                          : 'Configuration and runtime';
+                        : 'Runtime status';
     }
     syncInspectGraphAutoRefresh();
     if (mode === 'media') void renderMediaLibraryMode();
@@ -663,9 +654,20 @@ function applyMode(mode: DashboardMode): void {
     if (mode === 'status') renderStatusMode();
 }
 
+function modeUsesPipelineSelection(mode: DashboardMode): boolean {
+    return mode === 'pipeline' || mode === 'inspect';
+}
+
+function setModeUrl(mode: DashboardMode): void {
+    const url = new URL(window.location.href);
+    url.searchParams.set('mode', mode);
+    if (!modeUsesPipelineSelection(mode)) url.searchParams.delete('p');
+    window.history.pushState({}, '', url);
+}
+
 export function setDashboardMode(mode: string): void {
     const nextMode = normalizeMode(mode);
-    setUrlParam('mode', nextMode);
+    setModeUrl(nextMode);
     if (currentMode === nextMode) {
         applyMode(nextMode);
         return;
@@ -684,7 +686,6 @@ export function openInspectGraph(pipeId: string): void {
 export function renderDashboardModes(): void {
     renderOverview();
     renderInspect();
-    renderAdmin();
     applyMode(normalizeMode(getUrlParam('mode')));
 }
 

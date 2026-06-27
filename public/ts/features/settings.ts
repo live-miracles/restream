@@ -73,7 +73,7 @@ function applySettingsChrome(): void {
         const title = container.querySelector('h1');
         if (title) {
             title.textContent = 'Admin';
-            title.className = 'text-xl font-semibold';
+            title.className = 'text-lg font-semibold';
         }
         ensureSettingsNav(container);
     }
@@ -100,7 +100,7 @@ export function renderSettingsPanel(container: HTMLElement): void {
         <div class="mx-auto max-w-5xl space-y-5">
             <div class="flex flex-wrap items-end justify-between gap-3">
                 <div>
-                    <h1 class="text-xl font-semibold">Settings</h1>
+                    <h1 class="text-lg font-semibold">Settings</h1>
                     <p class="text-base-content/60 mt-1 text-sm">Server, security, and encoding configuration.</p>
                 </div>
                 <nav class="border-base-content/10 bg-base-200 rounded-lg border p-1" aria-label="Settings sections">

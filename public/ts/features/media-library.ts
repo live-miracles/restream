@@ -1,6 +1,6 @@
 import { deleteMediaFile, listMediaFiles, type MediaFile } from '../core/api.js';
 import { withBasePath } from '../core/base-path.js';
-import { escapeHtml } from '../core/utils.js';
+import { confirmInApp, escapeHtml } from '../core/utils.js';
 import { state } from '../core/state.js';
 
 type MediaKind = 'recording' | 'source';
@@ -155,7 +155,13 @@ function attachMediaActions(container: HTMLElement): void {
         btn.addEventListener('click', async () => {
             const filename = btn.dataset.filename;
             if (!filename) return;
-            if (!window.confirm(`Permanently delete "${filename}"?`)) return;
+            const confirmed = await confirmInApp({
+                title: 'Delete Media File',
+                message: `Permanently delete "${filename}"?`,
+                confirmLabel: 'Delete',
+                destructive: true,
+            });
+            if (!confirmed) return;
             const res = await deleteMediaFile(filename);
             if (res !== null) await renderMediaLibraryMode({ force: true });
         });

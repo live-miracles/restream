@@ -60,6 +60,14 @@ const ingestUiState = {
 
 const audioLabelEditKeys = new Set<string>();
 const audioLabelDrafts = new Map<string, string>();
+let pendingAudioLabelFocusKey: string | null = null;
+
+function editIconSvg(): string {
+    return `<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 7.125 16.875 4.5" />
+    </svg>`;
+}
 
 function formatProgressFps(value: number | null | undefined): string | null {
     if (!Number.isFinite(value) || (value as number) <= 0) return null;
@@ -86,6 +94,18 @@ function formatAudioTrackIdentity(track: AudioTrack, label: string): string {
 function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void {
     const audioTracksContainer = document.getElementById('input-audio-tracks');
     if (!audioTracksContainer) return;
+
+    const activeInput =
+        document.activeElement instanceof HTMLInputElement &&
+        audioTracksContainer.contains(document.activeElement)
+            ? document.activeElement
+            : null;
+    const activeEditKey = activeInput?.dataset.audioLabelEditKey || null;
+    const activeSelectionStart = activeInput?.selectionStart ?? null;
+    const activeSelectionEnd = activeInput?.selectionEnd ?? null;
+    if (activeEditKey && activeInput) {
+        audioLabelDrafts.set(activeEditKey, activeInput.value);
+    }
 
     if (tracks.length === 0) {
         audioTracksContainer.innerHTML =
@@ -115,6 +135,7 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                         class="input input-bordered input-xs mt-1 w-full max-w-44 text-center"
                         data-audio-label-input="${escapeHtml(key)}"
                         data-audio-label-index="${index}"
+                        data-audio-label-edit-key="${escapeHtml(editKey)}"
                         value="${escapeHtml(draftLabel)}"
                         placeholder="${escapeHtml(label)}"
                         aria-label="Audio track name"
@@ -124,11 +145,17 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                         <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="cancel" data-audio-label-index="${index}">Cancel</button>
                     </div>
                 </div>`
-                : `<div class="stat min-w-0 place-items-center p-2 text-center">
-                    <div class="flex max-w-full items-center justify-center gap-2">
-                        <div class="stat-title">Track ${index + 1}</div>
-                        <button type="button" class="btn btn-xs btn-ghost min-h-0 h-5 px-1.5 text-[0.65rem]" data-audio-label-action="edit" data-audio-label-index="${index}">Rename</button>
-                    </div>
+                : `<div class="stat relative min-w-0 place-items-center p-2 text-center">
+                    <button
+                        type="button"
+                        class="btn btn-xs btn-ghost btn-square absolute top-1 right-1 h-6 min-h-0 w-6 opacity-70 hover:opacity-100"
+                        data-audio-label-action="edit"
+                        data-audio-label-index="${index}"
+                        title="Rename track"
+                        aria-label="Rename ${escapeHtml(label)}">
+                        ${editIconSvg()}
+                    </button>
+                    <div class="stat-title">Track ${index + 1}</div>
                     <div class="stat-value truncate text-sm">${escapeHtml(label)}</div>
                     <div class="stat-desc truncate">${escapeHtml(identity)}</div>
                 </div>`;
@@ -167,6 +194,7 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                 if (action === 'edit') {
                     audioLabelEditKeys.add(editKey);
                     audioLabelDrafts.set(editKey, getAudioTrackStoredLabel(pipelineId, track, index));
+                    pendingAudioLabelFocusKey = editKey;
                 } else if (action === 'cancel') {
                     audioLabelEditKeys.delete(editKey);
                     audioLabelDrafts.delete(editKey);
@@ -213,9 +241,23 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                     renderAudioTracksTable(pipelineId, tracks);
                 }
             });
-            input.focus();
-            input.select();
         });
+
+    const focusKey = activeEditKey || pendingAudioLabelFocusKey;
+    if (focusKey) {
+        const input = audioTracksContainer.querySelector<HTMLInputElement>(
+            `input[data-audio-label-edit-key="${CSS.escape(focusKey)}"]`,
+        );
+        if (input) {
+            input.focus();
+            if (activeEditKey === focusKey && activeSelectionStart !== null && activeSelectionEnd !== null) {
+                input.setSelectionRange(activeSelectionStart, activeSelectionEnd);
+            } else {
+                input.select();
+            }
+        }
+    }
+    pendingAudioLabelFocusKey = null;
 }
 
 function renderVideoTrackDetails(video: Partial<NonNullable<PipelineView['input']['video']>>): void {

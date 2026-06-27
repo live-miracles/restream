@@ -211,6 +211,50 @@ function showErrorAlert(error: unknown): void {
     }, 5000);
 }
 
+function confirmInApp({
+    title,
+    message,
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
+    destructive = false,
+}: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+}): Promise<boolean> {
+    let dialog = document.getElementById('app-confirm-dialog') as HTMLDialogElement | null;
+    if (!dialog) {
+        dialog = document.createElement('dialog');
+        dialog.id = 'app-confirm-dialog';
+        dialog.className = 'modal';
+        document.body.appendChild(dialog);
+    }
+
+    dialog.innerHTML = `
+        <div class="modal-box max-w-md">
+            <h3 class="text-lg font-semibold">${escapeHtml(title)}</h3>
+            <p class="text-base-content/70 mt-2 text-sm leading-6">${escapeHtml(message)}</p>
+            <div class="modal-action">
+                <form method="dialog" class="flex gap-2">
+                    <button class="btn btn-sm" value="cancel">${escapeHtml(cancelLabel)}</button>
+                    <button class="btn btn-sm ${destructive ? 'btn-error' : 'btn-accent'}" value="confirm">${escapeHtml(confirmLabel)}</button>
+                </form>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button value="cancel">close</button></form>`;
+
+    return new Promise((resolve) => {
+        const onClose = (): void => {
+            dialog?.removeEventListener('close', onClose);
+            resolve(dialog?.returnValue === 'confirm');
+        };
+        dialog.addEventListener('close', onClose);
+        dialog.showModal();
+    });
+}
+
 function showLoading(): void {
     document.getElementById('saving-badge')?.classList.add('flex');
     document.getElementById('saving-badge')?.classList.remove('hidden');
@@ -472,6 +516,7 @@ export {
     readSelectedPipelineHint,
     setServerConfig,
     showErrorAlert,
+    confirmInApp,
     showLoading,
     hideLoading,
     showCopiedNotification,
