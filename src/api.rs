@@ -18,7 +18,7 @@ use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use sysinfo::{Disks, Networks, System};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -46,6 +46,14 @@ pub const MAX_ENCODING_LEN: usize = 512;
 pub const MAX_STREAM_KEY_LEN: usize = 256;
 pub const MAX_FFMPEG_ARGS_LEN: usize = 4096;
 pub const MAX_PASSWORD_LEN: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct EngineCpuSample {
+    total_ticks: u64,
+    process_ticks: u64,
+}
+
+static ENGINE_CPU_SAMPLE: OnceLock<Mutex<Option<EngineCpuSample>>> = OnceLock::new();
 
 /// Returns a 400 Bad Request response if `s` exceeds `max` bytes, else `None`.
 fn check_field_len(field: &str, s: &str, max: usize) -> Option<axum::response::Response> {
@@ -2833,6 +2841,97 @@ async fn healthz_get_handler() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+fn proc_total_ticks() -> Option<u64> {
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let cpu = stat.lines().find(|line| line.starts_with("cpu "))?;
+    Some(
+        cpu.split_whitespace()
+            .skip(1)
+            .filter_map(|value| value.parse::<u64>().ok())
+            .sum(),
+    )
+}
+
+fn proc_process_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let end_comm = stat.rfind(')')?;
+    let fields: Vec<&str> = stat[end_comm + 2..].split_whitespace().collect();
+    let utime = fields.get(11)?.parse::<u64>().ok()?;
+    let stime = fields.get(12)?.parse::<u64>().ok()?;
+    Some(utime + stime)
+}
+
+fn engine_process_pids(sys: &System) -> Vec<u32> {
+    let own_pid = std::process::id();
+    let own_sys_pid = sysinfo::Pid::from_u32(own_pid);
+    let mut pids = vec![own_pid];
+
+    for (pid, process) in sys.processes() {
+        let name = process.name().to_ascii_lowercase();
+        if process.parent() == Some(own_sys_pid) && name.contains("ffmpeg") {
+            pids.push(pid.as_u32());
+        }
+    }
+
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+fn engine_metrics(sys: &System, core_count: usize) -> serde_json::Value {
+    let own_pid = std::process::id();
+    let own_sys_pid = sysinfo::Pid::from_u32(own_pid);
+    let pids = engine_process_pids(sys);
+
+    let restream_memory = sys
+        .process(own_sys_pid)
+        .map(|process| process.memory())
+        .unwrap_or(0);
+    let mut external_ffmpeg_count = 0u64;
+    let mut external_ffmpeg_memory = 0u64;
+    let mut total_memory = 0u64;
+
+    for pid in &pids {
+        if let Some(process) = sys.process(sysinfo::Pid::from_u32(*pid)) {
+            let memory = process.memory();
+            total_memory = total_memory.saturating_add(memory);
+            if *pid != own_pid && process.name().to_ascii_lowercase().contains("ffmpeg") {
+                external_ffmpeg_count += 1;
+                external_ffmpeg_memory = external_ffmpeg_memory.saturating_add(memory);
+            }
+        }
+    }
+
+    let process_ticks = pids.iter().filter_map(|pid| proc_process_ticks(*pid)).sum::<u64>();
+    let total_ticks = proc_total_ticks();
+    let cpu_percent = total_ticks.and_then(|total_ticks| {
+        let sample = EngineCpuSample {
+            total_ticks,
+            process_ticks,
+        };
+        let lock = ENGINE_CPU_SAMPLE.get_or_init(|| Mutex::new(None));
+        let mut previous = lock.lock().ok()?;
+        let cpu = previous.and_then(|prev| {
+            let total_delta = sample.total_ticks.saturating_sub(prev.total_ticks);
+            let process_delta = sample.process_ticks.saturating_sub(prev.process_ticks);
+            if total_delta == 0 {
+                return None;
+            }
+            Some((process_delta as f64 / total_delta as f64) * core_count.max(1) as f64 * 100.0)
+        });
+        *previous = Some(sample);
+        cpu
+    });
+
+    serde_json::json!({
+        "cpuPercent": cpu_percent,
+        "memoryBytes": restream_memory,
+        "totalMemoryBytes": total_memory,
+        "externalFfmpegCount": external_ffmpeg_count,
+        "externalFfmpegMemoryBytes": external_ffmpeg_memory,
+    })
+}
+
 async fn metrics_system_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2859,6 +2958,7 @@ async fn metrics_system_handler(
     };
     let core_count = sys.cpus().len();
     let load_avg = System::load_average();
+    let engine = engine_metrics(&sys, core_count);
 
     let media_root = {
         let configured = FsPath::new(&state.media_dir);
@@ -3011,6 +3111,7 @@ async fn metrics_system_handler(
             "freeBytes": free_mem,
             "usedPercent": mem_pct
         },
+        "engine": engine,
         "disk": {
             "totalBytes": total_disk,
             "usedBytes": used_disk,

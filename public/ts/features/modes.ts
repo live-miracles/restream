@@ -22,6 +22,18 @@ let settingsMounted = false;
 let statusMounted = false;
 const INSPECT_GRAPH_REFRESH_MS = 5000;
 type StatusTone = 'success' | 'warning' | 'error' | 'neutral' | 'info';
+type OverviewMetricKey = 'inputs' | 'outputs' | 'inputKbps' | 'outputKbps' | 'engineCpu' | 'engineMemory';
+type SummaryCounts = ReturnType<typeof summaryCounts>;
+
+const OVERVIEW_HISTORY_LIMIT = 28;
+const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
+    inputs: [],
+    outputs: [],
+    inputKbps: [],
+    outputKbps: [],
+    engineCpu: [],
+    engineMemory: [],
+};
 
 function normalizeMode(mode: string | null): DashboardMode {
     if (mode && validModes.has(mode)) return mode as DashboardMode;
@@ -41,6 +53,43 @@ function formatBytes(bytes: number | null | undefined): string {
     if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
     if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
     return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+    if (!Number.isFinite(value as number) || (value as number) < 0) return '--';
+    return `${(value as number).toFixed((value as number) >= 10 ? 0 : 1)}%`;
+}
+
+function pushOverviewMetric(key: OverviewMetricKey, value: number | null | undefined): void {
+    if (!Number.isFinite(value as number)) return;
+    const history = overviewMetricHistory[key];
+    history.push(Math.max(0, value as number));
+    if (history.length > OVERVIEW_HISTORY_LIMIT) history.splice(0, history.length - OVERVIEW_HISTORY_LIMIT);
+}
+
+function recordOverviewMetricSamples(counts: SummaryCounts): void {
+    pushOverviewMetric('inputs', counts.liveInputs);
+    pushOverviewMetric('outputs', counts.runningOutputs);
+    pushOverviewMetric('inputKbps', counts.inputKbps);
+    pushOverviewMetric('outputKbps', counts.outputKbps);
+    pushOverviewMetric('engineCpu', state.metrics.engine?.cpuPercent);
+    pushOverviewMetric('engineMemory', state.metrics.engine?.totalMemoryBytes ?? state.metrics.engine?.memoryBytes);
+}
+
+function overviewSparkline(key: OverviewMetricKey): string {
+    const values = overviewMetricHistory[key];
+    if (values.length < 2) return '';
+    const max = Math.max(...values, 1);
+    const points = values
+        .map((value, index) => {
+            const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 100;
+            const y = 38 - (value / max) * 32;
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(' ');
+    return `<svg class="pointer-events-none absolute inset-x-2 bottom-2 h-12 opacity-25" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="currentColor" stroke-width="2.5" vector-effect="non-scaling-stroke" points="${points}"></polyline>
+    </svg>`;
 }
 
 function badgeClassForTone(tone: StatusTone): string {
@@ -158,6 +207,12 @@ function renderOverview(): void {
     if (!container) return;
 
     const counts = summaryCounts();
+    recordOverviewMetricSamples(counts);
+    const engine = state.metrics.engine || {};
+    const ffmpegCount = Number(engine.externalFfmpegCount || 0);
+    const ffmpegMemory = Number(engine.externalFfmpegMemoryBytes || 0);
+    const restreamMemory = Number(engine.memoryBytes || 0);
+    const engineMemory = Number(engine.totalMemoryBytes || restreamMemory + ffmpegMemory);
     const pipelineRows = [...state.pipelines]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((pipe) => {
@@ -179,11 +234,13 @@ function renderOverview(): void {
         .join('');
 
     container.innerHTML = `
-        <div class="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            ${overviewMetric('Inputs Live', `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : 'All quiet')}
-            ${overviewMetric('Outputs Running', `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`)}
-            ${overviewMetric('Throughput In', formatBitrate(counts.inputKbps), 'Across active publishers')}
-            ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`)}
+        <div class="mb-4 grid gap-3 md:grid-cols-3 2xl:grid-cols-6">
+            ${overviewMetric('Inputs Live', `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : 'All quiet', 'inputs')}
+            ${overviewMetric('Outputs Running', `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, 'outputs')}
+            ${overviewMetric('Throughput In', formatBitrate(counts.inputKbps), 'Across active publishers', 'inputKbps')}
+            ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`, 'outputKbps')}
+            ${overviewMetric('Engine CPU', formatPercent(engine.cpuPercent), `Host ${formatPercent(state.metrics.cpu?.usagePercent)} / FFmpeg ${ffmpegCount}`, 'engineCpu')}
+            ${overviewMetric('Engine Memory', formatBytes(engineMemory), `Restream ${formatBytes(restreamMemory)} / FFmpeg ${formatBytes(ffmpegMemory)}`, 'engineMemory')}
         </div>
         <section class="border-base-content/10 bg-base-200/80 rounded-lg border">
             <div class="border-base-content/10 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
@@ -222,11 +279,12 @@ function renderOverview(): void {
     if (addBtn) addBtn.onclick = () => void window.addPipeBtn();
 }
 
-function overviewMetric(label: string, value: string, note: string): string {
-    return `<section class="border-base-content/10 bg-base-200 rounded-lg border p-4">
-        <div class="text-base-content/60 text-xs font-semibold uppercase">${escapeHtml(label)}</div>
-        <div class="mt-2 text-2xl font-semibold tabular-nums">${escapeHtml(value)}</div>
-        <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(note)}</div>
+function overviewMetric(label: string, value: string, note: string, historyKey: OverviewMetricKey): string {
+    return `<section class="border-base-content/10 bg-base-200 relative min-h-30 overflow-hidden rounded-lg border p-4">
+        <div class="relative z-10 text-base-content/60 text-xs font-semibold uppercase">${escapeHtml(label)}</div>
+        <div class="relative z-10 mt-2 text-2xl font-semibold tabular-nums">${escapeHtml(value)}</div>
+        <div class="relative z-10 text-base-content/60 mt-1 text-sm">${escapeHtml(note)}</div>
+        ${overviewSparkline(historyKey)}
     </section>`;
 }
 
@@ -454,7 +512,6 @@ function renderAdmin(): void {
             <dl class="mt-3 grid gap-2 text-sm">
                 <div class="flex justify-between gap-3"><dt class="text-base-content/60">Server</dt><dd>${escapeHtml(state.config.serverName || 'Restream')}</dd></div>
                 <div class="flex justify-between gap-3"><dt class="text-base-content/60">Ingest Host</dt><dd>${escapeHtml(state.config.ingestHost || 'localhost')}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-base-content/60">Pipelines</dt><dd>${state.pipelines.length}</dd></div>
                 <div class="flex justify-between gap-3"><dt class="text-base-content/60">Profiles</dt><dd>${profileCount}</dd></div>
                 <div class="flex justify-between gap-3"><dt class="text-base-content/60">Failure Limit</dt><dd>${security?.failureLimit ?? '--'}</dd></div>
                 <div class="flex justify-between gap-3"><dt class="text-base-content/60">Tracked IP Limit</dt><dd>${security?.trackedIpLimit ?? '--'}</dd></div>

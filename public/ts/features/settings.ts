@@ -114,8 +114,8 @@ export function renderSettingsPanel(container: HTMLElement): void {
                     <h2 class="text-base font-semibold">Server</h2>
                 </div>
 
-                <div class="grid gap-4 md:grid-cols-2">
-                    <div class="space-y-2">
+                <div class="space-y-4">
+                    <div class="max-w-2xl space-y-2">
                         <label for="settings-server-name" class="text-sm font-medium">Server Name</label>
                         <div class="flex flex-wrap items-center gap-2">
                             <input type="text" id="settings-server-name" class="input input-sm min-w-0 flex-1" placeholder="Name" />
@@ -124,7 +124,7 @@ export function renderSettingsPanel(container: HTMLElement): void {
                         </div>
                     </div>
 
-                    <div class="space-y-2">
+                    <div class="max-w-2xl space-y-2">
                         <label for="settings-ingest-host" class="text-sm font-medium">Ingest Host</label>
                         <div class="flex flex-wrap items-center gap-2">
                             <input

@@ -172,6 +172,13 @@ export interface HealthData {
 export interface SystemMetrics {
     cpu?: { usagePercent?: number | null; cores?: number | null; load1?: number | null };
     memory?: { usedBytes?: number | null; totalBytes?: number | null; usedPercent?: number | null };
+    engine?: {
+        cpuPercent?: number | null;
+        memoryBytes?: number | null;
+        totalMemoryBytes?: number | null;
+        externalFfmpegCount?: number | null;
+        externalFfmpegMemoryBytes?: number | null;
+    };
     disk?: {
         usedPercent?: number | null;
         totalBytes?: number | null;

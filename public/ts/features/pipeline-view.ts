@@ -108,24 +108,24 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                     ? formatChannelCount(track.channels)
                     : '--';
             const trackStat = isEditing
-                ? `<div class="stat min-w-0 p-2.5">
+                ? `<div class="stat min-w-0 place-items-center p-2 text-center">
                     <div class="stat-title">Track ${index + 1}</div>
                     <input
                         type="text"
-                        class="input input-bordered input-xs mt-1 w-full"
+                        class="input input-bordered input-xs mt-1 w-full max-w-44 text-center"
                         data-audio-label-input="${escapeHtml(key)}"
                         data-audio-label-index="${index}"
                         value="${escapeHtml(draftLabel)}"
                         placeholder="${escapeHtml(label)}"
                         aria-label="Audio track name"
                     />
-                    <div class="mt-1 flex gap-1">
+                    <div class="mt-1 flex justify-center gap-1">
                         <button type="button" class="btn btn-xs btn-accent" data-audio-label-action="save" data-audio-label-index="${index}">Save</button>
                         <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="cancel" data-audio-label-index="${index}">Cancel</button>
                     </div>
                 </div>`
-                : `<div class="stat min-w-0 p-2.5">
-                    <div class="flex items-center justify-between gap-2">
+                : `<div class="stat min-w-0 place-items-center p-2 text-center">
+                    <div class="flex max-w-full items-center justify-center gap-2">
                         <div class="stat-title">Track ${index + 1}</div>
                         <button type="button" class="btn btn-xs btn-ghost min-h-0 h-5 px-1.5 text-[0.65rem]" data-audio-label-action="edit" data-audio-label-index="${index}">Rename</button>
                     </div>
@@ -133,21 +133,21 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
                     <div class="stat-desc truncate">${escapeHtml(identity)}</div>
                 </div>`;
 
-            return `<div class="stats border-base-content/10 bg-base-100 grid w-full grid-cols-[minmax(0,1.25fr)_minmax(3.1rem,.55fr)_minmax(5rem,.85fr)_minmax(7rem,1.35fr)_minmax(3.1rem,.55fr)] overflow-hidden border">
+            return `<div class="stats border-base-content/10 bg-base-100 grid w-full grid-cols-[minmax(0,1.15fr)_minmax(4rem,.65fr)_minmax(5rem,.8fr)_minmax(6rem,.95fr)_minmax(4rem,.65fr)] overflow-hidden border">
                 ${trackStat}
-                <div class="stat min-w-0 p-2.5">
+                <div class="stat min-w-0 place-items-center p-2 text-center">
                     <div class="stat-title">Codec</div>
                     <div class="stat-value truncate text-sm">${escapeHtml(codec)}</div>
                 </div>
-                <div class="stat min-w-0 p-2.5">
+                <div class="stat min-w-0 place-items-center p-2 text-center">
                     <div class="stat-title">Freq</div>
                     <div class="stat-value truncate text-sm">${escapeHtml(formatSampleRate(track.sample_rate))}</div>
                 </div>
-                <div class="stat min-w-0 p-2.5">
+                <div class="stat min-w-0 place-items-center p-2 text-center">
                     <div class="stat-title">Channels</div>
                     <div class="stat-value truncate text-sm">${escapeHtml(channelLabel)}</div>
                 </div>
-                <div class="stat min-w-0 p-2.5">
+                <div class="stat min-w-0 place-items-center p-2 text-center">
                     <div class="stat-title">Profile</div>
                     <div class="stat-value truncate text-sm">${escapeHtml(track.profile || '--')}</div>
                 </div>
