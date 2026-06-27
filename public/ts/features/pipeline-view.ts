@@ -59,6 +59,8 @@ const ingestUiState = {
     selectedProtocol: 'rtmp',
 };
 
+const audioLabelEditKeys = new Set<string>();
+
 function formatProgressFps(value: number | null | undefined): string | null {
     if (!Number.isFinite(value) || (value as number) <= 0) return null;
     return Number.isInteger(value) ? `${value} FPS` : `${(value as number).toFixed(1)} FPS`;
@@ -80,8 +82,6 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
         return;
     }
 
-    const displayValue = (value: unknown): string => escapeHtml(value ?? '--');
-
     audioTracksContainer.innerHTML = tracks
         .map((track, index) => {
             const codec = formatCodecName(track.codec) || track.codec || '--';
@@ -89,53 +89,98 @@ function renderAudioTracksTable(pipelineId: string, tracks: AudioTrack[]): void 
             const storedLabel = getAudioTrackStoredLabel(pipelineId, track, index);
             const identity = audioTrackIdentifier(track, index);
             const key = audioTrackKey(track, index);
+            const editKey = `${pipelineId}:${key}`;
+            const isEditing = audioLabelEditKeys.has(editKey);
             const channelLabel =
                 track.channels !== null && track.channels !== undefined
                     ? formatChannelCount(track.channels)
                     : '--';
-            return `<div class="stats border-base-content/10 bg-base-100 flex w-full flex-wrap overflow-hidden border">
-                <div class="stat min-w-[11rem] flex-[2] basis-[11rem] p-2">
-                    <div class="stat-title">Name</div>
+            const metrics = [
+                ['Codec', codec],
+                ['Freq', formatSampleRate(track.sample_rate)],
+                ['Channels', channelLabel],
+                ['Profile', track.profile || '--'],
+            ];
+            const title = isEditing
+                ? `<div class="flex min-w-0 flex-1 items-center gap-2">
                     <input
                         type="text"
-                        class="input input-bordered input-xs mt-1 w-full"
-                        data-audio-label-key="${escapeHtml(key)}"
+                        class="input input-bordered input-xs min-w-0 flex-1"
+                        data-audio-label-input="${escapeHtml(key)}"
                         data-audio-label-index="${index}"
                         value="${escapeHtml(storedLabel)}"
                         placeholder="${escapeHtml(label)}"
                         aria-label="Audio track name"
                     />
-                    <div class="mt-1 truncate text-xs opacity-60">${escapeHtml(identity)}</div>
+                    <button type="button" class="btn btn-xs btn-accent" data-audio-label-action="save" data-audio-label-index="${index}">Save</button>
+                    <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="cancel" data-audio-label-index="${index}">Cancel</button>
+                </div>`
+                : `<div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-semibold">${escapeHtml(label)}</div>
+                    <div class="text-base-content/55 mt-0.5 truncate text-xs">${escapeHtml(identity)}</div>
                 </div>
-                <div class="stat min-w-[4.25rem] flex-1 basis-[4.25rem] p-2">
-                    <div class="stat-title">Codec</div>
-                    <div class="stat-value text-sm">${displayValue(codec)}</div>
+                <button type="button" class="btn btn-xs btn-ghost" data-audio-label-action="edit" data-audio-label-index="${index}">Rename</button>`;
+
+            return `<div class="border-base-content/10 bg-base-100 rounded-lg border p-3">
+                <div class="flex min-w-0 items-start gap-2">
+                    <span class="badge badge-sm badge-outline mt-0.5 shrink-0">${index + 1}</span>
+                    ${title}
                 </div>
-                <div class="stat min-w-[5.25rem] flex-1 basis-[5.25rem] p-2">
-                    <div class="stat-title">Freq</div>
-                    <div class="stat-value text-sm">${displayValue(formatSampleRate(track.sample_rate))}</div>
-                </div>
-                <div class="stat min-w-[7rem] flex-[1.5] basis-[7rem] p-2">
-                    <div class="stat-title">Channels</div>
-                    <div class="stat-value break-words text-sm">${displayValue(channelLabel)}</div>
-                </div>
-                <div class="stat min-w-[3.5rem] flex-1 basis-[3.5rem] p-2">
-                    <div class="stat-title">Profile</div>
-                    <div class="stat-value text-sm">${displayValue(track.profile)}</div>
+                <div class="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                    ${metrics
+                        .map(
+                            ([metricLabel, value]) => `<div class="bg-base-200/60 rounded-md px-2 py-1.5">
+                                <div class="text-base-content/50 text-[0.65rem] uppercase leading-none">${escapeHtml(metricLabel)}</div>
+                                <div class="mt-1 truncate text-xs font-medium">${escapeHtml(value)}</div>
+                            </div>`,
+                        )
+                        .join('')}
                 </div>
             </div>`;
         })
         .join('');
 
     audioTracksContainer
+        .querySelectorAll<HTMLButtonElement>('button[data-audio-label-action]')
+        .forEach((button) => {
+            const index = Number(button.dataset.audioLabelIndex);
+            if (!Number.isFinite(index)) return;
+            const track = tracks[index];
+            const editKey = `${pipelineId}:${audioTrackKey(track, index)}`;
+            button.addEventListener('click', () => {
+                const action = button.dataset.audioLabelAction;
+                if (action === 'edit') {
+                    audioLabelEditKeys.add(editKey);
+                } else if (action === 'cancel') {
+                    audioLabelEditKeys.delete(editKey);
+                } else if (action === 'save') {
+                    const input = audioTracksContainer.querySelector<HTMLInputElement>(
+                        `input[data-audio-label-index="${index}"]`,
+                    );
+                    setAudioTrackStoredLabel(pipelineId, track, index, input?.value || '');
+                    audioLabelEditKeys.delete(editKey);
+                }
+                renderAudioTracksTable(pipelineId, tracks);
+            });
+        });
+    audioTracksContainer
         .querySelectorAll<HTMLInputElement>('input[data-audio-label-index]')
         .forEach((input) => {
             const index = Number(input.dataset.audioLabelIndex);
             if (!Number.isFinite(index)) return;
-            input.addEventListener('change', () => {
-                setAudioTrackStoredLabel(pipelineId, tracks[index], index, input.value);
-                renderAudioTracksTable(pipelineId, tracks);
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    setAudioTrackStoredLabel(pipelineId, tracks[index], index, input.value);
+                    audioLabelEditKeys.delete(`${pipelineId}:${audioTrackKey(tracks[index], index)}`);
+                    renderAudioTracksTable(pipelineId, tracks);
+                }
+                if (event.key === 'Escape') {
+                    audioLabelEditKeys.delete(`${pipelineId}:${audioTrackKey(tracks[index], index)}`);
+                    renderAudioTracksTable(pipelineId, tracks);
+                }
             });
+            input.focus();
+            input.select();
         });
 }
 
@@ -156,21 +201,16 @@ function renderVideoTrackDetails(video: Partial<NonNullable<PipelineView['input'
     }
 
     detailsEl.classList.remove('hidden');
-    detailsEl.innerHTML = `<details class="collapse collapse-arrow border-base-content/10 bg-base-100 mt-2 border">
-        <summary class="collapse-title min-h-0 px-3 py-2 text-sm font-medium">Track details</summary>
-        <div class="collapse-content px-3 pb-3 pt-0">
-            <div class="grid gap-2 sm:grid-cols-3">
-                ${rows
-                    .map(
-                        ([label, value]) => `<div>
-                            <div class="text-xs uppercase opacity-50">${escapeHtml(label)}</div>
-                            <div class="text-sm">${escapeHtml(value)}</div>
-                        </div>`,
-                    )
-                    .join('')}
-            </div>
-        </div>
-    </details>`;
+    detailsEl.innerHTML = `<div class="mt-2 flex flex-wrap gap-1.5">
+        ${rows
+            .map(
+                ([label, value]) => `<span class="badge badge-sm badge-outline border-base-content/15 gap-1">
+                    <span class="text-base-content/50">${escapeHtml(label)}</span>
+                    <span>${escapeHtml(value)}</span>
+                </span>`,
+            )
+            .join('')}
+    </div>`;
 }
 
 export function setPipelineViewDependencies(dependencies: Partial<PipelineViewDependencies>): void {
