@@ -166,7 +166,14 @@ export interface HealthData {
 export interface SystemMetrics {
     cpu?: { usagePercent?: number | null; cores?: number | null; load1?: number | null };
     memory?: { usedBytes?: number | null; totalBytes?: number | null; usedPercent?: number | null };
-    disk?: { usedPercent?: number | null; totalBytes?: number | null };
+    disk?: {
+        usedPercent?: number | null;
+        totalBytes?: number | null;
+        scope?: string;
+        mountPoint?: string | null;
+        mediaDir?: string;
+        mediaRoot?: string;
+    };
     network?: {
         scope?: 'external' | string;
         downloadKbps?: number | null;

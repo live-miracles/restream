@@ -123,6 +123,34 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     .execute(pool)
     .await?;
 
+    // Engine lifecycle events
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS lifecycle_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seq INTEGER NOT NULL,
+            ts TEXT NOT NULL,
+            pipeline_id TEXT NOT NULL,
+            output_id TEXT,
+            event_type TEXT NOT NULL,
+            event_data TEXT NOT NULL,
+            message TEXT NOT NULL
+        );",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_lifecycle_events_pipeline ON lifecycle_events(pipeline_id, ts);",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_lifecycle_events_output ON lifecycle_events(pipeline_id, output_id, ts);",
+    )
+    .execute(pool)
+    .await?;
+
     // Ingests
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ingests (
@@ -644,6 +672,63 @@ pub async fn list_job_logs_by_pipeline(
     .bind(pipeline_id)
     .fetch_all(pool)
     .await
+}
+
+pub async fn append_lifecycle_event(
+    pool: &SqlitePool,
+    event: &crate::events::Event,
+) -> Result<(), sqlx::Error> {
+    let event_type = event.kind.event_type();
+    let event_data = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+    sqlx::query(
+        "INSERT INTO lifecycle_events (seq, ts, pipeline_id, output_id, event_type, event_data, message)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(event.seq as i64)
+    .bind(event.timestamp.to_rfc3339())
+    .bind(event.kind.pipeline_id())
+    .bind(event.kind.output_id())
+    .bind(event_type)
+    .bind(event_data)
+    .bind(event.kind.message())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_lifecycle_events_by_pipeline(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    limit: i64,
+) -> Result<Vec<JobLog>, sqlx::Error> {
+    sqlx::query_as::<_, JobLog>(
+        "SELECT ts, message, event_type, event_data FROM lifecycle_events
+         WHERE pipeline_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+    )
+    .bind(pipeline_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_lifecycle_events_by_output(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    output_id: &str,
+    limit: i64,
+    order: &str,
+) -> Result<Vec<JobLog>, sqlx::Error> {
+    let order_sql = if order == "asc" { "ASC" } else { "DESC" };
+    let sql = format!(
+        "SELECT ts, message, event_type, event_data FROM lifecycle_events
+         WHERE pipeline_id = ? AND output_id = ? ORDER BY ts {order_sql}, id {order_sql} LIMIT ?"
+    );
+    sqlx::query_as::<_, JobLog>(&sql)
+        .bind(pipeline_id)
+        .bind(output_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
 }
 
 pub async fn delete_job_logs_older_than(pool: &SqlitePool, days: i64) -> Result<(), sqlx::Error> {

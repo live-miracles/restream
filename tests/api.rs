@@ -1,6 +1,7 @@
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use restream::domain::stage::{StageKey, StageKind};
+use restream::events::{Event, EventKind};
 use restream::media::engine::MediaEngine;
 use restream::media::security::IngestSecurityService;
 use restream::{api, db};
@@ -50,6 +51,42 @@ async fn authenticated_app() -> (axum::Router, String) {
     let (app, _) = test_app().await;
     let cookie = login(&app).await;
     (app, cookie)
+}
+
+async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path::PathBuf) {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    db::setup_database_schema(&pool).await.unwrap();
+
+    let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
+    api::initialize_auth(&pool, &sessions).await;
+
+    let security = Arc::new(IngestSecurityService::new(
+        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
+    ));
+    let engine = Arc::new(MediaEngine::new());
+    let temp_dir =
+        std::env::temp_dir().join(format!("restream-api-media-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let media_dir = temp_dir.to_string_lossy().to_string();
+
+    let state = Arc::new(api::AppState {
+        db: pool,
+        security,
+        sessions,
+        engine,
+        ports: api::PortConfig {
+            rtmp: 1935,
+            srt: 10080,
+        },
+        media_dir,
+        alert_tracker: restream::alerts::AlertTracker::new(),
+        #[cfg(feature = "agent-execution")]
+        agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
+    });
+
+    let app = api::create_router(state);
+    let cookie = login(&app).await;
+    (app, cookie, temp_dir)
 }
 
 async fn login(app: &axum::Router) -> String {
@@ -727,6 +764,87 @@ async fn ingest_crud_via_api() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// --- Lifecycle history ---
+
+#[tokio::test]
+async fn pipeline_history_includes_persisted_lifecycle_events_without_stream_keys() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::append_lifecycle_event(
+        &pool,
+        &Event {
+            seq: 1,
+            timestamp: chrono::Utc::now(),
+            kind: EventKind::IngestConnected {
+                pipeline_id: "pipe-history".to_string(),
+                protocol: "rtmp".to_string(),
+                stream_key: "secret-history-key".to_string(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/pipelines/pipe-history/history?limit=20",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["pipelineId"], "pipe-history");
+    assert_eq!(json["logs"][0]["eventType"], "ingest.connected");
+    assert_eq!(json["logs"][0]["message"], "RTMP publisher connected");
+    assert!(
+        !serde_json::to_string(&json)
+            .unwrap()
+            .contains("secret-history-key")
+    );
+}
+
+#[tokio::test]
+async fn output_history_lifecycle_filter_includes_persisted_egress_events() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::append_lifecycle_event(
+        &pool,
+        &Event {
+            seq: 2,
+            timestamp: chrono::Utc::now(),
+            kind: EventKind::EgressStarted {
+                pipeline_id: "pipe-history".to_string(),
+                output_id: "out-history".to_string(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/pipelines/pipe-history/outputs/out-history/history?filter=lifecycle",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["pipelineId"], "pipe-history");
+    assert_eq!(json["outputId"], "out-history");
+    assert_eq!(json["logs"][0]["eventType"], "egress.started");
+    assert_eq!(json["logs"][0]["eventData"]["outputId"], "out-history");
 }
 
 // --- Custom encoding ---
@@ -1419,6 +1537,29 @@ async fn media_delete_path_traversal_blocked() {
         .await
         .unwrap();
     assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn media_list_includes_ts_recordings() {
+    let (app, cookie, temp_dir) = authenticated_app_with_temp_media().await;
+    let recording_path = temp_dir.join("sample-recording.ts");
+    tokio::fs::write(&recording_path, b"ts data").await.unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/media", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let files = json["files"].as_array().unwrap();
+    assert!(
+        files
+            .iter()
+            .any(|file| file["name"].as_str() == Some("sample-recording.ts")),
+        "TS recordings should be visible in the media library"
+    );
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 // --- Round 7 #4: transcode profile field validation ---

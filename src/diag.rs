@@ -8,6 +8,7 @@
 //! The endpoint streams these via Server-Sent Events so the browser can show
 //! live progress just like the old diagnostics UI.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,6 +17,30 @@ use serde_json::json;
 use sysinfo::{Disks, Networks, System};
 
 use crate::media::engine::MediaEngine;
+
+fn media_root_path() -> PathBuf {
+    let configured = std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".to_string());
+    let configured_path = PathBuf::from(&configured);
+    let absolute = if configured_path.is_absolute() {
+        configured_path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(configured_path)
+    };
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+fn disk_for_path<'a>(disks: &'a Disks, path: &Path) -> Option<(&'a sysinfo::Disk, usize)> {
+    disks
+        .iter()
+        .filter_map(|disk| {
+            let mount = disk.mount_point();
+            path.starts_with(mount)
+                .then_some((disk, mount.components().count()))
+        })
+        .max_by_key(|(_, depth)| *depth)
+}
 
 // ─── SSE event helpers ────────────────────────────────────────────────────────
 
@@ -200,13 +225,27 @@ async fn check_system_resources(idx: u32) -> DiagResult {
     let used_mem = sys.used_memory();
     let mem_pct = (used_mem * 100).checked_div(total_mem).unwrap_or(0);
 
+    let media_root = media_root_path();
     let disks = Disks::new_with_refreshed_list();
-    let (total_disk, used_disk) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
+    let selected_disk = disk_for_path(&disks, &media_root).map(|(disk, _)| disk);
+    let (total_disk, used_disk, disk_scope, mount_point) = if let Some(disk) = selected_disk {
+        let total = disk.total_space();
+        let used = total.saturating_sub(disk.available_space());
         (
-            t + d.total_space(),
-            u + (d.total_space() - d.available_space()),
+            total,
+            used,
+            "media directory backing mount",
+            disk.mount_point().display().to_string(),
         )
-    });
+    } else {
+        let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
+            (
+                t + d.total_space(),
+                u + (d.total_space() - d.available_space()),
+            )
+        });
+        (total, used, "all reported mounts", "aggregate".to_string())
+    };
     let disk_pct = (used_disk * 100).checked_div(total_disk).unwrap_or(0);
 
     let mut issues = vec![];
@@ -223,13 +262,16 @@ async fn check_system_resources(idx: u32) -> DiagResult {
         used_mem / (1024 * 1024 * 1024),
         mem_pct
     ));
+    lines.push(format!("Disk scope: {}", disk_scope));
+    lines.push(format!("Disk mount: {}", mount_point));
+    lines.push(format!("Media dir: {}", media_root.display()));
     lines.push(format!(
-        "Disk total: {} GiB",
-        total_disk / (1024 * 1024 * 1024)
+        "Disk total: {:.1} GiB",
+        total_disk as f64 / (1024.0 * 1024.0 * 1024.0)
     ));
     lines.push(format!(
-        "Disk used: {} GiB ({}%)",
-        used_disk / (1024 * 1024 * 1024),
+        "Disk used: {:.1} GiB ({}%)",
+        used_disk as f64 / (1024.0 * 1024.0 * 1024.0),
         disk_pct
     ));
 
@@ -313,18 +355,14 @@ async fn check_active_outputs(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            lines.push(format!(
-                "Output {}: protocol={} status={} phase={} target={} target_addr={} bytes_sent={} last_progress={} started_at={}",
-                output_id,
-                egress.protocol,
-                egress.status,
-                phase,
-                egress.target_url,
-                target_addr,
-                bytes_sent,
-                last_progress,
-                egress.started_at
-            ));
+            lines.push(format!("Output {}", output_id));
+            lines.push(format!("  protocol: {}", egress.protocol));
+            lines.push(format!("  status: {} / {}", egress.status, phase));
+            lines.push(format!("  target: {}", egress.target_url));
+            lines.push(format!("  target_addr: {}", target_addr));
+            lines.push(format!("  bytes_sent: {}", bytes_sent));
+            lines.push(format!("  last_progress: {}", last_progress));
+            lines.push(format!("  started_at: {}", egress.started_at));
             if let Some(error) = last_error {
                 let failure_phase = egress
                     .failure_phase
@@ -332,10 +370,8 @@ async fn check_active_outputs(
                     .unwrap_or_else(|e| e.into_inner())
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string());
-                lines.push(format!(
-                    "  last_error_phase={} last_error={}",
-                    failure_phase, error
-                ));
+                lines.push(format!("  last_error_phase: {}", failure_phase));
+                lines.push(format!("  last_error: {}", error));
             }
             let quality = egress
                 .quality
@@ -350,16 +386,26 @@ async fn check_active_outputs(
                         || quality.tcp_send_rate_mbps.is_some()
                         || quality.tcp_notsent_bytes.is_some()
                     {
+                        lines.push("  tcp_quality:".to_string());
                         lines.push(format!(
-                            "  tcp_quality cc={:?} rtt_ms={:?} send_mbps={:?} notsent_bytes={:?} unacked={:?} retrans_total={:?} snd_cwnd={:?}",
-                            quality.tcp_congestion_algorithm,
-                            quality.tcp_rtt_ms,
-                            quality.tcp_send_rate_mbps,
-                            quality.tcp_notsent_bytes,
-                            quality.tcp_unacked,
-                            quality.tcp_total_retrans,
-                            quality.tcp_snd_cwnd
+                            "    congestion_control: {}",
+                            quality
+                                .tcp_congestion_algorithm
+                                .as_deref()
+                                .unwrap_or("unknown")
                         ));
+                        lines.push(format!("    rtt_ms: {:?}", quality.tcp_rtt_ms));
+                        lines.push(format!("    send_mbps: {:?}", quality.tcp_send_rate_mbps));
+                        lines.push(format!(
+                            "    notsent_bytes: {:?}",
+                            quality.tcp_notsent_bytes
+                        ));
+                        lines.push(format!("    unacked: {:?}", quality.tcp_unacked));
+                        lines.push(format!(
+                            "    retrans_total: {:?}",
+                            quality.tcp_total_retrans
+                        ));
+                        lines.push(format!("    snd_cwnd: {:?}", quality.tcp_snd_cwnd));
                     }
                 }
                 "srt"
@@ -367,17 +413,26 @@ async fn check_active_outputs(
                         || quality.mbps_send_rate.is_some()
                         || quality.srt_bonded.is_some() =>
                 {
+                    lines.push("  srt_quality:".to_string());
+                    lines.push(format!("    rtt_ms: {:?}", quality.ms_rtt));
+                    lines.push(format!("    send_mbps: {:?}", quality.mbps_send_rate));
+                    lines.push(format!("    sent_loss: {:?}", quality.packets_sent_loss));
+                    lines.push(format!("    sent_drop: {:?}", quality.packets_sent_drop));
                     lines.push(format!(
-                        "  srt_quality rtt_ms={:?} send_mbps={:?} sent_loss={:?} sent_drop={:?} sent_retrans={:?} bonded={:?} members={:?}/{:?} active={:?} broken={:?}",
-                        quality.ms_rtt,
-                        quality.mbps_send_rate,
-                        quality.packets_sent_loss,
-                        quality.packets_sent_drop,
-                        quality.packets_sent_retrans,
-                        quality.srt_bonded,
-                        quality.srt_group_connected_members,
-                        quality.srt_group_member_count,
-                        quality.srt_group_active_members,
+                        "    sent_retrans: {:?}",
+                        quality.packets_sent_retrans
+                    ));
+                    lines.push(format!("    bonded: {:?}", quality.srt_bonded));
+                    lines.push(format!(
+                        "    members: {:?}/{:?}",
+                        quality.srt_group_connected_members, quality.srt_group_member_count
+                    ));
+                    lines.push(format!(
+                        "    active: {:?}",
+                        quality.srt_group_active_members
+                    ));
+                    lines.push(format!(
+                        "    broken: {:?}",
                         quality.srt_group_broken_members
                     ));
                 }
@@ -949,7 +1004,10 @@ async fn check_network_bandwidth(idx: u32) -> DiagResult {
                 // Scale from 500ms sample to per-second
                 let rx_kbps = (rx * 8 * 2) / 1000;
                 let tx_kbps = (tx * 8 * 2) / 1000;
-                lines.push(format!("{}: ↓ {} Kbps ↑ {} Kbps", iface, rx_kbps, tx_kbps));
+                lines.push(format!(
+                    "{}: RX {} Kbps TX {} Kbps",
+                    iface, rx_kbps, tx_kbps
+                ));
                 total_rx_bytes += rx;
                 total_tx_bytes += tx;
             }
@@ -960,11 +1018,11 @@ async fn check_network_bandwidth(idx: u32) -> DiagResult {
     let total_tx_kbps = (total_tx_bytes * 8 * 2) / 1000;
 
     if lines.is_empty() {
-        lines.push("No active network interfaces detected.".to_string());
-        issues.push("No network traffic detected. Check network configuration.".to_string());
+        lines.push("No active network interfaces detected in sample.".to_string());
+        issues.push("No network traffic detected during the diagnostic sample.".to_string());
     } else {
         lines.push(format!(
-            "Total: ↓ {} Kbps ↑ {} Kbps",
+            "Total: RX {} Kbps TX {} Kbps",
             total_rx_kbps, total_tx_kbps
         ));
     }

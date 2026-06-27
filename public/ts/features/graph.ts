@@ -70,6 +70,8 @@ function nodeColor(type: string, active: boolean): string {
             return '#f59e0b';
         case 'audio_filter':
             return '#f97316';
+        case 'codec_edge':
+            return '#ec4899';
         case 'egress':
             return '#3b82f6';
         case 'recording':
@@ -187,6 +189,25 @@ export function renderGraphInto(container: HTMLElement, data: GraphData): void {
         const dotColor = node.active ? '#22c55e' : '#ef4444';
         svg += `<circle cx="${pos.x + NODE_W - 14}" cy="${pos.y + 40}" r="5" fill="${dotColor}"/>`;
 
+        const detailLines: string[] = [];
+        if (node.type === 'ring_buffer' && node.details) {
+            const fill = finiteNumber(node.details.fill);
+            const capacity = finiteNumber(node.details.capacity);
+            const readers = Array.isArray(node.details.readers) ? node.details.readers : [];
+            const maxLag = readers.reduce((max, reader) => {
+                const lag = finiteNumber((reader as Record<string, unknown>).lagSlots);
+                return Math.max(max, lag);
+            }, 0);
+            detailLines.push(`lag: ${maxLag}/${capacity} slots`);
+            detailLines.push(`fill: ${fill}/${capacity} now`);
+        } else if (node.type === 'ingest' && node.details?.bytesReceived !== undefined) {
+            const bitrate = Number(node.details.bitrateKbps);
+            const bitrateLabel = Number.isFinite(bitrate) ? ` | ${bitrate.toFixed(0)} kbps` : '';
+            detailLines.push(`received: ${formatBytes(node.details.bytesReceived as number)}${bitrateLabel}`);
+        } else if (node.type === 'egress' && node.details?.bitrateKbps !== undefined) {
+            detailLines.push(`${(node.details.bitrateKbps as number).toFixed(0)} kbps | ${formatBytes(node.details.totalSize as number)}`);
+        }
+
         // Metrics
         if (node.metrics && node.metrics.packetsIn > 0) {
             const m = node.metrics;
@@ -195,18 +216,20 @@ export function renderGraphInto(container: HTMLElement, data: GraphData): void {
             const uptimeSecs = finiteNumber(m.uptimeSecs ?? m.uptimeSec);
             const my = pos.y + NODE_H - 10;
             svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">in: ${formatRate(packetsPerSec)} pkt | ${formatBytes(finiteNumber(m.bytesIn))}</text>`;
-            svg += `<text x="${pos.x + 10}" y="${my + 24}" fill="#9ca3af" font-size="10">out: ${formatBytes(finiteNumber(m.bytesOut))} | avg: ${avgUsPerPacket.toFixed(0)}us/pkt</text>`;
+            const outLabel =
+                finiteNumber(m.bytesOut) > 0
+                    ? `out: ${formatBytes(finiteNumber(m.bytesOut))}`
+                    : node.type === 'ingest'
+                      ? 'fan-out: source buffer'
+                      : 'out: n/a';
+            const avgLabel =
+                finiteNumber(m.processingUs) > 0 ? `avg: ${avgUsPerPacket.toFixed(0)}us/pkt` : 'avg: n/a';
+            svg += `<text x="${pos.x + 10}" y="${my + 24}" fill="#9ca3af" font-size="10">${escapeXml(outLabel)} | ${escapeXml(avgLabel)}</text>`;
             svg += `<text x="${pos.x + 10}" y="${my + 38}" fill="#9ca3af" font-size="10">uptime: ${uptimeSecs.toFixed(0)}s</text>`;
         } else if (node.details) {
             const my = pos.y + NODE_H - 10;
-            if (node.type === 'ring_buffer' && node.details.fillPercent !== undefined) {
-                svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">fill: ${node.details.fillPercent}% (${node.details.fill}/${node.details.capacity})</text>`;
-            } else if (node.type === 'ingest' && node.details.bytesReceived !== undefined) {
-                const bitrate = Number(node.details.bitrateKbps);
-                const bitrateLabel = Number.isFinite(bitrate) ? ` | ${bitrate.toFixed(0)} kbps` : '';
-                svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">received: ${formatBytes(node.details.bytesReceived as number)}${bitrateLabel}</text>`;
-            } else if (node.type === 'egress' && node.details.bitrateKbps !== undefined) {
-                svg += `<text x="${pos.x + 10}" y="${my + 10}" fill="#9ca3af" font-size="10">${(node.details.bitrateKbps as number).toFixed(0)} kbps | ${formatBytes(node.details.totalSize as number)}</text>`;
+            for (let i = 0; i < Math.min(detailLines.length, 3); i++) {
+                svg += `<text x="${pos.x + 10}" y="${my + 10 + i * 14}" fill="#9ca3af" font-size="10">${escapeXml(detailLines[i])}</text>`;
             }
         }
 

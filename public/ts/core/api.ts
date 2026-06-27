@@ -307,17 +307,6 @@ async function patchConfig(body: {
     }>('/config', { method: 'PATCH', body });
 }
 
-async function getCustomEncoding(): Promise<{ ffmpegArgs: string | null } | null> {
-    return apiRequest<{ ffmpegArgs: string | null }>('/encodings/custom');
-}
-
-async function updateCustomEncoding(ffmpegArgs: string): Promise<{ ffmpegArgs: string } | null> {
-    return apiRequest<{ ffmpegArgs: string }>('/encodings/custom', {
-        method: 'PUT',
-        body: { ffmpegArgs },
-    });
-}
-
 async function startRecording(
     pipeId: string,
 ): Promise<{ enabled: boolean; active: boolean } | null> {
@@ -438,8 +427,6 @@ export {
     getOutputHistory,
     getPipelineHistory,
     patchConfig,
-    getCustomEncoding,
-    updateCustomEncoding,
     startRecording,
     stopRecording,
     listMediaFiles,

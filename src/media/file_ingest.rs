@@ -13,6 +13,71 @@ use tokio_util::sync::CancellationToken;
 type KeyframeTimes = Arc<std::sync::Mutex<Vec<i64>>>;
 type IngestRuntime = (Arc<AtomicU64>, Arc<StageMetrics>, KeyframeTimes);
 
+#[derive(Default)]
+struct LoopTimestampState {
+    offset_ms: i64,
+    pass_max_timestamp_ms: Option<i64>,
+    pass_packet_count: usize,
+}
+
+impl LoopTimestampState {
+    fn begin_pass(&mut self) {
+        self.pass_max_timestamp_ms = None;
+        self.pass_packet_count = 0;
+    }
+
+    fn apply(&mut self, packet: &mut MediaPacket) {
+        packet.pts = packet.pts.saturating_add(self.offset_ms);
+        packet.dts = packet.dts.saturating_add(self.offset_ms);
+        self.pass_packet_count += 1;
+        let packet_max = packet.pts.max(packet.dts);
+        self.pass_max_timestamp_ms = Some(
+            self.pass_max_timestamp_ms
+                .map_or(packet_max, |current| current.max(packet_max)),
+        );
+    }
+
+    fn finish_pass(&mut self) {
+        if let Some(max_timestamp_ms) = self.pass_max_timestamp_ms {
+            self.offset_ms = max_timestamp_ms.saturating_add(1);
+        }
+    }
+
+    fn pass_packet_count(&self) -> usize {
+        self.pass_packet_count
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ContinuousTimestampState {
+    offset_ms: i64,
+    last_timestamp_ms: Option<i64>,
+}
+
+impl ContinuousTimestampState {
+    pub(crate) fn apply(&mut self, packet: &mut MediaPacket) {
+        let raw_timestamp_ms = packet.pts.max(packet.dts);
+        if let Some(last_timestamp_ms) = self.last_timestamp_ms {
+            let adjusted_timestamp_ms = raw_timestamp_ms.saturating_add(self.offset_ms);
+            if adjusted_timestamp_ms <= last_timestamp_ms {
+                self.offset_ms = last_timestamp_ms
+                    .saturating_add(1)
+                    .saturating_sub(raw_timestamp_ms);
+            }
+        }
+
+        packet.pts = packet.pts.saturating_add(self.offset_ms);
+        packet.dts = packet.dts.saturating_add(self.offset_ms);
+        let adjusted_timestamp_ms = packet.pts.max(packet.dts);
+        self.last_timestamp_ms = Some(
+            self.last_timestamp_ms
+                .map_or(adjusted_timestamp_ms, |current| {
+                    current.max(adjusted_timestamp_ms)
+                }),
+        );
+    }
+}
+
 pub fn use_internal_file_ingest() -> bool {
     crate::env_flag_enabled("RESTREAM_USE_INTERNAL_FILE_INGEST")
 }
@@ -136,12 +201,14 @@ fn run_internal_file_ingest_loop(
 ) -> Result<(), String> {
     let (bytes_received, ingest_metrics, cached_keyframe_times) =
         load_ingest_runtime(&engine, &runtime_handle, pipeline_id)?;
+    let mut timestamps = LoopTimestampState::default();
 
     loop {
         if cancel.is_cancelled() {
             break;
         }
 
+        timestamps.begin_pass();
         run_internal_file_ingest_once(
             &engine,
             &runtime_handle,
@@ -153,10 +220,19 @@ fn run_internal_file_ingest_loop(
             &bytes_received,
             &ingest_metrics,
             &cached_keyframe_times,
+            &mut timestamps,
         )?;
+        timestamps.finish_pass();
 
         if cancel.is_cancelled() || !loop_enabled {
             break;
+        }
+
+        if timestamps.pass_packet_count() == 0 {
+            return Err(
+                "Looped file ingest produced no packets; stopping to avoid a tight loop"
+                    .to_string(),
+            );
         }
     }
 
@@ -193,6 +269,7 @@ fn run_internal_file_ingest_once(
     bytes_received: &Arc<AtomicU64>,
     ingest_metrics: &Arc<StageMetrics>,
     cached_keyframe_times: &KeyframeTimes,
+    timestamps: &mut LoopTimestampState,
 ) -> Result<(), String> {
     let mut ictx = format::input_with_interrupt(&file_path, || cancel.is_cancelled())
         .map_err(|e| format!("Failed to open input file: {e}"))?;
@@ -251,6 +328,7 @@ fn run_internal_file_ingest_once(
         bytes_received,
         ingest_metrics,
         cached_keyframe_times,
+        timestamps,
         &mut probe_sent,
     );
 
@@ -294,6 +372,7 @@ fn run_internal_file_ingest_once(
             bytes_received,
             ingest_metrics,
             cached_keyframe_times,
+            timestamps,
             &mut probe_sent,
         );
     }
@@ -311,6 +390,7 @@ fn run_internal_file_ingest_once(
         bytes_received,
         ingest_metrics,
         cached_keyframe_times,
+        timestamps,
         &mut probe_sent,
     );
 
@@ -320,6 +400,7 @@ fn run_internal_file_ingest_once(
         &mut packets,
         ring_buffer,
         cached_keyframe_times,
+        timestamps,
     );
     maybe_publish_probe(
         engine,
@@ -382,6 +463,7 @@ fn drain_remuxed_ts(
     bytes_received: &Arc<AtomicU64>,
     ingest_metrics: &Arc<StageMetrics>,
     cached_keyframe_times: &KeyframeTimes,
+    timestamps: &mut LoopTimestampState,
     probe_sent: &mut bool,
 ) {
     let mut buf = [0u8; 64 * 1024];
@@ -393,7 +475,13 @@ fn drain_remuxed_ts(
         }
 
         demuxer.feed(&buf[..read]);
-        push_demuxed_packets(demuxer, packets, ring_buffer, cached_keyframe_times);
+        push_demuxed_packets(
+            demuxer,
+            packets,
+            ring_buffer,
+            cached_keyframe_times,
+            timestamps,
+        );
         maybe_publish_probe(engine, runtime_handle, pipeline_id, demuxer, probe_sent);
         bytes_received.fetch_add(read as u64, Ordering::Relaxed);
         ingest_metrics.record_in(read as u64);
@@ -405,9 +493,14 @@ fn push_demuxed_packets(
     packets: &mut Vec<MediaPacket>,
     ring_buffer: &Arc<RingBuffer>,
     cached_keyframe_times: &KeyframeTimes,
+    timestamps: &mut LoopTimestampState,
 ) {
     if demuxer.drain_into(packets) == 0 {
         return;
+    }
+
+    for pkt in packets.iter_mut() {
+        timestamps.apply(pkt);
     }
 
     for pkt in packets.iter() {
@@ -457,7 +550,10 @@ fn maybe_publish_probe(
 mod tests {
     use super::parse_start_time_ms;
     use super::spawn_internal_file_ingest;
+    use super::{ContinuousTimestampState, LoopTimestampState};
     use crate::media::engine::MediaEngine;
+    use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat};
+    use bytes::Bytes;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::time::{Duration, sleep};
@@ -486,6 +582,78 @@ mod tests {
         assert!(parse_start_time_ms("-1").is_err());
         assert!(parse_start_time_ms("1:two").is_err());
         assert!(parse_start_time_ms("1:2:3:4").is_err());
+    }
+
+    #[test]
+    fn loop_timestamp_state_keeps_replayed_packets_monotonic() {
+        let mut timestamps = LoopTimestampState::default();
+
+        timestamps.begin_pass();
+        let mut first = test_packet(0, 0);
+        let mut second = test_packet(33, 33);
+        timestamps.apply(&mut first);
+        timestamps.apply(&mut second);
+        timestamps.finish_pass();
+
+        assert_eq!(first.pts, 0);
+        assert_eq!(second.pts, 33);
+        assert_eq!(timestamps.pass_packet_count(), 2);
+
+        timestamps.begin_pass();
+        let mut looped_first = test_packet(0, 0);
+        let mut looped_second = test_packet(33, 33);
+        timestamps.apply(&mut looped_first);
+        timestamps.apply(&mut looped_second);
+        timestamps.finish_pass();
+
+        assert_eq!(looped_first.pts, 34);
+        assert_eq!(looped_first.dts, 34);
+        assert_eq!(looped_second.pts, 67);
+        assert_eq!(looped_second.dts, 67);
+        assert_eq!(timestamps.pass_packet_count(), 2);
+    }
+
+    #[test]
+    fn loop_timestamp_state_reports_empty_passes() {
+        let mut timestamps = LoopTimestampState::default();
+        timestamps.begin_pass();
+        timestamps.finish_pass();
+
+        assert_eq!(timestamps.pass_packet_count(), 0);
+    }
+
+    #[test]
+    fn continuous_timestamp_state_offsets_replayed_subprocess_packets() {
+        let mut timestamps = ContinuousTimestampState::default();
+
+        let mut first = test_packet(0, 0);
+        let mut second = test_packet(40, 40);
+        timestamps.apply(&mut first);
+        timestamps.apply(&mut second);
+
+        let mut replayed_first = test_packet(0, 0);
+        let mut replayed_second = test_packet(40, 40);
+        timestamps.apply(&mut replayed_first);
+        timestamps.apply(&mut replayed_second);
+
+        assert_eq!(first.pts, 0);
+        assert_eq!(second.pts, 40);
+        assert_eq!(replayed_first.pts, 41);
+        assert_eq!(replayed_first.dts, 41);
+        assert_eq!(replayed_second.pts, 81);
+        assert_eq!(replayed_second.dts, 81);
+    }
+
+    fn test_packet(pts: i64, dts: i64) -> MediaPacket {
+        MediaPacket {
+            media_type: MediaType::Video,
+            format: PayloadFormat::Raw,
+            is_keyframe: false,
+            track_index: 0,
+            pts,
+            dts,
+            payload: Bytes::from_static(b"packet"),
+        }
     }
 
     #[tokio::test]

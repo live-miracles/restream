@@ -29,6 +29,7 @@ pub enum EventKind {
         pipeline_id: String,
         protocol: String,
         #[serde(rename = "streamKey")]
+        #[serde(skip_serializing)]
         stream_key: String,
     },
     IngestDisconnected {
@@ -69,6 +70,18 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            Self::IngestConnected { .. } => "ingest.connected",
+            Self::IngestDisconnected { .. } => "ingest.disconnected",
+            Self::StageStarted { .. } => "stage.started",
+            Self::StageStopped { .. } => "stage.stopped",
+            Self::EgressStarted { .. } => "egress.started",
+            Self::EgressStopped { .. } => "egress.stopped",
+            Self::EgressFailed { .. } => "egress.failed",
+        }
+    }
+
     pub fn pipeline_id(&self) -> &str {
         match self {
             Self::IngestConnected { pipeline_id, .. }
@@ -78,6 +91,36 @@ impl EventKind {
             | Self::EgressStarted { pipeline_id, .. }
             | Self::EgressStopped { pipeline_id, .. }
             | Self::EgressFailed { pipeline_id, .. } => pipeline_id,
+        }
+    }
+
+    pub fn output_id(&self) -> Option<&str> {
+        match self {
+            Self::EgressStarted { output_id, .. }
+            | Self::EgressStopped { output_id, .. }
+            | Self::EgressFailed { output_id, .. } => Some(output_id),
+            _ => None,
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::IngestConnected { protocol, .. } => {
+                format!("{} publisher connected", protocol.to_uppercase())
+            }
+            Self::IngestDisconnected { protocol, .. } => {
+                format!("{} publisher disconnected", protocol.to_uppercase())
+            }
+            Self::StageStarted { encoding, .. } => format!("Stage started: {}", encoding),
+            Self::StageStopped { encoding, .. } => format!("Stage stopped: {}", encoding),
+            Self::EgressStarted { output_id, .. } => format!("Output started: {}", output_id),
+            Self::EgressStopped { output_id, .. } => format!("Output stopped: {}", output_id),
+            Self::EgressFailed {
+                output_id,
+                phase,
+                error,
+                ..
+            } => format!("Output failed: {} during {} ({})", output_id, phase, error),
         }
     }
 }
@@ -98,6 +141,7 @@ pub struct Event {
 
 pub struct EventLog {
     inner: Mutex<EventLogInner>,
+    sink: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Event>>>,
 }
 
 struct EventLogInner {
@@ -118,22 +162,34 @@ impl EventLog {
                 events: VecDeque::with_capacity(MAX_EVENTS),
                 next_seq: 1,
             }),
+            sink: Mutex::new(None),
         }
+    }
+
+    pub fn set_sink(&self, sink: tokio::sync::mpsc::UnboundedSender<Event>) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
     /// Emit an event. The oldest event is dropped when the log is full.
     pub fn emit(&self, kind: EventKind) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let seq = inner.next_seq;
-        inner.next_seq += 1;
-        if inner.events.len() >= MAX_EVENTS {
-            inner.events.pop_front();
+        let event = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let seq = inner.next_seq;
+            inner.next_seq += 1;
+            if inner.events.len() >= MAX_EVENTS {
+                inner.events.pop_front();
+            }
+            let event = Event {
+                seq,
+                timestamp: Utc::now(),
+                kind,
+            };
+            inner.events.push_back(event.clone());
+            event
+        };
+        if let Some(sink) = self.sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = sink.send(event);
         }
-        inner.events.push_back(Event {
-            seq,
-            timestamp: Utc::now(),
-            kind,
-        });
     }
 
     /// Return up to `limit` most-recent events, optionally filtered by pipeline.

@@ -1,7 +1,5 @@
 import {
     patchConfig,
-    getCustomEncoding,
-    updateCustomEncoding,
     listMediaFiles,
     deleteMediaFile,
     listIngests,
@@ -23,18 +21,96 @@ import { withBasePath } from '../core/base-path.js';
 // ── Load ──────────────────────────────────────────────
 
 export async function loadSettings(): Promise<void> {
+    applySettingsChrome();
     const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
     if (nameInput) nameInput.value = state.config?.serverName || '';
     const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
     if (hostInput) hostInput.value = state.config?.ingestHost || '';
     populateIngestSecuritySettings();
     loadTranscodeProfiles();
+}
 
-    const enc = await getCustomEncoding();
-    if (enc) {
-        const argsInput = document.getElementById('custom-enc-args') as HTMLTextAreaElement | null;
-        if (argsInput) argsInput.value = enc.ffmpegArgs || '';
+function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (char) => {
+        switch (char) {
+            case '&':
+                return '&amp;';
+            case '<':
+                return '&lt;';
+            case '>':
+                return '&gt;';
+            case '"':
+                return '&quot;';
+            case "'":
+                return '&#39;';
+            default:
+                return char;
+        }
+    });
+}
+
+function settingsSectionFor(childId: string): HTMLElement | null {
+    return document.getElementById(childId)?.closest('section') as HTMLElement | null;
+}
+
+function styleSettingsSection(section: HTMLElement | null, id: string): void {
+    if (!section) return;
+    section.id = id;
+    section.className = 'border-base-content/10 bg-base-200 rounded-lg border p-4 shadow-none';
+    section.querySelector('h2')?.classList.add('text-base', 'font-semibold');
+}
+
+function ensureSettingsNav(container: Element): void {
+    if (document.getElementById('settings-admin-nav')) return;
+    const title = container.querySelector('h1');
+    const nav = document.createElement('nav');
+    nav.id = 'settings-admin-nav';
+    nav.className = 'border-base-content/10 bg-base-200 rounded-lg border p-2';
+    nav.setAttribute('aria-label', 'Admin sections');
+    nav.innerHTML = `
+        <div class="flex flex-wrap gap-2">
+            <a class="btn btn-sm btn-ghost" href="#media-library-section">Media Library</a>
+            <a class="btn btn-sm btn-ghost" href="#video-ingest-section">Video Ingest</a>
+            <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+            <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
+        </div>`;
+    title?.insertAdjacentElement('afterend', nav);
+}
+
+function applySettingsChrome(): void {
+    const container = document.querySelector('.flex-1.overflow-y-auto > div');
+    if (container instanceof HTMLElement) {
+        container.className = 'mx-auto max-w-7xl space-y-4';
+        const title = container.querySelector('h1');
+        if (title) {
+            title.textContent = 'Admin';
+            title.className = 'text-xl font-semibold';
+        }
+        ensureSettingsNav(container);
     }
+
+    const mediaSection = settingsSectionFor('media-list');
+    const ingestSection = settingsSectionFor('ingest-list');
+    const serverSection = settingsSectionFor('settings-server-name');
+    styleSettingsSection(mediaSection, 'media-library-section');
+    styleSettingsSection(ingestSection, 'video-ingest-section');
+    styleSettingsSection(serverSection, 'server-settings-section');
+    const profilesSection = document.getElementById('transcode-profiles-list')?.closest('.space-y-3');
+    if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
+
+    const mediaHeading = mediaSection?.querySelector('h2');
+    if (mediaHeading) mediaHeading.textContent = 'Media Library';
+    if (mediaSection && ingestSection && mediaSection.nextElementSibling !== ingestSection) {
+        ingestSection.parentElement?.insertBefore(mediaSection, ingestSection);
+    }
+
+    const ingestForm = document.getElementById('ingest-add-form');
+    if (ingestForm) {
+        ingestForm.className =
+            'border-base-content/10 bg-base-100 mb-4 hidden rounded-lg border p-4';
+    }
+    document.getElementById('media-list')?.classList.add('space-y-2');
+    document.getElementById('ingest-list')?.classList.add('space-y-2');
 }
 
 // ── Server Name ───────────────────────────────────────
@@ -167,7 +243,8 @@ export async function loadMediaFiles(): Promise<void> {
     const files = result?.files ?? [];
 
     if (files.length === 0) {
-        list.innerHTML = '<p class="text-sm opacity-70">No recordings yet.</p>';
+        list.innerHTML =
+            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No recordings yet.</div>';
         return;
     }
 
@@ -178,13 +255,16 @@ export async function loadMediaFiles(): Promise<void> {
                 ? 'disabled title="Remove configured ingests first"'
                 : '';
             const mediaUrl = withBasePath(`/media/${encodeURIComponent(f.name)}`);
+            const safeName = escapeHtml(f.name);
             return `
-        <div class="flex flex-wrap items-center gap-2 py-2 border-b border-base-300 last:border-0" data-filename="${f.name}">
-            <span class="flex-1 font-mono text-sm truncate min-w-0" title="${f.name}">${f.name}</span>
-            <span class="text-sm opacity-60 shrink-0">${formatFileSize(f.size)}</span>
+        <div class="border-base-content/10 bg-base-100 flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2" data-filename="${safeName}">
+            <div class="min-w-0 flex-1">
+                <div class="truncate font-mono text-sm" title="${safeName}">${safeName}</div>
+                <div class="text-base-content/50 mt-0.5 text-xs">${formatFileSize(f.size)}</div>
+            </div>
             <a href="${mediaUrl}" target="_blank" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>
-            <a href="${mediaUrl}" download="${f.name}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
-            <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${f.name}" ${deleteDisabled}>Delete</button>
+            <a href="${mediaUrl}" download="${safeName}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
+            <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${safeName}" ${deleteDisabled}>Delete</button>
         </div>`;
         })
         .join('');
@@ -314,30 +394,34 @@ export async function saveIngest(): Promise<void> {
 
 function renderIngest(ingest: IngestConfig): string {
     const { id, filename, loop, startTime, running } = ingest;
-    const maskedKey = formatMaskedStreamKey(ingest.streamKey);
-    const statusColor = running ? 'status-primary' : 'status-neutral';
-    const loopBadge = loop ? '<span class="badge badge-sm badge-info">loop</span>' : '';
+    const maskedKey = escapeHtml(formatMaskedStreamKey(ingest.streamKey));
+    const safeId = escapeHtml(id);
+    const safeFilename = escapeHtml(filename);
+    const stateBadge = running
+        ? '<span class="badge badge-sm badge-success">Running</span>'
+        : '<span class="badge badge-sm badge-ghost">Stopped</span>';
+    const loopBadge = loop ? '<span class="badge badge-sm badge-info">Loop</span>' : '';
     const startBadge = startTime
-        ? `<span class="badge badge-sm badge-ghost">from ${startTime}</span>`
+        ? `<span class="badge badge-sm badge-ghost">From ${escapeHtml(startTime)}</span>`
         : '';
     const toggleBtn = running
-        ? `<button class="btn btn-xs btn-accent btn-outline js-ingest-toggle" data-id="${id}" data-running="1">Stop</button>`
-        : `<button class="btn btn-xs btn-accent js-ingest-toggle" data-id="${id}" data-running="0">Start</button>`;
+        ? `<button class="btn btn-xs btn-accent btn-outline js-ingest-toggle" data-id="${safeId}" data-running="1">Stop</button>`
+        : `<button class="btn btn-xs btn-accent js-ingest-toggle" data-id="${safeId}" data-running="0">Start</button>`;
 
     return `
-        <div class="bg-base-100 px-3 py-2 shadow rounded-box w-full flex gap-2 items-center mb-2">
-            <div class="min-w-0 flex-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                <div class="flex items-center gap-2 shrink-0">
-                    <div aria-label="status" class="status status-lg ${statusColor} mx-1"></div>
-                    ${toggleBtn}
-                    <span class="font-mono text-sm truncate max-w-48 shrink-0" title="${filename}">${filename}</span>
+        <div class="border-base-content/10 bg-base-100 flex w-full items-center gap-3 rounded-lg border px-3 py-2">
+            <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                    ${stateBadge}
+                    <span class="max-w-72 truncate font-mono text-sm" title="${safeFilename}">${safeFilename}</span>
+                    ${loopBadge}${startBadge}
                 </div>
-                <code class="text-sm opacity-70 shrink-0">→ ${maskedKey}</code>
-                ${loopBadge}${startBadge}
+                <div class="text-base-content/50 mt-1 truncate font-mono text-xs">${maskedKey}</div>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
-                <button class="btn btn-xs btn-accent btn-outline js-ingest-edit" data-id="${id}" ${running ? 'disabled title="Stop before editing"' : ''}>&#9998;</button>
-                <button class="btn btn-xs btn-error btn-outline js-ingest-delete" data-id="${id}" ${running ? 'disabled' : ''}>&#128473;</button>
+            <div class="flex shrink-0 items-center gap-2">
+                ${toggleBtn}
+                <button class="btn btn-xs btn-accent btn-outline js-ingest-edit" data-id="${safeId}" ${running ? 'disabled title="Stop before editing"' : ''}>Edit</button>
+                <button class="btn btn-xs btn-error btn-outline js-ingest-delete" data-id="${safeId}" ${running ? 'disabled' : ''}>Delete</button>
             </div>
         </div>`;
 }
@@ -351,7 +435,8 @@ export async function loadIngests(): Promise<void> {
     currentIngests = ingests;
 
     if (ingests.length === 0) {
-        list.innerHTML = '<p class="text-sm opacity-70">No ingests configured.</p>';
+        list.innerHTML =
+            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No ingests configured.</div>';
         return;
     }
 
@@ -392,15 +477,6 @@ export async function loadIngests(): Promise<void> {
     });
 }
 
-// ── Custom Encoding ───────────────────────────────────
-
-export async function saveCustomEncoding(): Promise<void> {
-    const argsInput = document.getElementById('custom-enc-args') as HTMLTextAreaElement | null;
-    const ffmpegArgs = argsInput?.value?.trim() ?? '';
-    const result = await updateCustomEncoding(ffmpegArgs);
-    if (result !== null) showSavedFeedback('custom-enc-saved');
-}
-
 // ── Transcode Profiles ─────────────────────────────────
 
 const PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'];
@@ -409,24 +485,32 @@ const TUNE_OPTIONS = ['zerolatency', 'fastdecode', 'film', 'animation', 'grain',
 function renderProfileRow(name: string, profile: TranscodeProfile): string {
     const presetOpts = PRESET_OPTIONS.map((p) => `<option value="${p}" ${profile.preset === p ? 'selected' : ''}>${p}</option>`).join('');
     const tuneOpts = TUNE_OPTIONS.map((t) => `<option value="${t}" ${profile.tune === t ? 'selected' : ''}>${t}</option>`).join('');
+    const safeName = escapeHtml(name);
     return `
-        <div class="bg-base-100 px-3 py-2 shadow rounded-box space-y-2" data-profile-name="${name}">
-            <div class="flex items-center gap-2">
-                <input type="text" class="input input-sm font-mono w-32 js-profile-name" value="${name}" placeholder="profile name" />
-                <span class="text-sm opacity-70">preset</span>
+        <div class="border-base-content/10 bg-base-100 space-y-3 rounded-lg border px-3 py-3" data-profile-name="${safeName}">
+            <div class="flex flex-wrap items-end gap-2">
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Name</legend>
+                    <input type="text" class="input input-sm w-36 font-mono js-profile-name" value="${safeName}" placeholder="profile name" />
+                </fieldset>
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Preset</legend>
                 <select class="select select-sm js-profile-preset">${presetOpts}</select>
-                <span class="text-sm opacity-70">tune</span>
+                </fieldset>
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Tune</legend>
                 <select class="select select-sm js-profile-tune">${tuneOpts}</select>
-                <button class="btn btn-xs btn-error btn-outline js-profile-delete" data-name="${name}">&times;</button>
+                </fieldset>
+                <button class="btn btn-sm btn-error btn-outline js-profile-delete" data-name="${safeName}">Delete</button>
             </div>
-            <div class="flex flex-wrap items-center gap-3 text-sm">
-                <label class="flex items-center gap-1">CRF <input type="number" class="input input-xs w-16 js-profile-crf" value="${profile.crf}" min="0" max="51" /></label>
-                <label class="flex items-center gap-1">GOP <input type="number" class="input input-xs w-16 js-profile-gop" value="${profile.gop}" min="1" /></label>
-                <label class="flex items-center gap-1">B-frames <input type="number" class="input input-xs w-16 js-profile-bframes" value="${profile.bframes}" min="0" /></label>
-                <label class="flex items-center gap-1">Bitrate <input type="number" class="input input-xs w-24 js-profile-bitrate" value="${profile.bitrate}" placeholder="0=CRF" /></label>
-                <label class="flex items-center gap-1">MaxBitrate <input type="number" class="input input-xs w-24 js-profile-maxbitrate" value="${profile.maxBitrate}" placeholder="0=none" /></label>
-                <label class="flex items-center gap-1">W <input type="number" class="input input-xs w-16 js-profile-width" value="${profile.width}" placeholder="0=src" /></label>
-                <label class="flex items-center gap-1">H <input type="number" class="input input-xs w-16 js-profile-height" value="${profile.height}" placeholder="0=src" /></label>
+            <div class="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <label class="flex items-center gap-2">CRF <input type="number" class="input input-xs w-full js-profile-crf" value="${profile.crf}" min="0" max="51" /></label>
+                <label class="flex items-center gap-2">GOP <input type="number" class="input input-xs w-full js-profile-gop" value="${profile.gop}" min="1" /></label>
+                <label class="flex items-center gap-2">B-frames <input type="number" class="input input-xs w-full js-profile-bframes" value="${profile.bframes}" min="0" /></label>
+                <label class="flex items-center gap-2">Bitrate <input type="number" class="input input-xs w-full js-profile-bitrate" value="${profile.bitrate}" placeholder="0=CRF" /></label>
+                <label class="flex items-center gap-2">Max <input type="number" class="input input-xs w-full js-profile-maxbitrate" value="${profile.maxBitrate}" placeholder="0=none" /></label>
+                <label class="flex items-center gap-2">Width <input type="number" class="input input-xs w-full js-profile-width" value="${profile.width}" placeholder="0=src" /></label>
+                <label class="flex items-center gap-2">Height <input type="number" class="input input-xs w-full js-profile-height" value="${profile.height}" placeholder="0=src" /></label>
             </div>
         </div>`;
 }
@@ -437,7 +521,8 @@ export function loadTranscodeProfiles(): void {
     const profiles = state.config?.transcodeProfiles ?? {};
     const entries = Object.entries(profiles);
     if (entries.length === 0) {
-        list.innerHTML = '<p class="text-sm opacity-70">No profiles configured. Using built-in defaults (ultrafast, zerolatency, CRF 23).</p>';
+        list.innerHTML =
+            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No profiles configured. Using built-in defaults.</div>';
         return;
     }
     list.innerHTML = entries.map(([name, p]) => renderProfileRow(name, p)).join('');
@@ -454,8 +539,15 @@ export function addTranscodeProfile(): void {
     if (!list) return;
     const div = document.createElement('div');
     div.innerHTML = renderProfileRow('new_profile', {
-        preset: 'ultrafast', tune: 'zerolatency', crf: 23, gop: 60, bframes: 0,
-        bitrate: 0, maxBitrate: 0, width: 0, height: 0,
+        preset: 'ultrafast',
+        tune: 'zerolatency',
+        crf: 23,
+        gop: 60,
+        bframes: 0,
+        bitrate: 0,
+        maxBitrate: 0,
+        width: 0,
+        height: 0,
     });
     const row = div.firstElementChild as HTMLElement | null;
     if (row) {

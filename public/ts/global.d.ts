@@ -93,7 +93,6 @@ declare global {
         saveServerName: () => Promise<void>;
         saveIngestHost: () => Promise<void>;
         saveIngestSecurity: () => Promise<void>;
-        saveCustomEncoding: () => Promise<void>;
         saveTranscodeProfiles: () => Promise<void>;
         addTranscodeProfile: () => void;
         openAddIngestForm: () => void;

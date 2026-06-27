@@ -224,6 +224,18 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    engine.event_log.set_sink(event_tx);
+    {
+        let pool_events = pool.clone();
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                if let Err(err) = db::append_lifecycle_event(&pool_events, &event).await {
+                    eprintln!("[events] Failed to persist lifecycle event: {}", err);
+                }
+            }
+        });
+    }
     // Keep a clone of sessions for the reconciler's hourly prune tick.
     let sessions_for_reconciler = sessions.clone();
 

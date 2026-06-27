@@ -15,6 +15,7 @@ let inspectGraphInFlight: Promise<void> | null = null;
 let inspectGraphAutoRefresh = true;
 let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
 const INSPECT_GRAPH_REFRESH_MS = 5000;
+type StatusTone = 'success' | 'warning' | 'error' | 'neutral' | 'info';
 
 function normalizeMode(mode: string | null): DashboardMode {
     if (mode && validModes.has(mode)) return mode as DashboardMode;
@@ -36,14 +37,51 @@ function formatBytes(bytes: number | null | undefined): string {
     return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
-function pipelineHealthLabel(pipe: PipelineView): { label: string; cls: string } {
-    if (pipe.input.status === 'error') return { label: 'Input error', cls: 'badge-error' };
-    if (pipe.outs.some(isOutputUnexpectedlyDown)) return { label: 'Output down', cls: 'badge-error' };
-    if (pipe.input.status === 'warning' || pipe.outs.some((out) => out.status === 'warning')) {
-        return { label: 'Warning', cls: 'badge-warning' };
+function badgeClassForTone(tone: StatusTone): string {
+    if (tone === 'success') return 'badge-success';
+    if (tone === 'warning') return 'badge-warning';
+    if (tone === 'error') return 'badge-error';
+    if (tone === 'info') return 'badge-info';
+    return 'badge-neutral';
+}
+
+function statusPill(label: string, tone: StatusTone, detail?: string): string {
+    const toneClass =
+        tone === 'success'
+            ? 'border-success/30 bg-success/10 text-success'
+            : tone === 'warning'
+              ? 'border-warning/35 bg-warning/10 text-warning'
+              : tone === 'error'
+                ? 'border-error/35 bg-error/10 text-error'
+                : tone === 'info'
+                  ? 'border-info/30 bg-info/10 text-info'
+                  : 'border-base-content/10 bg-base-100/80 text-base-content/75';
+    return `<span class="${toneClass} inline-flex min-h-8 max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-semibold leading-tight">
+        <span class="truncate">${escapeHtml(label)}</span>
+        ${detail ? `<span class="text-base-content/55 font-normal">${escapeHtml(detail)}</span>` : ''}
+    </span>`;
+}
+
+function pipelineHealthLabel(pipe: PipelineView): { label: string; cls: string; tone: StatusTone; detail?: string } {
+    if (pipe.input.status === 'error') {
+        return { label: 'Input error', cls: badgeClassForTone('error'), tone: 'error', detail: 'publisher fault' };
     }
-    if (pipe.input.status === 'on') return { label: 'Live', cls: 'badge-success' };
-    return { label: 'Idle', cls: 'badge-neutral' };
+    if (pipe.input.status === 'warning') {
+        return { label: 'Input warning', cls: badgeClassForTone('warning'), tone: 'warning', detail: 'check ingest' };
+    }
+    if (pipe.input.status !== 'on') {
+        if (pipe.outs.some(isOutputUnexpectedlyDown)) {
+            return { label: 'Input down', cls: badgeClassForTone('error'), tone: 'error', detail: 'outputs blocked' };
+        }
+        return { label: 'Idle', cls: badgeClassForTone('neutral'), tone: 'neutral', detail: 'waiting for input' };
+    }
+    if (pipe.outs.some(isOutputUnexpectedlyDown)) {
+        return { label: 'Output down', cls: badgeClassForTone('error'), tone: 'error', detail: 'input live' };
+    }
+    if (pipe.outs.some((out) => out.status === 'warning')) {
+        return { label: 'Output warning', cls: badgeClassForTone('warning'), tone: 'warning', detail: 'input live' };
+    }
+    return { label: 'Live', cls: badgeClassForTone('success'), tone: 'success', detail: 'healthy' };
 }
 
 function outputStateLabel(out: OutputView): { label: string; cls: string } {
@@ -68,6 +106,42 @@ function summaryCounts() {
     };
 }
 
+function inputOverviewPill(pipe: PipelineView): string {
+    const protocol = pipe.input.publisher?.protocol?.toUpperCase();
+    const rate = formatBitrate(pipe.stats.inputBitrateKbps);
+    if (pipe.input.status === 'on') {
+        return statusPill('Live input', 'success', [protocol, rate !== '--' ? rate : null].filter(Boolean).join(' / '));
+    }
+    if (pipe.input.status === 'warning') {
+        return statusPill('Input warning', 'warning', protocol || 'publisher attached');
+    }
+    if (pipe.input.status === 'error') {
+        return statusPill('Input error', 'error', protocol || 'publisher fault');
+    }
+    return statusPill('No input', 'neutral', pipe.inputSource ? 'file/source idle' : 'waiting');
+}
+
+function outputsOverviewPill(pipe: PipelineView): string {
+    const total = pipe.outs.length;
+    const running = pipe.outs.filter(isOutputRunning).length;
+    const stopped = pipe.outs.filter(isOutputIntentStopped).length;
+    const down = pipe.outs.filter(isOutputUnexpectedlyDown).length;
+    if (!total) return statusPill('No outputs', 'neutral', 'not configured');
+    if (pipe.input.status !== 'on' && down > 0) {
+        return statusPill(`${running}/${total} running`, 'neutral', 'blocked by input');
+    }
+    if (down > 0) return statusPill(`${down} down`, 'error', `${running}/${total} running`);
+    if (stopped === total) return statusPill('Stopped', 'neutral', `${total} configured`);
+    if (running === total) return statusPill(`${running}/${total} running`, 'success');
+    return statusPill(`${running}/${total} running`, 'warning', `${stopped} stopped`);
+}
+
+function recordingOverviewPill(pipe: PipelineView): string {
+    if (pipe.recording.active) return statusPill('Recording', 'error', 'active');
+    if (pipe.recording.enabled) return statusPill('Armed', 'warning', 'ready');
+    return statusPill('Off', 'neutral');
+}
+
 function renderOverview(): void {
     const container = document.getElementById('overview-mode-content');
     if (!container) return;
@@ -77,17 +151,19 @@ function renderOverview(): void {
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((pipe) => {
             const health = pipelineHealthLabel(pipe);
-            const outputSummary = `${pipe.outs.filter(isOutputRunning).length}/${pipe.outs.length}`;
-            return `<tr>
-                <td>
-                    <button type="button" class="link font-semibold js-open-pipeline" data-pipeline-id="${escapeHtml(pipe.id)}">${escapeHtml(pipe.name)}</button>
+            return `<tr class="border-base-content/5 hover:bg-base-100/60 border-t">
+                <td class="min-w-56 py-3">
+                    <button type="button" class="group flex max-w-xs flex-col text-left js-open-pipeline" data-pipeline-id="${escapeHtml(pipe.id)}">
+                        <span class="group-hover:text-accent truncate font-semibold">${escapeHtml(pipe.name)}</span>
+                        <span class="text-base-content/45 truncate text-xs">${escapeHtml(pipe.key || pipe.id)}</span>
+                    </button>
                 </td>
-                <td><span class="badge ${health.cls}">${health.label}</span></td>
-                <td>${escapeHtml(pipe.input.status)}</td>
-                <td>${outputSummary}</td>
-                <td>${formatBitrate(pipe.stats.inputBitrateKbps)}</td>
-                <td>${formatBitrate(pipe.stats.outputBitrateKbps)}</td>
-                <td>${pipe.recording.active ? '<span class="badge badge-error">Recording</span>' : pipe.recording.enabled ? '<span class="badge badge-warning">Armed</span>' : '--'}</td>
+                <td>${statusPill(health.label, health.tone, health.detail)}</td>
+                <td>${inputOverviewPill(pipe)}</td>
+                <td>${outputsOverviewPill(pipe)}</td>
+                <td class="font-mono text-sm tabular-nums">${formatBitrate(pipe.stats.inputBitrateKbps)}</td>
+                <td class="font-mono text-sm tabular-nums">${formatBitrate(pipe.stats.outputBitrateKbps)}</td>
+                <td>${recordingOverviewPill(pipe)}</td>
             </tr>`;
         })
         .join('');
@@ -99,14 +175,17 @@ function renderOverview(): void {
             ${overviewMetric('Throughput In', formatBitrate(counts.inputKbps), 'Across active publishers')}
             ${overviewMetric('Throughput Out', formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? '' : 's'}`)}
         </div>
-        <section class="border-base-content/10 bg-base-200 rounded-lg border">
-            <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-                <h1 class="text-lg font-semibold">Operator Overview</h1>
+        <section class="border-base-content/10 bg-base-200/80 rounded-lg border">
+            <div class="border-base-content/10 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+                <div>
+                    <h1 class="text-lg font-semibold">Operator Overview</h1>
+                    <p class="text-base-content/60 text-sm">Primary state follows the upstream cause before downstream symptoms.</p>
+                </div>
                 <button type="button" class="btn btn-sm btn-outline" id="overview-add-pipeline-btn">Add Pipeline</button>
             </div>
             <div class="overflow-x-auto">
                 <table class="table table-sm">
-                    <thead>
+                    <thead class="text-base-content/55 bg-base-100/50 text-xs uppercase">
                         <tr>
                             <th>Pipeline</th>
                             <th>State</th>
@@ -117,7 +196,7 @@ function renderOverview(): void {
                             <th>Recording</th>
                         </tr>
                     </thead>
-                    <tbody>${pipelineRows || '<tr><td colspan="7" class="text-base-content/60">No pipelines configured.</td></tr>'}</tbody>
+                    <tbody>${pipelineRows || '<tr><td colspan="7" class="text-base-content/60 px-4 py-6">No pipelines configured.</td></tr>'}</tbody>
                 </table>
             </div>
         </section>`;

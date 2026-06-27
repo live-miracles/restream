@@ -91,6 +91,15 @@ function classifyHistoryEvent(
     if (eventType === 'lifecycle.started') {
         return { type: 'started', label: 'Started', badgeClass: 'badge-success' };
     }
+    if (eventType === 'egress.started') {
+        return { type: 'started', label: 'Egress Started', badgeClass: 'badge-success' };
+    }
+    if (eventType === 'egress.stopped') {
+        return { type: 'stopped', label: 'Egress Stopped', badgeClass: 'badge-stopped' };
+    }
+    if (eventType === 'egress.failed') {
+        return { type: 'failed', label: 'Egress Failed', badgeClass: 'badge-error' };
+    }
     if (eventType === 'lifecycle.stop_requested') {
         return { type: 'stopping', label: 'Stop requested', badgeClass: 'badge-warning' };
     }
@@ -248,6 +257,27 @@ function classifyPipelineHistoryEvent(log: HistoryLog): HistoryEventClassificati
     if (eventType === 'pipeline.input_state.reset') {
         return { type: 'reset', label: 'Input Reset', badgeClass: 'badge-info' };
     }
+    if (eventType === 'ingest.connected') {
+        return { type: 'on', label: 'Ingest Connected', badgeClass: 'badge-success' };
+    }
+    if (eventType === 'ingest.disconnected') {
+        return { type: 'off', label: 'Ingest Disconnected', badgeClass: 'badge-stopped' };
+    }
+    if (eventType === 'stage.started') {
+        return { type: 'stage', label: 'Stage Started', badgeClass: 'badge-info' };
+    }
+    if (eventType === 'stage.stopped') {
+        return { type: 'stage', label: 'Stage Stopped', badgeClass: 'badge-ghost' };
+    }
+    if (eventType === 'egress.started') {
+        return { type: 'egress', label: 'Output Started', badgeClass: 'badge-success' };
+    }
+    if (eventType === 'egress.stopped') {
+        return { type: 'egress', label: 'Output Stopped', badgeClass: 'badge-stopped' };
+    }
+    if (eventType === 'egress.failed') {
+        return { type: 'egress', label: 'Output Failed', badgeClass: 'badge-error' };
+    }
 
     const message = String(log?.message || '');
 
@@ -285,13 +315,37 @@ function getPipelineTimelineLogs(logs: HistoryLog[]): HistoryLog[] {
         const eventType = getNormalizedEventType(log);
         if (
             eventType.startsWith('pipeline.config.') ||
-            eventType.startsWith('pipeline.input_state.')
+            eventType.startsWith('pipeline.input_state.') ||
+            eventType.startsWith('ingest.') ||
+            eventType.startsWith('stage.') ||
+            eventType.startsWith('egress.')
         ) {
             return true;
         }
         const message = String(log?.message || '');
         return message.startsWith('[config]') || message.startsWith('[input_state]');
     });
+}
+
+function renderEventDataSummary(log: HistoryLog): string {
+    const data = getEventData(log);
+    if (!data) return '';
+    const hiddenKeys = new Set(['kind', 'timestamp', 'seq', 'streamKey']);
+    const entries = Object.entries(data)
+        .filter(([key]) => !hiddenKeys.has(key))
+        .slice(0, 5);
+    if (entries.length === 0) return '';
+    return `<div class="mt-2 flex flex-wrap gap-1">${entries
+        .map(([key, value]) => {
+            const rendered =
+                value === null || value === undefined
+                    ? '--'
+                    : typeof value === 'object'
+                      ? JSON.stringify(value)
+                      : String(value);
+            return `<span class="border-base-content/10 bg-base-200/70 rounded-md border px-2 py-1 text-[11px]"><span class="text-base-content/50">${key}</span> <span class="font-mono">${sanitizeLogMessage(rendered, true)}</span></span>`;
+        })
+        .join('')}</div>`;
 }
 
 function getOrderedOutputLogs(logs: HistoryLog[], order: string): HistoryLog[] {
@@ -584,6 +638,7 @@ export function renderOutputHistory(
                 <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
             </div>
             <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-log-msg"></pre>
+            ${renderEventDataSummary(log)}
             ${contextBoxHtml}
         `;
         (row.querySelector('.js-log-msg') as HTMLPreElement).textContent = sanitizeLogMessage(
@@ -637,6 +692,7 @@ export function renderPipelineHistory(
                         <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
                     </div>
                     <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-msg"></pre>
+                    ${renderEventDataSummary(log)}
                 </div>`;
         })
         .join('');

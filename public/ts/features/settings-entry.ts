@@ -3,7 +3,6 @@ import {
     saveServerName,
     saveIngestHost,
     saveIngestSecurity,
-    saveCustomEncoding,
     saveTranscodeProfiles,
     addTranscodeProfile,
     loadMediaFiles,
@@ -32,7 +31,6 @@ void init();
 window.saveServerName = saveServerName;
 window.saveIngestHost = saveIngestHost;
 window.saveIngestSecurity = saveIngestSecurity;
-window.saveCustomEncoding = saveCustomEncoding;
 window.saveTranscodeProfiles = saveTranscodeProfiles;
 window.addTranscodeProfile = addTranscodeProfile;
 window.openAddIngestForm = openAddIngestForm;

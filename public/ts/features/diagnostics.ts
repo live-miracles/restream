@@ -236,10 +236,41 @@ function formatOutput(str: string): string {
     if (!trimmed) return '';
     try {
         JSON.parse(trimmed);
-        return colorizeJson(trimmed);
+        return `<pre class="whitespace-pre-wrap break-words font-mono select-all">${colorizeJson(trimmed)}</pre>`;
     } catch {
-        return escapeHtml(trimmed);
+        return formatPlainDiagnosticOutput(trimmed);
     }
+}
+
+function formatPlainDiagnosticOutput(str: string): string {
+    const lines = str.split(/\r?\n/);
+    let html = '<div class="space-y-1">';
+
+    for (const rawLine of lines) {
+        const line = rawLine.trimEnd();
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        const headingMatch = trimmed.endsWith(':') && !trimmed.includes('://');
+        if (headingMatch) {
+            html += `<div class="text-base-content/70 pt-1 text-[11px] font-semibold uppercase">${escapeHtml(trimmed.slice(0, -1))}</div>`;
+            continue;
+        }
+
+        const kv = trimmed.match(/^([^:]+):\s*(.*)$/);
+        if (kv && !trimmed.includes('://')) {
+            html += `<div class="grid grid-cols-[minmax(7rem,14rem)_minmax(0,1fr)] gap-3 rounded bg-base-100/60 px-2 py-1">`;
+            html += `<span class="text-base-content/55">${escapeHtml(kv[1])}</span>`;
+            html += `<span class="font-mono break-words">${escapeHtml(kv[2] || '--')}</span>`;
+            html += `</div>`;
+            continue;
+        }
+
+        html += `<div class="font-mono break-words rounded bg-base-100/60 px-2 py-1">${escapeHtml(trimmed)}</div>`;
+    }
+
+    html += '</div>';
+    return html;
 }
 
 function renderList(): void {
@@ -359,11 +390,9 @@ function renderList(): void {
             html += `<div class="bg-base-200 rounded p-2 text-xs overflow-x-auto max-h-80 overflow-y-auto">`;
             html += `<div class="opacity-50 mb-1 select-all font-mono">$ ${escapeHtml(result.command)}</div>`;
 
-            if (result.stdout) {
-                html += `<pre class="whitespace-pre-wrap break-all font-mono select-all">${formatOutput(result.stdout)}</pre>`;
-            }
+            if (result.stdout) html += formatOutput(result.stdout);
             if (result.stderr) {
-                html += `<pre class="whitespace-pre-wrap break-all font-mono text-warning select-all">${escapeHtml(result.stderr)}</pre>`;
+                html += `<pre class="whitespace-pre-wrap break-words font-mono text-warning select-all">${escapeHtml(result.stderr)}</pre>`;
             }
             if (!result.stdout && !result.stderr) {
                 html += `<span class="opacity-40">(no output)</span>`;
@@ -432,32 +461,25 @@ async function copySingle(index: number): Promise<void> {
 
 function buildFullReport(): string {
     const pipe = getPipeline();
-    const lines: string[] = [];
-    lines.push('=== Restream Diagnostics ===');
-    lines.push(
-        `Pipeline: ${pipe?.name || diagnosticsPipeId} | Probe: ${activeProbeProtocol.toUpperCase()} | ${new Date().toISOString()}`,
+    return JSON.stringify(
+        {
+            schema: 'restream.diagnostics.v1',
+            generatedAt: new Date().toISOString(),
+            pipeline: {
+                id: diagnosticsPipeId,
+                name: pipe?.name || diagnosticsPipeId,
+            },
+            probe: activeProbeProtocol,
+            totalCommands,
+            results: results.filter(Boolean),
+            rawProbe: {
+                stdout: probeRawStdout || null,
+                stderr: probeRawStderr || null,
+            },
+        },
+        null,
+        2,
     );
-    lines.push('');
-
-    for (let i = 0; i < results.length; i++) {
-        const r = results[i];
-        if (!r) continue;
-        lines.push(formatResultForCopy(r, i, totalCommands));
-    }
-
-    // Append raw ffprobe output for post-mortem analysis
-    if (probeRawStdout) {
-        lines.push('');
-        lines.push('=== RAW FFPROBE OUTPUT (packets + frames + streams + format) ===');
-        lines.push(probeRawStdout);
-    }
-    if (probeRawStderr) {
-        lines.push('');
-        lines.push('=== RAW FFPROBE STDERR (warnings) ===');
-        lines.push(probeRawStderr);
-    }
-
-    return lines.join('\n');
 }
 
 async function copyAll(): Promise<void> {
@@ -469,9 +491,9 @@ function downloadLog(): void {
     const name = (pipe?.name || 'pipeline').replace(/[^a-zA-Z0-9_-]/g, '_');
     const id = (diagnosticsPipeId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
     const now = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-    const filename = `diagnostic-${name}-${id}-${now}.log`;
+    const filename = `diagnostic-${name}-${id}-${now}.json`;
 
-    const blob = new Blob([buildFullReport()], { type: 'text/plain' });
+    const blob = new Blob([buildFullReport()], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -526,8 +548,8 @@ function showAiToast(): void {
         'alert alert-success shadow-lg text-xs mb-2 shrink-0 transition-opacity duration-300';
     toast.innerHTML = `
         <div>
-            <div class="font-bold text-sm">✨ Prompt Copied &amp; Log Downloaded!</div>
-            <div>Opening ChatGPT. Upload the log file and paste (Ctrl+V) the prompt.</div>
+            <div class="font-bold text-sm">Prompt copied and report downloaded</div>
+            <div>Opening ChatGPT. Upload the JSON report and paste (Ctrl+V) the prompt.</div>
         </div>
     `;
 

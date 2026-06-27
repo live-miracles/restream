@@ -136,17 +136,6 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         };
     }
 
-    const mediaBtn = document.getElementById('pipe-media-btn');
-    if (mediaBtn) {
-        mediaBtn.onclick = () => {
-            const url = new URL(window.location.href);
-            url.searchParams.set('mode', 'admin');
-            url.searchParams.delete('p');
-            window.history.replaceState({}, '', url.toString());
-            window.dispatchEvent(new PopStateEvent('popstate'));
-        };
-    }
-
     const recordBtn = document.getElementById('record-pipe-btn') as HTMLButtonElement | null;
     if (recordBtn) {
         const isRecordingEnabled = pipe.recording.enabled;
@@ -167,16 +156,6 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
             }
             await pipelineViewDependencies.refreshDashboard?.();
         };
-    }
-
-    const recordingMeta = document.getElementById('pipeline-recording-meta');
-    if (recordingMeta) {
-        const recordingLabel = pipe.recording.active
-            ? '<span class="badge badge-sm badge-error">Recording active</span>'
-            : pipe.recording.enabled
-              ? '<span class="badge badge-sm badge-warning">Recording armed</span>'
-              : '<span class="badge badge-sm badge-ghost">Recording off</span>';
-        recordingMeta.innerHTML = `${recordingLabel}<span>Files are saved in the media library.</span>`;
     }
 
     const graphBtn = document.getElementById('graph-pipe-btn') as HTMLButtonElement | null;

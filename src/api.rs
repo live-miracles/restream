@@ -1416,10 +1416,39 @@ async fn output_status_handler(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    filter: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    order: Option<String>,
+    limit: Option<i64>,
+    prefix: Option<String>,
+}
+
+fn history_logs_json(logs: Vec<JobLog>) -> Vec<serde_json::Value> {
+    logs.into_iter()
+        .map(|log| {
+            let event_data = log
+                .event_data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .unwrap_or(serde_json::Value::Null);
+            serde_json::json!({
+                "ts": log.ts,
+                "message": log.message,
+                "eventType": log.event_type,
+                "eventData": event_data,
+            })
+        })
+        .collect()
+}
+
 async fn outputs_history_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((pipeline_id, output_id)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         if !state.is_authenticated(&token).await {
@@ -1429,13 +1458,53 @@ async fn outputs_history_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let logs = db::list_job_logs_by_output(&state.db, &pipeline_id, &output_id)
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    let order = query.order.as_deref().unwrap_or("desc");
+    let logs = if query.filter.as_deref() == Some("lifecycle") {
+        let mut logs = db::list_lifecycle_logs_by_output(&state.db, &pipeline_id, &output_id)
+            .await
+            .unwrap_or_default();
+        let mut events =
+            db::list_lifecycle_events_by_output(&state.db, &pipeline_id, &output_id, limit, order)
+                .await
+                .unwrap_or_default();
+        logs.append(&mut events);
+        logs.sort_by(|a, b| {
+            if order == "asc" {
+                a.ts.cmp(&b.ts)
+            } else {
+                b.ts.cmp(&a.ts)
+            }
+        });
+        logs.truncate(limit as usize);
+        logs
+    } else {
+        let prefixes = query.prefix.map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        });
+        db::list_job_logs_by_output_filtered(
+            &state.db,
+            &pipeline_id,
+            &output_id,
+            &HistoryFilters {
+                since: query.since,
+                until: query.until,
+                limit: Some(limit),
+                order: query.order,
+                prefixes,
+            },
+        )
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
     Json(serde_json::json!({
         "pipelineId": pipeline_id,
         "outputId": output_id,
-        "logs": logs
+        "logs": history_logs_json(logs)
     }))
     .into_response()
 }
@@ -1444,6 +1513,7 @@ async fn pipeline_history_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(pipeline_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         if !state.is_authenticated(&token).await {
@@ -1453,12 +1523,19 @@ async fn pipeline_history_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let logs = db::list_job_logs_by_pipeline(&state.db, &pipeline_id)
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    let mut logs = db::list_job_logs_by_pipeline(&state.db, &pipeline_id)
         .await
         .unwrap_or_default();
+    let mut events = db::list_lifecycle_events_by_pipeline(&state.db, &pipeline_id, limit)
+        .await
+        .unwrap_or_default();
+    logs.append(&mut events);
+    logs.sort_by(|a, b| b.ts.cmp(&a.ts));
+    logs.truncate(limit as usize);
     Json(serde_json::json!({
         "pipelineId": pipeline_id,
-        "logs": logs
+        "logs": history_logs_json(logs)
     }))
     .into_response()
 }
@@ -1628,6 +1705,7 @@ async fn pump_file_ingest_stdout(
     ring_buffer: Arc<crate::media::ring_buffer::RingBuffer>,
     mut stdout: ChildStdout,
     cancel: CancellationToken,
+    timestamps: &mut crate::media::file_ingest::ContinuousTimestampState,
 ) -> Result<(), String> {
     let (bytes_received, ingest_metrics, cached_keyframe_times) = {
         let ingests = state.engine.active_ingests.read().await;
@@ -1659,7 +1737,8 @@ async fn pump_file_ingest_stdout(
 
         demuxer.feed(&buf[..read]);
         if demuxer.drain_into(&mut packets) > 0 {
-            for pkt in &packets {
+            for pkt in &mut packets {
+                timestamps.apply(pkt);
                 if pkt.media_type == crate::media::ring_buffer::MediaType::Video && pkt.is_keyframe
                 {
                     let mut times = cached_keyframe_times
@@ -1744,6 +1823,7 @@ async fn run_file_ingest_task(
     cancel: CancellationToken,
     mut spawned: SpawnedFileIngestChild,
 ) {
+    let mut timestamps = crate::media::file_ingest::ContinuousTimestampState::default();
     loop {
         state
             .engine
@@ -1759,6 +1839,7 @@ async fn run_file_ingest_task(
             ring_buffer.clone(),
             spawned.stdout,
             cancel.clone(),
+            &mut timestamps,
         );
         let stderr_fut = log_file_ingest_stderr(&stderr_id, spawned.stderr);
         let (stdout_res, stderr_res) = tokio::join!(stdout_fut, stderr_fut);
@@ -2304,13 +2385,41 @@ async fn metrics_system_handler(
     let core_count = sys.cpus().len();
     let load_avg = System::load_average();
 
+    let media_root = {
+        let configured = FsPath::new(&state.media_dir);
+        let absolute = if configured.is_absolute() {
+            configured.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(configured)
+        };
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    };
     let disks = Disks::new_with_refreshed_list();
-    let (total_disk, used_disk) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
-        (
-            t + d.total_space(),
-            u + (d.total_space() - d.available_space()),
-        )
-    });
+    let selected_disk = disks
+        .iter()
+        .filter_map(|disk| {
+            let mount = disk.mount_point();
+            media_root
+                .starts_with(mount)
+                .then_some((disk, mount.components().count()))
+        })
+        .max_by_key(|(_, depth)| *depth)
+        .map(|(disk, _)| disk);
+    let (total_disk, used_disk, disk_mount) = if let Some(disk) = selected_disk {
+        let total = disk.total_space();
+        let used = total.saturating_sub(disk.available_space());
+        (total, used, Some(disk.mount_point().display().to_string()))
+    } else {
+        let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
+            (
+                t + d.total_space(),
+                u + (d.total_space() - d.available_space()),
+            )
+        });
+        (total, used, None)
+    };
     let free_disk = total_disk.saturating_sub(used_disk);
     let disk_pct = if total_disk > 0 {
         (used_disk as f64 / total_disk as f64) * 100.0
@@ -2397,7 +2506,11 @@ async fn metrics_system_handler(
             "totalBytes": total_disk,
             "usedBytes": used_disk,
             "freeBytes": free_disk,
-            "usedPercent": disk_pct
+            "usedPercent": disk_pct,
+            "scope": "mediaDir",
+            "mountPoint": disk_mount,
+            "mediaDir": state.media_dir,
+            "mediaRoot": media_root.display().to_string()
         },
         "network": {
             "scope": "external",
