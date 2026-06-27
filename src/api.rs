@@ -318,14 +318,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/pipelines/:pipeline_id/outputs/:output_id/status",
             get(output_status_handler),
         )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/history",
-            get(outputs_history_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/history",
-            get(pipeline_history_handler),
-        )
         .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
         .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
         .route(
@@ -1522,110 +1514,6 @@ async fn output_status_handler(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct HistoryQuery {
-    filter: Option<String>,
-    since: Option<String>,
-    until: Option<String>,
-    order: Option<String>,
-    limit: Option<i64>,
-    prefix: Option<String>,
-}
-
-fn history_logs_json(logs: Vec<AppLog>) -> Vec<serde_json::Value> {
-    logs.into_iter()
-        .map(|log| {
-            let event_data = log
-                .event_data
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-                .unwrap_or(serde_json::Value::Null);
-            serde_json::json!({
-                "ts": log.ts,
-                "message": log.message,
-                "eventType": log.event_type,
-                "eventData": event_data,
-            })
-        })
-        .collect()
-}
-
-async fn outputs_history_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((pipeline_id, output_id)): Path<(String, String)>,
-    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
-) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
-    let prefixes = query.prefix.map(|raw| {
-        raw.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>()
-    });
-    let event_class = if query.filter.as_deref() == Some("lifecycle") {
-        Some("lifecycle".to_string())
-    } else {
-        None
-    };
-    let logs = db::list_app_logs_by_output(
-        &state.db,
-        &pipeline_id,
-        &output_id,
-        &HistoryFilters {
-            since: query.since,
-            until: query.until,
-            limit: Some(limit),
-            order: query.order,
-            prefixes,
-            event_class,
-        },
-    )
-    .await
-    .unwrap_or_default();
-
-    Json(serde_json::json!({
-        "pipelineId": pipeline_id,
-        "outputId": output_id,
-        "logs": history_logs_json(logs)
-    }))
-    .into_response()
-}
-
-async fn pipeline_history_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(pipeline_id): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
-) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
-    let logs = db::list_app_logs_by_pipeline(&state.db, &pipeline_id, limit)
-        .await
-        .unwrap_or_default();
-    Json(serde_json::json!({
-        "pipelineId": pipeline_id,
-        "logs": history_logs_json(logs)
-    }))
-    .into_response()
-}
-
 // ── /api/logs — paginated query ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1636,6 +1524,8 @@ struct LogsQuery {
     target: Option<String>,
     pipeline_id: Option<String>,
     output_id: Option<String>,
+    event_class: Option<String>,
+    prefix: Option<String>,
     limit: Option<i64>,
     order: Option<String>,
 }
@@ -1660,6 +1550,8 @@ async fn logs_handler(
         target: query.target,
         pipeline_id: query.pipeline_id,
         output_id: query.output_id,
+        event_class: query.event_class,
+        prefix: query.prefix,
         limit: query.limit,
         order: query.order,
     };
@@ -1736,6 +1628,8 @@ async fn logs_stream_handler(
                     target: filter_target.clone(),
                     pipeline_id: filter_pipeline.clone(),
                     output_id: filter_output.clone(),
+                    event_class: None,
+                    prefix: None,
                     limit: Some(200),
                     order: Some("asc".to_string()),
                 },

@@ -547,85 +547,8 @@ pub async fn append_app_log_batch(
     Ok(())
 }
 
-/// Query for the output history endpoint (`/api/pipelines/:id/outputs/:oid/history`).
-/// `event_class = Some("lifecycle")` restricts to lifecycle events (timeline mode).
-/// `prefixes` filters by message prefix (raw mode context expansion).
-pub async fn list_app_logs_by_output(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-    output_id: &str,
-    filters: &crate::types::HistoryFilters,
-) -> Result<Vec<crate::types::AppLog>, sqlx::Error> {
-    let mut clauses = vec![
-        "pipeline_id = ?".to_string(),
-        "output_id = ?".to_string(),
-    ];
-
-    if let Some(ref ec) = filters.event_class {
-        if !ec.is_empty() {
-            clauses.push("event_class = ?".to_string());
-        }
-    }
-    if filters.since.is_some() {
-        clauses.push("ts >= ?".to_string());
-    }
-    if filters.until.is_some() {
-        clauses.push("ts < ?".to_string());
-    }
-    if let Some(ref prefixes) = filters.prefixes
-        && !prefixes.is_empty()
-    {
-        let parts: Vec<_> = prefixes.iter().map(|_| "message LIKE ?".to_string()).collect();
-        clauses.push(format!("({})", parts.join(" OR ")));
-    }
-
-    let order = if filters.order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
-    let limit_clause = if filters.limit.is_some() { " LIMIT ?" } else { "" };
-    let sql = format!(
-        "SELECT ts, message, event_type, fields AS event_data FROM app_logs WHERE {} ORDER BY ts {}{}",
-        clauses.join(" AND "),
-        order,
-        limit_clause
-    );
-
-    let mut q = sqlx::query_as::<_, crate::types::AppLog>(&sql)
-        .bind(pipeline_id)
-        .bind(output_id);
-
-    if let Some(ref ec) = filters.event_class
-        && !ec.is_empty()
-    {
-        q = q.bind(ec);
-    }
-    if let Some(ref s) = filters.since { q = q.bind(s); }
-    if let Some(ref u) = filters.until { q = q.bind(u); }
-    if let Some(ref prefixes) = filters.prefixes {
-        for p in prefixes { q = q.bind(format!("{}%", p)); }
-    }
-    if let Some(lim) = filters.limit { q = q.bind(lim); }
-
-    q.fetch_all(pool).await
-}
-
-/// Query for the pipeline history endpoint (`/api/pipelines/:id/history`).
-/// Returns lifecycle events across all outputs for the pipeline, newest first.
-pub async fn list_app_logs_by_pipeline(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-    limit: i64,
-) -> Result<Vec<crate::types::AppLog>, sqlx::Error> {
-    sqlx::query_as::<_, crate::types::AppLog>(
-        "SELECT ts, message, event_type, fields AS event_data FROM app_logs
-         WHERE pipeline_id = ? AND event_class = 'lifecycle'
-         ORDER BY ts DESC, id DESC LIMIT ?",
-    )
-    .bind(pipeline_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-}
-
-/// General query for `/api/logs` — supports level, target, pipeline_id, time range, limit, order.
+/// General query for `/api/logs` — supports level, target, pipeline_id, event_class,
+/// prefix (message LIKE), time range, limit, order.
 pub async fn list_app_logs(
     pool: &SqlitePool,
     filters: &crate::types::AppLogFilters,
@@ -641,11 +564,25 @@ pub async fn list_app_logs(
     let placeholders = levels.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     clauses.push(format!("level IN ({})", placeholders));
 
-    if filters.target.is_some()      { clauses.push("target LIKE ?".to_string()); }
-    if filters.pipeline_id.is_some() { clauses.push("pipeline_id = ?".to_string()); }
-    if filters.output_id.is_some()   { clauses.push("output_id = ?".to_string()); }
-    if filters.since.is_some()       { clauses.push("ts >= ?".to_string()); }
-    if filters.until.is_some()       { clauses.push("ts < ?".to_string()); }
+    if filters.target.is_some()       { clauses.push("target LIKE ?".to_string()); }
+    if filters.pipeline_id.is_some()  { clauses.push("pipeline_id = ?".to_string()); }
+    if filters.output_id.is_some()    { clauses.push("output_id = ?".to_string()); }
+    if filters.event_class.is_some()  { clauses.push("event_class = ?".to_string()); }
+    if filters.since.is_some()        { clauses.push("ts >= ?".to_string()); }
+    if filters.until.is_some()        { clauses.push("ts < ?".to_string()); }
+
+    // Comma-separated message prefix filter (e.g. "stderr,exit,control")
+    if let Some(ref prefix) = filters.prefix {
+        let parts: Vec<_> = prefix
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !parts.is_empty() {
+            let px: Vec<_> = parts.iter().map(|_| "message LIKE ?".to_string()).collect();
+            clauses.push(format!("({})", px.join(" OR ")));
+        }
+    }
 
     let order = if filters.order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
     let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
@@ -655,7 +592,8 @@ pub async fn list_app_logs(
         format!("WHERE {}", clauses.join(" AND "))
     };
     let sql = format!(
-        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id FROM app_logs {} ORDER BY ts {}, id {} LIMIT {}",
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs {} ORDER BY ts {}, id {} LIMIT {}",
         where_clause, order, order, limit
     );
 
@@ -664,8 +602,14 @@ pub async fn list_app_logs(
     if let Some(ref t) = filters.target      { q = q.bind(format!("{}%", t)); }
     if let Some(ref p) = filters.pipeline_id { q = q.bind(p); }
     if let Some(ref o) = filters.output_id   { q = q.bind(o); }
-    if let Some(ref s) = filters.since       { q = q.bind(s); }
-    if let Some(ref u) = filters.until       { q = q.bind(u); }
+    if let Some(ref ec) = filters.event_class { q = q.bind(ec); }
+    if let Some(ref s) = filters.since        { q = q.bind(s); }
+    if let Some(ref u) = filters.until        { q = q.bind(u); }
+    if let Some(ref prefix) = filters.prefix {
+        for p in prefix.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            q = q.bind(format!("{}%", p));
+        }
+    }
 
     q.fetch_all(pool).await
 }

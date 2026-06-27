@@ -220,6 +220,20 @@ interface GetOutputHistoryOptions {
     prefixes?: string[] | null;
 }
 
+// Transform an AppLogRow from /api/logs into the HistoryLog shape the UI expects.
+function appLogToHistoryLog(row: Record<string, unknown>): Record<string, unknown> {
+    const fields =
+        typeof row.fields === 'string'
+            ? (() => { try { return JSON.parse(row.fields as string); } catch { return {}; } })()
+            : (row.fields ?? {});
+    return {
+        ts: row.ts,
+        message: row.message,
+        eventType: row.eventType ?? null,
+        eventData: fields,
+    };
+}
+
 async function getOutputHistory(
     pipeId: string,
     outId: string,
@@ -230,7 +244,6 @@ async function getOutputHistory(
         return null;
     }
 
-    const query = new URLSearchParams();
     const {
         limit = 200,
         filter = null,
@@ -240,8 +253,12 @@ async function getOutputHistory(
         prefixes = null,
     } = options;
 
+    const query = new URLSearchParams();
+    query.set('pipeline_id', pipeId);
+    query.set('output_id', outId);
+
     if (filter === 'lifecycle') {
-        query.set('filter', 'lifecycle');
+        query.set('event_class', 'lifecycle');
     } else {
         const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
         query.set('limit', String(safeLimit));
@@ -254,9 +271,11 @@ async function getOutputHistory(
         query.set('prefix', prefixes.join(','));
     }
 
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/history?${query.toString()}`,
+    const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
+        `/api/logs?${query.toString()}`,
     );
+    if (!res) return null;
+    return { logs: res.logs.map(appLogToHistoryLog) };
 }
 
 async function getPipelineHistory(
@@ -269,9 +288,17 @@ async function getPipelineHistory(
     }
 
     const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
-    return apiRequest(
-        `/pipelines/${encodeURIComponent(pipeId)}/history?limit=${encodeURIComponent(safeLimit)}`,
+    const query = new URLSearchParams({
+        pipeline_id: pipeId,
+        event_class: 'lifecycle',
+        limit: String(safeLimit),
+    });
+
+    const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
+        `/api/logs?${query.toString()}`,
     );
+    if (!res) return null;
+    return { logs: res.logs.map(appLogToHistoryLog) };
 }
 
 export interface TranscodeProfile {
