@@ -227,13 +227,11 @@ pub async fn run_app() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     engine.event_log.set_sink(event_tx);
     {
-        let pool_events = pool.clone();
+        // Drain the event channel so the EventLog broadcast stays live.
+        // Persistence is handled by the tracing DbLayer — lifecycle events emitted
+        // via tracing macros in the reconciler land in app_logs automatically.
         tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                if let Err(err) = db::append_lifecycle_event(&pool_events, &event).await {
-                    eprintln!("[events] Failed to persist lifecycle event: {}", err);
-                }
-            }
+            while event_rx.recv().await.is_some() {}
         });
     }
     // Keep a clone of sessions for the reconciler's hourly prune tick.
@@ -549,17 +547,6 @@ pub async fn run_app() {
                 .await;
 
                 let engine_c = engine.clone();
-                let _ = db::append_job_log(
-                    &pool,
-                    Some(&job_id),
-                    Some(&output.pipeline_id),
-                    Some(&output.id),
-                    "lifecycle.start",
-                    None,
-                    &now_str,
-                    "[lifecycle] Output job started",
-                )
-                .await;
 
                 // Spawn the specific egress client.
                 // ring_buf already points to the correct ring:
@@ -592,17 +579,6 @@ pub async fn run_app() {
                             Some(&end_now),
                             Some(0),
                             None,
-                        )
-                        .await;
-                        let _ = db::append_job_log(
-                            &pool_c,
-                            Some(&job_id),
-                            Some(&pipeline_id_c),
-                            Some(&output_id_c),
-                            "lifecycle.error",
-                            None,
-                            &end_now,
-                            &format!("[lifecycle] Unsupported URL scheme: {}", url_c),
                         )
                         .await;
                         engine_c.unregister_egress(&output_id_c).await;
@@ -731,17 +707,6 @@ pub async fn run_app() {
                         Some(&end_now),
                         Some(0),
                         None,
-                    )
-                    .await;
-                    let _ = db::append_job_log(
-                        &pool_c,
-                        Some(&job_id),
-                        Some(&pipeline_id_c),
-                        Some(&output_id_c),
-                        "lifecycle.stop",
-                        None,
-                        &end_now,
-                        &format!("[lifecycle] Output job exited with status: {}", job_status),
                     )
                     .await;
 

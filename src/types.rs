@@ -59,21 +59,67 @@ pub struct Job {
     pub exit_signal: Option<String>,
 }
 
+/// History response row — same camelCase shape the frontend expects.
+/// Used by /api/pipelines/:id/history and /api/pipelines/:id/outputs/:oid/history.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
-pub struct JobLog {
+pub struct AppLog {
     pub ts: String,
     pub message: String,
-    pub event_type: String,
-    pub event_data: Option<String>, // Serialized JSON or null
+    pub event_type: Option<String>,
+    pub event_data: Option<String>,
 }
 
+/// Full row returned by /api/logs.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLogRow {
+    pub id: i64,
+    pub ts: String,
+    pub level: String,
+    pub target: String,
+    pub message: String,
+    pub fields: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub output_id: Option<String>,
+}
+
+/// Entry written by the DbLayer drain task.
+#[derive(Debug, Clone)]
+pub struct AppLogEntry {
+    pub ts: String,
+    pub level: String,
+    pub target: String,
+    pub message: String,
+    pub fields: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub output_id: Option<String>,
+    pub event_type: Option<String>,
+    pub event_class: Option<String>,
+}
+
+/// Filters for the /api/pipelines/:id/outputs/:oid/history endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryFilters {
     pub since: Option<String>,
     pub until: Option<String>,
     pub limit: Option<i64>,
-    pub order: Option<String>, // "asc" | "desc"
+    pub order: Option<String>,
     pub prefixes: Option<Vec<String>>,
+    pub event_class: Option<String>,
+}
+
+/// Filters for the /api/logs endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLogFilters {
+    pub level: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub target: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub output_id: Option<String>,
+    pub limit: Option<i64>,
+    pub order: Option<String>,
 }

@@ -1527,7 +1527,7 @@ struct HistoryQuery {
     prefix: Option<String>,
 }
 
-fn history_logs_json(logs: Vec<JobLog>) -> Vec<serde_json::Value> {
+fn history_logs_json(logs: Vec<AppLog>) -> Vec<serde_json::Value> {
     logs.into_iter()
         .map(|log| {
             let event_data = log
@@ -1560,48 +1560,34 @@ async fn outputs_history_handler(
     }
 
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
-    let order = query.order.as_deref().unwrap_or("desc");
-    let logs = if query.filter.as_deref() == Some("lifecycle") {
-        let mut logs = db::list_lifecycle_logs_by_output(&state.db, &pipeline_id, &output_id)
-            .await
-            .unwrap_or_default();
-        let mut events =
-            db::list_lifecycle_events_by_output(&state.db, &pipeline_id, &output_id, limit, order)
-                .await
-                .unwrap_or_default();
-        logs.append(&mut events);
-        logs.sort_by(|a, b| {
-            if order == "asc" {
-                a.ts.cmp(&b.ts)
-            } else {
-                b.ts.cmp(&a.ts)
-            }
-        });
-        logs.truncate(limit as usize);
-        logs
+    let prefixes = query.prefix.map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    });
+    let event_class = if query.filter.as_deref() == Some("lifecycle") {
+        Some("lifecycle".to_string())
     } else {
-        let prefixes = query.prefix.map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        });
-        db::list_job_logs_by_output_filtered(
-            &state.db,
-            &pipeline_id,
-            &output_id,
-            &HistoryFilters {
-                since: query.since,
-                until: query.until,
-                limit: Some(limit),
-                order: query.order,
-                prefixes,
-            },
-        )
-        .await
-        .unwrap_or_default()
+        None
     };
+    let logs = db::list_app_logs_by_output(
+        &state.db,
+        &pipeline_id,
+        &output_id,
+        &HistoryFilters {
+            since: query.since,
+            until: query.until,
+            limit: Some(limit),
+            order: query.order,
+            prefixes,
+            event_class,
+        },
+    )
+    .await
+    .unwrap_or_default();
+
     Json(serde_json::json!({
         "pipelineId": pipeline_id,
         "outputId": output_id,
@@ -1625,15 +1611,9 @@ async fn pipeline_history_handler(
     }
 
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
-    let mut logs = db::list_job_logs_by_pipeline(&state.db, &pipeline_id)
+    let logs = db::list_app_logs_by_pipeline(&state.db, &pipeline_id, limit)
         .await
         .unwrap_or_default();
-    let mut events = db::list_lifecycle_events_by_pipeline(&state.db, &pipeline_id, limit)
-        .await
-        .unwrap_or_default();
-    logs.append(&mut events);
-    logs.sort_by(|a, b| b.ts.cmp(&a.ts));
-    logs.truncate(limit as usize);
     Json(serde_json::json!({
         "pipelineId": pipeline_id,
         "logs": history_logs_json(logs)

@@ -101,55 +101,9 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_output_unique ON jobs(pipeline_id, output_id);"
     ).execute(pool).await?;
 
-    // Job Logs
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS job_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id TEXT,
-            pipeline_id TEXT,
-            output_id TEXT,
-            event_type TEXT,
-            event_data TEXT,
-            ts TEXT,
-            message TEXT
-        );",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_job_logs_output ON job_logs(pipeline_id, output_id, ts);",
-    )
-    .execute(pool)
-    .await?;
-
-    // Engine lifecycle events
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS lifecycle_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seq INTEGER NOT NULL,
-            ts TEXT NOT NULL,
-            pipeline_id TEXT NOT NULL,
-            output_id TEXT,
-            event_type TEXT NOT NULL,
-            event_data TEXT NOT NULL,
-            message TEXT NOT NULL
-        );",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_lifecycle_events_pipeline ON lifecycle_events(pipeline_id, ts);",
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_lifecycle_events_output ON lifecycle_events(pipeline_id, output_id, ts);",
-    )
-    .execute(pool)
-    .await?;
+    // Drop legacy tables on schema migration — data is superseded by app_logs.
+    sqlx::query("DROP TABLE IF EXISTS job_logs;").execute(pool).await?;
+    sqlx::query("DROP TABLE IF EXISTS lifecycle_events;").execute(pool).await?;
 
     // Ingests
     sqlx::query(
@@ -183,6 +137,39 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     )
     .execute(pool)
     .await?;
+
+    // Application process logs (tracing-based, multi-sink).
+    // event_type and event_class are promoted from tracing fields for history
+    // query efficiency without JSON extraction.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS app_logs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT    NOT NULL,
+            level       TEXT    NOT NULL,
+            target      TEXT    NOT NULL,
+            message     TEXT    NOT NULL,
+            fields      TEXT,
+            pipeline_id TEXT,
+            output_id   TEXT,
+            event_type  TEXT,
+            event_class TEXT
+        );",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_ts ON app_logs(ts DESC);")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level, ts DESC);")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_target ON app_logs(target, ts DESC);")
+        .execute(pool).await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_app_logs_pipeline ON app_logs(pipeline_id, ts DESC) WHERE pipeline_id IS NOT NULL;"
+    ).execute(pool).await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_app_logs_history ON app_logs(pipeline_id, output_id, event_class, ts) WHERE pipeline_id IS NOT NULL;"
+    ).execute(pool).await?;
 
     Ok(())
 }
@@ -528,182 +515,109 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
     .await
 }
 
-/* JobLog Operations */
+/* AppLog Operations — unified process log store backing /api/logs and /api/.../history */
 
-#[allow(clippy::too_many_arguments)]
-pub async fn append_job_log(
+/// Batch-insert log entries. Called by the DbLayer drain task every 100 ms.
+pub async fn append_app_log_batch(
     pool: &SqlitePool,
-    job_id: Option<&str>,
-    pipeline_id: Option<&str>,
-    output_id: Option<&str>,
-    event_type: &str,
-    event_data: Option<&str>,
-    ts: &str,
-    message: &str,
+    entries: &[crate::types::AppLogEntry],
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO job_logs (job_id, pipeline_id, output_id, event_type, event_data, ts, message)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(job_id)
-    .bind(pipeline_id)
-    .bind(output_id)
-    .bind(event_type)
-    .bind(event_data)
-    .bind(ts)
-    .bind(message)
-    .execute(pool)
-    .await?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for e in entries {
+        sqlx::query(
+            "INSERT INTO app_logs (ts, level, target, message, fields, pipeline_id, output_id, event_type, event_class)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&e.ts)
+        .bind(&e.level)
+        .bind(&e.target)
+        .bind(&e.message)
+        .bind(&e.fields)
+        .bind(&e.pipeline_id)
+        .bind(&e.output_id)
+        .bind(&e.event_type)
+        .bind(&e.event_class)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
-pub async fn list_job_logs(pool: &SqlitePool, job_id: &str) -> Result<Vec<JobLog>, sqlx::Error> {
-    sqlx::query_as::<_, JobLog>(
-        "SELECT ts, message, event_type, event_data FROM job_logs WHERE job_id = ? ORDER BY id ASC",
-    )
-    .bind(job_id)
-    .fetch_all(pool)
-    .await
-}
-
-pub async fn list_job_logs_by_output(
+/// Query for the output history endpoint (`/api/pipelines/:id/outputs/:oid/history`).
+/// `event_class = Some("lifecycle")` restricts to lifecycle events (timeline mode).
+/// `prefixes` filters by message prefix (raw mode context expansion).
+pub async fn list_app_logs_by_output(
     pool: &SqlitePool,
     pipeline_id: &str,
     output_id: &str,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    sqlx::query_as::<_, JobLog>(
-        "SELECT ts, message, event_type, event_data FROM job_logs
-         WHERE pipeline_id = ? AND output_id = ? ORDER BY ts DESC",
-    )
-    .bind(pipeline_id)
-    .bind(output_id)
-    .fetch_all(pool)
-    .await
-}
+    filters: &crate::types::HistoryFilters,
+) -> Result<Vec<crate::types::AppLog>, sqlx::Error> {
+    let mut clauses = vec![
+        "pipeline_id = ?".to_string(),
+        "output_id = ?".to_string(),
+    ];
 
-pub async fn list_job_logs_by_output_filtered(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-    output_id: &str,
-    filters: &HistoryFilters,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    let mut clauses = vec!["pipeline_id = ?".to_string(), "output_id = ?".to_string()];
-    let mut query_str = "SELECT ts, message, event_type, event_data FROM job_logs".to_string();
-
+    if let Some(ref ec) = filters.event_class {
+        if !ec.is_empty() {
+            clauses.push("event_class = ?".to_string());
+        }
+    }
     if filters.since.is_some() {
         clauses.push("ts >= ?".to_string());
     }
     if filters.until.is_some() {
         clauses.push("ts < ?".to_string());
     }
-
     if let Some(ref prefixes) = filters.prefixes
         && !prefixes.is_empty()
     {
-        let mut prefix_clauses = vec![];
-        for _ in prefixes {
-            prefix_clauses.push("message LIKE ?".to_string());
-        }
-        clauses.push(format!("({})", prefix_clauses.join(" OR ")));
+        let parts: Vec<_> = prefixes.iter().map(|_| "message LIKE ?".to_string()).collect();
+        clauses.push(format!("({})", parts.join(" OR ")));
     }
 
-    query_str.push_str(" WHERE ");
-    query_str.push_str(&clauses.join(" AND "));
+    let order = if filters.order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
+    let limit_clause = if filters.limit.is_some() { " LIMIT ?" } else { "" };
+    let sql = format!(
+        "SELECT ts, message, event_type, fields AS event_data FROM app_logs WHERE {} ORDER BY ts {}{}",
+        clauses.join(" AND "),
+        order,
+        limit_clause
+    );
 
-    let order = if filters.order.as_deref() == Some("asc") {
-        "ASC"
-    } else {
-        "DESC"
-    };
-    query_str.push_str(&format!(" ORDER BY ts {}", order));
-
-    if filters.limit.is_some() {
-        query_str.push_str(" LIMIT ?");
-    }
-
-    let mut query = sqlx::query_as::<_, JobLog>(&query_str)
+    let mut q = sqlx::query_as::<_, crate::types::AppLog>(&sql)
         .bind(pipeline_id)
         .bind(output_id);
 
-    if let Some(ref since) = filters.since {
-        query = query.bind(since);
+    if let Some(ref ec) = filters.event_class
+        && !ec.is_empty()
+    {
+        q = q.bind(ec);
     }
-    if let Some(ref until) = filters.until {
-        query = query.bind(until);
-    }
-
+    if let Some(ref s) = filters.since { q = q.bind(s); }
+    if let Some(ref u) = filters.until { q = q.bind(u); }
     if let Some(ref prefixes) = filters.prefixes {
-        for prefix in prefixes {
-            query = query.bind(format!("{}%", prefix));
-        }
+        for p in prefixes { q = q.bind(format!("{}%", p)); }
     }
+    if let Some(lim) = filters.limit { q = q.bind(lim); }
 
-    if let Some(limit) = filters.limit {
-        query = query.bind(limit);
-    }
-
-    query.fetch_all(pool).await
+    q.fetch_all(pool).await
 }
 
-pub async fn list_lifecycle_logs_by_output(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-    output_id: &str,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    sqlx::query_as::<_, JobLog>(
-        "SELECT ts, message, event_type, event_data FROM job_logs
-         WHERE pipeline_id = ? AND output_id = ? AND (event_type LIKE 'lifecycle.%' OR message LIKE '[lifecycle]%')
-         ORDER BY ts ASC"
-    )
-    .bind(pipeline_id)
-    .bind(output_id)
-    .fetch_all(pool)
-    .await
-}
-
-pub async fn list_job_logs_by_pipeline(
-    pool: &SqlitePool,
-    pipeline_id: &str,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    sqlx::query_as::<_, JobLog>(
-        "SELECT ts, message, event_type, event_data FROM job_logs
-         WHERE pipeline_id = ? AND output_id IS NULL ORDER BY ts DESC",
-    )
-    .bind(pipeline_id)
-    .fetch_all(pool)
-    .await
-}
-
-pub async fn append_lifecycle_event(
-    pool: &SqlitePool,
-    event: &crate::events::Event,
-) -> Result<(), sqlx::Error> {
-    let event_type = event.kind.event_type();
-    let event_data = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
-    sqlx::query(
-        "INSERT INTO lifecycle_events (seq, ts, pipeline_id, output_id, event_type, event_data, message)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(event.seq as i64)
-    .bind(event.timestamp.to_rfc3339())
-    .bind(event.kind.pipeline_id())
-    .bind(event.kind.output_id())
-    .bind(event_type)
-    .bind(event_data)
-    .bind(event.kind.message())
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn list_lifecycle_events_by_pipeline(
+/// Query for the pipeline history endpoint (`/api/pipelines/:id/history`).
+/// Returns lifecycle events across all outputs for the pipeline, newest first.
+pub async fn list_app_logs_by_pipeline(
     pool: &SqlitePool,
     pipeline_id: &str,
     limit: i64,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    sqlx::query_as::<_, JobLog>(
-        "SELECT ts, message, event_type, event_data FROM lifecycle_events
-         WHERE pipeline_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+) -> Result<Vec<crate::types::AppLog>, sqlx::Error> {
+    sqlx::query_as::<_, crate::types::AppLog>(
+        "SELECT ts, message, event_type, fields AS event_data FROM app_logs
+         WHERE pipeline_id = ? AND event_class = 'lifecycle'
+         ORDER BY ts DESC, id DESC LIMIT ?",
     )
     .bind(pipeline_id)
     .bind(limit)
@@ -711,28 +625,53 @@ pub async fn list_lifecycle_events_by_pipeline(
     .await
 }
 
-pub async fn list_lifecycle_events_by_output(
+/// General query for `/api/logs` — supports level, target, pipeline_id, time range, limit, order.
+pub async fn list_app_logs(
     pool: &SqlitePool,
-    pipeline_id: &str,
-    output_id: &str,
-    limit: i64,
-    order: &str,
-) -> Result<Vec<JobLog>, sqlx::Error> {
-    let order_sql = if order == "asc" { "ASC" } else { "DESC" };
+    filters: &crate::types::AppLogFilters,
+) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    let mut clauses: Vec<String> = vec![];
+
+    let levels: &[&str] = match filters.level.as_deref().unwrap_or("info") {
+        "error" => &["ERROR"],
+        "warn"  => &["ERROR", "WARN"],
+        "debug" => &["ERROR", "WARN", "INFO", "DEBUG"],
+        _       => &["ERROR", "WARN", "INFO"],
+    };
+    let placeholders = levels.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    clauses.push(format!("level IN ({})", placeholders));
+
+    if filters.target.is_some()      { clauses.push("target LIKE ?".to_string()); }
+    if filters.pipeline_id.is_some() { clauses.push("pipeline_id = ?".to_string()); }
+    if filters.output_id.is_some()   { clauses.push("output_id = ?".to_string()); }
+    if filters.since.is_some()       { clauses.push("ts >= ?".to_string()); }
+    if filters.until.is_some()       { clauses.push("ts < ?".to_string()); }
+
+    let order = if filters.order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
+    let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
     let sql = format!(
-        "SELECT ts, message, event_type, event_data FROM lifecycle_events
-         WHERE pipeline_id = ? AND output_id = ? ORDER BY ts {order_sql}, id {order_sql} LIMIT ?"
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id FROM app_logs {} ORDER BY ts {}, id {} LIMIT {}",
+        where_clause, order, order, limit
     );
-    sqlx::query_as::<_, JobLog>(&sql)
-        .bind(pipeline_id)
-        .bind(output_id)
-        .bind(limit)
-        .fetch_all(pool)
-        .await
+
+    let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(&sql);
+    for l in levels { q = q.bind(l); }
+    if let Some(ref t) = filters.target      { q = q.bind(format!("{}%", t)); }
+    if let Some(ref p) = filters.pipeline_id { q = q.bind(p); }
+    if let Some(ref o) = filters.output_id   { q = q.bind(o); }
+    if let Some(ref s) = filters.since       { q = q.bind(s); }
+    if let Some(ref u) = filters.until       { q = q.bind(u); }
+
+    q.fetch_all(pool).await
 }
 
-pub async fn delete_job_logs_older_than(pool: &SqlitePool, days: i64) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM job_logs WHERE ts < datetime('now', ?)")
+pub async fn delete_app_logs_older_than(pool: &SqlitePool, days: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM app_logs WHERE ts < datetime('now', ?)")
         .bind(format!("-{} days", days))
         .execute(pool)
         .await?;
