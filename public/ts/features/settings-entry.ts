@@ -1,12 +1,6 @@
 import {
     loadSettings,
-    saveServerName,
-    saveIngestHost,
-    saveIngestSecurity,
-    saveTranscodeProfiles,
-    addTranscodeProfile,
-    saveDashboardPassword,
-    logoutUser,
+    registerSettingsGlobals,
 } from './settings.js';
 import { getConfig } from '../core/api.js';
 import { state } from '../core/state.js';
@@ -20,11 +14,4 @@ async function init(): Promise<void> {
 }
 
 void init();
-
-window.saveServerName = saveServerName;
-window.saveIngestHost = saveIngestHost;
-window.saveIngestSecurity = saveIngestSecurity;
-window.saveTranscodeProfiles = saveTranscodeProfiles;
-window.addTranscodeProfile = addTranscodeProfile;
-window.saveDashboardPassword = saveDashboardPassword;
-window.logoutUser = logoutUser;
+registerSettingsGlobals();

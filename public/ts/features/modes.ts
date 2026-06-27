@@ -3,12 +3,14 @@ import { state } from '../core/state.js';
 import { openDiagnosticsModal } from './diagnostics.js';
 import { fetchProcessingGraph, renderGraphInto } from './graph.js';
 import { renderMediaLibraryMode } from './media-library.js';
+import { loadSettings, renderSettingsPanel } from './settings.js';
+import { loadStatus } from './status.js';
 import { isOutputIntentStopped, isOutputRunning, isOutputUnexpectedlyDown, selectPipeline } from './render.js';
 import type { OutputView, PipelineView } from '../types.js';
 
-type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'media' | 'admin';
+type DashboardMode = 'overview' | 'pipeline' | 'inspect' | 'media' | 'settings' | 'status' | 'admin';
 
-const validModes = new Set(['overview', 'pipeline', 'inspect', 'media', 'admin']);
+const validModes = new Set(['overview', 'pipeline', 'inspect', 'media', 'settings', 'status', 'admin']);
 let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
@@ -16,6 +18,8 @@ let inspectGraphInFlight: Promise<void> | null = null;
 let inspectGraphRequestSeq = 0;
 let inspectGraphAutoRefresh = true;
 let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
+let settingsMounted = false;
+let statusMounted = false;
 const INSPECT_GRAPH_REFRESH_MS = 5000;
 type StatusTone = 'success' | 'warning' | 'error' | 'neutral' | 'info';
 
@@ -440,8 +444,8 @@ function renderAdmin(): void {
         <section class="border-base-content/10 bg-base-200 rounded-lg border p-4">
             <h1 class="text-lg font-semibold">Admin</h1>
             <div class="mt-4 grid gap-3 md:grid-cols-3">
-                ${adminLink('Settings', 'settings.html', 'Server name, ingest host, security, media ingest, passwords.')}
-                ${adminLink('Status', 'status.html', 'Runtime build, native libraries, and system health.')}
+                ${adminModeButton('Settings', 'settings', 'Server name, ingest host, security, and encoding profiles.')}
+                ${adminModeButton('Status', 'status', 'Runtime build, native libraries, and system health.')}
                 ${adminLink('GitHub', 'https://github.com/live-miracles/restream', 'Source repository and release history.')}
             </div>
         </section>
@@ -457,6 +461,14 @@ function renderAdmin(): void {
             </dl>
         </aside>
     </div>`;
+    bindAdminNavigation(container);
+}
+
+function adminModeButton(label: string, mode: DashboardMode, description: string): string {
+    return `<button type="button" class="border-base-content/10 bg-base-100 hover:bg-base-300 rounded-lg border p-3 text-left" data-admin-mode="${mode}">
+        <div class="font-semibold">${escapeHtml(label)}</div>
+        <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(description)}</div>
+    </button>`;
 }
 
 function adminLink(label: string, href: string, description: string): string {
@@ -464,6 +476,48 @@ function adminLink(label: string, href: string, description: string): string {
         <div class="font-semibold">${escapeHtml(label)}</div>
         <div class="text-base-content/60 mt-1 text-sm">${escapeHtml(description)}</div>
     </a>`;
+}
+
+function bindAdminNavigation(container: HTMLElement): void {
+    container.querySelectorAll<HTMLButtonElement>('[data-admin-mode]').forEach((button) => {
+        button.onclick = () => setDashboardMode(button.dataset.adminMode || 'admin');
+    });
+}
+
+function renderSettingsMode(): void {
+    const container = document.getElementById('settings-mode-content');
+    if (!container) return;
+    if (!settingsMounted || !container.querySelector('#settings-server-name')) {
+        renderSettingsPanel(container);
+        settingsMounted = true;
+        void loadSettings({ embedded: true });
+    }
+}
+
+function renderStatusMode(): void {
+    const container = document.getElementById('status-mode-content');
+    if (!container) return;
+    if (!statusMounted || !container.querySelector('#status-versions')) {
+        container.innerHTML = `
+            <div class="mx-auto max-w-5xl space-y-5">
+                <div class="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                        <h1 class="text-xl font-semibold">Status</h1>
+                        <p class="text-base-content/60 mt-1 text-sm">Runtime build, native libraries, and system details.</p>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline" id="refresh-status-btn">Refresh</button>
+                </div>
+                <section class="border-base-content/10 bg-base-200 rounded-lg border p-5">
+                    <h2 class="mb-4 text-base font-semibold">Runtime</h2>
+                    <div id="status-versions" class="space-y-5">
+                        <p class="text-sm opacity-60">Loading...</p>
+                    </div>
+                </section>
+            </div>`;
+        container.querySelector<HTMLButtonElement>('#refresh-status-btn')?.addEventListener('click', () => void loadStatus());
+        statusMounted = true;
+        void loadStatus();
+    }
 }
 
 function refreshActiveMode(): void {
@@ -477,6 +531,8 @@ function applyMode(mode: DashboardMode): void {
         pipeline: document.getElementById('dashboard-grid'),
         inspect: document.getElementById('inspect-mode-panel'),
         media: document.getElementById('media-mode-panel'),
+        settings: document.getElementById('settings-mode-panel'),
+        status: document.getElementById('status-mode-panel'),
         admin: document.getElementById('admin-mode-panel'),
     };
     for (const [name, panel] of Object.entries(panels)) {
@@ -502,10 +558,16 @@ function applyMode(mode: DashboardMode): void {
                     ? 'Graph and diagnostics'
                     : mode === 'media'
                       ? 'Recordings and source files'
-                      : 'Configuration and runtime';
+                      : mode === 'settings'
+                        ? 'Server configuration'
+                        : mode === 'status'
+                          ? 'Runtime status'
+                          : 'Configuration and runtime';
     }
     syncInspectGraphAutoRefresh();
     if (mode === 'media') void renderMediaLibraryMode();
+    if (mode === 'settings') renderSettingsMode();
+    if (mode === 'status') renderStatusMode();
 }
 
 export function setDashboardMode(mode: string): void {

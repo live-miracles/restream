@@ -11,8 +11,8 @@ import { withBasePath } from '../core/base-path.js';
 
 // ── Load ──────────────────────────────────────────────
 
-export async function loadSettings(): Promise<void> {
-    applySettingsChrome();
+export async function loadSettings({ embedded = false }: { embedded?: boolean } = {}): Promise<void> {
+    if (!embedded) applySettingsChrome();
     const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
     if (nameInput) nameInput.value = state.config?.serverName || '';
     const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
@@ -82,6 +82,140 @@ function applySettingsChrome(): void {
     styleSettingsSection(serverSection, 'server-settings-section');
     const profilesSection = document.getElementById('transcode-profiles-list')?.parentElement;
     if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
+}
+
+export function registerSettingsGlobals(): void {
+    window.saveServerName = saveServerName;
+    window.saveIngestHost = saveIngestHost;
+    window.saveIngestSecurity = saveIngestSecurity;
+    window.saveTranscodeProfiles = saveTranscodeProfiles;
+    window.addTranscodeProfile = addTranscodeProfile;
+    window.saveDashboardPassword = saveDashboardPassword;
+    window.logoutUser = logoutUser;
+}
+
+export function renderSettingsPanel(container: HTMLElement): void {
+    registerSettingsGlobals();
+    container.innerHTML = `
+        <div class="mx-auto max-w-5xl space-y-5">
+            <div class="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold">Settings</h1>
+                    <p class="text-base-content/60 mt-1 text-sm">Server, security, and encoding configuration.</p>
+                </div>
+                <nav class="border-base-content/10 bg-base-200 rounded-lg border p-1" aria-label="Settings sections">
+                    <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+                    <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
+                </nav>
+            </div>
+
+            <section id="server-settings-section" class="border-base-content/10 bg-base-200 space-y-5 rounded-lg border p-5">
+                <div>
+                    <h2 class="text-base font-semibold">Server</h2>
+                </div>
+
+                <div class="grid gap-4 md:grid-cols-2">
+                    <div class="space-y-2">
+                        <label for="settings-server-name" class="text-sm font-medium">Server Name</label>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <input type="text" id="settings-server-name" class="input input-sm min-w-0 flex-1" placeholder="Name" />
+                            <button class="btn btn-accent btn-sm" onclick="saveServerName()">Save</button>
+                            <span id="server-name-saved" class="text-success hidden text-sm">Saved</span>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2">
+                        <label for="settings-ingest-host" class="text-sm font-medium">Ingest Host</label>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <input
+                                type="text"
+                                id="settings-ingest-host"
+                                class="input input-sm min-w-0 flex-1"
+                                placeholder="e.g. 192.168.1.10 (blank = localhost)" />
+                            <button class="btn btn-accent btn-sm" onclick="saveIngestHost()">Save</button>
+                            <span id="ingest-host-saved" class="text-success hidden text-sm">Saved</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <div class="space-y-2">
+                    <div class="text-sm font-medium">Dashboard Password</div>
+                    <div class="flex flex-wrap items-end gap-3">
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Current Password</legend>
+                            <input type="password" id="current-password-input" class="input input-sm w-44" autocomplete="current-password" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">New Password</legend>
+                            <input type="password" id="new-password-input" class="input input-sm w-44" autocomplete="new-password" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Confirm Password</legend>
+                            <input type="password" id="confirm-password-input" class="input input-sm w-44" autocomplete="new-password" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend invisible">_</legend>
+                            <div class="flex items-center gap-3">
+                                <button class="btn btn-accent btn-sm" onclick="saveDashboardPassword()">Save</button>
+                                <span id="dashboard-password-saved" class="text-success hidden text-sm">Saved</span>
+                            </div>
+                        </fieldset>
+                    </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <div class="space-y-2">
+                    <div class="text-sm font-medium">Ingest Security</div>
+                    <div class="flex flex-wrap items-end gap-3">
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Failure Limit</legend>
+                            <input type="number" id="ingest-security-failure-limit" class="input input-sm w-28" min="1" step="1" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Failure Window (ms)</legend>
+                            <input type="number" id="ingest-security-failure-window-ms" class="input input-sm w-36" min="1" step="1" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Ban Duration (ms)</legend>
+                            <input type="number" id="ingest-security-ban-ms" class="input input-sm w-36" min="1" step="1" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Tracked IP Limit</legend>
+                            <input type="number" id="ingest-security-tracked-ip-limit" class="input input-sm w-32" min="1" step="1" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend invisible">_</legend>
+                            <div class="flex items-center gap-3">
+                                <button class="btn btn-accent btn-sm" onclick="saveIngestSecurity()">Save</button>
+                                <span id="ingest-security-saved" class="text-success hidden text-sm">Saved</span>
+                            </div>
+                        </fieldset>
+                    </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <div id="transcode-profiles-section" class="space-y-3">
+                    <div class="flex flex-wrap items-baseline gap-3">
+                        <span class="shrink-0 text-sm font-medium">Transcode Profiles</span>
+                        <span class="text-sm opacity-70">Encoder settings per profile name. Used for H.265 to H.264 and resolution presets. Changes apply to new transcoder spawns.</span>
+                    </div>
+                    <div id="transcode-profiles-list" class="space-y-3"></div>
+                    <div class="flex items-center gap-3">
+                        <button class="btn btn-accent btn-sm" onclick="saveTranscodeProfiles()">Save Profiles</button>
+                        <button class="btn btn-ghost btn-sm" onclick="addTranscodeProfile()">+ Add Profile</button>
+                        <span id="transcode-profiles-saved" class="text-success hidden text-sm">Saved</span>
+                    </div>
+                </div>
+
+                <div class="flex justify-end">
+                    <button class="btn btn-error btn-outline btn-sm" onclick="logoutUser()">Logout</button>
+                </div>
+            </section>
+        </div>`;
 }
 
 // ── Server Name ───────────────────────────────────────
