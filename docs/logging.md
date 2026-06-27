@@ -6,11 +6,11 @@ Restream uses the `tracing` ecosystem as a unified logging facade. All
 fans events out to four independent sinks simultaneously. Process logs
 are queryable and streamable via `/api/logs` and `/api/logs/stream`.
 
-This document covers the logging architecture only. Domain lifecycle
-events (ingest connected, egress started/stopped, job lifecycle) continue
-to live in the `lifecycle_events` and `job_logs` tables and are served by
-the existing `/api/pipelines/:id/history` endpoints — those are separate
-from process logs.
+This document covers the logging architecture only. The former `job_logs`
+and `lifecycle_events` tables have been removed; all durable log storage
+now goes through `app_logs`. The former `/api/pipelines/:id/history` and
+`.../outputs/:oid/history` endpoints have been removed; the history UI
+calls `/api/logs` with `pipeline_id`/`output_id`/`event_class` filters.
 
 ## Overview
 
@@ -319,24 +319,35 @@ tracing-appender   = "0.2"
 No other new dependencies. `tokio::sync::{mpsc, broadcast}`, `sqlx`, and
 `axum` SSE patterns are already in the tree.
 
-## Migration from println!/eprintln!
+## Callsite conventions
 
-Replace existing print calls module by module. The mapping is mechanical:
+All `println!`/`eprintln!` calls have been replaced with tracing macros.
+The `[tag]` prefix that appeared in print messages is gone — the `target`
+field (module path) carries that information automatically.
 
-| Before | After |
-|---|---|
-| `println!("[srt] connected {}", id)` | `info!(stream_id = %id, "connected")` |
-| `eprintln!("[srt] socket error: {}", e)` | `error!(err = %e, "socket error")` |
-| `println!("[shutdown] done")` | `info!("shutdown complete")` |
-| `eprintln!("[events] Failed to persist: {}", e)` | `warn!(err = %e, "failed to persist lifecycle event")` |
-| `println!("[h264-tc] keyframe interval {}", n)` | `debug!(interval = n, "keyframe interval")` |
+```rust
+// ✗ old
+eprintln!("[srt] socket error: {}", e);
 
-The `[tag]` prefix in old messages is replaced by the `target` field
-(module path), which `tracing` populates automatically from the call
-site. Do not reproduce the tag in the message string.
+// ✓ new
+error!(err = %e, "socket error");
+```
 
-`src/media/ring_buffer.rs` and `src/media/avio.rs` receive no logging
-additions. These modules stay logging-free.
+Lifecycle transition events carry `event_class = "lifecycle"` and
+`event_type` fields so the history UI can filter them:
+
+```rust
+info!(
+    pipeline_id = %pipeline_id,
+    output_id   = %output_id,
+    event_class = "lifecycle",
+    event_type  = "lifecycle.start",
+    "output job started",
+);
+```
+
+`src/media/ring_buffer.rs` and `src/media/avio.rs` carry no logging.
+These modules stay logging-free.
 
 ## Invariants
 

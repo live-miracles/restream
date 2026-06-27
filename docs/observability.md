@@ -18,6 +18,8 @@ It does not expose a Prometheus text endpoint, proxy Grafana, or poll a sidecar.
 | `GET /api/v1/overview` | Session | Engine-wide operator summary: pipeline counts, alert rollup, SRT listener |
 | `GET /api/v1/alerts` | Session | Aggregate alerts across all pipelines with `firstSeen`/`lastSeen` tracking |
 | `GET /api/v1/events` | Session | Lifecycle event log (ingest, stage, egress transitions) |
+| `GET /api/logs` | Session | Process log query: level, module, pipeline, time range, event class filters |
+| `GET /api/logs/stream` | Session | SSE live tail with Last-Event-ID resumption and 20 s heartbeat |
 | `GET /api/v1/pipelines/:id/summary` | Session | Operator pipeline view: source, outputs, alerts |
 | `GET /api/v1/pipelines/:id/alerts` | Session | Per-pipeline alert list |
 | `GET /api/v1/engine/telemetry` | Session | Engineer: all ingests, stages, egresses, transcoder buffers |
@@ -169,11 +171,6 @@ Implemented egress parity:
 - process-lifetime egress failure events through `GET /api/v1/events`
 
 Remaining egress parity gaps:
-
-- durable egress failure history across process restarts. The current
-  implementation records `EgressFailed` in the bounded in-memory event log; DB
-  persistence should be a later retention/audit decision with schema and pruning
-  policy.
 - post-egress media metadata, GOP cadence, and timestamp validation
 - optional loopback/readback probe evidence for RTMP/SRT outputs
 

@@ -190,15 +190,46 @@ Any other prefix is rejected during validation with a `400 Bad Request`.
 HTTP/HTTPS HLS upload uses one shared local segmenter per pipeline, PUTs each
 new `seg<N>.ts`, then PUTs the playlist URL.
 
-## History
+## Process Logs
 
 | Method | Route | Response |
 |---|---|---|
-| `GET` | `/pipelines/:pipelineId/history` | `{ pipelineId, logs }` |
-| `GET` | `/pipelines/:pipelineId/outputs/:outputId/history` | `{ pipelineId, outputId, logs }` |
+| `GET` | `/api/logs` | `{ logs, total, hasMore }` |
+| `GET` | `/api/logs/stream` | SSE stream (`event: log` frames) |
 
-The current handlers do not expose query filtering even though the DB layer has
-filter support.
+All process log entries are stored in the `app_logs` SQLite table and served
+through these two endpoints. The old `/pipelines/:id/history` and
+`.../outputs/:oid/history` routes have been removed; the frontend history UI
+calls `/api/logs` with `pipeline_id`/`output_id` filters instead.
+
+### `GET /api/logs`
+
+Query parameters:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `level` | `info` | Minimum level: `error`, `warn`, `info`, `debug` |
+| `since` | — | RFC3339 lower bound (inclusive) |
+| `until` | — | RFC3339 upper bound (exclusive) |
+| `target` | — | Module prefix filter (`restream::media::srt`) |
+| `pipeline_id` | — | Restrict to a single pipeline |
+| `output_id` | — | Restrict to a single output (requires `pipeline_id`) |
+| `event_class` | — | `lifecycle` to return only lifecycle transition events |
+| `prefix` | — | Comma-separated message prefix filter (`stderr,exit`) |
+| `limit` | `200` | 1–1000 |
+| `order` | `desc` | `asc` or `desc` on `ts` |
+
+Each log entry in the response includes `id`, `ts`, `level`, `target`,
+`message`, `fields` (JSON), `pipelineId`, `outputId`, `eventType`.
+
+### `GET /api/logs/stream`
+
+SSE live tail. Accepts the same filter parameters as `GET /api/logs`.
+On connect, the handler backfills entries newer than the `Last-Event-ID`
+header (or `?last_event_id=`) from the database, then streams new entries
+from the broadcast channel. A `": ping"` comment is sent every 20 seconds.
+Lagging receivers are closed; the browser reconnects automatically using
+`Last-Event-ID`.
 
 ## Output Status
 

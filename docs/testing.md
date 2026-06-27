@@ -167,13 +167,11 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 | `POST` | `/.../outputs/:oid/start` | ✓ | ✓ | |
 | `POST` | `/.../outputs/:oid/stop` | ✓ | ✓ | |
 | `GET` | `/.../outputs/:oid/status` | ✓ | ✓ | |
-| `GET` | `/.../outputs/:oid/history` | ✓ | — | |
 
 **Pipeline detail**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/pipelines/:id/history` | ✓ | — | |
 | `GET` | `/pipelines/:id/probe` | — | ✓ | mixed-scale, correctness-* |
 | `GET` | `/pipelines/:id/graph` | ✓ | ✓ | |
 | `GET` | `/pipelines/:id/alerts` | ✓ | — | auth + response shape |
@@ -215,6 +213,8 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
+| `GET` | `/api/logs` | — | — | New; unit tests pending |
+| `GET` | `/api/logs/stream` | — | — | SSE; new; unit tests pending |
 | `GET` | `/api/v1/alerts` | ✓ | — | Aggregate across all pipelines |
 | `GET` | `/api/v1/events` | ✓ | — | Filtering tested |
 | `GET` | `/api/v1/overview` | ✓ | — | |
