@@ -47,15 +47,30 @@
 
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::engine::{MediaEngine, PublisherQuality};
-use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
+
+const DEFAULT_TS_RING_CAPACITY: usize = 1024;
+const MIN_TS_RING_CAPACITY: usize = 64;
+const MAX_TS_RING_CAPACITY: usize = 16_384;
+static TS_RING_CAPACITY: OnceLock<usize> = OnceLock::new();
+
+fn ts_ring_capacity() -> usize {
+    *TS_RING_CAPACITY.get_or_init(|| {
+        std::env::var("RESTREAM_TS_RING_CAPACITY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_TS_RING_CAPACITY)
+            .clamp(MIN_TS_RING_CAPACITY, MAX_TS_RING_CAPACITY)
+    })
+}
 
 // Raw SRT Types & FFI Bindings
 pub type SRTSOCKET = c_int;
@@ -1915,6 +1930,34 @@ mod tests {
     }
 
     #[test]
+    fn ts_accum_capacity_tracks_packet_size_without_fixed_64k_floor() {
+        let packets = vec![
+            Arc::new(MediaPacket {
+                media_type: MediaType::Audio,
+                track_index: 0,
+                pts: 0,
+                dts: 0,
+                is_keyframe: false,
+                format: PayloadFormat::Raw,
+                payload: bytes::Bytes::from(vec![0; 200]),
+            }),
+            Arc::new(MediaPacket {
+                media_type: MediaType::Video,
+                track_index: 0,
+                pts: 0,
+                dts: 0,
+                is_keyframe: true,
+                format: PayloadFormat::Raw,
+                payload: bytes::Bytes::from(vec![1; 1_000]),
+            }),
+        ];
+
+        let estimated = estimate_ts_accum_capacity(&packets);
+        assert_eq!(estimated, 200 + 1_000 + (188 * 4 * 2));
+        assert!(estimated < 64 * 1024);
+    }
+
+    #[test]
     fn receive_error_classifier_waits_only_for_transient_readiness() {
         assert_eq!(
             classify_srt_receive_error(SRT_EASYNCRCV),
@@ -2831,7 +2874,7 @@ pub fn start_shared_ts_muxer(
     engine: Arc<MediaEngine>,
     cancel: CancellationToken,
 ) -> Arc<TsChunkRing> {
-    let ts_ring = Arc::new(TsChunkRing::new(4096, cancel.clone()));
+    let ts_ring = Arc::new(TsChunkRing::new(ts_ring_capacity(), cancel.clone()));
     let ts_ring_clone = ts_ring.clone();
     let pipeline_id_str = pipeline_id.to_string();
 
@@ -2935,8 +2978,13 @@ pub fn start_shared_ts_muxer(
                         Ok(0) | Err(_) => {}
                         Ok(_) => {
                             chunk_ends.clear();
-                            // One allocation for the entire burst's TS output.
-                            let mut ts_accum = bytes::BytesMut::with_capacity(65536);
+                            // One allocation for the burst's TS output, sized to
+                            // the actual media payloads. A fixed 64 KiB floor
+                            // pins excessive memory in the retained TS ring
+                            // when the muxer wakes for one small packet.
+                            let mut ts_accum = bytes::BytesMut::with_capacity(
+                                estimate_ts_accum_capacity(&pull_packets),
+                            );
                             for pkt in &pull_packets {
                                 let payload: &[u8] = match pkt.media_type {
                                     MediaType::Video => {
@@ -3029,6 +3077,14 @@ pub fn start_shared_ts_muxer(
     });
 
     ts_ring
+}
+
+fn estimate_ts_accum_capacity(packets: &[Arc<MediaPacket>]) -> usize {
+    packets
+        .iter()
+        .map(|packet| packet.payload.len().saturating_add(188 * 4))
+        .sum::<usize>()
+        .max(188)
 }
 
 // SRT Egress Client

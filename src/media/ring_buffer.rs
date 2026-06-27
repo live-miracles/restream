@@ -4,7 +4,7 @@
 //!
 //! Packet slots are densely packed because readers only load them; cache-line
 //! isolation is reserved for the producer-owned indexes that are actively
-//! modified. This keeps the 4096-slot working set small enough for cache.
+//! modified. This keeps the slot working set small enough for cache.
 //!
 //! # Packet Walk
 //!
@@ -24,11 +24,11 @@
 //!
 //! # Capacity
 //!
-//! Default: 4096 slots. At 4K 60fps a stream produces ~120 video + ~50 audio
-//! = ~170 packets/sec, giving ~24 seconds of buffer depth. At 1080p30 the
-//! depth doubles. This is sufficient for transient egress stalls without
-//! triggering overflow, while keeping per-pipeline memory bounded (the slots
-//! hold `Arc` refs, not copies — actual payload memory is shared via refcount).
+//! Default: 1024 slots, configurable with `RESTREAM_RING_CAPACITY`. Slots hold
+//! demuxed media packets rather than fixed 188-byte TS packets, so retained
+//! payload memory scales with compressed frame size. The default gives tens of
+//! seconds of burst tolerance for common live inputs while bounding memory
+//! earlier than the old 4096-slot default.
 //!
 //! # Overflow & Recovery
 //!
@@ -47,8 +47,24 @@
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
+
+pub const DEFAULT_RING_CAPACITY: usize = 1024;
+const MIN_RING_CAPACITY: usize = 64;
+const MAX_RING_CAPACITY: usize = 16_384;
+static RING_CAPACITY: OnceLock<usize> = OnceLock::new();
+
+pub fn default_ring_capacity() -> usize {
+    *RING_CAPACITY.get_or_init(|| {
+        std::env::var("RESTREAM_RING_CAPACITY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RING_CAPACITY)
+            .clamp(MIN_RING_CAPACITY, MAX_RING_CAPACITY)
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -168,6 +184,16 @@ pub struct ReaderSnapshot {
     pub burst_count: u64,
     pub avg_burst_size: f64,
     pub median_burst_size: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayloadStats {
+    pub slots: usize,
+    pub payload_bytes: usize,
+    pub video_bytes: usize,
+    pub audio_bytes: usize,
+    pub min_payload_bytes: usize,
+    pub max_payload_bytes: usize,
 }
 
 impl ReaderInfo {
@@ -397,6 +423,36 @@ impl RingBuffer {
         }
     }
 
+    pub fn payload_stats(&self) -> PayloadStats {
+        let mut stats = PayloadStats::default();
+        let mut min_payload = usize::MAX;
+
+        for slot in &self.slots {
+            let Some(packet) = slot.data.load_full() else {
+                continue;
+            };
+            let len = packet.payload.len();
+            stats.slots += 1;
+            stats.payload_bytes = stats.payload_bytes.saturating_add(len);
+            min_payload = min_payload.min(len);
+            stats.max_payload_bytes = stats.max_payload_bytes.max(len);
+            match packet.media_type {
+                MediaType::Video => {
+                    stats.video_bytes = stats.video_bytes.saturating_add(len);
+                }
+                MediaType::Audio => {
+                    stats.audio_bytes = stats.audio_bytes.saturating_add(len);
+                }
+            }
+        }
+
+        if stats.slots > 0 {
+            stats.min_payload_bytes = min_payload;
+        }
+
+        stats
+    }
+
     pub fn reader_snapshots(&self) -> Vec<ReaderSnapshot> {
         let write_idx = self.get_write_idx();
         let now_us = self.elapsed_us();
@@ -624,7 +680,7 @@ impl Reader {
 
     /// Number of slots this reader is behind the write cursor.
     ///
-    /// Zero means fully caught up; values approaching `capacity` (4096) mean
+    /// Zero means fully caught up; values approaching `capacity` mean
     /// the reader is at risk of overflow. Useful as a health metric for slow
     /// egress consumers.
     pub fn lag(&self) -> usize {
@@ -1432,5 +1488,36 @@ mod tests {
         assert_eq!(n3, 0);
         let (_, _, bursts2) = reader.info.burst_stats();
         assert_eq!(bursts2, 2, "empty pull must not increment burst_count");
+    }
+
+    #[test]
+    fn payload_stats_reports_retained_ring_bytes() {
+        let rb = Arc::new(RingBuffer::new(3));
+        rb.push(MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 0,
+            dts: 0,
+            is_keyframe: true,
+            format: PayloadFormat::Raw,
+            payload: Bytes::from(vec![1; 10]),
+        });
+        rb.push(MediaPacket {
+            media_type: MediaType::Audio,
+            track_index: 0,
+            pts: 0,
+            dts: 0,
+            is_keyframe: false,
+            format: PayloadFormat::Raw,
+            payload: Bytes::from(vec![2; 4]),
+        });
+
+        let stats = rb.payload_stats();
+        assert_eq!(stats.slots, 2);
+        assert_eq!(stats.payload_bytes, 14);
+        assert_eq!(stats.video_bytes, 10);
+        assert_eq!(stats.audio_bytes, 4);
+        assert_eq!(stats.min_payload_bytes, 4);
+        assert_eq!(stats.max_payload_bytes, 10);
     }
 }

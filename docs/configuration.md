@@ -16,6 +16,8 @@ in SQLite.
 | External transcoder and file-ingest executable | Embedded `public/bin/ffmpeg`, extracted to `/tmp/restream-ffmpeg/ffmpeg` at startup | `FFMPEG_BIN_PATH` |
 | SQLite database | `data.db` | `RESTREAM_DB_PATH` |
 | Media directory | `media/` | `RESTREAM_MEDIA_DIR` |
+| Media packet ring depth | `1024` packets | `RESTREAM_RING_CAPACITY` |
+| Shared SRT TS ring depth | `1024` packets | `RESTREAM_TS_RING_CAPACITY` |
 | File descriptor limit | `65536` | `RESTREAM_NOFILE_LIMIT` |
 | Output reconciliation interval | 1 second | `RESTREAM_RECONCILE_INTERVAL_MS` |
 | Failed-output max retries | `10` | `RESTREAM_OUTPUT_MAX_RETRIES` |

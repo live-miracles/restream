@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
 use crate::media::hls::HlsStore;
-use crate::media::ring_buffer::RingBuffer;
+use crate::media::ring_buffer::{RingBuffer, default_ring_capacity};
 use crate::media::ts_chunk_ring::TsChunkRing;
 use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 
@@ -613,7 +613,7 @@ impl MediaEngine {
         if let Some(rb) = pipelines.get(pipeline_id) {
             rb.clone()
         } else {
-            let rb = Arc::new(RingBuffer::new(4096)); // ~24s at 4K60, ~48s at 1080p30
+            let rb = Arc::new(RingBuffer::new(default_ring_capacity()));
             pipelines.insert(pipeline_id.to_string(), rb.clone());
             rb
         }
@@ -651,7 +651,7 @@ impl MediaEngine {
         }
         // Cancelled stage — fall through and replace it
 
-        let output_buf = Arc::new(RingBuffer::new(4096));
+        let output_buf = Arc::new(RingBuffer::new(default_ring_capacity()));
         let cancel = CancellationToken::new();
         buffers.insert(key.clone(), (output_buf.clone(), cancel.clone()));
         drop(buffers); // release write lock before spawning
@@ -828,7 +828,7 @@ impl MediaEngine {
             return rb.clone();
         }
 
-        let output_buf = Arc::new(RingBuffer::new(4096));
+        let output_buf = Arc::new(RingBuffer::new(default_ring_capacity()));
         // hevc_to_h264 stage always produces H.264 — tag the ring so consumers
         // can initialize their TsMuxer / PMT with the correct codec.
         output_buf.set_codec_hint("h264");
@@ -1682,6 +1682,8 @@ impl MediaEngine {
         let stage_metrics = self.stage_metrics.read().await;
         let pipe_metrics = self.pipe_metrics.read().await;
         let buffers = self.transcoder_buffers.read().await;
+        let pipelines = self.pipelines.read().await;
+        let ts_muxers = self.ts_muxer_stages.read().await;
 
         let ingest_arr: Vec<serde_json::Value> = ingests
             .iter()
@@ -1719,12 +1721,73 @@ impl MediaEngine {
             })
             .collect();
 
+        let source_rings: Vec<serde_json::Value> = pipelines
+            .iter()
+            .map(|(pipeline_id, ring)| {
+                serde_json::json!({
+                    "pipelineId": pipeline_id,
+                    "payloadStats": Self::ring_payload_stats_json(ring),
+                })
+            })
+            .collect();
+        let transcoder_rings: Vec<serde_json::Value> = buffers
+            .iter()
+            .map(|(key, (ring, token))| {
+                serde_json::json!({
+                    "stageKey": key.to_string(),
+                    "pipelineId": key.pipeline.as_str(),
+                    "kind": key.kind.to_string(),
+                    "active": !token.is_cancelled(),
+                    "payloadStats": Self::ring_payload_stats_json(ring),
+                })
+            })
+            .collect();
+        let ts_muxer_rings: Vec<serde_json::Value> = ts_muxers
+            .iter()
+            .map(|(stage_key, stage)| {
+                serde_json::json!({
+                    "stageKey": stage_key,
+                    "active": !stage.cancel.is_cancelled(),
+                    "payloadStats": Self::ring_payload_stats_json(&stage.ring),
+                })
+            })
+            .collect();
+        let retained_payload_bytes = source_rings
+            .iter()
+            .chain(transcoder_rings.iter())
+            .chain(ts_muxer_rings.iter())
+            .filter_map(|entry| entry["payloadStats"]["payloadBytes"].as_u64())
+            .sum::<u64>();
+
         serde_json::json!({
             "generatedAt": generated_at,
             "ingests": ingest_arr,
             "stages": stage_arr,
             "egresses": egress_arr,
             "activeTranscoderBuffers": buffers.len(),
+            "memoryAccounting": {
+                "retainedPayloadBytes": retained_payload_bytes,
+                "sourceRings": source_rings,
+                "transcoderRings": transcoder_rings,
+                "tsMuxerRings": ts_muxer_rings,
+            },
+        })
+    }
+
+    fn ring_payload_stats_json(ring: &RingBuffer) -> serde_json::Value {
+        let stats = ring.payload_stats();
+        serde_json::json!({
+            "slots": stats.slots,
+            "payloadBytes": stats.payload_bytes,
+            "videoBytes": stats.video_bytes,
+            "audioBytes": stats.audio_bytes,
+            "minPayloadBytes": stats.min_payload_bytes,
+            "maxPayloadBytes": stats.max_payload_bytes,
+            "avgPayloadBytes": if stats.slots > 0 {
+                stats.payload_bytes as f64 / stats.slots as f64
+            } else {
+                0.0
+            },
         })
     }
 
@@ -1738,6 +1801,7 @@ impl MediaEngine {
         let all_stage_metrics = self.stage_metrics.read().await;
         let all_pipe_metrics = self.pipe_metrics.read().await;
         let pipelines = self.pipelines.read().await;
+        let buffers = self.transcoder_buffers.read().await;
 
         let ingest = ingests.get(pipeline_id).map(|i| {
             serde_json::json!({
@@ -1768,6 +1832,7 @@ impl MediaEngine {
             serde_json::json!({
                 "fill": fill,
                 "capacity": cap,
+                "payloadStats": Self::ring_payload_stats_json(rb),
                 "readers": readers,
             })
         });
@@ -1782,6 +1847,10 @@ impl MediaEngine {
                 });
                 if let Some(pm) = all_pipe_metrics.get(k) {
                     val["pipeMetrics"] = pm.snapshot();
+                }
+                if let Some((ring, token)) = buffers.get(k) {
+                    val["active"] = serde_json::json!(!token.is_cancelled());
+                    val["payloadStats"] = Self::ring_payload_stats_json(ring);
                 }
                 val
             })
@@ -1937,17 +2006,18 @@ impl MediaEngine {
                     })
                 })
                 .collect();
-            (fill, cap, reader_stats)
+            (fill, cap, Self::ring_payload_stats_json(rb), reader_stats)
         });
         nodes.push(serde_json::json!({
             "id": rb_node_id,
             "type": "ring_buffer",
             "label": "Source Buffer",
             "active": rb_info.is_some(),
-            "details": rb_info.map(|(fill, cap, readers)| serde_json::json!({
+            "details": rb_info.map(|(fill, cap, payload_stats, readers)| serde_json::json!({
                 "fill": fill,
                 "capacity": cap,
                 "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
+                "payloadStats": payload_stats,
                 "format": Self::source_buffer_format(ingest_protocol),
                 "readers": readers,
             })),
@@ -1964,7 +2034,7 @@ impl MediaEngine {
         }));
 
         // Nodes: transcoder stages.
-        for (key, (_, token)) in transcoder_buffers.iter() {
+        for (key, (stage_ring, token)) in transcoder_buffers.iter() {
             if key.pipeline.as_str() == pipeline_id {
                 let kind = &key.kind;
                 let stage_key_str = kind.to_string();
@@ -1980,6 +2050,7 @@ impl MediaEngine {
                     "metrics": all_stage_metrics.get(key).map(|m| m.snapshot()),
                     "queueMetrics": queue_stats,
                     "pipeMetrics": pipe_stats,
+                    "payloadStats": Self::ring_payload_stats_json(stage_ring),
                 }));
 
                 if let Some(upstream) = kind.upstream() {
@@ -2077,6 +2148,9 @@ impl MediaEngine {
                 let mux_active = ts_muxers
                     .get(&mux_key)
                     .is_some_and(|stage| !stage.cancel.is_cancelled());
+                let mux_payload_stats = ts_muxers
+                    .get(&mux_key)
+                    .map(|stage| Self::ring_payload_stats_json(&stage.ring));
                 if added_packetizers.insert(mux_node_id.clone()) {
                     nodes.push(serde_json::json!({
                         "id": mux_node_id.clone(),
@@ -2087,6 +2161,7 @@ impl MediaEngine {
                             "protocol": "srt",
                             "encoding": output.encoding.as_str(),
                             "stageKey": mux_key,
+                            "payloadStats": mux_payload_stats,
                         }),
                     }));
                     edges.push(serde_json::json!({
