@@ -242,6 +242,174 @@ function formatOutput(str: string): string {
     }
 }
 
+function formatDiagnosticOutput(result: DiagnosticResult): string {
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return '';
+    if (result.name === 'GOP Analysis') return formatGopAnalysisOutput(trimmed);
+    if (result.name === 'Ring Buffer Health') return formatRingBufferOutput(trimmed);
+    if (result.name === 'Active Outputs') return formatActiveOutputsOutput(trimmed);
+    return formatOutput(trimmed);
+}
+
+function cleanDiagnosticValue(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'None') return '--';
+    return trimmed
+        .replace(/\bNone\b/g, '--')
+        .replace(/Some\(([^()]*)\)/g, '$1');
+}
+
+function formatDiagnosticMetric(label: string, value: string): string {
+    return `<div class="border-base-content/10 bg-base-100/70 rounded-lg border px-3 py-2">
+        <div class="text-base-content/55 text-[11px] font-semibold uppercase">${escapeHtml(label)}</div>
+        <div class="mt-1 break-words font-mono text-xs">${escapeHtml(cleanDiagnosticValue(value))}</div>
+    </div>`;
+}
+
+function formatGopAnalysisOutput(str: string): string {
+    const metrics: string[] = [];
+    const notes: string[] = [];
+    for (const rawLine of str.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const minMax = line.match(/^Min:\s*(.*?)\s+Max:\s*(.*)$/);
+        if (minMax) {
+            metrics.push(formatDiagnosticMetric('Min', minMax[1]));
+            metrics.push(formatDiagnosticMetric('Max', minMax[2]));
+            continue;
+        }
+        const kv = line.match(/^([^:]+):\s*(.*)$/);
+        if (kv) {
+            metrics.push(formatDiagnosticMetric(kv[1], kv[2]));
+        } else {
+            notes.push(line);
+        }
+    }
+    return `<div class="space-y-2">
+        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">${metrics.join('')}</div>
+        ${notes.map((note) => `<div class="text-base-content/70 rounded-lg bg-base-100/70 px-3 py-2 text-xs">${escapeHtml(note)}</div>`).join('')}
+    </div>`;
+}
+
+function formatRingBufferOutput(str: string): string {
+    const metrics: string[] = [];
+    const readers: string[] = [];
+    const notes: string[] = [];
+    let inReaders = false;
+
+    for (const rawLine of str.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        if (line === 'Active readers:') {
+            inReaders = true;
+            continue;
+        }
+        if (line === 'Active readers: none') {
+            notes.push('No active readers are attached.');
+            continue;
+        }
+        const reader = line.match(/^-\s*(.+):\s*lag=(\d+)\s+slots,\s*overflows=(\d+),\s*packet_age=(.+)ms$/);
+        if (inReaders && reader) {
+            readers.push(`<div class="border-base-content/10 bg-base-100/70 rounded-lg border p-3">
+                <div class="truncate text-xs font-semibold" title="${escapeHtml(reader[1])}">${escapeHtml(reader[1])}</div>
+                <div class="mt-2 grid grid-cols-3 gap-2">
+                    ${formatDiagnosticMetric('Lag', `${reader[2]} slots`)}
+                    ${formatDiagnosticMetric('Overflows', reader[3])}
+                    ${formatDiagnosticMetric('Packet Age', `${cleanDiagnosticValue(reader[4])} ms`)}
+                </div>
+            </div>`);
+            continue;
+        }
+        const kv = line.match(/^([^:]+):\s*(.*)$/);
+        if (!inReaders && kv) {
+            metrics.push(formatDiagnosticMetric(kv[1], kv[2]));
+            continue;
+        }
+        notes.push(line.replace('Buffer is empty — no media has been received recently.', 'Buffer is empty — active readers are caught up with the producer.'));
+    }
+
+    return `<div class="space-y-3">
+        ${metrics.length ? `<div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">${metrics.join('')}</div>` : ''}
+        ${readers.length ? `<div><div class="text-base-content/60 mb-2 text-[11px] font-semibold uppercase">Active Readers</div><div class="space-y-2">${readers.join('')}</div></div>` : ''}
+        ${notes.map((note) => `<div class="text-base-content/70 rounded-lg bg-base-100/70 px-3 py-2 text-xs">${escapeHtml(note)}</div>`).join('')}
+    </div>`;
+}
+
+interface OutputDiagnosticBlock {
+    id: string;
+    fields: Record<string, string>;
+    quality: Record<string, string>;
+    qualityName: string | null;
+}
+
+function parseActiveOutputBlocks(str: string): OutputDiagnosticBlock[] {
+    const blocks: OutputDiagnosticBlock[] = [];
+    let current: OutputDiagnosticBlock | null = null;
+    let section: 'fields' | 'quality' = 'fields';
+
+    for (const rawLine of str.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const output = line.match(/^Output\s+(.+)$/);
+        if (output) {
+            current = { id: output[1], fields: {}, quality: {}, qualityName: null };
+            blocks.push(current);
+            section = 'fields';
+            continue;
+        }
+        if (!current) continue;
+        const heading = line.match(/^([A-Za-z0-9_]+):$/);
+        if (heading) {
+            current.qualityName = heading[1];
+            section = 'quality';
+            continue;
+        }
+        const kv = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
+        if (kv) {
+            current[section][kv[1]] = kv[2];
+        }
+    }
+
+    return blocks;
+}
+
+function formatActiveOutputsOutput(str: string): string {
+    const blocks = parseActiveOutputBlocks(str);
+    if (!blocks.length) return formatOutput(str);
+    return `<div class="space-y-3">${blocks
+        .map((block) => {
+            const protocol = cleanDiagnosticValue(block.fields.protocol || '--').toUpperCase();
+            const status = cleanDiagnosticValue(block.fields.status || '--');
+            const target = cleanDiagnosticValue(block.fields.target || '--');
+            const fieldEntries = Object.entries(block.fields).filter(
+                ([key]) => !['protocol', 'status', 'target'].includes(key),
+            );
+            const qualityEntries = Object.entries(block.quality);
+            return `<section class="border-base-content/10 bg-base-100/70 rounded-lg border p-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="min-w-0">
+                        <div class="text-base-content/55 text-[11px] font-semibold uppercase">Output</div>
+                        <div class="truncate font-mono text-xs" title="${escapeHtml(block.id)}">${escapeHtml(block.id)}</div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="badge badge-outline">${escapeHtml(protocol)}</span>
+                        <span class="badge badge-success">${escapeHtml(status)}</span>
+                    </div>
+                </div>
+                <div class="border-base-content/10 bg-base-200/70 mt-3 rounded-lg border px-3 py-2">
+                    <div class="text-base-content/55 text-[11px] font-semibold uppercase">Target</div>
+                    <div class="mt-1 break-all font-mono text-xs">${escapeHtml(target)}</div>
+                </div>
+                ${fieldEntries.length ? `<div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">${fieldEntries.map(([key, value]) => formatDiagnosticMetric(key, value)).join('')}</div>` : ''}
+                ${qualityEntries.length ? `<div class="mt-3">
+                    <div class="text-base-content/60 mb-2 text-[11px] font-semibold uppercase">${escapeHtml(block.qualityName || 'quality')}</div>
+                    <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">${qualityEntries.map(([key, value]) => formatDiagnosticMetric(key, value)).join('')}</div>
+                </div>` : ''}
+            </section>`;
+        })
+        .join('')}</div>`;
+}
+
 function formatPlainDiagnosticOutput(str: string): string {
     const lines = str.split(/\r?\n/);
     let html = '<div class="space-y-1">';
@@ -390,7 +558,7 @@ function renderList(): void {
             html += `<div class="bg-base-200 rounded p-2 text-xs overflow-x-auto max-h-80 overflow-y-auto">`;
             html += `<div class="opacity-50 mb-1 select-all font-mono">$ ${escapeHtml(result.command)}</div>`;
 
-            if (result.stdout) html += formatOutput(result.stdout);
+            if (result.stdout) html += formatDiagnosticOutput(result);
             if (result.stderr) {
                 html += `<pre class="whitespace-pre-wrap break-words font-mono text-warning select-all">${escapeHtml(result.stderr)}</pre>`;
             }

@@ -820,7 +820,13 @@ async fn check_ring_buffer_health(
             ));
         }
         if fill == 0 {
-            lines.push("Buffer is empty — no media has been received recently.".to_string());
+            if readers_info.is_empty() {
+                lines.push("Buffer is empty — no active readers are attached.".to_string());
+            } else {
+                lines.push(
+                    "Buffer is empty — active readers are caught up with the producer.".to_string(),
+                );
+            }
         }
     } else {
         lines.push("Ring buffer not yet allocated for this pipeline.".to_string());
