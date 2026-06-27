@@ -74,6 +74,24 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
         preset.strip_prefix("video:").unwrap_or(preset)
     };
     let audio_routing = stage_audio_routing(preset);
+    let profile = if matches!(encoding, "" | "source" | "custom") {
+        None
+    } else {
+        crate::media::profiles::cache()
+            .try_read()
+            .ok()
+            .and_then(|cache| cache.get(encoding).or_else(|| cache.get("h264")).cloned())
+            .or_else(|| {
+                crate::media::profiles::built_in_defaults()
+                    .get(encoding)
+                    .cloned()
+            })
+            .or_else(|| {
+                crate::media::profiles::built_in_defaults()
+                    .get("h264")
+                    .cloned()
+            })
+    };
 
     let mut args = vec![
         "-nostdin".to_string(),
@@ -96,12 +114,14 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
     }
 
     // ── video filter (scaling) ────────────────────────────────────────────
-    // Named presets. Custom profiles with explicit width/height can extend this.
-    match encoding {
-        "480p" => args.extend(["-vf".to_string(), "scale=854:480".to_string()]),
-        "720p" => args.extend(["-vf".to_string(), "scale=1280:720".to_string()]),
-        "1080p" => args.extend(["-vf".to_string(), "scale=1920:1080".to_string()]),
-        _ => {} // no scale for unknown presets; FFmpeg will encode as-is
+    if let Some(profile) = &profile
+        && profile.width > 0
+        && profile.height > 0
+    {
+        args.extend([
+            "-vf".to_string(),
+            format!("scale={}:{}", profile.width, profile.height),
+        ]);
     }
 
     // ── video codec ───────────────────────────────────────────────────────
@@ -120,8 +140,27 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
             "-c:v".to_string(),
             encoder.to_string(),
             "-preset".to_string(),
-            "veryfast".to_string(),
+            profile
+                .as_ref()
+                .map(|profile| profile.preset.clone())
+                .unwrap_or_else(|| "veryfast".to_string()),
         ]);
+        if let Some(profile) = &profile {
+            if !profile.tune.is_empty() {
+                args.extend(["-tune".to_string(), profile.tune.clone()]);
+            }
+            args.extend(["-g".to_string(), profile.gop.to_string()]);
+            args.extend(["-bf".to_string(), profile.bframes.to_string()]);
+            if profile.bitrate > 0 {
+                args.extend(["-b:v".to_string(), profile.bitrate.to_string()]);
+                if profile.max_bitrate > 0 {
+                    args.extend(["-maxrate".to_string(), profile.max_bitrate.to_string()]);
+                    args.extend(["-bufsize".to_string(), profile.max_bitrate.to_string()]);
+                }
+            } else {
+                args.extend(["-crf".to_string(), profile.crf.to_string()]);
+            }
+        }
     }
 
     // ── audio ────────────────────────────────────────────────────────────
@@ -569,6 +608,36 @@ mod tests {
             assert_eq!(args[cv_pos + 1], "libx265", "codec={codec}");
             assert!(args.last() == Some(&"pipe:1".to_string()));
         }
+    }
+
+    #[test]
+    fn stage_args_custom_profile_uses_profile_settings() {
+        {
+            let mut cache = crate::media::profiles::cache().blocking_write();
+            cache.insert(
+                "square_test".to_string(),
+                crate::media::profiles::TranscodeProfile {
+                    preset: "superfast".to_string(),
+                    tune: "zerolatency".to_string(),
+                    crf: 21,
+                    gop: 100,
+                    bframes: 1,
+                    bitrate: 1500000,
+                    max_bitrate: 2000000,
+                    width: 640,
+                    height: 640,
+                },
+            );
+        }
+
+        let args = build_stage_ffmpeg_args("square_test", "h264");
+        assert!(args.windows(2).any(|w| w == ["-vf", "scale=640:640"]));
+        assert!(args.windows(2).any(|w| w == ["-preset", "superfast"]));
+        assert!(args.windows(2).any(|w| w == ["-g", "100"]));
+        assert!(args.windows(2).any(|w| w == ["-bf", "1"]));
+        assert!(args.windows(2).any(|w| w == ["-b:v", "1500000"]));
+        assert!(args.windows(2).any(|w| w == ["-maxrate", "2000000"]));
+        assert!(!args.iter().any(|arg| arg == "-crf"));
     }
 
     #[test]

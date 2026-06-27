@@ -203,17 +203,22 @@ function showSavedFeedback(id: string): void {
 
 const PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'];
 const TUNE_OPTIONS = ['zerolatency', 'fastdecode', 'film', 'animation', 'grain', 'stillimage', 'psnr', 'ssim'];
+const BUILT_IN_PROFILE_ORDER = ['h264', '720p', '1080p'];
 
 function renderProfileRow(name: string, profile: TranscodeProfile): string {
     const presetOpts = PRESET_OPTIONS.map((p) => `<option value="${p}" ${profile.preset === p ? 'selected' : ''}>${p}</option>`).join('');
     const tuneOpts = TUNE_OPTIONS.map((t) => `<option value="${t}" ${profile.tune === t ? 'selected' : ''}>${t}</option>`).join('');
     const safeName = escapeHtml(name);
+    const isBuiltIn = BUILT_IN_PROFILE_ORDER.includes(name);
+    const deleteButton = isBuiltIn
+        ? '<button class="btn btn-sm btn-ghost" disabled>Built-in</button>'
+        : `<button class="btn btn-sm btn-error btn-outline js-profile-delete" data-name="${safeName}">Delete</button>`;
     return `
         <div class="border-base-content/10 bg-base-100 space-y-3 rounded-lg border px-3 py-3" data-profile-name="${safeName}">
             <div class="flex flex-wrap items-end gap-2">
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Name</legend>
-                    <input type="text" class="input input-sm w-36 font-mono js-profile-name" value="${safeName}" placeholder="profile name" />
+                    <input type="text" class="input input-sm w-36 font-mono js-profile-name" value="${safeName}" placeholder="profile name" ${isBuiltIn ? 'readonly' : ''} />
                 </fieldset>
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Preset</legend>
@@ -223,7 +228,7 @@ function renderProfileRow(name: string, profile: TranscodeProfile): string {
                     <legend class="fieldset-legend">Tune</legend>
                 <select class="select select-sm js-profile-tune">${tuneOpts}</select>
                 </fieldset>
-                <button class="btn btn-sm btn-error btn-outline js-profile-delete" data-name="${safeName}">Delete</button>
+                ${deleteButton}
             </div>
             <div class="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
                 <label class="flex items-center gap-2">CRF <input type="number" class="input input-xs w-full js-profile-crf" value="${profile.crf}" min="0" max="51" /></label>
@@ -241,7 +246,16 @@ export function loadTranscodeProfiles(): void {
     const list = document.getElementById('transcode-profiles-list');
     if (!list) return;
     const profiles = state.config?.transcodeProfiles ?? {};
-    const entries = Object.entries(profiles);
+    const entries = Object.entries(profiles).sort(([a], [b]) => {
+        const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
+        const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);
+        if (ai !== -1 || bi !== -1) {
+            if (ai === -1) return 1;
+            if (bi === -1) return -1;
+            return ai - bi;
+        }
+        return a.localeCompare(b);
+    });
     if (entries.length === 0) {
         list.innerHTML =
             '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No profiles configured. Using built-in defaults.</div>';

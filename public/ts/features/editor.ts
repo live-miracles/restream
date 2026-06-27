@@ -650,6 +650,49 @@ type PipeModalMode = 'create' | 'edit';
 
 let currentPipeModalMode: PipeModalMode = 'edit';
 let currentPipeModalPipeline: PipelineView | null = null;
+const BUILT_IN_PROFILE_ORDER = ['h264', '720p', '1080p'];
+
+function orderedTranscodeProfileNames(): string[] {
+    const names = Object.keys(state.config?.transcodeProfiles || {});
+    return names.sort((a, b) => {
+        const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
+        const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);
+        if (ai !== -1 || bi !== -1) {
+            if (ai === -1) return 1;
+            if (bi === -1) return -1;
+            return ai - bi;
+        }
+        return a.localeCompare(b);
+    });
+}
+
+function populateOutputEncodingSelect(selectedEncoding = 'source'): void {
+    const select = document.getElementById('out-encoding-input') as HTMLSelectElement | null;
+    if (!select) return;
+
+    const selectedVideoEncoding = selectedEncoding.includes('+')
+        ? selectedEncoding.split('+')[0].trim()
+        : selectedEncoding.trim();
+    const profileNames = orderedTranscodeProfileNames();
+    const optionValues = ['source', ...profileNames];
+    if (
+        selectedVideoEncoding &&
+        !optionValues.includes(selectedVideoEncoding) &&
+        !/^(atrack|downmix|remap):/.test(selectedVideoEncoding.toLowerCase())
+    ) {
+        optionValues.push(selectedVideoEncoding);
+    }
+
+    select.innerHTML = optionValues
+        .map((value) => {
+            const label = value === selectedVideoEncoding && !profileNames.includes(value) && value !== 'source'
+                ? `${value} (current)`
+                : value;
+            return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+        })
+        .join('');
+    select.value = optionValues.includes(selectedVideoEncoding) ? selectedVideoEncoding : 'source';
+}
 
 function getSuggestedPipelineName(): string {
     const numbers = state.pipelines
@@ -891,22 +934,20 @@ async function openOutModal(
 
     // Parse compound encoding "videoEncoding+audioRouting" so both controls are
     // populated independently. Pure audio-only or pure video-only are also handled.
-    const encodingSelect = document.getElementById(
-        'out-encoding-input',
-    ) as HTMLSelectElement | null;
-    const rawEncoding = String(output?.encoding || 'source')
-        .trim()
-        .toLowerCase();
+    const rawEncoding = String(output?.encoding || 'source').trim();
+    const rawAudioEncoding = rawEncoding.toLowerCase();
     const compoundMatch = /^([^+]+)\+(.+)$/.exec(rawEncoding);
     let videoEncodingPart = rawEncoding;
     let audioEncodingPart = '';
     if (compoundMatch) {
         videoEncodingPart = compoundMatch[1].trim();
-        audioEncodingPart = compoundMatch[2].trim();
+        audioEncodingPart = compoundMatch[2].trim().toLowerCase();
     }
 
-    const isRemapEncoding = /^remap:(\d+):(\d+)(?::(\d+))?$/.test(audioEncodingPart || rawEncoding);
-    const remapSource = audioEncodingPart || rawEncoding;
+    const isRemapEncoding = /^remap:(\d+):(\d+)(?::(\d+))?$/.test(
+        audioEncodingPart || rawAudioEncoding,
+    );
+    const remapSource = audioEncodingPart || rawAudioEncoding;
     const remapParts = isRemapEncoding ? remapSource.split(':') : null;
     let remapTrack = 0;
     let remapLeft = 0;
@@ -927,7 +968,7 @@ async function openOutModal(
     }
     currentModalIngestLive = pipe.input.status === 'on';
 
-    const audioSource = audioEncodingPart || rawEncoding;
+    const audioSource = audioEncodingPart || rawAudioEncoding;
     const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(audioSource);
     const downmixMatch = /^downmix:(\d+)$/.exec(audioSource);
     modalAudioMode = isRemapEncoding
@@ -946,13 +987,9 @@ async function openOutModal(
 
     // Set the video encoding dropdown: compound → video part; pure audio-only → 'source';
     // pure video → the encoding itself.
-    if (encodingSelect) {
-        if (compoundMatch) {
-            encodingSelect.value = videoEncodingPart;
-        } else {
-            encodingSelect.value = isAudioRoutingEncoding ? 'source' : rawEncoding || 'source';
-        }
-    }
+    populateOutputEncodingSelect(
+        compoundMatch ? videoEncodingPart : isAudioRoutingEncoding ? 'source' : rawEncoding || 'source',
+    );
     const trackCount = Math.max(1, currentModalAudioTracks.length);
     populateRemapTrackOptions(trackCount, remapTrack);
     populateRemapChannelOptions(getTrackChannelCount(remapTrack), remapLeft, remapRight);

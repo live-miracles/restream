@@ -160,13 +160,14 @@ pub fn cache() -> &'static Arc<RwLock<TranscodeProfiles>> {
     PROFILES.get_or_init(|| Arc::new(RwLock::new(built_in_defaults())))
 }
 
-/// Return built-ins whenever the configured profile map is empty.
+/// Return built-ins plus configured profiles, with configured profiles
+/// overriding same-named built-ins.
 pub fn effective_profiles(profiles: &TranscodeProfiles) -> TranscodeProfiles {
-    if profiles.is_empty() {
-        built_in_defaults()
-    } else {
-        profiles.clone()
+    let mut effective = built_in_defaults();
+    for (name, profile) in profiles {
+        effective.insert(name.clone(), profile.clone());
     }
+    effective
 }
 
 /// Get the profile set currently exposed to API consumers and transcoders.
@@ -317,6 +318,34 @@ mod tests {
         let effective = effective_profiles(&profiles);
         assert!(effective.contains_key("h264"));
         assert!(effective.contains_key("720p"));
+        assert!(effective.contains_key("1080p"));
+    }
+
+    #[test]
+    fn configured_profiles_extend_and_override_built_ins() {
+        let mut profiles = TranscodeProfiles::new();
+        profiles.insert(
+            "custom_4k".to_string(),
+            TranscodeProfile {
+                width: 3840,
+                height: 2160,
+                ..TranscodeProfile::default()
+            },
+        );
+        profiles.insert(
+            "720p".to_string(),
+            TranscodeProfile {
+                crf: 20,
+                width: 1280,
+                height: 720,
+                ..TranscodeProfile::default()
+            },
+        );
+
+        let effective = effective_profiles(&profiles);
+        assert_eq!(effective["720p"].crf, 20);
+        assert_eq!(effective["custom_4k"].width, 3840);
+        assert!(effective.contains_key("h264"));
         assert!(effective.contains_key("1080p"));
     }
 

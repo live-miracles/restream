@@ -1699,6 +1699,56 @@ async fn config_patch_invalid_transcode_profile_rejected() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn config_patch_custom_transcode_profiles_keep_built_ins_visible() {
+    let (app, _) = test_app().await;
+    let cookie = login(&app).await;
+
+    let body = serde_json::json!({
+        "transcodeProfiles": {
+            "4k60": {
+                "preset": "ultrafast",
+                "tune": "zerolatency",
+                "crf": 23,
+                "gop": 60,
+                "bframes": 0,
+                "bitrate": 20000000,
+                "maxBitrate": 24000000,
+                "width": 3840,
+                "height": 2160
+            }
+        }
+    });
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/config",
+            &cookie,
+            Some(&body.to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["transcodeProfiles"]["h264"].is_object());
+    assert!(json["transcodeProfiles"]["720p"].is_object());
+    assert!(json["transcodeProfiles"]["1080p"].is_object());
+    assert_eq!(json["transcodeProfiles"]["4k60"]["width"], 3840);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["transcodeProfiles"]["h264"].is_object());
+    assert!(json["transcodeProfiles"]["720p"].is_object());
+    assert!(json["transcodeProfiles"]["1080p"].is_object());
+    assert_eq!(json["transcodeProfiles"]["4k60"]["height"], 2160);
+}
+
 // --- Ingest start_time validation tests ---
 
 #[tokio::test]
