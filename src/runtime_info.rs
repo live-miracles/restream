@@ -47,11 +47,7 @@ fn native_component(
     version_source: &str,
     properties: Vec<Value>,
 ) -> Value {
-    let linkage = if option_env!("RESTREAM_NATIVE_BUILD_ID").is_some() {
-        "statically linked release component"
-    } else {
-        "system-selected development component"
-    };
+    let linkage = "statically linked component";
     let bom_version = version
         .chars()
         .map(|character| {
@@ -340,7 +336,7 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
             { "name": "restream:gitCommit", "value": env!("GIT_COMMIT_HASH") },
             {
                 "name": "restream:nativeBuildId",
-                "value": option_env!("RESTREAM_NATIVE_BUILD_ID").unwrap_or("system-libraries")
+                "value": env!("GIT_COMMIT_HASH")
             }
         ]
     });
@@ -374,7 +370,7 @@ pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value
         "restream": {
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("GIT_COMMIT_HASH"),
-            "nativeBuildId": option_env!("RESTREAM_NATIVE_BUILD_ID"),
+            "nativeBuildId": env!("GIT_COMMIT_HASH"),
         },
         "toolchain": {
             "rustc": env!("RESTREAM_RUSTC_VERSION"),

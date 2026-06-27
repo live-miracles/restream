@@ -44,14 +44,18 @@ RAM and CPU budget:
 
 ```sh
 scripts/resource-limit cargo build
-scripts/resource-limit cargo build --release
+scripts/resource-limit cargo build --profile bench
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
 ```
 
-Do not run bare `cargo build --release` from agents; release builds use
-significantly more memory per compilation unit and should still go through the
-wrapper.
+Release builds (`--release`) are only for CI. For local development and agent
+work, use `--profile bench` which shares the same opt-level but supports
+incremental compilation and keeps debug symbols for flamegraphs. The
+integration test script uses `target/release/` (where `--profile bench`
+outputs).
+
+Do not run `cargo build --release` from agents; use `--profile bench` instead.
 
 For other Cargo build commands, prefer the wrapper too:
 
@@ -87,7 +91,6 @@ Benchmarks and integration tests:
 
 ```sh
 scripts/resource-limit cargo bench --bench <name>
-scripts/resource-limit cargo bench --bench <name> --profile bench-dev
 scripts/resource-limit ./test/run-integration.sh mixed-scale
 scripts/resource-limit ./test/run-integration.sh ramp
 scripts/resource-limit ./test/run-integration.sh bonding

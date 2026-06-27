@@ -40,11 +40,17 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
-            libsrt-openssl-dev libssl-dev pkg-config clang
-      - name: Cache cargo
+          sudo apt-get install -y -qq libssl-dev pkg-config clang
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+      - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
@@ -68,11 +74,17 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
-            libsrt-openssl-dev libssl-dev pkg-config clang
-      - name: Cache cargo
+          sudo apt-get install -y -qq libssl-dev pkg-config clang
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+      - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
@@ -97,11 +109,17 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
-            libsrt-openssl-dev libssl-dev pkg-config clang
-      - name: Cache cargo
+          sudo apt-get install -y -qq libssl-dev pkg-config clang
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+      - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
@@ -137,15 +155,22 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
-            libsrt-openssl-dev libssl-dev pkg-config clang \
+            libssl-dev pkg-config clang \
             jq curl iproute2 util-linux
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - name: Cache cargo
+      - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
@@ -155,8 +180,7 @@ jobs:
             target
           key: integration-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: integration-${{ runner.os }}-
-
-      - name: Download FFmpeg binary
+      - name: Restore FFmpeg binary
         uses: actions/cache@v4
         id: cache-ffmpeg
         with:
@@ -182,8 +206,7 @@ jobs:
         run: |
           chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
           echo "$GITHUB_WORKSPACE/bin/ffmpeg" >> "$GITHUB_PATH"
-
-      - name: Download MediaMTX
+      - name: Restore MediaMTX binary
         uses: actions/cache@v4
         id: cache-mediamtx
         with:
@@ -204,16 +227,13 @@ jobs:
           curl -fsSL "$URL" | tar -xz -C bin/mediamtx
       - name: Ensure MediaMTX is executable
         run: chmod +x bin/mediamtx/mediamtx
-
       - name: Build release binary
         run: scripts/resource-limit cargo build --release
-
-      - name: Run ramp integration test
-        run: scripts/resource-limit ./test/run-integration.sh ramp
-
-      - name: Run mixed-scale integration test
-        run: scripts/resource-limit ./test/run-integration.sh mixed-scale
-
+      - name: Run integration suite
+        run: |
+          scripts/resource-limit ./target/release/test_harness suite \
+            --only-modes ramp-family,mixed-h264-rtmp,mixed-anchor,mixed-h265-srt,mixed-h264-srt-multi,mixed-h265-srt-multi \
+            --continue-on-fail
       - name: Upload test artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -232,15 +252,21 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libavformat-dev libavcodec-dev libavutil-dev \
-            libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev \
-            libsrt-openssl-dev libssl-dev pkg-config clang
+          sudo apt-get install -y -qq libssl-dev pkg-config clang
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - name: Cache cargo
+      - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |

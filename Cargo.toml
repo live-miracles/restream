@@ -8,11 +8,15 @@ edition = "2024"
 [features]
 default = []
 agent-plane = []
+agent-execution = ["agent-plane"]
 
 [dependencies]
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.35", features = [
+    "fs", "io-util", "macros", "net", "process",
+    "rt-multi-thread", "signal", "sync", "time", "test-util",
+] }
 axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["fs", "cors", "compression-full", "set-header"] }
+tower-http = { version = "0.5", features = ["fs", "cors", "set-header", "compression-gzip"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "macros"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -112,30 +116,23 @@ split-debuginfo = "unpacked"
 # cached across rebuilds). Our own crate stays at opt-level 0 for maximum
 # incremental compile speed — only changed translation units are recompiled.
 [profile.dev.package."*"]
-opt-level = 2
+opt-level = 1
 
-# bench-dev: runs Criterion at full optimization without fat-LTO.
-# Use:  scripts/resource-limit cargo bench --bench <name> --profile bench-dev
-# Much faster to build than the default `bench` profile (which inherits release
-# and uses fat LTO + 1 codegen unit). Accuracy is equivalent for relative
-# comparisons; absolute ns values may differ ≤5% from full release.
-[profile.bench-dev]
-inherits = "dev"
+# Local benchmarks: fast incremental builds, debug symbols for flamegraphs.
+# Accuracy is equivalent for relative comparisons; absolute ns values may
+# differ ≤5% from full release.  CI uses --profile release for absolute numbers.
+[profile.bench]
 opt-level = 3
 lto = "thin"
 incremental = true
-# Keep debug symbols so flamegraphs and perf work without a separate build.
 debug = 1
 split-debuginfo = "unpacked"
+codegen-units = 16
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
-debug = false
-panic = "unwind"
-
-[profile.fast-release]
-inherits = "release"
 lto = "thin"
 codegen-units = 16
+debug = 1
+split-debuginfo = "unpacked"
+panic = "unwind"

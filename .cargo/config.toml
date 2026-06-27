@@ -7,3 +7,10 @@ jobs = 8
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Point ffmpeg-sys-next's build.rs at the repo-managed static prefix so it
+# detects the correct FFmpeg version (≥ 8.0) and emits the right cfg flags.
+# Our build.rs handles actual linking; the sys crate's duplicate link
+# directives are harmless.
+[env]
+FFMPEG_DIR = { value = ".build/static/prefix", relative = true, force = false }

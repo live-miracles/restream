@@ -71,6 +71,12 @@ subprocess path, with an opt-in in-process backend behind
 
 ## Development
 
+Fresh clone on Debian/Ubuntu:
+
+```sh
+./scripts/bootstrap-dev.sh
+```
+
 ### Prerequisites
 
 There are two build paths with different FFmpeg requirements:
@@ -92,10 +98,18 @@ against the repo-managed static `libsrt.a` from `.build/static/prefix`:
 Debian/Ubuntu:
 
 ```sh
-apt-get install -y ffmpeg jq pkg-config clang nasm mold \
+apt-get install -y build-essential ca-certificates clang cmake curl ffmpeg \
+  git jq mold nasm ninja-build nodejs npm perl pkg-config python3 \
   libssl-dev \
   libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
   libswscale-dev libavfilter-dev libavdevice-dev
+```
+
+Or let the repo install the host dependencies, Rust toolchain, frontend npm
+packages, and pinned native prefix for you:
+
+```sh
+./scripts/bootstrap-dev.sh
 ```
 
 Before the first Rust build, bootstrap the pinned native dependency prefix:

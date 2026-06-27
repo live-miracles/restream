@@ -1,9 +1,4 @@
 fn main() {
-    println!("cargo:rerun-if-env-changed=RESTREAM_STATIC_FFMPEG");
-    println!("cargo:rerun-if-env-changed=RESTREAM_FULLY_STATIC");
-    println!("cargo:rerun-if-env-changed=RESTREAM_BUILD_ROOT");
-    println!("cargo:rerun-if-env-changed=RESTREAM_NATIVE_BUILD_ID");
-    println!("cargo:rerun-if-env-changed=RESTREAM_PROTOCOL_MATRIX_ONLY");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=Cargo.toml");
 
@@ -20,124 +15,30 @@ fn main() {
     embed_toolchain_versions();
     embed_rust_dependency_inventory();
 
-    if std::env::var_os("RESTREAM_PROTOCOL_MATRIX_ONLY").is_some() {
-        println!("cargo:rustc-env=RESTREAM_BUILD_SRT_VERSION=not-linked");
-        println!("cargo:rustc-env=RESTREAM_BUILD_X264_VERSION=not-linked");
-        println!("cargo:rustc-env=RESTREAM_BUILD_X265_VERSION=not-linked");
-        println!("cargo:rustc-env=RESTREAM_BUILD_OPENSSL_VERSION=not-linked");
-        return;
-    }
-
-    // Always link SRT from the repo-managed static prefix so bonded ingest does
-    // not depend on distro library build flags. Whole-archiving is intentional:
-    // distro FFmpeg may itself depend on a shared libsrt build with bonding
-    // disabled, and otherwise that shared object can satisfy our SRT symbols
-    // before the selected archive is pulled in.
-    let fully_static = std::env::var_os("RESTREAM_FULLY_STATIC").is_some();
-    let repo_static_srt = repo_static_srt();
-    println!(
-        "cargo:rustc-env=RESTREAM_BUILD_SRT_VERSION={}",
-        repo_static_srt.version
-    );
-    if fully_static {
-        println!(
-            "cargo:rustc-link-search=native={}",
-            repo_static_srt.lib_dir.display()
-        );
-        let output = std::process::Command::new("c++")
-            .arg("-print-file-name=libstdc++.a")
-            .output()
-            .expect("failed to ask C++ compiler for libstdc++.a");
-        let archive = String::from_utf8(output.stdout)
-            .expect("C++ compiler returned a non-UTF-8 libstdc++.a path");
-        let archive = std::path::Path::new(archive.trim());
-        let directory = archive
-            .parent()
-            .filter(|path| archive.is_absolute() && path.exists())
-            .expect("C++ compiler did not return an absolute libstdc++.a path");
-        println!("cargo:rustc-link-search=native={}", directory.display());
-        println!("cargo:rustc-link-lib=static=srt");
-        println!("cargo:rustc-link-lib=static=ssl");
-        println!("cargo:rustc-link-lib=static=crypto");
-        // GNU ld resolves static archives left-to-right. SRT is C++, so place
-        // libstdc++ after all Rust/native objects instead of letting rustc put
-        // it before the SRT archive.
-        println!("cargo:rustc-link-arg=-Wl,-Bstatic");
-        println!("cargo:rustc-link-arg=-Wl,--start-group");
-        println!("cargo:rustc-link-arg=-lstdc++");
-        println!("cargo:rustc-link-arg=-lm");
-        println!("cargo:rustc-link-arg=-lpthread");
-        println!("cargo:rustc-link-arg=-ldl");
-        println!("cargo:rustc-link-arg=-lc");
-        println!("cargo:rustc-link-arg=-lgcc_eh");
-        println!("cargo:rustc-link-arg=-lgcc");
-        println!("cargo:rustc-link-arg=-Wl,--end-group");
-    } else {
-        let srt_link_dir = isolate_srt_archive(&repo_static_srt.archive);
-        println!("cargo:rustc-link-search=native={}", srt_link_dir.display());
-        println!("cargo:rustc-link-lib=static:+whole-archive=srt");
-        println!("cargo:rustc-link-lib=dylib=ssl");
-        println!("cargo:rustc-link-lib=dylib=crypto");
-        println!("cargo:rustc-link-lib=dylib=stdc++");
-        println!("cargo:rustc-link-lib=dylib=dl");
-        println!("cargo:rustc-link-lib=dylib=pthread");
-        println!("cargo:rustc-link-lib=dylib=m");
-    }
-
-    // FFmpeg remains dynamically selected for normal development builds and
-    // switches to the local minimal static build for release packaging.
-    let static_ffmpeg = std::env::var_os("RESTREAM_STATIC_FFMPEG").is_some();
-    let mut ffmpeg = pkg_config::Config::new();
-    ffmpeg.statik(static_ffmpeg);
-    ffmpeg
-        .probe("libavcodec")
-        .expect("libavcodec not found or static probe failed");
-    ffmpeg
-        .probe("libavformat")
-        .expect("libavformat not found or static probe failed");
-    ffmpeg
-        .probe("libavfilter")
-        .expect("libavfilter not found or static probe failed");
-    ffmpeg
-        .probe("libswscale")
-        .expect("libswscale not found or static probe failed");
-    ffmpeg
-        .probe("libswresample")
-        .expect("libswresample not found or static probe failed");
-    ffmpeg
-        .probe("libavutil")
-        .expect("libavutil not found or static probe failed");
-
-    embed_pkg_version("RESTREAM_BUILD_X264_VERSION", "x264", static_ffmpeg);
-    embed_pkg_version("RESTREAM_BUILD_X265_VERSION", "x265", static_ffmpeg);
-    embed_pkg_version("RESTREAM_BUILD_OPENSSL_VERSION", "openssl", fully_static);
-
-    // The status endpoint calls OpenSSL_version() directly. SRT already
-    // depends on OpenSSL, but explicitly probing it keeps the build failure
-    // readable when the development package is missing.
-    pkg_config::Config::new()
-        .statik(fully_static)
-        .probe("openssl")
-        .expect("OpenSSL not found; libsrt encryption requires it");
-}
-
-struct RepoStaticSrt {
-    version: String,
-    lib_dir: std::path::PathBuf,
-    archive: std::path::PathBuf,
-}
-
-fn repo_static_srt() -> RepoStaticSrt {
+    // All native libraries (SRT, FFmpeg, OpenSSL, libstdc++) are always linked
+    // statically from the repo-managed static prefix built by setup-static-build.sh.
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR missing"),
     );
-    let build_root = std::env::var_os("RESTREAM_BUILD_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join(".build/static"));
-    let prefix = build_root.join("prefix");
+    let prefix = manifest_dir.join(".build/static/prefix");
     let lib_dir = prefix.join("lib");
+    let pkgconfig_dir = lib_dir.join("pkgconfig");
+
+    // Prepend the static prefix to pkg-config's search path so FFmpeg, SRT, and
+    // codec .pc files from the prefix take priority over any system-installed
+    // counterparts, while OpenSSL (not built into the prefix) still resolves
+    // from the system paths.
+    let existing_pkg_config_path = std::env::var("PKG_CONFIG_PATH").unwrap_or_default();
+    let new_pkg_config_path = if existing_pkg_config_path.is_empty() {
+        pkgconfig_dir.display().to_string()
+    } else {
+        format!("{}:{existing_pkg_config_path}", pkgconfig_dir.display())
+    };
+    // SAFETY: build scripts are single-threaded at the point this runs.
+    unsafe { std::env::set_var("PKG_CONFIG_PATH", new_pkg_config_path) };
+
     let archive = lib_dir.join("libsrt.a");
-    let pc_path = lib_dir.join("pkgconfig").join("srt.pc");
+    let pc_path = pkgconfig_dir.join("srt.pc");
 
     println!("cargo:rerun-if-changed={}", archive.display());
     println!("cargo:rerun-if-changed={}", pc_path.display());
@@ -149,34 +50,87 @@ fn repo_static_srt() -> RepoStaticSrt {
         );
     }
 
-    let version = std::fs::read_to_string(&pc_path)
+    let srt_version = std::fs::read_to_string(&pc_path)
         .ok()
         .and_then(|pc| {
             pc.lines()
                 .find_map(|line| line.strip_prefix("Version: ").map(str::to_owned))
         })
         .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=RESTREAM_BUILD_SRT_VERSION={srt_version}");
 
-    RepoStaticSrt {
-        version,
-        lib_dir,
-        archive,
+    // SRT is C++; place libstdc++ after all Rust/native objects so GNU ld
+    // resolves C++ symbols from SRT before closing the static archive group.
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    let output = std::process::Command::new("c++")
+        .arg("-print-file-name=libstdc++.a")
+        .output()
+        .expect("failed to ask C++ compiler for libstdc++.a");
+    let archive_path = String::from_utf8(output.stdout)
+        .expect("C++ compiler returned a non-UTF-8 libstdc++.a path");
+    let archive_path = std::path::Path::new(archive_path.trim());
+    let stdcxx_dir = archive_path
+        .parent()
+        .filter(|p| archive_path.is_absolute() && p.exists())
+        .expect("C++ compiler did not return an absolute libstdc++.a path");
+    println!("cargo:rustc-link-search=native={}", stdcxx_dir.display());
+
+    // OpenSSL is not built into the static prefix — resolve its library
+    // directory from the system pkg-config so the linker can find libssl.a.
+    if let Ok(openssl) = pkg_config::Config::new()
+        .statik(true)
+        .cargo_metadata(false)
+        .probe("openssl")
+    {
+        for path in &openssl.link_paths {
+            println!("cargo:rustc-link-search=native={}", path.display());
+        }
     }
+
+    println!("cargo:rustc-link-lib=static=srt");
+    println!("cargo:rustc-link-lib=static=ssl");
+    println!("cargo:rustc-link-lib=static=crypto");
+    println!("cargo:rustc-link-arg=-Wl,-Bstatic");
+    println!("cargo:rustc-link-arg=-Wl,--start-group");
+    println!("cargo:rustc-link-arg=-lstdc++");
+    println!("cargo:rustc-link-arg=-lm");
+    println!("cargo:rustc-link-arg=-lpthread");
+    println!("cargo:rustc-link-arg=-ldl");
+    println!("cargo:rustc-link-arg=-lc");
+    println!("cargo:rustc-link-arg=-lgcc_eh");
+    println!("cargo:rustc-link-arg=-lgcc");
+    println!("cargo:rustc-link-arg=-Wl,--end-group");
+
+    let mut ffmpeg = pkg_config::Config::new();
+    ffmpeg.statik(true);
+    ffmpeg
+        .probe("libavcodec")
+        .expect("libavcodec not found; run setup-static-build.sh first");
+    ffmpeg
+        .probe("libavformat")
+        .expect("libavformat not found; run setup-static-build.sh first");
+    ffmpeg
+        .probe("libavfilter")
+        .expect("libavfilter not found; run setup-static-build.sh first");
+    ffmpeg
+        .probe("libswscale")
+        .expect("libswscale not found; run setup-static-build.sh first");
+    ffmpeg
+        .probe("libswresample")
+        .expect("libswresample not found; run setup-static-build.sh first");
+    ffmpeg
+        .probe("libavutil")
+        .expect("libavutil not found; run setup-static-build.sh first");
+
+    embed_pkg_version("RESTREAM_BUILD_X264_VERSION", "x264");
+    embed_pkg_version("RESTREAM_BUILD_X265_VERSION", "x265");
+    embed_pkg_version("RESTREAM_BUILD_OPENSSL_VERSION", "openssl");
 }
 
-fn isolate_srt_archive(archive: &std::path::Path) -> std::path::PathBuf {
-    let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR missing"));
-    let link_dir = out_dir.join("srt-link");
-    std::fs::create_dir_all(&link_dir).expect("failed to create isolated SRT link directory");
-    std::fs::copy(archive, link_dir.join("libsrt.a"))
-        .expect("failed to copy repo static libsrt into isolated link directory");
-    link_dir
-}
-
-fn embed_pkg_version(env_name: &str, package: &str, statik: bool) {
-    let mut config = pkg_config::Config::new();
-    config.statik(statik).cargo_metadata(false);
-    let version = config
+fn embed_pkg_version(env_name: &str, package: &str) {
+    let version = pkg_config::Config::new()
+        .statik(true)
+        .cargo_metadata(false)
         .probe(package)
         .map(|library| library.version)
         .unwrap_or_else(|_| "unknown".to_string());
