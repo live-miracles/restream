@@ -299,7 +299,7 @@ function setOutputTogglePending(pipeId: string, outId: string, busy: boolean): v
 let currentModalAudioTracks: AudioTrack[] = [];
 let currentModalIngestLive = false;
 
-type ModalAudioMode = 'auto' | 'pass' | 'downmix' | 'remap';
+type ModalAudioMode = 'auto' | 'pass' | 'normalize' | 'downmix' | 'remap';
 let modalAudioMode: ModalAudioMode = 'auto';
 let modalAudioSelectedTracks: number[] = [0];
 
@@ -430,6 +430,22 @@ function renderAudioWarnings(
         items.push({
             cls: 'text-warning',
             text: `${platformLabel} supports max ${formatChannelCount(caps.maxChannels)} on ${protoLabel} — the selected track is downmixed to stereo.`,
+        });
+    }
+    if (modalAudioMode === 'normalize') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: 'Selected track is encoded as AAC-LC stereo, 48 kHz, 128 kbps; video remains passthrough unless re-encoded above.',
+        });
+    }
+    if (
+        platform === 'youtube' &&
+        (protocol === 'rtmp' || protocol === 'rtmps') &&
+        modalAudioMode === 'pass'
+    ) {
+        items.push({
+            cls: 'text-warning',
+            text: `YouTube ${protoLabel} can reject copied AAC metadata or report audio bitrate as 0. Use Normalize if audio crackles or YouTube warns about audio bitrate.`,
         });
     }
     if (
@@ -582,7 +598,8 @@ function refreshAudioRoutingUi(): void {
         };
     });
 
-    const showPicker = modalAudioMode === 'pass' || modalAudioMode === 'downmix';
+    const showPicker =
+        modalAudioMode === 'pass' || modalAudioMode === 'normalize' || modalAudioMode === 'downmix';
     document.getElementById('out-audio-track-pick')?.classList.toggle('hidden', !showPicker);
     if (showPicker) {
         renderAudioTrackPicker(modalAudioMode === 'pass' && multiAllowed);
@@ -781,19 +798,25 @@ async function openOutModal(
     const audioSource = audioEncodingPart || rawEncoding;
     const atrackMatch = /^atrack:(\d+(?:,\d+)*)$/.exec(audioSource);
     const downmixMatch = /^downmix:(\d+)$/.exec(audioSource);
+    const normalizeMatch = /^normalize:(\d+)$/.exec(audioSource);
     modalAudioMode = isRemapEncoding
         ? 'remap'
         : atrackMatch
           ? 'pass'
-          : downmixMatch
-            ? 'downmix'
-            : 'auto';
+          : normalizeMatch
+            ? 'normalize'
+            : downmixMatch
+              ? 'downmix'
+              : 'auto';
     modalAudioSelectedTracks = atrackMatch
         ? atrackMatch[1].split(',').map((t) => parseInt(t, 10))
-        : downmixMatch
-          ? [parseInt(downmixMatch[1], 10)]
-          : [0];
-    const isAudioRoutingEncoding = isRemapEncoding || !!atrackMatch || !!downmixMatch;
+        : normalizeMatch
+          ? [parseInt(normalizeMatch[1], 10)]
+          : downmixMatch
+            ? [parseInt(downmixMatch[1], 10)]
+            : [0];
+    const isAudioRoutingEncoding =
+        isRemapEncoding || !!atrackMatch || !!normalizeMatch || !!downmixMatch;
 
     // Set the video encoding dropdown: compound → video part; pure audio-only → 'source';
     // pure video → the encoding itself.
@@ -901,6 +924,8 @@ export async function editOutFormBtn(event: Event): Promise<void> {
     let audioSuffix = '';
     if (modalAudioMode === 'pass') {
         audioSuffix = `atrack:${modalAudioSelectedTracks.join(',')}`;
+    } else if (modalAudioMode === 'normalize') {
+        audioSuffix = `normalize:${modalAudioSelectedTracks[0] ?? 0}`;
     } else if (modalAudioMode === 'downmix') {
         audioSuffix = `downmix:${modalAudioSelectedTracks[0] ?? 0}`;
     } else if (modalAudioMode === 'remap') {

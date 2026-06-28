@@ -118,6 +118,7 @@ export function parseRemapEncoding(encoding: string): {
 
 const ATRACK_ENCODING_RE = /^atrack:(\d+(?:,\d+)*)$/;
 const DOWNMIX_ENCODING_RE = /^downmix:(\d+)$/;
+const NORMALIZE_ENCODING_RE = /^normalize:(\d+)$/;
 
 export function parseAtrackEncoding(encoding: string): number[] | null {
     const m = ATRACK_ENCODING_RE.exec(encoding);
@@ -132,11 +133,18 @@ export function parseDownmixEncoding(encoding: string): number | null {
     return parseInt(m[1], 10);
 }
 
+export function parseNormalizeEncoding(encoding: string): number | null {
+    const m = NORMALIZE_ENCODING_RE.exec(encoding);
+    if (!m) return null;
+    return parseInt(m[1], 10);
+}
+
 // Parse a compound encoding string into its video and audio routing parts.
 //
 // Compound format:  "<videoEncoding>+<audioRouting>"
 //   e.g. "720p+atrack:0,1"  → { video: '720p',   audio: 'atrack:0,1' }
 //        "source+remap:1:0:1" → { video: 'source', audio: 'remap:1:0:1' }
+//        "source+normalize:0" → { video: 'source', audio: 'normalize:0' }
 //
 // Pure audio-only (backward-compat, video defaults to 'source'):
 //   e.g. "atrack:0,1" → { video: 'source', audio: 'atrack:0,1' }
@@ -154,6 +162,7 @@ export function parseCompoundEncoding(encoding: string): { video: string; audio:
     if (
         ATRACK_ENCODING_RE.test(encoding) ||
         DOWNMIX_ENCODING_RE.test(encoding) ||
+        NORMALIZE_ENCODING_RE.test(encoding) ||
         REMAP_ENCODING_RE.test(encoding)
     ) {
         return { video: 'source', audio: encoding };
@@ -165,6 +174,7 @@ export function isValidOutputEncoding(encoding: string): boolean {
     // Pure audio routing (backward compat)
     if (ATRACK_ENCODING_RE.test(encoding)) return true;
     if (DOWNMIX_ENCODING_RE.test(encoding)) return true;
+    if (NORMALIZE_ENCODING_RE.test(encoding)) return true;
     if (REMAP_ENCODING_RE.test(encoding)) return true;
 
     // Compound encoding: video+audio
@@ -175,6 +185,7 @@ export function isValidOutputEncoding(encoding: string): boolean {
         return (
             ATRACK_ENCODING_RE.test(audio) ||
             DOWNMIX_ENCODING_RE.test(audio) ||
+            NORMALIZE_ENCODING_RE.test(audio) ||
             REMAP_ENCODING_RE.test(audio)
         );
     }
@@ -266,6 +277,7 @@ export function buildFfmpegOutputArgs({
         const remap = parseRemapEncoding(audioRouting);
         const atracks = parseAtrackEncoding(audioRouting);
         const downmixTrack = parseDownmixEncoding(audioRouting);
+        const normalizeTrack = parseNormalizeEncoding(audioRouting);
 
         // 1. All stream map selectors.
         if (videoEncoding === 'custom' && !customArgs) {
@@ -288,6 +300,8 @@ export function buildFfmpegOutputArgs({
             }
         } else if (downmixTrack !== null) {
             args.push('-map', `0:a:${downmixTrack}`);
+        } else if (normalizeTrack !== null) {
+            args.push('-map', `0:a:${normalizeTrack}`);
         }
 
         // 2. Video codec args (after all maps).
@@ -314,6 +328,8 @@ export function buildFfmpegOutputArgs({
         } else if (atracks) {
             args.push('-c:a', 'copy');
         } else if (downmixTrack !== null) {
+            args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
+        } else if (normalizeTrack !== null) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         }
     } else {
@@ -350,6 +366,24 @@ export function buildFfmpegOutputArgs({
             args.push('-c:v', 'copy', '-c:a', 'copy');
         } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
             const track = parseDownmixEncoding(normalizedEncoding)!;
+            args.push(
+                '-map',
+                '0:v',
+                '-map',
+                `0:a:${track}`,
+                '-c:v',
+                'copy',
+                '-c:a',
+                'aac',
+                '-b:a',
+                '128k',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+            );
+        } else if (parseNormalizeEncoding(normalizedEncoding) !== null) {
+            const track = parseNormalizeEncoding(normalizedEncoding)!;
             args.push(
                 '-map',
                 '0:v',

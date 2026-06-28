@@ -12,6 +12,7 @@ const {
     isValidOutputEncoding,
     parseAtrackEncoding,
     parseDownmixEncoding,
+    parseNormalizeEncoding,
     parseCompoundEncoding,
     normalizeOutputEncoding,
 } = require('../../src/utils/ffmpeg');
@@ -80,17 +81,21 @@ test('detectAudioProtocol maps URL schemes with fallback', () => {
     assert.equal(detectAudioProtocol('garbage', 'srt'), 'srt');
 });
 
-test('atrack and downmix encodings validate and parse', () => {
+test('atrack, normalize, and downmix encodings validate and parse', () => {
     assert.equal(isValidOutputEncoding('atrack:0'), true);
     assert.equal(isValidOutputEncoding('atrack:0,1,3'), true);
+    assert.equal(isValidOutputEncoding('normalize:2'), true);
     assert.equal(isValidOutputEncoding('downmix:3'), true);
     assert.equal(isValidOutputEncoding('atrack:'), false);
     assert.equal(isValidOutputEncoding('atrack:0,'), false);
+    assert.equal(isValidOutputEncoding('normalize:'), false);
+    assert.equal(isValidOutputEncoding('normalize:1,2'), false);
     assert.equal(isValidOutputEncoding('downmix:'), false);
     assert.equal(isValidOutputEncoding('downmix:1,2'), false);
 
     assert.deepEqual(parseAtrackEncoding('atrack:0,1,3'), [0, 1, 3]);
     assert.deepEqual(parseAtrackEncoding('atrack:2,2'), [2]);
+    assert.equal(parseNormalizeEncoding('normalize:2'), 2);
     assert.equal(parseDownmixEncoding('downmix:3'), 3);
 });
 
@@ -114,6 +119,18 @@ test('buildFfmpegOutputArgs downmixes the selected track to stereo', () => {
     });
     const joined = args.join(' ');
     assert.ok(joined.includes('-map 0:v -map 0:a:3'), joined);
+    assert.ok(joined.includes('-c:v copy -c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
+    assert.ok(joined.includes('-f flv'), joined);
+});
+
+test('buildFfmpegOutputArgs normalizes selected audio while preserving video', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'rtmp://localhost:1935/live/test',
+        outputUrl: 'rtmp://a.rtmp.youtube.com/live2/key',
+        encoding: 'normalize:0',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-map 0:v -map 0:a:0'), joined);
     assert.ok(joined.includes('-c:v copy -c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
     assert.ok(joined.includes('-f flv'), joined);
 });
@@ -150,9 +167,17 @@ test('parseCompoundEncoding splits video+audio compound strings', () => {
         video: '1080p',
         audio: 'downmix:3',
     });
+    assert.deepEqual(parseCompoundEncoding('source+normalize:0'), {
+        video: 'source',
+        audio: 'normalize:0',
+    });
 
     // Pure audio-only → video defaults to 'source' (backward compat)
     assert.deepEqual(parseCompoundEncoding('atrack:0,1'), { video: 'source', audio: 'atrack:0,1' });
+    assert.deepEqual(parseCompoundEncoding('normalize:2'), {
+        video: 'source',
+        audio: 'normalize:2',
+    });
     assert.deepEqual(parseCompoundEncoding('downmix:2'), { video: 'source', audio: 'downmix:2' });
     assert.deepEqual(parseCompoundEncoding('remap:0:0:1'), {
         video: 'source',
@@ -172,6 +197,8 @@ test('isValidOutputEncoding accepts valid compound encodings', () => {
     assert.equal(isValidOutputEncoding('source+atrack:0'), true);
     assert.equal(isValidOutputEncoding('720p+atrack:0,1'), true);
     assert.equal(isValidOutputEncoding('1080p+atrack:0,1,3'), true);
+    assert.equal(isValidOutputEncoding('source+normalize:0'), true);
+    assert.equal(isValidOutputEncoding('720p+normalize:2'), true);
     assert.equal(isValidOutputEncoding('source+downmix:0'), true);
     assert.equal(isValidOutputEncoding('720p+downmix:3'), true);
     assert.equal(isValidOutputEncoding('source+remap:0:0:1'), true);
@@ -187,6 +214,8 @@ test('isValidOutputEncoding rejects invalid compound encodings', () => {
 
     // Valid video + invalid audio routing
     assert.equal(isValidOutputEncoding('720p+atrack:'), false);
+    assert.equal(isValidOutputEncoding('720p+normalize:'), false);
+    assert.equal(isValidOutputEncoding('720p+normalize:1,2'), false);
     assert.equal(isValidOutputEncoding('720p+downmix:'), false);
     assert.equal(isValidOutputEncoding('720p+downmix:1,2'), false);
     assert.equal(isValidOutputEncoding('source+source'), false);
@@ -201,6 +230,7 @@ test('normalizeOutputEncoding handles vertical alias inside compound strings', (
     assert.equal(normalizeOutputEncoding('VERTICAL+atrack:0'), 'vertical-crop+atrack:0');
     // Non-alias video encoding passes through
     assert.equal(normalizeOutputEncoding('720p+atrack:0,1'), '720p+atrack:0,1');
+    assert.equal(normalizeOutputEncoding('source+normalize:0'), 'source+normalize:0');
     assert.equal(normalizeOutputEncoding('source+downmix:2'), 'source+downmix:2');
     // Pure video alias still works
     assert.equal(normalizeOutputEncoding('vertical'), 'vertical-crop');
@@ -242,6 +272,19 @@ test('buildFfmpegOutputArgs: source passthrough + downmix (RTMP output)', () => 
     // Audio downmixed to stereo AAC
     assert.ok(joined.includes('-c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
     // RTMP/FLV mux
+    assert.ok(joined.includes('-f flv'), joined);
+});
+
+test('buildFfmpegOutputArgs: source passthrough + normalized audio (YouTube RTMP output)', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'srt://localhost:10080?streamid=read:live/key02',
+        outputUrl: 'rtmp://a.rtmp.youtube.com/live2/streamkey',
+        encoding: 'source+normalize:0',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-map 0:v -map 0:a:0'), joined);
+    assert.ok(joined.includes('-c:v copy'), joined);
+    assert.ok(joined.includes('-c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
     assert.ok(joined.includes('-f flv'), joined);
 });
 

@@ -242,6 +242,7 @@ Creates an output for a pipeline.
   "name": "YouTube",
   "url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx",
   "encoding": "source"   // system: source | vertical-crop | vertical-rotate | 720p | 1080p
+                         // audio routing: atrack:N | normalize:N | downmix:N | remap...
                          // or any custom encoding key from GET /encodings
 }
 ```
@@ -314,6 +315,9 @@ Sets this output's desired state to `running` and reconciles runtime toward that
 6. Build pull URL from the active ingest protocol: RTMP ingest uses `rtmp://localhost:1935/live/<streamKey>`; SRT ingest uses `srt://localhost:10080?streamid=read:live/<streamKey>`.
 8. Spawn FFmpeg with `-progress pipe:3` for the selected output encoding:
   - `source`: codec copy (`-c:v copy -c:a copy`)
+  - `atrack:N`: video copy + selected audio track copy
+  - `normalize:N`: video copy + selected audio track encoded as AAC-LC stereo, 48 kHz, 128 kbps
+  - `downmix:N`: video copy + selected audio track downmixed/encoded as AAC-LC stereo, 48 kHz, 128 kbps
   - `vertical-crop`: `-vf scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
   - `vertical-rotate`: `-vf transpose=1,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280` + H.264/AAC encode
   - `720p`: `-vf scale=-2:720` + H.264/AAC encode
@@ -791,7 +795,9 @@ Custom FFmpeg encoding presets. System encodings (`source`, `vertical-crop`, `ve
 
 ### `GET /encodings`
 
-Returns all encodings — system encodings first, then custom ones ordered by creation.
+Returns all encodings — system video encodings first, then custom ones ordered by creation.
+Audio routing is represented in output encoding strings as suffixes such as `source+normalize:0`
+or `720p+atrack:0`.
 
 **Response 200:**
 ```json
