@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
@@ -3043,6 +3043,7 @@ mod tests {
             pipeline_id: pipeline_id.to_string(),
             name: "SRT Target".to_string(),
             url: "srt://example.com:9000?streamid=publish:live/test".to_string(),
+            monitoring_url: None,
             desired_state: "running".to_string(),
             encoding: "source".to_string(),
         };
@@ -3093,6 +3094,7 @@ mod tests {
             pipeline_id: pipeline_id.to_string(),
             name: "Failed Target".to_string(),
             url: "rtmp://example/live/test".to_string(),
+            monitoring_url: None,
             desired_state: "running".to_string(),
             encoding: "source".to_string(),
         };

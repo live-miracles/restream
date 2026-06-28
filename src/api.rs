@@ -7,10 +7,10 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, post, put},
 };
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::alerts;
 use crate::db;
@@ -39,7 +39,7 @@ use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
 use crate::media::srt::{
     SRT_INGEST_GLOBAL_CONFIG_META_KEY, SrtIngestPolicyStore, load_global_srt_ingest_config,
-    parse_pipeline_srt_ingest_policy, serialize_pipeline_srt_ingest_policy,
+    parse_pipeline_srt_ingest_policy_json, serialize_pipeline_srt_ingest_policy_json,
 };
 use crate::types::*;
 
@@ -216,8 +216,8 @@ fn pipeline_response_json(
         "streamKey": pipeline.stream_key,
         "inputSource": pipeline.input_source,
         "encoding": pipeline.encoding,
-        "srtIngestPolicy": parse_pipeline_srt_ingest_policy(
-            pipeline.srt_ingest_policy.as_deref()
+        "srtIngestPolicy": parse_pipeline_srt_ingest_policy_json(
+            pipeline.srt_ingest_policy_json.as_deref()
         ),
         "ingestUrls": {
             "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, rtmp_port, pipeline.stream_key),
@@ -303,78 +303,66 @@ pub async fn initialize_auth(db_pool: &SqlitePool, sessions_set: &TokioRwLock<Ha
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/login", get(login_get_handler))
+        .route("/login.html", get(login_html_redirect_handler))
+        .route("/settings.html", get(settings_html_redirect_handler))
+        .route("/status.html", get(status_html_redirect_handler))
         .route("/logo.png", get(logo_handler))
         .route("/output.css", get(css_handler))
         .route("/api/auth/login", post(login_post_handler))
         .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/change-password", post(change_password_handler))
         .route("/audio-caps", get(audio_caps_handler))
-        .route("/api/logs", get(logs_handler))
-        .route("/api/logs/stream", get(logs_stream_handler))
-        .route("/api/v1/alerts", get(aggregate_alerts_handler))
-        .route("/api/v1/events", get(v1_events_handler))
-        .route("/api/v1/overview", get(v1_overview_handler))
-        .route("/api/v1/engine", get(v1_engine_handler))
-        .route("/api/v1/engine/health", get(v1_engine_health_handler))
-        .route("/api/v1/engine/sbom", get(v1_engine_sbom_handler))
-        .route("/api/v1/engine/telemetry", get(v1_engine_telemetry_handler))
         .route(
-            "/api/v1/settings",
+            "/config",
             get(config_get_handler).patch(config_patch_handler),
         )
-        .route("/api/v1/stream-keys", get(stream_keys_handler))
+        .route("/stream-keys", get(stream_keys_handler))
         .route(
-            "/api/v1/pipelines",
+            "/pipelines",
             get(pipelines_get_handler).post(pipelines_post_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id",
-            get(v1_pipeline_get_handler)
-                .patch(pipelines_update_handler)
-                .delete(pipelines_delete_handler),
+            "/pipelines/:id",
+            post(pipelines_update_handler).delete(pipelines_delete_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/file-ingest",
+            "/pipelines/:pipeline_id/file-ingest",
             get(pipeline_file_ingest_get_handler)
                 .put(pipeline_file_ingest_put_handler)
                 .delete(pipeline_file_ingest_delete_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/outputs",
+            "/pipelines/:pipeline_id/outputs",
             post(outputs_create_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/outputs/:output_id",
-            patch(outputs_update_handler).delete(outputs_delete_handler),
+            "/pipelines/:pipeline_id/outputs/:output_id",
+            post(outputs_update_handler).delete(outputs_delete_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/start",
+            "/pipelines/:pipeline_id/outputs/:output_id/start",
             post(outputs_start_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/stop",
+            "/pipelines/:pipeline_id/outputs/:output_id/stop",
             post(outputs_stop_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/status",
+            "/pipelines/:pipeline_id/outputs/:output_id/status",
             get(output_status_handler),
         )
+        .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
+        .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
         .route(
-            "/api/v1/pipelines/:pipeline_id/probe",
-            get(pipeline_probe_handler),
-        )
-        .route(
-            "/api/v1/pipelines/:pipeline_id/history",
-            get(pipeline_history_handler),
-        )
-        .route(
-            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/history",
-            get(output_history_handler),
-        )
-        .route(
-            "/api/v1/pipelines/:pipeline_id/alerts",
+            "/pipelines/:pipeline_id/alerts",
             get(pipeline_alerts_handler),
         )
+        .route("/api/logs", get(logs_handler))
+        .route("/api/logs/stream", get(logs_stream_handler))
+        .route("/api/v1/alerts", get(aggregate_alerts_handler))
+        .route("/api/v1/events", get(v1_events_handler))
+        .route("/api/v1/overview", get(v1_overview_handler))
+        .route("/api/v1/engine/telemetry", get(v1_engine_telemetry_handler))
         .route(
             "/api/v1/agent/capabilities",
             get(agent_capabilities_handler),
@@ -427,39 +415,39 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(v1_pipeline_summary_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/graph",
-            get(v1_pipeline_graph_handler),
+            "/pipelines/:pipeline_id/diagnostics",
+            get(pipeline_diagnostics_sse_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/diagnostics",
-            get(v1_pipeline_diagnostics_handler),
-        )
-        .route(
-            "/api/v1/pipelines/:pipeline_id/recording/start",
+            "/pipelines/:pipeline_id/recording/start",
             post(recording_start_handler),
         )
         .route(
-            "/api/v1/pipelines/:pipeline_id/recording/stop",
+            "/pipelines/:pipeline_id/recording/stop",
             post(recording_stop_handler),
         )
         .route(
-            "/api/v1/encodings/custom",
+            "/encodings/custom",
             get(custom_encoding_get).put(custom_encoding_put),
         )
         .route(
-            "/api/v1/ingests",
+            "/api/ingests",
             get(ingests_get_handler).post(ingests_post_handler),
         )
         .route(
-            "/api/v1/ingests/:id",
+            "/api/ingests/:id",
             put(ingests_update_handler).delete(ingests_delete_handler),
         )
-        .route("/api/v1/ingests/:id/start", post(ingests_start_handler))
-        .route("/api/v1/ingests/:id/stop", post(ingests_stop_handler))
+        .route("/api/ingests/:id/start", post(ingests_start_handler))
+        .route("/api/ingests/:id/stop", post(ingests_stop_handler))
+        .route("/api/status", get(status_get_handler))
+        .route("/api/status/sbom", get(status_sbom_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
         .route("/media/:filename", get(media_file_handler))
         // HLS routes are registered with CORS headers in the merged sub-router below.
+        // Deprecated compatibility aliases. New clients should use /hls/.
+        .route("/health", get(health_get_handler))
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
@@ -480,7 +468,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         ))
         // HLS sub-router: allow any origin so browser-based players (hls.js,
         // Video.js) on a different origin can fetch playlists and segments.
-        // Merged last so the CORS layer only applies to /hls/.
+        // Merged last so the CORS layer only applies to /hls/ and /preview/hls/.
         .merge(
             Router::new()
                 .route("/hls/:pipeline_id", get(hls_playlist_handler))
@@ -503,6 +491,35 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                     get(hls_audio_segment_handler),
                 )
                 .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
+                .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
+                .route(
+                    "/preview/hls/:pipeline_id/master.m3u8",
+                    get(hls_master_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/index.m3u8",
+                    get(hls_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/video/index.m3u8",
+                    get(hls_video_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/video/:segment",
+                    get(hls_video_segment_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/audio/:track_index/index.m3u8",
+                    get(hls_audio_playlist_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/audio/:track_index/:segment",
+                    get(hls_audio_segment_handler),
+                )
+                .route(
+                    "/preview/hls/:pipeline_id/:segment",
+                    get(hls_segment_handler),
+                )
                 .layer(
                     CorsLayer::new()
                         .allow_origin(AllowOrigin::any())
@@ -571,6 +588,18 @@ async fn login_get_handler(
         return Redirect::to("/").into_response();
     }
     serve_embedded("login.html").into_response()
+}
+
+async fn login_html_redirect_handler() -> impl IntoResponse {
+    Redirect::to("/login")
+}
+
+async fn settings_html_redirect_handler() -> impl IntoResponse {
+    Redirect::to("/?mode=settings")
+}
+
+async fn status_html_redirect_handler() -> impl IntoResponse {
+    Redirect::to("/?mode=status")
 }
 
 async fn logo_handler() -> impl IntoResponse {
@@ -1146,8 +1175,8 @@ async fn pipelines_post_handler(
         .input_source
         .as_ref()
         .and_then(|source| source.as_deref());
-    let srt_ingest_policy = match payload.srt_ingest_policy.as_ref() {
-        Some(policy) => match serialize_pipeline_srt_ingest_policy(policy) {
+    let srt_ingest_policy_json = match payload.srt_ingest_policy.as_ref() {
+        Some(policy) => match serialize_pipeline_srt_ingest_policy_json(policy) {
             Ok(value) => Some(value),
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
@@ -1161,7 +1190,7 @@ async fn pipelines_post_handler(
         &stream_key,
         input_source,
         payload.encoding.as_deref(),
-        srt_ingest_policy.as_deref(),
+        srt_ingest_policy_json.as_deref(),
     )
     .await
     {
@@ -1251,19 +1280,19 @@ async fn pipelines_update_handler(
     let existing_stream_key = existing.stream_key.clone();
     let existing_input_source = existing.input_source.clone();
     let existing_encoding = existing.encoding.clone();
-    let existing_srt_ingest_policy = existing.srt_ingest_policy.clone();
+    let existing_srt_ingest_policy_json = existing.srt_ingest_policy_json.clone();
 
     let stream_key = payload.stream_key.unwrap_or(existing_stream_key);
     let input_source = payload.input_source.unwrap_or(existing_input_source);
     let encoding = payload.encoding.or(existing_encoding);
-    let srt_ingest_policy = match payload
+    let srt_ingest_policy_json = match payload
         .srt_ingest_policy
         .as_ref()
-        .map(serialize_pipeline_srt_ingest_policy)
+        .map(serialize_pipeline_srt_ingest_policy_json)
         .transpose()
     {
         Ok(Some(value)) => Some(value),
-        Ok(None) => existing_srt_ingest_policy,
+        Ok(None) => existing_srt_ingest_policy_json,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
@@ -1286,7 +1315,7 @@ async fn pipelines_update_handler(
         &stream_key,
         input_source.as_deref(),
         encoding.as_deref(),
-        srt_ingest_policy.as_deref(),
+        srt_ingest_policy_json.as_deref(),
     )
     .await
     {
@@ -1381,10 +1410,12 @@ async fn pipelines_delete_handler(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OutputPayload {
     name: String,
     url: String,
     encoding: String,
+    monitoring_url: Option<String>,
 }
 
 fn is_supported_output_url(url: &str) -> bool {
@@ -1397,6 +1428,8 @@ fn is_supported_output_url(url: &str) -> bool {
 }
 
 const OUTPUT_URL_SCHEME_ERROR: &str = "Invalid URL scheme. Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://";
+const MONITORING_URL_SCHEME_ERROR: &str =
+    "Invalid monitoring URL scheme. Supported schemes are http://, https://, and srt://";
 const CUSTOM_OUTPUT_ENCODING_ERROR: &str =
     "Custom output encoding is not available yet; choose source or a preset encoding";
 
@@ -1406,6 +1439,19 @@ fn is_custom_output_encoding(encoding: &str) -> bool {
         .next()
         .map(|video| video.trim().eq_ignore_ascii_case("custom"))
         .unwrap_or(false)
+}
+
+fn normalize_monitoring_url(url: Option<&str>) -> Option<String> {
+    let trimmed = url.unwrap_or_default().trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn is_supported_monitoring_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || url.starts_with("srt://")
 }
 
 async fn outputs_create_handler(
@@ -1431,6 +1477,11 @@ async fn outputs_create_handler(
     if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
         return r;
     }
+    if let Some(monitoring_url) = payload.monitoring_url.as_deref()
+        && let Some(r) = check_field_len("monitoring_url", monitoring_url, MAX_URL_LEN)
+    {
+        return r;
+    }
     if is_custom_output_encoding(&payload.encoding) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1450,6 +1501,19 @@ async fn outputs_create_handler(
         )
             .into_response();
     }
+    let monitoring_url = normalize_monitoring_url(payload.monitoring_url.as_deref());
+    if let Some(ref url) = monitoring_url
+        && !is_supported_monitoring_url(url)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": MONITORING_URL_SCHEME_ERROR
+            })),
+        )
+            .into_response();
+    }
+
     let id = format!("output_{}", to_hex(&rand::random::<[u8; 8]>()));
 
     match db::create_output(
@@ -1458,6 +1522,7 @@ async fn outputs_create_handler(
         &pipeline_id,
         &payload.name,
         &payload.url,
+        monitoring_url.as_deref(),
         "stopped",
         &payload.encoding,
     )
@@ -1495,6 +1560,11 @@ async fn outputs_update_handler(
     if let Some(r) = check_field_len("encoding", &payload.encoding, MAX_ENCODING_LEN) {
         return r;
     }
+    if let Some(monitoring_url) = payload.monitoring_url.as_deref()
+        && let Some(r) = check_field_len("monitoring_url", monitoring_url, MAX_URL_LEN)
+    {
+        return r;
+    }
     if is_custom_output_encoding(&payload.encoding) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1514,12 +1584,48 @@ async fn outputs_update_handler(
         )
             .into_response();
     }
+    let monitoring_url = normalize_monitoring_url(payload.monitoring_url.as_deref());
+    if let Some(ref url) = monitoring_url
+        && !is_supported_monitoring_url(url)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": MONITORING_URL_SCHEME_ERROR
+            })),
+        )
+            .into_response();
+    }
+    let existing = match db::get_output(&state.db, &pipeline_id, &output_id).await {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Output not found" })),
+            )
+                .into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if existing.desired_state == "running"
+        && (existing.url != payload.url || existing.encoding != payload.encoding)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "Cannot change output transport URL or encoding while the output is running"
+            })),
+        )
+            .into_response();
+    }
+
     match db::update_output(
         &state.db,
         &pipeline_id,
         &output_id,
         &payload.name,
         &payload.url,
+        monitoring_url.as_deref(),
         &payload.encoding,
     )
     .await
@@ -1629,111 +1735,10 @@ struct LogsQuery {
     order: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct HistoryQuery {
-    limit: Option<i64>,
-    since: Option<String>,
-    until: Option<String>,
-    filter: Option<String>,
-    order: Option<String>,
-}
-
-fn parse_history_filters(
-    pipeline_id: String,
-    output_id: Option<String>,
-    query: HistoryQuery,
-) -> AppLogFilters {
-    AppLogFilters {
-        level: Some("info".to_string()),
-        since: query.since,
-        until: query.until,
-        target: None,
-        pipeline_id: Some(pipeline_id),
-        output_id,
-        event_class: query.filter,
-        prefix: None,
-        limit: Some(query.limit.unwrap_or(200)),
-        order: query.order.or_else(|| Some("asc".to_string())),
-    }
-}
-
-fn event_payload(fields: Option<String>) -> serde_json::Value {
-    match fields.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) {
-        Some(value) => value,
-        None => serde_json::Value::Null,
-    }
-}
-
-fn event_to_history_row(row: crate::types::AppLogRow) -> serde_json::Value {
-    serde_json::json!({
-        "id": row.id,
-        "ts": row.ts,
-        "level": row.level,
-        "message": row.message,
-        "eventType": row.event_type.unwrap_or_default(),
-        "eventData": event_payload(row.fields),
-    })
-}
-
-async fn pipeline_history_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Query(query): Query<HistoryQuery>,
-    Path(pipeline_id): Path<String>,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let rows = match db::list_app_logs(
-        &state.db,
-        &parse_history_filters(pipeline_id.clone(), None, query),
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    Json(serde_json::json!({
-        "pipelineId": pipeline_id,
-        "logs": rows.into_iter().map(event_to_history_row).collect::<Vec<_>>(),
-    }))
-    .into_response()
-}
-
-async fn output_history_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Query(query): Query<HistoryQuery>,
-    Path((pipeline_id, output_id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let rows = match db::list_app_logs(
-        &state.db,
-        &parse_history_filters(pipeline_id.clone(), Some(output_id.clone()), query),
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    Json(serde_json::json!({
-        "pipelineId": pipeline_id,
-        "outputId": output_id,
-        "logs": rows.into_iter().map(event_to_history_row).collect::<Vec<_>>(),
-    }))
-    .into_response()
-}
-
 async fn logs_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<LogsQuery>,
+    axum::extract::Query(query): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         if !state.is_authenticated(&token).await {
@@ -2225,7 +2230,7 @@ async fn pipeline_file_ingest_put_handler(
         &pipeline.stream_key,
         Some(&input_source),
         pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy.as_deref(),
+        pipeline.srt_ingest_policy_json.as_deref(),
     )
     .await
     .is_err()
@@ -2268,7 +2273,7 @@ async fn pipeline_file_ingest_delete_handler(
         &pipeline.stream_key,
         None,
         pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy.as_deref(),
+        pipeline.srt_ingest_policy_json.as_deref(),
     )
     .await
     .is_err()
@@ -2738,6 +2743,30 @@ async fn ingests_stop_handler(
     .into_response()
 }
 
+async fn status_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let sys = System::new_all();
+    let bonding_available = state
+        .engine
+        .srt_listener_stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
+    status["os"] = system_status(&sys);
+
+    Json(status).into_response()
+}
+
 fn system_status(sys: &System) -> serde_json::Value {
     serde_json::json!({
         "platform": std::env::consts::OS,
@@ -2865,6 +2894,40 @@ fn read_trimmed_file(path: impl AsRef<FsPath>) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+async fn status_sbom_get_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let bonding_available = state
+        .engine
+        .srt_listener_stats
+        .bonding_available
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.cyclonedx+json; version=1.5",
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"restream-sbom.cdx.json\"",
+            ),
+        ],
+        Json(sbom),
+    )
+        .into_response()
 }
 
 async fn media_list_handler(
@@ -3018,6 +3081,29 @@ async fn media_delete_handler(
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
+}
+
+async fn health_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
+        Err(_) => vec![],
+    };
+    let mut recording_enabled = std::collections::HashMap::new();
+    for pid in &pipeline_ids {
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        recording_enabled.insert(pid.clone(), rec);
+    }
+    let snapshot = state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await;
+    Json(snapshot)
 }
 
 async fn healthz_get_handler() -> impl IntoResponse {
@@ -3575,91 +3661,6 @@ async fn v1_overview_handler(
     .into_response()
 }
 
-async fn v1_engine_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let sys = System::new_all();
-    let bonding_available = state
-        .engine
-        .srt_listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let (mut engine, _) = crate::runtime_info::status_and_sbom(bonding_available);
-    engine["os"] = system_status(&sys);
-
-    Json(serde_json::json!({
-        "generatedAt": chrono::Utc::now().to_rfc3339(),
-        "engine": engine,
-    }))
-    .into_response()
-}
-
-async fn v1_engine_health_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
-        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
-        Err(_) => vec![],
-    };
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
-    let snapshot = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
-    Json(snapshot).into_response()
-}
-
-async fn v1_engine_sbom_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let bonding_available = state
-        .engine
-        .srt_listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
-
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/vnd.cyclonedx+json; version=1.5",
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"restream-sbom.cdx.json\"",
-            ),
-        ],
-        Json(sbom),
-    )
-        .into_response()
-}
-
 async fn v1_engine_telemetry_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3668,36 +3669,6 @@ async fn v1_engine_telemetry_handler(
         return response;
     }
     Json(state.engine.engine_telemetry().await).into_response()
-}
-
-async fn v1_pipeline_get_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pipeline_id): Path<String>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    let pipeline = match db::get_pipeline(&state.db, &pipeline_id).await {
-        Ok(Some(pipeline)) => pipeline,
-        Ok(None) => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let ingest_host = match get_ingest_host(&state.db).await {
-        Ok(host) => host,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let outputs = match db::list_outputs_for_pipeline(&state.db, &pipeline_id).await {
-        Ok(outputs) => outputs,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    Json(serde_json::json!({
-        "pipeline": pipeline_response_json(&pipeline, &ingest_host, state.ports.rtmp, state.ports.srt),
-        "outputs": outputs,
-    }))
-    .into_response()
 }
 
 async fn v1_pipeline_telemetry_handler(
@@ -3722,45 +3693,6 @@ async fn v1_stage_telemetry_handler(
     match state.engine.stage_telemetry_by_display(&stage_key).await {
         Some(val) => Json(val).into_response(),
         None => (StatusCode::NOT_FOUND, "Stage not found").into_response(),
-    }
-}
-
-async fn v1_pipeline_graph_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pipeline_id): Path<String>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    match db::get_pipeline(&state.db, &pipeline_id).await {
-        Ok(Some(_)) => pipeline_graph_handler(State(state), headers, Path(pipeline_id))
-            .await
-            .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-async fn v1_pipeline_diagnostics_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pipeline_id): Path<String>,
-    headers: HeaderMap,
-    query: axum::extract::Query<DiagnosticsQuery>,
-) -> impl IntoResponse {
-    if let Some(response) = require_authenticated(&state, &headers).await {
-        return response;
-    }
-
-    match db::get_pipeline(&state.db, &pipeline_id).await {
-        Ok(Some(_)) => {
-            pipeline_diagnostics_sse_handler(State(state), Path(pipeline_id), query, headers)
-                .await
-                .into_response()
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -4359,9 +4291,16 @@ async fn apply_agent_add_output(
 ) -> Result<serde_json::Value, String> {
     let name = required_change_field(change.name.as_deref(), "name")?;
     let url = required_change_field(change.url.as_deref(), "url")?.trim();
+    let monitoring_url = normalize_monitoring_url(change.monitoring_url.as_deref());
     let encoding = change.encoding.as_deref().unwrap_or("source").trim();
     let desired_state = change.desired_state.as_deref().unwrap_or("stopped").trim();
-    validate_output_fields(name, url, encoding, desired_state)?;
+    validate_output_fields(
+        name,
+        url,
+        monitoring_url.as_deref(),
+        encoding,
+        desired_state,
+    )?;
 
     let output_id = change
         .output_id
@@ -4373,7 +4312,7 @@ async fn apply_agent_add_output(
         pipeline_id,
         name.trim(),
         url,
-        None,
+        monitoring_url.as_deref(),
         desired_state,
         encoding,
     )
@@ -4403,6 +4342,12 @@ async fn apply_agent_update_output(
         .ok_or_else(|| format!("output '{output_id}' not found on pipeline '{pipeline_id}'"))?;
     let name = change.name.as_deref().unwrap_or(&existing.name);
     let url = change.url.as_deref().unwrap_or(&existing.url).trim();
+    let monitoring_url = change
+        .monitoring_url
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_string)
+        .or_else(|| existing.monitoring_url.clone());
     let encoding = change
         .encoding
         .as_deref()
@@ -4413,7 +4358,13 @@ async fn apply_agent_update_output(
         .as_deref()
         .unwrap_or(&existing.desired_state)
         .trim();
-    validate_output_fields(name, url, encoding, desired_state)?;
+    validate_output_fields(
+        name,
+        url,
+        monitoring_url.as_deref(),
+        encoding,
+        desired_state,
+    )?;
 
     let mut updated = db::update_output(
         &state.db,
@@ -4421,6 +4372,7 @@ async fn apply_agent_update_output(
         output_id,
         name.trim(),
         url,
+        monitoring_url.as_deref(),
         encoding,
     )
     .await
@@ -4508,17 +4460,26 @@ fn required_change_field<'a>(value: Option<&'a str>, field: &str) -> Result<&'a 
 fn validate_output_fields(
     name: &str,
     url: &str,
+    monitoring_url: Option<&str>,
     encoding: &str,
     desired_state: &str,
 ) -> Result<(), String> {
     validate_len("name", name, MAX_NAME_LEN)?;
     validate_len("url", url, MAX_URL_LEN)?;
     validate_len("encoding", encoding, MAX_ENCODING_LEN)?;
+    if let Some(monitoring_url) = monitoring_url {
+        validate_len("monitoring_url", monitoring_url, MAX_URL_LEN)?;
+    }
     if is_custom_output_encoding(encoding) {
         return Err(CUSTOM_OUTPUT_ENCODING_ERROR.to_string());
     }
     if !is_supported_output_url(url) {
         return Err(OUTPUT_URL_SCHEME_ERROR.to_string());
+    }
+    if let Some(monitoring_url) = monitoring_url
+        && !is_supported_monitoring_url(monitoring_url)
+    {
+        return Err(MONITORING_URL_SCHEME_ERROR.to_string());
     }
     if !matches!(desired_state, "running" | "stopped") {
         return Err("desiredState must be either 'running' or 'stopped'".to_string());
@@ -4973,7 +4934,7 @@ fn agent_diagnostics_summary(
         pipeline_reports.push(serde_json::json!({
             "pipelineId": pipeline.id,
             "passive": true,
-            "activeProbeEndpoint": format!("/api/v1/pipelines/{}/diagnostics", pipeline.id),
+            "activeProbeEndpoint": format!("/pipelines/{}/diagnostics", pipeline.id),
             "supportedProbeQueryValues": ["rtmp", "srt"],
             "includedActiveProbeResults": false,
             "reason": "The context endpoint is read-only and does not open active SSE diagnostics probes.",
@@ -4983,7 +4944,7 @@ fn agent_diagnostics_summary(
     }
 
     serde_json::json!({
-        "streamingEndpointTemplate": "/api/v1/pipelines/:pipeline_id/diagnostics?probe=:probe",
+        "streamingEndpointTemplate": "/pipelines/:pipeline_id/diagnostics?probe=:probe",
         "includedActiveProbeResults": false,
         "pipelines": pipeline_reports,
     })
@@ -5878,6 +5839,27 @@ mod tests {
         assert!(check_field_len("name", "hello", MAX_NAME_LEN).is_none());
         assert!(check_field_len("url", "rtmp://host/app/key", MAX_URL_LEN).is_none());
         assert!(check_field_len("encoding", "720p", MAX_ENCODING_LEN).is_none());
+    }
+
+    #[test]
+    fn monitoring_url_validation_accepts_supported_schemes() {
+        assert!(is_supported_monitoring_url(
+            "https://example.com/live/master.m3u8"
+        ));
+        assert!(is_supported_monitoring_url("http://example.com/player"));
+        assert!(is_supported_monitoring_url(
+            "srt://127.0.0.1:9000?streamid=read:live/demo"
+        ));
+        assert_eq!(normalize_monitoring_url(Some("   ")), None);
+    }
+
+    #[test]
+    fn monitoring_url_validation_rejects_unsupported_schemes() {
+        assert!(!is_supported_monitoring_url("rtmp://example.com/live/key"));
+        assert_eq!(
+            normalize_monitoring_url(Some(" https://example.com/watch?v=abc ")),
+            Some("https://example.com/watch?v=abc".to_string())
+        );
     }
 
     #[test]

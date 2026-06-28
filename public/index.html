@@ -13,8 +13,17 @@
     <div class="navbar bg-base-100 shrink-0">
       <!-- LEFT -->
       <div class="flex flex-1 items-center gap-3">
-        <button class="btn btn-ghost text-xl" id="server-name" onclick="selectPipeline(null)">Restream</button>
-        <div id="saving-badge" class="hidden items-center gap-2 text-sm opacity-60">
+        <button
+          class="btn btn-ghost text-xl"
+          id="server-name"
+          onclick="selectPipeline(null)"
+        >
+          Restream
+        </button>
+        <div
+          id="saving-badge"
+          class="hidden items-center gap-2 text-sm opacity-60"
+        >
           <span class="loading loading-infinity loading-xs"></span>
           Saving
         </div>
@@ -23,30 +32,80 @@
       <!-- CENTER - Server Metrics -->
       <div class="hidden min-w-0 flex-none xl:block">
         <div class="flex items-stretch gap-2" id="server-metrics-navbar">
-          <div id="navbar-cpu-card" class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5">
+          <div
+            id="navbar-cpu-card"
+            class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5"
+          >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-base-content/60 text-[0.65rem] font-semibold uppercase">CPU</span>
-              <span class="font-mono text-xs tabular-nums" id="navbar-cpu-value">...</span>
+              <span
+                class="text-base-content/60 text-[0.65rem] font-semibold uppercase"
+                >CPU</span
+              >
+              <span class="font-mono text-xs tabular-nums" id="navbar-cpu-value"
+                >...</span
+              >
             </div>
-            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full"><div id="navbar-cpu-bar" class="bg-success h-full w-0 rounded-full"></div></div>
+            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full">
+              <div
+                id="navbar-cpu-bar"
+                class="bg-success h-full w-0 rounded-full"
+              ></div>
+            </div>
           </div>
-          <div id="navbar-ram-card" class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5">
+          <div
+            id="navbar-ram-card"
+            class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5"
+          >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-base-content/60 text-[0.65rem] font-semibold uppercase">RAM</span>
-              <span class="font-mono text-xs tabular-nums" id="navbar-ram-value">...</span>
+              <span
+                class="text-base-content/60 text-[0.65rem] font-semibold uppercase"
+                >RAM</span
+              >
+              <span class="font-mono text-xs tabular-nums" id="navbar-ram-value"
+                >...</span
+              >
             </div>
-            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full"><div id="navbar-ram-bar" class="bg-success h-full w-0 rounded-full"></div></div>
+            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full">
+              <div
+                id="navbar-ram-bar"
+                class="bg-success h-full w-0 rounded-full"
+              ></div>
+            </div>
           </div>
-          <div id="navbar-disk-card" class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5">
+          <div
+            id="navbar-disk-card"
+            class="border-base-content/10 bg-base-200/70 flex h-14 min-w-28 flex-col justify-center rounded-lg border px-3 py-1.5"
+          >
             <div class="flex items-center justify-between gap-2">
-              <span class="text-base-content/60 text-[0.65rem] font-semibold uppercase">Disk</span>
-              <span class="font-mono text-xs tabular-nums" id="navbar-disk-value">...</span>
+              <span
+                class="text-base-content/60 text-[0.65rem] font-semibold uppercase"
+                >Disk</span
+              >
+              <span
+                class="font-mono text-xs tabular-nums"
+                id="navbar-disk-value"
+                >...</span
+              >
             </div>
-            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full"><div id="navbar-disk-bar" class="bg-success h-full w-0 rounded-full"></div></div>
+            <div class="bg-base-300 mt-1 h-1 overflow-hidden rounded-full">
+              <div
+                id="navbar-disk-bar"
+                class="bg-success h-full w-0 rounded-full"
+              ></div>
+            </div>
           </div>
-          <div id="navbar-net-card" class="border-base-content/10 bg-base-200/70 flex h-14 min-w-44 flex-col justify-center rounded-lg border px-3 py-1.5">
-            <div class="text-base-content/60 text-[0.65rem] font-semibold uppercase">External Net</div>
-            <div class="mt-0.5 flex items-center gap-3 font-mono text-xs tabular-nums">
+          <div
+            id="navbar-net-card"
+            class="border-base-content/10 bg-base-200/70 flex h-14 min-w-44 flex-col justify-center rounded-lg border px-3 py-1.5"
+          >
+            <div
+              class="text-base-content/60 text-[0.65rem] font-semibold uppercase"
+            >
+              External Net
+            </div>
+            <div
+              class="mt-0.5 flex items-center gap-3 font-mono text-xs tabular-nums"
+            >
               <span id="navbar-down-value">RX ...</span>
               <span id="navbar-up-value">TX ...</span>
             </div>
@@ -57,56 +116,149 @@
       <!-- RIGHT -->
       <div class="flex flex-1 justify-end">
         <ul class="menu menu-horizontal px-1">
-          <li><a href="https://github.com/live-miracles/restream">GitHub</a></li>
+          <li>
+            <a href="https://github.com/live-miracles/restream">GitHub</a>
+          </li>
         </ul>
       </div>
     </div>
 
-    <div id="workspace-mode-bar" class="border-base-content/10 bg-base-100 shrink-0 border-y px-4 py-2">
+    <div
+      id="workspace-mode-bar"
+      class="border-base-content/10 bg-base-100 shrink-0 border-y px-4 py-2"
+    >
       <div class="flex flex-wrap items-center gap-2">
         <div class="join" role="tablist" aria-label="Workspace mode">
-          <button type="button" class="btn btn-sm join-item btn-accent" data-dashboard-mode="overview" aria-pressed="true">Overview</button>
-          <button type="button" class="btn btn-sm join-item btn-outline" data-dashboard-mode="pipeline" aria-pressed="false">Pipeline</button>
-          <button type="button" class="btn btn-sm join-item btn-outline" data-dashboard-mode="inspect" aria-pressed="false">Inspect</button>
-          <button type="button" class="btn btn-sm join-item btn-outline" data-dashboard-mode="media" aria-pressed="false">Media</button>
-          <button type="button" class="btn btn-sm join-item btn-outline" data-dashboard-mode="settings" aria-pressed="false">Settings</button>
-          <button type="button" class="btn btn-sm join-item btn-outline" data-dashboard-mode="status" aria-pressed="false">Status</button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-accent"
+            data-dashboard-mode="overview"
+            aria-pressed="true"
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="pipeline"
+            aria-pressed="false"
+          >
+            Pipeline
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="inspect"
+            aria-pressed="false"
+          >
+            Inspect
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="control"
+            aria-pressed="false"
+          >
+            Control Room
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="media"
+            aria-pressed="false"
+          >
+            Media
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="settings"
+            aria-pressed="false"
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm join-item btn-outline"
+            data-dashboard-mode="status"
+            aria-pressed="false"
+          >
+            Status
+          </button>
         </div>
-        <div class="text-base-content/60 min-w-0 truncate text-sm" id="workspace-mode-summary"></div>
+        <div
+          class="text-base-content/60 min-w-0 truncate text-sm"
+          id="workspace-mode-summary"
+        ></div>
       </div>
     </div>
 
     <div
       id="top-banner-stack"
       class="fixed left-1/2 z-999 flex -translate-x-1/2 transform flex-col items-center gap-2"
-      style="top: 0.5rem; pointer-events: none">
-      <div id="health-banner" role="alert" class="alert alert-warning hidden w-fit max-w-xl shadow-lg" style="pointer-events: auto">
-        <span id="health-banner-text">Service is degraded: runtime telemetry is temporarily unavailable.</span>
+      style="top: 0.5rem; pointer-events: none"
+    >
+      <div
+        id="health-banner"
+        role="alert"
+        class="alert alert-warning hidden w-fit max-w-xl shadow-lg"
+        style="pointer-events: auto"
+      >
+        <span id="health-banner-text"
+          >Service is degraded: runtime telemetry is temporarily
+          unavailable.</span
+        >
         <button
           id="dismiss-health-banner-btn"
           type="button"
           class="btn btn-ghost btn-xs"
           aria-label="Dismiss health warning"
-          style="margin-left: auto">
+          style="margin-left: auto"
+        >
           ×
         </button>
       </div>
 
-      <div role="alert" id="error-alert" class="alert alert-error hidden max-w-175 opacity-90" style="pointer-events: auto">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
+      <div
+        role="alert"
+        id="error-alert"
+        class="alert alert-error hidden max-w-175 opacity-90"
+        style="pointer-events: auto"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="h-6 w-6 shrink-0 stroke-current"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
           <path
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
-            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
         </svg>
         <span id="error-msg"></span>
       </div>
     </div>
 
-    <div id="copied-notification" role="alert" class="alert alert-success fixed bottom-3 left-1/2 z-60 hidden w-fit -translate-x-1/2 transform">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    <div
+      id="copied-notification"
+      role="alert"
+      class="alert alert-success fixed bottom-3 left-1/2 z-60 hidden w-fit -translate-x-1/2 transform"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        class="h-6 w-6 shrink-0 stroke-current"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+        />
       </svg>
       <span>Copied</span>
     </div>
@@ -117,18 +269,30 @@
         <input type="text" id="pipe-id-input" class="hidden" />
 
         <div class="focus mx-auto mt-2 w-full space-y-4 px-4">
-          <h2 class="text-lg font-semibold" id="pipe-modal-title">Edit Pipeline</h2>
+          <h2 class="text-lg font-semibold" id="pipe-modal-title">
+            Edit Pipeline
+          </h2>
           <div class="grid gap-3 sm:grid-cols-[1fr_14rem]">
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">Pipeline Name</legend>
-            <input type="text" id="pipe-name-input" class="input w-full" placeholder="Type here" />
-          </fieldset>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Pipeline Name</legend>
+              <input
+                type="text"
+                id="pipe-name-input"
+                class="input w-full"
+                placeholder="Type here"
+              />
+            </fieldset>
 
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">Stream Key</legend>
-            <select class="select w-full" id="pipe-stream-key-input"></select>
-            <p id="pipe-stream-key-locked-hint" class="text-warning hidden text-sm">Stop all outputs before changing the stream key.</p>
-          </fieldset>
+            <fieldset class="fieldset">
+              <legend class="fieldset-legend">Stream Key</legend>
+              <select class="select w-full" id="pipe-stream-key-input"></select>
+              <p
+                id="pipe-stream-key-locked-hint"
+                class="text-warning hidden text-sm"
+              >
+                Stop all outputs before changing the stream key.
+              </p>
+            </fieldset>
           </div>
 
           <fieldset class="fieldset">
@@ -139,7 +303,10 @@
             </select>
           </fieldset>
 
-          <div id="pipe-file-fields" class="border-base-content/10 bg-base-200 hidden rounded-lg border p-3">
+          <div
+            id="pipe-file-fields"
+            class="border-base-content/10 bg-base-200 hidden rounded-lg border p-3"
+          >
             <div class="grid gap-3 sm:grid-cols-[1fr_9rem_5rem]">
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">File</legend>
@@ -149,21 +316,36 @@
               </fieldset>
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Start Time</legend>
-                <input type="text" id="pipe-file-start-time-input" class="input w-full" placeholder="00:00:00" />
+                <input
+                  type="text"
+                  id="pipe-file-start-time-input"
+                  class="input w-full"
+                  placeholder="00:00:00"
+                />
               </fieldset>
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Loop</legend>
                 <label class="flex h-10 items-center">
-                  <input type="checkbox" id="pipe-file-loop-input" class="checkbox checkbox-sm" />
+                  <input
+                    type="checkbox"
+                    id="pipe-file-loop-input"
+                    class="checkbox checkbox-sm"
+                  />
                 </label>
               </fieldset>
             </div>
           </div>
 
-          <div id="pipe-srt-ingest-fields" class="border-base-content/10 bg-base-200 rounded-lg border p-3">
+          <div
+            id="pipe-srt-ingest-fields"
+            class="border-base-content/10 bg-base-200 rounded-lg border p-3"
+          >
             <div class="mb-2">
               <div class="text-sm font-medium">SRT Ingest Policy</div>
-              <p class="text-base-content/60 text-xs">Controls whether this pipeline inherits the global listener policy, stays plaintext, or requires its own passphrase.</p>
+              <p class="text-base-content/60 text-xs">
+                Controls whether this pipeline inherits the global listener
+                policy, stays plaintext, or requires its own passphrase.
+              </p>
             </div>
             <div class="grid gap-3 sm:grid-cols-[12rem_1fr_8rem]">
               <fieldset class="fieldset">
@@ -176,11 +358,19 @@
               </fieldset>
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Passphrase</legend>
-                <input type="password" id="pipe-srt-ingest-passphrase-input" class="input w-full" placeholder="10-79 bytes" />
+                <input
+                  type="password"
+                  id="pipe-srt-ingest-passphrase-input"
+                  class="input w-full"
+                  placeholder="10-79 bytes"
+                />
               </fieldset>
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Key Length</legend>
-                <select class="select w-full" id="pipe-srt-ingest-pbkeylen-input">
+                <select
+                  class="select w-full"
+                  id="pipe-srt-ingest-pbkeylen-input"
+                >
                   <option value="16">AES-128</option>
                   <option value="24">AES-192</option>
                   <option value="32">AES-256</option>
@@ -193,7 +383,14 @@
         <div class="modal-action">
           <form method="dialog">
             <button class="btn mx-2">Cancel</button>
-            <button type="button" id="pipe-submit-btn" class="btn btn-accent" onclick="pipeFormBtn(event)">Update</button>
+            <button
+              type="button"
+              id="pipe-submit-btn"
+              class="btn btn-accent"
+              onclick="pipeFormBtn(event)"
+            >
+              Update
+            </button>
           </form>
         </div>
       </div>
@@ -206,11 +403,18 @@
         <input type="text" id="out-id-input" class="hidden" />
 
         <div class="focus mx-auto mt-2 space-y-3 px-4">
-          <h2 class="text-lg font-semibold" id="out-modal-title">Edit Output</h2>
+          <h2 class="text-lg font-semibold" id="out-modal-title">
+            Edit Output
+          </h2>
 
           <fieldset class="fieldset inline-block w-48">
             <legend class="fieldset-legend">Output Name</legend>
-            <input type="text" id="out-name-input" class="input" placeholder="Type here" />
+            <input
+              type="text"
+              id="out-name-input"
+              class="input"
+              placeholder="Type here"
+            />
           </fieldset>
 
           <fieldset class="fieldset ml-2 inline-block w-24">
@@ -224,13 +428,20 @@
 
           <fieldset class="fieldset ml-2 inline-block w-40">
             <legend class="fieldset-legend">Encoding</legend>
-            <select class="select" id="out-encoding-input" onchange="onOutEncodingChange(this.value)">
+            <select
+              class="select"
+              id="out-encoding-input"
+              onchange="onOutEncodingChange(this.value)"
+            >
               <option value="source">source</option>
             </select>
           </fieldset>
 
           <div class="hidden" id="out-remap-fields">
-            <fieldset class="fieldset ml-2 hidden inline-block w-24" id="out-remap-track-field">
+            <fieldset
+              class="fieldset ml-2 hidden inline-block w-24"
+              id="out-remap-track-field"
+            >
               <legend class="fieldset-legend">Audio Track</legend>
               <select class="select" id="out-remap-track-input"></select>
             </fieldset>
@@ -244,7 +455,10 @@
             </fieldset>
           </div>
 
-          <fieldset class="fieldset ml-2 inline-block w-44" id="out-server-url-field">
+          <fieldset
+            class="fieldset ml-2 inline-block w-44"
+            id="out-server-url-field"
+          >
             <legend class="fieldset-legend">Server URL</legend>
             <select class="select" id="out-server-url-input">
               <option selected="" value="" disabled>Loading presets...</option>
@@ -252,53 +466,145 @@
           </fieldset>
 
           <fieldset class="fieldset" id="out-url-field">
-            <legend class="fieldset-legend" id="out-url-input-label">Stream Key</legend>
-            <input type="text" id="out-rtmp-key-input" class="input w-full" placeholder="Type here" />
-            <p id="out-rtmp-error" class="text-error hidden text-sm">Enter a valid RTMP, SRT, or HLS playlist URL.</p>
+            <legend class="fieldset-legend" id="out-url-input-label">
+              Stream Key
+            </legend>
+            <input
+              type="text"
+              id="out-rtmp-key-input"
+              class="input w-full"
+              placeholder="Type here"
+            />
+            <p id="out-rtmp-error" class="text-error hidden text-sm">
+              Enter a valid RTMP, SRT, or HLS playlist URL.
+            </p>
           </fieldset>
+
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">Monitoring URL</legend>
+            <input
+              type="text"
+              id="out-monitoring-url-input"
+              class="input w-full"
+              placeholder="https://youtube.com/watch?v=... or https://.../master.m3u8"
+            />
+            <p class="text-base-content/55 text-xs">
+              Optional. Used by Control Room embeds and future monitoring
+              workflows.
+            </p>
+            <p id="out-monitoring-error" class="text-error hidden text-sm">
+              Enter a valid monitoring URL using http://, https://, or srt://.
+            </p>
+          </fieldset>
+
+          <p id="out-running-lock-note" class="text-warning hidden text-sm">
+            This output is running. Transport URL and encoding changes are
+            blocked while live, but name and monitoring URL can still be
+            updated.
+          </p>
 
           <div class="hidden" id="out-srt-fields">
             <fieldset class="fieldset inline-block w-24">
               <legend class="fieldset-legend">Host</legend>
-              <input type="text" id="out-srt-host-input" class="input w-full" placeholder="localhost" />
+              <input
+                type="text"
+                id="out-srt-host-input"
+                class="input w-full"
+                placeholder="localhost"
+              />
             </fieldset>
             <fieldset class="fieldset ml-2 inline-block w-16">
               <legend class="fieldset-legend">Port</legend>
-              <input type="text" id="out-srt-port-input" class="input w-full" placeholder="6000" />
+              <input
+                type="text"
+                id="out-srt-port-input"
+                class="input w-full"
+                placeholder="6000"
+              />
             </fieldset>
             <fieldset class="fieldset ml-2 inline-block w-64">
               <legend class="fieldset-legend">Stream ID</legend>
-              <input type="text" id="out-srt-streamid-input" class="input w-full" placeholder="publish:live/my-key" />
+              <input
+                type="text"
+                id="out-srt-streamid-input"
+                class="input w-full"
+                placeholder="publish:live/my-key"
+              />
             </fieldset>
             <fieldset class="fieldset ml-2 inline-block w-64">
               <legend class="fieldset-legend">Extra Query</legend>
-              <input type="text" id="out-srt-extra-query-input" class="input w-full" placeholder="latency=120&mode=caller" />
+              <input
+                type="text"
+                id="out-srt-extra-query-input"
+                class="input w-full"
+                placeholder="latency=120&mode=caller"
+              />
             </fieldset>
           </div>
 
-          <div class="border-base-300 bg-base-200/40 rounded-box border p-3" id="out-audio-section">
+          <div
+            class="border-base-300 bg-base-200/40 rounded-box border p-3"
+            id="out-audio-section"
+          >
             <div class="flex flex-wrap items-center gap-2">
               <h3 class="text-sm font-semibold">Audio Routing</h3>
               <div class="flex flex-wrap gap-1" id="out-audio-caps"></div>
             </div>
-            <p class="text-base-content/60 mt-1 text-xs" id="out-audio-ingest"></p>
-            <p class="text-base-content/50 mt-1 hidden text-xs" id="out-audio-encoding-note">
-              Audio routing combines with the encoding above — e.g. selecting <span class="font-semibold">720p</span> and track 2 produces
+            <p
+              class="text-base-content/60 mt-1 text-xs"
+              id="out-audio-ingest"
+            ></p>
+            <p
+              class="text-base-content/50 mt-1 hidden text-xs"
+              id="out-audio-encoding-note"
+            >
+              Audio routing combines with the encoding above — e.g. selecting
+              <span class="font-semibold">720p</span> and track 2 produces
               <code>720p+atrack:1</code>.
             </p>
             <div id="out-audio-controls">
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Track Mode</legend>
                 <div class="join" id="out-audio-mode">
-                  <button type="button" class="btn btn-sm join-item" data-amode="auto">Auto</button>
-                  <button type="button" class="btn btn-sm join-item" data-amode="pass">Passthrough</button>
-                  <button type="button" class="btn btn-sm join-item" data-amode="downmix">Downmix</button>
-                  <button type="button" class="btn btn-sm join-item" data-amode="remap">Remap</button>
+                  <button
+                    type="button"
+                    class="btn btn-sm join-item"
+                    data-amode="auto"
+                  >
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm join-item"
+                    data-amode="pass"
+                  >
+                    Passthrough
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm join-item"
+                    data-amode="downmix"
+                  >
+                    Downmix
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm join-item"
+                    data-amode="remap"
+                  >
+                    Remap
+                  </button>
                 </div>
               </fieldset>
-              <div class="mt-2 hidden space-y-1" id="out-audio-track-pick"></div>
+              <div
+                class="mt-2 hidden space-y-1"
+                id="out-audio-track-pick"
+              ></div>
               <div class="hidden" id="out-remap-fields">
-                <fieldset class="fieldset hidden inline-block w-24" id="out-remap-track-field">
+                <fieldset
+                  class="fieldset hidden inline-block w-24"
+                  id="out-remap-track-field"
+                >
                   <legend class="fieldset-legend">Audio Track</legend>
                   <select class="select" id="out-remap-track-input"></select>
                 </fieldset>
@@ -319,7 +625,14 @@
         <div class="modal-action">
           <form method="dialog">
             <button class="btn mx-2">Cancel</button>
-            <button type="button" class="btn btn-accent" id="out-submit-btn" onclick="editOutFormBtn(event)">Update</button>
+            <button
+              type="button"
+              class="btn btn-accent"
+              id="out-submit-btn"
+              onclick="editOutFormBtn(event)"
+            >
+              Update
+            </button>
           </form>
         </div>
       </div>
@@ -328,9 +641,16 @@
     <dialog id="output-history-modal" class="modal">
       <div class="modal-box flex h-150 max-w-160 flex-col">
         <div class="flex shrink-0 items-center justify-between gap-2">
-          <h3 class="text-lg font-semibold" id="output-history-title">Output History</h3>
+          <h3 class="text-lg font-semibold" id="output-history-title">
+            Output History
+          </h3>
           <div class="flex items-center gap-2">
-            <button id="output-history-playpause" type="button" class="btn btn-xs btn-outline" onclick="toggleHistoryPlayPause()">
+            <button
+              id="output-history-playpause"
+              type="button"
+              class="btn btn-xs btn-outline"
+              onclick="toggleHistoryPlayPause()"
+            >
               &#9654; Live
             </button>
             <div class="join" role="group" aria-label="Output history order">
@@ -339,7 +659,8 @@
                 type="button"
                 class="btn btn-xs join-item btn-accent"
                 aria-pressed="true"
-                onclick="setOutputHistoryOrder('desc')">
+                onclick="setOutputHistoryOrder('desc')"
+              >
                 Newest
               </button>
               <button
@@ -347,7 +668,8 @@
                 type="button"
                 class="btn btn-xs join-item btn-outline"
                 aria-pressed="false"
-                onclick="setOutputHistoryOrder('asc')">
+                onclick="setOutputHistoryOrder('asc')"
+              >
                 Oldest
               </button>
             </div>
@@ -357,7 +679,8 @@
                 type="button"
                 class="btn btn-xs join-item btn-accent"
                 aria-pressed="true"
-                onclick="setOutputHistoryMode('timeline')">
+                onclick="setOutputHistoryMode('timeline')"
+              >
                 Timeline
               </button>
               <button
@@ -365,15 +688,21 @@
                 type="button"
                 class="btn btn-xs join-item btn-outline"
                 aria-pressed="false"
-                onclick="setOutputHistoryMode('raw')">
+                onclick="setOutputHistoryMode('raw')"
+              >
                 Raw
               </button>
             </div>
           </div>
         </div>
 
-        <div class="bg-base-200 mt-3 flex min-h-0 flex-1 flex-col rounded-lg p-3">
-          <div id="output-history-loading" class="hidden shrink-0 text-sm opacity-70">
+        <div
+          class="bg-base-200 mt-3 flex min-h-0 flex-1 flex-col rounded-lg p-3"
+        >
+          <div
+            id="output-history-loading"
+            class="hidden shrink-0 text-sm opacity-70"
+          >
             <span class="loading loading-dots loading-sm"></span>
             Loading history...
           </div>
@@ -385,16 +714,24 @@
                 class="input input-sm input-bordered w-full pr-40"
                 placeholder="Search raw logs"
                 oninput="setOutputHistorySearch(this.value)"
-                onkeydown="onOutputHistorySearchKeydown(event)" />
-              <div class="absolute inset-y-0 right-2 flex items-center gap-1" id="output-history-search-controls">
-                <span id="output-history-search-status" class="min-w-12 text-right text-xs opacity-70"></span>
+                onkeydown="onOutputHistorySearchKeydown(event)"
+              />
+              <div
+                class="absolute inset-y-0 right-2 flex items-center gap-1"
+                id="output-history-search-controls"
+              >
+                <span
+                  id="output-history-search-status"
+                  class="min-w-12 text-right text-xs opacity-70"
+                ></span>
                 <button
                   id="output-history-search-prev"
                   type="button"
                   class="btn btn-ghost btn-xs btn-square"
                   aria-label="Previous match"
                   title="Previous match"
-                  onclick="navigateOutputHistorySearch(-1)">
+                  onclick="navigateOutputHistorySearch(-1)"
+                >
                   &#9650;
                 </button>
                 <button
@@ -403,14 +740,23 @@
                   class="btn btn-ghost btn-xs btn-square"
                   aria-label="Next match"
                   title="Next match"
-                  onclick="navigateOutputHistorySearch(1)">
+                  onclick="navigateOutputHistorySearch(1)"
+                >
                   &#9660;
                 </button>
               </div>
             </div>
           </div>
-          <div id="output-history-empty" class="hidden shrink-0 text-sm opacity-70">No history available yet.</div>
-          <div id="output-history-list" class="min-h-0 flex-1 space-y-2 overflow-auto"></div>
+          <div
+            id="output-history-empty"
+            class="hidden shrink-0 text-sm opacity-70"
+          >
+            No history available yet.
+          </div>
+          <div
+            id="output-history-list"
+            class="min-h-0 flex-1 space-y-2 overflow-auto"
+          ></div>
         </div>
 
         <div class="modal-action shrink-0">
@@ -424,21 +770,41 @@
     <dialog id="pipeline-history-modal" class="modal">
       <div class="modal-box flex h-150 max-w-160 flex-col">
         <div class="flex shrink-0 items-center justify-between gap-2">
-          <h3 class="text-lg font-semibold" id="pipeline-history-title">Pipeline History</h3>
+          <h3 class="text-lg font-semibold" id="pipeline-history-title">
+            Pipeline History
+          </h3>
           <div class="flex items-center gap-2">
-            <button id="pipeline-history-playpause" type="button" class="btn btn-xs btn-outline" onclick="togglePipelineHistoryPlayPause()">
+            <button
+              id="pipeline-history-playpause"
+              type="button"
+              class="btn btn-xs btn-outline"
+              onclick="togglePipelineHistoryPlayPause()"
+            >
               &#9654; Live
             </button>
           </div>
         </div>
 
-        <div class="bg-base-200 mt-3 flex min-h-0 flex-1 flex-col rounded-lg p-3">
-          <div id="pipeline-history-loading" class="hidden shrink-0 text-sm opacity-70">
+        <div
+          class="bg-base-200 mt-3 flex min-h-0 flex-1 flex-col rounded-lg p-3"
+        >
+          <div
+            id="pipeline-history-loading"
+            class="hidden shrink-0 text-sm opacity-70"
+          >
             <span class="loading loading-dots loading-sm"></span>
             Loading history...
           </div>
-          <div id="pipeline-history-empty" class="hidden shrink-0 text-sm opacity-70">No history available yet.</div>
-          <div id="pipeline-history-list" class="min-h-0 flex-1 space-y-2 overflow-auto"></div>
+          <div
+            id="pipeline-history-empty"
+            class="hidden shrink-0 text-sm opacity-70"
+          >
+            No history available yet.
+          </div>
+          <div
+            id="pipeline-history-list"
+            class="min-h-0 flex-1 space-y-2 overflow-auto"
+          ></div>
         </div>
 
         <div class="modal-action shrink-0">
@@ -453,11 +819,22 @@
       <div class="modal-box max-w-xl">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <h3 class="text-lg font-semibold" id="publisher-health-title">Publisher Health</h3>
-            <p class="mt-1 text-sm opacity-60" id="publisher-health-subtitle"></p>
+            <h3 class="text-lg font-semibold" id="publisher-health-title">
+              Publisher Health
+            </h3>
+            <p
+              class="mt-1 text-sm opacity-60"
+              id="publisher-health-subtitle"
+            ></p>
           </div>
           <div class="flex gap-1">
-            <button type="button" class="btn btn-xs btn-outline" id="publisher-health-copy-btn">Copy</button>
+            <button
+              type="button"
+              class="btn btn-xs btn-outline"
+              id="publisher-health-copy-btn"
+            >
+              Copy
+            </button>
           </div>
         </div>
         <div class="mt-4 overflow-x-auto">
@@ -472,7 +849,10 @@
             <tbody id="publisher-health-rows"></tbody>
           </table>
         </div>
-        <div id="publisher-health-empty" class="text-base-content/60 mt-4 hidden text-sm"></div>
+        <div
+          id="publisher-health-empty"
+          class="text-base-content/60 mt-4 hidden text-sm"
+        ></div>
         <div class="modal-action">
           <form method="dialog">
             <button class="btn btn-sm">Close</button>
@@ -484,17 +864,43 @@
 
     <dialog id="diagnostics-modal" class="modal">
       <div class="modal-box flex h-[80vh] max-w-3xl flex-col">
-        <div class="flex shrink-0 items-center justify-between gap-2" id="diagnostics-header">
-          <h3 class="text-lg font-semibold" id="diagnostics-title">Diagnostics</h3>
+        <div
+          class="flex shrink-0 items-center justify-between gap-2"
+          id="diagnostics-header"
+        >
+          <h3 class="text-lg font-semibold" id="diagnostics-title">
+            Diagnostics
+          </h3>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <span id="diagnostics-probe-toggle"></span>
             <span class="text-sm opacity-60" id="diagnostics-total-time"></span>
-            <button type="button" class="btn btn-xs btn-accent btn-outline" id="diagnostics-copy-all-btn">Copy All</button>
-            <button type="button" class="btn btn-xs btn-accent btn-outline" id="diagnostics-download-btn">Download</button>
-            <button type="button" class="btn btn-xs btn-accent btn-outline" id="diagnostics-ask-ai-btn">✨ Ask AI</button>
+            <button
+              type="button"
+              class="btn btn-xs btn-accent btn-outline"
+              id="diagnostics-copy-all-btn"
+            >
+              Copy All
+            </button>
+            <button
+              type="button"
+              class="btn btn-xs btn-accent btn-outline"
+              id="diagnostics-download-btn"
+            >
+              Download
+            </button>
+            <button
+              type="button"
+              class="btn btn-xs btn-accent btn-outline"
+              id="diagnostics-ask-ai-btn"
+            >
+              ✨ Ask AI
+            </button>
           </div>
         </div>
-        <div class="mt-3 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" id="diagnostics-list"></div>
+        <div
+          class="mt-3 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto"
+          id="diagnostics-list"
+        ></div>
         <div class="modal-action shrink-0">
           <form method="dialog">
             <button class="btn btn-sm">Close</button>
@@ -504,34 +910,81 @@
       <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
-    <section id="overview-mode-panel" class="min-h-0 flex-1 overflow-auto px-4 py-3">
+    <section
+      id="overview-mode-panel"
+      class="min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
       <div id="overview-mode-content" class="mx-auto max-w-7xl"></div>
     </section>
 
-    <section id="inspect-mode-panel" class="hidden min-h-0 flex-1 overflow-auto px-4 py-3">
-      <div class="mx-auto grid max-w-7xl gap-4 xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]">
+    <section
+      id="control-mode-panel"
+      class="hidden min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
+      <div id="control-mode-content" class="mx-auto max-w-7xl"></div>
+    </section>
+
+    <section
+      id="inspect-mode-panel"
+      class="hidden min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
+      <div
+        class="mx-auto grid max-w-7xl gap-4 xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]"
+      >
         <aside class="space-y-3">
           <div class="flex items-center gap-2">
-            <select id="inspect-pipeline-select" class="select select-sm w-full" aria-label="Inspect pipeline"></select>
-            <button type="button" id="inspect-open-pipeline-btn" class="btn btn-sm btn-outline">Open</button>
+            <select
+              id="inspect-pipeline-select"
+              class="select select-sm w-full"
+              aria-label="Inspect pipeline"
+            ></select>
+            <button
+              type="button"
+              id="inspect-open-pipeline-btn"
+              class="btn btn-sm btn-outline"
+            >
+              Open
+            </button>
           </div>
           <div id="inspect-pipeline-summary" class="space-y-3"></div>
         </aside>
         <div class="grid min-h-0 gap-4">
-          <section class="border-base-content/10 bg-base-200 min-h-[24rem] rounded-lg border p-3">
+          <section
+            class="border-base-content/10 bg-base-200 min-h-[24rem] rounded-lg border p-3"
+          >
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h2 class="text-base font-semibold">Graph Explorer</h2>
               <div class="flex gap-2">
-                <button type="button" id="inspect-refresh-graph-btn" class="btn btn-xs btn-accent">Stop Refresh</button>
+                <button
+                  type="button"
+                  id="inspect-refresh-graph-btn"
+                  class="btn btn-xs btn-accent"
+                >
+                  Stop Refresh
+                </button>
               </div>
             </div>
-            <div id="inspect-graph-status" class="text-base-content/60 mb-2 text-sm"></div>
-            <div id="inspect-graph-container" class="bg-base-100 min-h-[20rem] overflow-auto rounded-lg"></div>
+            <div
+              id="inspect-graph-status"
+              class="text-base-content/60 mb-2 text-sm"
+            ></div>
+            <div
+              id="inspect-graph-container"
+              class="bg-base-100 min-h-[20rem] overflow-auto rounded-lg"
+            ></div>
           </section>
-          <section class="border-base-content/10 bg-base-200 rounded-lg border p-3">
+          <section
+            class="border-base-content/10 bg-base-200 rounded-lg border p-3"
+          >
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h2 class="text-base font-semibold">Diagnostics Deep Dive</h2>
-              <button type="button" id="inspect-open-diagnostics-btn" class="btn btn-xs btn-outline">Run Diagnostics</button>
+              <button
+                type="button"
+                id="inspect-open-diagnostics-btn"
+                class="btn btn-xs btn-outline"
+              >
+                Run Diagnostics
+              </button>
             </div>
             <div id="inspect-diagnostics-summary"></div>
           </section>
@@ -539,48 +992,125 @@
       </div>
     </section>
 
-    <section id="media-mode-panel" class="hidden min-h-0 flex-1 overflow-auto px-4 py-3">
+    <section
+      id="media-mode-panel"
+      class="hidden min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
       <div id="media-mode-content" class="mx-auto max-w-7xl"></div>
     </section>
 
-    <section id="settings-mode-panel" class="hidden min-h-0 flex-1 overflow-auto px-4 py-3">
+    <section
+      id="settings-mode-panel"
+      class="hidden min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
       <div id="settings-mode-content" class="w-full"></div>
     </section>
 
-    <section id="status-mode-panel" class="hidden min-h-0 flex-1 overflow-auto px-4 py-3">
+    <section
+      id="status-mode-panel"
+      class="hidden min-h-0 flex-1 overflow-auto px-4 py-3"
+    >
       <div id="status-mode-content" class="w-full"></div>
     </section>
 
     <div
       id="dashboard-grid"
       class="mx-auto grid hidden min-h-0 w-full max-w-7xl flex-1 gap-4 p-4"
-      style="grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr) minmax(24rem, 1fr)">
+      style="
+        grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr) minmax(
+            24rem,
+            1fr
+          );
+      "
+    >
       <!-- Left Column -->
-      <div class="border-base-content/10 bg-base-200 w-full max-w-[18rem] overflow-y-auto rounded-lg border">
-        <div class="border-base-content/10 flex items-center justify-between gap-2 border-b px-4 py-3">
-          <h2 class="text-base-content/70 text-sm font-semibold uppercase">Pipelines</h2>
-          <button class="btn btn-xs btn-accent btn-outline" id="add-pipe-btn" onclick="addPipeBtn()">Add</button>
+      <div
+        class="border-base-content/10 bg-base-200 w-full max-w-[18rem] overflow-y-auto rounded-lg border"
+      >
+        <div
+          class="border-base-content/10 flex items-center justify-between gap-2 border-b px-4 py-3"
+        >
+          <h2 class="text-base-content/70 text-sm font-semibold uppercase">
+            Pipelines
+          </h2>
+          <button
+            class="btn btn-xs btn-accent btn-outline"
+            id="add-pipe-btn"
+            onclick="addPipeBtn()"
+          >
+            Add
+          </button>
         </div>
         <ul class="menu w-full gap-1 p-2" id="pipelines"></ul>
       </div>
 
       <!-- Middle Column -->
-      <div class="border-base-content/10 bg-base-200 hidden overflow-y-auto rounded-lg border p-4" id="pipe-info-col">
+      <div
+        class="border-base-content/10 bg-base-200 hidden overflow-y-auto rounded-lg border p-4"
+        id="pipe-info-col"
+      >
         <div>
           <div class="mb-3 flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <h2 class="truncate text-lg font-semibold leading-tight" id="pipe-name"></h2>
+              <h2
+                class="truncate text-lg font-semibold leading-tight"
+                id="pipe-name"
+              ></h2>
             </div>
             <div class="flex shrink-0 items-center gap-2">
-              <button class="btn btn-xs btn-accent btn-outline" id="record-pipe-btn">Record</button>
-              <button class="btn btn-xs btn-accent btn-outline" id="graph-pipe-btn">Graph</button>
-              <button class="btn btn-xs btn-accent btn-outline" id="diagnose-pipe-btn">Diagnose</button>
+              <button
+                class="btn btn-xs btn-accent btn-outline"
+                id="record-pipe-btn"
+              >
+                Record
+              </button>
+              <button
+                class="btn btn-xs btn-accent btn-outline"
+                id="graph-pipe-btn"
+              >
+                Graph
+              </button>
+              <button
+                class="btn btn-xs btn-accent btn-outline"
+                id="diagnose-pipe-btn"
+              >
+                Diagnose
+              </button>
               <div class="dropdown dropdown-end">
-                <button type="button" tabindex="0" class="btn btn-xs btn-outline" aria-label="Pipeline actions">More</button>
-                <ul tabindex="0" class="dropdown-content menu bg-base-100 border-base-content/10 z-20 mt-2 w-40 rounded-lg border p-1 shadow">
-                  <li><button type="button" id="pipe-history-btn">History</button></li>
-                  <li><button type="button" id="edit-pipe-btn" onclick="editPipeBtn()">Edit</button></li>
-                  <li><button type="button" id="delete-pipe-btn" class="text-error" onclick="deletePipeBtn()">Delete</button></li>
+                <button
+                  type="button"
+                  tabindex="0"
+                  class="btn btn-xs btn-outline"
+                  aria-label="Pipeline actions"
+                >
+                  More
+                </button>
+                <ul
+                  tabindex="0"
+                  class="dropdown-content menu bg-base-100 border-base-content/10 z-20 mt-2 w-40 rounded-lg border p-1 shadow"
+                >
+                  <li>
+                    <button type="button" id="pipe-history-btn">History</button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      id="edit-pipe-btn"
+                      onclick="editPipeBtn()"
+                    >
+                      Edit
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      id="delete-pipe-btn"
+                      class="text-error"
+                      onclick="deletePipeBtn()"
+                    >
+                      Delete
+                    </button>
+                  </li>
                 </ul>
               </div>
             </div>
@@ -592,7 +1122,9 @@
           </div>
 
           <div id="input-stats">
-            <h2 class="text-base-content/70 text-sm font-semibold uppercase">Stats</h2>
+            <h2 class="text-base-content/70 text-sm font-semibold uppercase">
+              Stats
+            </h2>
             <div class="stats border-base-content/10 bg-base-100 mt-1 border">
               <div class="stat p-3">
                 <div class="stat-title">Input Bitrate</div>
@@ -615,7 +1147,11 @@
               </div>
             </div>
 
-            <h2 class="text-base-content/70 mt-3 text-sm font-semibold uppercase">Video</h2>
+            <h2
+              class="text-base-content/70 mt-3 text-sm font-semibold uppercase"
+            >
+              Video
+            </h2>
             <div class="stats border-base-content/10 bg-base-100 mt-1 border">
               <div class="stat p-3">
                 <div class="stat-title">Codec</div>
@@ -624,7 +1160,10 @@
 
               <div class="stat p-3">
                 <div class="stat-title">Resolution</div>
-                <div class="stat-value text-sm" id="input-video-resolution"></div>
+                <div
+                  class="stat-value text-sm"
+                  id="input-video-resolution"
+                ></div>
               </div>
 
               <div class="stat p-3">
@@ -648,51 +1187,105 @@
               </div>
             </div>
 
-            <h2 class="text-base-content/70 mt-3 text-sm font-semibold uppercase">Audio</h2>
+            <h2
+              class="text-base-content/70 mt-3 text-sm font-semibold uppercase"
+            >
+              Audio
+            </h2>
             <div id="input-audio-tracks" class="mt-1 space-y-1"></div>
           </div>
           <div class="divider"></div>
           <div class="space-y-3">
-            <section class="border-base-content/10 bg-base-100 rounded-lg border p-4">
+            <section
+              class="border-base-content/10 bg-base-100 rounded-lg border p-4"
+            >
               <div class="flex items-center gap-2">
-                <span class="text-base-content/75 text-sm font-semibold">Key:</span>
-                <code id="stream-key-inline" class="text-base-content/90 min-w-0 flex-1 truncate font-mono text-sm"></code>
-                <button type="button" id="stream-key-copy-btn" class="btn btn-sm btn-accent btn-outline shrink-0">Copy Key</button>
+                <span class="text-base-content/75 text-sm font-semibold"
+                  >Key:</span
+                >
+                <code
+                  id="stream-key-inline"
+                  class="text-base-content/90 min-w-0 flex-1 truncate font-mono text-sm"
+                ></code>
+                <button
+                  type="button"
+                  id="stream-key-copy-btn"
+                  class="btn btn-sm btn-accent btn-outline shrink-0"
+                >
+                  Copy Key
+                </button>
               </div>
             </section>
 
-            <section id="ingest-url-section" class="border-base-content/10 bg-base-100 rounded-lg border p-4">
+            <section
+              id="ingest-url-section"
+              class="border-base-content/10 bg-base-100 rounded-lg border p-4"
+            >
               <div class="flex flex-wrap items-center gap-2">
-                <span class="text-base-content/75 mr-auto text-sm font-semibold">Publish URL</span>
-                <div role="group" aria-label="Ingest protocol selector" class="flex gap-2">
+                <span class="text-base-content/75 mr-auto text-sm font-semibold"
+                  >Publish URL</span
+                >
+                <div
+                  role="group"
+                  aria-label="Ingest protocol selector"
+                  class="flex gap-2"
+                >
                   <button
                     type="button"
                     id="ingest-protocol-rtmp"
                     data-protocol="rtmp"
-                    class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-lg px-4 shadow-none">
+                    class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-lg px-4 shadow-none"
+                  >
                     RTMP
                   </button>
                   <button
                     type="button"
                     id="ingest-protocol-srt"
                     data-protocol="srt"
-                    class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-lg px-4 shadow-none">
+                    class="btn btn-sm border-base-content/10 bg-base-100/70 text-base-content/80 hover:bg-base-100 min-w-20 rounded-lg px-4 shadow-none"
+                  >
                     SRT
                   </button>
                 </div>
-                <button type="button" id="ingest-url-copy-btn" class="btn btn-sm btn-outline btn-accent" aria-label="Copy ingest URL">
+                <button
+                  type="button"
+                  id="ingest-url-copy-btn"
+                  class="btn btn-sm btn-outline btn-accent"
+                  aria-label="Copy ingest URL"
+                >
                   Copy URL
                 </button>
               </div>
 
-              <div id="ingest-url-surface" class="border-base-content/10 bg-base-200 mt-3 hidden rounded-lg border px-4 py-3">
-                <code class="text-base-content/90 block font-mono text-[0.98rem] leading-7 break-all" id="ingest-url" data-copy=""></code>
+              <div
+                id="ingest-url-surface"
+                class="border-base-content/10 bg-base-200 mt-3 hidden rounded-lg border px-4 py-3"
+              >
+                <code
+                  class="text-base-content/90 block font-mono text-[0.98rem] leading-7 break-all"
+                  id="ingest-url"
+                  data-copy=""
+                ></code>
               </div>
 
-              <div id="ingest-url-details" class="border-base-content/10 bg-base-200 mt-3 hidden rounded-lg border p-3">
-                <div id="ingest-url-details-heading" class="text-base-content/60 text-xs font-semibold">Operator Fields</div>
-                <p id="ingest-url-details-note" class="text-base-content/60 mt-1 hidden text-xs leading-5"></p>
-                <div id="ingest-details-grid" class="mt-3 grid gap-2 sm:grid-cols-2"></div>
+              <div
+                id="ingest-url-details"
+                class="border-base-content/10 bg-base-200 mt-3 hidden rounded-lg border p-3"
+              >
+                <div
+                  id="ingest-url-details-heading"
+                  class="text-base-content/60 text-xs font-semibold"
+                >
+                  Operator Fields
+                </div>
+                <p
+                  id="ingest-url-details-note"
+                  class="text-base-content/60 mt-1 hidden text-xs leading-5"
+                ></p>
+                <div
+                  id="ingest-details-grid"
+                  class="mt-3 grid gap-2 sm:grid-cols-2"
+                ></div>
               </div>
             </section>
           </div>
@@ -700,16 +1293,30 @@
       </div>
 
       <!-- Right Column -->
-      <div class="border-base-content/10 bg-base-200 hidden w-full min-w-[24rem] overflow-y-auto rounded-lg border p-4" id="outs-col">
-        <h2 class="text-base-content/70 mb-3 text-sm font-semibold uppercase">Outputs</h2>
+      <div
+        class="border-base-content/10 bg-base-200 hidden w-full min-w-[24rem] overflow-y-auto rounded-lg border p-4"
+        id="outs-col"
+      >
+        <h2 class="text-base-content/70 mb-3 text-sm font-semibold uppercase">
+          Outputs
+        </h2>
         <div class="space-y-3" id="outputs-list"></div>
         <div class="mt-5 w-full text-center">
-          <button class="btn btn-sm btn-accent btn-outline" id="add-out-btn" onclick="addOutBtn()">Add Output</button>
+          <button
+            class="btn btn-sm btn-accent btn-outline"
+            id="add-out-btn"
+            onclick="addOutBtn()"
+          >
+            Add Output
+          </button>
         </div>
       </div>
 
       <!-- Stats Column -->
-      <div class="border-base-content/10 bg-base-200 hidden overflow-y-auto rounded-lg border p-4" id="stats-col">
+      <div
+        class="border-base-content/10 bg-base-200 hidden overflow-y-auto rounded-lg border p-4"
+        id="stats-col"
+      >
         <div class="overflow-x-auto">
           <table class="table">
             <!-- head -->

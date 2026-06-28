@@ -63,6 +63,7 @@ pub struct ProposedChange {
     pub output_id: Option<String>,
     pub name: Option<String>,
     pub url: Option<String>,
+    pub monitoring_url: Option<String>,
     pub encoding: Option<String>,
     pub desired_state: Option<String>,
 }
@@ -293,6 +294,7 @@ pub fn schema_catalog() -> Value {
                 "outputId": {"type": "string", "optional": true},
                 "name": {"type": "string", "optional": true},
                 "url": {"type": "string", "optional": true, "redacted": true},
+                "monitoringUrl": {"type": "string", "optional": true, "redacted": true},
                 "encoding": {"type": "string", "optional": true},
                 "desiredState": {"type": "string", "optional": true, "enum": ["running", "stopped"]}
             }
@@ -358,7 +360,7 @@ fn redact_map(map: Map<String, Value>) -> Map<String, Value> {
                     out.insert(key, redact_secrets(value));
                 }
             }
-            "targetUrl" | "url" => {
+            "targetUrl" | "url" | "monitoringUrl" | "monitoring_url" => {
                 if let Some(raw) = value.as_str() {
                     out.insert(format!("{key}Redacted"), redacted_url(raw));
                     out.insert(format!("{key}Fingerprint"), fingerprint(raw));
@@ -396,6 +398,7 @@ fn redacted_output(output: &Output) -> Value {
         "urlFingerprint": fingerprint(&output.url),
         "desiredState": output.desired_state,
         "encoding": output.encoding,
+        "monitoringUrl": output.monitoring_url.as_ref().map(|url| redacted_url(url)),
     })
 }
 
@@ -946,6 +949,7 @@ mod tests {
                 output_id: None,
                 name: Some("CDN".to_string()),
                 url: Some("ftp://example".to_string()),
+                monitoring_url: None,
                 encoding: Some("720p".to_string()),
                 desired_state: None,
             }],
@@ -978,6 +982,7 @@ mod tests {
                 output_id: None,
                 name: None,
                 url: Some("rtmp://example/live/key".to_string()),
+                monitoring_url: None,
                 encoding: Some("720p+atrack:0".to_string()),
                 desired_state: None,
             }],

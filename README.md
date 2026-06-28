@@ -52,20 +52,10 @@ scripts/resource-limit cargo clippy
 cargo fmt
 ```
 
-`./scripts/bootstrap-dev.sh` also installs a repo-managed `pre-commit` hook.
-That hook auto-formats staged Rust files with `rustfmt` and staged frontend
-source files with `prettier`. If you clone the repo without running bootstrap,
-install the hook manually with:
-
-```sh
-./scripts/install-git-hooks.sh
-```
-
 If you edit frontend assets:
 
 ```sh
 npm run build:frontend
-npx tailwindcss -i public/input.css -o public/output.css
 ```
 
 ## Codebase Map
