@@ -121,7 +121,7 @@ fn build_policy_snapshot(
     let mut per_stream_key = HashMap::with_capacity(pipelines.len());
     for pipeline in pipelines {
         let pipeline_policy =
-            parse_pipeline_srt_ingest_policy_json(pipeline.srt_ingest_policy_json.as_deref())
+            parse_pipeline_srt_ingest_policy(pipeline.srt_ingest_policy.as_deref())
                 .unwrap_or_default();
         match pipeline_policy.resolve(&global) {
             Ok(resolved) => {
@@ -1518,7 +1518,7 @@ impl SrtServer {
 
         // Query pipeline for stream key validation
         let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?"
+            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
         )
         .bind(stream_key)
         .fetch_optional(&self.db)
@@ -3124,11 +3124,11 @@ pub async fn load_global_srt_ingest_config(db: &sqlx::SqlitePool) -> SrtGlobalIn
     config
 }
 
-pub fn parse_pipeline_srt_ingest_policy_json(raw: Option<&str>) -> Option<SrtPipelineIngestConfig> {
+pub fn parse_pipeline_srt_ingest_policy(raw: Option<&str>) -> Option<SrtPipelineIngestConfig> {
     raw.and_then(|value| serde_json::from_str::<SrtPipelineIngestConfig>(value).ok())
 }
 
-pub fn serialize_pipeline_srt_ingest_policy_json(
+pub fn serialize_pipeline_srt_ingest_policy(
     config: &SrtPipelineIngestConfig,
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(config)

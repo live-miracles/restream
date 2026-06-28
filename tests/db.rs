@@ -10,7 +10,7 @@ async fn test_pool() -> sqlx::SqlitePool {
 async fn pipeline_crud() {
     let pool = test_pool().await;
 
-    let p = db::create_pipeline(&pool, "p1", "Test Pipeline", "key01", None, None)
+    let p = db::create_pipeline(&pool, "p1", "Test Pipeline", "key01", None, None, None)
         .await
         .unwrap();
     assert_eq!(p.id, "p1");
@@ -29,10 +29,18 @@ async fn pipeline_crud() {
     let all = db::list_pipelines(&pool).await.unwrap();
     assert_eq!(all.len(), 1);
 
-    let updated = db::update_pipeline(&pool, "p1", "Renamed", "key02", Some("file.mp4"), None)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = db::update_pipeline(
+        &pool,
+        "p1",
+        "Renamed",
+        "key02",
+        Some("file.mp4"),
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(updated.name, "Renamed");
     assert_eq!(updated.stream_key, "key02");
     assert_eq!(updated.input_source.as_deref(), Some("file.mp4"));
@@ -44,7 +52,7 @@ async fn pipeline_crud() {
 #[tokio::test]
 async fn update_nonexistent_pipeline_returns_none() {
     let pool = test_pool().await;
-    let result = db::update_pipeline(&pool, "nope", "x", "k", None, None)
+    let result = db::update_pipeline(&pool, "nope", "x", "k", None, None, None)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -53,7 +61,7 @@ async fn update_nonexistent_pipeline_returns_none() {
 #[tokio::test]
 async fn output_crud() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
 
@@ -96,7 +104,7 @@ async fn output_crud() {
 #[tokio::test]
 async fn cascade_delete_removes_outputs() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -111,7 +119,7 @@ async fn cascade_delete_removes_outputs() {
 #[tokio::test]
 async fn job_lifecycle() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -157,7 +165,7 @@ async fn job_lifecycle() {
 #[tokio::test]
 async fn job_upsert_on_conflict() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -196,7 +204,7 @@ async fn job_upsert_on_conflict() {
 #[tokio::test]
 async fn job_logs() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -305,7 +313,7 @@ async fn session_operations() {
 #[tokio::test]
 async fn reset_running_jobs() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -335,7 +343,7 @@ async fn reset_running_jobs() {
 #[tokio::test]
 async fn filtered_job_logs() {
     let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
     db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
@@ -461,7 +469,7 @@ async fn output_with_null_encoding_decodes_as_empty_string() {
     let pool = db::create_pool("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
 
-    db::create_pipeline(&pool, "p1", "P", "key-null-enc", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key-null-enc", None, None, None)
         .await
         .unwrap();
 

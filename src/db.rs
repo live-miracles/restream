@@ -2,8 +2,10 @@
 //! Schema is created via `CREATE TABLE IF NOT EXISTS` at startup (no migrations).
 //! WAL mode is enabled for concurrent reader/writer access.
 
+use crate::events;
 use crate::types::*;
-use sqlx::{Row, SqlitePool};
+use serde_json::json;
+use sqlx::{AssertSqlSafe, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::time::SystemTime;
 
 /// Create a connection pool with all per-connection PRAGMAs baked in via
@@ -189,8 +191,9 @@ async fn ensure_column_exists(
     column: &str,
     column_type: &str,
 ) -> Result<(), sqlx::Error> {
+    // table/column metadata here comes from hard-coded schema migration callsites.
     let pragma = format!("PRAGMA table_info({table})");
-    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+    let rows = sqlx::query(AssertSqlSafe(pragma)).fetch_all(pool).await?;
     let exists = rows
         .iter()
         .any(|row| row.get::<String, _>("name") == column);
@@ -198,8 +201,65 @@ async fn ensure_column_exists(
         return Ok(());
     }
     let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
-    sqlx::query(&alter).execute(pool).await?;
+    sqlx::query(AssertSqlSafe(alter)).execute(pool).await?;
     Ok(())
+}
+
+fn derive_event_class(event_type: &str) -> &str {
+    event_type.split('.').next().unwrap_or(event_type)
+}
+
+fn history_message(_event_type: &str, message: &str) -> String {
+    message.to_string()
+}
+
+async fn append_app_log_row(
+    pool: &SqlitePool,
+    level: &str,
+    target: &str,
+    message: &str,
+    fields: Option<&str>,
+    pipeline_id: Option<&str>,
+    output_id: Option<&str>,
+    event_type: Option<&str>,
+    event_class: Option<&str>,
+    ts: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let ts_value = ts
+        .map(str::to_string)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    sqlx::query(
+        "INSERT INTO app_logs (ts, level, target, message, fields, pipeline_id, output_id, event_type, event_class) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(ts_value)
+    .bind(level)
+    .bind(target)
+    .bind(message)
+    .bind(fields)
+    .bind(pipeline_id)
+    .bind(output_id)
+    .bind(event_type)
+    .bind(event_class)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn app_log_levels(level: Option<&str>) -> &'static [&'static str] {
+    match level.unwrap_or("info") {
+        "error" => &["ERROR"],
+        "warn" => &["ERROR", "WARN"],
+        "debug" => &["ERROR", "WARN", "INFO", "DEBUG"],
+        _ => &["ERROR", "WARN", "INFO"],
+    }
+}
+
+fn split_csv_terms(raw: &str) -> Vec<&str> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /* Pipeline Operations */
@@ -211,7 +271,7 @@ pub async fn create_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
-    srt_ingest_policy_json: Option<&str>,
+    srt_ingest_policy: Option<&str>,
 ) -> Result<Pipeline, sqlx::Error> {
     let exists =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pipelines WHERE stream_key = ?")
@@ -230,7 +290,7 @@ pub async fn create_pipeline(
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
-    .bind(srt_ingest_policy_json)
+    .bind(srt_ingest_policy)
     .execute(pool)
     .await?;
 
@@ -241,7 +301,7 @@ pub async fn create_pipeline(
 
 pub async fn get_pipeline(pool: &SqlitePool, id: &str) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE id = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -253,7 +313,7 @@ pub async fn get_pipeline_by_stream_key(
     stream_key: &str,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?",
     )
     .bind(stream_key)
     .fetch_optional(pool)
@@ -262,7 +322,7 @@ pub async fn get_pipeline_by_stream_key(
 
 pub async fn list_pipelines(pool: &SqlitePool) -> Result<Vec<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines",
     )
     .fetch_all(pool)
     .await
@@ -275,7 +335,7 @@ pub async fn update_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
-    srt_ingest_policy_json: Option<&str>,
+    srt_ingest_policy: Option<&str>,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     let duplicate = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pipelines WHERE stream_key = ? AND id != ?",
@@ -295,7 +355,7 @@ pub async fn update_pipeline(
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
-    .bind(srt_ingest_policy_json)
+    .bind(srt_ingest_policy)
     .bind(id)
     .execute(pool)
     .await?;
@@ -585,95 +645,245 @@ pub async fn list_app_logs(
     pool: &SqlitePool,
     filters: &crate::types::AppLogFilters,
 ) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
-    let mut clauses: Vec<String> = vec![];
-
-    let levels: &[&str] = match filters.level.as_deref().unwrap_or("info") {
-        "error" => &["ERROR"],
-        "warn" => &["ERROR", "WARN"],
-        "debug" => &["ERROR", "WARN", "INFO", "DEBUG"],
-        _ => &["ERROR", "WARN", "INFO"],
-    };
-    let placeholders = levels.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    clauses.push(format!("level IN ({})", placeholders));
-
-    if filters.target.is_some() {
-        clauses.push("target LIKE ?".to_string());
-    }
-    if filters.pipeline_id.is_some() {
-        clauses.push("pipeline_id = ?".to_string());
-    }
-    if filters.output_id.is_some() {
-        clauses.push("output_id = ?".to_string());
-    }
-    if filters.event_class.is_some() {
-        clauses.push("event_class = ?".to_string());
-    }
-    if filters.since.is_some() {
-        clauses.push("ts >= ?".to_string());
-    }
-    if filters.until.is_some() {
-        clauses.push("ts < ?".to_string());
-    }
-
-    // Comma-separated message prefix filter (e.g. "stderr,exit,control")
-    if let Some(ref prefix) = filters.prefix {
-        let parts: Vec<_> = prefix
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !parts.is_empty() {
-            let px: Vec<_> = parts.iter().map(|_| "message LIKE ?".to_string()).collect();
-            clauses.push(format!("({})", px.join(" OR ")));
-        }
-    }
-
+    let levels = app_log_levels(filters.level.as_deref());
+    let prefix_terms = filters
+        .prefix
+        .as_deref()
+        .map(split_csv_terms)
+        .unwrap_or_default();
     let order = if filters.order.as_deref() == Some("asc") {
         "ASC"
     } else {
         "DESC"
     };
     let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", clauses.join(" AND "))
-    };
-    let sql = format!(
-        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
-         FROM app_logs {} ORDER BY ts {}, id {} LIMIT {}",
-        where_clause, order, order, limit
-    );
 
-    let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(&sql);
-    for l in levels {
-        q = q.bind(l);
+    let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs WHERE level IN (",
+    );
+    {
+        let mut separated = builder.separated(", ");
+        for level in levels {
+            separated.push_bind(*level);
+        }
     }
+    builder.push(")");
+
     if let Some(ref t) = filters.target {
-        q = q.bind(format!("{}%", t));
+        builder.push(" AND target LIKE ").push_bind(format!("{t}%"));
     }
     if let Some(ref p) = filters.pipeline_id {
-        q = q.bind(p);
+        builder.push(" AND pipeline_id = ").push_bind(p);
     }
     if let Some(ref o) = filters.output_id {
-        q = q.bind(o);
+        builder.push(" AND output_id = ").push_bind(o);
     }
     if let Some(ref ec) = filters.event_class {
-        q = q.bind(ec);
+        builder.push(" AND event_class = ").push_bind(ec);
     }
     if let Some(ref s) = filters.since {
-        q = q.bind(s);
+        builder.push(" AND ts >= ").push_bind(s);
     }
     if let Some(ref u) = filters.until {
-        q = q.bind(u);
+        builder.push(" AND ts < ").push_bind(u);
     }
-    if let Some(ref prefix) = filters.prefix {
-        for p in prefix.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            q = q.bind(format!("{}%", p));
+
+    if !prefix_terms.is_empty() {
+        builder.push(" AND (");
+        {
+            let mut separated = builder.separated(" OR ");
+            for prefix in prefix_terms {
+                separated
+                    .push("message LIKE ")
+                    .push_bind_unseparated(format!("{prefix}%"));
+            }
+        }
+        builder.push(")");
+    }
+
+    builder
+        .push(" ORDER BY ts ")
+        .push(order)
+        .push(", id ")
+        .push(order)
+        .push(" LIMIT ")
+        .push_bind(limit);
+
+    builder
+        .build_query_as::<crate::types::AppLogRow>()
+        .fetch_all(pool)
+        .await
+}
+
+/// Backwards-compatible lifecycle logging API used by historical tests.
+pub async fn append_lifecycle_event(
+    pool: &SqlitePool,
+    event: &events::Event,
+) -> Result<(), sqlx::Error> {
+    let event_type = event.kind.event_type();
+    let kind_payload = serde_json::to_string(&event.kind).unwrap_or_else(|_| json!({}).to_string());
+    append_app_log_row(
+        pool,
+        "INFO",
+        "restream::lifecycle",
+        &event.kind.message(),
+        Some(&kind_payload),
+        Some(event.kind.pipeline_id()),
+        event.kind.output_id(),
+        Some(event_type),
+        Some("lifecycle"),
+        Some(
+            &event
+                .timestamp
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        ),
+    )
+    .await
+}
+
+/// Backwards-compatible job logging helper used by older tests.
+pub async fn append_job_log(
+    pool: &SqlitePool,
+    job_id: Option<&str>,
+    pipeline_id: Option<&str>,
+    output_id: Option<&str>,
+    event_type: &str,
+    event_class: Option<&str>,
+    ts: &str,
+    message: &str,
+) -> Result<(), sqlx::Error> {
+    let job_label = job_id.unwrap_or("global");
+    let class = event_class
+        .unwrap_or(derive_event_class(event_type))
+        .to_string();
+    let target = format!("restream::job:{job_label}");
+    let payload = serde_json::to_string(&json!({
+        "jobId": job_id,
+        "eventType": event_type,
+        "eventClass": class,
+        "pipelineId": pipeline_id,
+        "outputId": output_id,
+    }))
+    .unwrap_or_else(|_| json!({}).to_string());
+    append_app_log_row(
+        pool,
+        "INFO",
+        &target,
+        &history_message(event_type, message),
+        Some(&payload),
+        pipeline_id,
+        output_id,
+        Some(event_type),
+        Some(&class),
+        Some(ts),
+    )
+    .await
+}
+
+pub async fn list_job_logs(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    let target = format!("restream::job:{job_id}");
+    sqlx::query_as::<_, crate::types::AppLogRow>(
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs WHERE target = ? ORDER BY ts ASC, id ASC",
+    )
+    .bind(&target)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_job_logs_by_output(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    output_id: &str,
+) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    sqlx::query_as::<_, crate::types::AppLogRow>(
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs WHERE pipeline_id = ? AND output_id = ? AND target LIKE 'restream::job:%' \
+         ORDER BY ts ASC, id ASC",
+    )
+    .bind(pipeline_id)
+    .bind(output_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_job_logs_by_output_filtered(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    output_id: &str,
+    filters: &crate::types::HistoryFilters,
+) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
+    let order = filters.order.as_deref().unwrap_or("desc");
+    let order = if order == "asc" { "ASC" } else { "DESC" };
+    let mut builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs WHERE pipeline_id = ",
+    );
+    builder
+        .push_bind(pipeline_id)
+        .push(" AND output_id = ")
+        .push_bind(output_id)
+        .push(" AND target LIKE 'restream::job:%'");
+
+    if filters.since.is_some() {
+        builder
+            .push(" AND ts >= ")
+            .push_bind(filters.since.as_deref().unwrap_or_default());
+    }
+    if filters.until.is_some() {
+        builder
+            .push(" AND ts < ")
+            .push_bind(filters.until.as_deref().unwrap_or_default());
+    }
+
+    if let Some(prefixes) = filters.prefixes.as_deref() {
+        if !prefixes.is_empty() {
+            builder.push(" AND (");
+            {
+                let mut separated = builder.separated(" OR ");
+                for prefix in prefixes {
+                    separated
+                        .push("message LIKE ")
+                        .push_bind_unseparated(format!("{prefix}%"));
+                }
+            }
+            builder.push(")");
         }
     }
 
-    q.fetch_all(pool).await
+    builder
+        .push(" ORDER BY ts ")
+        .push(order)
+        .push(", id ")
+        .push(order)
+        .push(" LIMIT ")
+        .push_bind(limit);
+
+    builder
+        .build_query_as::<crate::types::AppLogRow>()
+        .fetch_all(pool)
+        .await
+}
+
+pub async fn list_lifecycle_logs_by_output(
+    pool: &SqlitePool,
+    pipeline_id: &str,
+    output_id: &str,
+) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    sqlx::query_as::<_, crate::types::AppLogRow>(
+        "SELECT id, ts, level, target, message, fields, pipeline_id, output_id, event_type \
+         FROM app_logs WHERE pipeline_id = ? AND output_id = ? AND event_class = 'lifecycle' \
+         ORDER BY ts ASC, id ASC",
+    )
+    .bind(pipeline_id)
+    .bind(output_id)
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn delete_app_logs_older_than(pool: &SqlitePool, days: i64) -> Result<(), sqlx::Error> {

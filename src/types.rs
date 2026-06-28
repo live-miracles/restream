@@ -197,7 +197,7 @@ pub struct Pipeline {
     pub input_source: Option<String>,
     pub encoding: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
-    pub srt_ingest_policy_json: Option<String>,
+    pub srt_ingest_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -268,6 +268,17 @@ pub struct AppLogFilters {
     pub prefix: Option<String>,
     pub limit: Option<i64>,
     pub order: Option<String>,
+}
+
+/// Historic filter shape used by compatibility history endpoints/tests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFilters {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub limit: Option<i64>,
+    pub order: Option<String>,
+    pub prefixes: Option<Vec<String>>,
 }
 
 #[cfg(test)]

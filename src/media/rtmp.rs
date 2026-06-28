@@ -962,7 +962,7 @@ async fn handle_session_results(
 
                         // Validate stream key against database pipelines
                         let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?"
+                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
                         )
                         .bind(&stream_key)
                         .fetch_optional(db)
@@ -1181,7 +1181,7 @@ async fn handle_session_results(
                     } => {
                         // Look up pipeline by stream key
                         let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?"
+                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
                         )
                         .bind(&stream_key)
                         .fetch_optional(db)

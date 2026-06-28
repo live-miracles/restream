@@ -400,6 +400,18 @@ pub async fn start_hls_segmenter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_lock<T>(f: impl FnOnce() -> T) -> T {
+        let guard: MutexGuard<'_, ()> = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = f();
+        drop(guard);
+        result
+    }
 
     #[test]
     fn playlist_references_stored_segments() {
@@ -691,33 +703,52 @@ mod tests {
 
     #[test]
     fn hls_config_from_env_uses_defaults_when_unset() {
-        // Safety: single-threaded test context; no other thread reads these vars.
-        unsafe {
-            std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
-            std::env::remove_var("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES");
-            std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
-        }
-        let cfg = HlsConfig::from_env();
-        let defaults = HlsConfig::default();
-        assert_eq!(cfg.min_segment_secs, defaults.min_segment_secs);
-        assert_eq!(cfg.segment_capacity, defaults.segment_capacity);
-        assert_eq!(cfg.max_segments, defaults.max_segments);
+        with_env_lock(|| {
+            unsafe {
+                std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
+                std::env::remove_var("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES");
+                std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
+            }
+            let cfg = HlsConfig::from_env();
+            let defaults = HlsConfig::default();
+            assert_eq!(cfg.min_segment_secs, defaults.min_segment_secs);
+            assert_eq!(cfg.segment_capacity, defaults.segment_capacity);
+            assert_eq!(cfg.max_segments, defaults.max_segments);
+        });
     }
 
     #[test]
     fn hls_config_from_env_reads_env_vars() {
-        // Safety: single-threaded test context; no other thread reads these vars.
-        unsafe {
-            std::env::set_var("RESTREAM_HLS_MIN_SEGMENT_MS", "500");
-            std::env::set_var("RESTREAM_HLS_MAX_SEGMENTS", "5");
-        }
-        let cfg = HlsConfig::from_env();
-        unsafe {
-            std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
-            std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
-        }
-        assert!((cfg.min_segment_secs - 0.5).abs() < 0.001);
-        assert_eq!(cfg.max_segments, 5);
+        with_env_lock(|| {
+            unsafe {
+                std::env::set_var("RESTREAM_HLS_MIN_SEGMENT_MS", "500");
+                std::env::set_var("RESTREAM_HLS_MAX_SEGMENTS", "5");
+            }
+            let cfg = HlsConfig::from_env();
+            unsafe {
+                std::env::remove_var("RESTREAM_HLS_MIN_SEGMENT_MS");
+                std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
+            }
+            assert!((cfg.min_segment_secs - 0.5).abs() < 0.001);
+            assert_eq!(cfg.max_segments, 5);
+        });
+    }
+
+    #[test]
+    fn hls_config_from_env_reads_env_vars_when_set_to_custom_capacity() {
+        with_env_lock(|| {
+            unsafe {
+                std::env::set_var("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES", "524288");
+                std::env::set_var("RESTREAM_HLS_MAX_SEGMENTS", "9");
+            }
+            let cfg = HlsConfig::from_env();
+            unsafe {
+                std::env::remove_var("RESTREAM_HLS_SEGMENT_CAPACITY_BYTES");
+                std::env::remove_var("RESTREAM_HLS_MAX_SEGMENTS");
+            }
+            assert_eq!(cfg.segment_capacity, 524288);
+            assert_eq!(cfg.max_segments, 9);
+        });
     }
 
     #[test]
