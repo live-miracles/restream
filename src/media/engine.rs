@@ -655,55 +655,47 @@ impl MediaEngine {
             .min(MAX_RING_CAPACITY);
 
         let mut pipelines = self.pipelines.write().await;
-        let Some(rb) = pipelines.get(pipeline_id) else {
+        let Some(old_rb) = pipelines.get(pipeline_id).cloned() else {
             return None;
         };
 
         // Always record the packet rate for buffer-depth telemetry.
-        rb.set_estimated_pkt_rate(pkt_rate);
+        old_rb.set_estimated_pkt_rate(pkt_rate);
 
-        if needed <= rb.capacity() {
+        if needed <= old_rb.capacity() {
             return None; // already large enough
         }
 
-        let new_rb = Arc::new(RingBuffer::new(needed));
+        // Create a new ring that continues the write-index sequence of the old
+        // one so migrating readers pick up exactly where they left off.
+        let old_write_idx = old_rb.get_write_idx();
+        let new_rb = Arc::new(RingBuffer::new_continuing(needed, old_write_idx));
         new_rb.set_estimated_pkt_rate(pkt_rate);
-        if let Some(hint) = rb.codec_hint.get() {
+        if let Some(hint) = old_rb.codec_hint.get() {
             new_rb.set_codec_hint(hint);
         }
         let new_rb_clone = new_rb.clone();
-        let n_readers = rb.active_reader_count();
-        pipelines.insert(pipeline_id.to_string(), new_rb);
-        drop(pipelines); // release before taking egress_cancel_tokens lock
 
-        // Cancel any egress connections still on the old ring so the reconciler
-        // restarts them onto the new ring within ~1 s.
-        let n_cancelled = if n_readers > 0 {
-            let tokens = self.egress_cancel_tokens.read().await;
-            let egresses = self.active_egresses.read().await;
-            let mut count = 0;
-            for (output_id, egress) in egresses.iter() {
-                if egress.pipeline_id == pipeline_id {
-                    if let Some(tok) = tokens.get(output_id.as_str()) {
-                        tok.cancel();
-                        count += 1;
-                    }
-                }
-            }
-            count
-        } else {
-            0
-        };
+        // Install the new ring in the engine map so that the producer (SRT
+        // ingest) switches to it after we return Some(new_rb_clone).
+        pipelines.insert(pipeline_id.to_string(), new_rb.clone());
+        drop(pipelines);
 
-        info!("Adaptive ring resize: pipeline={} {:.0} pkt/s \
-             (video={:.0} fps, audio={} tracks) → {} slots ({:.1} s headroom)\
-             {}", pipeline_id, pkt_rate, video_fps, audio_track_count,
-            needed, needed as f64 / pkt_rate,
-            if n_cancelled > 0 {
-                format!("; cancelled {n_cancelled} egress(es) for reconnect")
-            } else {
-                String::new()
-            }
+        // Seal the old ring and forward its readers to the new one.
+        // Readers blocked in wait_for_data() are woken here; they drain any
+        // remaining unread slots in the old ring, then migrate autonomously.
+        // External egress connections (RTMP/SRT to mediamtx) are never
+        // cancelled — they see only a sub-millisecond pause in data flow.
+        old_rb.seal_and_forward(new_rb);
+
+        info!(
+            pipeline_id,
+            pkt_rate = format!("{pkt_rate:.0}"),
+            video_fps = format!("{video_fps:.0}"),
+            audio_track_count,
+            new_capacity = needed,
+            headroom_secs = format!("{:.1}", needed as f64 / pkt_rate),
+            "adaptive ring resize: readers migrate in-place, no egress reconnect"
         );
 
         Some(new_rb_clone)

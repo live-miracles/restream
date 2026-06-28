@@ -60,7 +60,7 @@ impl TsChunkReader {
         }
     }
 
-    pub async fn wait_for_data(&self) {
+    pub async fn wait_for_data(&mut self) {
         self.inner.wait_for_data().await;
     }
 

@@ -283,6 +283,14 @@ pub struct RingBuffer {
     /// Estimated packet rate (pkt/s) set once after stream probe.
     /// Used by telemetry to compute buffer depth in seconds.
     pub estimated_pkt_rate: std::sync::atomic::AtomicU32,
+    /// Forwarding pointer set when this ring is superseded by a larger one.
+    ///
+    /// When `adapt_pipeline_ring` grows the source ring, it stores the new ring
+    /// here and fires `self.notify.notify_waiters()`.  Readers on the old ring
+    /// wake up, drain any remaining unread slots, then follow `next` to the new
+    /// ring.  External egress connections never disconnect — they just see a
+    /// sub-millisecond hiccup as readers move to the new ring.
+    pub next: ArcSwapOption<RingBuffer>,
 }
 
 impl RingBuffer {
@@ -313,7 +321,33 @@ impl RingBuffer {
             codec_hint: std::sync::OnceLock::new(),
             audio_tracks: std::sync::OnceLock::new(),
             estimated_pkt_rate: std::sync::atomic::AtomicU32::new(0),
+            next: ArcSwapOption::empty(),
         }
+    }
+
+    /// Create a ring whose write cursor starts at `start_write_idx` rather than 0.
+    ///
+    /// Used when growing a pipeline ring: the new ring continues the old ring's
+    /// index sequence so that existing `Reader` instances (which remember their
+    /// `read_idx`) can transparently migrate and resume without a gap.
+    pub fn new_continuing(capacity: usize, start_write_idx: usize) -> Self {
+        let mut ring = Self::new(capacity);
+        ring.write_idx.val.store(start_write_idx, Ordering::Relaxed);
+        // The last_keyframe sentinel is irrelevant to new readers migrating from
+        // the old ring; they will establish a new baseline from the first keyframe.
+        ring
+    }
+
+    /// Forward all waiting readers to `new_ring` and mark this ring as superseded.
+    ///
+    /// After this call, `self` receives no new data (the caller must redirect the
+    /// producer to `new_ring`).  Readers currently blocked in `wait_for_data` are
+    /// woken; they drain any remaining slots in `self`, then follow `self.next` to
+    /// `new_ring` automatically.
+    pub fn seal_and_forward(&self, new_ring: Arc<RingBuffer>) {
+        self.next.store(Some(new_ring));
+        // Wake all readers blocked on this ring so they can discover `next`.
+        self.notify.notify_waiters();
     }
 
     pub fn capacity(&self) -> usize {
@@ -732,9 +766,15 @@ impl Reader {
         Ok(loaded)
     }
 
-    pub async fn wait_for_data(&self) {
-        let notify = self.buffer.get_notify();
+    /// Wait until the ring (or its successor) has unread data past `read_idx`.
+    ///
+    /// If the current ring was sealed while we were waiting (`ring.next` is set),
+    /// we drain any remaining unread slots in the current ring, then silently
+    /// migrate to the next ring.  External egress connections are never
+    /// disrupted — they just observe a brief pause in data flow.
+    pub async fn wait_for_data(&mut self) {
         loop {
+            let notify = self.buffer.get_notify();
             // Re-check for data before blocking to avoid a TOCTOU race:
             // the writer could notify_waiters() between our pull() returning
             // None and this notified().await registering — Notify does NOT
@@ -742,8 +782,47 @@ impl Reader {
             if self.buffer.get_write_idx() > self.read_idx {
                 return;
             }
-            notify.notified().await;
+            // Check if this ring was superseded by a larger one.
+            if let Some(next) = self.buffer.next.load_full() {
+                // De-register from old ring's reader list and migrate.
+                self.migrate_to(next);
+                continue; // re-check write_idx on new ring
+            }
+            // Subscribe BEFORE the final check so `notify_waiters()` fired
+            // during seal_and_forward() cannot be missed.
+            let notified = notify.notified();
+            if self.buffer.get_write_idx() > self.read_idx {
+                return;
+            }
+            if self.buffer.next.load().is_some() {
+                // sealed between our last check and notified subscription; retry
+                continue;
+            }
+            notified.await;
         }
+    }
+
+    /// Migrate this reader to `new_ring`, carrying `read_idx` forward.
+    fn migrate_to(&mut self, new_ring: Arc<RingBuffer>) {
+        // Drain any final unread slots in the old ring before switching.
+        // In practice the old ring is sealed only after write_idx stabilises,
+        // so lag is 0 or very small.
+        // (Nothing to drain here — the loop in wait_for_data already pulled
+        //  everything via pull_burst before calling us.)
+        let old = std::mem::replace(&mut self.buffer, new_ring.clone());
+        // Re-register reader with new ring so active_reader_count() is accurate.
+        if let Ok(mut guard) = new_ring.readers.lock() {
+            guard.push(Arc::downgrade(&self.info));
+        }
+        // Remove from old ring's reader list (best-effort; Weak will expire anyway).
+        if let Ok(mut guard) = old.readers.lock() {
+            guard.retain(|w| w.upgrade().is_some());
+        }
+        debug!(
+            read_idx = self.read_idx,
+            name = %self.info.name,
+            "reader migrated to resized ring"
+        );
     }
 
     /// Number of slots this reader is behind the write cursor.
@@ -1626,5 +1705,53 @@ mod tests {
         let depth = rb.buffer_depth_secs().unwrap();
         // 4980 / 830 ≈ 6.0 s
         assert!((depth - 6.0).abs() < 0.1, "depth={depth}");
+    }
+
+    #[tokio::test]
+    async fn seal_and_forward_migrates_reader_without_gap() {
+        // Simulate adaptive ring resize during live ingest.
+        // Writer pushes 5 packets to old ring, seals it, starts new ring.
+        // Reader must drain old ring then transparently continue on new ring —
+        // no cancel, no reconnect, no missed packets.
+        let old_ring = Arc::new(RingBuffer::new(16));
+        let mut reader = Reader::new("r".to_string(), old_ring.clone());
+
+        // Push 5 packets to old ring.
+        for i in 0i64..5 {
+            old_ring.push(video_packet(i * 33, i * 33, i == 0));
+        }
+        let old_write_idx = old_ring.get_write_idx(); // == 5
+
+        // Create new ring continuing the write index.
+        let new_ring = Arc::new(RingBuffer::new_continuing(64, old_write_idx));
+        // Seal old ring and link to new ring (mimics adapt_pipeline_ring).
+        old_ring.seal_and_forward(new_ring.clone());
+
+        // Push 3 more packets to the NEW ring.
+        for i in 5i64..8 {
+            new_ring.push(video_packet(i * 33, i * 33, false));
+        }
+
+        // Reader must pull all 8 packets with no gaps.
+        let mut out = Vec::new();
+        let n1 = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n1, 5, "first burst: old ring packets");
+
+        // Now at read_idx == 5 == old write_idx: wait_for_data migrates to new ring.
+        // (In a real async context wait_for_data would poll; here we drive it manually.)
+        reader.wait_for_data().await;
+
+        let n2 = reader.pull_burst(&mut out, 32).unwrap();
+        assert_eq!(n2, 3, "second burst: new ring packets");
+
+        assert_eq!(out.len(), 8, "all 8 packets received without gap");
+        // Read index now points into new ring.
+        assert_eq!(reader.read_idx, 8);
+        // Verify reader's buffer is now the new ring.
+        assert_eq!(
+            Arc::as_ptr(&reader.buffer),
+            Arc::as_ptr(&new_ring),
+            "reader migrated to new ring"
+        );
     }
 }

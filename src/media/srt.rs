@@ -3350,7 +3350,7 @@ pub async fn start_srt_egress(
         // before any data is ready results in an idle publisher that MediaMTX
         // closes for inactivity before the first packet ever arrives.
         if !ring_buffer.codec_hint_str().is_empty() {
-            let warmup = crate::media::ring_buffer::Reader::new(
+            let mut warmup = crate::media::ring_buffer::Reader::new(
                 format!("srt_egress_warmup:{}", output_id),
                 ring_buffer.clone(),
             );
