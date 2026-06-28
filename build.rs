@@ -15,7 +15,7 @@ fn main() {
     embed_toolchain_versions();
     embed_rust_dependency_inventory();
 
-    // All native libraries (SRT, FFmpeg, OpenSSL, libstdc++) are always linked
+    // All native libraries (SRT, FFmpeg, Mbed TLS, libstdc++) are always linked
     // statically from the repo-managed static prefix built by setup-static-build.sh.
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR missing"),
@@ -24,10 +24,10 @@ fn main() {
     let lib_dir = prefix.join("lib");
     let pkgconfig_dir = lib_dir.join("pkgconfig");
 
-    // Prepend the static prefix to pkg-config's search path so FFmpeg, SRT, and
-    // codec .pc files from the prefix take priority over any system-installed
-    // counterparts, while OpenSSL (not built into the prefix) still resolves
-    // from the system paths.
+    // Prepend the static prefix to pkg-config's search path so FFmpeg, SRT,
+    // codec, and Mbed TLS .pc files from the prefix take priority over any
+    // system-installed counterparts. setup-static-build.sh builds a pinned
+    // Mbed TLS into the prefix; this prepend is what makes it win over the host.
     let existing_pkg_config_path = std::env::var("PKG_CONFIG_PATH").unwrap_or_default();
     let new_pkg_config_path = if existing_pkg_config_path.is_empty() {
         pkgconfig_dir.display().to_string()
@@ -75,21 +75,26 @@ fn main() {
         .expect("C++ compiler did not return an absolute libstdc++.a path");
     println!("cargo:rustc-link-search=native={}", stdcxx_dir.display());
 
-    // OpenSSL is not built into the static prefix — resolve its library
-    // directory from the system pkg-config so the linker can find libssl.a.
-    if let Ok(openssl) = pkg_config::Config::new()
+    // Resolve Mbed TLS's static library directory via pkg-config. With the
+    // static prefix prepended to PKG_CONFIG_PATH above, this picks the pinned
+    // Mbed TLS built by setup-static-build.sh; it falls back to the system copy
+    // if the prefix has not been built.
+    if let Ok(mbedtls) = pkg_config::Config::new()
         .statik(true)
         .cargo_metadata(false)
-        .probe("openssl")
+        .probe("mbedcrypto")
     {
-        for path in &openssl.link_paths {
+        for path in &mbedtls.link_paths {
             println!("cargo:rustc-link-search=native={}", path.display());
         }
     }
 
     println!("cargo:rustc-link-lib=static=srt");
-    println!("cargo:rustc-link-lib=static=ssl");
-    println!("cargo:rustc-link-lib=static=crypto");
+    // SRT references symbols from all three Mbed TLS archives; mbedtls depends
+    // on mbedx509 which depends on mbedcrypto, so list them in that order.
+    println!("cargo:rustc-link-lib=static=mbedtls");
+    println!("cargo:rustc-link-lib=static=mbedx509");
+    println!("cargo:rustc-link-lib=static=mbedcrypto");
     println!("cargo:rustc-link-arg=-Wl,-Bstatic");
     println!("cargo:rustc-link-arg=-Wl,--start-group");
     println!("cargo:rustc-link-arg=-lstdc++");
@@ -124,7 +129,7 @@ fn main() {
 
     embed_pkg_version("RESTREAM_BUILD_X264_VERSION", "x264");
     embed_pkg_version("RESTREAM_BUILD_X265_VERSION", "x265");
-    embed_pkg_version("RESTREAM_BUILD_OPENSSL_VERSION", "openssl");
+    embed_pkg_version("RESTREAM_BUILD_MBEDTLS_VERSION", "mbedcrypto");
 }
 
 fn embed_pkg_version(env_name: &str, package: &str) {

@@ -56,16 +56,15 @@ If you are not using `bootstrap-dev.sh`, you will need:
 - Rust toolchain pinned in `rust-toolchain.toml`
 - FFmpeg development packages available through `pkg-config`
 - `clang`, `nasm`, `mold`, `cmake`, `pkg-config`, `perl`
-- `libssl-dev`
-- `ffmpeg`, `curl`, `jq`
+- `ffmpeg`, `curl`, `bzip2`, `jq`
 - Node.js `>= 20` plus `npm` for frontend work
 
 On Debian/Ubuntu, the bootstrap script installs:
 
 ```sh
-apt-get install -y build-essential ca-certificates clang cmake curl ffmpeg \
+apt-get install -y build-essential bzip2 ca-certificates clang cmake curl ffmpeg \
   git jq libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
-  libavutil-dev libssl-dev libswresample-dev libswscale-dev mold nasm \
+  libavutil-dev libswresample-dev libswscale-dev mold nasm \
   ninja-build perl pkg-config
 ```
 
@@ -78,6 +77,13 @@ Before the first Rust build, make sure the repo-managed native prefix exists:
 ```sh
 scripts/resource-limit ./scripts/setup-static-build.sh
 ```
+
+That native setup builds SRT against a repo-managed Mbed TLS instead of the
+host's OpenSSL. [scripts/mbedtls-config-srt.h](../scripts/mbedtls-config-srt.h)
+is intentionally a whole-build replacement config, not a small override: it
+keeps only the AES-CTR, PBKDF2-HMAC-SHA1, entropy/CTR-DRBG, and version-report
+pieces that SRT's CRYSPR backend actually calls. The goal is a smaller static
+artifact, a tighter SBOM, and less unused crypto surface in the shipped binary.
 
 ## Inner Loop
 
@@ -139,6 +145,17 @@ Available suites include:
 - `alert_tracker`
 - `stage_feeder`
 - `simd_alternatives`
+
+For the SRT crypto migration specifically, compare plaintext vs encrypted local
+socket cost with:
+
+```sh
+scripts/resource-limit cargo bench --bench srt_ingest_latency -- srt_(ingest|egress)
+```
+
+That bench now emits separate `srt_ingest/{plain,encrypted}/recv_path` and
+`srt_egress/{plain,encrypted}/send_path` cases so we can quantify the overhead
+of `SRTO_PASSPHRASE` / `SRTO_PBKEYLEN` without pulling in the full live harness.
 
 For the optimization roadmap behind those benches, see
 [High-Performance Data Path](high-performance-data-path.md).

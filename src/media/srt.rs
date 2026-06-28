@@ -46,13 +46,13 @@
 //!     obtained from a `sockaddr_storage` cast, with the family field set first.
 
 use std::net::SocketAddr;
-use tracing::{debug, error, info, warn};
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::media::engine::{MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
@@ -367,11 +367,14 @@ pub const SRTO_MAXBW: c_int = 16;
 pub const SRTO_LATENCY: c_int = 23;
 pub const SRTO_INPUTBW: c_int = 24;
 pub const SRTO_OHEADBW: c_int = 25;
+pub const SRTO_PASSPHRASE: c_int = 26;
+pub const SRTO_PBKEYLEN: c_int = 27;
 pub const SRTO_LOSSMAXTTL: c_int = 42;
 pub const SRTO_RCVLATENCY: c_int = 43;
 pub const SRTO_PEERLATENCY: c_int = 44;
 pub const SRTO_STREAMID: c_int = 46;
 pub const SRTO_TRANSTYPE: c_int = 50;
+pub const SRTO_ENFORCEDENCRYPTION: c_int = 53;
 pub const SRTO_GROUPCONNECT: c_int = 57;
 pub const SRTO_GROUPTYPE: c_int = 59;
 
@@ -1128,7 +1131,7 @@ impl SrtServer {
                     .srt_listener_stats
                     .bonding_available
                     .store(true, Ordering::Relaxed);
-                info!("Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)", )
+                info!("Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)",)
             }
             Err(error) => {
                 self.engine
@@ -1393,7 +1396,10 @@ impl SrtServer {
                     broken = summary.broken_members,
                     "bonded ingest group accepted",
                 ),
-                None => warn!(sock = client_sock, "bonded ingest group accepted but member state not available"),
+                None => warn!(
+                    sock = client_sock,
+                    "bonded ingest group accepted but member state not available"
+                ),
             }
         }
 
@@ -1672,7 +1678,8 @@ impl SrtServer {
                 // Adapt ring capacity for the detected packet rate.
                 // If the ring was resized, update the local reference so
                 // subsequent push_batch() calls write to the new ring.
-                if let Some(new_ring) = self.engine
+                if let Some(new_ring) = self
+                    .engine
                     .adapt_pipeline_ring(&pipeline.id, video_fps, audio_track_count)
                     .await
                 {

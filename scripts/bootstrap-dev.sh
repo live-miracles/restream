@@ -59,6 +59,7 @@ fi
 
 APT_PACKAGES=(
     build-essential
+    bzip2
     ca-certificates
     clang
     cmake
@@ -72,7 +73,6 @@ APT_PACKAGES=(
     libavfilter-dev
     libavformat-dev
     libavutil-dev
-    libssl-dev
     libswresample-dev
     libswscale-dev
     mold

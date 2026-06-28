@@ -26,7 +26,7 @@ interface StatusData {
             license?: string;
             bondingAvailable?: boolean;
         };
-        openssl?: {
+        mbedtls?: {
             version?: string;
             buildVersion?: string;
             license?: string;
@@ -241,7 +241,7 @@ export async function loadStatus(): Promise<void> {
 
     const ffmpeg = data.nativeLibraries?.ffmpeg;
     const srt = data.nativeLibraries?.srt;
-    const openssl = data.nativeLibraries?.openssl;
+    const mbedtls = data.nativeLibraries?.mbedtls;
     const sqlite = data.nativeLibraries?.sqlite;
     const sbomEndpoint = data.sbom?.endpoint || '/api/status/sbom';
 
@@ -287,8 +287,8 @@ export async function loadStatus(): Promise<void> {
                 versionRows('libsrt', srt?.version, srt?.buildVersion),
                 row('libsrt License', srt?.license),
                 row('SRT Bonding Available', srt?.bondingAvailable),
-                versionRows('OpenSSL', openssl?.version, openssl?.buildVersion),
-                row('OpenSSL License', openssl?.license),
+                versionRows('Mbed TLS', mbedtls?.version, mbedtls?.buildVersion),
+                row('Mbed TLS License', mbedtls?.license),
                 row('SQLite Version', sqlite?.version),
                 row('SQLite License', sqlite?.license),
                 row('x264 Version', data.nativeLibraries?.x264?.version),

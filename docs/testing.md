@@ -44,7 +44,15 @@ Good scoped benchmark patterns:
 ```sh
 scripts/resource-limit cargo bench --bench <bench-name> --profile bench-dev -- <criterion-filter>
 scripts/resource-limit cargo bench --bench high_performance_data_path --profile bench-dev -- egress_progress
+scripts/resource-limit cargo bench --bench srt_ingest_latency --profile bench-dev -- 'srt_(ingest|egress)'
 ```
+
+The SRT bench is a socket-pair microbenchmark, not a live pipeline test. It is
+meant to answer narrow questions such as "what did enabling SRT encryption cost
+on loopback?" by comparing:
+
+- `srt_ingest/plain/recv_path` vs `srt_ingest/encrypted/recv_path`
+- `srt_egress/plain/send_path` vs `srt_egress/encrypted/send_path`
 
 Use the full `cargo test` suite, full benchmark suites, or live integration
 modes as a broader confidence pass when a change crosses module boundaries,
@@ -505,6 +513,18 @@ Rust harness records:
 See [resource-sweep.md](resource-sweep.md) for the artifact layout and env
 knobs.
 
+Useful narrow-loop knobs:
+
+- `RESOURCE_SWEEP_SCENARIOS=...` to run only a named slice such as
+  `egress-growth-transcode-mixed`, `egress-growth-transcode-dual-mixed`, or
+  `egress-growth-hevc-bridge`
+- `RESOURCE_SWEEP_EGRESS_COUNTS=10` or `RESOURCE_SWEEP_INGEST_COUNTS=5` to pin
+  the fanout/fanin you care about
+- `RESOURCE_SWEEP_LIFECYCLE=isolated|continuous|cumulative` to compare clean
+  attribution against additive growth
+- `RESOURCE_SWEEP_SAMPLE_SECS=30` when you want enough time to attach `perf`
+  during a single scenario
+
 ### `bitrate-sweep` — bitrate sensitivity sweep
 
 ```sh
@@ -536,6 +556,39 @@ Useful env vars:
 - `BITRATE_SWEEP_OUTPUT_GROUPS=1`
 - `BITRATE_SWEEP_STABILIZE_SECS=30`
 - `BITRATE_SWEEP_SAMPLE_INTERVAL_SECS=5`
+
+### `branch-matrix` — passthrough vs transcode family baseline
+
+```sh
+scripts/resource-limit cargo build --profile bench --bin test_harness
+./target/release/test_harness branch-matrix
+```
+
+This is a focused current-code baseline for one question: how much cost comes
+from passthrough fanout versus adding another distinct transcode family.
+
+It runs five fixed H.264 SRT egress shapes:
+
+- source only
+- one shared transcode family (`720p`)
+- source + one shared transcode family
+- two shared transcode families (`720p` + `1080p`)
+- source + two shared transcode families
+
+Artifacts are written to `test/artifacts/branch-matrix/` by default:
+
+- `branch-matrix-results.json`
+- `branch-matrix-results.csv`
+- `branch-matrix-summary.md`
+- `branch-matrix-samples.jsonl`
+
+Useful env vars:
+
+- `BRANCH_MATRIX_EGRESS_COUNT=10`
+- `RESOURCE_SWEEP_SAMPLE_SECS=6`
+- `RESOURCE_SWEEP_SETTLE_SECS=4`
+- `RESOURCE_SWEEP_LIFECYCLE=isolated|continuous|cumulative`
+- `RESTREAM_USE_INTERNAL_TRANSCODER=1` to capture the internal-backend baseline
 
 ### `bonding` — SRT socket bonding
 

@@ -1197,7 +1197,7 @@ async fn status_returns_version_info() {
     assert!(json["nativeLibraries"]["ffmpeg"]["version"].is_string());
     assert!(json["nativeLibraries"]["ffmpeg"]["configuration"].is_string());
     assert!(json["nativeLibraries"]["srt"]["version"].is_string());
-    assert!(json["nativeLibraries"]["openssl"]["version"].is_string());
+    assert!(json["nativeLibraries"]["mbedtls"]["version"].is_string());
     assert!(json["nativeLibraries"]["sqlite"]["version"].is_string());
     assert!(json["nativeLibraries"]["x264"]["version"].is_string());
     assert!(json["nativeLibraries"]["x265"]["version"].is_string());
@@ -1281,8 +1281,7 @@ async fn status_sbom_is_authenticated_cyclonedx_with_licenses() {
         "libswresample",
         "libavutil",
         "libsrt",
-        "libssl",
-        "libcrypto",
+        "libmbedcrypto",
         "SQLite",
         "x264",
         "x265",

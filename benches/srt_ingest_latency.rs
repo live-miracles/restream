@@ -1,7 +1,26 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use restream::media::srt::*;
 use std::ffi::c_int;
 use std::time::{Duration, Instant};
+
+const BENCH_LATENCY_MS: c_int = 20;
+const BENCH_PBKEYLEN_BYTES: c_int = 16;
+const BENCH_PASSPHRASE: &str = "benchpass12";
+
+#[derive(Clone, Copy)]
+enum CryptoMode {
+    Plain,
+    Encrypted,
+}
+
+impl CryptoMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Encrypted => "encrypted",
+        }
+    }
+}
 
 fn make_addr(port: u16) -> sockaddr_in {
     sockaddr_in {
@@ -32,20 +51,67 @@ fn srt_error() -> String {
     }
 }
 
-fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
-    let listener = unsafe { srt_create_socket() };
-    assert!(listener >= 0, "listener: {}", srt_error());
-
-    let latency: c_int = 20;
-    unsafe {
+fn set_latency(sock: SRTSOCKET) {
+    let ret = unsafe {
         srt_setsockopt(
-            listener,
+            sock,
             0,
             SRTO_LATENCY,
-            &latency as *const _ as *const _,
+            &BENCH_LATENCY_MS as *const _ as *const _,
             std::mem::size_of::<c_int>() as c_int,
-        );
+        )
+    };
+    assert_eq!(ret, 0, "set latency: {}", srt_error());
+}
+
+fn set_encryption(sock: SRTSOCKET) {
+    let yes: bool = true;
+    let passphrase = BENCH_PASSPHRASE.as_bytes();
+    let ret = unsafe {
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_ENFORCEDENCRYPTION,
+            &yes as *const _ as *const _,
+            std::mem::size_of::<bool>() as c_int,
+        )
+    };
+    assert_eq!(ret, 0, "set enforced encryption: {}", srt_error());
+
+    let ret = unsafe {
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_PBKEYLEN,
+            &BENCH_PBKEYLEN_BYTES as *const _ as *const _,
+            std::mem::size_of::<c_int>() as c_int,
+        )
+    };
+    assert_eq!(ret, 0, "set pbkeylen: {}", srt_error());
+
+    let ret = unsafe {
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_PASSPHRASE,
+            passphrase.as_ptr() as *const _,
+            passphrase.len() as c_int,
+        )
+    };
+    assert_eq!(ret, 0, "set passphrase: {}", srt_error());
+}
+
+fn configure_socket(sock: SRTSOCKET, crypto: CryptoMode) {
+    set_latency(sock);
+    if matches!(crypto, CryptoMode::Encrypted) {
+        set_encryption(sock);
     }
+}
+
+fn make_srt_pair(crypto: CryptoMode) -> (SRTSOCKET, SRTSOCKET) {
+    let listener = unsafe { srt_create_socket() };
+    assert!(listener >= 0, "listener: {}", srt_error());
+    configure_socket(listener, crypto);
 
     let addr = make_addr(0);
     assert_eq!(
@@ -66,16 +132,7 @@ fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
     let connect_thread = std::thread::spawn(move || {
         let sender = unsafe { srt_create_socket() };
         assert!(sender >= 0, "sender: {}", srt_error());
-        let slatency: c_int = 20;
-        unsafe {
-            srt_setsockopt(
-                sender,
-                0,
-                SRTO_LATENCY,
-                &slatency as *const _ as *const _,
-                std::mem::size_of::<c_int>() as c_int,
-            );
-        }
+        configure_socket(sender, crypto);
         let dst = make_addr(actual_port);
         let ret = unsafe { srt_connect(sender, &dst, std::mem::size_of::<sockaddr_in>() as c_int) };
         assert_eq!(ret, 0, "connect: {}", srt_error());
@@ -88,14 +145,6 @@ fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
     assert!(receiver >= 0, "accept: {}", srt_error());
 
     unsafe {
-        srt_setsockopt(
-            receiver,
-            0,
-            SRTO_LATENCY,
-            &latency as *const _ as *const _,
-            std::mem::size_of::<c_int>() as c_int,
-        );
-
         srt_close(listener);
     }
     let sender = connect_thread.join().unwrap();
@@ -103,137 +152,38 @@ fn make_srt_pair() -> (SRTSOCKET, SRTSOCKET) {
     (sender, receiver)
 }
 
-fn bench_srt_ingest_latency(c: &mut Criterion) {
-    unsafe {
-        srt_startup();
-    }
-
-    let payload = vec![0x47u8; 1316];
-    let mut buf = vec![0u8; 1316];
-
-    let mut group = c.benchmark_group("srt_ingest_latency");
+fn bench_ingest(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
+    let mut group = c.benchmark_group(format!("srt_ingest/{}", crypto.label()));
     group.measurement_time(Duration::from_secs(5));
-    group.sample_size(50);
-    group.throughput(criterion::Throughput::Bytes(1316));
+    group.sample_size(30);
+    group.throughput(Throughput::Bytes(payload.len() as u64));
 
-    group.bench_function("blocking_hot", |b| {
+    group.bench_function("recv_path", |b| {
         b.iter_custom(|iters| {
-            let (sender, receiver) = make_srt_pair();
+            let (sender, receiver) = make_srt_pair(crypto);
+            let send_payload = payload.to_vec();
+            let sender_thread = std::thread::spawn(move || {
+                for _ in 0..iters {
+                    let n = unsafe {
+                        srt_send(sender, send_payload.as_ptr(), send_payload.len() as c_int)
+                    };
+                    assert_eq!(n, send_payload.len() as c_int, "send: {}", srt_error());
+                }
+                sender
+            });
+
+            let mut recv_buf = vec![0u8; payload.len()];
             let start = Instant::now();
             for _ in 0..iters {
-                unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
-                let n = unsafe { srt_recv(receiver, buf.as_mut_ptr(), buf.len() as c_int) };
-                assert!(n > 0, "recv: {}", srt_error());
+                let n =
+                    unsafe { srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int) };
+                assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
                 black_box(n);
             }
             let elapsed = start.elapsed();
-            unsafe {
-                srt_close(sender);
-                srt_close(receiver);
-            }
-            elapsed
-        });
-    });
 
-    group.bench_function("polling_1ms", |b| {
-        b.iter_custom(|iters| {
-            let (sender, receiver) = make_srt_pair();
-            let zero: c_int = 0;
+            let sender = sender_thread.join().unwrap();
             unsafe {
-                srt_setsockopt(
-                    receiver,
-                    0,
-                    SRTO_RCVSYN,
-                    &zero as *const _ as *const _,
-                    std::mem::size_of::<c_int>() as c_int,
-                );
-            }
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            let start = Instant::now();
-            rt.block_on(async {
-                for _ in 0..iters {
-                    unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
-                    loop {
-                        let n = unsafe { srt_recv(receiver, buf.as_mut_ptr(), buf.len() as c_int) };
-                        if n > 0 {
-                            black_box(n);
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                    }
-                }
-            });
-            let elapsed = start.elapsed();
-            drop(rt);
-            unsafe {
-                srt_close(sender);
-                srt_close(receiver);
-            }
-            elapsed
-        });
-    });
-
-    group.bench_function("epoll_spawn", |b| {
-        b.iter_custom(|iters| {
-            let (sender, receiver) = make_srt_pair();
-            let zero: c_int = 0;
-            unsafe {
-                srt_setsockopt(
-                    receiver,
-                    0,
-                    SRTO_RCVSYN,
-                    &zero as *const _ as *const _,
-                    std::mem::size_of::<c_int>() as c_int,
-                );
-            }
-            let eid = unsafe { srt_epoll_create() };
-            assert!(eid >= 0);
-            let events = 0x1i32;
-            assert_eq!(unsafe { srt_epoll_add_usock(eid, receiver, &events) }, 0);
-
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            let start = Instant::now();
-            rt.block_on(async {
-                for _ in 0..iters {
-                    unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
-                    loop {
-                        let n = unsafe { srt_recv(receiver, buf.as_mut_ptr(), buf.len() as c_int) };
-                        if n > 0 {
-                            black_box(n);
-                            break;
-                        }
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let mut rd = [0i32; 1];
-                            let mut rn = 1i32;
-                            unsafe {
-                                srt_epoll_wait(
-                                    eid,
-                                    rd.as_mut_ptr(),
-                                    &mut rn,
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    -1,
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                );
-                            };
-                        })
-                        .await;
-                    }
-                }
-            });
-            let elapsed = start.elapsed();
-            drop(rt);
-            unsafe {
-                srt_epoll_release(eid);
                 srt_close(sender);
                 srt_close(receiver);
             }
@@ -242,10 +192,64 @@ fn bench_srt_ingest_latency(c: &mut Criterion) {
     });
 
     group.finish();
+}
+
+fn bench_egress(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
+    let mut group = c.benchmark_group(format!("srt_egress/{}", crypto.label()));
+    group.measurement_time(Duration::from_secs(5));
+    group.sample_size(30);
+    group.throughput(Throughput::Bytes(payload.len() as u64));
+
+    group.bench_function("send_path", |b| {
+        b.iter_custom(|iters| {
+            let (sender, receiver) = make_srt_pair(crypto);
+            let recv_len = payload.len();
+            let receiver_thread = std::thread::spawn(move || {
+                let mut recv_buf = vec![0u8; recv_len];
+                for _ in 0..iters {
+                    let n = unsafe {
+                        srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int)
+                    };
+                    assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
+                }
+                receiver
+            });
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                let n = unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
+                assert_eq!(n, payload.len() as c_int, "send: {}", srt_error());
+                black_box(n);
+            }
+            let elapsed = start.elapsed();
+
+            let receiver = receiver_thread.join().unwrap();
+            unsafe {
+                srt_close(sender);
+                srt_close(receiver);
+            }
+            elapsed
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_srt_transport_latency(c: &mut Criterion) {
+    unsafe {
+        srt_startup();
+    }
+
+    let payload = vec![0x47u8; 1316];
+    for crypto in [CryptoMode::Plain, CryptoMode::Encrypted] {
+        bench_ingest(c, &payload, crypto);
+        bench_egress(c, &payload, crypto);
+    }
+
     unsafe {
         srt_cleanup();
     }
 }
 
-criterion_group!(benches, bench_srt_ingest_latency);
+criterion_group!(benches, bench_srt_transport_latency);
 criterion_main!(benches);

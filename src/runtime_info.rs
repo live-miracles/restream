@@ -1,18 +1,17 @@
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_char};
 
 use serde_json::{Value, json};
 
-// SAFETY: OpenSSL_version is a well-defined C function with a stable ABI.
-// The kind parameter (OPENSSL_VERSION = 0) requests the full version string.
-// The returned pointer is valid for the lifetime of the OpenSSL library
-// (loaded at process start and never unloaded).
+// SAFETY: mbedtls_version_get_string_full writes a NUL-terminated version
+// string (e.g. "Mbed TLS 3.6.6") into the caller-provided buffer. The Mbed TLS
+// docs guarantee the output never exceeds 18 bytes including the NUL, so the
+// 32-byte buffer at the call site is always large enough.
 unsafe extern "C" {
-    fn OpenSSL_version(kind: c_int) -> *const c_char;
+    fn mbedtls_version_get_string_full(string: *mut c_char);
     fn sqlite3_libversion() -> *const c_char;
     fn sqlite3_sourceid() -> *const c_char;
 }
 
-const OPENSSL_VERSION: c_int = 0;
 const RUST_DEPENDENCIES_JSON: &str =
     include_str!(concat!(env!("OUT_DIR"), "/rust-runtime-dependencies.json"));
 
@@ -21,7 +20,7 @@ fn c_string(pointer: *const c_char) -> String {
         return "unknown".to_string();
     }
     // SAFETY: Caller guarantees pointer is either null or a valid
-    // NUL-terminated C string obtained from a C library (OpenSSL, FFmpeg,
+    // NUL-terminated C string obtained from a C library (Mbed TLS, FFmpeg,
     // or glibc). The null case is checked above.
     unsafe { CStr::from_ptr(pointer) }
         .to_string_lossy()
@@ -217,10 +216,14 @@ fn libc_component() -> Option<Value> {
 
 pub fn status_and_sbom(bonding_available: bool) -> (Value, Value) {
     let (sqlite_version, sqlite_source_id) = sqlite_runtime_info();
-    // SAFETY: OpenSSL_version(OPENSSL_VERSION) returns a NUL-terminated
-    // static string owned by the OpenSSL library, valid for the process
-    // lifetime. No deallocation required.
-    let openssl_version = c_string(unsafe { OpenSSL_version(OPENSSL_VERSION) });
+    // SAFETY: mbedtls_version_get_string_full writes at most 18 bytes
+    // (including the NUL) into the 32-byte buffer, then c_string reads it back
+    // as a NUL-terminated C string. The buffer outlives the read.
+    let mbedtls_version = {
+        let mut buffer = [0 as c_char; 32];
+        unsafe { mbedtls_version_get_string_full(buffer.as_mut_ptr()) };
+        c_string(buffer.as_ptr())
+    };
     let srt_version = crate::media::srt::linked_srt_version();
     let x264_version = env!("RESTREAM_BUILD_X264_VERSION").to_string();
     let x265_version = env!("RESTREAM_BUILD_X265_VERSION").to_string();
@@ -244,23 +247,13 @@ pub fn status_and_sbom(bonding_available: bool) -> (Value, Value) {
             ],
         ),
         native_component(
-            "libssl",
-            openssl_version.clone(),
+            "libmbedcrypto",
+            mbedtls_version.clone(),
             "Apache-2.0",
             "runtime API",
             vec![json!({
                 "name": "restream:buildResolvedVersion",
-                "value": env!("RESTREAM_BUILD_OPENSSL_VERSION")
-            })],
-        ),
-        native_component(
-            "libcrypto",
-            openssl_version.clone(),
-            "Apache-2.0",
-            "runtime API",
-            vec![json!({
-                "name": "restream:buildResolvedVersion",
-                "value": env!("RESTREAM_BUILD_OPENSSL_VERSION")
+                "value": env!("RESTREAM_BUILD_MBEDTLS_VERSION")
             })],
         ),
         native_component(
@@ -400,9 +393,9 @@ pub fn status_and_sbom(bonding_available: bool) -> (Value, Value) {
                 "license": "MPL-2.0",
                 "bondingAvailable": bonding_available,
             },
-            "openssl": {
-                "version": openssl_version,
-                "buildVersion": env!("RESTREAM_BUILD_OPENSSL_VERSION"),
+            "mbedtls": {
+                "version": mbedtls_version,
+                "buildVersion": env!("RESTREAM_BUILD_MBEDTLS_VERSION"),
                 "license": "Apache-2.0",
             },
             "sqlite": {

@@ -27,7 +27,7 @@
       "version": "1.96.0"
     },
     {
-      "bom-ref": "native:SQLite@3.44.0",
+      "bom-ref": "native:SQLite@3.46.0",
       "licenses": [
         {
           "expression": "blessing"
@@ -49,11 +49,11 @@
         },
         {
           "name": "restream:sqliteSourceId",
-          "value": "2023-11-01 11:23:50 17129ba1ff7f0daf37100ee82d507aef7827cf38de1866e2633096ae6ad81301"
+          "value": "2024-05-23 13:25:27 96c92aba00c8375bc32fafcdf12429c58bd8aabfcadab6683e35bbb9cdebf19e"
         }
       ],
       "type": "library",
-      "version": "3.44.0"
+      "version": "3.46.0"
     },
     {
       "bom-ref": "pkg:cargo/adler2@2.0.1",
@@ -80,32 +80,6 @@
       "purl": "pkg:cargo/adler2@2.0.1",
       "type": "library",
       "version": "2.0.1"
-    },
-    {
-      "bom-ref": "pkg:cargo/ahash@0.8.12",
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "name": "ahash",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/ahash@0.8.12",
-      "type": "library",
-      "version": "0.8.12"
     },
     {
       "bom-ref": "pkg:cargo/aho-corasick@1.1.4",
@@ -314,32 +288,6 @@
       "purl": "pkg:cargo/axum-core@0.4.5",
       "type": "library",
       "version": "0.4.5"
-    },
-    {
-      "bom-ref": "pkg:cargo/base64@0.21.7",
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "name": "base64",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/base64@0.21.7",
-      "type": "library",
-      "version": "0.21.7"
     },
     {
       "bom-ref": "pkg:cargo/base64@0.22.1",
@@ -704,6 +652,32 @@
       "purl": "pkg:cargo/compression-core@0.4.32",
       "type": "library",
       "version": "0.4.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/concurrent-queue@2.5.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "concurrent-queue",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/concurrent-queue@2.5.0",
+      "type": "library",
+      "version": "2.5.0"
     },
     {
       "bom-ref": "pkg:cargo/const-oid@0.9.6",
@@ -1226,7 +1200,7 @@
       "version": "0.3.14"
     },
     {
-      "bom-ref": "pkg:cargo/event-listener@2.5.3",
+      "bom-ref": "pkg:cargo/event-listener@5.4.1",
       "licenses": [
         {
           "expression": "Apache-2.0 OR MIT"
@@ -1247,9 +1221,9 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/event-listener@2.5.3",
+      "purl": "pkg:cargo/event-listener@5.4.1",
       "type": "library",
-      "version": "2.5.3"
+      "version": "5.4.1"
     },
     {
       "bom-ref": "pkg:cargo/ffmpeg-next@8.1.0",
@@ -1354,6 +1328,32 @@
       "purl": "pkg:cargo/flume@0.11.1",
       "type": "library",
       "version": "0.11.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/foldhash@0.1.5",
+      "licenses": [
+        {
+          "expression": "Zlib"
+        }
+      ],
+      "name": "foldhash",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/foldhash@0.1.5",
+      "type": "library",
+      "version": "0.1.5"
     },
     {
       "bom-ref": "pkg:cargo/form_urlencoded@1.2.2",
@@ -1693,7 +1693,7 @@
       "version": "2.39"
     },
     {
-      "bom-ref": "pkg:cargo/hashbrown@0.14.5",
+      "bom-ref": "pkg:cargo/hashbrown@0.15.5",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -1714,9 +1714,9 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/hashbrown@0.14.5",
+      "purl": "pkg:cargo/hashbrown@0.15.5",
       "type": "library",
-      "version": "0.14.5"
+      "version": "0.15.5"
     },
     {
       "bom-ref": "pkg:cargo/hashbrown@0.17.1",
@@ -1745,7 +1745,7 @@
       "version": "0.17.1"
     },
     {
-      "bom-ref": "pkg:cargo/hashlink@0.8.4",
+      "bom-ref": "pkg:cargo/hashlink@0.10.0",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -1766,9 +1766,9 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/hashlink@0.8.4",
+      "purl": "pkg:cargo/hashlink@0.10.0",
       "type": "library",
-      "version": "0.8.4"
+      "version": "0.10.0"
     },
     {
       "bom-ref": "pkg:cargo/hex@0.4.3",
@@ -2547,7 +2547,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -2580,7 +2580,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -2613,7 +2613,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -2646,7 +2646,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -2681,35 +2681,6 @@
       "purl": "pkg:cargo/libc@0.2.186",
       "type": "library",
       "version": "0.2.186"
-    },
-    {
-      "bom-ref": "native:libcrypto@OpenSSL_3.0.13_30_Jan_2024",
-      "licenses": [
-        {
-          "expression": "Apache-2.0"
-        }
-      ],
-      "name": "libcrypto",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "native"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "runtime API"
-        },
-        {
-          "name": "restream:linkage",
-          "value": "statically linked component"
-        },
-        {
-          "name": "restream:buildResolvedVersion",
-          "value": "3.0.13"
-        }
-      ],
-      "type": "library",
-      "version": "OpenSSL 3.0.13 30 Jan 2024"
     },
     {
       "bom-ref": "native:libgcc@13.3.0",
@@ -2763,7 +2734,36 @@
       "version": "0.2.16"
     },
     {
-      "bom-ref": "pkg:cargo/libsqlite3-sys@0.27.0",
+      "bom-ref": "native:libmbedcrypto@Mbed_TLS_3.6.6",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "libmbedcrypto",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:buildResolvedVersion",
+          "value": "3.6.6"
+        }
+      ],
+      "type": "library",
+      "version": "Mbed TLS 3.6.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/libsqlite3-sys@0.30.1",
       "licenses": [
         {
           "expression": "MIT"
@@ -2784,9 +2784,9 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/libsqlite3-sys@0.27.0",
+      "purl": "pkg:cargo/libsqlite3-sys@0.30.1",
       "type": "library",
-      "version": "0.27.0"
+      "version": "0.30.1"
     },
     {
       "bom-ref": "native:libsrt@1.5.5",
@@ -2820,35 +2820,6 @@
       ],
       "type": "library",
       "version": "1.5.5"
-    },
-    {
-      "bom-ref": "native:libssl@OpenSSL_3.0.13_30_Jan_2024",
-      "licenses": [
-        {
-          "expression": "Apache-2.0"
-        }
-      ],
-      "name": "libssl",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "native"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "runtime API"
-        },
-        {
-          "name": "restream:linkage",
-          "value": "statically linked component"
-        },
-        {
-          "name": "restream:buildResolvedVersion",
-          "value": "3.0.13"
-        }
-      ],
-      "type": "library",
-      "version": "OpenSSL 3.0.13 30 Jan 2024"
     },
     {
       "bom-ref": "native:libstdc++@13.3.0",
@@ -2898,7 +2869,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -2931,7 +2902,7 @@
         },
         {
           "name": "restream:ffmpegConfiguration",
-          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --extra-cxxflags='-O3 -march=x86-64-v3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
         },
         {
           "name": "restream:runtimeLicenseText",
@@ -3228,32 +3199,6 @@
       "version": "2.0.5"
     },
     {
-      "bom-ref": "pkg:cargo/minimal-lexical@0.2.1",
-      "licenses": [
-        {
-          "expression": "MIT/Apache-2.0"
-        }
-      ],
-      "name": "minimal-lexical",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/minimal-lexical@0.2.1",
-      "type": "library",
-      "version": "0.2.1"
-    },
-    {
       "bom-ref": "pkg:cargo/miniz_oxide@0.8.9",
       "licenses": [
         {
@@ -3330,32 +3275,6 @@
       "purl": "pkg:cargo/nix@0.27.1",
       "type": "library",
       "version": "0.27.1"
-    },
-    {
-      "bom-ref": "pkg:cargo/nom@7.1.3",
-      "licenses": [
-        {
-          "expression": "MIT"
-        }
-      ],
-      "name": "nom",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/nom@7.1.3",
-      "type": "library",
-      "version": "7.1.3"
     },
     {
       "bom-ref": "pkg:cargo/nu-ansi-term@0.50.3",
@@ -3564,6 +3483,32 @@
       "purl": "pkg:cargo/opaque-debug@0.3.1",
       "type": "library",
       "version": "0.3.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/parking@2.2.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "parking",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/parking@2.2.1",
+      "type": "library",
+      "version": "2.2.1"
     },
     {
       "bom-ref": "pkg:cargo/parking_lot@0.12.5",
@@ -4424,32 +4369,6 @@
       "version": "2.1.2"
     },
     {
-      "bom-ref": "pkg:cargo/rustls@0.21.12",
-      "licenses": [
-        {
-          "expression": "Apache-2.0 OR ISC OR MIT"
-        }
-      ],
-      "name": "rustls",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/rustls@0.21.12",
-      "type": "library",
-      "version": "0.21.12"
-    },
-    {
       "bom-ref": "pkg:cargo/rustls@0.23.41",
       "licenses": [
         {
@@ -4476,32 +4395,6 @@
       "version": "0.23.41"
     },
     {
-      "bom-ref": "pkg:cargo/rustls-pemfile@1.0.4",
-      "licenses": [
-        {
-          "expression": "Apache-2.0 OR ISC OR MIT"
-        }
-      ],
-      "name": "rustls-pemfile",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/rustls-pemfile@1.0.4",
-      "type": "library",
-      "version": "1.0.4"
-    },
-    {
       "bom-ref": "pkg:cargo/rustls-pki-types@1.14.1",
       "licenses": [
         {
@@ -4526,32 +4419,6 @@
       "purl": "pkg:cargo/rustls-pki-types@1.14.1",
       "type": "library",
       "version": "1.14.1"
-    },
-    {
-      "bom-ref": "pkg:cargo/rustls-webpki@0.101.7",
-      "licenses": [
-        {
-          "expression": "ISC"
-        }
-      ],
-      "name": "rustls-webpki",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/rustls-webpki@0.101.7",
-      "type": "library",
-      "version": "0.101.7"
     },
     {
       "bom-ref": "pkg:cargo/rustls-webpki@0.103.13",
@@ -4708,32 +4575,6 @@
       "purl": "pkg:cargo/scrypt@0.11.0",
       "type": "library",
       "version": "0.11.0"
-    },
-    {
-      "bom-ref": "pkg:cargo/sct@0.7.1",
-      "licenses": [
-        {
-          "expression": "Apache-2.0 OR ISC OR MIT"
-        }
-      ],
-      "name": "sct",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/sct@0.7.1",
-      "type": "library",
-      "version": "0.7.1"
     },
     {
       "bom-ref": "pkg:cargo/serde@1.0.228",
@@ -5178,33 +5019,7 @@
       "version": "0.7.3"
     },
     {
-      "bom-ref": "pkg:cargo/sqlformat@0.2.6",
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "name": "sqlformat",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/sqlformat@0.2.6",
-      "type": "library",
-      "version": "0.2.6"
-    },
-    {
-      "bom-ref": "pkg:cargo/sqlx@0.7.4",
+      "bom-ref": "pkg:cargo/sqlx@0.8.6",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -5225,12 +5040,12 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/sqlx@0.7.4",
+      "purl": "pkg:cargo/sqlx@0.8.6",
       "type": "library",
-      "version": "0.7.4"
+      "version": "0.8.6"
     },
     {
-      "bom-ref": "pkg:cargo/sqlx-core@0.7.4",
+      "bom-ref": "pkg:cargo/sqlx-core@0.8.6",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -5251,12 +5066,12 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/sqlx-core@0.7.4",
+      "purl": "pkg:cargo/sqlx-core@0.8.6",
       "type": "library",
-      "version": "0.7.4"
+      "version": "0.8.6"
     },
     {
-      "bom-ref": "pkg:cargo/sqlx-mysql@0.7.4",
+      "bom-ref": "pkg:cargo/sqlx-mysql@0.8.6",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -5277,12 +5092,12 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/sqlx-mysql@0.7.4",
+      "purl": "pkg:cargo/sqlx-mysql@0.8.6",
       "type": "library",
-      "version": "0.7.4"
+      "version": "0.8.6"
     },
     {
-      "bom-ref": "pkg:cargo/sqlx-postgres@0.7.4",
+      "bom-ref": "pkg:cargo/sqlx-postgres@0.8.6",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -5303,12 +5118,12 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/sqlx-postgres@0.7.4",
+      "purl": "pkg:cargo/sqlx-postgres@0.8.6",
       "type": "library",
-      "version": "0.7.4"
+      "version": "0.8.6"
     },
     {
-      "bom-ref": "pkg:cargo/sqlx-sqlite@0.7.4",
+      "bom-ref": "pkg:cargo/sqlx-sqlite@0.8.6",
       "licenses": [
         {
           "expression": "MIT OR Apache-2.0"
@@ -5329,9 +5144,9 @@
           "value": "registry+https://github.com/rust-lang/crates.io-index"
         }
       ],
-      "purl": "pkg:cargo/sqlx-sqlite@0.7.4",
+      "purl": "pkg:cargo/sqlx-sqlite@0.8.6",
       "type": "library",
-      "version": "0.7.4"
+      "version": "0.8.6"
     },
     {
       "bom-ref": "pkg:cargo/stable_deref_trait@1.2.1",
@@ -5722,32 +5537,6 @@
       "purl": "pkg:cargo/tokio@1.52.3",
       "type": "library",
       "version": "1.52.3"
-    },
-    {
-      "bom-ref": "pkg:cargo/tokio-rustls@0.24.1",
-      "licenses": [
-        {
-          "expression": "MIT/Apache-2.0"
-        }
-      ],
-      "name": "tokio-rustls",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/tokio-rustls@0.24.1",
-      "type": "library",
-      "version": "0.24.1"
     },
     {
       "bom-ref": "pkg:cargo/tokio-rustls@0.26.4",
@@ -6270,32 +6059,6 @@
       "version": "0.1.4"
     },
     {
-      "bom-ref": "pkg:cargo/unicode_categories@0.1.1",
-      "licenses": [
-        {
-          "expression": "MIT OR Apache-2.0"
-        }
-      ],
-      "name": "unicode_categories",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/unicode_categories@0.1.1",
-      "type": "library",
-      "version": "0.1.1"
-    },
-    {
       "bom-ref": "pkg:cargo/untrusted@0.9.0",
       "licenses": [
         {
@@ -6346,32 +6109,6 @@
       "purl": "pkg:cargo/url@2.5.8",
       "type": "library",
       "version": "2.5.8"
-    },
-    {
-      "bom-ref": "pkg:cargo/urlencoding@2.1.3",
-      "licenses": [
-        {
-          "expression": "MIT"
-        }
-      ],
-      "name": "urlencoding",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/urlencoding@2.1.3",
-      "type": "library",
-      "version": "2.1.3"
     },
     {
       "bom-ref": "pkg:cargo/utf8_iter@1.0.4",
@@ -6450,32 +6187,6 @@
       "purl": "pkg:cargo/want@0.3.1",
       "type": "library",
       "version": "0.3.1"
-    },
-    {
-      "bom-ref": "pkg:cargo/webpki-roots@0.25.4",
-      "licenses": [
-        {
-          "expression": "MPL-2.0"
-        }
-      ],
-      "name": "webpki-roots",
-      "properties": [
-        {
-          "name": "restream:ecosystem",
-          "value": "cargo"
-        },
-        {
-          "name": "restream:versionSource",
-          "value": "Cargo.lock"
-        },
-        {
-          "name": "restream:source",
-          "value": "registry+https://github.com/rust-lang/crates.io-index"
-        }
-      ],
-      "purl": "pkg:cargo/webpki-roots@0.25.4",
-      "type": "library",
-      "version": "0.25.4"
     },
     {
       "bom-ref": "pkg:cargo/webpki-roots@1.0.8",
@@ -6810,11 +6521,11 @@
       "properties": [
         {
           "name": "restream:gitCommit",
-          "value": "c47725c"
+          "value": "2bae8c4"
         },
         {
           "name": "restream:nativeBuildId",
-          "value": "c47725c"
+          "value": "2bae8c4"
         }
       ],
       "purl": "pkg:cargo/restream@0.1.0",
@@ -6831,7 +6542,7 @@
         "value": "resolved normal Cargo dependency closure"
       }
     ],
-    "timestamp": "2026-06-28T06:27:43.702953935+00:00",
+    "timestamp": "2026-06-28T10:05:28.457113871+00:00",
     "tools": {
       "components": [
         {
