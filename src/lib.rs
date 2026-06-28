@@ -53,6 +53,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info, warn};
 
+#[cfg(restream_ffmpeg_needs_avcodec_close_shim)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn avcodec_close(
+    _ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+) -> std::ffi::c_int {
+    // FFmpeg 6+/libavcodec 60 removed this symbol. ffmpeg-next still calls it
+    // from decoder drop, but Context::drop frees the codec context via
+    // avcodec_free_context, so treating the legacy close step as a no-op keeps
+    // linking compatible with newer libavcodec builds.
+    0
+}
+
 pub struct ServerPorts {
     pub http: u16,
     pub rtmp: u16,

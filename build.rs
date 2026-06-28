@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rustc-check-cfg=cfg(restream_ffmpeg_needs_avcodec_close_shim)");
 
     // Embed git commit hash at build time
     let output = std::process::Command::new("git")
@@ -108,9 +109,18 @@ fn main() {
 
     let mut ffmpeg = pkg_config::Config::new();
     ffmpeg.statik(true);
-    ffmpeg
+    let avcodec = ffmpeg
         .probe("libavcodec")
         .expect("libavcodec not found; run setup-static-build.sh first");
+    if avcodec
+        .version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 60)
+    {
+        println!("cargo:rustc-cfg=restream_ffmpeg_needs_avcodec_close_shim");
+    }
     ffmpeg
         .probe("libavformat")
         .expect("libavformat not found; run setup-static-build.sh first");
