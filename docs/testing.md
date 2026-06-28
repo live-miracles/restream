@@ -486,6 +486,25 @@ The five mixed-scale slices are intentionally non-redundant: `h264-rtmp`,
 `h264-srt`, `h265-srt`, `h264-srt-multi`, and `h265-srt-multi`. All selected
 `ffprobe` checks now emit fatal JSONL assertions and honor `--resume-from`.
 
+### `resource-sweep` — CPU and memory attribution sweep
+
+```sh
+scripts/resource-limit cargo build --profile bench --bin test_harness
+./target/release/test_harness resource-sweep
+```
+
+Measures current-code CPU and memory across baseline, ingest-only, ingest
+growth, egress growth, source-vs-transcode, and HEVC bridge scenarios. The
+script records:
+
+- process RSS plus `smaps_rollup` (`Anonymous`, `Private_Dirty`, `Shared_Clean`, `Pss`)
+- internal memory accounting from `/api/v1/engine/telemetry`
+- child FFmpeg RSS
+- 1 Hz raw samples and per-stage aggregates
+
+See [resource-sweep.md](resource-sweep.md) for the artifact layout and env
+knobs.
+
 ### `bonding` — SRT socket bonding
 
 ```sh
