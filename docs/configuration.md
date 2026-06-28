@@ -40,8 +40,8 @@ external transcoder and by file ingest when
 
 ## SQLite-Backed Settings
 
-`GET /config` returns the current values. `PATCH /config` updates any supplied
-field.
+`GET /api/v1/settings` returns the current values. `PATCH /api/v1/settings`
+updates any supplied field.
 
 ```json
 {
@@ -62,7 +62,7 @@ field.
 | `ingestHost` | Hostname used when generating RTMP/SRT publisher URLs; blank falls back to `localhost` |
 | `ingestSecurity` | In-memory failed-publish tracking and temporary IP bans; changes are persisted |
 | Dashboard password | Scrypt hash stored in SQLite; first-run password is `admin` |
-| Custom encoding | Stored through `/encodings/custom` for future use; not offered as an output encoding and rejected by output create/update |
+| Custom encoding | Stored through `/api/v1/encodings/custom` for future use; not offered as an output encoding and rejected by output create/update |
 | Recording enabled | Stored per pipeline as `recording_enabled:<pipelineId>` |
 
 Sessions are persisted in SQLite and reloaded at startup. Expired sessions are
@@ -215,8 +215,7 @@ The in-memory HLS store is served at:
 /hls/<pipelineId>/seg<N>.ts
 ```
 
-The older `/preview/hls/...` paths are compatibility aliases. Live generation
-uses the native inline `TsMuxer`; one shared segmenter per pipeline serves
+Live generation uses the native inline `TsMuxer`; one shared segmenter per pipeline serves
 browser previews and HLS-type outputs. The segmenter is kept alive while at
 least one persistent HLS output is active; its reference count is adjusted
 correctly even when an HLS egress task panics (refcount is decremented in

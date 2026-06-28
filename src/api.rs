@@ -309,59 +309,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/change-password", post(change_password_handler))
         .route("/audio-caps", get(audio_caps_handler))
-        .route(
-            "/config",
-            get(config_get_handler).patch(config_patch_handler),
-        )
-        .route("/stream-keys", get(stream_keys_handler))
-        .route(
-            "/pipelines",
-            get(pipelines_get_handler).post(pipelines_post_handler),
-        )
-        .route(
-            "/pipelines/:id",
-            post(pipelines_update_handler).delete(pipelines_delete_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/file-ingest",
-            get(pipeline_file_ingest_get_handler)
-                .put(pipeline_file_ingest_put_handler)
-                .delete(pipeline_file_ingest_delete_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs",
-            post(outputs_create_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id",
-            post(outputs_update_handler).delete(outputs_delete_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/start",
-            post(outputs_start_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/stop",
-            post(outputs_stop_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/status",
-            get(output_status_handler),
-        )
-        .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
-        .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
-        .route(
-            "/pipelines/:pipeline_id/history",
-            get(pipeline_history_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/history",
-            get(output_history_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/alerts",
-            get(pipeline_alerts_handler),
-        )
         .route("/api/logs", get(logs_handler))
         .route("/api/logs/stream", get(logs_stream_handler))
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
@@ -509,39 +456,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/ingests/:id/start", post(ingests_start_handler))
         .route("/api/v1/ingests/:id/stop", post(ingests_stop_handler))
-        .route(
-            "/pipelines/:pipeline_id/diagnostics",
-            get(pipeline_diagnostics_sse_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/recording/start",
-            post(recording_start_handler),
-        )
-        .route(
-            "/pipelines/:pipeline_id/recording/stop",
-            post(recording_stop_handler),
-        )
-        .route(
-            "/encodings/custom",
-            get(custom_encoding_get).put(custom_encoding_put),
-        )
-        .route(
-            "/api/ingests",
-            get(ingests_get_handler).post(ingests_post_handler),
-        )
-        .route(
-            "/api/ingests/:id",
-            put(ingests_update_handler).delete(ingests_delete_handler),
-        )
-        .route("/api/ingests/:id/start", post(ingests_start_handler))
-        .route("/api/ingests/:id/stop", post(ingests_stop_handler))
-        .route("/api/status", get(status_get_handler))
-        .route("/api/status/sbom", get(status_sbom_get_handler))
         .route("/api/media", get(media_list_handler))
         .route("/api/media/:filename", delete(media_delete_handler))
         .route("/media/:filename", get(media_file_handler))
         // HLS routes are registered with CORS headers in the merged sub-router below.
-        .route("/health", get(health_get_handler))
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
@@ -2820,30 +2738,6 @@ async fn ingests_stop_handler(
     .into_response()
 }
 
-async fn status_get_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    let sys = System::new_all();
-    let bonding_available = state
-        .engine
-        .srt_listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
-    status["os"] = system_status(&sys);
-
-    Json(status).into_response()
-}
-
 fn system_status(sys: &System) -> serde_json::Value {
     serde_json::json!({
         "platform": std::env::consts::OS,
@@ -2971,40 +2865,6 @@ fn read_trimmed_file(path: impl AsRef<FsPath>) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-async fn status_sbom_get_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
-    let bonding_available = state
-        .engine
-        .srt_listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/vnd.cyclonedx+json; version=1.5",
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"restream-sbom.cdx.json\"",
-            ),
-        ],
-        Json(sbom),
-    )
-        .into_response()
 }
 
 async fn media_list_handler(
@@ -3158,29 +3018,6 @@ async fn media_delete_handler(
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
-}
-
-async fn health_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
-        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
-        Err(_) => vec![],
-    };
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
-    let snapshot = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
-    Json(snapshot)
 }
 
 async fn healthz_get_handler() -> impl IntoResponse {

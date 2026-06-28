@@ -1291,6 +1291,18 @@ Every benchmark should report:
 - define canonical terminology
 - freeze legacy vocabulary from new work
 
+Current audit snapshot, 2026-06-28:
+- Phases 0 through 7 are materially implemented, but the full plan is not yet
+  complete end-to-end.
+- Phase 3 is now materially complete for the shipped control plane: frontend,
+  API tests, and Rust test-harness flows all use the versioned `/api/v1`
+  surface, and the superseded non-v1 operational routes have been removed.
+- Runtime decomposition remains partial: typed stage identity, feeder reuse, and
+  typed-key plumbing are complete, but the larger `MediaEngine` split into
+  dedicated registries is still future work.
+- Phase 8 remains open. Package-stage sharing, deeper backend-fusion decisions,
+  and capacity/autoscaling/remediation follow-through are not yet complete.
+
 ## Phase 1 — structural runtime cleanup
 - introduce typed IDs and stage kinds
 - extract `StageFeeder`
@@ -1343,11 +1355,11 @@ Implementation note, 2026-06-25:
 - typed alert model implemented in `src/alerts.rs`: `Alert`, `Severity`, `Scope`
   structs and a pure `derive_alerts(&snapshot)` function covering publisher-absent,
   reader-lag, ring-overflow, output-down, and SRT-drop conditions. Served at
-  `GET /api/v1/alerts` and `GET /pipelines/:id/alerts`. First-seen/last-seen
+  `GET /api/v1/alerts` and `GET /api/v1/pipelines/:id/alerts`. First-seen/last-seen
   tracking deferred to Phase 3 (requires persistent state).
 - stage metrics wired into `external_transcoder` (record_in/record_out per packet)
   and `h264_transcoder` (record_in on muxer side); metrics are removed on stage
-  exit. `GET /pipelines/:id/graph` now returns live throughput for transcoder nodes.
+  exit. `GET /api/v1/pipelines/:id/graph` now returns live throughput for transcoder nodes.
 - `MemoryQueue` stats surfaced in `processing_graph()` via a new `input_queues`
   registry in `MediaEngine`; `h264_transcoder` and internal transcoder register
   their queues. Each transcoder graph node includes a `queueMetrics` field.
@@ -1399,7 +1411,7 @@ Implementation note, 2026-06-25:
   `GET /api/v1/pipelines/:id/summary` are all live and tested.
 - `generatedAt` envelope is consistent across all v1 snapshot endpoints.
 
-Phase 3 completion, 2026-06-26:
+Phase 3 implementation checkpoint, 2026-06-26:
 - Engineer telemetry endpoints landed:
   `GET /api/v1/engine/telemetry` (all ingests, stages, egresses, buffer count),
   `GET /api/v1/pipelines/:id/telemetry` (pipeline-scoped ingest, ring, stages,
@@ -1408,7 +1420,7 @@ Phase 3 completion, 2026-06-26:
 - `AlertTracker` with `firstSeen`/`lastSeen` timestamps: stamps alerts on
   first observation, updates `lastSeen` on each subsequent observation, prunes
   resolved conditions. Wired into `/api/v1/alerts`,
-  `/pipelines/:id/alerts`, and `/api/v1/pipelines/:id/summary`.
+  `/api/v1/pipelines/:id/alerts`, and `/api/v1/pipelines/:id/summary`.
 - Legacy string layer removed from `StageKey`/`StageKind`: `parse_legacy_key`,
   `storage_key`, `legacy_key`, `legacy_ref`, `legacy_stage_key`,
   `terminal_stage_ref`, and `Unknown` variant all deleted. All engine method
@@ -1422,6 +1434,16 @@ Phase 3 completion, 2026-06-26:
 - Remaining structural follow-up: splitting `MediaEngine` into finer-grained
   registry structs (`StageRegistry`, `IngestRegistry`) is a future cleanup,
   not gating Phase 3 completion.
+
+Phase 3 audit update, 2026-06-28:
+- The v1 surface now covers the shipped control plane end to end: engine
+  status/health/sbom, settings, stream keys, pipelines, outputs, ingests,
+  recording, graph, summary, telemetry, stage telemetry, alerts, events, and
+  diagnostics.
+- The frontend, API tests, and Rust test harness all consume canonical v1
+  routes directly.
+- Superseded non-v1 operational routes have been removed, so Phase 3 should be
+  treated as complete for the current product surface.
 
 ## Phase 4 — agent read and planning plane
 - capability discovery
@@ -1550,6 +1572,12 @@ Phase 7 completion note, 2026-06-27:
 - selective backend fusion where benchmarked and justified
 - capacity and autoscaling guidance
 - guided remediation playbooks where justified
+
+Phase 8 audit status, 2026-06-28:
+- still open
+- package-stage sharing remains the largest unfinished runtime optimization item
+- backend-fusion, capacity/autoscaling guidance, and remediation playbooks are
+  not yet complete enough to mark this phase done
 
 ---
 

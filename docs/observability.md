@@ -8,13 +8,13 @@ It does not expose a Prometheus text endpoint, proxy Grafana, or poll a sidecar.
 | Surface | Authentication | Purpose |
 |---|---|---|
 | `GET /healthz` | None | Process liveness: `{ "status": "ok" }` |
-| `GET /health` | None | Pipeline input/output state, transport quality, recording state, SRT listener pressure |
+| `GET /api/v1/engine/health` | Session | Pipeline input/output state, transport quality, recording state, SRT listener pressure |
 | `GET /metrics/system` | Session | Host CPU/memory/disk/network plus restream engine self metrics, including child FFmpeg CPU/RSS (JSON, not Prometheus) |
-| `GET /api/status` | Session | Restream build/toolchain, linked native-library versions, SBOM summary, and System information: OS, kernel, memory, CPU topology/features, and virtualization context |
-| `GET /api/status/sbom` | Session | CycloneDX 1.5 runtime SBOM for resolved Rust crates and linked native libraries |
-| `GET /pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
-| `GET /pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
-| `GET /pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |
+| `GET /api/v1/engine` | Session | Restream build/toolchain, linked native-library versions, SBOM summary, and System information: OS, kernel, memory, CPU topology/features, and virtualization context |
+| `GET /api/v1/engine/sbom` | Session | CycloneDX 1.5 runtime SBOM for resolved Rust crates and linked native libraries |
+| `GET /api/v1/pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
+| `GET /api/v1/pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
+| `GET /api/v1/pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |
 | `GET /api/v1/overview` | Session | Engine-wide operator summary: pipeline counts, alert rollup, SRT listener |
 | `GET /api/v1/alerts` | Session | Aggregate alerts across all pipelines with `firstSeen`/`lastSeen` tracking |
 | `GET /api/v1/events` | Session | Lifecycle event log (ingest, stage, egress transitions) |
@@ -28,9 +28,9 @@ It does not expose a Prometheus text endpoint, proxy Grafana, or poll a sidecar.
 
 See [API Reference](api-reference.md) for request/response details.
 
-## `/health` Field Derivation
+## `/api/v1/engine/health` Field Derivation
 
-`GET /health` is built on demand from native `MediaEngine` state and per-pipeline
+`GET /api/v1/engine/health` is built on demand from native `MediaEngine` state and per-pipeline
 recording settings in SQLite.
 
 ### Top-Level Shape
@@ -134,8 +134,8 @@ Active native egresses appear in `pipelines[id].outputs`:
 | `quality` | Egress transport quality. RTMP/RTMPS expose sender-side `TCP_INFO`/`SO_MEMINFO`; SRT exposes sender-side `srt_bistats()` and bonded group member state when available. |
 
 Stopped configured outputs are absent rather than being emitted with `off`.
-The dashboard merges those definitions from `/config`; active output counters
-come from `/health`.
+The dashboard merges those definitions from `/api/v1/settings`; active output counters
+come from `/api/v1/engine/health`.
 
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.
@@ -223,7 +223,7 @@ prepared with bonding support or the wrong binary was linked.
 
 ## Diagnostic Checks
 
-The SSE diagnostic run (`GET /pipelines/:id/diagnostics`) emits nine checks:
+The SSE diagnostic run (`GET /api/v1/pipelines/:id/diagnostics`) emits nine checks:
 
 | # | Check | Notes |
 |---|---|---|

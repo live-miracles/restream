@@ -8,9 +8,9 @@ are queryable and streamable via `/api/logs` and `/api/logs/stream`.
 
 This document covers the logging architecture only. The former `job_logs`
 and `lifecycle_events` tables have been removed; all durable log storage
-now goes through `app_logs`. The former `/api/pipelines/:id/history` and
-`.../outputs/:oid/history` endpoints have been removed; the history UI
-calls `/api/logs` with `pipeline_id`/`output_id`/`event_class` filters.
+now goes through `app_logs`. The history UI calls `/api/logs` with
+`pipeline_id`/`output_id`/`event_class` filters instead of relying on the
+pipeline-scoped history endpoints.
 
 ## Overview
 

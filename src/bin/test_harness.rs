@@ -634,7 +634,7 @@ async fn run_sink_probe(
     // Stop the output
     let _ = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
             json!({}),
         )
         .await;
@@ -721,7 +721,7 @@ async fn run_hls_put_probe(
 
     let status = api
         .get_json(&format!(
-            "/pipelines/{pipeline_id}/outputs/{output_id}/status"
+            "/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/status"
         ))
         .await
         .ok();
@@ -731,7 +731,7 @@ async fn run_hls_put_probe(
 
     let _ = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
             json!({}),
         )
         .await;
@@ -767,7 +767,7 @@ async fn run_hls_put_probe(
 
 async fn run_burst_graph_check(api: &RampApi, pipeline_id: &str) -> Result<(bool, Value), String> {
     let graph = api
-        .get_json(&format!("/pipelines/{pipeline_id}/graph"))
+        .get_json(&format!("/api/v1/pipelines/{pipeline_id}/graph"))
         .await?;
     let readers = graph_ring_readers(&graph);
     let burst_ok = readers
@@ -2857,7 +2857,10 @@ async fn create_resource_pipeline(
     stream_key: &str,
 ) -> Result<String, String> {
     let pipeline = api
-        .post_json("/pipelines", json!({"name": name, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": name, "streamKey": stream_key}),
+        )
         .await?;
     pipeline["pipeline"]["id"]
         .as_str()
@@ -2866,7 +2869,9 @@ async fn create_resource_pipeline(
 }
 
 async fn delete_resource_pipeline(api: &RampApi, pipeline_id: &str) {
-    let _ = api.delete_json(&format!("/pipelines/{pipeline_id}")).await;
+    let _ = api
+        .delete_json(&format!("/api/v1/pipelines/{pipeline_id}"))
+        .await;
 }
 
 fn spawn_resource_publisher(
@@ -3029,7 +3034,7 @@ async fn wait_for_outputs_progress(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let health = api.get_json("/health").await?;
+        let health = api.get_json("/api/v1/engine/health").await?;
         let mut progressed = 0usize;
         for output_id in output_ids {
             let entry = &health["pipelines"][pipeline_id]["outputs"][output_id];
@@ -3090,7 +3095,7 @@ async fn sample_resource_window(
         let rss_kb = read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log)?;
         let rollup = read_smaps_rollup(stack.restream_pid)?;
         let telemetry = stack.api.get_json("/api/v1/engine/telemetry").await?;
-        let health = stack.api.get_json("/health").await?;
+        let health = stack.api.get_json("/api/v1/engine/health").await?;
         let accounting = &telemetry["memoryAccounting"];
         let retained_kb = accounting["retainedPayloadBytes"].as_u64().unwrap_or(0) / 1024;
         let source_ring_kb = accounting["sourceRings"]
@@ -3645,7 +3650,7 @@ async fn api_smoke() -> Result<Value, String> {
     // Create pipeline
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "smoke-test", "streamKey": "sk-smoke"}),
         )
         .await?;
@@ -3658,7 +3663,7 @@ async fn api_smoke() -> Result<Value, String> {
     // Create output
     let output = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
             json!({"name": "smoke-out", "url": "rtmp://127.0.0.1:19350/live/nowhere", "encoding": "source"}),
         )
         .await?;
@@ -3669,7 +3674,7 @@ async fn api_smoke() -> Result<Value, String> {
     println!("[api-smoke] created output {output_id}");
 
     // Read back pipeline list
-    let pipelines = api.get_json("/pipelines").await?;
+    let pipelines = api.get_json("/api/v1/pipelines").await?;
     let list = pipelines["pipelines"]
         .as_array()
         .ok_or("pipelines list not an array")?;
@@ -3679,7 +3684,7 @@ async fn api_smoke() -> Result<Value, String> {
     println!("[api-smoke] pipeline appears in list");
 
     // Health shows pipeline
-    let health = api.get_json("/health").await?;
+    let health = api.get_json("/api/v1/engine/health").await?;
     if health["pipelines"][&pipeline_id].is_null() {
         return Err("pipeline not in health snapshot".to_string());
     }
@@ -3697,7 +3702,7 @@ async fn api_smoke() -> Result<Value, String> {
     api2.login().await?;
     println!("[api-smoke] restarted and authenticated");
 
-    let pipelines2 = api2.get_json("/pipelines").await?;
+    let pipelines2 = api2.get_json("/api/v1/pipelines").await?;
     let list2 = pipelines2["pipelines"]
         .as_array()
         .ok_or("pipelines list after restart not an array")?;
@@ -3932,7 +3937,7 @@ async fn run_ramp_config(
     let stream_key = format!("sk-{}", config.name);
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": config.name, "streamKey": stream_key}),
         )
         .await?;
@@ -3958,7 +3963,7 @@ async fn run_ramp_config(
         };
         let output = api
             .post_json(
-                &format!("/pipelines/{pipeline_id}/outputs"),
+                &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
                 json!({"name": format!("out{n}"), "url": url, "encoding": config.encoding}),
             )
             .await?;
@@ -3967,7 +3972,7 @@ async fn run_ramp_config(
             .ok_or("output create response missing output.id")?
             .to_string();
         api.post_json(
-            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/start"),
             Value::Null,
         )
         .await?;
@@ -4004,7 +4009,7 @@ async fn run_ramp_config(
     for output_id in &output_ids {
         let _ = api
             .post_json(
-                &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+                &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
                 Value::Null,
             )
             .await;
@@ -4088,7 +4093,7 @@ async fn wait_for_api_input_live(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(health) = api.get_json("/health").await
+        if let Ok(health) = api.get_json("/api/v1/engine/health").await
             && health["pipelines"][pipeline_id]["input"]["status"] == "on"
             && health["pipelines"][pipeline_id]["input"]["bytesReceived"]
                 .as_u64()
@@ -4114,7 +4119,7 @@ async fn wait_for_api_input_off(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(health) = api.get_json("/health").await {
+        if let Ok(health) = api.get_json("/api/v1/engine/health").await {
             let status = health["pipelines"][pipeline_id]["input"]["status"]
                 .as_str()
                 .unwrap_or("unknown");
@@ -4693,7 +4698,10 @@ async fn run_mixed_anchor_config(
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
-        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": cfg, "streamKey": stream_key}),
+        )
         .await?;
     let pipeline_id = pipeline["pipeline"]["id"]
         .as_str()
@@ -5145,7 +5153,10 @@ async fn run_mixed_h265_srt_config(
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
-        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": cfg, "streamKey": stream_key}),
+        )
         .await?;
     let pipeline_id = pipeline["pipeline"]["id"]
         .as_str()
@@ -5458,7 +5469,10 @@ async fn run_mixed_h264_rtmp_config(
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
-        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": cfg, "streamKey": stream_key}),
+        )
         .await?;
     let pipeline_id = pipeline["pipeline"]["id"]
         .as_str()
@@ -5720,7 +5734,10 @@ async fn run_mixed_srt_multi_config(
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
-        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": cfg, "streamKey": stream_key}),
+        )
         .await?;
     let pipeline_id = pipeline["pipeline"]["id"]
         .as_str()
@@ -6286,7 +6303,7 @@ async fn create_mixed_output(
 ) -> Result<String, String> {
     let output = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
             json!({"name": name, "url": url, "encoding": encoding}),
         )
         .await?;
@@ -6302,7 +6319,7 @@ async fn start_mixed_output(
     output_id: &str,
 ) -> Result<(), String> {
     api.post_json(
-        &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+        &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/start"),
         Value::Null,
     )
     .await
@@ -6585,7 +6602,7 @@ async fn stop_mixed_outputs(api: &RampApi, pipeline_id: &str, output_ids: &[Stri
     for output_id in output_ids {
         let _ = api
             .post_json(
-                &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+                &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
                 Value::Null,
             )
             .await;
@@ -6600,7 +6617,7 @@ async fn wait_for_outputs_stopped(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let config = api.get_json("/config").await?;
+        let config = api.get_json("/api/v1/settings").await?;
         let all_stopped = output_ids.iter().all(|output_id| {
             config["jobs"]
                 .as_array()
@@ -6700,7 +6717,7 @@ async fn correctness() -> Result<Value, String> {
 
     let rtmp_pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "RTMP test", "streamKey": "e2e-rtmp"}),
         )
         .await?;
@@ -6711,7 +6728,7 @@ async fn correctness() -> Result<Value, String> {
 
     let srt_pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "SRT test", "streamKey": "e2e-srt"}),
         )
         .await?;
@@ -6747,7 +6764,7 @@ async fn correctness() -> Result<Value, String> {
     wait_for_api_input_live(&api, &rtmp_id, Duration::from_secs(15)).await?;
     wait_for_api_input_live(&api, &srt_id, Duration::from_secs(15)).await?;
 
-    let health = api.get_json("/health").await?;
+    let health = api.get_json("/api/v1/engine/health").await?;
     let rtmp_snapshot = health["pipelines"][&rtmp_id].clone();
     let srt_snapshot = health["pipelines"][&srt_id].clone();
     if rtmp_snapshot.is_null() || srt_snapshot.is_null() {
@@ -6764,6 +6781,8 @@ async fn correctness() -> Result<Value, String> {
     assert_media_only(&srt_probe, "SRT read")?;
     let rtmp_media = normalized_streams(&rtmp_probe)?;
     let srt_media = normalized_streams(&srt_probe)?;
+    assert_snapshot_matches_probe(&rtmp_snapshot, &rtmp_media, "RTMP")?;
+    assert_snapshot_matches_probe(&srt_snapshot, &srt_media, "SRT")?;
 
     stop_child(&mut rtmp_publisher).await;
     stop_child(&mut srt_publisher).await;
@@ -6820,7 +6839,7 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
 
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "H.264 SRT source", "streamKey": "e2e-srt-rtmp"}),
         )
         .await?;
@@ -6833,7 +6852,7 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
     let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/e2e-srt-rtmp-sink");
     let output = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
             json!({"name": "rtmp-sink", "url": sink_url, "encoding": "source"}),
         )
         .await?;
@@ -6875,7 +6894,7 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
 
     // Start the output
     api.post_json(
-        &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+        &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/start"),
         json!({}),
     )
     .await?;
@@ -6988,13 +7007,13 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     let mut results = serde_json::Map::new();
 
     api.patch_json(
-        "/config",
+        "/api/v1/settings",
         json!({"srtIngest": {"mode": "plaintext", "pbkeylen": 16, "passphrase": null}}),
     )
     .await?;
     let plain_inherit = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "policy-plain-inherit", "streamKey": "policy-plain-inherit", "srtIngestPolicy": {"mode": "inherit"}}),
         )
         .await?;
@@ -7020,13 +7039,13 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     );
 
     api.patch_json(
-        "/config",
+        "/api/v1/settings",
         json!({"srtIngest": {"mode": "encrypted", "passphrase": "globalpass123", "pbkeylen": 16}}),
     )
     .await?;
     let global_enc = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "policy-global-enc", "streamKey": "policy-global-enc", "srtIngestPolicy": {"mode": "inherit"}}),
         )
         .await?;
@@ -7076,7 +7095,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
 
     let plain_override = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "policy-plain-override", "streamKey": "policy-plain-override", "srtIngestPolicy": {"mode": "plaintext"}}),
         )
         .await?;
@@ -7103,7 +7122,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     );
 
     api.patch_json(
-        "/config",
+        "/api/v1/settings",
         json!({"srtIngest": {"mode": "plaintext", "pbkeylen": 16, "passphrase": null}}),
     )
     .await?;
@@ -7123,7 +7142,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     ] {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({
                     "name": label,
                     "streamKey": stream_key,
@@ -7455,7 +7474,7 @@ async fn bframe_rtmp_correctness() -> Result<Value, String> {
 
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "B-frame RTMP source", "streamKey": "e2e-bframe-src"}),
         )
         .await?;
@@ -7468,7 +7487,7 @@ async fn bframe_rtmp_correctness() -> Result<Value, String> {
     let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/e2e-bframe-sink");
     let output = api
         .post_json(
-            &format!("/pipelines/{pipeline_id}/outputs"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
             json!({"name": "bframe-sink", "url": sink_url, "encoding": "source"}),
         )
         .await?;
@@ -7507,7 +7526,7 @@ async fn bframe_rtmp_correctness() -> Result<Value, String> {
 
     // Start the output
     api.post_json(
-        &format!("/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+        &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/start"),
         json!({}),
     )
     .await?;
@@ -7589,7 +7608,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let stream_key = format!("e2e-{protocol}");
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": format!("{protocol} test"), "streamKey": stream_key}),
         )
         .await?;
@@ -7635,7 +7654,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let mut publisher = spawn_publisher(&fixture, &publish_url, format, map_all).await?;
     wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
 
-    let health = api.get_json("/health").await?;
+    let health = api.get_json("/api/v1/engine/health").await?;
     let snapshot = health["pipelines"][&pipeline_id].clone();
     if snapshot.is_null() {
         stop_child(&mut publisher).await;
@@ -7646,6 +7665,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let probe = ffprobe(&read_url).await?;
     assert_media_only(&probe, &format!("{protocol} read"))?;
     let normalized = normalized_streams(&probe)?;
+    assert_snapshot_matches_probe(&snapshot, &normalized, protocol)?;
 
     stop_child(&mut publisher).await;
     stop_child(&mut child).await;
@@ -7679,7 +7699,7 @@ async fn egress_correctness() -> Result<Value, String> {
 
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "Egress source", "streamKey": "e2e-src"}),
         )
         .await?;
@@ -7729,7 +7749,7 @@ async fn egress_correctness() -> Result<Value, String> {
     );
     let srt_pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "SRT egress sink", "streamKey": "e2e-srt-sink"}),
         )
         .await?;
@@ -7767,7 +7787,10 @@ async fn egress_correctness() -> Result<Value, String> {
     });
 
     // SRT egress validation — check the sink pipeline received ingest
-    let srt_health = api.get_json("/health").await.unwrap_or(json!({}));
+    let srt_health = api
+        .get_json("/api/v1/engine/health")
+        .await
+        .unwrap_or(json!({}));
     let srt_has_input = srt_health["pipelines"]
         .as_array()
         .and_then(|pipes| {
@@ -7787,13 +7810,13 @@ async fn egress_correctness() -> Result<Value, String> {
     let media_dir = work_dir.join("media");
     std::fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
     api.post_json(
-        &format!("/pipelines/{pipeline_id}/recording/start"),
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/start"),
         json!({}),
     )
     .await?;
     tokio::time::sleep(Duration::from_secs(6)).await;
     api.post_json(
-        &format!("/pipelines/{pipeline_id}/recording/stop"),
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/stop"),
         json!({}),
     )
     .await?;
@@ -7908,7 +7931,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
 
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "H.265 SRT source", "streamKey": "e2e-hevc"}),
         )
         .await?;
@@ -7937,7 +7960,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
 
     // Verify source is HEVC via /probe
     let probe = api
-        .get_json(&format!("/pipelines/{pipeline_id}/probe"))
+        .get_json(&format!("/api/v1/pipelines/{pipeline_id}/probe"))
         .await
         .unwrap_or(json!({}));
     let source_codec = probe["video"]["codec"].as_str().unwrap_or("unknown");
@@ -8033,7 +8056,7 @@ async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
     // Source pipeline
     let pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "H.265 SRT source", "streamKey": "e2e-hevc-srt"}),
         )
         .await?;
@@ -8045,7 +8068,7 @@ async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
     // Sink pipeline (SRT egress will publish here)
     let sink_pipeline = api
         .post_json(
-            "/pipelines",
+            "/api/v1/pipelines",
             json!({"name": "H.265 SRT passthrough sink", "streamKey": "e2e-hevc-srt-sink"}),
         )
         .await?;
@@ -8447,6 +8470,46 @@ fn assert_media_only(probe: &Value, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn assert_snapshot_matches_probe(
+    snapshot: &Value,
+    normalized: &Value,
+    label: &str,
+) -> Result<(), String> {
+    let streams = normalized
+        .as_array()
+        .ok_or_else(|| format!("{label}: normalized streams are not an array"))?;
+    let video = streams
+        .iter()
+        .find(|stream| stream["type"] == "video")
+        .ok_or_else(|| format!("{label}: missing normalized video"))?;
+    let audio = streams
+        .iter()
+        .find(|stream| stream["type"] == "audio")
+        .ok_or_else(|| format!("{label}: missing normalized audio"))?;
+    let snapshot_audio = snapshot["audioTracks"]
+        .as_array()
+        .and_then(|tracks| tracks.first())
+        .ok_or_else(|| format!("{label}: snapshot missing audio"))?;
+    let probe_sample_rate = audio["sampleRate"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| audio["sampleRate"].as_u64());
+
+    let matches = snapshot["video"]["codec"] == video["codec"]
+        && snapshot["video"]["width"] == video["width"]
+        && snapshot["video"]["height"] == video["height"]
+        && snapshot_audio["codec"] == audio["codec"]
+        && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
+        && snapshot_audio["channels"] == audio["channels"];
+    if !matches {
+        return Err(format!(
+            "{label}: engine snapshot does not match external probe: snapshot={} probe={}",
+            snapshot, normalized
+        ));
+    }
+    Ok(())
+}
+
 async fn mixed_file_h264_correctness() -> Result<Value, String> {
     let env = MixedEnv::from_env("mixed-file-h264");
     if env.n_per_group == 0 {
@@ -8506,7 +8569,10 @@ async fn run_mixed_file_h264_config(
     }
 
     let pipeline = api
-        .post_json("/pipelines", json!({"name": cfg, "streamKey": stream_key}))
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": cfg, "streamKey": stream_key}),
+        )
         .await?;
     let pipeline_id = pipeline["pipeline"]["id"]
         .as_str()
@@ -8514,12 +8580,12 @@ async fn run_mixed_file_h264_config(
         .to_string();
 
     api.put_json(
-        &format!("/pipelines/{pipeline_id}/file-ingest"),
+        &format!("/api/v1/pipelines/{pipeline_id}/file-ingest"),
         json!({"filename": fixture_name, "loop": true}),
     )
     .await?;
 
-    let ingest_list = api.get_json("/api/ingests").await?;
+    let ingest_list = api.get_json("/api/v1/ingests").await?;
     let ingest_id = ingest_list
         .as_array()
         .and_then(|arr| {
@@ -8607,7 +8673,7 @@ async fn run_mixed_file_h264_config(
 
     for (i, output_id) in output_ids.iter().enumerate() {
         api.post_json(
-            &format!("/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/stop"),
             json!({}),
         )
         .await?;
@@ -8660,7 +8726,7 @@ async fn fault_resilience() -> Result<Value, String> {
     {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "fault-rtmp", "streamKey": "fault-rtmp"}),
             )
             .await?;
@@ -8701,7 +8767,7 @@ async fn fault_resilience() -> Result<Value, String> {
     {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "fault-srt", "streamKey": "fault-srt"}),
             )
             .await?;
@@ -8745,7 +8811,7 @@ async fn fault_resilience() -> Result<Value, String> {
     {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "fault-file", "streamKey": "fault-file"}),
             )
             .await?;
@@ -8767,12 +8833,12 @@ async fn fault_resilience() -> Result<Value, String> {
         }
 
         api.put_json(
-            &format!("/pipelines/{pid}/file-ingest"),
+            &format!("/api/v1/pipelines/{pid}/file-ingest"),
             json!({"filename": fixture_name, "loop": false}),
         )
         .await?;
 
-        let ingest_list = api.get_json("/api/ingests").await?;
+        let ingest_list = api.get_json("/api/v1/ingests").await?;
         let ingest_id = ingest_list
             .as_array()
             .and_then(|arr| {
@@ -8813,7 +8879,7 @@ async fn fault_resilience() -> Result<Value, String> {
     {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "fault-egress-rtmp", "streamKey": "fault-egress-rtmp"}),
             )
             .await?;
@@ -8863,7 +8929,7 @@ async fn fault_resilience() -> Result<Value, String> {
         let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/fault-egress-rtmp-sink");
         let output = api
             .post_json(
-                &format!("/pipelines/{pid}/outputs"),
+                &format!("/api/v1/pipelines/{pid}/outputs"),
                 json!({"name": "rtmp-sink", "url": sink_url, "encoding": "source"}),
             )
             .await?;
@@ -8881,8 +8947,11 @@ async fn fault_resilience() -> Result<Value, String> {
         .await?;
         wait_for_api_input_live(&api, &pid, timeout).await?;
 
-        api.post_json(&format!("/pipelines/{pid}/outputs/{oid}/start"), json!({}))
-            .await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
 
         let deadline = Instant::now() + timeout;
         while sink_bytes.load(Ordering::Relaxed) < 50_000 {
@@ -8912,7 +8981,7 @@ async fn fault_resilience() -> Result<Value, String> {
         while Instant::now() < poll_deadline {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let status = api
-                .get_json(&format!("/pipelines/{pid}/outputs/{oid}/status"))
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
                 .await;
             match &status {
                 Err(_) => {
@@ -8965,7 +9034,7 @@ async fn fault_resilience() -> Result<Value, String> {
     {
         let pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "fault-egress-srt", "streamKey": "fault-egress-srt"}),
             )
             .await?;
@@ -8976,7 +9045,7 @@ async fn fault_resilience() -> Result<Value, String> {
 
         let sink_pipeline = api
             .post_json(
-                "/pipelines",
+                "/api/v1/pipelines",
                 json!({"name": "srt-sink-target", "streamKey": "srt-sink-target"}),
             )
             .await?;
@@ -8991,7 +9060,7 @@ async fn fault_resilience() -> Result<Value, String> {
         );
         let output = api
             .post_json(
-                &format!("/pipelines/{pid}/outputs"),
+                &format!("/api/v1/pipelines/{pid}/outputs"),
                 json!({"name": "srt-sink", "url": sink_url, "encoding": "source"}),
             )
             .await?;
@@ -9012,14 +9081,17 @@ async fn fault_resilience() -> Result<Value, String> {
         .await?;
         wait_for_api_input_live(&api, &pid, timeout).await?;
 
-        api.post_json(&format!("/pipelines/{pid}/outputs/{oid}/start"), json!({}))
-            .await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
 
         // Wait for the sink pipeline to see data
         let deadline = Instant::now() + timeout;
         let mut sink_live = false;
         while Instant::now() < deadline {
-            if let Ok(health) = api.get_json("/health").await {
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
                 let status = health["pipelines"][&sink_pid]["input"]["status"]
                     .as_str()
                     .unwrap_or("off");
@@ -9035,7 +9107,7 @@ async fn fault_resilience() -> Result<Value, String> {
         }
 
         // Delete the sink pipeline to simulate sink disappearance
-        let delete_url = format!("{}/pipelines/{sink_pid}", api.base_url);
+        let delete_url = format!("{}/api/v1/pipelines/{sink_pid}", api.base_url);
         let mut request = api.client.delete(&delete_url);
         if let Some(cookie) = &api.cookie {
             request = request.header(reqwest::header::COOKIE, cookie);
@@ -9046,7 +9118,7 @@ async fn fault_resilience() -> Result<Value, String> {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         let status = api
-            .get_json(&format!("/pipelines/{pid}/outputs/{oid}/status"))
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
             .await;
         let has_error = status
             .as_ref()

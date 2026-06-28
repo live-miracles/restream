@@ -8,7 +8,7 @@ use restream::{api, db};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::sync::{RwLock as TokioRwLock, broadcast};
 use tokio::time::{Duration, sleep};
 use tower::ServiceExt;
 
@@ -27,11 +27,17 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
     let security = Arc::new(IngestSecurityService::new(
         restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
     ));
+    let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
+        restream::types::SrtGlobalIngestConfig::default(),
+        &[],
+    ));
+    let (log_broadcast, _) = broadcast::channel(32);
     let engine = Arc::new(MediaEngine::new());
 
     let state = Arc::new(api::AppState {
         db: pool.clone(),
         security,
+        ingest_policy_store,
         sessions,
         engine: engine.clone(),
         ports: api::PortConfig {
@@ -40,6 +46,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
         },
         media_dir: "media".to_string(),
         alert_tracker: restream::alerts::AlertTracker::new(),
+        log_broadcast,
         #[cfg(feature = "agent-execution")]
         agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
     });
@@ -63,6 +70,11 @@ async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path
     let security = Arc::new(IngestSecurityService::new(
         restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
     ));
+    let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
+        restream::types::SrtGlobalIngestConfig::default(),
+        &[],
+    ));
+    let (log_broadcast, _) = broadcast::channel(32);
     let engine = Arc::new(MediaEngine::new());
     let temp_dir =
         std::env::temp_dir().join(format!("restream-api-media-{}", rand::random::<u64>()));
@@ -72,6 +84,7 @@ async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path
     let state = Arc::new(api::AppState {
         db: pool,
         security,
+        ingest_policy_store,
         sessions,
         engine,
         ports: api::PortConfig {
@@ -80,6 +93,7 @@ async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path
         },
         media_dir,
         alert_tracker: restream::alerts::AlertTracker::new(),
+        log_broadcast,
         #[cfg(feature = "agent-execution")]
         agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
     });
@@ -223,7 +237,7 @@ async fn unauthenticated_returns_401() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/config")
+                .uri("/api/v1/settings")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -235,7 +249,7 @@ async fn unauthenticated_returns_401() {
 #[tokio::test]
 async fn unauthenticated_app_pages_redirect_to_login() {
     let (app, _) = test_app().await;
-    for uri in ["/", "/settings.html"] {
+    for uri in ["/"] {
         let resp = app
             .clone()
             .oneshot(
@@ -278,7 +292,7 @@ async fn pipeline_crud_via_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"Test Pipeline","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
         ))
@@ -291,7 +305,7 @@ async fn pipeline_crud_via_api() {
     // List
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/pipelines", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/pipelines", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -299,11 +313,11 @@ async fn pipeline_crud_via_api() {
     assert_eq!(json["pipelines"].as_array().unwrap().len(), 1);
 
     // Update
-    let uri = format!("/pipelines/{}", pipeline_id);
+    let uri = format!("/api/v1/pipelines/{}", pipeline_id);
     let resp = app
         .clone()
         .oneshot(auth_req(
-            "POST",
+            "PATCH",
             &uri,
             &cookie,
             Some(r#"{"name":"Updated Pipeline"}"#),
@@ -328,7 +342,7 @@ async fn duplicate_stream_keys_are_rejected() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p1", "P1", "unique-key", None, None)
+    db::create_pipeline(&pool, "p1", "P1", "unique-key", None, None, None)
         .await
         .unwrap();
 
@@ -336,7 +350,7 @@ async fn duplicate_stream_keys_are_rejected() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"P2","streamKey":"unique-key"}"#),
         ))
@@ -348,7 +362,7 @@ async fn duplicate_stream_keys_are_rejected() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"P2","streamKey":"unique-key-2"}"#),
         ))
@@ -359,8 +373,8 @@ async fn duplicate_stream_keys_are_rejected() {
     let resp = app
         .clone()
         .oneshot(auth_req(
-            "POST",
-            "/pipelines/p1",
+            "PATCH",
+            "/api/v1/pipelines/p1",
             &cookie,
             Some(r#"{"name":"P1","streamKey":"unique-key-2"}"#),
         ))
@@ -374,7 +388,7 @@ async fn rtmps_output_is_accepted_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p_rtmps", "P", "key_rtmps", None, None)
+    db::create_pipeline(&pool, "p_rtmps", "P", "key_rtmps", None, None, None)
         .await
         .unwrap();
 
@@ -383,7 +397,7 @@ async fn rtmps_output_is_accepted_by_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines/p_rtmps/outputs",
+            "/api/v1/pipelines/p_rtmps/outputs",
             &cookie,
             Some(r#"{"name":"FB","url":"rtmps://live-api-s.facebook.com:443/rtmp/test","encoding":"source"}"#),
         ))
@@ -408,7 +422,7 @@ async fn local_hls_output_is_accepted_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p_hls", "P", "key_hls", None, None)
+    db::create_pipeline(&pool, "p_hls", "P", "key_hls", None, None, None)
         .await
         .unwrap();
 
@@ -416,7 +430,7 @@ async fn local_hls_output_is_accepted_by_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines/p_hls/outputs",
+            "/api/v1/pipelines/p_hls/outputs",
             &cookie,
             Some(r#"{"name":"Local HLS","url":"hls://localhost/hls/key_hls","encoding":"source"}"#),
         ))
@@ -433,7 +447,7 @@ async fn custom_output_encoding_is_rejected_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p_custom", "P", "key_custom", None, None)
+    db::create_pipeline(&pool, "p_custom", "P", "key_custom", None, None, None)
         .await
         .unwrap();
 
@@ -441,7 +455,7 @@ async fn custom_output_encoding_is_rejected_by_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines/p_custom/outputs",
+            "/api/v1/pipelines/p_custom/outputs",
             &cookie,
             Some(r#"{"name":"Custom","url":"rtmp://dest/live/key","encoding":"custom"}"#),
         ))
@@ -468,11 +482,11 @@ async fn custom_output_encoding_is_rejected_by_api() {
     )
     .await
     .unwrap();
-    let uri = format!("/pipelines/p_custom/outputs/{}", output.id);
+    let uri = format!("/api/v1/pipelines/p_custom/outputs/{}", output.id);
     let resp = app
         .clone()
         .oneshot(auth_req(
-            "POST",
+            "PATCH",
             &uri,
             &cookie,
             Some(r#"{"name":"Custom","url":"rtmp://dest/live/key","encoding":"custom+atrack:0"}"#),
@@ -487,7 +501,7 @@ async fn http_hls_upload_output_is_accepted_by_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p_http_hls", "P", "key_http_hls", None, None)
+    db::create_pipeline(&pool, "p_http_hls", "P", "key_http_hls", None, None, None)
         .await
         .unwrap();
 
@@ -495,7 +509,7 @@ async fn http_hls_upload_output_is_accepted_by_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines/p_http_hls/outputs",
+            "/api/v1/pipelines/p_http_hls/outputs",
             &cookie,
             Some(r#"{"name":"Remote HLS","url":"https://a.upload.youtube.com/http_upload_hls?cid=abc&copy=0&file=out.m3u8","encoding":"source"}"#),
         ))
@@ -515,7 +529,7 @@ async fn output_crud_via_api() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
 
@@ -524,7 +538,7 @@ async fn output_crud_via_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines/p1/outputs",
+            "/api/v1/pipelines/p1/outputs",
             &cookie,
             Some(r#"{"name":"YouTube","url":"rtmp://yt/live","encoding":"source"}"#),
         ))
@@ -535,7 +549,7 @@ async fn output_crud_via_api() {
     let output_id = json["output"]["id"].as_str().unwrap().to_string();
 
     // Start
-    let uri = format!("/pipelines/p1/outputs/{}/start", output_id);
+    let uri = format!("/api/v1/pipelines/p1/outputs/{}/start", output_id);
     let resp = app
         .clone()
         .oneshot(auth_req("POST", &uri, &cookie, None))
@@ -553,7 +567,7 @@ async fn output_crud_via_api() {
     assert_eq!(output.desired_state, "running");
 
     // Stop
-    let uri = format!("/pipelines/p1/outputs/{}/stop", output_id);
+    let uri = format!("/api/v1/pipelines/p1/outputs/{}/stop", output_id);
     let resp = app
         .clone()
         .oneshot(auth_req("POST", &uri, &cookie, None))
@@ -562,7 +576,7 @@ async fn output_crud_via_api() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Delete
-    let uri = format!("/pipelines/p1/outputs/{}", output_id);
+    let uri = format!("/api/v1/pipelines/p1/outputs/{}", output_id);
     let resp = app
         .clone()
         .oneshot(auth_req("DELETE", &uri, &cookie, None))
@@ -578,13 +592,13 @@ async fn config_get_returns_structured_data() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -609,7 +623,7 @@ async fn config_patch_server_name() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"serverName":"My Server"}"#),
         ))
@@ -624,7 +638,7 @@ async fn config_patch_server_name() {
 async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None)
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
 
@@ -632,7 +646,7 @@ async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"ingestHost":"  ingest.example.com  "}"#),
         ))
@@ -648,7 +662,7 @@ async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     let json = body_json(resp).await;
@@ -666,7 +680,7 @@ async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"ingestHost":"   "}"#),
         ))
@@ -678,7 +692,7 @@ async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     let json = body_json(resp).await;
@@ -716,7 +730,7 @@ async fn stream_keys_requires_auth() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/stream-keys")
+                .uri("/api/v1/stream-keys")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -735,7 +749,7 @@ async fn stream_keys_returns_array() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/stream-keys", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/stream-keys", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -765,7 +779,7 @@ async fn ingest_crud_via_api() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/ingests",
+            "/api/v1/ingests",
             &cookie,
             Some(r#"{"filename":"test.mp4","streamKey":"key01","loopFlag":true}"#),
         ))
@@ -780,7 +794,7 @@ async fn ingest_crud_via_api() {
     // List
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/api/ingests", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/ingests", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -788,7 +802,7 @@ async fn ingest_crud_via_api() {
     assert_eq!(json.as_array().unwrap().len(), 1);
 
     // Delete
-    let uri = format!("/api/ingests/{}", id);
+    let uri = format!("/api/v1/ingests/{}", id);
     let resp = app
         .clone()
         .oneshot(auth_req("DELETE", &uri, &cookie, None))
@@ -810,7 +824,7 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(&create_pipeline.to_string()),
         ))
@@ -825,7 +839,7 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
         "loop": true,
         "startTime": "00:00:05"
     });
-    let uri = format!("/pipelines/{pipeline_id}/file-ingest");
+    let uri = format!("/api/v1/pipelines/{pipeline_id}/file-ingest");
     let resp = app
         .clone()
         .oneshot(auth_req(
@@ -856,7 +870,7 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -881,7 +895,7 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -915,7 +929,7 @@ async fn pipeline_history_includes_persisted_lifecycle_events_without_stream_key
         .clone()
         .oneshot(auth_req(
             "GET",
-            "/pipelines/pipe-history/history?limit=20",
+            "/api/v1/pipelines/pipe-history/history?limit=20",
             &cookie,
             None,
         ))
@@ -956,7 +970,7 @@ async fn output_history_lifecycle_filter_includes_persisted_egress_events() {
         .clone()
         .oneshot(auth_req(
             "GET",
-            "/pipelines/pipe-history/outputs/out-history/history?filter=lifecycle",
+            "/api/v1/pipelines/pipe-history/outputs/out-history/history?filter=lifecycle",
             &cookie,
             None,
         ))
@@ -981,7 +995,7 @@ async fn custom_encoding_roundtrip() {
         .clone()
         .oneshot(auth_req(
             "PUT",
-            "/encodings/custom",
+            "/api/v1/encodings/custom",
             &cookie,
             Some(r#"{"ffmpegArgs":"-c:v libx264 -preset fast"}"#),
         ))
@@ -991,7 +1005,7 @@ async fn custom_encoding_roundtrip() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/encodings/custom", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/encodings/custom", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1026,9 +1040,6 @@ async fn hls_routes_require_authentication() {
         "/hls/test_pipe",
         "/hls/test_pipe/index.m3u8",
         "/hls/test_pipe/notasegment",
-        "/preview/hls/test_pipe",
-        "/preview/hls/test_pipe/index.m3u8",
-        "/preview/hls/test_pipe/notasegment",
     ] {
         let resp = app
             .clone()
@@ -1045,17 +1056,12 @@ async fn hls_routes_require_authentication() {
 }
 
 #[tokio::test]
-async fn hls_canonical_and_legacy_playlist_routes_use_the_same_handler() {
+async fn hls_playlist_routes_return_not_found_for_empty_store() {
     let (app, _, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
     engine.get_or_create_hls_store("test_pipe").await;
 
-    for uri in [
-        "/hls/test_pipe",
-        "/hls/test_pipe/index.m3u8",
-        "/preview/hls/test_pipe",
-        "/preview/hls/test_pipe/index.m3u8",
-    ] {
+    for uri in ["/hls/test_pipe", "/hls/test_pipe/index.m3u8"] {
         let resp = app
             .clone()
             .oneshot(auth_req("GET", uri, &cookie, None))
@@ -1076,10 +1082,7 @@ async fn hls_segment_bad_name_returns_400() {
     let cookie = login(&app).await;
     engine.get_or_create_hls_store("test_pipe").await;
 
-    for uri in [
-        "/hls/test_pipe/notasegment",
-        "/preview/hls/test_pipe/notasegment",
-    ] {
+    for uri in ["/hls/test_pipe/notasegment"] {
         let resp = app
             .clone()
             .oneshot(auth_req("GET", uri, &cookie, None))
@@ -1097,9 +1100,17 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
     let stream_key = "file-preview-key";
     let ingest_id = "ingest-file-preview";
 
-    db::create_pipeline(&pool, pipeline_id, "File Preview", stream_key, None, None)
-        .await
-        .expect("create pipeline");
+    db::create_pipeline(
+        &pool,
+        pipeline_id,
+        "File Preview",
+        stream_key,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("create pipeline");
 
     let ring_buffer = engine.get_or_create_pipeline(pipeline_id).await;
     let cancel = engine
@@ -1127,7 +1138,7 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
             .clone()
             .oneshot(auth_req(
                 "GET",
-                &format!("/preview/hls/{pipeline_id}/index.m3u8"),
+                &format!("/hls/{pipeline_id}/index.m3u8"),
                 &cookie,
                 None,
             ))
@@ -1159,7 +1170,7 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         .clone()
         .oneshot(auth_req(
             "GET",
-            &format!("/preview/hls/{pipeline_id}/{segment}"),
+            &format!("/hls/{pipeline_id}/{segment}"),
             &cookie,
             None,
         ))
@@ -1185,30 +1196,32 @@ async fn status_returns_version_info() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/api/status", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/engine", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert!(json["restream"]["version"].is_string());
-    assert!(json["restream"]["commit"].is_string());
-    assert!(json.get("ffmpeg").is_none());
-    assert!(json["toolchain"]["rustc"].is_string());
-    assert!(json["nativeLibraries"]["ffmpeg"]["version"].is_string());
-    assert!(json["nativeLibraries"]["ffmpeg"]["configuration"].is_string());
-    assert!(json["nativeLibraries"]["srt"]["version"].is_string());
-    assert!(json["nativeLibraries"]["mbedtls"]["version"].is_string());
-    assert!(json["nativeLibraries"]["sqlite"]["version"].is_string());
-    assert!(json["nativeLibraries"]["x264"]["version"].is_string());
-    assert!(json["nativeLibraries"]["x265"]["version"].is_string());
-    assert_eq!(json["sbom"]["format"], "CycloneDX");
-    assert_eq!(json["sbom"]["specVersion"], "1.5");
-    assert_eq!(json["sbom"]["licensesIncluded"], true);
-    assert!(json["sbom"]["componentCount"].as_u64().unwrap() > 20);
-    assert!(json["os"]["platform"].is_string());
-    assert!(json["os"]["hostname"].is_string());
-    assert!(json["os"]["cpu"]["logicalCpus"].as_u64().unwrap() > 0);
-    assert!(json["os"]["cpu"]["flags"].is_array());
+    assert!(json["generatedAt"].is_string());
+    let engine = &json["engine"];
+    assert!(engine["restream"]["version"].is_string());
+    assert!(engine["restream"]["commit"].is_string());
+    assert!(engine.get("ffmpeg").is_none());
+    assert!(engine["toolchain"]["rustc"].is_string());
+    assert!(engine["nativeLibraries"]["ffmpeg"]["version"].is_string());
+    assert!(engine["nativeLibraries"]["ffmpeg"]["configuration"].is_string());
+    assert!(engine["nativeLibraries"]["srt"]["version"].is_string());
+    assert!(engine["nativeLibraries"]["mbedtls"]["version"].is_string());
+    assert!(engine["nativeLibraries"]["sqlite"]["version"].is_string());
+    assert!(engine["nativeLibraries"]["x264"]["version"].is_string());
+    assert!(engine["nativeLibraries"]["x265"]["version"].is_string());
+    assert_eq!(engine["sbom"]["format"], "CycloneDX");
+    assert_eq!(engine["sbom"]["specVersion"], "1.5");
+    assert_eq!(engine["sbom"]["licensesIncluded"], true);
+    assert!(engine["sbom"]["componentCount"].as_u64().unwrap() > 20);
+    assert!(engine["os"]["platform"].is_string());
+    assert!(engine["os"]["hostname"].is_string());
+    assert!(engine["os"]["cpu"]["logicalCpus"].as_u64().unwrap() > 0);
+    assert!(engine["os"]["cpu"]["flags"].is_array());
 }
 
 #[tokio::test]
@@ -1219,7 +1232,7 @@ async fn status_sbom_is_authenticated_cyclonedx_with_licenses() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/status/sbom")
+                .uri("/api/v1/engine/sbom")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -1229,7 +1242,7 @@ async fn status_sbom_is_authenticated_cyclonedx_with_licenses() {
 
     let cookie = login(&app).await;
     let response = app
-        .oneshot(auth_req("GET", "/api/status/sbom", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/engine/sbom", &cookie, None))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -1317,7 +1330,7 @@ async fn pipeline_graph_returns_dag() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"graph-test","streamKey":"gkey"}"#),
         ))
@@ -1332,7 +1345,7 @@ async fn pipeline_graph_returns_dag() {
         .clone()
         .oneshot(auth_req(
             "GET",
-            &format!("/pipelines/{}/graph", pid),
+            &format!("/api/v1/pipelines/{}/graph", pid),
             &cookie,
             None,
         ))
@@ -1356,7 +1369,7 @@ async fn diagnostics_requires_active_ingest() {
         .clone()
         .oneshot(auth_req(
             "GET",
-            "/pipelines/inactive/diagnostics?probe=srt",
+            "/api/v1/pipelines/inactive/diagnostics?probe=srt",
             &cookie,
             None,
         ))
@@ -1425,9 +1438,15 @@ async fn health_shows_registered_egress() {
         let security = Arc::new(IngestSecurityService::new(
             restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
         ));
+        let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
+            restream::types::SrtGlobalIngestConfig::default(),
+            &[],
+        ));
+        let (log_broadcast, _) = broadcast::channel(32);
         let state = Arc::new(api::AppState {
             db: pool.clone(),
             security,
+            ingest_policy_store,
             sessions,
             engine: engine.clone(),
             ports: api::PortConfig {
@@ -1436,6 +1455,7 @@ async fn health_shows_registered_egress() {
             },
             media_dir: "media".to_string(),
             alert_tracker: restream::alerts::AlertTracker::new(),
+            log_broadcast,
             #[cfg(feature = "agent-execution")]
             agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
         });
@@ -1448,7 +1468,7 @@ async fn health_shows_registered_egress() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
         ))
@@ -1462,7 +1482,7 @@ async fn health_shows_registered_egress() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            &format!("/pipelines/{pid}/outputs"),
+            &format!("/api/v1/pipelines/{pid}/outputs"),
             &cookie,
             Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
         ))
@@ -1484,12 +1504,7 @@ async fn health_shows_registered_egress() {
     // Health endpoint should show the output under the correct pipeline
     let resp = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1512,7 +1527,7 @@ async fn delete_output_cancels_egress() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
         ))
@@ -1525,7 +1540,7 @@ async fn delete_output_cancels_egress() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            &format!("/pipelines/{pid}/outputs"),
+            &format!("/api/v1/pipelines/{pid}/outputs"),
             &cookie,
             Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
         ))
@@ -1544,7 +1559,7 @@ async fn delete_output_cancels_egress() {
         .clone()
         .oneshot(auth_req(
             "DELETE",
-            &format!("/pipelines/{pid}/outputs/{oid}"),
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}"),
             &cookie,
             None,
         ))
@@ -1741,7 +1756,7 @@ async fn config_patch_invalid_transcode_profile_rejected() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"transcodeProfiles":{"h264":{"preset":"garbage","tune":"zerolatency","crf":23}}}"#),
         ))
@@ -1754,7 +1769,7 @@ async fn config_patch_invalid_transcode_profile_rejected() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"transcodeProfiles":{"h264":{"preset":"ultrafast","tune":"badtune","crf":23}}}"#),
         ))
@@ -1767,7 +1782,7 @@ async fn config_patch_invalid_transcode_profile_rejected() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(r#"{"transcodeProfiles":{"h264":{"preset":"ultrafast","tune":"zerolatency","crf":100}}}"#),
         ))
@@ -1800,7 +1815,7 @@ async fn config_patch_custom_transcode_profiles_keep_built_ins_visible() {
         .clone()
         .oneshot(auth_req(
             "PATCH",
-            "/config",
+            "/api/v1/settings",
             &cookie,
             Some(&body.to_string()),
         ))
@@ -1815,7 +1830,7 @@ async fn config_patch_custom_transcode_profiles_keep_built_ins_visible() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/config", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1843,7 +1858,7 @@ async fn ingest_create_start_time_too_long_rejected() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/ingests",
+            "/api/v1/ingests",
             &cookie,
             Some(&body.to_string()),
         ))
@@ -1866,7 +1881,7 @@ async fn ingest_create_start_time_valid_accepted() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/ingests",
+            "/api/v1/ingests",
             &cookie,
             Some(&body.to_string()),
         ))
@@ -1889,7 +1904,7 @@ async fn ingest_update_start_time_too_long_rejected() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/ingests",
+            "/api/v1/ingests",
             &cookie,
             Some(&create_body.to_string()),
         ))
@@ -1909,7 +1924,7 @@ async fn ingest_update_start_time_too_long_rejected() {
         .clone()
         .oneshot(auth_req(
             "PUT",
-            &format!("/api/ingests/{}", ingest_id),
+            &format!("/api/v1/ingests/{}", ingest_id),
             &cookie,
             Some(&update_body.to_string()),
         ))
@@ -1931,7 +1946,7 @@ async fn ingest_start_requires_matching_pipeline() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/ingests",
+            "/api/v1/ingests",
             &cookie,
             Some(&create_body.to_string()),
         ))
@@ -1945,7 +1960,7 @@ async fn ingest_start_requires_matching_pipeline() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            &format!("/api/ingests/{ingest_id}/start"),
+            &format!("/api/v1/ingests/{ingest_id}/start"),
             &cookie,
             None,
         ))
@@ -2005,7 +2020,7 @@ async fn v1_overview_counts_match_pipeline_count() {
         app.clone()
             .oneshot(auth_req(
                 "POST",
-                "/pipelines",
+                "/api/v1/pipelines",
                 &cookie,
                 Some(&serde_json::json!({ "name": name, "streamKey": name }).to_string()),
             ))
@@ -2053,7 +2068,7 @@ async fn v1_pipeline_summary_returns_operator_fields() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(
                 &serde_json::json!({ "name": "summary-test", "streamKey": "smrykey" }).to_string(),
@@ -2087,6 +2102,158 @@ async fn v1_pipeline_summary_returns_operator_fields() {
     assert!(body["graph"]["activeNodes"].is_number());
     assert!(body["alerts"].is_array());
     assert!(body["generatedAt"].is_string());
+}
+
+#[tokio::test]
+async fn v1_engine_and_health_endpoints_require_auth() {
+    let (app, _) = test_app().await;
+
+    for uri in ["/api/v1/engine", "/api/v1/engine/health"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn v1_engine_and_settings_endpoints_return_structured_payloads() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let engine = body_json(resp).await;
+    assert!(engine["generatedAt"].is_string());
+    assert!(engine["engine"]["restream"]["version"].is_string());
+    assert!(engine["engine"]["os"].is_object());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = body_json(resp).await;
+    assert!(health["generatedAt"].is_string());
+    assert!(health["pipelines"].is_object());
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let settings = body_json(resp).await;
+    assert!(settings["serverName"].is_string());
+    assert!(settings["transcodeProfiles"].is_object());
+}
+
+#[tokio::test]
+async fn v1_pipeline_list_detail_and_graph_endpoints_return_payloads() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    db::create_pipeline(
+        &pool,
+        "pipe-v1",
+        "Pipeline V1",
+        "key_v1",
+        None,
+        Some("source"),
+        None,
+    )
+    .await
+    .unwrap();
+    db::create_output(
+        &pool,
+        "out-v1",
+        "pipe-v1",
+        "Output V1",
+        "rtmp://example/live/key",
+        "stopped",
+        "source",
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/pipelines", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    assert!(list["pipelines"].is_array());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/pipelines/pipe-v1", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let detail = body_json(resp).await;
+    assert_eq!(detail["pipeline"]["id"], "pipe-v1");
+    assert_eq!(detail["outputs"].as_array().unwrap().len(), 1);
+
+    let resp = app
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/pipelines/pipe-v1/graph",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let graph = body_json(resp).await;
+    assert!(graph["nodes"].is_array());
+    assert!(graph["edges"].is_array());
+}
+
+#[tokio::test]
+async fn v1_pipeline_detail_and_diagnostics_return_404_for_unknown_pipeline() {
+    let (app, cookie) = authenticated_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/pipelines/missing", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/pipelines/missing/graph",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let resp = app
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/pipelines/missing/diagnostics",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // --- Lifecycle events endpoint ---
@@ -2222,7 +2389,7 @@ async fn pipeline_telemetry_returns_structured_response() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(r#"{"name":"TelPipe","streamKey":"telkey_6c71124cde80358ca7c13081"}"#),
         ))
@@ -2434,7 +2601,7 @@ async fn agent_context_returns_redacted_state_bundle() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(
                 &serde_json::json!({ "name": "agent-context", "streamKey": raw_stream_key })
@@ -2450,7 +2617,7 @@ async fn agent_context_returns_redacted_state_bundle() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            &format!("/pipelines/{pid}/outputs"),
+            &format!("/api/v1/pipelines/{pid}/outputs"),
             &cookie,
             Some(
                 &serde_json::json!({
@@ -2531,7 +2698,7 @@ async fn agent_investigation_returns_evidence_envelope() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(
                 &serde_json::json!({ "name": "agent-pipe", "streamKey": raw_stream_key })
@@ -2593,7 +2760,7 @@ async fn agent_plan_validates_and_previews_stage_impact() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(
                 &serde_json::json!({ "name": "agent-plan", "streamKey": "agent-plan-key" })
@@ -2726,7 +2893,7 @@ async fn agent_operation_lifecycle_is_approval_gated_redacted_and_verified() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/pipelines",
+            "/api/v1/pipelines",
             &cookie,
             Some(
                 &serde_json::json!({
@@ -2897,7 +3064,7 @@ async fn pipeline_alerts_requires_auth_and_returns_array() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/pipelines/nonexistent/alerts")
+                .uri("/api/v1/pipelines/nonexistent/alerts")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -2909,7 +3076,7 @@ async fn pipeline_alerts_requires_auth_and_returns_array() {
         app.clone()
             .oneshot(auth_req(
                 "POST",
-                "/pipelines",
+                "/api/v1/pipelines",
                 &cookie,
                 Some(r#"{"name":"alert-test","streamKey":"sk-alert"}"#),
             ))
@@ -2923,7 +3090,7 @@ async fn pipeline_alerts_requires_auth_and_returns_array() {
         .clone()
         .oneshot(auth_req(
             "GET",
-            &format!("/pipelines/{pid}/alerts"),
+            &format!("/api/v1/pipelines/{pid}/alerts"),
             &cookie,
             None,
         ))

@@ -30,8 +30,8 @@ message.
 | `POST` | `/api/auth/change-password` | Change the password; existing sessions remain valid |
 
 Static pages/assets are served without an auth gate; protected API handlers
-enforce the cookie themselves. `/health`, `/healthz`, and `/audio-caps` are
-public. HLS pull routes require the dashboard session cookie.
+enforce the cookie themselves. `/healthz` and `/audio-caps` are public.
+HLS pull routes require the dashboard session cookie.
 
 All responses include `X-Content-Type-Options: nosniff` and
 `X-Frame-Options: SAMEORIGIN` security headers. These are applied globally by
@@ -39,7 +39,9 @@ a `SetResponseHeaderLayer` on the main router.
 
 ## Configuration and Discovery
 
-### `GET /config`
+The canonical authenticated settings surface is `/api/v1/settings`.
+
+### `GET /api/v1/settings`
 
 Returns SQLite-backed settings plus configured pipelines, outputs, and jobs.
 
@@ -61,7 +63,7 @@ Returns SQLite-backed settings plus configured pipelines, outputs, and jobs.
 
 Each pipeline in this response also includes generated RTMP and SRT ingest URLs.
 
-### `PATCH /config`
+### `PATCH /api/v1/settings`
 
 Updates any supplied setting:
 
@@ -80,8 +82,8 @@ Updates any supplied setting:
 
 An empty `serverName` returns `400`.
 
-When `transcodeProfiles` are included in `PATCH /config`, each profile is
-validated before saving:
+When `transcodeProfiles` are included in `PATCH /api/v1/settings`, each profile
+is validated before saving:
 
 - `preset` must be one of: `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`, `slower`, `veryslow`, `placebo`
 - `tune` must be empty or one of: `film`, `animation`, `grain`, `stillimage`, `psnr`, `ssim`, `fastdecode`, `zerolatency`
@@ -89,7 +91,7 @@ validated before saving:
 
 Invalid values return `400 Bad Request` with a descriptive error.
 
-### `GET /stream-keys`
+### `GET /api/v1/stream-keys`
 
 Returns 20 built-in keys and native ingest URLs:
 
@@ -116,10 +118,10 @@ Returns the frontend's platform/protocol audio capability matrix.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/pipelines` | List pipelines |
-| `POST` | `/pipelines` | Create a pipeline |
-| `POST` | `/pipelines/:id` | Replace editable pipeline fields |
-| `DELETE` | `/pipelines/:id` | Delete a pipeline |
+| `GET` | `/api/v1/pipelines` | List pipelines |
+| `POST` | `/api/v1/pipelines` | Create a pipeline |
+| `PATCH` | `/api/v1/pipelines/:id` | Replace editable pipeline fields |
+| `DELETE` | `/api/v1/pipelines/:id` | Delete a pipeline |
 
 Create/update body:
 
@@ -148,11 +150,11 @@ recording cleanup still follows their existing task lifecycle.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `POST` | `/pipelines/:pipelineId/outputs` | Create an output |
-| `POST` | `/pipelines/:pipelineId/outputs/:outputId` | Update an output |
-| `DELETE` | `/pipelines/:pipelineId/outputs/:outputId` | Delete an output |
-| `POST` | `/pipelines/:pipelineId/outputs/:outputId/start` | Set `desiredState=running` |
-| `POST` | `/pipelines/:pipelineId/outputs/:outputId/stop` | Set `desiredState=stopped` |
+| `POST` | `/api/v1/pipelines/:pipelineId/outputs` | Create an output |
+| `PATCH` | `/api/v1/pipelines/:pipelineId/outputs/:outputId` | Update an output |
+| `DELETE` | `/api/v1/pipelines/:pipelineId/outputs/:outputId` | Delete an output |
+| `POST` | `/api/v1/pipelines/:pipelineId/outputs/:outputId/start` | Set `desiredState=running` |
+| `POST` | `/api/v1/pipelines/:pipelineId/outputs/:outputId/stop` | Set `desiredState=stopped` |
 
 Create/update body:
 
@@ -198,9 +200,9 @@ new `seg<N>.ts`, then PUTs the playlist URL.
 | `GET` | `/api/logs/stream` | SSE stream (`event: log` frames) |
 
 All process log entries are stored in the `app_logs` SQLite table and served
-through these two endpoints. The old `/pipelines/:id/history` and
-`.../outputs/:oid/history` routes have been removed; the frontend history UI
-calls `/api/logs` with `pipeline_id`/`output_id` filters instead.
+through these two endpoints. The frontend history UI calls `/api/logs` with
+`pipeline_id`/`output_id` filters instead of relying on the pipeline-scoped
+history endpoints.
 
 ### `GET /api/logs`
 
@@ -233,7 +235,7 @@ Lagging receivers are closed; the browser reconnects automatically using
 
 ## Output Status
 
-### `GET /pipelines/:pipelineId/outputs/:outputId/status`
+### `GET /api/v1/pipelines/:pipelineId/outputs/:outputId/status`
 
 Returns live egress telemetry for a single active output: `phase`, `bytesOut`,
 `lastProgressAt`, `lastError`, `failurePhase`, `uptimeSecs`, `protocol`,
@@ -242,7 +244,7 @@ actively running.
 
 ## Probe, Graph, and Diagnostics
 
-### `GET /pipelines/:pipelineId/probe`
+### `GET /api/v1/pipelines/:pipelineId/probe`
 
 Returns active native ingest metadata, bitrate, GOP observations, and ingest
 identity. Video and audio metadata include MPEG-TS `pid`, `language`, and
@@ -250,12 +252,12 @@ identity. Video and audio metadata include MPEG-TS `pid`, `language`, and
 active audio track; `audio` remains the primary/first track for older clients.
 Returns `404` without an active ingest.
 
-### `GET /pipelines/:pipelineId/graph`
+### `GET /api/v1/pipelines/:pipelineId/graph`
 
 Returns the current processing DAG: ingest, source ring, transcoder stages,
 egresses, HLS, and recording nodes where present.
 
-### `GET /pipelines/:pipelineId/diagnostics`
+### `GET /api/v1/pipelines/:pipelineId/diagnostics`
 
 Streams Server-Sent Events. An optional `probe=rtmp|srt` query must match the
 active ingest protocol. Returns `404` without an active ingest and `400` for a
@@ -375,8 +377,8 @@ The current run contains nine checks; see [Observability](observability.md).
 
 | Method | Route | Purpose |
 |---|---|---|
-| `POST` | `/pipelines/:pipelineId/recording/start` | Persist enabled state and start immediately if ingest is active |
-| `POST` | `/pipelines/:pipelineId/recording/stop` | Disable and cancel recording |
+| `POST` | `/api/v1/pipelines/:pipelineId/recording/start` | Persist enabled state and start immediately if ingest is active |
+| `POST` | `/api/v1/pipelines/:pipelineId/recording/stop` | Disable and cancel recording |
 
 Response:
 
@@ -393,12 +395,12 @@ MemoryQueue-backed file writer.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/ingests` | List configured file ingests |
-| `POST` | `/api/ingests` | Create |
-| `PUT` | `/api/ingests/:id` | Update |
-| `DELETE` | `/api/ingests/:id` | Delete |
-| `POST` | `/api/ingests/:id/start` | Start file ingest via the configured backend |
-| `POST` | `/api/ingests/:id/stop` | Stop the active ingest task/process |
+| `GET` | `/api/v1/ingests` | List configured file ingests |
+| `POST` | `/api/v1/ingests` | Create |
+| `PUT` | `/api/v1/ingests/:id` | Update |
+| `DELETE` | `/api/v1/ingests/:id` | Delete |
+| `POST` | `/api/v1/ingests/:id/start` | Start file ingest via the configured backend |
+| `POST` | `/api/v1/ingests/:id/stop` | Stop the active ingest task/process |
 
 Create/update body:
 
@@ -444,17 +446,17 @@ Missing files return `404`.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/encodings/custom` | Return `{ "ffmpegArgs": "..." }` |
-| `PUT` | `/encodings/custom` | Persist `{ "ffmpegArgs": "..." }` |
+| `GET` | `/api/v1/encodings/custom` | Return `{ "ffmpegArgs": "..." }` |
+| `PUT` | `/api/v1/encodings/custom` | Persist `{ "ffmpegArgs": "..." }` |
 
 The value is configuration-only today. The native transcoder does not interpret
 the stored FFmpeg argument string.
 
 ## Health and Status
 
-### `GET /health`
+### `GET /api/v1/engine/health`
 
-Public native state snapshot:
+Authenticated native state snapshot:
 
 ```json
 {
@@ -513,7 +515,7 @@ and `engine.totalMemoryBytes` include the restream process plus child FFmpeg
 processes launched by restream; `restream*` and `externalFfmpeg*` fields provide
 the breakdown. This is not Prometheus text format.
 
-### `GET /api/status`
+### `GET /api/v1/engine`
 
 Authenticated build/runtime information:
 
@@ -563,7 +565,7 @@ Authenticated build/runtime information:
   "sbom": {
     "format": "CycloneDX",
     "specVersion": "1.5",
-    "endpoint": "/api/status/sbom",
+    "endpoint": "/api/v1/engine/sbom",
     "componentCount": 100,
     "rustComponentCount": 85,
     "nativeComponentCount": 16,
@@ -605,7 +607,7 @@ The `os.cpu` object is intentionally a production-debug subset rather than an
 context, and acceleration features that can explain codec throughput, WSL/cloud
 behavior, and native-library performance differences.
 
-### `GET /api/status/sbom`
+### `GET /api/v1/engine/sbom`
 
 Authenticated CycloneDX 1.5 JSON software bill of materials. The response uses
 content type `application/vnd.cyclonedx+json; version=1.5` and contains:
@@ -631,8 +633,6 @@ does not include development-only or benchmark dependencies.
 | `GET` | `/hls/:pipelineId/index.m3u8` | Playlist |
 | `GET` | `/hls/:pipelineId/seg<N>.ts` | MPEG-TS segment |
 
-`/preview/hls/...` remains as a deprecated compatibility alias.
-
 Responses:
 
 - playlist: `application/vnd.apple.mpegurl`
@@ -649,6 +649,16 @@ origins can pull segments and playlists without CORS preflight errors.
 ## Operator v1 Endpoints
 
 All `/api/v1` routes require the session cookie.
+
+### `GET /api/v1/engine`
+
+Authenticated canonical engine/runtime status envelope for the frontend control
+plane.
+
+### `GET /api/v1/engine/health`
+
+Authenticated engine health snapshot. Returns the same pipeline/ingest/output
+health model documented above on the v1 authenticated control-plane surface.
 
 ### `GET /api/v1/overview`
 
@@ -698,9 +708,34 @@ Lifecycle event log. Query params: `pipeline_id` (optional filter),
 Operator-focused pipeline view: source state, output rollup, recording,
 HLS preview, alerts. Returns 404 for unknown pipeline IDs.
 
+### `GET /api/v1/pipelines`
+
+Authenticated pipeline list with ingest URLs and configured pipeline metadata.
+
+### `GET /api/v1/pipelines/:pipelineId`
+
+Authenticated pipeline detail endpoint. Returns one pipeline plus its
+configured outputs. Returns 404 for unknown pipeline IDs.
+
 ### `GET /api/v1/pipelines/:pipelineId/alerts`
 
 Alerts for a single pipeline. Same alert shape as the aggregate endpoint.
+
+### `GET /api/v1/pipelines/:pipelineId/graph`
+
+Authenticated pipeline graph endpoint. Returns 404 for unknown pipeline IDs.
+
+### `GET /api/v1/pipelines/:pipelineId/diagnostics`
+
+Authenticated SSE diagnostics endpoint for the pipeline diagnostics stream.
+
+### `GET /api/v1/settings`
+
+Authenticated settings/configuration read endpoint.
+
+### `PATCH /api/v1/settings`
+
+Authenticated settings/configuration update endpoint.
 
 ## Engineer v1 Endpoints
 

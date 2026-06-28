@@ -650,7 +650,7 @@ blockers or hardening work:
 - **Recording** (resolved): `recording.rs` writes raw MPEG-TS via `MemoryQueue`; naming was `run_mkv_muxer` (now `run_ts_writer`). Container upgrade (MP4/MKV) is a future roadmap item.
 - **HLS upload**: HTTP/HTTPS output URLs run the shared segmenter and PUT
   `seg<N>.ts` objects plus the playlist to the target URL.
-- **Custom encoding**: `/encodings/custom` persists future args, but output
+- **Custom encoding**: `/api/v1/encodings/custom` persists future args, but output
   create/update rejects `custom` so operators cannot select an inactive path.
 - **RTMPS**: URL parser accepts it and the reconciler dispatches it through
   RTMP egress with Rustls wrapping before the RTMP handshake.

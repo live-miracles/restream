@@ -129,7 +129,7 @@ via API, publish with ffmpeg, receive egress in the harness sink, assert.
 
 `mixed-*` already runs 5 real ingest cases through the binary. Rather than bespoke
 single-purpose tests, assert as many properties as possible **on those same live runs**,
-via ffprobe and `/api/status`:
+via ffprobe and `/api/v1/engine`:
 
 | Property | Assert on live runs via |
 |---|---|
@@ -137,8 +137,8 @@ via ffprobe and `/api/status`:
 | B-frame composition offset (PTS>DTS) | harness sink, wherever the source has B-frames |
 | Payload format (`Flv`/`Raw`) | harness sink |
 | Packet / keyframe counts, GOP cadence | harness sink |
-| Burst reader stats | `/api/status` processing graph |
-| Transcoder sharing (≤1 H.264 instance) | `/api/status` (already asserted) |
+| Burst reader stats | `/api/v1/engine` processing graph |
+| Transcoder sharing (≤1 H.264 instance) | `/api/v1/engine` (already asserted) |
 | Audio route correctness | harness sink + ffprobe decode check |
 | Codec edge (H.265→H.264) | ffprobe decode check (interop sink) |
 
@@ -200,11 +200,11 @@ Phases 0–5 are complete.
    - `sink-probe` (DTS monotonicity, video/audio/keyframe counts via harness RTMP sink)
    - `hls-put-probe` (HLS PUT upload: playlist, content types, segment decode via harness
      HTTP PUT sink)
-   - `burst-graph` (ring buffer burst stats via `/pipelines/:id/graph` API)
+   - `burst-graph` (ring buffer burst stats via `/api/v1/pipelines/:id/graph` API)
 5. **Fault resilience + file ingest coverage** — done. New test modes:
    - `fault-resilience`: publisher disconnect detection (RTMP kill → input off, SRT kill →
      input off, file-ingest stop → input off) and egress sink disappearance (RTMP sink
      gone → output error/reconnect, SRT sink gone → output error/reconnect).
    - `mixed-file-h264`: file-ingest as input source with RTMP+SRT egress mixed-scale load.
-   - `wait_for_api_input_off()` helper verifies `/health` transitions to `"off"` within
+   - `wait_for_api_input_off()` helper verifies `/api/v1/engine/health` transitions to `"off"` within
      a timeout after publisher disconnects.

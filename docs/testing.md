@@ -123,7 +123,7 @@ Unit coverage includes:
 The API suite (66 tests) covers authentication, configuration, pipeline/output
 CRUD, ingests, HLS aliases, status, graph, diagnostics preconditions, custom
 encoding persistence/rejection for runtime outputs, HLS upload output
-acceptance, RTMPS output acceptance, egress-pipeline association in `/health`,
+acceptance, RTMPS output acceptance, egress-pipeline association in `/api/v1/engine/health`,
 deletion-cancellation of egress tasks, pipeline and aggregate alerts response
 shape, system metrics structured response, agent graph-diff-preview compiled-out
 behavior, and operator telemetry/events/overview/summary endpoints.
@@ -147,77 +147,77 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/config` | ✓ | ✓ | |
-| `PATCH` | `/config` | ✓ | — | 3 tests incl. transcode profiles |
+| `GET` | `/api/v1/settings` | ✓ | ✓ | |
+| `PATCH` | `/api/v1/settings` | ✓ | — | 3 tests incl. transcode profiles |
 | `GET` | `/audio-caps` | ✓ | — | |
-| `GET` | `/stream-keys` | ✓ | — | |
+| `GET` | `/api/v1/stream-keys` | ✓ | — | |
 
 **Pipelines**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/pipelines` | ✓ | ✓ | |
-| `POST` | `/pipelines` | ✓ | ✓ | Create |
-| `POST` | `/pipelines/:id` | ✓ | — | Update |
-| `DELETE` | `/pipelines/:id` | ✓ | ✓ | fault-resilience SRT test |
+| `GET` | `/api/v1/pipelines` | ✓ | ✓ | |
+| `POST` | `/api/v1/pipelines` | ✓ | ✓ | Create |
+| `PATCH` | `/api/v1/pipelines/:id` | ✓ | — | Update |
+| `DELETE` | `/api/v1/pipelines/:id` | ✓ | ✓ | fault-resilience SRT test |
 
 **File ingest**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/pipelines/:id/file-ingest` | ✓ | — | |
-| `PUT` | `/pipelines/:id/file-ingest` | ✓ | ✓ | |
-| `DELETE` | `/pipelines/:id/file-ingest` | ✓ | — | |
+| `GET` | `/api/v1/pipelines/:id/file-ingest` | ✓ | — | |
+| `PUT` | `/api/v1/pipelines/:id/file-ingest` | ✓ | ✓ | |
+| `DELETE` | `/api/v1/pipelines/:id/file-ingest` | ✓ | — | |
 
 **Outputs**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `POST` | `/pipelines/:id/outputs` | ✓ | ✓ | Create |
-| `POST` | `/pipelines/:id/outputs/:oid` | ✓ | — | Update |
-| `DELETE` | `/pipelines/:id/outputs/:oid` | ✓ | — | |
-| `POST` | `/.../outputs/:oid/start` | ✓ | ✓ | |
-| `POST` | `/.../outputs/:oid/stop` | ✓ | ✓ | |
-| `GET` | `/.../outputs/:oid/status` | ✓ | ✓ | |
+| `POST` | `/api/v1/pipelines/:id/outputs` | ✓ | ✓ | Create |
+| `PATCH` | `/api/v1/pipelines/:id/outputs/:oid` | ✓ | — | Update |
+| `DELETE` | `/api/v1/pipelines/:id/outputs/:oid` | ✓ | — | |
+| `POST` | `/api/v1/pipelines/:id/outputs/:oid/start` | ✓ | ✓ | |
+| `POST` | `/api/v1/pipelines/:id/outputs/:oid/stop` | ✓ | ✓ | |
+| `GET` | `/api/v1/pipelines/:id/outputs/:oid/status` | ✓ | ✓ | |
 
 **Pipeline detail**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/pipelines/:id/probe` | — | ✓ | mixed-scale, correctness-* |
-| `GET` | `/pipelines/:id/graph` | ✓ | ✓ | |
-| `GET` | `/pipelines/:id/alerts` | ✓ | — | auth + response shape |
-| `GET` | `/pipelines/:id/diagnostics` | ~ | — | SSE; precondition only |
-| `POST` | `/.../recording/start` | — | ✓ | mixed-anchor |
-| `POST` | `/.../recording/stop` | — | ✓ | mixed-anchor |
+| `GET` | `/api/v1/pipelines/:id/probe` | — | ✓ | mixed-scale, correctness-* |
+| `GET` | `/api/v1/pipelines/:id/graph` | ✓ | ✓ | |
+| `GET` | `/api/v1/pipelines/:id/alerts` | ✓ | — | auth + response shape |
+| `GET` | `/api/v1/pipelines/:id/diagnostics` | ~ | — | SSE; precondition only |
+| `POST` | `/api/v1/pipelines/:id/recording/start` | — | ✓ | mixed-anchor |
+| `POST` | `/api/v1/pipelines/:id/recording/stop` | — | ✓ | mixed-anchor |
 
 **Encodings**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/encodings/custom` | ✓ | — | |
-| `PUT` | `/encodings/custom` | ✓ | — | |
+| `GET` | `/api/v1/encodings/custom` | ✓ | — | |
+| `PUT` | `/api/v1/encodings/custom` | ✓ | — | |
 
 **Ingests**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/api/ingests` | ✓ | ✓ | |
-| `POST` | `/api/ingests` | ✓ | — | |
-| `PUT` | `/api/ingests/:id` | ✓ | — | |
-| `DELETE` | `/api/ingests/:id` | ✓ | — | |
-| `POST` | `/api/ingests/:id/start` | ✓ | ✓ | |
-| `POST` | `/api/ingests/:id/stop` | — | ✓ | fault-resilience |
+| `GET` | `/api/v1/ingests` | ✓ | ✓ | |
+| `POST` | `/api/v1/ingests` | ✓ | — | |
+| `PUT` | `/api/v1/ingests/:id` | ✓ | — | |
+| `DELETE` | `/api/v1/ingests/:id` | ✓ | — | |
+| `POST` | `/api/v1/ingests/:id/start` | ✓ | ✓ | |
+| `POST` | `/api/v1/ingests/:id/stop` | — | ✓ | fault-resilience |
 
 **Status and health**
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/api/status` | ✓ | — | |
-| `GET` | `/api/status/sbom` | ✓ | — | |
+| `GET` | `/api/v1/engine` | ✓ | — | |
+| `GET` | `/api/v1/engine/sbom` | ✓ | — | |
 | `GET` | `/api/media` | ✓ | — | |
 | `DELETE` | `/api/media/:filename` | ✓ | — | Path traversal tested |
-| `GET` | `/health` | ✓ | ✓ | |
+| `GET` | `/api/v1/engine/health` | ✓ | ✓ | |
 | `GET` | `/healthz` | ✓ | ✓ | |
 | `GET` | `/metrics/system` | ✓ | — | Structured cpu/memory/disk/network |
 
@@ -457,7 +457,7 @@ to the resource measurements:
 2. **Fatal ffprobe** — after all groups, `verify_stream` (fatal, 30×2s retries)
    on RTMP-src, RTMP-720p, SRT-src, SRT-720p, HLS/mediamtx, and HLS/restream
    endpoints.
-3. **Stop lifecycle** — calls `/stop` on every output and polls `/config` until
+3. **Stop lifecycle** — calls `/stop` on every output and polls `/api/v1/settings` until
    all reach `"stopped"` within 60 s.
 
 **h265-srt** asserts `1 ≤ TC_SPAWNS ≤ ext_ffmpeg# + 1`: the number of shared
@@ -664,7 +664,7 @@ scripts/resource-limit ./test/run-integration.sh burst-verify
 
 Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
 frame rates, and single/dual-audio variants. Each case starts a source output,
-waits for ingest, samples `/pipelines/:id/graph`, and fails if active ring
+waits for ingest, samples `/api/v1/pipelines/:id/graph`, and fails if active ring
 readers do not report positive `burstCount` and `avgBurstSize` telemetry.
 
 Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
@@ -804,7 +804,7 @@ Publish the same H.264 fixture to both RTMP and SRT pipelines. Verify:
 
 ### Phase 2: Probe Matching
 
-Use both engine snapshots (`/pipelines/:id/probe`) and external `ffprobe` via
+Use both engine snapshots (`/api/v1/pipelines/:id/probe`) and external `ffprobe` via
 matching protocol. Compare: video codec, dimensions, frame rate, audio codec,
 sample rate, channels, track count, GOP interval.
 
