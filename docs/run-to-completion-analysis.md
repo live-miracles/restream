@@ -199,41 +199,25 @@ graph LR
 
 ## Blocking Boundaries (Cannot Be Removed)
 
-```
-╔════════════════════════════════════════════════════════════════╗
-║        ASYNC RUNTIME (Tokio) — Non-blocking operations         ║
-║        ════════════════════════════════════════════════        ║
-║  - Socket recv (non-blocking, epoll/kqueue)                   ║
-║  - Demuxing (CPU-bound, short duration)                       ║
-║  - Muxing (CPU-bound, short duration)                         ║
-║  - Packet filtering (CPU-bound, short duration)               ║
-║  - Ring publish/consume (lock-free, nanoseconds)              ║
-║  - HTTP handling (network + compute)                          ║
-╚════════════════════════════════════════════════════════════════╝
-            ║
-            ║ MemoryQueue + Condvar (spawn_blocking)
-            ║
-            ▼
-╔════════════════════════════════════════════════════════════════╗
-║              OS THREADS — Blocking operations                   ║
-║              ═══════════════════════════════════════           ║
-║  - libsrt_send() → blocks on kernel UDP buffer full           ║
-║  - FFmpeg subprocess → blocks on codec work                   ║
-║  - H.265→H.264 conversion → blocks on libavcodec              ║
-║  - fwrite() → blocks on disk I/O (page cache, fsync)         ║
-╚════════════════════════════════════════════════════════════════╝
-
-WHY THIS SEPARATION IS ESSENTIAL:
-  • Tokio worker thread blocked = all tasks on that core stalled
-  • One slow egress blocks all others (if on same thread)
-  • FFmpeg takes 0.5–2 seconds per frame
-  • libsrt_send can block indefinitely on network congestion
-  • Disk I/O can stall for 100+ milliseconds
-
-CONSEQUENCE:
-  • Every blocking operation MUST have a dedicated OS thread
-  • Every independent consumer MUST have independent buffering
-  • Decoupling is MANDATORY, not optional
+```mermaid
+graph TD
+    Tokio["<b>ASYNC RUNTIME</b><br/>(Tokio)<br/>═════════<br/>• Socket recv<br/>• Demuxing<br/>• Muxing<br/>• Packet filtering<br/>• Ring pub/consume<br/>• HTTP handling"]
+    
+    Boundary["<b>MemoryQueue</b><br/>+ Condvar<br/>(spawn_blocking)"]
+    
+    Threads["<b>OS THREADS</b><br/>Blocking I/O<br/>═════════<br/>• libsrt_send()<br/>• FFmpeg subprocess<br/>• H.265→H.264 codecs<br/>• fwrite() to disk"]
+    
+    Tokio -->|Decoupling| Boundary
+    Boundary -->|Isolate| Threads
+    
+    Why["<b>Why Separation Is Essential</b><br/>• Tokio worker blocked = all tasks stalled<br/>• FFmpeg blocks 0.5–2 seconds/frame<br/>• libsrt_send blocks on network congestion<br/>• Disk I/O stalls 100+ milliseconds"]
+    
+    Threads -.->|Must isolate| Why
+    
+    style Tokio fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
+    style Boundary fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#000
+    style Threads fill:#ffe0b2,stroke:#e65100,stroke-width:3px,color:#000
+    style Why fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
 ```
 
 ---
@@ -1078,183 +1062,199 @@ OPTIMIZATION OPPORTUNITY:
 
 ## Path Comparison Chart
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     RUN-TO-COMPLETION POTENTIAL RANKING                 │
-└─────────────────────────────────────────────────────────────────────────┘
-
-Rank │ Path                          │ Potential │ Decoupling Count │ Bottleneck
-─────┼───────────────────────────────┼───────────┼──────────────────┼──────────────
-  1  │ HLS segmenting (source)       │  🟢 High  │ 1 (Mutex)        │ None (HTTP clients)
-  2  │ RTMP→RTMP passthrough         │ 🟠 Medium │ 1 (ring)         │ Multi-consumer
-  3  │ Audio routing (atrack)        │ 🟠 Medium │ 1 (ring)         │ Multi-consumer
-  4  │ SRT ingest demux              │ 🟠 Medium │ 1 (ring)         │ Multi-consumer
-  5  │ SRT→SRT passthrough           │ 🔴 Low    │ 3 (ring+chunk+Q) │ libsrt_send
-  6  │ SRT→RTMP passthrough + conv   │ 🔴 Low    │ 2 (ring+Q)       │ AVCC codec work
-  7  │ Recording (source)            │ 🔴 Low    │ 2 (ring+Q)       │ Disk I/O blocking
-  8  │ Multi-audio routing           │ 🔴 Low    │ 2-3 (rings+...)  │ libsrt_send
-  9  │ Transcoded RTMP→RTMP (720p)  │ 🔴 VeryLow│ 4 (ring+Q+ring+Q)│ FFmpeg encode
- 10  │ Transcoded SRT ingest+H.265   │ 🔴 VeryLow│ 6+ (multiple)    │ FFmpeg + H.265→H.264
-─────┴───────────────────────────────┴───────────┴──────────────────┴──────────────
-
-KEY:
-  Potential: Achievability of run-to-completion execution
-  Decoupling: Number of separate ring/queue boundaries
-  Bottleneck: Primary source of latency or blocking
+```mermaid
+graph TD
+    Title["<b>RUN-TO-COMPLETION POTENTIAL RANKING</b>"]
+    
+    R1["<b>1. HLS segmenting</b><br/>🟢 High Potential<br/>1 Decoupling (Mutex)<br/>Bottleneck: HTTP clients"]
+    
+    R2["<b>2. RTMP→RTMP passthrough</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    
+    R3["<b>3. Audio routing</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    
+    R4["<b>4. SRT ingest demux</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    
+    R5["<b>5. SRT→SRT passthrough</b><br/>🔴 Low Potential<br/>3 Decoupling (ring+chunk+Q)<br/>Bottleneck: libsrt_send"]
+    
+    R6["<b>6. SRT→RTMP + codec</b><br/>🔴 Low Potential<br/>2 Decoupling (ring+Q)<br/>Bottleneck: AVCC codec"]
+    
+    R7["<b>7. Recording</b><br/>🔴 Low Potential<br/>2 Decoupling (ring+Q)<br/>Bottleneck: Disk I/O"]
+    
+    R8["<b>8. Multi-audio routing</b><br/>🔴 Low Potential<br/>2-3 Decoupling (rings)<br/>Bottleneck: libsrt_send"]
+    
+    R9["<b>9. Transcoded RTMP 720p</b><br/>🔴 Very Low Potential<br/>4 Decoupling (ring+Q+ring+Q)<br/>Bottleneck: FFmpeg encode"]
+    
+    R10["<b>10. Transcoded SRT H.265</b><br/>🔴 Very Low Potential<br/>6+ Decoupling (multiple)<br/>Bottleneck: FFmpeg + H.265→H.264"]
+    
+    Title --> R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7 --> R8 --> R9 --> R10
+    
+    style R1 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style R2 fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
+    style R3 fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
+    style R4 fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
+    style R5 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style R6 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style R7 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style R8 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style R9 fill:#ff1744,stroke:#b71c1c,stroke-width:2px,color:#fff
+    style R10 fill:#ff1744,stroke:#b71c1c,stroke-width:2px,color:#fff
+    style Title fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,color:#000
 ```
 
 ---
 
 ## Latency Model: Where Time Is Spent
 
-```
-PACKET LIFETIME THROUGH PIPELINE (relative times):
-
- 0 μs ┌─ Ingest (socket read + protocol parse)
-      │  • RTMP: rml_rtmp library parse       ~0.5-2 μs
-      │  • SRT: TsDemuxer parse + demux      ~1-3 μs
-      │
-~3 μs ├─ Source RingBuffer publish
-      │  • Arc allocation + ArcSwap store     ~0.04 μs (40B)
-      │  • Atomic Release store               ~0.01 μs
-      │  • notify_waiters()                   ~0.1 μs (wakeup latency varies)
-      │
-~3.2 μs├─ Reader acquire from ring (per egress)
-      │  • Atomic Acquire load                ~0.01 μs
-      │  • ArcSwap load_full()                ~0.02 μs
-      │
-~3.25 μs├─ Egress packet processing
-      │  ├─ RTMP passthrough (FLV):           ~0.1 μs  (zero-copy)
-      │  ├─ SRT passthrough (TS mux):         ~0.6 μs  (inline TsMuxer)
-      │  ├─ Codec conversion (AVCC):          ~0.7-2 μs (allocates 2 Vecs)
-      │  ├─ H.265→H.264:                      ~5-50 ms (libavcodec, OS thread)
-      │  └─ HLS mux:                          ~0.6 μs  (inline)
-      │
-~4 μs ├─ [For SRT] TsChunkRing publish
-      │  • ArcSwap store + notify             ~0.1 μs
-      │
-~4.1 μs├─ [For SRT] MemoryQueue write
-      │  • Mutex lock                         ~0.05 μs (uncontended)
-      │  • VecDeque push                      ~0.01 μs
-      │  • Condvar notify                     ~0.1 μs
-      │
-~4.3 μs├─ [For SRT] OS thread wakeup (if blocked)
-      │  • Context switch + thread reschedule ~0.5-5 ms (kernel scheduling)
-      │
-~4.3+ms├─ [For SRT] libsrt_send() blocking
-      │  • Network I/O, kernel UDP buffer     ~1-100+ ms (network speed + congestion)
-      │
-~100+ms└─ Packet exits system (network round-trip latency)
-
-[For Transcoding: Add ~0.5-2000 ms for FFmpeg codec work]
+```mermaid
+graph LR
+    T0["<b>0 μs</b><br/>Ingest<br/>socket read<br/>+ parse<br/>~0.5-3 μs<br/>RTMP/SRT"]
+    
+    T1["<b>~3 μs</b><br/>Source<br/>RingBuffer<br/>Arc+publish<br/>~0.15 μs"]
+    
+    T2["<b>~3.2 μs</b><br/>Reader<br/>acquire<br/>per egress<br/>~0.03 μs"]
+    
+    T3["<b>~3.25 μs</b><br/>Egress<br/>processing<br/>RTMP: 0.1 μs<br/>SRT: 0.6 μs<br/>Codec: 0.7-2 μs<br/>H.265: 5-50 ms<br/>HLS: 0.6 μs"]
+    
+    T4["<b>~4 μs</b><br/>TsChunkRing<br/>SRT path<br/>only<br/>~0.1 μs"]
+    
+    T5["<b>~4.1 μs</b><br/>MemoryQueue<br/>write<br/>SRT path<br/>Mutex: 0.05 μs<br/>Push: 0.01 μs<br/>Notify: 0.1 μs"]
+    
+    T6["<b>~4.3 μs</b><br/>OS thread<br/>wakeup<br/>context switch<br/>~0.5-5 ms"]
+    
+    T7["<b>~4.3+ms</b><br/>libsrt_send<br/>blocking<br/>Network I/O<br/>~1-100+ ms<br/>UDP kernel buffer"]
+    
+    T8["<b>~100+ms</b><br/>Packet exits<br/>Network latency"]
+    
+    T0 --> T1 --> T2 --> T3
+    T3 --> T4
+    T4 --> T5 --> T6 --> T7 --> T8
+    
+    Transcoding["<b>Transcoding</b><br/>Add ~0.5-2000 ms<br/>FFmpeg codec work"]
+    
+    T3 -.->|If preset| Transcoding
+    
+    style T0 fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style T1 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    style T2 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    style T3 fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    style T4 fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style T5 fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style T6 fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style T7 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style T8 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Transcoding fill:#ff1744,stroke:#b71c1c,stroke-width:2px,color:#fff
 ```
 
 ---
 
 ## Optimization Opportunity Matrix
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                   OPTIMIZATION IMPACT vs. EFFORT ANALYSIS                │
-└──────────────────────────────────────────────────────────────────────────┘
-
-                                   HIGH
-                                    ▲
-                    ┌─────────────────────────────────┐
-                    │ FFmpeg sharding               │  [LATENCY IMPACT]
-                    │ (pyramid parallelization)     │
-                    │ Effort: HIGH                  │
-                    │ Gain: Encode throughput 2-3x  │
-                    │ Prerequisite: Profiling       │
-                    └──────────────┬──────────────────┘
-                                   │
-                ┌──────────────────┼──────────────────┐
-                │                  │                  │
-    ┌───────────▼────────────┐  ┌──▼──────────────────▼────────┐
-    │ Adaptive ring sizing   │  │ Async I/O (io-uring)        │
-    │ (single-output opt)    │  │ for recording               │
-    │ Effort: MEDIUM         │  │ Effort: MEDIUM-HIGH         │
-    │ Gain: RSS -20-30%      │  │ Gain: Latency -5-10%        │
-    │ Prerequisite: Measure  │  │ Prerequisite: Profile,      │
-    │                        │  │ kernel compat testing       │
-    └────────────────────────┘  └────────────────────────────┘
-                │                  │
-                └──────────────────┼──────────────────┐
-                                   │                  │
-                                   │             ┌────▼──────────────┐
-                                   │             │ Lock-free HLS    │
-                                   │             │ segment store    │
-                                   │             │ Effort: LOW      │
-                                   │             │ Gain: <1% latency│
-                                   │             │ Current: Acceptable
-                                   │             └──────────────────┘
-                                   │
-                                   ▼ LOW
-                              (diminishing returns)
-   
-   HIGH                       [EFFORT]                         LOW
-   
-   RECOMMENDED PRIORITY ORDER:
-   1. Measure FFmpeg (decode vs. encode bottleneck)
-   2. If encode-bound: implement FFmpeg sharding
-   3. If SRT dominant: consider async send (profiling first)
-   4. For general latency: already well-optimized
+```mermaid
+graph TD
+    Title["<b>OPTIMIZATION IMPACT vs EFFORT</b>"]
+    
+    FFmpeg["<b>FFmpeg Sharding</b><br/>(pyramid parallelization)<br/>─────<br/>Effort: HIGH<br/>Gain: Encode 2-3x<br/>Impact: HIGH"]
+    
+    Ring["<b>Adaptive Ring Sizing</b><br/>(single-output opt)<br/>─────<br/>Effort: MEDIUM<br/>Gain: RSS -20-30%<br/>Impact: MEDIUM"]
+    
+    IO["<b>Async I/O (io-uring)</b><br/>for recording<br/>─────<br/>Effort: MEDIUM-HIGH<br/>Gain: Latency -5-10%<br/>Impact: MEDIUM"]
+    
+    HLS["<b>Lock-free HLS</b><br/>segment store<br/>─────<br/>Effort: LOW<br/>Gain: <1% latency<br/>Impact: VERY LOW"]
+    
+    Priority["<b>Recommended Priority</b><br/>1. Measure FFmpeg bottleneck<br/>2. If encode-bound: sharding<br/>3. If SRT dominant: async send<br/>4. General latency: optimized ✓"]
+    
+    Title --> FFmpeg
+    FFmpeg --> Ring
+    FFmpeg --> IO
+    Ring --> HLS
+    IO --> HLS
+    FFmpeg -.->|High cost| Priority
+    Ring -.->|Medium cost| Priority
+    IO -.->|Medium cost| Priority
+    HLS -.->|Low cost| Priority
+    
+    style FFmpeg fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Ring fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style IO fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
+    style HLS fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style Priority fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+    style Title fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,color:#000
 ```
 
 ---
 
 ## Decoupling Decision Tree
 
-```
-START: Can this path run end-to-end on Tokio?
-  │
-  ├─ Is transcoding required (preset != source)?
-  │  ├─ YES → Must use OS thread or subprocess
-  │  │         ├─ FFmpeg subprocess (default)
-  │  │         └─ LibAVcodec in-process
-  │  │         [DECOUPLING: MemoryQueue + thread]
-  │  │
-  │  └─ NO → Continue
-  │
-  ├─ Are there multiple egress outputs at different rates?
-  │  ├─ YES → Ring buffer required for isolation
-  │  │         [DECOUPLING: Source RingBuffer]
-  │  │
-  │  └─ NO (single output)
-  │      ├─ RTMP output?
-  │      │  └─ YES → Could inline (but lose multi-egress if added later)
-  │      │
-  │      └─ SRT output?
-  │         └─ YES → Still need MemoryQueue for libsrt_send()
-  │             [DECOUPLING: MemoryQueue + OS thread]
-  │
-  ├─ Is this SRT egress?
-  │  ├─ YES → libsrt_send() blocks
-  │  │         [DECOUPLING: MemoryQueue + OS thread]
-  │  │
-  │  └─ NO → Continue
-  │
-  ├─ Is this recording?
-  │  ├─ YES → fwrite() blocks
-  │  │         [DECOUPLING: MemoryQueue + OS thread]
-  │  │
-  │  └─ NO → Continue
-  │
-  ├─ Is this audio routing with multi-output?
-  │  ├─ YES → Ring needed for isolation
-  │  │         [DECOUPLING: Audio ring (cheap)]
-  │  │
-  │  └─ NO → Continue
-  │
-  ├─ Is this HLS?
-  │  ├─ YES → Only Mutex at segment boundaries
-  │  │         [DECOUPLING: Mutex (~0.17 Hz contention)]
-  │  │         RESULT: ✅ BEST RUN-TO-COMPLETION
-  │  │
-  │  └─ NO → Must be RTMP passthrough
-  │      RESULT: ⚠️ Ring-only decoupling (unavoidable)
-  │
-  END
+```mermaid
+graph TD
+    START["<b>START</b><br/>Can path run<br/>end-to-end?"]
+    
+    Q1{"Transcoding<br/>required?"}
+    
+    Q1_YES["❌ YES<br/>Transcode = blocking<br/>Use: FFmpeg subprocess<br/>or libavcodec thread<br/><br/>→ MemoryQueue + OS thread"]
+    
+    Q2{"Multiple egress<br/>at different rates?"}
+    
+    Q2_YES["⚠️ YES<br/>Need isolation<br/><br/>→ Source RingBuffer"]
+    
+    Q2_NO["Single output"]
+    Q2_NO_RTMP{"RTMP?"}
+    Q2_NO_SRT{"SRT?"}
+    
+    Q2_NO_RTMP_YES["Could inline<br/>but lose scalability"]
+    Q2_NO_SRT_YES["Need libsrt isolation<br/>→ MemoryQueue + thread"]
+    
+    Q3{"SRT egress?"}
+    Q3_YES["libsrt_send() blocks<br/>→ MemoryQueue + thread"]
+    
+    Q4{"Recording?"}
+    Q4_YES["fwrite() blocks<br/>→ MemoryQueue + thread"]
+    
+    Q5{"Audio routing<br/>multi-output?"}
+    Q5_YES["Ring needed<br/>→ Audio ring"]
+    
+    Q6{"HLS?"}
+    Q6_YES["✅ Mutex only<br/>~0.17 Hz contention<br/><br/>BEST RUN-TO-COMPLETION"]
+    Q6_NO["⚠️ RTMP passthrough<br/>Ring-only (unavoidable)"]
+    
+    START --> Q1
+    Q1 -->|YES| Q1_YES
+    Q1 -->|NO| Q2
+    
+    Q2 -->|YES| Q2_YES
+    Q2 -->|NO| Q2_NO
+    
+    Q2_NO --> Q2_NO_RTMP
+    Q2_NO --> Q2_NO_SRT
+    
+    Q2_NO_RTMP -->|YES| Q2_NO_RTMP_YES
+    Q2_NO_RTMP -->|NO| Q3
+    
+    Q2_NO_SRT -->|YES| Q2_NO_SRT_YES
+    Q2_NO_SRT -->|NO| Q3
+    
+    Q3 -->|YES| Q3_YES
+    Q3 -->|NO| Q4
+    
+    Q4 -->|YES| Q4_YES
+    Q4 -->|NO| Q5
+    
+    Q5 -->|YES| Q5_YES
+    Q5 -->|NO| Q6
+    
+    Q6 -->|YES| Q6_YES
+    Q6 -->|NO| Q6_NO
+    
+    style START fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style Q1_YES fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Q2_YES fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style Q2_NO_RTMP_YES fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
+    style Q2_NO_SRT_YES fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Q3_YES fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Q4_YES fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style Q5_YES fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style Q6_YES fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style Q6_NO fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
 ```
 
 ---
