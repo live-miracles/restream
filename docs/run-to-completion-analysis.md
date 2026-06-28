@@ -6,291 +6,196 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 
 ## Complete System Architecture
 
-**SVG Diagram:** [View Full Architecture](diagrams/system_architecture.svg)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              RESTREAM MEDIA PIPELINE                            │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-                            ┌──────────────────────────┐
-                            │     INGRESS LAYER        │
-                            └──────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    │               │               │
-                    ▼               ▼               ▼
-            ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-            │ RTMP ingest  │ │ SRT ingest   │ │ File ingest  │
-            │ (TCP, FLV)   │ │ (UDP, TS)    │ │ (FFmpeg)     │
-            └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-                   │                │                │
-                   │ FLV demux      │ TS demux      │ TS demux
-                   │ (inline async) │ (inline async)│ (subprocess)
-                   │                │                │
-                   └────────────────┼────────────────┘
-                                    │
-                                    ▼
-            ╔══════════════════════════════════════════════════╗
-            ║         SOURCE RINGBUFFER (4096 slots)           ║
-            ║  Lock-free SPMC, one producer, N consumers       ║
-            ║  [DECOUPLING BOUNDARY #1: Multi-egress isolation]║
-            ╚══════════════════════════════════════════════════╝
-                                    │
-                ┌───────┬───────────┼──────────┬───────────┐
-                │       │           │          │           │
-                ▼       ▼           ▼          ▼           ▼
-            ┌────────────────────────────────────────────────────────┐
-            │            PROCESSING BRANCHES (per output)            │
-            └────────────────────────────────────────────────────────┘
-                │           │           │           │           │
-       ┌────────┴─┐  ┌──────┴───┐  ┌───┴────┐  ┌──┴─────┐  ┌──┴─────┐
-       │           │  │          │  │        │  │        │  │        │
-       ▼           ▼  ▼          ▼  ▼        ▼  ▼        ▼  ▼        ▼
-    RTMP-src   RTMP-720p    SRT-src    SRT-720p    HLS   Recording  Audio
-    (pass)   (transcode)   (pass)   (transcode)  seg    (TS file)  routs
-       │           │          │          │         │         │       │
-       │        ┌──┴──────────┴──┐       │         │         │       │
-       │        │                │       │         │         │       │
-       │        ▼                ▼       │         │         │       │
-       │    ┌─────────────────────────────────────────────────────┐  │
-       │    │   TRANSCODING STAGES (if preset != source)          │  │
-       │    │   - Shared per (pipeline, video_preset)             │  │
-       │    │   - External: FFmpeg subprocess                     │  │
-       │    │   - Internal: libavcodec in-process                 │  │
-       │    │   [DECOUPLING #2: Async ↔ blocking codec work]     │  │
-       │    └────────────┬──────────────────────────────────────┐ │  │
-       │                 │                                      │ │  │
-       │        ┌────────┴──────────────────────────────────────┼─┴──┐
-       │        │                                               │    │
-       │        ▼                                               ▼    ▼
-       │    ┌──────────────────────────────────────────────────────┐
-       │    │  OUTPUT RINGBUFFER (4096 slots, per preset)          │
-       │    │  Lock-free SPMC, carries transcoded packets          │
-       │    │  [DECOUPLING #3: Egress rate decoupling]            │
-       │    └────────┬─────────────────────────────────────────────┘
-       │             │
-       └─────────────┼──────────────────────────────────┐
-                     │                                  │
-       ┌─────────────┴────────┬────────────┬────────────┴─────────┐
-       │                      │            │                      │
-       ▼                      ▼            ▼                      ▼
-   ┌─────────┐          ┌──────────┐  ┌──────────┐          ┌──────────┐
-   │ RTMP    │          │ SRT muxer│  │ Audio    │          │ H.265→   │
-   │ egress  │          │ shared   │  │ routing  │          │ H.264    │
-   │ task    │          │ TsMuxer  │  │ (atrack) │          │ convert  │
-   │ (async) │          │ (async)  │  │ (async)  │          │ (thread) │
-   └────┬────┘          └────┬─────┘  └────┬─────┘          └────┬─────┘
-        │                    │             │                    │
-        │              ┌─────┴─────┐       │                    │
-        │              │           │       │                    │
-        │              ▼           ▼       ▼                    ▼
-        │         ┌──────────────────────────────────────────────────────┐
-        │         │  TS CHUNK RING (per (pipeline, preset))              │
-        │         │  Lock-free SPMC, pre-muxed TS packets                │
-        │         │  [DECOUPLING #4: Shared mux result]                 │
-        │         └──────┬──────────────────────────┬──────────────────┘
-        │                │                          │
-        │    ┌───────────┴────────────┬─────────────┴──────────────┐
-        │    │                        │                            │
-        │    ▼                        ▼                            ▼
-        │ ┌────────────┐         ┌────────────┐             ┌────────────┐
-        │ │MemoryQueue │         │MemoryQueue │             │ HlsStore   │
-        │ │  (per SRT  │         │ (per H.265 │             │ (Mutex)    │
-        │ │ connection)│         │ conversion)│             │            │
-        │ │            │         │            │             │ [Contention│
-        │ │[DECOUPLING │         │[DECOUPLING │             │  0.17 Hz]  │
-        │ │    #5]     │         │    #6]     │             └────┬───────┘
-        │ └─────┬──────┘         └─────┬──────┘                  │
-        │       │                      │                         │
-        │       ▼                      ▼                         ▼
-        │   ┌────────────┐         ┌────────────┐         ┌──────────┐
-        │   │OS Thread:  │         │OS Thread:  │         │ HTTP GET │
-        │   │libsrt_send │         │H.265→H.264 │         │ handlers │
-        │   │            │         │ libavcodec │         │ (async)  │
-        │   │[THREAD HOP]│         │ [THREAD HOP]│         └────┬─────┘
-        │   └─────┬──────┘         └─────┬──────┘              │
-        │         │                      │                     │
-        ▼         ▼                      ▼                     ▼
-    ┌──────────────────────────────────────────────────────────────────┐
-    │                         EGRESS LAYER                              │
-    │                   (TCP/UDP sockets, files, HTTP)                  │
-    └──────────────────────────────────────────────────────────────────┘
-        │         │                      │                     │
-        ▼         ▼                      ▼                     ▼
-    RTMP out  SRT out                SRT out               HLS seg
-    client A  client B,C             client D,E            browser
+```mermaid
+graph TD
+    RTMP["🔴 RTMP Ingest<br/>TCP + FLV<br/>demux"] 
+    SRT["🔴 SRT Ingest<br/>UDP + TS<br/>demux"]
+    File["🔴 File Ingest<br/>FFmpeg<br/>decode"]
+    
+    RTMP --> SourceRing
+    SRT --> SourceRing
+    File --> SourceRing
+    
+    SourceRing["⭐ SOURCE RING 4096 slots<br/>Lock-free SPMC<br/>[B#1]"]
+    
+    SourceRing --> Branch{Multi-egress<br/>paths}
+    
+    Branch -->|passthrough| RTMP_EGR["🟦 RTMP Egress<br/>async task"]
+    Branch -->|passthrough| SRT_EGR["🟦 SRT Egress<br/>async task"]
+    Branch -->|segmenting| HLS_EGR["🟦 HLS Segment<br/>async task"]
+    Branch -->|feeder| RECORD["🟦 Recording<br/>async task"]
+    Branch -->|feeder| XCODE_F["🟦 Transcoder<br/>Feeder"]
+    
+    RTMP_EGR --> RTMP_TCP["📤 TCP<br/>socket"]
+    
+    SRT_EGR --> SRT_MUX["🟨 TsChunkRing<br/>[B#2]"]
+    SRT_MUX --> SRT_QUEUE["🟧 MemoryQueue<br/>[B#3]"]
+    SRT_QUEUE --> |OS Thread| SRT_SEND["srt_send()<br/>blocking"]
+    SRT_SEND --> SRT_NET["📤 Network"]
+    
+    HLS_EGR --> HLS_MUTEX["🟩 Mutex<br/>0.17Hz [B#8]"]
+    HLS_MUTEX --> HTTP["📤 HTTP GET"]
+    
+    RECORD --> REC_QUEUE["🟧 MemoryQueue<br/>[B#9]"]
+    REC_QUEUE --> |OS Thread| FWRITE["fwrite()<br/>blocking"]
+    FWRITE --> DISK["📄 Disk"]
+    
+    XCODE_F --> XCODE_QUEUE["🟧 MemoryQueue<br/>[B#4]"]
+    XCODE_QUEUE --> |Subprocess| FFMPEG["FFmpeg<br/>decode+encode"]
+    FFMPEG --> OUTPUT["⭐ OUTPUT RING<br/>[B#5]"]
+    OUTPUT --> XCODE_OUT["🟦 Egress tasks<br/>async"]
+    XCODE_OUT --> |multiple| RTMP_TCP
+    XCODE_OUT --> |multiple| SRT_NET
+    
+    classDef ingest fill:#4caf50,stroke:#1b5e20,color:#fff
+    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#333
+    classDef task fill:#2196f3,stroke:#1565c0,color:#fff
+    classDef thread fill:#ffb74d,stroke:#e65100,color:#333
+    classDef queue fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    classDef output fill:#ffcc80,stroke:#ef6c00,color:#333
+    
+    class RTMP,SRT,File ingest
+    class SourceRing,OUTPUT ring
+    class RTMP_EGR,SRT_EGR,HLS_EGR,RECORD,XCODE_F,XCODE_OUT,FFMPEG task
+    class SRT_SEND,FWRITE thread
+    class SRT_QUEUE,REC_QUEUE,XCODE_QUEUE queue
+    class RTMP_TCP,SRT_NET,HTTP,DISK output
 ```
 
 ---
 
 ## Thread and Task Topology
 
-**SVG Diagram:** [View Thread Topology](diagrams/thread_topology.svg)
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    TOKIO RUNTIME (num_cpus workers)                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ RTMP ingest  │  │ SRT ingest   │  │ File ingest  │              │
-│  │ (1 per conn) │  │ (1 per conn) │  │ (1 per file) │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ RTMP egress  │  │ SRT muxer    │  │ HLS segment  │              │
-│  │ (1 per out)  │  │ (1 per       │  │ (1 per       │              │
-│  │              │  │ preset)      │  │ pipeline)    │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ Transcoder   │  │ Transcoder   │  │ Audio route  │              │
-│  │ feeder       │  │ stdout reader│  │ (atrack)     │              │
-│  │ (1 per preset)  │ (1 per preset)  │ (1 per key)  │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ Recording feeder (1 per active recording)                    │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ Reconciler (main loop, 1/sec tick)                          │  │
-│  │ Axum HTTP handler (per request)                             │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-    ║
-    ║ (bounded mpsc channel, spawn_blocking)
-    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      OS THREADS (std::thread)                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ SRT accept   │  │ SRT egress   │  │ Transcoder   │              │
-│  │ loop (1)     │  │ sender       │  │ codec thread │              │
-│  │              │  │ (N, capped)  │  │ (M, external)               │
-│  │[blocks on    │  │[blocks on    │  │ (K, internal)               │
-│  │ srt_accept]  │  │ srt_send]    │  │[blocks on    │              │
-│  └──────────────┘  └──────────────┘  │ FFmpeg]     │              │
-│  ┌──────────────┐  ┌──────────────┐  └──────────────┘              │
-│  │ Recording    │  │ H.265→H.264  │  ┌──────────────┐              │
-│  │ TS writer    │  │ converter    │  │ AVIO input   │              │
-│  │ (1 per rec)  │  │ (per stage)  │  │ (FFmpeg)     │              │
-│  │[blocks on    │  │[libavcodec]  │  │              │              │
-│  │ fwrite]      │  │              │  │ [blocks on   │              │
-│  └──────────────┘  └──────────────┘  │ read/write]  │              │
-│                                       └──────────────┘              │
-└─────────────────────────────────────────────────────────────────────┘
-    ║
-    ║ (child processes, Command::spawn)
-    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    CHILD PROCESSES (FFmpeg)                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ FFmpeg stdin │  │ FFmpeg       │  │ FFmpeg       │              │
-│  │ feeder (TS)  │  │ subprocess   │  │ stdout reader│              │
-│  │              │  │ (scale +     │  │ (TS demux)   │              │
-│  │ (1 per preset)  │ encode)      │  │ (1 per preset)              │
-│  │              │  │ (1 per preset)  │              │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Tokio ["🔵 TOKIO ASYNC RUNTIME"]
+        Ingest["Ingest<br/>RTMP/SRT/File"]
+        Egress["Egress<br/>RTMP/SRT/HLS"]
+        Feeder["Feeder<br/>Transcoder"]
+        Reader["Reader<br/>Transcoder"]
+        Audio["Audio<br/>Routing"]
+        Record_Feeder["Recording<br/>Feeder"]
+        Recon["Reconciler<br/>& HTTP"]
+        
+        Ring1["⭐ SOURCE RING"]
+        Ring2["⭐ OUTPUT RING"]
+        
+        Ingest --> Ring1
+        Ring1 --> Egress
+        Ring1 --> Feeder
+        Feeder --> Ring2
+        Ring2 --> Reader
+        Reader --> Egress
+        Ring1 --> Audio
+        Ring1 --> Record_Feeder
+    end
+    
+    Boundary["🔶 ASYNC ↔ BLOCKING BOUNDARY<br/>MemoryQueue + Condvar"]
+    
+    Tokio --> Boundary
+    
+    subgraph OS ["🟠 OS THREADS"]
+        SRT_SEND["SRT senders<br/>(N threads)<br/>srt_send()"]
+        FFmpeg["FFmpeg<br/>subprocess<br/>decode+encode"]
+        Codec["H.265→H.264<br/>converters<br/>(per stage)"]
+        REC_WRITE["Recording<br/>writers<br/>fwrite()"]
+        
+        Queue1["MemoryQueue"]
+        Queue2["MemoryQueue"]
+        Queue3["MemoryQueue"]
+        
+        Queue1 --> SRT_SEND
+        Queue2 --> FFmpeg
+        Queue3 --> Codec
+        Record_Feeder --> Queue3
+    end
+    
+    Boundary --> Queue1
+    Boundary --> Queue2
+    
+    SRT_SEND --> NET["Network<br/>UDP"]
+    FFmpeg --> Ring2
+    Codec --> Ring_Audio["Audio Ring"]
+    REC_WRITE --> DISK["Disk<br/>I/O"]
+    Record_Feeder --> REC_WRITE
+    
+    classDef tokio fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#333
+    classDef os fill:#ffe0b2,stroke:#e65100,stroke-width:2px,color:#333
+    classDef boundary fill:#ffccbc,stroke:#d84315,stroke-width:3px,color:#333
+    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#333
+    classDef queue fill:#c8e6c9,stroke:#388e3c,color:#333
+    
+    class Tokio tokio
+    class OS os
+    class Boundary boundary
+    class Ring1,Ring2,Ring_Audio ring
+    class Queue1,Queue2,Queue3 queue
 ```
 
 ---
 
 ## Decoupling Boundaries Summary
 
-**SVG Diagram:** [View All 9 Decoupling Boundaries](diagrams/decoupling_boundaries.svg)
-
 All 9 boundaries and their purposes:
 
-```
-                        ┌──────────────┐
-                        │ INGEST TASKS │
-                        └───────┬──────┘
-                                │
-                                ▼
-              ┌─────────────────────────────────┐
-              │ [B#1] SOURCE RING               │
-              │ Multi-egress SPMC isolation     │
-              └──┬──────────┬──────┬────────┬───┘
-                 │          │      │        │
-         ┌───────┘  ┌───────┘  ┌───┴────┐ ┌┴──────┐
-         │          │          │        │ │       │
-         ▼          ▼          ▼        ▼ ▼       │
-    ┌─────────┐ ┌──────────┐ ┌─────┐ ┌────┐     │
-    │ RTMP    │ │ SRT      │ │HLS  │ │Rec │     │
-    │ EGRESS  │ │ EGRESS   │ │SEG  │ │Feed│     │
-    │ (Task)  │ │ (Task)   │ │(Tsk)│ │    │     │
-    └────┬────┘ └────┬─────┘ └──┬──┘ └──┬─┘     │
-         │           │          │       │       │
-         ▼           ▼          ▼       ▼       │
-    TCP Socket  ┌──────────┐  Mutex  ┌──────┐  │
-               │ [B#2]    │         │[B#9]│  │
-               │TS CHUNK  │         │Memory│  │
-               │ RING     │         │Queue │  │
-               └────┬─────┘         └──┬───┘  │
-                    │ SRT conn         │      │
-                    ▼                  ▼      │
-               ┌──────────┐        ┌────────┐ │
-               │ [B#3]    │        │OS Thrd:│ │
-               │ MEMORY   │        │fwrite()│ │
-               │ QUEUE    │        └────────┘ │
-               └────┬─────┘                   │
-                    ▼                          │
-               ┌──────────┐                   │
-               │OS Thread:│                   │
-               │srt_send()│                   │
-               └──────────┘                   │
-                                             │
-            ┌────────────────────────────────┘
-            │
-            └──→ TRANSCODING PATH
-                 │
-                 ▼
-            ┌──────────────┐
-            │ Transcoder   │
-            │ FEEDER task  │
-            └────────┬─────┘
-                     │
-                     ▼
-            ┌──────────────┐
-            │ [B#4]        │
-            │ MEMORY QUEUE │
-            │ (async↔block)│
-            └────────┬─────┘
-                     │
-                     ▼
-            ┌──────────────┐
-            │ OS THREAD:   │
-            │ FFmpeg       │
-            │ subprocess   │
-            └────────┬─────┘
-                     │
-                     ▼
-            ┌──────────────────────┐
-            │ [B#5] OUTPUT RING    │
-            │ Transcoded packets   │
-            └────┬─────────┬───────┘
-                 │         │
-                 ▼         ▼
-            ┌────────┐  ┌────────────┐
-            │ RTMP   │  │ SRT        │
-            │ EGRESS │  │ EGRESS     │
-            │(AVCC)  │  │ (TsMuxer)  │
-            └──┬─────┘  └────┬───────┘
-               │              ▼
-               │         ┌─────────────┐
-               │         │ [B#6]       │
-               │         │ MEMORY QUEUE│
-               │         │ (srt_send)  │
-               │         └────┬────────┘
-               │              │
-               │              ▼
-               │         ┌──────────┐
-               │         │OS Thread:│
-               │         │srt_send()│
-               │         └──────────┘
-
-AUDIO ROUTING (if multi-audio):
-  [B#7] Audio routing rings (per track config)
-        → Async packet filters → egress
+```mermaid
+graph LR
+    Ingest["🔴 INGEST<br/>RTMP/SRT/File"]
+    Ingest --> B1["⭐ B#1<br/>SOURCE<br/>RING"]
+    B1 --> RTMP["🟦 RTMP<br/>Egress"]
+    B1 --> SRT["🟦 SRT<br/>Egress"]
+    B1 --> HLS["🟦 HLS<br/>Segment"]
+    B1 --> Rec["🟦 Record<br/>Feeder"]
+    B1 --> Xcode["🟦 Transcoder<br/>Feeder"]
+    
+    RTMP --> TCP["📤 TCP"]
+    SRT --> B2["🟨 B#2<br/>TS Ring"]
+    B2 --> B3["🟧 B#3<br/>MemQ"]
+    B3 --> OS_SRT["🟠 srt_send<br/>OS Thrd"]
+    OS_SRT --> NET["📤 Network"]
+    
+    HLS --> B8["🟩 B#8<br/>Mutex"]
+    B8 --> HTTP["📤 HTTP"]
+    
+    Rec --> B9["🟧 B#9<br/>MemQ"]
+    B9 --> OS_Rec["🟠 fwrite<br/>OS Thrd"]
+    OS_Rec --> DISK["📄 Disk"]
+    
+    Xcode --> B4["🟧 B#4<br/>MemQ"]
+    B4 --> FFmpeg["🟠 FFmpeg<br/>Subprocess"]
+    FFmpeg --> B5["⭐ B#5<br/>OUTPUT<br/>RING"]
+    B5 --> Multi["🟦 Multi<br/>Egress"]
+    
+    B1 --> Audio["🟨 B#7<br/>Audio<br/>Rings"]
+    Audio --> AudioOut["🟦 Audio"]
+    
+    classDef ingest fill:#4caf50,stroke:#1b5e20,color:#fff
+    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef queue fill:#ffccbc,stroke:#d84315
+    classDef mutex fill:#c8e6c9,stroke:#388e3c
+    classDef task fill:#2196f3,stroke:#1565c0,color:#fff
+    classDef thread fill:#ffb74d,stroke:#e65100
+    classDef output fill:#ffcc80,stroke:#ef6c00
+    
+    class Ingest ingest
+    class B1,B2,B5 ring
+    class B3,B4,B9 queue
+    class B8 mutex
+    class RTMP,SRT,HLS,Rec,Xcode,Multi,AudioOut task
+    class OS_SRT,OS_Rec,FFmpeg thread
+    class TCP,NET,HTTP,DISK output
 ```
 
----
+**Why each boundary exists:**
+- **B#1:** Multi-egress at independent rates ← CANNOT REMOVE
+- **B#2:** Shared muxer → multiple SRT connections
+- **B#3:** MANDATORY → libsrt_send() blocks indefinitely
+- **B#4:** MANDATORY → FFmpeg subprocess blocks  
+- **B#5:** Multi-consumer egress at independent rates
+- **B#6:** Per-SRT connection reader state
+- **B#7:** Audio track routing per config
+- **B#8:** HLS Mutex (0.17 Hz) ✅ BEST CASE (low contention)
+- **B#9:** Disk I/O isolation
 
 ## Blocking Boundaries (Cannot Be Removed)
 
