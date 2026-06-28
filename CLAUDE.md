@@ -29,82 +29,35 @@ Instructions for AI coding agents in this repository.
 
 Use the pinned Rust toolchain from `rust-toolchain.toml`.
 
-```sh
-cargo build
-scripts/resource-limit cargo test
-scripts/resource-limit cargo clippy
-cargo fmt
-```
-
-### Resource-Aware Builds
-
-When multiple agents may be building concurrently, use the resource-aware wrapper.
-It acquires the shared repository build lock, then sizes build jobs to available
-RAM and CPU budget:
+Always prefix Cargo and heavy commands with `scripts/resource-limit` — it acquires
+the build lock and sizes jobs to available RAM/CPU (parallel agents share resources).
+Use `--profile bench` instead of `--release` for local/agent builds (same opt-level,
+incremental, keeps debug symbols). Never use `--release` from agents.
 
 ```sh
-scripts/resource-limit cargo build
 scripts/resource-limit cargo build --profile bench
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
-```
+cargo fmt
 
-Release builds (`--release`) are only for CI. For local development and agent
-work, use `--profile bench` which shares the same opt-level but supports
-incremental compilation and keeps debug symbols for flamegraphs. The
-integration test script uses `target/release/` (where `--profile bench`
-outputs).
-
-Do not run `cargo build --release` from agents; use `--profile bench` instead.
-
-For other Cargo build commands, prefer the wrapper too:
-
-```sh
-scripts/resource-limit cargo bench --bench <name>
-```
-
-For non-Cargo heavy commands, use the same wrapper:
-
-```sh
-scripts/resource-limit ./test/run-integration.sh mixed-scale
-scripts/resource-limit ./scripts/setup-static-build.sh
-scripts/resource-limit ./scripts/build-static.sh
-```
-
-The lock uses `flock(1)` on `.build-lock`; it is released automatically if the
-process exits or crashes. The wrapper exports `BUILD_JOBS`, `CARGO_BUILD_JOBS`,
-`CMAKE_BUILD_PARALLEL_LEVEL`, and `MAKEFLAGS`; tune with
-`RESTREAM_MB_PER_JOB`, `RESTREAM_CPU_RESERVE`, `RESTREAM_MIN_JOBS`, and
-`RESTREAM_MAX_JOBS`.
-
-Frontend work:
-
-```sh
+# Frontend
 npx tsc -p tsconfig.json
 npx tailwindcss -i public/input.css -o public/output.css
 npx playwright test
+
+# Benchmarks and integration tests
+scripts/resource-limit cargo bench --bench <name>
+scripts/resource-limit ./test/run-integration.sh mixed-scale   # also: ramp, bonding
 ```
 
 Edit `public/ts/` and `public/input.css`. Do not hand-edit generated files in `public/js/`.
+Integration tests use a private loopback namespace by default; use `--host` only when required.
 
-Benchmarks and integration tests:
-
-```sh
-scripts/resource-limit cargo bench --bench <name>
-scripts/resource-limit ./test/run-integration.sh mixed-scale
-scripts/resource-limit ./test/run-integration.sh ramp
-scripts/resource-limit ./test/run-integration.sh bonding
-```
-
-Integration tests run in a private loopback namespace by default. Use `--host` only when host networking is required.
-
-### Build Safety on Memory-Limited Systems (WSL2)
+### Build Safety (WSL2)
 
 **Never run `cargo build`, `cargo test`, or `cargo clippy` while a live pipeline is running.**
-
-The bench binary (`target/release/restream`) combined with its FFmpeg child processes commits a large virtual address space due to statically-linked FFmpeg libraries (~3.9 GB VSZ for restream alone). On an 8 GB WSL2 system without swap, adding a `clippy-driver`/`rustc` invocation (~690 MB RSS) on top of 4 running FFmpeg transcoders (~460 MB) can push `Committed_AS` past 8 GB, causing the WSL2 kernel to panic and restart.
-
-Before any `cargo` command, kill the live setup:
+Static FFmpeg libraries push VSZ to ~3.9 GB; adding a rustc invocation on top can
+exhaust the 8 GB WSL2 limit and kernel-panic the VM.
 
 ```sh
 pkill -x restream; pkill -x mediamtx; pkill -x ffmpeg
@@ -152,31 +105,24 @@ SRT/RTMP packet loops, HLS segmenting, and transcoder data paths.
 - Do not add diagnostic readers or metrics that alter production pipeline behavior.
 - Keep protocol correctness tests at least as strong as performance validation.
 
-SIMD/vectorization:
-
-- Benchmark the scalar path first.
-- Add SIMD only for a measured bottleneck.
-- Keep a pure scalar fallback and test it as the oracle.
-- Use runtime feature detection once, cache the chosen implementation, and gate target features locally.
-- Keep `unsafe` blocks minimal and document safety invariants.
+For SIMD/vectorization: benchmark scalar first; add SIMD only for measured bottlenecks;
+keep a scalar fallback; use runtime feature detection; minimize `unsafe` and document invariants.
 
 ## Testing Expectations
 
-- Scope verification to the changed behavior first for a fast loop: run filtered
-  unit/integration tests and filtered Criterion benchmarks that exercise the
-  touched code path before using full suites as a broader confidence pass.
-- Treat unrelated full-suite failures as separate findings. Do not let them hide
-  whether the scoped tests/benchmarks for the current change passed or failed.
-- Broaden from scoped tests to package, integration, or full benchmark suites
-  only when the change crosses module boundaries, alters shared contracts, or
-  has enough risk to justify the slower loop.
-- When a benchmark or integration suite has grown into a blocker, split the
-  work into composable named slices by behavior, protocol, codec, topology, load
-  shape, and evidence type; report each slice independently.
-- Use `cargo test av_sync` for timestamp, DTS/PTS, and cross-stream sync changes.
-- Use protocol-matched probes: RTMP changes with RTMP probes, SRT changes with SRT probes.
-- For UI changes, run TypeScript compile and the relevant Playwright tests.
-- For integration or scale behavior, prefer `scripts/resource-limit ./test/run-integration.sh mixed-scale`; use `ramp` for memory growth and `bonding` for SRT bonding.
+- Run scoped tests first (filtered unit/Criterion for the touched path), then broaden only
+  if the change crosses module boundaries or alters shared contracts.
+- Treat unrelated full-suite failures as separate findings — don't let them obscure scoped results.
+- `cargo test av_sync` for timestamp/DTS/PTS changes; protocol-matched probes for RTMP/SRT.
+- UI changes: `npx tsc` + relevant Playwright tests.
+- Scale/integration: `scripts/resource-limit ./test/run-integration.sh mixed-scale` (ramp, bonding).
+
+## Session Hygiene
+
+Token costs grow with context length. To keep sessions efficient:
+- If the user's request is clearly a new, unrelated task, say so in one sentence and suggest
+  starting a fresh session (e.g. "This looks like a new topic — a new session would keep costs low").
+- Do not suggest this mid-task or for follow-up questions on the same topic.
 
 ## Key References
 
