@@ -80,7 +80,6 @@ APT_PACKAGES=(
     ninja-build
     perl
     pkg-config
-    python3
     tzdata
 )
 

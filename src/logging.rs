@@ -360,9 +360,6 @@ pub fn init(db_pool: SqlitePool) -> LoggingHandles {
         tracing_appender::non_blocking(appender)
     };
 
-    // ── log format ──
-    let log_format = std::env::var("RESTREAM_LOG_FORMAT").unwrap_or_else(|_| "compact".to_string());
-
     // ── RUST_LOG / EnvFilter ──
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));

@@ -24,7 +24,7 @@ tracing facade  (compile-time level strip via Cargo features)
 tracing_subscriber::Registry + EnvFilter
     |
     +---> fmt::Layer      --> stdout / stderr
-    +---> FileLayer       --> logs/restream.YYYY-MM-DD  (NonBlocking)
+    +---> FileLayer       --> logs/restream.log.YYYY-MM-DD  (NonBlocking)
     +---> DbLayer         --> app_logs table (SQLite, batched)
     `---> BroadcastLayer  --> tokio broadcast channel --> SSE subscribers
                                                           (GET /api/logs/stream)
@@ -111,9 +111,9 @@ RUST_LOG=info,restream::media::h264_transcoder=warn
 
 ### 1. fmt::Layer — stdout / stderr
 
-`error!` events go to stderr; all others go to stdout. Format is compact
-text in development and JSON in production (controlled by
-`RESTREAM_LOG_FORMAT=json|compact`, default `compact`).
+`error!` events go to stderr; all others go to stdout. The stdout/stderr
+format is the default `tracing_subscriber` text formatter, while the file
+sink uses JSON.
 
 JSON format makes log lines parseable by Datadog, Loki, Cloud Logging,
 and similar without a parsing rule.
@@ -128,7 +128,7 @@ The `WorkerGuard` returned by `non_blocking()` is held for the process
 lifetime in `run_app()`. On shutdown the guard is dropped last, flushing
 any buffered lines before the process exits.
 
-File names: `logs/restream.2026-06-27`. No log rotation library is
+File names: `logs/restream.log.2026-06-27`. No log rotation library is
 required — daily rotation is built into `tracing-appender`.
 
 Configure the directory with `RESTREAM_LOG_DIR` (default: `logs/`). Set

@@ -9,6 +9,7 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "fault-resilience",
     "mixed-file-h264",
     "resource-sweep",
+    "bitrate-sweep",
 ];
 
 const SINK_PORT: u16 = 12935;
@@ -84,13 +86,14 @@ async fn run() -> Result<(), String> {
         "fault-resilience" => fault_resilience().await,
         "mixed-file-h264" => mixed_file_h264_correctness().await,
         "resource-sweep" => resource_sweep().await,
+        "bitrate-sweep" => bitrate_sweep().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
               correctness-rtmp, correctness-srt, correctness-srt-rtmp, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-resilience, mixed-file-h264, or resource-sweep"
+              fault-resilience, mixed-file-h264, resource-sweep, or bitrate-sweep"
         )),
     };
 
@@ -973,6 +976,63 @@ fn parse_usize_list(name: &str, default: &str) -> Vec<usize> {
         .collect()
 }
 
+fn parse_bitrate_specs(name: &str, default: &str) -> Result<Vec<BitrateSpec>, String> {
+    let mut out = Vec::new();
+    for part in std::env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let normalized = part.to_ascii_uppercase();
+        let mbps = if let Some(value) = normalized.strip_suffix('M') {
+            value
+                .parse::<f64>()
+                .map_err(|_| format!("invalid Mbps bitrate {part:?}"))?
+        } else if let Some(value) = normalized.strip_suffix('K') {
+            value
+                .parse::<f64>()
+                .map_err(|_| format!("invalid Kbps bitrate {part:?}"))?
+                / 1000.0
+        } else {
+            normalized
+                .parse::<f64>()
+                .map_err(|_| format!("invalid bitrate {part:?}"))?
+        };
+        out.push(BitrateSpec {
+            label: part.to_string(),
+            mbps,
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("{name} produced no bitrate values"));
+    }
+    Ok(out)
+}
+
+fn parse_sweep_configs(name: &str) -> Result<Vec<SweepConfig>, String> {
+    let raw = std::env::var(name).unwrap_or_else(|_| {
+        SWEEP_CONFIGS
+            .iter()
+            .map(|cfg| cfg.name)
+            .collect::<Vec<_>>()
+            .join(",")
+    });
+    let mut out = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+        let config = SWEEP_CONFIGS
+            .iter()
+            .copied()
+            .find(|cfg| cfg.name == part)
+            .ok_or_else(|| format!("unknown sweep config {part:?}"))?;
+        out.push(config);
+    }
+    if out.is_empty() {
+        return Err(format!("{name} produced no configs"));
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Copy)]
 struct SweepConfig {
     name: &'static str,
@@ -1040,6 +1100,130 @@ struct ResourceSweepStack {
     restream_pid: u32,
 }
 
+struct BitrateSweepEnv {
+    work_dir: PathBuf,
+    summary_json: PathBuf,
+    summary_csv: PathBuf,
+    samples_jsonl: PathBuf,
+    restream_log: PathBuf,
+    mediamtx_log: PathBuf,
+    mediamtx_config: PathBuf,
+    restream_bin: PathBuf,
+    restream_db_path: PathBuf,
+    restream_http: u16,
+    restream_rtmp: u16,
+    restream_srt: u16,
+    mtx_rtmp: u16,
+    mtx_srt: u16,
+    mtx_api: u16,
+    stabilize_secs: u64,
+    sample_interval_secs: u64,
+    output_groups: usize,
+    no_cleanup: bool,
+    bitrates: Vec<BitrateSpec>,
+    configs: Vec<SweepConfig>,
+}
+
+impl BitrateSweepEnv {
+    fn from_env() -> Result<Self, String> {
+        let work_dir = std::env::var_os("WORK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("test/artifacts/bitrate-sweep"));
+        Ok(Self {
+            summary_json: work_dir.join("bitrate-sweep-results.json"),
+            summary_csv: work_dir.join("bitrate-sweep-results.csv"),
+            samples_jsonl: work_dir.join("bitrate-sweep-samples.jsonl"),
+            restream_log: work_dir.join("restream.log"),
+            mediamtx_log: work_dir.join("mediamtx.log"),
+            mediamtx_config: work_dir.join("mediamtx.yml"),
+            restream_bin: std::env::var_os("RESTREAM_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data.db")),
+            restream_http: env_u16("RESTREAM_HTTP", 3030),
+            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
+            restream_srt: env_u16("RESTREAM_SRT", 10080),
+            mtx_rtmp: env_u16("MTX_RTMP", 1936),
+            mtx_srt: env_u16("MTX_SRT", 8891),
+            mtx_api: env_u16("MTX_API", 9997),
+            stabilize_secs: env_secs("BITRATE_SWEEP_STABILIZE_SECS", 30),
+            sample_interval_secs: env_secs("BITRATE_SWEEP_SAMPLE_INTERVAL_SECS", 5).max(1),
+            output_groups: env_usize("BITRATE_SWEEP_OUTPUT_GROUPS", 1).max(1),
+            no_cleanup: std::env::var("BITRATE_SWEEP_NO_CLEANUP")
+                .ok()
+                .is_some_and(|v| v == "1"),
+            bitrates: parse_bitrate_specs("BITRATE_SWEEP_BITRATES", "1.5M,4M,8M")?,
+            configs: parse_sweep_configs("BITRATE_SWEEP_CONFIGS")?,
+            work_dir,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct BitrateSpec {
+    label: String,
+    mbps: f64,
+}
+
+#[derive(Clone)]
+struct BitrateSweepSample {
+    config: String,
+    bitrate_label: String,
+    bitrate_mbps: f64,
+    elapsed_secs: u64,
+    restream_cpu_pct: f64,
+    ffmpeg_cpu_pct: f64,
+    total_cpu_pct: f64,
+    restream_rss_kb: u64,
+    ffmpeg_count: u64,
+    ffmpeg_rss_kb: u64,
+    total_rss_kb: u64,
+    retained_payload_kb: u64,
+    source_ring_kb: u64,
+    transcoder_ring_kb: u64,
+    tsmux_ring_kb: u64,
+    avio_len_kb: u64,
+    avio_hwm_kb: u64,
+    overflow_count: u64,
+}
+
+struct BitrateSweepCase {
+    config: String,
+    ingest_proto: String,
+    video_codec: String,
+    multi_audio: bool,
+    bitrate_label: String,
+    bitrate_mbps: f64,
+    output_groups: usize,
+    outputs_total: usize,
+    restream_rss_base_kb: u64,
+    restream_rss_final_kb: u64,
+    restream_rss_delta_kb: u64,
+    restream_rss_peak_kb: u64,
+    ffmpeg_count_peak: u64,
+    ffmpeg_rss_peak_kb: u64,
+    total_rss_peak_kb: u64,
+    restream_cpu_avg_pct: f64,
+    restream_cpu_peak_pct: f64,
+    ffmpeg_cpu_avg_pct: f64,
+    ffmpeg_cpu_peak_pct: f64,
+    total_cpu_avg_pct: f64,
+    total_cpu_peak_pct: f64,
+    retained_payload_min_kb: u64,
+    retained_payload_max_kb: u64,
+    retained_payload_final_kb: u64,
+    retained_growth_kb_per_min: f64,
+    source_ring_peak_kb: u64,
+    transcoder_ring_peak_kb: u64,
+    tsmux_ring_peak_kb: u64,
+    avio_len_peak_kb: u64,
+    avio_hwm_peak_kb: u64,
+    overflow_count_final: u64,
+    correctness_ok: bool,
+}
+
 #[derive(Clone)]
 struct ResourceSample {
     scenario: String,
@@ -1050,7 +1234,9 @@ struct ResourceSample {
     ingest_types: String,
     egress_mix: String,
     transcode: String,
-    cpu_pct: f64,
+    restream_cpu_pct: f64,
+    ffmpeg_cpu_pct: f64,
+    total_cpu_pct: f64,
     rss_kb: u64,
     ffmpeg_count: u64,
     ffmpeg_rss_kb: u64,
@@ -1085,8 +1271,12 @@ struct ResourceAggregate {
     egress_mix: String,
     transcode: String,
     sample_count: usize,
-    cpu_avg_pct: f64,
-    cpu_peak_pct: f64,
+    restream_cpu_avg_pct: f64,
+    restream_cpu_peak_pct: f64,
+    ffmpeg_cpu_avg_pct: f64,
+    ffmpeg_cpu_peak_pct: f64,
+    total_cpu_avg_pct: f64,
+    total_cpu_peak_pct: f64,
     rss_avg_kb: f64,
     rss_peak_kb: u64,
     ffmpeg_rss_peak_kb: u64,
@@ -1243,13 +1433,123 @@ async fn resource_sweep() -> Result<Value, String> {
     Ok(result)
 }
 
-async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSweepStack, String> {
+async fn bitrate_sweep() -> Result<Value, String> {
+    let env = BitrateSweepEnv::from_env()?;
+    std::fs::create_dir_all(&env.work_dir).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&env.summary_csv);
+    let _ = std::fs::remove_file(&env.summary_json);
+    let _ = std::fs::remove_file(&env.samples_jsonl);
+
+    let mut rows = Vec::new();
+    for config in &env.configs {
+        for bitrate in &env.bitrates {
+            let row = run_bitrate_case(&env, *config, bitrate).await?;
+            rows.push(row);
+        }
+    }
+
+    write_bitrate_sweep_csv(&env.summary_csv, &rows)?;
+    let result = json!({
+        "mode": "bitrate-sweep",
+        "artifacts": {
+            "summaryJson": env.summary_json,
+            "summaryCsv": env.summary_csv,
+            "samplesJsonl": env.samples_jsonl,
+            "restreamLog": env.restream_log,
+            "mediamtxLog": env.mediamtx_log,
+        },
+        "cases": rows.iter().map(bitrate_sweep_case_json).collect::<Vec<_>>(),
+    });
+    std::fs::write(&env.summary_json, serde_json::to_vec_pretty(&result).unwrap())
+        .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+async fn run_bitrate_case(
+    env: &BitrateSweepEnv,
+    config: SweepConfig,
+    bitrate: &BitrateSpec,
+) -> Result<BitrateSweepCase, String> {
+    let mut stack = start_bitrate_sweep_stack(env).await?;
+    let stream_key = format!(
+        "bitrate-{}-{}",
+        config.name,
+        bitrate.label.to_ascii_lowercase().replace('.', "_")
+    );
+    let pipeline_id = create_resource_pipeline(&stack.api, config.name, &stream_key).await?;
+    let mut publisher = spawn_resource_publisher_with_bitrate(
+        env.restream_rtmp,
+        env.restream_srt,
+        &env.work_dir,
+        config,
+        &stream_key,
+        &bitrate.label,
+    )?;
+    wait_for_api_input_live(&stack.api, &pipeline_id, Duration::from_secs(45)).await?;
+    let restream_rss_base_kb =
+        read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log)?;
+
+    let mut output_ids = Vec::new();
+    let mut probe_specs = Vec::new();
+    for index in 1..=env.output_groups {
+        let names = bitrate_case_output_names(config.name, &bitrate.label, index);
+        for (kind, name, expected) in [
+            (SweepOutputKind::RtmpSource, names.rtmp_source, "1920x1080"),
+            (SweepOutputKind::Rtmp720p, names.rtmp_720p, "1280x720"),
+            (SweepOutputKind::SrtSource, names.srt_source, "1920x1080"),
+            (SweepOutputKind::Srt720p, names.srt_720p, "1280x720"),
+        ] {
+            let (url, encoding) = bitrate_output_url(env, config, kind, &name);
+            let output_id =
+                create_mixed_output(&stack.api, &pipeline_id, &name, &url, &encoding).await?;
+            start_mixed_output(&stack.api, &pipeline_id, &output_id).await?;
+            output_ids.push(output_id);
+            probe_specs.push((kind, name, expected.to_string()));
+        }
+    }
+    wait_for_outputs_progress(&stack.api, &pipeline_id, &output_ids, Duration::from_secs(30))
+        .await?;
+
+    let samples = sample_bitrate_window(env, &mut stack, config, bitrate, &pipeline_id).await?;
+    let mut correctness_ok = true;
+    for (kind, name, expected) in &probe_specs {
+        let url = bitrate_probe_url(env, *kind, name);
+        if !check_bitrate_stream(&url, expected, Duration::from_secs(20)).await? {
+            correctness_ok = false;
+        }
+    }
+
+    let restream_rss_final_kb =
+        read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log).unwrap_or(0);
+    let ffmpeg = ffmpeg_children_stats(stack.restream_pid)?;
+
+    stop_child(&mut publisher).await;
+    delete_resource_pipeline(&stack.api, &pipeline_id).await;
+    if !env.no_cleanup {
+        stop_child(&mut stack.restream).await;
+        stop_child(&mut stack.mediamtx).await;
+    }
+
+    summarize_bitrate_case(
+        config,
+        bitrate,
+        env.output_groups,
+        restream_rss_base_kb,
+        restream_rss_final_kb,
+        ffmpeg,
+        correctness_ok,
+        &samples,
+    )
+}
+
+async fn start_bitrate_sweep_stack(env: &BitrateSweepEnv) -> Result<ResourceSweepStack, String> {
     if !env.restream_bin.exists() {
         return Err(format!(
             "restream binary not found at {}",
             env.restream_bin.display()
         ));
     }
+    std::fs::create_dir_all(env.work_dir.join("logs")).map_err(|e| e.to_string())?;
     cleanup_ramp_db(&env.restream_db_path);
     let mediamtx_log = std::fs::File::create(&env.mediamtx_log).map_err(|e| e.to_string())?;
     let mediamtx_err = mediamtx_log.try_clone().map_err(|e| e.to_string())?;
@@ -1284,6 +1584,503 @@ async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSw
         .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
         .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
         .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
+        .env("RESTREAM_LOG_DIR", env.work_dir.join("logs"))
+        .env(
+            "RESTREAM_DB_PATH",
+            env.restream_db_path.to_string_lossy().to_string(),
+        )
+        .stdout(Stdio::from(restream_log))
+        .stderr(Stdio::from(restream_err))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/healthz", env.restream_http),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut restream).await;
+        stop_child(&mut mediamtx).await;
+        return Err(format!("restream did not become ready: {err}"));
+    }
+    let mut api = RampApi::new(env.restream_http);
+    api.login().await?;
+    let restream_pid = restream.id().ok_or("restream pid missing")?;
+    Ok(ResourceSweepStack {
+        mediamtx,
+        restream,
+        api,
+        restream_pid,
+    })
+}
+
+struct BitrateOutputNames {
+    rtmp_source: String,
+    rtmp_720p: String,
+    srt_source: String,
+    srt_720p: String,
+}
+
+fn bitrate_case_output_names(config_name: &str, bitrate_label: &str, index: usize) -> BitrateOutputNames {
+    let suffix = bitrate_label.to_ascii_lowercase().replace('.', "_");
+    BitrateOutputNames {
+        rtmp_source: format!("{config_name}-{suffix}-rtmp-src-{index}"),
+        rtmp_720p: format!("{config_name}-{suffix}-rtmp-720p-{index}"),
+        srt_source: format!("{config_name}-{suffix}-srt-src-{index}"),
+        srt_720p: format!("{config_name}-{suffix}-srt-720p-{index}"),
+    }
+}
+
+fn bitrate_output_url(
+    env: &BitrateSweepEnv,
+    config: SweepConfig,
+    kind: SweepOutputKind,
+    name: &str,
+) -> (String, String) {
+    match kind {
+        SweepOutputKind::RtmpSource => (
+            format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp),
+            "source".to_string(),
+        ),
+        SweepOutputKind::SrtSource => (
+            format!("srt://127.0.0.1:{}?streamid=publish:live/{name}", env.mtx_srt),
+            "source".to_string(),
+        ),
+        SweepOutputKind::Rtmp720p => (
+            format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp),
+            if config.multi_audio {
+                "720p+atrack:0".to_string()
+            } else {
+                "720p".to_string()
+            },
+        ),
+        SweepOutputKind::Srt720p => (
+            format!("srt://127.0.0.1:{}?streamid=publish:live/{name}", env.mtx_srt),
+            if config.multi_audio {
+                "720p+atrack:0,1".to_string()
+            } else {
+                "720p".to_string()
+            },
+        ),
+    }
+}
+
+fn bitrate_probe_url(env: &BitrateSweepEnv, kind: SweepOutputKind, name: &str) -> String {
+    match kind {
+        SweepOutputKind::RtmpSource | SweepOutputKind::Rtmp720p => {
+            format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp)
+        }
+        SweepOutputKind::SrtSource | SweepOutputKind::Srt720p => {
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{name}&timeout=30000000",
+                env.mtx_srt
+            )
+        }
+    }
+}
+
+async fn sample_bitrate_window(
+    env: &BitrateSweepEnv,
+    stack: &mut ResourceSweepStack,
+    config: SweepConfig,
+    bitrate: &BitrateSpec,
+    pipeline_id: &str,
+) -> Result<Vec<BitrateSweepSample>, String> {
+    let mut samples = Vec::new();
+    let mut prev_ticks = read_proc_stat_ticks(stack.restream_pid)?;
+    let mut prev_ffmpeg_ticks: HashMap<u32, u64> = HashMap::new();
+    let mut prev_instant = Instant::now();
+    let mut elapsed_secs = 0u64;
+    let deadline = Instant::now() + Duration::from_secs(env.stabilize_secs);
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(env.sample_interval_secs)).await;
+        elapsed_secs += env.sample_interval_secs;
+        let ffmpeg = ffmpeg_children_stats(stack.restream_pid)?;
+        let ticks = read_proc_stat_ticks(stack.restream_pid)?;
+        let interval_secs = prev_instant.elapsed().as_secs_f64().max(0.001);
+        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) as f64 };
+        let restream_cpu_pct =
+            100.0 * (ticks.saturating_sub(prev_ticks)) as f64 / clk_tck / interval_secs;
+        let mut ffmpeg_delta_ticks = 0u64;
+        let mut next_ffmpeg_ticks = HashMap::new();
+        for pid in &ffmpeg.pids {
+            if let Ok(current_ticks) = read_proc_stat_ticks(*pid) {
+                let previous_ticks = prev_ffmpeg_ticks.get(pid).copied().unwrap_or(current_ticks);
+                ffmpeg_delta_ticks += current_ticks.saturating_sub(previous_ticks);
+                next_ffmpeg_ticks.insert(*pid, current_ticks);
+            }
+        }
+        let ffmpeg_cpu_pct = 100.0 * ffmpeg_delta_ticks as f64 / clk_tck / interval_secs;
+        let total_cpu_pct = restream_cpu_pct + ffmpeg_cpu_pct;
+        prev_ticks = ticks;
+        prev_ffmpeg_ticks = next_ffmpeg_ticks;
+        prev_instant = Instant::now();
+
+        let telemetry = stack.api.get_json("/api/v1/engine/telemetry").await?;
+        let pipeline_telemetry = stack
+            .api
+            .get_json(&format!("/api/v1/pipelines/{pipeline_id}/telemetry"))
+            .await?;
+        let accounting = &telemetry["memoryAccounting"];
+        let avio = &accounting["avioQueues"];
+        let overflow_count = pipeline_telemetry["sourceRing"]["readers"]
+            .as_array()
+            .map(|readers| {
+                readers
+                    .iter()
+                    .map(|reader| reader["overflowCount"].as_u64().unwrap_or(0))
+                    .sum()
+            })
+            .unwrap_or(0);
+        let sample = BitrateSweepSample {
+            config: config.name.to_string(),
+            bitrate_label: bitrate.label.clone(),
+            bitrate_mbps: bitrate.mbps,
+            elapsed_secs,
+            restream_cpu_pct,
+            ffmpeg_cpu_pct,
+            total_cpu_pct,
+            restream_rss_kb: read_proc_status_kb_checked(
+                stack.restream_pid,
+                "VmRSS",
+                &env.restream_log,
+            )?,
+            ffmpeg_count: ffmpeg.count,
+            ffmpeg_rss_kb: ffmpeg.rss_kb,
+            total_rss_kb: read_proc_status_kb_checked(
+                stack.restream_pid,
+                "VmRSS",
+                &env.restream_log,
+            )? + ffmpeg.rss_kb,
+            retained_payload_kb: accounting["retainedPayloadBytes"].as_u64().unwrap_or(0) / 1024,
+            source_ring_kb: accounting["sourceRings"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|ring| ring["payloadStats"]["payloadBytes"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                / 1024,
+            transcoder_ring_kb: accounting["transcoderRings"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|ring| ring["payloadStats"]["payloadBytes"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                / 1024,
+            tsmux_ring_kb: accounting["tsMuxerRings"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|ring| ring["payloadStats"]["payloadBytes"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                / 1024,
+            avio_len_kb: avio["totalLenBytes"].as_u64().unwrap_or(0) / 1024,
+            avio_hwm_kb: avio["inputQueues"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(avio["egressQueues"].as_array().into_iter().flatten())
+                .map(|queue| queue["highWaterBytes"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                / 1024,
+            overflow_count,
+        };
+        append_line(
+            &env.samples_jsonl,
+            &format!("{}\n", serde_json::to_string(&bitrate_sweep_sample_json(&sample)).unwrap()),
+        )?;
+        samples.push(sample);
+    }
+    Ok(samples)
+}
+
+async fn check_bitrate_stream(
+    url: &str,
+    expected: &str,
+    timeout: Duration,
+) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(dimensions) = probe_dims_ramp(url).await
+            && dimensions == expected
+        {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Ok(false)
+}
+
+fn summarize_bitrate_case(
+    config: SweepConfig,
+    bitrate: &BitrateSpec,
+    output_groups: usize,
+    restream_rss_base_kb: u64,
+    restream_rss_final_kb: u64,
+    ffmpeg: FfmpegStats,
+    correctness_ok: bool,
+    samples: &[BitrateSweepSample],
+) -> Result<BitrateSweepCase, String> {
+    if samples.is_empty() {
+        return Err("bitrate sweep produced no samples".to_string());
+    }
+    let retained_min_kb = samples
+        .iter()
+        .map(|sample| sample.retained_payload_kb)
+        .min()
+        .unwrap_or(0);
+    let retained_max_kb = samples
+        .iter()
+        .map(|sample| sample.retained_payload_kb)
+        .max()
+        .unwrap_or(0);
+    let retained_final_kb = samples.last().map(|sample| sample.retained_payload_kb).unwrap_or(0);
+    let elapsed_min = (samples.last().map(|sample| sample.elapsed_secs).unwrap_or(0) as f64) / 60.0;
+    Ok(BitrateSweepCase {
+        config: config.name.to_string(),
+        ingest_proto: config.ingest_proto.to_string(),
+        video_codec: config.video_codec.to_string(),
+        multi_audio: config.multi_audio,
+        bitrate_label: bitrate.label.clone(),
+        bitrate_mbps: bitrate.mbps,
+        output_groups,
+        outputs_total: output_groups * 4,
+        restream_rss_base_kb,
+        restream_rss_final_kb,
+        restream_rss_delta_kb: restream_rss_final_kb.saturating_sub(restream_rss_base_kb),
+        restream_rss_peak_kb: samples
+            .iter()
+            .map(|sample| sample.restream_rss_kb)
+            .max()
+            .unwrap_or(0),
+        ffmpeg_count_peak: samples
+            .iter()
+            .map(|sample| sample.ffmpeg_count)
+            .max()
+            .unwrap_or(ffmpeg.count),
+        ffmpeg_rss_peak_kb: samples
+            .iter()
+            .map(|sample| sample.ffmpeg_rss_kb)
+            .max()
+            .unwrap_or(ffmpeg.rss_kb),
+        total_rss_peak_kb: samples
+            .iter()
+            .map(|sample| sample.total_rss_kb)
+            .max()
+            .unwrap_or(restream_rss_final_kb + ffmpeg.rss_kb),
+        restream_cpu_avg_pct: round2(
+            samples.iter().map(|sample| sample.restream_cpu_pct).sum::<f64>() / samples.len() as f64,
+        ),
+        restream_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|sample| sample.restream_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
+        ffmpeg_cpu_avg_pct: round2(
+            samples.iter().map(|sample| sample.ffmpeg_cpu_pct).sum::<f64>() / samples.len() as f64,
+        ),
+        ffmpeg_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|sample| sample.ffmpeg_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
+        total_cpu_avg_pct: round2(
+            samples.iter().map(|sample| sample.total_cpu_pct).sum::<f64>() / samples.len() as f64,
+        ),
+        total_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|sample| sample.total_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
+        retained_payload_min_kb: retained_min_kb,
+        retained_payload_max_kb: retained_max_kb,
+        retained_payload_final_kb: retained_final_kb,
+        retained_growth_kb_per_min: if elapsed_min > 0.0 {
+            round2((retained_final_kb.saturating_sub(retained_min_kb)) as f64 / elapsed_min)
+        } else {
+            0.0
+        },
+        source_ring_peak_kb: samples
+            .iter()
+            .map(|sample| sample.source_ring_kb)
+            .max()
+            .unwrap_or(0),
+        transcoder_ring_peak_kb: samples
+            .iter()
+            .map(|sample| sample.transcoder_ring_kb)
+            .max()
+            .unwrap_or(0),
+        tsmux_ring_peak_kb: samples
+            .iter()
+            .map(|sample| sample.tsmux_ring_kb)
+            .max()
+            .unwrap_or(0),
+        avio_len_peak_kb: samples
+            .iter()
+            .map(|sample| sample.avio_len_kb)
+            .max()
+            .unwrap_or(0),
+        avio_hwm_peak_kb: samples
+            .iter()
+            .map(|sample| sample.avio_hwm_kb)
+            .max()
+            .unwrap_or(0),
+        overflow_count_final: samples.last().map(|sample| sample.overflow_count).unwrap_or(0),
+        correctness_ok,
+    })
+}
+
+fn bitrate_sweep_sample_json(sample: &BitrateSweepSample) -> Value {
+    json!({
+        "config": sample.config,
+        "bitrateLabel": sample.bitrate_label,
+        "bitrateMbps": sample.bitrate_mbps,
+        "elapsedSecs": sample.elapsed_secs,
+        "restreamCpuPct": sample.restream_cpu_pct,
+        "ffmpegCpuPct": sample.ffmpeg_cpu_pct,
+        "totalCpuPct": sample.total_cpu_pct,
+        "restreamRssKb": sample.restream_rss_kb,
+        "ffmpegCount": sample.ffmpeg_count,
+        "ffmpegRssKb": sample.ffmpeg_rss_kb,
+        "totalRssKb": sample.total_rss_kb,
+        "retainedPayloadKb": sample.retained_payload_kb,
+        "sourceRingKb": sample.source_ring_kb,
+        "transcoderRingKb": sample.transcoder_ring_kb,
+        "tsmuxRingKb": sample.tsmux_ring_kb,
+        "avioLenKb": sample.avio_len_kb,
+        "avioHwmKb": sample.avio_hwm_kb,
+        "overflowCount": sample.overflow_count,
+    })
+}
+
+fn bitrate_sweep_case_json(case: &BitrateSweepCase) -> Value {
+    json!({
+        "config": case.config,
+        "ingestProto": case.ingest_proto,
+        "videoCodec": case.video_codec,
+        "multiAudio": case.multi_audio,
+        "bitrateLabel": case.bitrate_label,
+        "bitrateMbps": case.bitrate_mbps,
+        "outputGroups": case.output_groups,
+        "outputsTotal": case.outputs_total,
+        "restreamRssBaseKb": case.restream_rss_base_kb,
+        "restreamRssFinalKb": case.restream_rss_final_kb,
+        "restreamRssDeltaKb": case.restream_rss_delta_kb,
+        "restreamRssPeakKb": case.restream_rss_peak_kb,
+        "ffmpegCountPeak": case.ffmpeg_count_peak,
+        "ffmpegRssPeakKb": case.ffmpeg_rss_peak_kb,
+        "totalRssPeakKb": case.total_rss_peak_kb,
+        "restreamCpuAvgPct": case.restream_cpu_avg_pct,
+        "restreamCpuPeakPct": case.restream_cpu_peak_pct,
+        "ffmpegCpuAvgPct": case.ffmpeg_cpu_avg_pct,
+        "ffmpegCpuPeakPct": case.ffmpeg_cpu_peak_pct,
+        "totalCpuAvgPct": case.total_cpu_avg_pct,
+        "totalCpuPeakPct": case.total_cpu_peak_pct,
+        "retainedPayloadMinKb": case.retained_payload_min_kb,
+        "retainedPayloadMaxKb": case.retained_payload_max_kb,
+        "retainedPayloadFinalKb": case.retained_payload_final_kb,
+        "retainedGrowthKbPerMin": case.retained_growth_kb_per_min,
+        "sourceRingPeakKb": case.source_ring_peak_kb,
+        "transcoderRingPeakKb": case.transcoder_ring_peak_kb,
+        "tsmuxRingPeakKb": case.tsmux_ring_peak_kb,
+        "avioLenPeakKb": case.avio_len_peak_kb,
+        "avioHwmPeakKb": case.avio_hwm_peak_kb,
+        "overflowCountFinal": case.overflow_count_final,
+        "correctnessOk": case.correctness_ok,
+    })
+}
+
+fn write_bitrate_sweep_csv(path: &Path, rows: &[BitrateSweepCase]) -> Result<(), String> {
+    let mut text = String::from(
+        "config,ingest_proto,video_codec,multi_audio,bitrate_label,bitrate_mbps,output_groups,outputs_total,restream_rss_base_kb,restream_rss_final_kb,restream_rss_delta_kb,restream_rss_peak_kb,ffmpeg_count_peak,ffmpeg_rss_peak_kb,total_rss_peak_kb,restream_cpu_avg_pct,restream_cpu_peak_pct,ffmpeg_cpu_avg_pct,ffmpeg_cpu_peak_pct,total_cpu_avg_pct,total_cpu_peak_pct,retained_payload_min_kb,retained_payload_max_kb,retained_payload_final_kb,retained_growth_kb_per_min,source_ring_peak_kb,transcoder_ring_peak_kb,tsmux_ring_peak_kb,avio_len_peak_kb,avio_hwm_peak_kb,overflow_count_final,correctness_ok\n",
+    );
+    for row in rows {
+        text.push_str(&format!(
+            "{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.2},{},{},{},{},{},{},{}\n",
+            csv_escape(&row.config),
+            csv_escape(&row.ingest_proto),
+            csv_escape(&row.video_codec),
+            row.multi_audio,
+            csv_escape(&row.bitrate_label),
+            row.bitrate_mbps,
+            row.output_groups,
+            row.outputs_total,
+            row.restream_rss_base_kb,
+            row.restream_rss_final_kb,
+            row.restream_rss_delta_kb,
+            row.restream_rss_peak_kb,
+            row.ffmpeg_count_peak,
+            row.ffmpeg_rss_peak_kb,
+            row.total_rss_peak_kb,
+            row.restream_cpu_avg_pct,
+            row.restream_cpu_peak_pct,
+            row.ffmpeg_cpu_avg_pct,
+            row.ffmpeg_cpu_peak_pct,
+            row.total_cpu_avg_pct,
+            row.total_cpu_peak_pct,
+            row.retained_payload_min_kb,
+            row.retained_payload_max_kb,
+            row.retained_payload_final_kb,
+            row.retained_growth_kb_per_min,
+            row.source_ring_peak_kb,
+            row.transcoder_ring_peak_kb,
+            row.tsmux_ring_peak_kb,
+            row.avio_len_peak_kb,
+            row.avio_hwm_peak_kb,
+            row.overflow_count_final,
+            row.correctness_ok,
+        ));
+    }
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSweepStack, String> {
+    if !env.restream_bin.exists() {
+        return Err(format!(
+            "restream binary not found at {}",
+            env.restream_bin.display()
+        ));
+    }
+    std::fs::create_dir_all(env.work_dir.join("logs")).map_err(|e| e.to_string())?;
+    cleanup_ramp_db(&env.restream_db_path);
+    let mediamtx_log = std::fs::File::create(&env.mediamtx_log).map_err(|e| e.to_string())?;
+    let mediamtx_err = mediamtx_log.try_clone().map_err(|e| e.to_string())?;
+    std::fs::write(
+        &env.mediamtx_config,
+        format!(
+            "logLevel: warn\nrtmp: yes\nrtmpAddress: :{}\nrtmpEncryption: \"no\"\nrtsp: no\nsrt: yes\nsrtAddress: :{}\nhls: no\nwebrtc: no\napi: yes\napiAddress: :{}\nmetrics: no\npaths:\n  all:\n",
+            env.mtx_rtmp, env.mtx_srt, env.mtx_api
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut mediamtx = Command::new("mediamtx")
+        .arg(&env.mediamtx_config)
+        .stdout(Stdio::from(mediamtx_log))
+        .stderr(Stdio::from(mediamtx_err))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/v3/paths/list", env.mtx_api),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut mediamtx).await;
+        return Err(format!("mediamtx did not become ready: {err}"));
+    }
+
+    let restream_log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
+    let restream_err = restream_log.try_clone().map_err(|e| e.to_string())?;
+    let mut restream = Command::new(&env.restream_bin)
+        .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
+        .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
+        .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
+        .env("RESTREAM_LOG_DIR", env.work_dir.join("logs"))
         .env(
             "RESTREAM_DB_PATH",
             env.restream_db_path.to_string_lossy().to_string(),
@@ -1612,6 +2409,24 @@ fn spawn_resource_publisher(
     config: SweepConfig,
     stream_key: &str,
 ) -> Result<Child, String> {
+    spawn_resource_publisher_with_bitrate(
+        env.restream_rtmp,
+        env.restream_srt,
+        &env.work_dir,
+        config,
+        stream_key,
+        "1.5M",
+    )
+}
+
+fn spawn_resource_publisher_with_bitrate(
+    restream_rtmp: u16,
+    restream_srt: u16,
+    work_dir: &Path,
+    config: SweepConfig,
+    stream_key: &str,
+    bitrate: &str,
+) -> Result<Child, String> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-nostdin",
@@ -1649,21 +2464,17 @@ fn spawn_resource_publisher(
     if config.multi_audio {
         cmd.args(["-map", "2:a"]);
     }
-    cmd.args(["-b:v", "1.5M", "-c:a", "aac", "-b:a", "64k"]);
+    cmd.args(["-g", "30", "-b:v", bitrate, "-c:a", "aac", "-b:a", "64k"]);
     if config.ingest_proto == "rtmp" {
         cmd.args(["-f", "flv"]);
-        cmd.arg(format!(
-            "rtmp://127.0.0.1:{}/live/{stream_key}",
-            env.restream_rtmp
-        ));
+        cmd.arg(format!("rtmp://127.0.0.1:{restream_rtmp}/live/{stream_key}"));
     } else {
         cmd.args(["-f", "mpegts"]);
         cmd.arg(format!(
-            "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
-            env.restream_srt
+            "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
         ));
     }
-    let log_path = env.work_dir.join(format!("publisher-{stream_key}.log"));
+    let log_path = work_dir.join(format!("publisher-{stream_key}.log"));
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
     cmd.stdout(Stdio::from(log))
@@ -1752,22 +2563,37 @@ async fn sample_resource_window(
     tokio::time::sleep(Duration::from_secs(env.settle_secs)).await;
     let mut samples = Vec::new();
     let mut prev_ticks = read_proc_stat_ticks(stack.restream_pid)?;
+    let mut prev_ffmpeg_ticks: HashMap<u32, u64> = HashMap::new();
     let mut prev_instant = Instant::now();
     let deadline = Instant::now() + Duration::from_secs(env.sample_secs);
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(env.sample_interval_ms)).await;
         let now = Instant::now();
         let ticks = read_proc_stat_ticks(stack.restream_pid)?;
-        let cpu_pct = 100.0 * (ticks.saturating_sub(prev_ticks)) as f64
-            / unsafe { libc::sysconf(libc::_SC_CLK_TCK) as f64 }
-            / prev_instant.elapsed().as_secs_f64().max(0.001);
+        let ffmpeg = ffmpeg_children_stats(stack.restream_pid)?;
+        let interval_secs = prev_instant.elapsed().as_secs_f64().max(0.001);
+        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) as f64 };
+        let restream_cpu_pct =
+            100.0 * (ticks.saturating_sub(prev_ticks)) as f64 / clk_tck / interval_secs;
+        let mut ffmpeg_delta_ticks = 0u64;
+        let mut next_ffmpeg_ticks = HashMap::new();
+        for pid in &ffmpeg.pids {
+            if let Ok(current_ticks) = read_proc_stat_ticks(*pid) {
+                let previous_ticks = prev_ffmpeg_ticks.get(pid).copied().unwrap_or(current_ticks);
+                ffmpeg_delta_ticks += current_ticks.saturating_sub(previous_ticks);
+                next_ffmpeg_ticks.insert(*pid, current_ticks);
+            }
+        }
+        let ffmpeg_cpu_pct = 100.0 * ffmpeg_delta_ticks as f64 / clk_tck / interval_secs;
+        let total_cpu_pct = restream_cpu_pct + ffmpeg_cpu_pct;
         prev_ticks = ticks;
+        prev_ffmpeg_ticks = next_ffmpeg_ticks;
         prev_instant = now;
-        let rss_kb = read_proc_status_kb(stack.restream_pid, "VmRSS")?;
+        let rss_kb =
+            read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log)?;
         let rollup = read_smaps_rollup(stack.restream_pid)?;
         let telemetry = stack.api.get_json("/api/v1/engine/telemetry").await?;
         let health = stack.api.get_json("/health").await?;
-        let ffmpeg = ffmpeg_children_stats(stack.restream_pid)?;
         let accounting = &telemetry["memoryAccounting"];
         let retained_kb = accounting["retainedPayloadBytes"].as_u64().unwrap_or(0) / 1024;
         let source_ring_kb = accounting["sourceRings"]
@@ -1810,7 +2636,9 @@ async fn sample_resource_window(
             ingest_types: meta.ingest_types.clone(),
             egress_mix: meta.egress_mix.clone(),
             transcode: meta.transcode.to_string(),
-            cpu_pct,
+            restream_cpu_pct,
+            ffmpeg_cpu_pct,
+            total_cpu_pct,
             rss_kb,
             ffmpeg_count: ffmpeg.count,
             ffmpeg_rss_kb: ffmpeg.rss_kb,
@@ -1848,7 +2676,9 @@ fn summarize_resource_samples(
     lifecycle: ResourceSweepLifecycle,
     samples: &[ResourceSample],
 ) -> ResourceAggregate {
-    let cpu_sum: f64 = samples.iter().map(|s| s.cpu_pct).sum();
+    let restream_cpu_sum: f64 = samples.iter().map(|s| s.restream_cpu_pct).sum();
+    let ffmpeg_cpu_sum: f64 = samples.iter().map(|s| s.ffmpeg_cpu_pct).sum();
+    let total_cpu_sum: f64 = samples.iter().map(|s| s.total_cpu_pct).sum();
     let rss_sum: u64 = samples.iter().map(|s| s.rss_kb).sum();
     ResourceAggregate {
         scenario: meta.scenario.to_string(),
@@ -1860,8 +2690,27 @@ fn summarize_resource_samples(
         egress_mix: meta.egress_mix,
         transcode: meta.transcode.to_string(),
         sample_count: samples.len(),
-        cpu_avg_pct: round2(cpu_sum / samples.len().max(1) as f64),
-        cpu_peak_pct: round2(samples.iter().map(|s| s.cpu_pct).fold(0.0, f64::max)),
+        restream_cpu_avg_pct: round2(restream_cpu_sum / samples.len().max(1) as f64),
+        restream_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|s| s.restream_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
+        ffmpeg_cpu_avg_pct: round2(ffmpeg_cpu_sum / samples.len().max(1) as f64),
+        ffmpeg_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|s| s.ffmpeg_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
+        total_cpu_avg_pct: round2(total_cpu_sum / samples.len().max(1) as f64),
+        total_cpu_peak_pct: round2(
+            samples
+                .iter()
+                .map(|s| s.total_cpu_pct)
+                .fold(0.0, f64::max),
+        ),
         rss_avg_kb: round2(rss_sum as f64 / samples.len().max(1) as f64),
         rss_peak_kb: samples.iter().map(|s| s.rss_kb).max().unwrap_or(0),
         ffmpeg_rss_peak_kb: samples.iter().map(|s| s.ffmpeg_rss_kb).max().unwrap_or(0),
@@ -1937,6 +2786,20 @@ fn read_proc_status_kb(pid: u32, key: &str) -> Result<u64, String> {
     Err(format!("{key} missing in /proc/{pid}/status"))
 }
 
+fn read_proc_status_kb_checked(pid: u32, key: &str, log_path: &Path) -> Result<u64, String> {
+    read_proc_status_kb(pid, key).map_err(|error| {
+        let tail = file_tail_lines(log_path, 20);
+        if tail.is_empty() {
+            format!("restream pid {pid} unavailable while reading {key}: {error}")
+        } else {
+            format!(
+                "restream pid {pid} unavailable while reading {key}: {error}\nrestream log tail:\n{}",
+                tail.join("\n")
+            )
+        }
+    })
+}
+
 fn read_smaps_rollup(pid: u32) -> Result<ProcMemRollup, String> {
     let text =
         std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).map_err(|e| e.to_string())?;
@@ -1961,6 +2824,7 @@ fn read_smaps_rollup(pid: u32) -> Result<ProcMemRollup, String> {
 fn ffmpeg_children_stats(parent_pid: u32) -> Result<FfmpegStats, String> {
     let mut count = 0u64;
     let mut rss_kb = 0u64;
+    let mut pids = Vec::new();
     for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
@@ -1984,9 +2848,14 @@ fn ffmpeg_children_stats(parent_pid: u32) -> Result<FfmpegStats, String> {
         if text.contains("ffmpeg") {
             count += 1;
             rss_kb += read_proc_status_kb(pid, "VmRSS").unwrap_or(0);
+            pids.push(pid);
         }
     }
-    Ok(FfmpegStats { count, rss_kb })
+    Ok(FfmpegStats {
+        count,
+        rss_kb,
+        pids,
+    })
 }
 
 fn resource_sample_json(sample: &ResourceSample) -> Value {
@@ -1999,7 +2868,9 @@ fn resource_sample_json(sample: &ResourceSample) -> Value {
         "ingestTypes": sample.ingest_types,
         "egressMix": sample.egress_mix,
         "transcode": sample.transcode,
-        "cpuPct": sample.cpu_pct,
+        "restreamCpuPct": sample.restream_cpu_pct,
+        "ffmpegCpuPct": sample.ffmpeg_cpu_pct,
+        "totalCpuPct": sample.total_cpu_pct,
         "rssKb": sample.rss_kb,
         "ffmpegCount": sample.ffmpeg_count,
         "ffmpegRssKb": sample.ffmpeg_rss_kb,
@@ -2036,8 +2907,12 @@ fn resource_aggregate_json(aggregate: &ResourceAggregate) -> Value {
         "egressMix": aggregate.egress_mix,
         "transcode": aggregate.transcode,
         "sampleCount": aggregate.sample_count,
-        "cpuAvgPct": aggregate.cpu_avg_pct,
-        "cpuPeakPct": aggregate.cpu_peak_pct,
+        "restreamCpuAvgPct": aggregate.restream_cpu_avg_pct,
+        "restreamCpuPeakPct": aggregate.restream_cpu_peak_pct,
+        "ffmpegCpuAvgPct": aggregate.ffmpeg_cpu_avg_pct,
+        "ffmpegCpuPeakPct": aggregate.ffmpeg_cpu_peak_pct,
+        "totalCpuAvgPct": aggregate.total_cpu_avg_pct,
+        "totalCpuPeakPct": aggregate.total_cpu_peak_pct,
         "rssAvgKb": aggregate.rss_avg_kb,
         "rssPeakKb": aggregate.rss_peak_kb,
         "ffmpegRssPeakKb": aggregate.ffmpeg_rss_peak_kb,
@@ -2061,10 +2936,10 @@ fn resource_aggregate_json(aggregate: &ResourceAggregate) -> Value {
 }
 
 fn write_resource_sweep_csv(path: &Path, rows: &[ResourceAggregate]) -> Result<(), String> {
-    let mut text = String::from("scenario,label,lifecycle,pipelines,outputs,ingest_types,egress_mix,transcode,sample_count,cpu_avg_pct,cpu_peak_pct,rss_avg_kb,rss_peak_kb,ffmpeg_rss_peak_kb,retained_peak_kb,source_ring_peak_kb,transcoder_ring_peak_kb,tsmux_ring_peak_kb,avio_len_peak_kb,avio_hwm_peak_kb,anonymous_peak_kb,private_dirty_peak_kb,shared_clean_peak_kb,pss_peak_kb,unattributed_peak_kb,active_transcoder_buffers_peak,ingests_peak,egresses_peak,stages_peak,pipeline_count_peak\n");
+    let mut text = String::from("scenario,label,lifecycle,pipelines,outputs,ingest_types,egress_mix,transcode,sample_count,restream_cpu_avg_pct,restream_cpu_peak_pct,ffmpeg_cpu_avg_pct,ffmpeg_cpu_peak_pct,total_cpu_avg_pct,total_cpu_peak_pct,rss_avg_kb,rss_peak_kb,ffmpeg_rss_peak_kb,retained_peak_kb,source_ring_peak_kb,transcoder_ring_peak_kb,tsmux_ring_peak_kb,avio_len_peak_kb,avio_hwm_peak_kb,anonymous_peak_kb,private_dirty_peak_kb,shared_clean_peak_kb,pss_peak_kb,unattributed_peak_kb,active_transcoder_buffers_peak,ingests_peak,egresses_peak,stages_peak,pipeline_count_peak\n");
     for row in rows {
         text.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&row.scenario),
             csv_escape(&row.label),
             csv_escape(&row.lifecycle),
@@ -2074,8 +2949,12 @@ fn write_resource_sweep_csv(path: &Path, rows: &[ResourceAggregate]) -> Result<(
             csv_escape(&row.egress_mix),
             csv_escape(&row.transcode),
             row.sample_count,
-            row.cpu_avg_pct,
-            row.cpu_peak_pct,
+            row.restream_cpu_avg_pct,
+            row.restream_cpu_peak_pct,
+            row.ffmpeg_cpu_avg_pct,
+            row.ffmpeg_cpu_peak_pct,
+            row.total_cpu_avg_pct,
+            row.total_cpu_peak_pct,
             row.rss_avg_kb,
             row.rss_peak_kb,
             row.ffmpeg_rss_peak_kb,
@@ -2739,10 +3618,11 @@ fn append_line(path: &Path, line: &str) -> Result<(), String> {
     file.write_all(line.as_bytes()).map_err(|e| e.to_string())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct FfmpegStats {
     count: u64,
     rss_kb: u64,
+    pids: Vec<u32>,
 }
 
 async fn ffmpeg_pipe1_stats() -> FfmpegStats {
@@ -2751,6 +3631,7 @@ async fn ffmpeg_pipe1_stats() -> FfmpegStats {
         return FfmpegStats {
             count: 0,
             rss_kb: 0,
+            pids: Vec::new(),
         };
     };
     let text = String::from_utf8_lossy(&output.stdout);
@@ -2766,7 +3647,11 @@ async fn ffmpeg_pipe1_stats() -> FfmpegStats {
                 .unwrap_or(0);
         }
     }
-    FfmpegStats { count, rss_kb }
+    FfmpegStats {
+        count,
+        rss_kb,
+        pids: Vec::new(),
+    }
 }
 
 async fn process_cpu_pct(pid: u32) -> Option<String> {

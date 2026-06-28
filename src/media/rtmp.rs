@@ -8,7 +8,7 @@
 //! `RingBuffer` via a `Reader`. Cancellation via `CancellationToken`.
 
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use rml_rtmp::sessions::{
     ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
     PublishRequestType, ServerSession, ServerSessionConfig, ServerSessionEvent,
@@ -25,20 +25,9 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName};
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_util::sync::CancellationToken;
-
-fn log_rss(label: &str, output_id: &str) {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        for line in status.lines() {
-            if let Some(val) = line.strip_prefix("VmRSS:") {
-                let rss_kb = val.trim().trim_end_matches(" kB").trim();
-                debug!(rss_kb, label, output_id, "RSS sample");
-                return;
-            }
-        }
-    }
-}
 
 use crate::media::codec;
 use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, StageMetrics, VideoMeta};
@@ -499,17 +488,10 @@ impl RtmpEgressStream {
 
 fn rustls_client_config() -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
-    roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|anchor| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            anchor.subject,
-            anchor.spki,
-            anchor.name_constraints,
-        )
-    }));
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     Arc::new(
         ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(roots)
             .with_no_client_auth(),
     )
@@ -523,7 +505,7 @@ async fn connect_rtmp_egress_stream(parts: &RtmpUrlParts) -> io::Result<RtmpEgre
         return Ok(RtmpEgressStream::Plain(tcp));
     }
 
-    let server_name = ServerName::try_from(parts.host.as_str())
+    let server_name = ServerName::try_from(parts.host.clone())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid RTMPS host name"))?;
     let connector = TlsConnector::from(rustls_client_config());
     let tls = connector.connect(server_name, tcp).await?;
@@ -1360,7 +1342,6 @@ pub async fn start_rtmp_egress(
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
 ) {
-    log_rss("egress_start", &output_id);
     let parts = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
@@ -1551,7 +1532,6 @@ pub async fn start_rtmp_egress(
     // Each task owns its own buffer; no sharing, no contention with transcoder.
     let mut video_buf = Vec::<u8>::new();
     let mut audio_buf = Vec::<u8>::new();
-    log_rss("egress_reader_created", &output_id);
 
     // Pre-allocated burst buffer — declared outside the loop so capacity
     // is retained across bursts instead of re-allocating per burst.

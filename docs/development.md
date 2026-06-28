@@ -55,7 +55,7 @@ If you are not using `bootstrap-dev.sh`, you will need:
 
 - Rust toolchain pinned in `rust-toolchain.toml`
 - FFmpeg development packages available through `pkg-config`
-- `clang`, `nasm`, `mold`, `cmake`, `pkg-config`, `perl`, `python3`
+- `clang`, `nasm`, `mold`, `cmake`, `pkg-config`, `perl`
 - `libssl-dev`
 - `ffmpeg`, `curl`, `jq`
 - Node.js `>= 20` plus `npm` for frontend work
@@ -66,7 +66,7 @@ On Debian/Ubuntu, the bootstrap script installs:
 apt-get install -y build-essential ca-certificates clang cmake curl ffmpeg \
   git jq libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
   libavutil-dev libssl-dev libswresample-dev libswscale-dev mold nasm \
-  ninja-build perl pkg-config python3
+  ninja-build perl pkg-config
 ```
 
 Then install a current Node.js toolchain for Tailwind/TypeScript work

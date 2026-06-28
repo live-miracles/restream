@@ -17,8 +17,17 @@ SRT_VERSION="${SRT_VERSION:-v1.5.5}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
 X264_COMMIT="${X264_COMMIT:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
 X265_COMMIT="${X265_COMMIT:-e444744c03978c1fb4e037168967020cf2648427}"
+# OpenSSL is built from source into the static prefix (see block below) so the
+# runtime binary embeds a current, patched OpenSSL rather than the build host's.
+# Pinned to the current LTS; overridable. 3.0.x reaches EOL in Sept 2026.
+OPENSSL_VERSION="${OPENSSL_VERSION:-openssl-3.5.7}"
 
 mkdir -p "$TOOLS" "$SOURCES" "$PREFIX" "$STAMPS"
+
+# Make the static prefix's pkg-config metadata (notably the OpenSSL built below)
+# take priority over any system copy for every native dependency built here —
+# libsrt resolves OpenSSL via pkg-config (USE_OPENSSL_PC=ON).
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 if command -v apt-get >/dev/null; then
     missing_packages=()
@@ -29,7 +38,6 @@ if command -v apt-get >/dev/null; then
     command -v nasm >/dev/null || missing_packages+=(nasm)
     command -v pkg-config >/dev/null || missing_packages+=(pkg-config)
     command -v perl >/dev/null || missing_packages+=(perl)
-    command -v python3 >/dev/null || missing_packages+=(python3)
     dpkg-query -W libssl-dev >/dev/null 2>&1 || missing_packages+=(libssl-dev)
 
     if ((${#missing_packages[@]})); then
@@ -46,12 +54,12 @@ if command -v apt-get >/dev/null; then
         fi
     fi
 elif ! command -v cmake >/dev/null || ! command -v ninja >/dev/null; then
-    python3 -m pip install --upgrade --target "$TOOLS" cmake ninja
-    export PYTHONPATH="$TOOLS${PYTHONPATH:+:$PYTHONPATH}"
-    export PATH="$TOOLS/bin:$PATH"
+    echo "setup-static-build: cmake and ninja are required on non-apt hosts" >&2
+    echo "install them manually before running this script" >&2
+    exit 1
 fi
 
-for command in git cc c++ make perl python3 pkg-config cmake ninja nasm sha256sum; do
+for command in git cc c++ make perl pkg-config cmake ninja nasm sha256sum; do
     command -v "$command" >/dev/null || {
         echo "missing required command after setup: $command" >&2
         exit 1
@@ -77,6 +85,7 @@ clone_commit() {
     fi
 }
 
+clone_tag https://github.com/openssl/openssl.git "$OPENSSL_VERSION" "$SOURCES/openssl"
 clone_tag https://github.com/Haivision/srt.git "$SRT_VERSION" "$SOURCES/srt"
 clone_tag https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_VERSION" "$SOURCES/ffmpeg"
 clone_commit https://code.videolan.org/videolan/x264.git "$X264_COMMIT" "$SOURCES/x264"
@@ -116,6 +125,45 @@ SEC_CFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC"
 SEC_CXXFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIC"
 BUILD_CFLAGS="$OPT_CFLAGS $SEC_CFLAGS"
 BUILD_CXXFLAGS="$OPT_CXXFLAGS $SEC_CXXFLAGS"
+
+# ─ OpenSSL (pinned, static) ──────────────────────────────────────────────────
+# libsrt is the only consumer of OpenSSL (SRT AES encryption); FFmpeg is built
+# --disable-network. Building OpenSSL into the static prefix pins a current,
+# patched version that build.rs links statically (rustc-link-lib=static=ssl/
+# crypto) and that the SRT build below picks up via pkg-config. -fPIC is via
+# BUILD_CFLAGS because the final restream binary is position-independent.
+OPENSSL_FINGERPRINT="$(
+    {
+        git -C "$SOURCES/openssl" rev-parse HEAD
+        cc --version | head -n 1
+        printf '%s\n' \
+            "CFLAGS=$BUILD_CFLAGS" \
+            "--prefix=$PREFIX" \
+            "linux-x86_64 no-shared no-tests no-apps no-docs"
+    } | fingerprint
+)"
+OPENSSL_STAMP="$STAMPS/openssl"
+if ! stamp_matches "$OPENSSL_STAMP" "$OPENSSL_FINGERPRINT" ||
+    [[ ! -f "$PREFIX/lib/libssl.a" || ! -f "$PREFIX/lib/libcrypto.a" ||
+        ! -f "$PREFIX/lib/pkgconfig/openssl.pc" ]]; then
+    pushd "$SOURCES/openssl" >/dev/null
+    ./Configure linux-x86_64 \
+        --prefix="$PREFIX" \
+        --libdir=lib \
+        --openssldir="$PREFIX/ssl" \
+        no-shared \
+        no-tests \
+        no-apps \
+        no-docs \
+        $BUILD_CFLAGS
+    make -j"${BUILD_JOBS:-$(nproc)}"
+    make install_sw
+    make distclean
+    popd >/dev/null
+    write_stamp "$OPENSSL_STAMP" "$OPENSSL_FINGERPRINT"
+else
+    echo "Using cached OpenSSL build."
+fi
 
 SRT_FINGERPRINT="$(
     {
