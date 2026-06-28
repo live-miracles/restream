@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUST_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' "$ROOT/rust-toolchain.toml")"
 FRONTEND_NODE_MAJOR="${RESTREAM_FRONTEND_NODE_MAJOR:-22}"
 FRONTEND_NODE_MIN_MAJOR=20
+MEDIAMTX_VERSION="${RESTREAM_MEDIAMTX_VERSION:-v1.19.1}"
 WITH_FRONTEND=1
 RUN_NATIVE_SETUP=1
 
@@ -16,6 +17,7 @@ Bootstraps a Debian/Ubuntu development environment for this repo:
   - installs required apt packages
   - installs rustup if needed and the pinned Rust toolchain
   - installs frontend npm dependencies
+  - installs a pinned mediamtx binary for live harness interoperability checks
   - builds the pinned native dependency prefix via scripts/setup-static-build.sh
 
 Options:
@@ -112,6 +114,56 @@ ensure_frontend_node_toolchain() {
     run_as_root apt-get install -y nodejs
 }
 
+mediamtx_archive_name() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)
+            echo "mediamtx_${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+            ;;
+        aarch64|arm64)
+            echo "mediamtx_${MEDIAMTX_VERSION}_linux_arm64v8.tar.gz"
+            ;;
+        armv7l)
+            echo "mediamtx_${MEDIAMTX_VERSION}_linux_armv7.tar.gz"
+            ;;
+        *)
+            echo "bootstrap-dev: unsupported architecture for mediamtx: $arch" >&2
+            exit 1
+            ;;
+    esac
+}
+
+install_mediamtx() {
+    local archive_name archive_url tmpdir extracted_bin target_bin current_version
+    target_bin="/usr/local/bin/mediamtx"
+
+    if command -v mediamtx >/dev/null 2>&1; then
+        current_version="$(mediamtx --version 2>/dev/null | awk 'NR==1 {print $2}')"
+        if [[ "$current_version" == "$MEDIAMTX_VERSION" ]]; then
+            echo "bootstrap-dev: mediamtx $MEDIAMTX_VERSION already present"
+            return
+        fi
+    fi
+
+    archive_name="$(mediamtx_archive_name)"
+    archive_url="https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/${archive_name}"
+    tmpdir="$(mktemp -d)"
+
+    echo "bootstrap-dev: installing mediamtx ${MEDIAMTX_VERSION}"
+    curl -fsSL "$archive_url" -o "$tmpdir/$archive_name"
+    tar -xzf "$tmpdir/$archive_name" -C "$tmpdir"
+
+    extracted_bin="$tmpdir/mediamtx"
+    if [[ ! -x "$extracted_bin" ]]; then
+        echo "bootstrap-dev: mediamtx archive did not contain an executable binary" >&2
+        exit 1
+    fi
+
+    run_as_root install -m 0755 "$extracted_bin" "$target_bin"
+    rm -rf "$tmpdir"
+}
+
 missing_packages=()
 for package in "${APT_PACKAGES[@]}"; do
     if ! dpkg-query -W "$package" >/dev/null 2>&1; then
@@ -154,6 +206,8 @@ if (( WITH_FRONTEND )); then
         exit 1
     fi
 fi
+
+install_mediamtx
 
 if (( RUN_NATIVE_SETUP )); then
     echo "bootstrap-dev: building pinned native dependency prefix"

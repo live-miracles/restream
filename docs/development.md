@@ -14,7 +14,8 @@ cargo run
 ```
 
 `bootstrap-dev.sh` installs host packages, the pinned Rust toolchain, frontend
-dependencies, and the repo-managed native dependency prefix used by the build.
+dependencies, a pinned `mediamtx` binary for the live harness, and the
+repo-managed native dependency prefix used by the build.
 
 After `cargo run`, the service is available at `http://localhost:3030`.
 
@@ -56,7 +57,7 @@ If you are not using `bootstrap-dev.sh`, you will need:
 - Rust toolchain pinned in `rust-toolchain.toml`
 - FFmpeg development packages available through `pkg-config`
 - `clang`, `nasm`, `mold`, `cmake`, `pkg-config`, `perl`
-- `ffmpeg`, `curl`, `bzip2`, `jq`
+- `ffmpeg` / `ffprobe`, `curl`, `bzip2`, `jq`, `mediamtx`
 - Node.js `>= 20` plus `npm` for frontend work
 
 On Debian/Ubuntu, the bootstrap script installs:

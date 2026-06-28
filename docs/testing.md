@@ -314,6 +314,7 @@ private loopback network namespace (`unshare --net`) so ports never conflict
 with the host. Pass `--host` to skip the namespace wrapper.
 
 Required tools: `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, `jq`.
+On Debian/Ubuntu, `./scripts/bootstrap-dev.sh` installs everything above.
 
 Common runner flags:
 
