@@ -3,7 +3,7 @@
 //! WAL mode is enabled for concurrent reader/writer access.
 
 use crate::types::*;
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::time::SystemTime;
 
 /// Create a connection pool with all per-connection PRAGMAs baked in via
@@ -192,7 +192,7 @@ async fn ensure_column_exists(
     column_type: &str,
 ) -> Result<(), sqlx::Error> {
     let pragma = format!("PRAGMA table_info({table})");
-    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+    let rows = sqlx::query(AssertSqlSafe(pragma)).fetch_all(pool).await?;
     let exists = rows
         .iter()
         .any(|row| row.get::<String, _>("name") == column);
@@ -200,7 +200,7 @@ async fn ensure_column_exists(
         return Ok(());
     }
     let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
-    sqlx::query(&alter).execute(pool).await?;
+    sqlx::query(AssertSqlSafe(alter)).execute(pool).await?;
     Ok(())
 }
 
@@ -213,7 +213,7 @@ pub async fn create_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
-    srt_ingest_policy_json: Option<&str>,
+    srt_ingest_policy: Option<&str>,
 ) -> Result<Pipeline, sqlx::Error> {
     let exists =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pipelines WHERE stream_key = ?")
@@ -232,7 +232,7 @@ pub async fn create_pipeline(
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
-    .bind(srt_ingest_policy_json)
+    .bind(srt_ingest_policy)
     .execute(pool)
     .await?;
 
@@ -243,7 +243,7 @@ pub async fn create_pipeline(
 
 pub async fn get_pipeline(pool: &SqlitePool, id: &str) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE id = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -255,7 +255,7 @@ pub async fn get_pipeline_by_stream_key(
     stream_key: &str,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?",
     )
     .bind(stream_key)
     .fetch_optional(pool)
@@ -264,7 +264,7 @@ pub async fn get_pipeline_by_stream_key(
 
 pub async fn list_pipelines(pool: &SqlitePool) -> Result<Vec<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines",
     )
     .fetch_all(pool)
     .await
@@ -277,7 +277,7 @@ pub async fn update_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
-    srt_ingest_policy_json: Option<&str>,
+    srt_ingest_policy: Option<&str>,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     let duplicate = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pipelines WHERE stream_key = ? AND id != ?",
@@ -297,7 +297,7 @@ pub async fn update_pipeline(
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
-    .bind(srt_ingest_policy_json)
+    .bind(srt_ingest_policy)
     .bind(id)
     .execute(pool)
     .await?;
@@ -651,7 +651,7 @@ pub async fn list_app_logs(
         where_clause, order, order, limit
     );
 
-    let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(&sql);
+    let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(AssertSqlSafe(sql));
     for l in levels {
         q = q.bind(l);
     }

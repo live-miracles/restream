@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 use crate::alerts;
 use crate::db;
@@ -39,7 +39,7 @@ use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
 use crate::media::srt::{
     SRT_INGEST_GLOBAL_CONFIG_META_KEY, SrtIngestPolicyStore, load_global_srt_ingest_config,
-    parse_pipeline_srt_ingest_policy_json, serialize_pipeline_srt_ingest_policy_json,
+    parse_pipeline_srt_ingest_policy, serialize_pipeline_srt_ingest_policy,
 };
 use crate::types::*;
 
@@ -216,8 +216,8 @@ fn pipeline_response_json(
         "streamKey": pipeline.stream_key,
         "inputSource": pipeline.input_source,
         "encoding": pipeline.encoding,
-        "srtIngestPolicy": parse_pipeline_srt_ingest_policy_json(
-            pipeline.srt_ingest_policy_json.as_deref()
+        "srtIngestPolicy": parse_pipeline_srt_ingest_policy(
+            pipeline.srt_ingest_policy.as_deref()
         ),
         "ingestUrls": {
             "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, rtmp_port, pipeline.stream_key),
@@ -1175,8 +1175,8 @@ async fn pipelines_post_handler(
         .input_source
         .as_ref()
         .and_then(|source| source.as_deref());
-    let srt_ingest_policy_json = match payload.srt_ingest_policy.as_ref() {
-        Some(policy) => match serialize_pipeline_srt_ingest_policy_json(policy) {
+    let srt_ingest_policy = match payload.srt_ingest_policy.as_ref() {
+        Some(policy) => match serialize_pipeline_srt_ingest_policy(policy) {
             Ok(value) => Some(value),
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
@@ -1190,7 +1190,7 @@ async fn pipelines_post_handler(
         &stream_key,
         input_source,
         payload.encoding.as_deref(),
-        srt_ingest_policy_json.as_deref(),
+        srt_ingest_policy.as_deref(),
     )
     .await
     {
@@ -1280,19 +1280,19 @@ async fn pipelines_update_handler(
     let existing_stream_key = existing.stream_key.clone();
     let existing_input_source = existing.input_source.clone();
     let existing_encoding = existing.encoding.clone();
-    let existing_srt_ingest_policy_json = existing.srt_ingest_policy_json.clone();
+    let existing_srt_ingest_policy = existing.srt_ingest_policy.clone();
 
     let stream_key = payload.stream_key.unwrap_or(existing_stream_key);
     let input_source = payload.input_source.unwrap_or(existing_input_source);
     let encoding = payload.encoding.or(existing_encoding);
-    let srt_ingest_policy_json = match payload
+    let srt_ingest_policy = match payload
         .srt_ingest_policy
         .as_ref()
-        .map(serialize_pipeline_srt_ingest_policy_json)
+        .map(serialize_pipeline_srt_ingest_policy)
         .transpose()
     {
         Ok(Some(value)) => Some(value),
-        Ok(None) => existing_srt_ingest_policy_json,
+        Ok(None) => existing_srt_ingest_policy,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
@@ -1315,7 +1315,7 @@ async fn pipelines_update_handler(
         &stream_key,
         input_source.as_deref(),
         encoding.as_deref(),
-        srt_ingest_policy_json.as_deref(),
+        srt_ingest_policy.as_deref(),
     )
     .await
     {
@@ -2230,7 +2230,7 @@ async fn pipeline_file_ingest_put_handler(
         &pipeline.stream_key,
         Some(&input_source),
         pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy_json.as_deref(),
+        pipeline.srt_ingest_policy.as_deref(),
     )
     .await
     .is_err()
@@ -2273,7 +2273,7 @@ async fn pipeline_file_ingest_delete_handler(
         &pipeline.stream_key,
         None,
         pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy_json.as_deref(),
+        pipeline.srt_ingest_policy.as_deref(),
     )
     .await
     .is_err()
@@ -5577,7 +5577,7 @@ fn build_hls_master_playlist(
     video: Option<&crate::media::engine::VideoMeta>,
     audio_tracks: &[crate::media::engine::AudioMeta],
 ) -> String {
-    let mut playlist = "#EXTM3U\n#EXT-X-VERSION:3\n".to_string();
+    let mut playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n".to_string();
     let group_id = "source-audio";
 
     for (position, track) in audio_tracks.iter().enumerate() {
@@ -5608,7 +5608,11 @@ fn build_hls_master_playlist(
         playlist.push_str(&format!("#EXT-X-MEDIA:{}\n", attrs.join(",")));
     }
 
-    let mut stream_attrs = vec!["BANDWIDTH=8000000".to_string()];
+    let bandwidth = estimate_hls_master_bandwidth(video, audio_tracks);
+    let mut stream_attrs = vec![
+        format!("BANDWIDTH={bandwidth}"),
+        format!("AVERAGE-BANDWIDTH={bandwidth}"),
+    ];
     if let Some(video) = video {
         if video.width > 0 && video.height > 0 {
             stream_attrs.push(format!("RESOLUTION={}x{}", video.width, video.height));
@@ -5617,12 +5621,151 @@ fn build_hls_master_playlist(
             stream_attrs.push(format!("FRAME-RATE={:.3}", video.fps));
         }
     }
+    if let Some(codecs) = build_hls_codec_list(video, audio_tracks) {
+        stream_attrs.push(format!("CODECS={}", quote_hls_attr(&codecs)));
+    }
     if !audio_tracks.is_empty() {
         stream_attrs.push(format!("AUDIO={}", quote_hls_attr(group_id)));
     }
     playlist.push_str(&format!("#EXT-X-STREAM-INF:{}\n", stream_attrs.join(",")));
     playlist.push_str("video/index.m3u8\n");
     playlist
+}
+
+fn estimate_hls_master_bandwidth(
+    video: Option<&crate::media::engine::VideoMeta>,
+    audio_tracks: &[crate::media::engine::AudioMeta],
+) -> u64 {
+    let video_bw = video
+        .and_then(|meta| meta.bw)
+        .filter(|bw| bw.is_finite() && *bw > 0.0)
+        .map(|bw| bw.round() as u64);
+    let audio_bw = audio_tracks
+        .iter()
+        .map(estimate_audio_bandwidth)
+        .sum::<u64>();
+    let fallback_bw = 8_000_000u64.saturating_add(audio_bw);
+    video_bw
+        .map(|bw| bw.saturating_add(audio_bw))
+        .unwrap_or(fallback_bw)
+        .max(1)
+}
+
+fn estimate_audio_bandwidth(track: &crate::media::engine::AudioMeta) -> u64 {
+    match track.codec.to_ascii_lowercase().as_str() {
+        "aac" => match track.channels {
+            0 | 1 => 96_000,
+            2 => 128_000,
+            _ => 192_000,
+        },
+        "mp3" => 128_000,
+        "opus" => match track.channels {
+            0 | 1 => 64_000,
+            2 => 128_000,
+            _ => 160_000,
+        },
+        _ => 128_000,
+    }
+}
+
+fn build_hls_codec_list(
+    video: Option<&crate::media::engine::VideoMeta>,
+    audio_tracks: &[crate::media::engine::AudioMeta],
+) -> Option<String> {
+    let mut codecs = Vec::new();
+    if let Some(video) = video.and_then(build_hls_video_codec) {
+        codecs.push(video);
+    }
+    for codec in audio_tracks.iter().filter_map(build_hls_audio_codec) {
+        if !codecs.iter().any(|existing| existing == &codec) {
+            codecs.push(codec);
+        }
+    }
+    (!codecs.is_empty()).then(|| codecs.join(","))
+}
+
+fn build_hls_video_codec(video: &crate::media::engine::VideoMeta) -> Option<String> {
+    let codec = video.codec.trim().to_ascii_lowercase();
+    match codec.as_str() {
+        "h264" | "avc" => build_h264_codec_string(video),
+        "hevc" | "h265" => Some(build_hevc_codec_string(video)),
+        "av1" => Some("av01.0.08M.08".to_string()),
+        _ => None,
+    }
+}
+
+fn build_h264_codec_string(video: &crate::media::engine::VideoMeta) -> Option<String> {
+    let profile_idc = match video.profile.as_deref().map(str::trim) {
+        Some("Baseline") => 66u8,
+        Some("Main") => 77u8,
+        Some("Extended") => 88u8,
+        Some("High") => 100u8,
+        Some("High 10") => 110u8,
+        Some("High 4:2:2") => 122u8,
+        Some("High 4:4:4 Predictive") => 244u8,
+        _ => return Some("avc1".to_string()),
+    };
+    let level = parse_h264_level_idc(video.level.as_deref()).unwrap_or(31);
+    Some(format!("avc1.{profile_idc:02x}00{level:02x}"))
+}
+
+fn parse_h264_level_idc(level: Option<&str>) -> Option<u8> {
+    let level = level?.trim();
+    if level.is_empty() {
+        return None;
+    }
+    let (major, minor) = match level.split_once('.') {
+        Some((major, minor)) => (major.trim(), minor.trim()),
+        None => (level, "0"),
+    };
+    let major: u8 = major.parse().ok()?;
+    let minor: u8 = minor.parse().ok()?;
+    Some(major.saturating_mul(10).saturating_add(minor))
+}
+
+fn build_hevc_codec_string(video: &crate::media::engine::VideoMeta) -> String {
+    let profile = match video.profile.as_deref().map(str::trim) {
+        Some("Main") => 1u8,
+        Some("Main 10") => 2u8,
+        Some("Main Still Picture") => 3u8,
+        _ => 1u8,
+    };
+    let level_tenths = video
+        .level
+        .as_deref()
+        .and_then(parse_h265_level_tenths)
+        .unwrap_or(120);
+    let general_level_idc = level_tenths.saturating_mul(3);
+    format!("hvc1.{profile}.6.L{general_level_idc}.B0")
+}
+
+fn parse_h265_level_tenths(level: &str) -> Option<u8> {
+    let level = level.trim();
+    if level.is_empty() {
+        return None;
+    }
+    let (major, minor) = match level.split_once('.') {
+        Some((major, minor)) => (major.trim(), minor.trim()),
+        None => (level, "0"),
+    };
+    let major: u8 = major.parse().ok()?;
+    let minor: u8 = minor.parse().ok()?;
+    Some(major.saturating_mul(10).saturating_add(minor))
+}
+
+fn build_hls_audio_codec(track: &crate::media::engine::AudioMeta) -> Option<String> {
+    let codec = track.codec.trim().to_ascii_lowercase();
+    match codec.as_str() {
+        "aac" => Some(match track.profile.as_deref().map(str::trim) {
+            Some("Main") => "mp4a.40.1".to_string(),
+            Some("SSR") => "mp4a.40.3".to_string(),
+            Some("LTP/Reserved") => "mp4a.40.4".to_string(),
+            _ => "mp4a.40.2".to_string(),
+        }),
+        "mp3" => Some("mp4a.40.34".to_string()),
+        "opus" => Some("opus".to_string()),
+        _ => None,
+    }
 }
 
 fn parse_hls_segment_name(segment: &str) -> Option<u64> {
@@ -5904,6 +6047,7 @@ mod tests {
 
         let playlist = build_hls_master_playlist(Some(&video), &audio_tracks);
 
+        assert!(playlist.starts_with("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n"));
         assert!(playlist.contains("#EXT-X-MEDIA:TYPE=AUDIO"));
         assert!(playlist.contains("GROUP-ID=\"source-audio\""));
         assert!(playlist.contains("DEFAULT=YES"));
@@ -5911,9 +6055,56 @@ mod tests {
         assert!(playlist.contains("URI=\"audio/0/index.m3u8\""));
         assert!(playlist.contains("URI=\"audio/15/index.m3u8\""));
         assert!(playlist.contains("#EXT-X-STREAM-INF:"));
+        assert!(playlist.contains("AVERAGE-BANDWIDTH="));
+        assert!(playlist.contains("CODECS=\"avc1.640028,mp4a.40.2\""));
         assert!(playlist.contains("RESOLUTION=1920x1080"));
         assert!(playlist.contains("AUDIO=\"source-audio\""));
         assert!(playlist.ends_with("video/index.m3u8\n"));
+    }
+
+    #[test]
+    fn hls_codec_list_deduplicates_audio_codecs() {
+        let video = crate::media::engine::VideoMeta {
+            codec: "h264".to_string(),
+            width: 1280,
+            height: 720,
+            fps: 30.0,
+            bw: Some(4_000_000.0),
+            pid: None,
+            language: None,
+            title: None,
+            profile: Some("High".to_string()),
+            level: Some("3.1".to_string()),
+            pixel_format: None,
+        };
+        let audio_tracks = vec![
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 0,
+                pid: None,
+                language: None,
+                title: None,
+                profile: Some("LC".to_string()),
+            },
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 1,
+                pid: None,
+                language: None,
+                title: None,
+                profile: Some("LC".to_string()),
+            },
+        ];
+
+        let codecs = build_hls_codec_list(Some(&video), &audio_tracks);
+
+        assert_eq!(codecs.as_deref(), Some("avc1.64001f,mp4a.40.2"));
     }
 
     #[test]

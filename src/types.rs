@@ -197,7 +197,7 @@ pub struct Pipeline {
     pub input_source: Option<String>,
     pub encoding: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
-    pub srt_ingest_policy_json: Option<String>,
+    pub srt_ingest_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
