@@ -279,7 +279,6 @@ impl TestPorts {
             srt: env_u16("RESTREAM_SRT", 10080),
         }
     }
-
 }
 
 async fn start_restream_child(
@@ -346,8 +345,6 @@ async fn start_restream_child_opts(
 struct SinkPacket {
     media_type: &'static str,
     timestamp_ms: u64,
-    size: usize,
-    is_keyframe: bool,
 }
 
 struct GeneralizedSinkMetrics {
@@ -537,8 +534,6 @@ async fn write_generalized_sink_results(
                         pkts.push(SinkPacket {
                             media_type: "video",
                             timestamp_ms: timestamp.value as u64,
-                            size: data.len(),
-                            is_keyframe,
                         });
                     }
                 }
@@ -566,8 +561,6 @@ async fn write_generalized_sink_results(
                         pkts.push(SinkPacket {
                             media_type: "audio",
                             timestamp_ms: timestamp.value as u64,
-                            size: data.len(),
-                            is_keyframe: false,
                         });
                     }
                 }
@@ -577,61 +570,6 @@ async fn write_generalized_sink_results(
         }
     }
     Ok(())
-}
-
-// ── Decode-only ffprobe verifier (Phase 1) ──────────────────────────────────
-
-async fn ffprobe_decode_verify(url: &str, expected_dims: Option<&str>) -> Result<Value, String> {
-    let mut cmd = Command::new("ffprobe");
-    cmd.args([
-        "-v",
-        "error",
-        "-probesize",
-        "10000000",
-        "-analyzeduration",
-        "10000000",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,codec_name",
-        "-of",
-        "json",
-    ]);
-    let child = cmd
-        .arg(url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let output = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
-        .await
-        .map_err(|_| format!("ffprobe timed out: {url}"))?
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffprobe failed: {url}: {}", stderr.trim()));
-    }
-    let probe: Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("ffprobe parse failed: {e}"))?;
-    if let Some(expected) = expected_dims {
-        let streams = probe["streams"]
-            .as_array()
-            .ok_or("no streams in ffprobe output")?;
-        if let Some(video) = streams.first() {
-            let w = video["width"].as_u64().unwrap_or(0);
-            let h = video["height"].as_u64().unwrap_or(0);
-            let got = format!("{w}x{h}");
-            if got != expected {
-                return Err(format!(
-                    "dimension mismatch: expected {expected}, got {got}"
-                ));
-            }
-        } else {
-            return Err("no video stream in ffprobe output".to_string());
-        }
-    }
-    Ok(probe)
 }
 
 // ── Harness sink probe (Phase 4) ──────────────────────────────────────────
@@ -2652,29 +2590,6 @@ async fn ensure_resource_stack<'a>(
     stack
         .as_mut()
         .ok_or("resource sweep stack missing".to_string())
-}
-
-async fn teardown_resource_stack(
-    env: &ResourceSweepEnv,
-    stack: &mut Option<ResourceSweepStack>,
-    retained_publishers: &mut Vec<Child>,
-    retain: bool,
-) {
-    if retain {
-        return;
-    }
-    for child in retained_publishers.iter_mut() {
-        stop_child(child).await;
-    }
-    retained_publishers.clear();
-    if let Some(stack) = stack.as_mut() {
-        stop_child(&mut stack.restream).await;
-        stop_child(&mut stack.mediamtx).await;
-    }
-    *stack = None;
-    if env.lifecycle == ResourceSweepLifecycle::Isolated {
-        let _ = std::fs::remove_file(&env.restream_db_path);
-    }
 }
 
 async fn run_resource_baseline(
@@ -8527,46 +8442,6 @@ fn assert_media_only(probe: &Value, label: &str) -> Result<(), String> {
         return Err(format!(
             "{label}: expected 1 video + >=1 audio, got video={video_count} \
              audio={audio_count} non_media={non_media:?}"
-        ));
-    }
-    Ok(())
-}
-
-fn assert_snapshot_matches_probe(
-    snapshot: &Value,
-    normalized: &Value,
-    label: &str,
-) -> Result<(), String> {
-    let streams = normalized
-        .as_array()
-        .ok_or_else(|| format!("{label}: normalized streams are not an array"))?;
-    let video = streams
-        .iter()
-        .find(|stream| stream["type"] == "video")
-        .ok_or_else(|| format!("{label}: missing normalized video"))?;
-    let audio = streams
-        .iter()
-        .find(|stream| stream["type"] == "audio")
-        .ok_or_else(|| format!("{label}: missing normalized audio"))?;
-    let snapshot_audio = snapshot["audioTracks"]
-        .as_array()
-        .and_then(|tracks| tracks.first())
-        .ok_or_else(|| format!("{label}: snapshot missing audio"))?;
-    let probe_sample_rate = audio["sampleRate"]
-        .as_str()
-        .and_then(|value| value.parse::<u64>().ok())
-        .or_else(|| audio["sampleRate"].as_u64());
-
-    let matches = snapshot["video"]["codec"] == video["codec"]
-        && snapshot["video"]["width"] == video["width"]
-        && snapshot["video"]["height"] == video["height"]
-        && snapshot_audio["codec"] == audio["codec"]
-        && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
-        && snapshot_audio["channels"] == audio["channels"];
-    if !matches {
-        return Err(format!(
-            "{label}: engine snapshot does not match external probe: snapshot={} probe={}",
-            snapshot, normalized
         ));
     }
     Ok(())
