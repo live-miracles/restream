@@ -124,6 +124,23 @@ Token costs grow with context length. To keep sessions efficient:
   starting a fresh session (e.g. "This looks like a new topic — a new session would keep costs low").
 - Do not suggest this mid-task or for follow-up questions on the same topic.
 
+## Model Selection
+
+Current session model is the ceiling — never spawn a subagent at a higher tier.
+Pick the lowest model that can reliably complete the work:
+
+| Task type | Model |
+|-----------|-------|
+| Search, grep, file lookup, single-file read | `haiku` |
+| Code explanation, simple Q&A, rename/format | `haiku` |
+| Bug fix, small feature, test writing | `sonnet` |
+| Multi-file refactor, architecture, complex analysis | `sonnet` |
+
+Apply this when spawning Agent subagents — set `model: "haiku"` for Explore/search agents
+and read-only research; use `model: "sonnet"` for agents that write or edit code.
+For the main session task itself: if it fits the haiku tier, tell the user
+"This is a simple task — you could switch to Haiku (`/model haiku`) for lower cost."
+
 ## Key References
 
 - Overview/setup: `README.md`
