@@ -906,42 +906,43 @@ scripts/resource-limit ./test/run-integration.sh correctness-hevc-srt
 test/run-media-validation.sh
 ```
 
-Aggregate release-evidence wrapper:
+Aggregate release-evidence runner:
 
 ```sh
-./test/run-protocol-matrix.sh --run-id <run-id>
+cargo run --bin test_harness -- suite --run-id <run-id>
 ```
 
-This thin shell wrapper delegates to the Rust `protocol_matrix` binary. It
-creates `test/artifacts/<run-id>/manifest.json`, runs preflight plus each
-checked-in integration mode in a per-mode subdirectory, and records one JSONL
-result per mode in `test/artifacts/<run-id>/results.jsonl`. Pass `--fast` for a
-quick agent loop, `--preflight-only` to audit readiness for every selected mode
-without starting live services, `--only-modes hls-put,bframe-rtmp` while
-iterating on a subset, or `--continue-on-fail` when collecting failure artifacts
-for every mode. `--help` and `--list-modes` are handled by the shell wrapper
-without compiling, and `--only-modes` is validated before `cargo run`, so
-agents can inspect and slice the matrix cheaply; real matrix runs invoke
-`cargo run` through `scripts/resource-limit`. The wrapper sets
-`RESTREAM_PROTOCOL_MATRIX_ONLY=1` for that orchestrator build so aggregate
-preflight does not require the media-native SRT/FFmpeg link prefix before any
-live mode starts. Do not set that flag for `restream` or `test_harness` builds;
-it is only for the non-media protocol-matrix orchestrator binary. The Rust
-orchestrator removes that variable before delegating to `test/run-integration.sh`
-so selected live modes still build/link their media-native binaries normally.
-For release-parity preflight, build the static binary with
-`scripts/resource-limit ./scripts/setup-static-build.sh` followed by
-`scripts/resource-limit ./scripts/build-static.sh`, then pass
-`--restream-bin .build/static/cargo-target/release/restream` to the matrix
-wrapper.
+Use `test_harness suite` as the canonical aggregate orchestrator. It creates
+`test/artifacts/<run-id>/manifest.json`, runs each checked-in integration mode
+in its own subdirectory, and records one JSONL result per mode in
+`test/artifacts/<run-id>/results.jsonl`. Supported suite options are:
 
-Keep new aggregate orchestration in Rust and leave shell wrappers as argument
-parsers/launchers only. `burst-verify`, `hls-put`, `bframe-rtmp`,
-`correctness-srt-rtmp`, `correctness-hevc-rtmp`, and `correctness-hevc-srt`
-are behind typed Rust harness entry points, and `ramp` now delegates its full
-eight-config matrix to `test_harness ramp-family`. `mixed-scale` now delegates
-its five config slices to Rust and leaves the shell layer as a launcher plus
-summary renderer.
+- `--run-id <id>` to choose the artifact run id
+- `--work-root <path>` to choose the aggregate artifact directory
+- `--only-modes hls-put,bframe-rtmp` to run a subset
+- `--preflight-only` to run readiness checks without starting live services
+- `--continue-on-fail` to keep collecting artifacts after the first failure
+
+Why the aggregate runner lives in `test_harness` instead of a separate
+`protocol_matrix` binary:
+
+- The suite and the per-mode scenarios already share the same artifact layout,
+  loopback namespace handling, fixture generation, child-process helpers, and
+  result serialization.
+- Keeping orchestration and mode execution in one binary avoids a second Rust
+  surface that can drift in CLI semantics, manifest shape, or per-mode naming.
+- `suite_run()` can spawn the same executable for each mode, which keeps the
+  aggregate runner honest: it exercises the exact per-mode entrypoints used in
+  focused runs instead of re-implementing them in a parallel binary.
+- The old shell-plus-`protocol_matrix` path no longer buys us anything. The
+  aggregate orchestration logic is already implemented in `test_harness`, so
+  the extra wrapper only adds another compatibility surface to maintain.
+
+`burst-verify`, `hls-put`, `bframe-rtmp`, `correctness-srt-rtmp`,
+`correctness-hevc-rtmp`, and `correctness-hevc-srt` are behind typed Rust
+harness entry points, and `ramp` now delegates its full eight-config matrix to
+`test_harness ramp-family`. `mixed-scale` now delegates its five config slices
+to Rust and leaves the shell layer only for per-mode compatibility launching.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
@@ -949,9 +950,8 @@ for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
 paths. This applies even to setup failures after the mode has initialized its
 artifact directory, making failed matrix attempts auditable instead of silent.
 
-Planned scenario families for the remaining matrix should be added as Rust
-`test_harness` or `protocol_matrix` entries, with shell kept to compatibility
-launching only:
+Planned scenario families for the remaining matrix should be added as
+`test_harness` entries:
 
 ```text
 ingest-equivalence
