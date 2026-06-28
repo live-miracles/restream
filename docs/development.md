@@ -100,6 +100,16 @@ cargo fmt
 `build-native.sh` verifies that the debug build is using the expected native
 linkage, including the repo-managed static `libsrt`.
 
+`bootstrap-dev.sh` also installs the repo-managed Git hooks path. The
+versioned `pre-commit` hook auto-formats staged Rust files with `rustfmt` and
+staged frontend source files with `prettier`.
+
+If you skip bootstrap, install the hooks manually:
+
+```sh
+./scripts/install-git-hooks.sh
+```
+
 ### Frontend
 
 Only needed when editing `public/ts/` or `public/input.css`:
@@ -107,6 +117,7 @@ Only needed when editing `public/ts/` or `public/input.css`:
 ```sh
 npm run build:frontend
 npx tailwindcss -i public/input.css -o public/output.css
+npm run format:frontend
 ```
 
 Edit `public/ts/`, not generated files in `public/js/`.

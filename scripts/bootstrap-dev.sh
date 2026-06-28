@@ -207,6 +207,9 @@ if (( WITH_FRONTEND )); then
     fi
 fi
 
+echo "bootstrap-dev: installing repo-managed Git hooks"
+"$ROOT/scripts/install-git-hooks.sh"
+
 install_mediamtx
 
 if (( RUN_NATIVE_SETUP )); then

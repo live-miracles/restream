@@ -1,7 +1,39 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "Checking code formatting..."
-cargo fmt --check
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
 
-echo "Formatting looks good"
+mapfile -t staged_files < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if ((${#staged_files[@]} == 0)); then
+    exit 0
+fi
+
+rust_files=()
+frontend_files=()
+
+for file in "${staged_files[@]}"; do
+    if [[ "$file" == *.rs ]]; then
+        rust_files+=("$file")
+        continue
+    fi
+
+    if [[ "$file" =~ ^public/ts/.*\.ts$ ]] ||
+        [[ "$file" =~ ^public/.*\.html$ ]] ||
+        [[ "$file" == "public/input.css" ]]; then
+        frontend_files+=("$file")
+    fi
+done
+
+if ((${#rust_files[@]} > 0)); then
+    echo "pre-commit: formatting staged Rust files"
+    rustfmt --edition 2024 "${rust_files[@]}"
+    git add -- "${rust_files[@]}"
+fi
+
+if ((${#frontend_files[@]} > 0)); then
+    echo "pre-commit: formatting staged frontend files"
+    npx --no-install prettier --write "${frontend_files[@]}"
+    git add -- "${frontend_files[@]}"
+fi
