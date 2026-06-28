@@ -1,242 +1,141 @@
 # syntax=docker/dockerfile:1.7
 
-# ── Stage 1: native C/C++ deps (SRT, FFmpeg, x264, x265) ─────────────────────
+# Multi-stage build that keeps the build logic in repo scripts and uses Docker
+# layers only for cache boundaries:
 #
-# Clones sources and compiles everything from scratch — no pre-built artifacts
-# required. Cached as a separate stage so native rebuilds (rare) don't
-# invalidate the Rust/Cargo layer cache.
+#   1. native-deps  → OS packages, pinned Rust toolchain, static C/C++ prefix
+#   2. rust-build   → Cargo dependency warm-up, then the real application build
+#   3. scratch      → only the shipped binary plus the runtime files it expects
 #
-# BUILD REQUIREMENTS
-# ──────────────────
-# Git to clone SRT, FFmpeg, x264, x265 from upstream repos
-# Build tools: gcc, g++, cmake, ninja, nasm, pkg-config, perl, python3
-# OpenSSL dev headers (statically linked OpenSSL 3.0.13 as a build dep)
-# CA certificates for git clone over HTTPS
+# The native/static artifacts come from scripts/setup-static-build.sh, the Rust
+# toolchain bootstrap comes from scripts/bootstrap-dev.sh, and the final static
+# binary build comes from scripts/build-static.sh.
+
+# ── Stage 1: native-deps ─────────────────────────────────────────────────────
 #
-# COMPILER FLAGS & HARDENING
-# ──────────────────────────
-# Optimization flags from setup-static-build.sh:
-#   -O3 -march=x86-64-v2 (baseline for ~10 year old CPUs)
-# Security hardening flags from setup-static-build.sh:
-#   -D_FORTIFY_SOURCE=3 (buffer overflow checks)
-#   -fstack-protector-strong (stack canaries in vulnerable frames)
-#   -fPIC (position-independent code for potential future shared libs)
+# Everything here changes rarely and is expensive to rebuild:
+#   - fresh-Ubuntu bootstrap packages
+#   - pinned Rust toolchain
+#   - static SRT/FFmpeg/x264/x265 prefix under .build/static/
 #
-# OUTPUT
-# ──────
-# /build/.build/static/prefix/ → static lib/include/bin (SRT, FFmpeg, x264, x265 artifacts)
-# /build/public/bin/ffmpeg     → binary for rust-embed
-#
+# Docker intentionally does not duplicate package or toolchain logic here.
+# scripts/bootstrap-dev.sh is the source of truth for what a fresh Ubuntu 24.04
+# machine needs, and Docker consumes that script directly.
 FROM ubuntu:24.04 AS native-deps
 
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-        build-essential git cmake ninja-build nasm pkg-config perl python3 \
-        libssl-dev ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
-WORKDIR /build
+WORKDIR /workspace
 
-# Only the files setup-static-build.sh actually needs; everything else is
-# excluded via .dockerignore so the layer cache stays stable.
-COPY scripts/resource-limit        scripts/resource-limit
-COPY scripts/setup-static-build.sh scripts/setup-static-build.sh
-COPY test/srt-bond-client.c        test/srt-bond-client.c
-COPY test/srt-bond-server.c        test/srt-bond-server.c
-COPY test/ffmpeg-capabilities.c    test/ffmpeg-capabilities.c
-
-# git archive strips execute bits; restore them explicitly.
-RUN chmod +x scripts/resource-limit scripts/setup-static-build.sh
-
-# resource-limit requires RESTREAM_BUILD_LOCK_HELD (set by flock in normal
-# usage). Override it here — Docker is already single-tenant per build.
-RUN RESTREAM_BUILD_LOCK_HELD=1 BUILD_JOBS="$(nproc)" \
-    scripts/resource-limit ./scripts/setup-static-build.sh
-
-# ── Stage 2: Rust binary ──────────────────────────────────────────────────────
-#
-# Compiles Rust source against statically linked native libraries from Stage 1.
-# Produces a fully statically linked, hardened binary ready for Stage 3 (scratch).
-#
-# BUILD REQUIREMENTS
-# ──────────────────
-# Rust toolchain 1.96.0 (pinned in rust-toolchain.toml)
-# Cargo with build.rs FFmpeg setup (reads Cargo.lock, build.rs, src/*, public/*, benches/*, tests/*)
-# pkg-config to locate .build/static/prefix/lib/pkgconfig artifacts from Stage 1
-# Static C/C++ headers/libs from Stage 1: OpenSSL, SRT, FFmpeg, x264, x265, SQLite
-# clang + mold linker (referenced by .cargo/config.toml; static build overrides to bfd)
-#
-# COMPILER FLAGS & HARDENING
-# ──────────────────────────
-# Static linking flags: -C target-feature=+crt-static -C relocation-model=static
-#                       -C link-arg=-fuse-ld=bfd -C link-arg=-static -C link-arg=-no-pie
-# Hardening from .cargo/config.toml: -C link-arg=-Wl,-z,relro,-z,now (Full RELRO)
-# Hardening from scripts/setup-static-build.sh: -D_FORTIFY_SOURCE=3 -fstack-protector-strong
-#                                                (applied to all C/C++ native deps)
-#
-FROM ubuntu:24.04 AS rust-build
-
-# Build tools: pkg-config for linking against Stage 1 artifacts; clang+mold for
-# the .cargo/config.toml defaults (even though static build overrides linker);
-# curl for rustup installation; tzdata and ca-certificates for runtime.
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-        build-essential pkg-config libssl-dev clang mold ca-certificates curl \
-        tzdata \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install exactly the toolchain pinned in rust-toolchain.toml.
+# Only copy inputs that affect bootstrap/native compilation so app source edits
+# do not invalidate this expensive stage.
+COPY package.json package-lock.json ./
 COPY rust-toolchain.toml rust-toolchain.toml
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --no-modify-path --default-toolchain none \
-    && . "$HOME/.cargo/env" \
-    && rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+COPY scripts/bootstrap-dev.sh scripts/bootstrap-dev.sh
+COPY scripts/resource-limit scripts/resource-limit
+COPY scripts/setup-static-build.sh scripts/setup-static-build.sh
+COPY test/srt-bond-client.c test/srt-bond-client.c
+COPY test/srt-bond-server.c test/srt-bond-server.c
+COPY test/ffmpeg-capabilities.c test/ffmpeg-capabilities.c
 
-ENV PATH="/root/.cargo/bin:$PATH"
+RUN chmod +x scripts/bootstrap-dev.sh scripts/resource-limit scripts/setup-static-build.sh
 
-WORKDIR /build
+# bootstrap-dev owns the fresh-Ubuntu dependency contract, including Node/npm
+# plus npm ci for the committed frontend toolchain dependencies.
+RUN scripts/bootstrap-dev.sh
 
-# Native prefix from Stage 1.
-COPY --from=native-deps /build/.build/static /build/.build/static
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Cargo dependency layer — changes only when Cargo.lock changes.
-COPY Cargo.toml Cargo.lock ./
-COPY build.rs ./
+# ── Stage 2: frontend-build ──────────────────────────────────────────────────
+#
+# Frontend edits should have their own cache boundary. This stage reuses the
+# Node/npm + node_modules state prepared by bootstrap-dev.sh, then rebuilds the
+# generated browser assets under public/.
+FROM native-deps AS frontend-build
+
+WORKDIR /workspace
+
+COPY public/ public/
+COPY tsconfig.json tsconfig.json
+
+RUN npm run build:frontend
+
+# ── Stage 3: rust-build ──────────────────────────────────────────────────────
+#
+# This stage is split into two cache boundaries:
+#   - manifest/config only + dummy src/main.rs → compile Cargo dependencies
+#   - real src/ + built public/ assets         → relink just the app crate
+#
+# scripts/build-static.sh is used for both so Docker never re-implements the
+# static-link flags or verification logic.
+FROM native-deps AS rust-build
+
+WORKDIR /workspace
+
+COPY scripts/build-static.sh scripts/build-static.sh
+RUN chmod +x scripts/build-static.sh
+
+# Warm the release dependency graph without copying the real application code.
+# The dummy main compiles the full dependency set into .build/static/cargo-target
+# so ordinary src/ edits only need to rebuild our crate in the next layer.
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY .cargo/ .cargo/
+RUN mkdir -p benches src \
+    && awk '/^\[\[bench\]\]$/ { in_bench = 1; next } in_bench && /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name); printf "fn main() {}\\n" > ("benches/" name ".rs"); in_bench = 0 }' Cargo.toml \
+    && printf 'fn main() {}\n' > src/main.rs
+RUN scripts/resource-limit ./scripts/build-static.sh
 
-# Source layers — ordered so a code change only rebuilds from here.
-COPY src/     src/
-COPY public/  public/
-COPY benches/ benches/
-COPY tests/   tests/
+# Inner-loop layer: copy the actual application sources, then bring in the
+# built frontend assets from the frontend stage. Rust-only edits therefore skip
+# frontend rebuilds, while frontend edits reuse the warmed Cargo dependency
+# target directory above.
+COPY src/ src/
+COPY --from=frontend-build /workspace/public public
+COPY --from=native-deps /workspace/public/bin/ffmpeg public/bin/ffmpeg
+RUN scripts/resource-limit ./scripts/build-static.sh
 
-# public/bin/ffmpeg is excluded from the build context (via .dockerignore) to
-# avoid stale host copies. Copy the freshly built one from native-deps last so
-# it lands correctly for rust-embed.
-COPY --from=native-deps /build/public/bin/ffmpeg public/bin/ffmpeg
+# Build the minimal filesystem tree that the shipped binary expects at runtime.
+# /tmp must remain writable and executable because the embedded FFmpeg binary is
+# extracted there on startup; operators should still prefer --tmpfs /tmp:exec.
+RUN mkdir -p \
+        /runtime/data \
+        /runtime/etc/ssl/certs \
+        /runtime/media \
+        /runtime/tmp/logs \
+        /runtime/usr/share/zoneinfo \
+    && cp -a /usr/share/zoneinfo/. /runtime/usr/share/zoneinfo/ \
+    && cp -a /etc/localtime /runtime/etc/localtime \
+    && cp /etc/ssl/certs/ca-certificates.crt /runtime/etc/ssl/certs/ca-certificates.crt \
+    && printf 'restream:x:1000:1000:restream:/nonexistent:/sbin/nologin\n' > /runtime/etc/passwd \
+    && printf 'restream:x:1000:\n' > /runtime/etc/group \
+    && chmod 1777 /runtime/tmp \
+    && chown -R 1000:1000 /runtime/data /runtime/media /runtime/tmp
 
-# env.sh from setup-static-build.sh bakes in host-absolute paths; set the
-# Docker equivalents directly instead.
+# ── Stage 4: scratch runtime ─────────────────────────────────────────────────
 #
-# FFMPEG_DIR is also declared in .cargo/config.toml as a relative env var
-# (relative to workspace root = /build); the explicit ENV here takes precedence
-# and makes the value unambiguous.
-ENV PKG_CONFIG_PATH=/build/.build/static/prefix/lib/pkgconfig \
-    RESTREAM_BUILD_ROOT=/build/.build/static \
-    RESTREAM_STATIC_FFMPEG=1 \
-    RESTREAM_FULLY_STATIC=1 \
-    FFMPEG_DIR=/build/.build/static/prefix
-
-# Produce a fully statically linked binary.
-# -C linker=cc + -fuse-ld=bfd overrides .cargo/config.toml's clang+mold for
-# this invocation only; RELRO from config.toml is kept via the explicit flag.
-RUN cargo rustc --release --bin restream -- \
-        -C target-feature=+crt-static \
-        -C relocation-model=static \
-        -C linker=cc \
-        -C link-arg=-fuse-ld=bfd \
-        -C link-arg=-static \
-        -C link-arg=-no-pie \
-        -C link-arg=-Wl,-z,relro,-z,now
-
-# Fail the image build if any shared library leaked through.
-RUN ldd target/release/restream 2>&1 \
-    | grep -Eq "not a dynamic executable|statically linked" \
-    || { echo "ERROR: binary is not statically linked:" >&2; \
-         ldd target/release/restream >&2; exit 1; }
-
-# ── Stage 3: scratch runtime ──────────────────────────────────────────────────
+# Runtime requirements:
+#   /tmp    exec-enabled writable tmpfs for embedded FFmpeg extraction
+#   /data   SQLite database persistence
+#   /media  HLS/media persistence
 #
-# Minimal production container: ~30 MB image, non-root user (uid 1000), fully
-# statically linked Rust binary with hardened compiler flags (RELRO, canaries, FORTIFY).
-#
-# RUNTIME REQUIREMENTS
-# ────────────────────
-#
-# Filesystems (in priority order):
-#   /tmp                  FFmpeg binary extracted from rust-embed on startup.
-#                         Must be exec-enabled tmpfs; see 'docker run' examples below.
-#
-#   /data                 SQLite database persistence (sqlite:/data/restream.db).
-#                         Create a volume: docker volume create restream-db
-#                         Mount as: -v restream-db:/data
-#
-#   /media                Media library & HLS segment storage.
-#                         Create a volume: docker volume create restream-media
-#                         Mount as: -v restream-media:/media
-#
-# Trust anchors & timezones (embedded in image):
-#   /usr/share/zoneinfo   Timezone data (tokio + chrono need this for local time).
-#   /etc/localtime        Symlink to active timezone.
-#   /etc/ssl/certs/ca-certificates.crt   Root CAs for outbound TLS
-#                         (RTMPS publishers, HTTPS push targets).
-#   /etc/passwd           uid→name resolution for logging & some OpenSSL paths.
-#
-# Host isolation:
-#   No /proc, /dev, /dev/shm, /sys, or shell — supplied by container runtime.
-#   Binary runs as uid 1000 (non-root). No privilege escalation possible.
-#
-# DEVELOPMENT / TESTING
-# ─────────────────────
-#
-# To override the embedded FFmpeg at runtime:
-#   docker run -e FFMPEG_BIN_PATH=/path/to/ffmpeg restream:scratch-test
-#
-# To run locally for debugging (expose logs, bind data):
-#   docker run --rm -it \
+# Example:
+#   docker run -d \
 #     --tmpfs /tmp:exec,mode=1777 \
 #     -v restream-db:/data \
 #     -v restream-media:/media \
 #     -p 3030:3030 -p 1935:1935 -p 10080:10080/udp \
-#     restream:scratch-test
-#
-# To health-check (requires host curl or socat):
-#   curl -s http://localhost:3030/api/status | jq .version
-#
+#     restream:scratch
 FROM scratch
 
-COPY --from=rust-build /usr/share/zoneinfo             /usr/share/zoneinfo
-COPY --from=rust-build /etc/localtime                  /etc/localtime
-COPY --from=rust-build /etc/ssl/certs/ca-certificates.crt \
-                                                        /etc/ssl/certs/ca-certificates.crt
-# Minimal passwd with one non-root entry so uid 1000 resolves by name.
-# The Ubuntu build image only has system accounts; create this file explicitly.
-COPY --from=rust-build /etc/passwd /etc/passwd
-# (the COPY gives us system accounts; USER 1000 works even without a named
-# entry because Docker accepts bare uids — but having the entry avoids silent
-# failures in getpwuid callers like some OpenSSL codepaths)
-
-COPY --from=rust-build /build/target/release/restream  /restream
+COPY --from=rust-build /runtime/ /
+COPY --from=rust-build /workspace/.build/static/cargo-target/release/restream /restream
 
 EXPOSE 3030 1935 10080/udp
 
-# Non-root. uid 1000 is present in the /etc/passwd we copied above.
-USER 1000
+USER 1000:1000
 
 ENV RESTREAM_DB_PATH=/data/restream.db \
     RESTREAM_MEDIA_DIR=/media \
     RESTREAM_LOG_DIR=/tmp/logs
 
-# Production invocation (persisted data):
-#
-#   docker run -d --name restream \
-#     --tmpfs /tmp:exec,mode=1777 \
-#     -v restream-db:/data \
-#     -v restream-media:/media \
-#     -p 3030:3030 -p 1935:1935 -p 10080:10080/udp \
-#     restream:scratch-test
-#
-# For ephemeral testing (data discarded on exit):
-#
-#   docker run --rm \
-#     --tmpfs /tmp:exec,mode=1777 \
-#     -p 3030:3030 \
-#     restream:scratch-test
-#
-# To inspect runtime environment (debug only):
-#
-#   docker run --rm -it \
-#     --tmpfs /tmp:exec,mode=1777 \
-#     --entrypoint /bin/sh \
-#     restream:scratch-test
-#   # (fails: no shell in scratch; use a devel image instead)
-#
 ENTRYPOINT ["/restream"]

@@ -58,7 +58,7 @@ If you are not using `bootstrap-dev.sh`, you will need:
 - `clang`, `nasm`, `mold`, `cmake`, `pkg-config`, `perl`, `python3`
 - `libssl-dev`
 - `ffmpeg`, `curl`, `jq`
-- `nodejs` and `npm` for frontend work
+- Node.js `>= 20` plus `npm` for frontend work
 
 On Debian/Ubuntu, the bootstrap script installs:
 
@@ -66,8 +66,12 @@ On Debian/Ubuntu, the bootstrap script installs:
 apt-get install -y build-essential ca-certificates clang cmake curl ffmpeg \
   git jq libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev \
   libavutil-dev libssl-dev libswresample-dev libswscale-dev mold nasm \
-  ninja-build nodejs npm perl pkg-config python3
+  ninja-build perl pkg-config python3
 ```
+
+Then install a current Node.js toolchain for Tailwind/TypeScript work
+(the bootstrap script uses NodeSource `22.x` by default because Tailwind 4's
+native tooling requires Node `>= 20`).
 
 Before the first Rust build, make sure the repo-managed native prefix exists:
 
