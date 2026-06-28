@@ -50,32 +50,9 @@ jobs:
       - name: Build binary
         run: scripts/resource-limit cargo build --profile bench
 
-      - name: Install syft
+      - name: Generate SBOM from runtime code path
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
-      - name: Generate SBOM (runtime endpoint or syft fallback)
-        run: |
-          export PORT=13030
-          RESTREAM_HTTP_PORT=$PORT ./target/bench/restream &
-          RESTREAM_PID=$!
-
-          SBOM_OK=false
-          for i in $(seq 1 10); do
-            sleep 1
-            if curl -sf "http://localhost:$PORT/api/status/sbom" -o restream.cdx.json 2>/dev/null; then
-              SBOM_OK=true
-              break
-            fi
-          done
-
-          kill $RESTREAM_PID 2>/dev/null || true
-          wait $RESTREAM_PID 2>/dev/null || true
-
-          if [ "$SBOM_OK" != "true" ]; then
-            echo "Runtime SBOM endpoint unavailable; falling back to syft"
-            syft packages ./target/bench/restream -o cyclonedx-json=restream.cdx.json
-          fi
+          ./target/bench/restream --emit-sbom restream.cdx.json
 
       - name: Install grype
         run: |

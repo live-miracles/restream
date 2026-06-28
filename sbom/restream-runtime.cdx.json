@@ -1,0 +1,6847 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "native:Rust standard library@1.96.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "Rust standard library",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "rustc toolchain used for linking"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        }
+      ],
+      "type": "library",
+      "version": "1.96.0"
+    },
+    {
+      "bom-ref": "native:SQLite@3.44.0",
+      "licenses": [
+        {
+          "expression": "blessing"
+        }
+      ],
+      "name": "SQLite",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime SQL function"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:sqliteSourceId",
+          "value": "2023-11-01 11:23:50 17129ba1ff7f0daf37100ee82d507aef7827cf38de1866e2633096ae6ad81301"
+        }
+      ],
+      "type": "library",
+      "version": "3.44.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/adler2@2.0.1",
+      "licenses": [
+        {
+          "expression": "0BSD OR MIT OR Apache-2.0"
+        }
+      ],
+      "name": "adler2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/adler2@2.0.1",
+      "type": "library",
+      "version": "2.0.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/ahash@0.8.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "ahash",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ahash@0.8.12",
+      "type": "library",
+      "version": "0.8.12"
+    },
+    {
+      "bom-ref": "pkg:cargo/aho-corasick@1.1.4",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "aho-corasick",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/aho-corasick@1.1.4",
+      "type": "library",
+      "version": "1.1.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/allocator-api2@0.2.21",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "allocator-api2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/allocator-api2@0.2.21",
+      "type": "library",
+      "version": "0.2.21"
+    },
+    {
+      "bom-ref": "pkg:cargo/arc-swap@1.9.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "arc-swap",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/arc-swap@1.9.1",
+      "type": "library",
+      "version": "1.9.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/async-compression@0.4.42",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "async-compression",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/async-compression@0.4.42",
+      "type": "library",
+      "version": "0.4.42"
+    },
+    {
+      "bom-ref": "pkg:cargo/atoi@2.0.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "atoi",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/atoi@2.0.0",
+      "type": "library",
+      "version": "2.0.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/atomic-waker@1.1.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "atomic-waker",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/atomic-waker@1.1.2",
+      "type": "library",
+      "version": "1.1.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/axum@0.7.9",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "axum",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/axum@0.7.9",
+      "type": "library",
+      "version": "0.7.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/axum-core@0.4.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "axum-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/axum-core@0.4.5",
+      "type": "library",
+      "version": "0.4.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/base64@0.21.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "base64",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/base64@0.21.7",
+      "type": "library",
+      "version": "0.21.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/base64@0.22.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "base64",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/base64@0.22.1",
+      "type": "library",
+      "version": "0.22.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/base64ct@1.8.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "base64ct",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/base64ct@1.8.3",
+      "type": "library",
+      "version": "1.8.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/bcrypt@0.15.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "bcrypt",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/bcrypt@0.15.1",
+      "type": "library",
+      "version": "0.15.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/bitflags@2.13.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "bitflags",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/bitflags@2.13.0",
+      "type": "library",
+      "version": "2.13.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/block-buffer@0.10.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "block-buffer",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/block-buffer@0.10.4",
+      "type": "library",
+      "version": "0.10.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/block-buffer@0.9.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "block-buffer",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/block-buffer@0.9.0",
+      "type": "library",
+      "version": "0.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/blowfish@0.9.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "blowfish",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/blowfish@0.9.1",
+      "type": "library",
+      "version": "0.9.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/byteorder@1.5.0",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "byteorder",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/byteorder@1.5.0",
+      "type": "library",
+      "version": "1.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/bytes@1.12.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "bytes",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/bytes@1.12.0",
+      "type": "library",
+      "version": "1.12.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/cfg-if@1.0.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "cfg-if",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/cfg-if@1.0.4",
+      "type": "library",
+      "version": "1.0.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/chrono@0.4.45",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "chrono",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/chrono@0.4.45",
+      "type": "library",
+      "version": "0.4.45"
+    },
+    {
+      "bom-ref": "pkg:cargo/cipher@0.4.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "cipher",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/cipher@0.4.4",
+      "type": "library",
+      "version": "0.4.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/compression-codecs@0.4.38",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "compression-codecs",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/compression-codecs@0.4.38",
+      "type": "library",
+      "version": "0.4.38"
+    },
+    {
+      "bom-ref": "pkg:cargo/compression-core@0.4.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "compression-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/compression-core@0.4.32",
+      "type": "library",
+      "version": "0.4.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/const-oid@0.9.6",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "const-oid",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/const-oid@0.9.6",
+      "type": "library",
+      "version": "0.9.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/cpufeatures@0.2.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "cpufeatures",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/cpufeatures@0.2.17",
+      "type": "library",
+      "version": "0.2.17"
+    },
+    {
+      "bom-ref": "pkg:cargo/crc@3.4.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crc",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crc@3.4.0",
+      "type": "library",
+      "version": "3.4.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/crc-catalog@2.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crc-catalog",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crc-catalog@2.5.0",
+      "type": "library",
+      "version": "2.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/crc32fast@1.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crc32fast",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crc32fast@1.5.0",
+      "type": "library",
+      "version": "1.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/crossbeam-channel@0.5.15",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crossbeam-channel",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-channel@0.5.15",
+      "type": "library",
+      "version": "0.5.15"
+    },
+    {
+      "bom-ref": "pkg:cargo/crossbeam-deque@0.8.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crossbeam-deque",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-deque@0.8.6",
+      "type": "library",
+      "version": "0.8.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/crossbeam-epoch@0.9.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crossbeam-epoch",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-epoch@0.9.18",
+      "type": "library",
+      "version": "0.9.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/crossbeam-queue@0.3.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crossbeam-queue",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-queue@0.3.12",
+      "type": "library",
+      "version": "0.3.12"
+    },
+    {
+      "bom-ref": "pkg:cargo/crossbeam-utils@0.8.21",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crossbeam-utils",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crossbeam-utils@0.8.21",
+      "type": "library",
+      "version": "0.8.21"
+    },
+    {
+      "bom-ref": "pkg:cargo/crypto-common@0.1.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crypto-common",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crypto-common@0.1.7",
+      "type": "library",
+      "version": "0.1.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/crypto-mac@0.10.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "crypto-mac",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/crypto-mac@0.10.0",
+      "type": "library",
+      "version": "0.10.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/der@0.7.10",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "der",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/der@0.7.10",
+      "type": "library",
+      "version": "0.7.10"
+    },
+    {
+      "bom-ref": "pkg:cargo/deranged@0.5.8",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "deranged",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/deranged@0.5.8",
+      "type": "library",
+      "version": "0.5.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/digest@0.10.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "digest",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/digest@0.10.7",
+      "type": "library",
+      "version": "0.10.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/digest@0.9.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "digest",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/digest@0.9.0",
+      "type": "library",
+      "version": "0.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/dotenvy@0.15.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "dotenvy",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/dotenvy@0.15.7",
+      "type": "library",
+      "version": "0.15.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/either@1.16.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "either",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/either@1.16.0",
+      "type": "library",
+      "version": "1.16.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/equivalent@1.0.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "equivalent",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/equivalent@1.0.2",
+      "type": "library",
+      "version": "1.0.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/errno@0.3.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "errno",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/errno@0.3.14",
+      "type": "library",
+      "version": "0.3.14"
+    },
+    {
+      "bom-ref": "pkg:cargo/event-listener@2.5.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "event-listener",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/event-listener@2.5.3",
+      "type": "library",
+      "version": "2.5.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/ffmpeg-next@8.1.0",
+      "licenses": [
+        {
+          "expression": "WTFPL"
+        }
+      ],
+      "name": "ffmpeg-next",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ffmpeg-next@8.1.0",
+      "type": "library",
+      "version": "8.1.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/ffmpeg-sys-next@8.1.0",
+      "licenses": [
+        {
+          "expression": "WTFPL"
+        }
+      ],
+      "name": "ffmpeg-sys-next",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ffmpeg-sys-next@8.1.0",
+      "type": "library",
+      "version": "8.1.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/flate2@1.1.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "flate2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/flate2@1.1.9",
+      "type": "library",
+      "version": "1.1.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/flume@0.11.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0/MIT"
+        }
+      ],
+      "name": "flume",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/flume@0.11.1",
+      "type": "library",
+      "version": "0.11.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/form_urlencoded@1.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "form_urlencoded",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/form_urlencoded@1.2.2",
+      "type": "library",
+      "version": "1.2.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-channel@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-channel",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-channel@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-core@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-core@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-executor@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-executor",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-executor@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-intrusive@0.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-intrusive",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-intrusive@0.5.0",
+      "type": "library",
+      "version": "0.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-io@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-io",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-io@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-sink@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-sink",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-sink@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-task@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-task",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-task@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/futures-util@0.3.32",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "futures-util",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/futures-util@0.3.32",
+      "type": "library",
+      "version": "0.3.32"
+    },
+    {
+      "bom-ref": "pkg:cargo/generic-array@0.14.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "generic-array",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/generic-array@0.14.7",
+      "type": "library",
+      "version": "0.14.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/getrandom@0.2.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "getrandom",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/getrandom@0.2.17",
+      "type": "library",
+      "version": "0.2.17"
+    },
+    {
+      "bom-ref": "pkg:cargo/getrandom@0.3.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "getrandom",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/getrandom@0.3.4",
+      "type": "library",
+      "version": "0.3.4"
+    },
+    {
+      "bom-ref": "native:glibc@2.39",
+      "licenses": [
+        {
+          "expression": "LGPL-2.1-or-later"
+        }
+      ],
+      "name": "glibc",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        }
+      ],
+      "type": "library",
+      "version": "2.39"
+    },
+    {
+      "bom-ref": "pkg:cargo/hashbrown@0.14.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hashbrown",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.14.5",
+      "type": "library",
+      "version": "0.14.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/hashbrown@0.17.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hashbrown",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.17.1",
+      "type": "library",
+      "version": "0.17.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/hashlink@0.8.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hashlink",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hashlink@0.8.4",
+      "type": "library",
+      "version": "0.8.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/hex@0.4.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hex",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hex@0.4.3",
+      "type": "library",
+      "version": "0.4.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/hkdf@0.12.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hkdf",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hkdf@0.12.4",
+      "type": "library",
+      "version": "0.12.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/hmac@0.10.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hmac",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hmac@0.10.1",
+      "type": "library",
+      "version": "0.10.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/hmac@0.12.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "hmac",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hmac@0.12.1",
+      "type": "library",
+      "version": "0.12.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/home@0.5.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "home",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/home@0.5.9",
+      "type": "library",
+      "version": "0.5.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/http@1.4.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "http",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/http@1.4.2",
+      "type": "library",
+      "version": "1.4.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/http-body@1.0.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "http-body",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/http-body@1.0.1",
+      "type": "library",
+      "version": "1.0.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/http-body-util@0.1.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "http-body-util",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/http-body-util@0.1.3",
+      "type": "library",
+      "version": "0.1.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/http-range-header@0.4.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "http-range-header",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/http-range-header@0.4.2",
+      "type": "library",
+      "version": "0.4.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/httparse@1.10.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "httparse",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/httparse@1.10.1",
+      "type": "library",
+      "version": "1.10.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/httpdate@1.0.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "httpdate",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/httpdate@1.0.3",
+      "type": "library",
+      "version": "1.0.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/hyper@1.10.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "hyper",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hyper@1.10.1",
+      "type": "library",
+      "version": "1.10.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/hyper-rustls@0.27.9",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "name": "hyper-rustls",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hyper-rustls@0.27.9",
+      "type": "library",
+      "version": "0.27.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/hyper-util@0.1.20",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "hyper-util",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/hyper-util@0.1.20",
+      "type": "library",
+      "version": "0.1.20"
+    },
+    {
+      "bom-ref": "pkg:cargo/iana-time-zone@0.1.65",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "iana-time-zone",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/iana-time-zone@0.1.65",
+      "type": "library",
+      "version": "0.1.65"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_collections@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_collections",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_collections@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_locale_core@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_locale_core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_locale_core@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_normalizer@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_normalizer",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_normalizer@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_normalizer_data@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_normalizer_data",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_normalizer_data@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_properties@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_properties",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_properties@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_properties_data@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_properties_data",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_properties_data@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/icu_provider@2.2.0",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "icu_provider",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/icu_provider@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/idna@1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "idna",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/idna@1.1.0",
+      "type": "library",
+      "version": "1.1.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/idna_adapter@1.2.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "idna_adapter",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/idna_adapter@1.2.2",
+      "type": "library",
+      "version": "1.2.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/indexmap@2.14.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "indexmap",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/indexmap@2.14.0",
+      "type": "library",
+      "version": "2.14.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/inout@0.1.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "inout",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/inout@0.1.4",
+      "type": "library",
+      "version": "0.1.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/ipnet@2.12.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "ipnet",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ipnet@2.12.0",
+      "type": "library",
+      "version": "2.12.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/itoa@1.0.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "itoa",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/itoa@1.0.18",
+      "type": "library",
+      "version": "1.0.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/lazy_static@1.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "lazy_static",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/lazy_static@1.5.0",
+      "type": "library",
+      "version": "1.5.0"
+    },
+    {
+      "bom-ref": "native:libavcodec@62.28.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libavcodec",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "62.28.102"
+    },
+    {
+      "bom-ref": "native:libavfilter@11.14.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libavfilter",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "11.14.102"
+    },
+    {
+      "bom-ref": "native:libavformat@62.12.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libavformat",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "62.12.102"
+    },
+    {
+      "bom-ref": "native:libavutil@60.26.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libavutil",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "60.26.102"
+    },
+    {
+      "bom-ref": "pkg:cargo/libc@0.2.186",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "libc",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.186",
+      "type": "library",
+      "version": "0.2.186"
+    },
+    {
+      "bom-ref": "native:libcrypto@OpenSSL_3.0.13_30_Jan_2024",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "libcrypto",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:buildResolvedVersion",
+          "value": "3.0.13"
+        }
+      ],
+      "type": "library",
+      "version": "OpenSSL 3.0.13 30 Jan 2024"
+    },
+    {
+      "bom-ref": "native:libgcc@13.3.0",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later WITH GCC-exception-3.1"
+        }
+      ],
+      "name": "libgcc",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "C/C++ compiler used for linking"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        }
+      ],
+      "type": "library",
+      "version": "13.3.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/libm@0.2.16",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "libm",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/libm@0.2.16",
+      "type": "library",
+      "version": "0.2.16"
+    },
+    {
+      "bom-ref": "pkg:cargo/libsqlite3-sys@0.27.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "libsqlite3-sys",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/libsqlite3-sys@0.27.0",
+      "type": "library",
+      "version": "0.27.0"
+    },
+    {
+      "bom-ref": "native:libsrt@1.5.5",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "name": "libsrt",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:bondingAvailable",
+          "value": "false"
+        },
+        {
+          "name": "restream:buildResolvedVersion",
+          "value": "1.5.5"
+        }
+      ],
+      "type": "library",
+      "version": "1.5.5"
+    },
+    {
+      "bom-ref": "native:libssl@OpenSSL_3.0.13_30_Jan_2024",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "libssl",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:buildResolvedVersion",
+          "value": "3.0.13"
+        }
+      ],
+      "type": "library",
+      "version": "OpenSSL 3.0.13 30 Jan 2024"
+    },
+    {
+      "bom-ref": "native:libstdc++@13.3.0",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later WITH GCC-exception-3.1"
+        }
+      ],
+      "name": "libstdc++",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "C++ compiler used for linking"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        }
+      ],
+      "type": "library",
+      "version": "13.3.0"
+    },
+    {
+      "bom-ref": "native:libswresample@6.3.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libswresample",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "6.3.102"
+    },
+    {
+      "bom-ref": "native:libswscale@9.5.102",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "libswscale",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "runtime API"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:ffmpegConfiguration",
+          "value": "--prefix=/home/krsna1729/code/github/live-miracles/restream/.build/static/prefix --pkg-config-flags=--static --enable-static --disable-shared --enable-pic --disable-programs --disable-doc --disable-debug --disable-autodetect --disable-network --enable-x86asm --extra-cflags='-O3 -march=x86-64-v3' --extra-cxxflags='-O3 -march=x86-64-v3' --disable-everything --enable-gpl --enable-libx264 --enable-libx265 --enable-avcodec --enable-avformat --enable-avfilter --enable-swscale --enable-swresample --enable-protocol='file,pipe' --enable-demuxer='mpegts,matroska,mov' --enable-muxer='mpegts,matroska' --enable-decoder='h264,hevc,aac,mp3,ac3,eac3' --enable-encoder='aac,ac3,libx264,libx265' --enable-parser='h264,hevc,aac,ac3' --enable-bsf='h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc' --enable-filter='scale,crop,transpose,format,aformat,aresample,pan'"
+        },
+        {
+          "name": "restream:runtimeLicenseText",
+          "value": "GPL version 2 or later"
+        }
+      ],
+      "type": "library",
+      "version": "9.5.102"
+    },
+    {
+      "bom-ref": "pkg:cargo/litemap@0.8.2",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "litemap",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/litemap@0.8.2",
+      "type": "library",
+      "version": "0.8.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/lock_api@0.4.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "lock_api",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/lock_api@0.4.14",
+      "type": "library",
+      "version": "0.4.14"
+    },
+    {
+      "bom-ref": "pkg:cargo/log@0.4.33",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "log",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/log@0.4.33",
+      "type": "library",
+      "version": "0.4.33"
+    },
+    {
+      "bom-ref": "pkg:cargo/lru-slab@0.1.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR Zlib"
+        }
+      ],
+      "name": "lru-slab",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/lru-slab@0.1.2",
+      "type": "library",
+      "version": "0.1.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/matchers@0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "matchers",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/matchers@0.2.0",
+      "type": "library",
+      "version": "0.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/matchit@0.7.3",
+      "licenses": [
+        {
+          "expression": "MIT AND BSD-3-Clause"
+        }
+      ],
+      "name": "matchit",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/matchit@0.7.3",
+      "type": "library",
+      "version": "0.7.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/md-5@0.10.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "md-5",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/md-5@0.10.6",
+      "type": "library",
+      "version": "0.10.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/memchr@2.8.2",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "memchr",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/memchr@2.8.2",
+      "type": "library",
+      "version": "2.8.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/memoffset@0.9.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "memoffset",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/memoffset@0.9.1",
+      "type": "library",
+      "version": "0.9.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/mime@0.3.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "mime",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/mime@0.3.17",
+      "type": "library",
+      "version": "0.3.17"
+    },
+    {
+      "bom-ref": "pkg:cargo/mime_guess@2.0.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "mime_guess",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/mime_guess@2.0.5",
+      "type": "library",
+      "version": "2.0.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/minimal-lexical@0.2.1",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "minimal-lexical",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/minimal-lexical@0.2.1",
+      "type": "library",
+      "version": "0.2.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/miniz_oxide@0.8.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Zlib OR Apache-2.0"
+        }
+      ],
+      "name": "miniz_oxide",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/miniz_oxide@0.8.9",
+      "type": "library",
+      "version": "0.8.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/mio@1.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "mio",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/mio@1.2.1",
+      "type": "library",
+      "version": "1.2.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/nix@0.27.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "nix",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/nix@0.27.1",
+      "type": "library",
+      "version": "0.27.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/nom@7.1.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "nom",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/nom@7.1.3",
+      "type": "library",
+      "version": "7.1.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/nu-ansi-term@0.50.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "nu-ansi-term",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/nu-ansi-term@0.50.3",
+      "type": "library",
+      "version": "0.50.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/num-bigint-dig@0.8.6",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "num-bigint-dig",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/num-bigint-dig@0.8.6",
+      "type": "library",
+      "version": "0.8.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/num-conv@0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "num-conv",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/num-conv@0.2.2",
+      "type": "library",
+      "version": "0.2.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/num-integer@0.1.46",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "num-integer",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/num-integer@0.1.46",
+      "type": "library",
+      "version": "0.1.46"
+    },
+    {
+      "bom-ref": "pkg:cargo/num-iter@0.1.45",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "num-iter",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/num-iter@0.1.45",
+      "type": "library",
+      "version": "0.1.45"
+    },
+    {
+      "bom-ref": "pkg:cargo/num-traits@0.2.19",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "num-traits",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/num-traits@0.2.19",
+      "type": "library",
+      "version": "0.2.19"
+    },
+    {
+      "bom-ref": "pkg:cargo/once_cell@1.21.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "once_cell",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/once_cell@1.21.4",
+      "type": "library",
+      "version": "1.21.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/opaque-debug@0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "opaque-debug",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/opaque-debug@0.3.1",
+      "type": "library",
+      "version": "0.3.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/parking_lot@0.12.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "parking_lot",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/parking_lot@0.12.5",
+      "type": "library",
+      "version": "0.12.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/parking_lot_core@0.9.12",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "parking_lot_core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/parking_lot_core@0.9.12",
+      "type": "library",
+      "version": "0.9.12"
+    },
+    {
+      "bom-ref": "pkg:cargo/password-hash@0.5.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "password-hash",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/password-hash@0.5.0",
+      "type": "library",
+      "version": "0.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/pbkdf2@0.12.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "pbkdf2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/pbkdf2@0.12.2",
+      "type": "library",
+      "version": "0.12.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/pem-rfc7468@0.7.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "pem-rfc7468",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/pem-rfc7468@0.7.0",
+      "type": "library",
+      "version": "0.7.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/percent-encoding@2.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "percent-encoding",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/percent-encoding@2.3.2",
+      "type": "library",
+      "version": "2.3.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/pin-project-lite@0.2.17",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "pin-project-lite",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/pin-project-lite@0.2.17",
+      "type": "library",
+      "version": "0.2.17"
+    },
+    {
+      "bom-ref": "pkg:cargo/pkcs1@0.7.5",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "pkcs1",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/pkcs1@0.7.5",
+      "type": "library",
+      "version": "0.7.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/pkcs8@0.10.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "pkcs8",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/pkcs8@0.10.2",
+      "type": "library",
+      "version": "0.10.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/potential_utf@0.1.5",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "potential_utf",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/potential_utf@0.1.5",
+      "type": "library",
+      "version": "0.1.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/powerfmt@0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "powerfmt",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/powerfmt@0.2.0",
+      "type": "library",
+      "version": "0.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/ppv-lite86@0.2.21",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "ppv-lite86",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ppv-lite86@0.2.21",
+      "type": "library",
+      "version": "0.2.21"
+    },
+    {
+      "bom-ref": "pkg:cargo/quinn@0.11.11",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "quinn",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/quinn@0.11.11",
+      "type": "library",
+      "version": "0.11.11"
+    },
+    {
+      "bom-ref": "pkg:cargo/quinn-proto@0.11.15",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "quinn-proto",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/quinn-proto@0.11.15",
+      "type": "library",
+      "version": "0.11.15"
+    },
+    {
+      "bom-ref": "pkg:cargo/quinn-udp@0.5.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "quinn-udp",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/quinn-udp@0.5.14",
+      "type": "library",
+      "version": "0.5.14"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand@0.8.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand@0.8.6",
+      "type": "library",
+      "version": "0.8.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand@0.9.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand@0.9.4",
+      "type": "library",
+      "version": "0.9.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand_chacha@0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand_chacha",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand_chacha@0.3.1",
+      "type": "library",
+      "version": "0.3.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand_chacha@0.9.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand_chacha",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand_chacha@0.9.0",
+      "type": "library",
+      "version": "0.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand_core@0.6.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand_core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand_core@0.6.4",
+      "type": "library",
+      "version": "0.6.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/rand_core@0.9.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rand_core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rand_core@0.9.5",
+      "type": "library",
+      "version": "0.9.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/rayon@1.12.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rayon",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rayon@1.12.0",
+      "type": "library",
+      "version": "1.12.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rayon-core@1.13.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rayon-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rayon-core@1.13.0",
+      "type": "library",
+      "version": "1.13.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/regex-automata@0.4.14",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "regex-automata",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/regex-automata@0.4.14",
+      "type": "library",
+      "version": "0.4.14"
+    },
+    {
+      "bom-ref": "pkg:cargo/regex-syntax@0.8.11",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "regex-syntax",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/regex-syntax@0.8.11",
+      "type": "library",
+      "version": "0.8.11"
+    },
+    {
+      "bom-ref": "pkg:cargo/reqwest@0.12.28",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "reqwest",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/reqwest@0.12.28",
+      "type": "library",
+      "version": "0.12.28"
+    },
+    {
+      "bom-ref": "pkg:cargo/ring@0.17.14",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND ISC"
+        }
+      ],
+      "name": "ring",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ring@0.17.14",
+      "type": "library",
+      "version": "0.17.14"
+    },
+    {
+      "bom-ref": "pkg:cargo/rml_amf0@0.3.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "rml_amf0",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rml_amf0@0.3.0",
+      "type": "library",
+      "version": "0.3.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rml_rtmp@0.8.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "rml_rtmp",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rml_rtmp@0.8.0",
+      "type": "library",
+      "version": "0.8.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rsa@0.9.10",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rsa",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rsa@0.9.10",
+      "type": "library",
+      "version": "0.9.10"
+    },
+    {
+      "bom-ref": "pkg:cargo/rust-embed@8.11.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "rust-embed",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rust-embed@8.11.0",
+      "type": "library",
+      "version": "8.11.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rust-embed-utils@8.11.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "rust-embed-utils",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rust-embed-utils@8.11.0",
+      "type": "library",
+      "version": "8.11.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustc-hash@2.1.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "rustc-hash",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustc-hash@2.1.2",
+      "type": "library",
+      "version": "2.1.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls@0.21.12",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "name": "rustls",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls@0.21.12",
+      "type": "library",
+      "version": "0.21.12"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls@0.23.41",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "name": "rustls",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls@0.23.41",
+      "type": "library",
+      "version": "0.23.41"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls-pemfile@1.0.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "name": "rustls-pemfile",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls-pemfile@1.0.4",
+      "type": "library",
+      "version": "1.0.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls-pki-types@1.14.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "rustls-pki-types",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls-pki-types@1.14.1",
+      "type": "library",
+      "version": "1.14.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls-webpki@0.101.7",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "name": "rustls-webpki",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls-webpki@0.101.7",
+      "type": "library",
+      "version": "0.101.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/rustls-webpki@0.103.13",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "name": "rustls-webpki",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/rustls-webpki@0.103.13",
+      "type": "library",
+      "version": "0.103.13"
+    },
+    {
+      "bom-ref": "pkg:cargo/ryu@1.0.23",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSL-1.0"
+        }
+      ],
+      "name": "ryu",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/ryu@1.0.23",
+      "type": "library",
+      "version": "1.0.23"
+    },
+    {
+      "bom-ref": "pkg:cargo/salsa20@0.10.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "salsa20",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/salsa20@0.10.2",
+      "type": "library",
+      "version": "0.10.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/same-file@1.0.6",
+      "licenses": [
+        {
+          "expression": "Unlicense/MIT"
+        }
+      ],
+      "name": "same-file",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/same-file@1.0.6",
+      "type": "library",
+      "version": "1.0.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/scopeguard@1.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "scopeguard",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/scopeguard@1.2.0",
+      "type": "library",
+      "version": "1.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/scrypt@0.11.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "scrypt",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/scrypt@0.11.0",
+      "type": "library",
+      "version": "0.11.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/sct@0.7.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "name": "sct",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sct@0.7.1",
+      "type": "library",
+      "version": "0.7.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/serde@1.0.228",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "serde",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde@1.0.228",
+      "type": "library",
+      "version": "1.0.228"
+    },
+    {
+      "bom-ref": "pkg:cargo/serde_core@1.0.228",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "serde_core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde_core@1.0.228",
+      "type": "library",
+      "version": "1.0.228"
+    },
+    {
+      "bom-ref": "pkg:cargo/serde_json@1.0.150",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "serde_json",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde_json@1.0.150",
+      "type": "library",
+      "version": "1.0.150"
+    },
+    {
+      "bom-ref": "pkg:cargo/serde_path_to_error@0.1.20",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "serde_path_to_error",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde_path_to_error@0.1.20",
+      "type": "library",
+      "version": "0.1.20"
+    },
+    {
+      "bom-ref": "pkg:cargo/serde_urlencoded@0.7.1",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "serde_urlencoded",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde_urlencoded@0.7.1",
+      "type": "library",
+      "version": "0.7.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/sha1@0.10.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sha1",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sha1@0.10.6",
+      "type": "library",
+      "version": "0.10.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/sha2@0.10.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sha2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sha2@0.10.9",
+      "type": "library",
+      "version": "0.10.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/sha2@0.9.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sha2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sha2@0.9.9",
+      "type": "library",
+      "version": "0.9.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/sharded-slab@0.1.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "sharded-slab",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sharded-slab@0.1.7",
+      "type": "library",
+      "version": "0.1.7"
+    },
+    {
+      "bom-ref": "pkg:cargo/signal-hook-registry@1.4.8",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "signal-hook-registry",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/signal-hook-registry@1.4.8",
+      "type": "library",
+      "version": "1.4.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/signature@2.2.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "signature",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/signature@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/simd-adler32@0.3.9",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "simd-adler32",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/simd-adler32@0.3.9",
+      "type": "library",
+      "version": "0.3.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/slab@0.4.12",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "slab",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/slab@0.4.12",
+      "type": "library",
+      "version": "0.4.12"
+    },
+    {
+      "bom-ref": "pkg:cargo/smallvec@1.15.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "smallvec",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/smallvec@1.15.2",
+      "type": "library",
+      "version": "1.15.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/socket2@0.6.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "socket2",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/socket2@0.6.4",
+      "type": "library",
+      "version": "0.6.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/spin@0.9.8",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "spin",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/spin@0.9.8",
+      "type": "library",
+      "version": "0.9.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/spki@0.7.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "spki",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/spki@0.7.3",
+      "type": "library",
+      "version": "0.7.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlformat@0.2.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlformat",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlformat@0.2.6",
+      "type": "library",
+      "version": "0.2.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlx@0.7.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlx",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlx@0.7.4",
+      "type": "library",
+      "version": "0.7.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlx-core@0.7.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlx-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlx-core@0.7.4",
+      "type": "library",
+      "version": "0.7.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlx-mysql@0.7.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlx-mysql",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlx-mysql@0.7.4",
+      "type": "library",
+      "version": "0.7.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlx-postgres@0.7.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlx-postgres",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlx-postgres@0.7.4",
+      "type": "library",
+      "version": "0.7.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/sqlx-sqlite@0.7.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "sqlx-sqlite",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sqlx-sqlite@0.7.4",
+      "type": "library",
+      "version": "0.7.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/stable_deref_trait@1.2.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "stable_deref_trait",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/stable_deref_trait@1.2.1",
+      "type": "library",
+      "version": "1.2.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/stringprep@0.1.5",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "stringprep",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/stringprep@0.1.5",
+      "type": "library",
+      "version": "0.1.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/subtle@2.6.1",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "subtle",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/subtle@2.6.1",
+      "type": "library",
+      "version": "2.6.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/symlink@0.1.0",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "symlink",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/symlink@0.1.0",
+      "type": "library",
+      "version": "0.1.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/sync_wrapper@1.0.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "sync_wrapper",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sync_wrapper@1.0.2",
+      "type": "library",
+      "version": "1.0.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/sysinfo@0.30.13",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "sysinfo",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/sysinfo@0.30.13",
+      "type": "library",
+      "version": "0.30.13"
+    },
+    {
+      "bom-ref": "pkg:cargo/thiserror@1.0.69",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "thiserror",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror@1.0.69",
+      "type": "library",
+      "version": "1.0.69"
+    },
+    {
+      "bom-ref": "pkg:cargo/thiserror@2.0.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "thiserror",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror@2.0.18",
+      "type": "library",
+      "version": "2.0.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/thread_local@1.1.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "thread_local",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/thread_local@1.1.9",
+      "type": "library",
+      "version": "1.1.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/time@0.3.51",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "time",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/time@0.3.51",
+      "type": "library",
+      "version": "0.3.51"
+    },
+    {
+      "bom-ref": "pkg:cargo/time-core@0.1.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "time-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/time-core@0.1.9",
+      "type": "library",
+      "version": "0.1.9"
+    },
+    {
+      "bom-ref": "pkg:cargo/tinystr@0.8.3",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "tinystr",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tinystr@0.8.3",
+      "type": "library",
+      "version": "0.8.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/tinyvec@1.11.0",
+      "licenses": [
+        {
+          "expression": "Zlib OR Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "tinyvec",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tinyvec@1.11.0",
+      "type": "library",
+      "version": "1.11.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/tinyvec_macros@0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR Zlib"
+        }
+      ],
+      "name": "tinyvec_macros",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tinyvec_macros@0.1.1",
+      "type": "library",
+      "version": "0.1.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/tokio@1.52.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tokio",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tokio@1.52.3",
+      "type": "library",
+      "version": "1.52.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/tokio-rustls@0.24.1",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "tokio-rustls",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-rustls@0.24.1",
+      "type": "library",
+      "version": "0.24.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/tokio-rustls@0.26.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "tokio-rustls",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-rustls@0.26.4",
+      "type": "library",
+      "version": "0.26.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/tokio-stream@0.1.18",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tokio-stream",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-stream@0.1.18",
+      "type": "library",
+      "version": "0.1.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/tokio-util@0.7.18",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tokio-util",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tokio-util@0.7.18",
+      "type": "library",
+      "version": "0.7.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/tower@0.5.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tower",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tower@0.5.3",
+      "type": "library",
+      "version": "0.5.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/tower-http@0.5.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tower-http",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tower-http@0.5.2",
+      "type": "library",
+      "version": "0.5.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/tower-http@0.6.11",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tower-http",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tower-http@0.6.11",
+      "type": "library",
+      "version": "0.6.11"
+    },
+    {
+      "bom-ref": "pkg:cargo/tower-layer@0.3.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tower-layer",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tower-layer@0.3.3",
+      "type": "library",
+      "version": "0.3.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/tower-service@0.3.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tower-service",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tower-service@0.3.3",
+      "type": "library",
+      "version": "0.3.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing@0.1.44",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing@0.1.44",
+      "type": "library",
+      "version": "0.1.44"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing-appender@0.2.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing-appender",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-appender@0.2.5",
+      "type": "library",
+      "version": "0.2.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing-core@0.1.36",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing-core",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-core@0.1.36",
+      "type": "library",
+      "version": "0.1.36"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing-log@0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing-log",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-log@0.2.0",
+      "type": "library",
+      "version": "0.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing-serde@0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing-serde",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-serde@0.2.0",
+      "type": "library",
+      "version": "0.2.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/tracing-subscriber@0.3.23",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "tracing-subscriber",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/tracing-subscriber@0.3.23",
+      "type": "library",
+      "version": "0.3.23"
+    },
+    {
+      "bom-ref": "pkg:cargo/try-lock@0.2.5",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "try-lock",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/try-lock@0.2.5",
+      "type": "library",
+      "version": "0.2.5"
+    },
+    {
+      "bom-ref": "pkg:cargo/typenum@1.20.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "typenum",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/typenum@1.20.1",
+      "type": "library",
+      "version": "1.20.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/unicase@2.9.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "unicase",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/unicase@2.9.0",
+      "type": "library",
+      "version": "2.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode-bidi@0.3.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "unicode-bidi",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-bidi@0.3.18",
+      "type": "library",
+      "version": "0.3.18"
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode-normalization@0.1.25",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "unicode-normalization",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-normalization@0.1.25",
+      "type": "library",
+      "version": "0.1.25"
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode-properties@0.1.4",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ],
+      "name": "unicode-properties",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-properties@0.1.4",
+      "type": "library",
+      "version": "0.1.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode_categories@0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "unicode_categories",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/unicode_categories@0.1.1",
+      "type": "library",
+      "version": "0.1.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/untrusted@0.9.0",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "name": "untrusted",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/untrusted@0.9.0",
+      "type": "library",
+      "version": "0.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/url@2.5.8",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "url",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/url@2.5.8",
+      "type": "library",
+      "version": "2.5.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/urlencoding@2.1.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "urlencoding",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/urlencoding@2.1.3",
+      "type": "library",
+      "version": "2.1.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/utf8_iter@1.0.4",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "utf8_iter",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/utf8_iter@1.0.4",
+      "type": "library",
+      "version": "1.0.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/walkdir@2.5.0",
+      "licenses": [
+        {
+          "expression": "Unlicense/MIT"
+        }
+      ],
+      "name": "walkdir",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/walkdir@2.5.0",
+      "type": "library",
+      "version": "2.5.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/want@0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "want",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/want@0.3.1",
+      "type": "library",
+      "version": "0.3.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/webpki-roots@0.25.4",
+      "licenses": [
+        {
+          "expression": "MPL-2.0"
+        }
+      ],
+      "name": "webpki-roots",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/webpki-roots@0.25.4",
+      "type": "library",
+      "version": "0.25.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/webpki-roots@1.0.8",
+      "licenses": [
+        {
+          "expression": "CDLA-Permissive-2.0"
+        }
+      ],
+      "name": "webpki-roots",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/webpki-roots@1.0.8",
+      "type": "library",
+      "version": "1.0.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/whoami@1.6.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSL-1.0 OR MIT"
+        }
+      ],
+      "name": "whoami",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/whoami@1.6.1",
+      "type": "library",
+      "version": "1.6.1"
+    },
+    {
+      "bom-ref": "pkg:cargo/writeable@0.6.3",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "writeable",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/writeable@0.6.3",
+      "type": "library",
+      "version": "0.6.3"
+    },
+    {
+      "bom-ref": "native:x264@0.165.3222",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "x264",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "linked pkg-config metadata at build time"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:runtimeDispatch",
+          "value": "x86 assembly enabled"
+        }
+      ],
+      "type": "library",
+      "version": "0.165.3222"
+    },
+    {
+      "bom-ref": "native:x265@4.2",
+      "licenses": [
+        {
+          "expression": "GPL-2.0-or-later"
+        }
+      ],
+      "name": "x265",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "native"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "linked pkg-config metadata at build time"
+        },
+        {
+          "name": "restream:linkage",
+          "value": "statically linked component"
+        },
+        {
+          "name": "restream:runtimeDispatch",
+          "value": "x86 assembly enabled"
+        }
+      ],
+      "type": "library",
+      "version": "4.2"
+    },
+    {
+      "bom-ref": "pkg:cargo/yoke@0.8.3",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "yoke",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/yoke@0.8.3",
+      "type": "library",
+      "version": "0.8.3"
+    },
+    {
+      "bom-ref": "pkg:cargo/zerocopy@0.8.52",
+      "licenses": [
+        {
+          "expression": "BSD-2-Clause OR Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "zerocopy",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zerocopy@0.8.52",
+      "type": "library",
+      "version": "0.8.52"
+    },
+    {
+      "bom-ref": "pkg:cargo/zerofrom@0.1.8",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "zerofrom",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zerofrom@0.1.8",
+      "type": "library",
+      "version": "0.1.8"
+    },
+    {
+      "bom-ref": "pkg:cargo/zeroize@1.9.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "name": "zeroize",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zeroize@1.9.0",
+      "type": "library",
+      "version": "1.9.0"
+    },
+    {
+      "bom-ref": "pkg:cargo/zerotrie@0.2.4",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "zerotrie",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zerotrie@0.2.4",
+      "type": "library",
+      "version": "0.2.4"
+    },
+    {
+      "bom-ref": "pkg:cargo/zerovec@0.11.6",
+      "licenses": [
+        {
+          "expression": "Unicode-3.0"
+        }
+      ],
+      "name": "zerovec",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zerovec@0.11.6",
+      "type": "library",
+      "version": "0.11.6"
+    },
+    {
+      "bom-ref": "pkg:cargo/zmij@1.0.21",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "zmij",
+      "properties": [
+        {
+          "name": "restream:ecosystem",
+          "value": "cargo"
+        },
+        {
+          "name": "restream:versionSource",
+          "value": "Cargo.lock"
+        },
+        {
+          "name": "restream:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zmij@1.0.21",
+      "type": "library",
+      "version": "1.0.21"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "pkg:cargo/restream@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "NOASSERTION"
+          }
+        }
+      ],
+      "name": "restream",
+      "properties": [
+        {
+          "name": "restream:gitCommit",
+          "value": "c47725c"
+        },
+        {
+          "name": "restream:nativeBuildId",
+          "value": "c47725c"
+        }
+      ],
+      "purl": "pkg:cargo/restream@0.1.0",
+      "type": "application",
+      "version": "0.1.0"
+    },
+    "properties": [
+      {
+        "name": "restream:generatedBy",
+        "value": "running process"
+      },
+      {
+        "name": "restream:rustDependencySource",
+        "value": "resolved normal Cargo dependency closure"
+      }
+    ],
+    "timestamp": "2026-06-28T06:27:43.702953935+00:00",
+    "tools": {
+      "components": [
+        {
+          "name": "restream-runtime-sbom",
+          "type": "application",
+          "version": "0.1.0"
+        }
+      ]
+    }
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

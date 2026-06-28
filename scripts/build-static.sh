@@ -32,6 +32,7 @@ cargo rustc --profile "$PROFILE" --bin restream -- \
     -C link-arg=-no-pie
 
 BINARY="$CARGO_TARGET_DIR/$PROFILE/restream"
+SBOM="$ROOT/sbom/restream-runtime.cdx.json"
 file "$BINARY"
 "$BUILD_ROOT/prefix/bin/restream-ffmpeg-capabilities"
 
@@ -43,3 +44,5 @@ else
     echo "$ldd_output" >&2
     exit 1
 fi
+
+"$BINARY" --emit-sbom "$SBOM"

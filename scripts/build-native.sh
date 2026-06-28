@@ -33,6 +33,7 @@ cd "$ROOT"
 RESTREAM_BUILD_ROOT="$BUILD_ROOT" cargo build "${cargo_args[@]}" --bin restream
 
 BINARY="${CARGO_TARGET_DIR:-$ROOT/target}/$binary_dir/restream"
+SBOM="$ROOT/sbom/restream-runtime.cdx.json"
 file "$BINARY"
 
 ldd_output="$(ldd "$BINARY" 2>&1 || true)"
@@ -44,3 +45,4 @@ if grep -Eq 'libsrt|libsrt-' <<<"$ldd_output"; then
 fi
 
 echo "Verified: $BINARY does not link libsrt dynamically."
+"$BINARY" --emit-sbom "$SBOM"

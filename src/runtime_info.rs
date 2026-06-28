@@ -1,7 +1,6 @@
 use std::ffi::{CStr, c_char, c_int};
 
 use serde_json::{Value, json};
-use sqlx::SqlitePool;
 
 // SAFETY: OpenSSL_version is a well-defined C function with a stable ABI.
 // The kind parameter (OPENSSL_VERSION = 0) requests the full version string.
@@ -9,6 +8,8 @@ use sqlx::SqlitePool;
 // (loaded at process start and never unloaded).
 unsafe extern "C" {
     fn OpenSSL_version(kind: c_int) -> *const c_char;
+    fn sqlite3_libversion() -> *const c_char;
+    fn sqlite3_sourceid() -> *const c_char;
 }
 
 const OPENSSL_VERSION: c_int = 0;
@@ -109,6 +110,17 @@ fn rust_components() -> Vec<Value> {
         .collect()
 }
 
+fn sqlite_runtime_info() -> (String, String) {
+    (
+        // SAFETY: sqlite3_libversion returns a valid static string owned by the
+        // linked SQLite library for the process lifetime.
+        c_string(unsafe { sqlite3_libversion() }),
+        // SAFETY: sqlite3_sourceid returns a valid static string owned by the
+        // linked SQLite library for the process lifetime.
+        c_string(unsafe { sqlite3_sourceid() }),
+    )
+}
+
 fn ffmpeg_components() -> (Vec<Value>, String, String) {
     // SAFETY: avcodec_configuration and avcodec_license are FFmpeg C API
     // functions that return NUL-terminated static strings valid for the
@@ -203,15 +215,8 @@ fn libc_component() -> Option<Value> {
     None
 }
 
-pub async fn status_and_sbom(db: &SqlitePool, bonding_available: bool) -> (Value, Value) {
-    let sqlite_version = sqlx::query_scalar::<_, String>("SELECT sqlite_version()")
-        .fetch_one(db)
-        .await
-        .unwrap_or_else(|_| "unknown".to_string());
-    let sqlite_source_id = sqlx::query_scalar::<_, String>("SELECT sqlite_source_id()")
-        .fetch_one(db)
-        .await
-        .unwrap_or_else(|_| "unknown".to_string());
+pub fn status_and_sbom(bonding_available: bool) -> (Value, Value) {
+    let (sqlite_version, sqlite_source_id) = sqlite_runtime_info();
     // SAFETY: OpenSSL_version(OPENSSL_VERSION) returns a NUL-terminated
     // static string owned by the OpenSSL library, valid for the process
     // lifetime. No deallocation required.

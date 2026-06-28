@@ -97,6 +97,40 @@ jobs:
       - name: Rust tests
         run: scripts/resource-limit cargo test --workspace
 
+  sbom-sync:
+    name: SBOM sync check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config clang
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: sbom-sync-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sbom-sync-${{ runner.os }}-
+      - name: Rebuild committed SBOM
+        run: scripts/resource-limit ./scripts/build-native.sh
+      - name: Verify committed SBOM is up to date
+        run: git diff --exit-code -- sbom/restream-runtime.cdx.json
+
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest

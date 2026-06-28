@@ -2550,7 +2550,7 @@ async fn status_get_handler(
         .srt_listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
-    let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
     status["os"] = system_status(&sys);
 
     Json(status).into_response()
@@ -2702,7 +2702,7 @@ async fn status_sbom_get_handler(
         .srt_listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
-    let (_, sbom) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
     (
         [
             (
@@ -3929,7 +3929,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .srt_listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
-    let (mut status, _) = crate::runtime_info::status_and_sbom(&state.db, bonding_available).await;
+    let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
     let sys = System::new_all();
     status["os"] = system_status(&sys);
 
