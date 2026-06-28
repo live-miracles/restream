@@ -1230,9 +1230,15 @@ fn run_ffmpeg_transcode_with_scale_with_metrics(
                     continue;
                 }
                 enc_frame.set_pts(Some(pts_counter));
+                // Drop source picture-type hints so the new encoder can choose
+                // GOP/B-frame placement from its own settings.
+                enc_frame.set_kind(ffmpeg_next::util::picture::Type::None);
                 &enc_frame
             } else {
                 dec_frame.set_pts(Some(pts_counter));
+                // Even without scaling, a decode/re-encode stage should not
+                // preserve source I/P/B tags across the encoder boundary.
+                dec_frame.set_kind(ffmpeg_next::util::picture::Type::None);
                 &dec_frame
             };
             pts_counter += 1;

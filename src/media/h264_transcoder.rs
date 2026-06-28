@@ -436,6 +436,9 @@ fn run_ffmpeg_h264_stage(
                 continue;
             }
             enc_frame.set_pts(Some(pts_counter));
+            // Decoded frames may retain source I/P/B tags; clear them at the
+            // transcode boundary so x264 uses this encoder's GOP/B-frame policy.
+            enc_frame.set_kind(ffmpeg_next::util::picture::Type::None);
             pts_counter += 1;
 
             if enc.send_frame(&enc_frame).is_err() {
