@@ -331,7 +331,7 @@ impl RingBuffer {
     /// index sequence so that existing `Reader` instances (which remember their
     /// `read_idx`) can transparently migrate and resume without a gap.
     pub fn new_continuing(capacity: usize, start_write_idx: usize) -> Self {
-        let mut ring = Self::new(capacity);
+        let ring = Self::new(capacity);
         ring.write_idx.val.store(start_write_idx, Ordering::Relaxed);
         // The last_keyframe sentinel is irrelevant to new readers migrating from
         // the old ring; they will establish a new baseline from the first keyframe.
