@@ -484,6 +484,9 @@ fn benchmark_seal_and_forward(c: &mut Criterion) {
         .unwrap();
 
     // Cost of seal_and_forward itself (atomic store + notify_waiters).
+    // Rings are created in setup (outside timed region). We return them from
+    // the closure so Criterion drops them AFTER the timed section — correct
+    // Criterion idiom to exclude deallocation from the measurement.
     group.bench_function("seal_only", |b| {
         b.iter_batched(
             || {
@@ -492,36 +495,44 @@ fn benchmark_seal_and_forward(c: &mut Criterion) {
                 (old, new)
             },
             |(old, new)| {
-                black_box(old.seal_and_forward(new));
+                // Seal: ArcSwap store + tokio Notify::notify_waiters.
+                old.seal_and_forward(new.clone());
+                // Return rings so Criterion drops them outside the timed window.
+                (old, new)
             },
             BatchSize::SmallInput,
         )
     });
 
     // Cost of seal + one reader migrating (wait_for_data detects seal).
+    // One packet is pre-pushed to the new ring so wait_for_data returns
+    // immediately after migration (no indefinite wait on empty new ring).
+    // Rings and reader are returned from the closure so Criterion drops them
+    // outside the timed section.
     group.bench_function("seal_plus_one_reader_migrate", |b| {
         b.iter_batched(
             || {
                 let old = Arc::new(RingBuffer::new(1024));
-                // Push some packets so reader has lag 0 at benchmark start.
                 let new = Arc::new(RingBuffer::new_continuing(4096, old.get_write_idx()));
-                let mut reader = Reader::new("bench".to_string(), old.clone());
-                // Drain old ring (zero lag) before timed region.
-                let _ = reader.pull_burst(&mut Vec::new(), 64);
+                // Pre-push to new ring so wait_for_data returns after migration.
+                new.push(make_packet(64));
+                let reader = Reader::new("bench".to_string(), old.clone());
                 (old, new, reader)
             },
             |(old, new, mut reader)| {
                 old.seal_and_forward(new.clone());
-                // Simulate what wait_for_data does: detect seal, migrate.
+                // Detect seal, migrate, see the pre-pushed packet, return.
                 rt.block_on(async {
-                    black_box(reader.wait_for_data().await);
+                    reader.wait_for_data().await;
                 });
+                (old, new, reader)
             },
             BatchSize::SmallInput,
         )
     });
 
     // N readers all migrating after a single seal.
+    // Same pre-push trick: one packet on new ring so all readers unblock promptly.
     for n in [1, 4, 8, 16] {
         group.bench_with_input(
             BenchmarkId::new("seal_N_readers_migrate", n),
@@ -531,6 +542,7 @@ fn benchmark_seal_and_forward(c: &mut Criterion) {
                     || {
                         let old = Arc::new(RingBuffer::new(1024));
                         let new = Arc::new(RingBuffer::new_continuing(4096, old.get_write_idx()));
+                        new.push(make_packet(64));
                         let readers: Vec<Reader> = (0..n)
                             .map(|idx| Reader::new(format!("r{idx}"), old.clone()))
                             .collect();
@@ -540,9 +552,10 @@ fn benchmark_seal_and_forward(c: &mut Criterion) {
                         old.seal_and_forward(new.clone());
                         rt.block_on(async {
                             for r in &mut readers {
-                                black_box(r.wait_for_data().await);
+                                r.wait_for_data().await;
                             }
                         });
+                        (old, new, readers)
                     },
                     BatchSize::SmallInput,
                 )

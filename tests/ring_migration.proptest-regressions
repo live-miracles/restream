@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 601ec580ec2197249cfdb8030bf46f08ec2e0919cbf9889c4bf04536aebb4370 # shrinks to n_before = 1, n_after = 0, drain_before_seal = 1, old_cap = 8, new_cap = 8
+cc 71481b64c12c02f575d43fa7b2c6411d8d0af1a0917d12d0d60403f22c1bbe7b # shrinks to n_before = 18, n_after = 0, drain_before_seal = 0, old_cap = 8, new_cap = 8
+cc 151aad65e74cff3cc0bf08d1e1a5b17104e1950f6d13b08a15c0456f8b2f0afc # shrinks to n_before = 1, n_after = 0, drain_before_seal = 0, old_cap_extra = 0, new_cap_extra = 1
+cc 41c5eeb594a1ddb7b1db641ebb3df05fb235a87984682565e40b1ee47295adec # shrinks to n_before = 1, n_after = 35, drain_before_seal = 0, old_cap_extra = 0, new_cap_extra = 1
