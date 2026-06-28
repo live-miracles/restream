@@ -639,6 +639,12 @@ impl Drop for Reader {
 }
 
 impl Reader {
+    /// Current ring this reader is consuming from.  Changes after a successful
+    /// migration triggered by `wait_for_data` following `seal_and_forward`.
+    pub fn current_ring(&self) -> &Arc<RingBuffer> {
+        &self.buffer
+    }
+
     pub fn new(name: String, buffer: Arc<RingBuffer>) -> Self {
         let current_write = buffer.get_write_idx();
         let start_idx = buffer.fast_forward(current_write);

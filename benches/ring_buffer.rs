@@ -470,12 +470,96 @@ fn benchmark_active_reader_count(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure the cost of `seal_and_forward` + one reader migrating.
+///
+/// This is the steady-state impact on the hot path during an adaptive resize:
+/// the seal itself is atomic + notify; the migration runs in each reader's
+/// async task on its next `wait_for_data` wake-up.
+///
+/// Target: seal < 500 ns; single-reader migration < 2 µs.
+fn benchmark_seal_and_forward(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ring_buffer/seal_and_forward");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    // Cost of seal_and_forward itself (atomic store + notify_waiters).
+    group.bench_function("seal_only", |b| {
+        b.iter_batched(
+            || {
+                let old = Arc::new(RingBuffer::new(1024));
+                let new = Arc::new(RingBuffer::new_continuing(4096, 0));
+                (old, new)
+            },
+            |(old, new)| {
+                black_box(old.seal_and_forward(new));
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // Cost of seal + one reader migrating (wait_for_data detects seal).
+    group.bench_function("seal_plus_one_reader_migrate", |b| {
+        b.iter_batched(
+            || {
+                let old = Arc::new(RingBuffer::new(1024));
+                // Push some packets so reader has lag 0 at benchmark start.
+                let new = Arc::new(RingBuffer::new_continuing(4096, old.get_write_idx()));
+                let mut reader = Reader::new("bench".to_string(), old.clone());
+                // Drain old ring (zero lag) before timed region.
+                let _ = reader.pull_burst(&mut Vec::new(), 64);
+                (old, new, reader)
+            },
+            |(old, new, mut reader)| {
+                old.seal_and_forward(new.clone());
+                // Simulate what wait_for_data does: detect seal, migrate.
+                rt.block_on(async {
+                    black_box(reader.wait_for_data().await);
+                });
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // N readers all migrating after a single seal.
+    for n in [1, 4, 8, 16] {
+        group.bench_with_input(
+            BenchmarkId::new("seal_N_readers_migrate", n),
+            &n,
+            |b, &n| {
+                b.iter_batched(
+                    || {
+                        let old = Arc::new(RingBuffer::new(1024));
+                        let new = Arc::new(RingBuffer::new_continuing(4096, old.get_write_idx()));
+                        let readers: Vec<Reader> = (0..n)
+                            .map(|idx| Reader::new(format!("r{idx}"), old.clone()))
+                            .collect();
+                        (old, new, readers)
+                    },
+                    |(old, new, mut readers)| {
+                        old.seal_and_forward(new.clone());
+                        rt.block_on(async {
+                            for r in &mut readers {
+                                black_box(r.wait_for_data().await);
+                            }
+                        });
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_push_batch_vs_push,
     benchmark_pull_burst,
     benchmark_reader_lag,
     benchmark_active_reader_count,
+    benchmark_seal_and_forward,
     benchmark_vec_capacity,
     benchmark_vec_loop_reuse,
     benchmark_burst_drain_alloc,
