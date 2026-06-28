@@ -154,9 +154,12 @@ socket cost with:
 scripts/resource-limit cargo bench --bench srt_ingest_latency -- srt_(ingest|egress)
 ```
 
-That bench now emits separate `srt_ingest/{plain,encrypted}/recv_path` and
-`srt_egress/{plain,encrypted}/send_path` cases so we can quantify the overhead
-of `SRTO_PASSPHRASE` / `SRTO_PBKEYLEN` without pulling in the full live harness.
+That bench now emits separate `srt_ingest/{plain,encrypted}/recv_path/<size>`
+and `srt_egress/{plain,encrypted}/send_path/<size>` cases for a small transfer
+ladder (`1`, `8`, and `64` live-mode packets per timed iteration, or `1316 B`,
+`10528 B`, and `84224 B` transferred per iteration). This keeps each individual
+SRT payload within live-mode limits while still making it easier to see whether
+crypto cost is real or just loopback noise from the tiny single-packet path.
 
 For the optimization roadmap behind those benches, see
 [High-Performance Data Path](high-performance-data-path.md).

@@ -51,8 +51,12 @@ The SRT bench is a socket-pair microbenchmark, not a live pipeline test. It is
 meant to answer narrow questions such as "what did enabling SRT encryption cost
 on loopback?" by comparing:
 
-- `srt_ingest/plain/recv_path` vs `srt_ingest/encrypted/recv_path`
-- `srt_egress/plain/send_path` vs `srt_egress/encrypted/send_path`
+- `srt_ingest/plain/recv_path/<size>` vs `srt_ingest/encrypted/recv_path/<size>`
+- `srt_egress/plain/send_path/<size>` vs `srt_egress/encrypted/send_path/<size>`
+
+It intentionally includes multiple payload sizes so we can see whether an
+apparent "encrypted is faster" result disappears once more bytes are moved per
+iteration.
 
 Use the full `cargo test` suite, full benchmark suites, or live integration
 modes as a broader confidence pass when a change crosses module boundaries,
@@ -586,10 +590,13 @@ Artifacts are written to `test/artifacts/branch-matrix/` by default:
 Useful env vars:
 
 - `BRANCH_MATRIX_EGRESS_COUNT=10`
+- `BRANCH_MATRIX_SCENARIOS=egress-growth-source-mixed,egress-growth-transcode-mixed`
 - `RESOURCE_SWEEP_SAMPLE_SECS=6`
 - `RESOURCE_SWEEP_SETTLE_SECS=4`
 - `RESOURCE_SWEEP_LIFECYCLE=isolated|continuous|cumulative`
 - `RESTREAM_USE_INTERNAL_TRANSCODER=1` to capture the internal-backend baseline
+- `HARNESS_SRT_PASSPHRASE=0123456789abcd` and `HARNESS_SRT_PBKEYLEN=16` to
+  rerun the matrix with encrypted SRT ingest
 
 ### `bonding` — SRT socket bonding
 

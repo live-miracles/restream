@@ -1,4 +1,4 @@
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use restream::media::srt::*;
 use std::ffi::c_int;
 use std::time::{Duration, Instant};
@@ -6,6 +6,12 @@ use std::time::{Duration, Instant};
 const BENCH_LATENCY_MS: c_int = 20;
 const BENCH_PBKEYLEN_BYTES: c_int = 16;
 const BENCH_PASSPHRASE: &str = "benchpass12";
+const SRT_LIVE_PAYLOAD_BYTES: usize = 1316;
+const PACKETS_PER_ITER: &[usize] = &[
+    1,  // one MPEG-TS-over-SRT payload
+    8,  // small burst
+    64, // larger steady-state transfer
+];
 
 #[derive(Clone, Copy)]
 enum CryptoMode {
@@ -152,22 +158,32 @@ fn make_srt_pair(crypto: CryptoMode) -> (SRTSOCKET, SRTSOCKET) {
     (sender, receiver)
 }
 
-fn bench_ingest(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
+fn bench_ingest(c: &mut Criterion, payload: &[u8], packets_per_iter: usize, crypto: CryptoMode) {
     let mut group = c.benchmark_group(format!("srt_ingest/{}", crypto.label()));
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(30);
-    group.throughput(Throughput::Bytes(payload.len() as u64));
+    group.throughput(Throughput::Bytes(
+        (payload.len() * packets_per_iter) as u64,
+    ));
 
-    group.bench_function("recv_path", |b| {
+    group.bench_with_input(
+        BenchmarkId::new(
+            "recv_path",
+            format!("{}pkts_{}b", packets_per_iter, payload.len() * packets_per_iter),
+        ),
+        &packets_per_iter,
+        |b, _| {
         b.iter_custom(|iters| {
             let (sender, receiver) = make_srt_pair(crypto);
             let send_payload = payload.to_vec();
             let sender_thread = std::thread::spawn(move || {
                 for _ in 0..iters {
-                    let n = unsafe {
-                        srt_send(sender, send_payload.as_ptr(), send_payload.len() as c_int)
-                    };
-                    assert_eq!(n, send_payload.len() as c_int, "send: {}", srt_error());
+                    for _ in 0..packets_per_iter {
+                        let n = unsafe {
+                            srt_send(sender, send_payload.as_ptr(), send_payload.len() as c_int)
+                        };
+                        assert_eq!(n, send_payload.len() as c_int, "send: {}", srt_error());
+                    }
                 }
                 sender
             });
@@ -175,62 +191,79 @@ fn bench_ingest(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
             let mut recv_buf = vec![0u8; payload.len()];
             let start = Instant::now();
             for _ in 0..iters {
-                let n =
-                    unsafe { srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int) };
-                assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
-                black_box(n);
+                for _ in 0..packets_per_iter {
+                    let n = unsafe {
+                        srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int)
+                    };
+                    assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
+                    black_box(n);
+                }
             }
-            let elapsed = start.elapsed();
+                let elapsed = start.elapsed();
 
-            let sender = sender_thread.join().unwrap();
-            unsafe {
-                srt_close(sender);
-                srt_close(receiver);
-            }
-            elapsed
-        });
-    });
+                let sender = sender_thread.join().unwrap();
+                unsafe {
+                    srt_close(sender);
+                    srt_close(receiver);
+                }
+                elapsed
+            })
+        },
+    );
 
     group.finish();
 }
 
-fn bench_egress(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
+fn bench_egress(c: &mut Criterion, payload: &[u8], packets_per_iter: usize, crypto: CryptoMode) {
     let mut group = c.benchmark_group(format!("srt_egress/{}", crypto.label()));
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(30);
-    group.throughput(Throughput::Bytes(payload.len() as u64));
+    group.throughput(Throughput::Bytes(
+        (payload.len() * packets_per_iter) as u64,
+    ));
 
-    group.bench_function("send_path", |b| {
+    group.bench_with_input(
+        BenchmarkId::new(
+            "send_path",
+            format!("{}pkts_{}b", packets_per_iter, payload.len() * packets_per_iter),
+        ),
+        &packets_per_iter,
+        |b, _| {
         b.iter_custom(|iters| {
             let (sender, receiver) = make_srt_pair(crypto);
             let recv_len = payload.len();
             let receiver_thread = std::thread::spawn(move || {
                 let mut recv_buf = vec![0u8; recv_len];
                 for _ in 0..iters {
-                    let n = unsafe {
-                        srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int)
-                    };
-                    assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
+                    for _ in 0..packets_per_iter {
+                        let n = unsafe {
+                            srt_recv(receiver, recv_buf.as_mut_ptr(), recv_buf.len() as c_int)
+                        };
+                        assert_eq!(n, recv_buf.len() as c_int, "recv: {}", srt_error());
+                    }
                 }
                 receiver
             });
 
             let start = Instant::now();
             for _ in 0..iters {
-                let n = unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
-                assert_eq!(n, payload.len() as c_int, "send: {}", srt_error());
-                black_box(n);
+                for _ in 0..packets_per_iter {
+                    let n = unsafe { srt_send(sender, payload.as_ptr(), payload.len() as c_int) };
+                    assert_eq!(n, payload.len() as c_int, "send: {}", srt_error());
+                    black_box(n);
+                }
             }
-            let elapsed = start.elapsed();
+                let elapsed = start.elapsed();
 
-            let receiver = receiver_thread.join().unwrap();
-            unsafe {
-                srt_close(sender);
-                srt_close(receiver);
-            }
-            elapsed
-        });
-    });
+                let receiver = receiver_thread.join().unwrap();
+                unsafe {
+                    srt_close(sender);
+                    srt_close(receiver);
+                }
+                elapsed
+            })
+        },
+    );
 
     group.finish();
 }
@@ -240,10 +273,12 @@ fn bench_srt_transport_latency(c: &mut Criterion) {
         srt_startup();
     }
 
-    let payload = vec![0x47u8; 1316];
     for crypto in [CryptoMode::Plain, CryptoMode::Encrypted] {
-        bench_ingest(c, &payload, crypto);
-        bench_egress(c, &payload, crypto);
+        let payload = vec![0x47u8; SRT_LIVE_PAYLOAD_BYTES];
+        for &packets_per_iter in PACKETS_PER_ITER {
+            bench_ingest(c, &payload, packets_per_iter, crypto);
+            bench_egress(c, &payload, packets_per_iter, crypto);
+        }
     }
 
     unsafe {
