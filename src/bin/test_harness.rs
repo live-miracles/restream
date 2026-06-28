@@ -33,6 +33,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "mixed-h265-srt-multi",
     "bframe-rtmp",
     "correctness-srt-rtmp",
+    "correctness-srt-policy",
     "correctness-hevc-rtmp",
     "correctness-hevc-srt",
     "fault-resilience",
@@ -74,6 +75,7 @@ async fn run() -> Result<(), String> {
         "correctness-rtmp" => correctness_rtmp().await,
         "correctness-srt" => correctness_srt().await,
         "correctness-srt-rtmp" => srt_to_rtmp_correctness().await,
+        "correctness-srt-policy" => srt_policy_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "ramp-family" => ramp_family_correctness().await,
         "mixed-h264-rtmp" => mixed_h264_rtmp_correctness().await,
@@ -94,7 +96,7 @@ async fn run() -> Result<(), String> {
         "srt-crypto-matrix" => srt_crypto_matrix().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
-              correctness-rtmp, correctness-srt, correctness-srt-rtmp, \
+              correctness-rtmp, correctness-srt, correctness-srt-rtmp, correctness-srt-policy, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
@@ -969,6 +971,18 @@ impl RampApi {
         let mut request = self
             .client
             .post(format!("{}{}", self.base_url, path))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string());
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        json_response(request).await
+    }
+
+    async fn patch_json(&self, path: &str, body: Value) -> Result<Value, String> {
+        let mut request = self
+            .client
+            .patch(format!("{}{}", self.base_url, path))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string());
         if let Some(cookie) = &self.cookie {
@@ -7008,6 +7022,275 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
     } else {
         Err(format!("SRT to RTMP direct egress failed: {results}"))
     }
+}
+
+fn srt_publish_url(
+    port: u16,
+    stream_key: &str,
+    crypto: Option<(&str, u32)>,
+) -> String {
+    let mut url = format!("srt://127.0.0.1:{port}?streamid=publish:live/{stream_key}&pkt_size=1316");
+    if let Some((passphrase, pbkeylen)) = crypto {
+        url.push_str(&format!("&passphrase={passphrase}&pbkeylen={pbkeylen}"));
+    }
+    url
+}
+
+fn srt_read_url(
+    port: u16,
+    stream_key: &str,
+    crypto: Option<(&str, u32)>,
+) -> String {
+    let mut url = format!(
+        "srt://127.0.0.1:{port}?streamid=read:live/{stream_key}&mode=caller&transtype=live&latency=100"
+    );
+    if let Some((passphrase, pbkeylen)) = crypto {
+        url.push_str(&format!("&passphrase={passphrase}&pbkeylen={pbkeylen}"));
+    }
+    url
+}
+
+async fn expect_ingest_rejected(
+    api: &RampApi,
+    pipeline_id: &str,
+    fixture: &Path,
+    publish_url: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let mut publisher = spawn_publisher(fixture, publish_url, "mpegts", true).await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let live = wait_for_api_input_live(api, pipeline_id, Duration::from_secs(1))
+        .await
+        .is_ok();
+    stop_child(&mut publisher).await;
+    if live {
+        return Err(format!("{label}: ingest unexpectedly went live"));
+    }
+    wait_for_api_input_off(api, pipeline_id, Duration::from_secs(5)).await?;
+    Ok(json!({"passed": true, "label": label}))
+}
+
+async fn expect_srt_read_failure(url: &str, label: &str) -> Result<Value, String> {
+    match ffprobe(url).await {
+        Ok(probe) => Err(format!("{label}: read unexpectedly succeeded: {probe}")),
+        Err(error) => Ok(json!({"passed": true, "label": label, "error": error})),
+    }
+}
+
+async fn srt_policy_correctness() -> Result<Value, String> {
+    let work_dir = artifact_path("correctness-srt-policy");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = std::env::var_os("RESTREAM_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let ports = TestPorts::from_env();
+
+    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let fixture = artifact_path("correctness-h264.ts");
+    if !fixture.exists() {
+        generate_fixture_h264(&fixture).await?;
+    }
+
+    let mut results = serde_json::Map::new();
+
+    api.patch_json(
+        "/config",
+        json!({"srtIngest": {"mode": "plaintext", "pbkeylen": 16, "passphrase": null}}),
+    )
+    .await?;
+    let plain_inherit = api
+        .post_json(
+            "/pipelines",
+            json!({"name": "policy-plain-inherit", "streamKey": "policy-plain-inherit", "srtIngestPolicy": {"mode": "inherit"}}),
+        )
+        .await?;
+    let plain_inherit_id = plain_inherit["pipeline"]["id"]
+        .as_str()
+        .ok_or("plain inherit pipeline id missing")?
+        .to_string();
+    let mut plain_pub = spawn_publisher(
+        &fixture,
+        &srt_publish_url(ports.srt, "policy-plain-inherit", None),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_api_input_live(&api, &plain_inherit_id, Duration::from_secs(15)).await?;
+    let plain_read_probe = ffprobe(&srt_read_url(ports.srt, "policy-plain-inherit", None)).await?;
+    assert_media_only(&plain_read_probe, "plain inherit read")?;
+    stop_child(&mut plain_pub).await;
+    wait_for_api_input_off(&api, &plain_inherit_id, Duration::from_secs(10)).await?;
+    results.insert(
+        "globalPlaintextInherit".to_string(),
+        json!({"passed": true, "readProbe": plain_read_probe}),
+    );
+
+    api.patch_json(
+        "/config",
+        json!({"srtIngest": {"mode": "encrypted", "passphrase": "globalpass123", "pbkeylen": 16}}),
+    )
+    .await?;
+    let global_enc = api
+        .post_json(
+            "/pipelines",
+            json!({"name": "policy-global-enc", "streamKey": "policy-global-enc", "srtIngestPolicy": {"mode": "inherit"}}),
+        )
+        .await?;
+    let global_enc_id = global_enc["pipeline"]["id"]
+        .as_str()
+        .ok_or("global enc pipeline id missing")?
+        .to_string();
+    let mut global_enc_pub = spawn_publisher(
+        &fixture,
+        &srt_publish_url(ports.srt, "policy-global-enc", Some(("globalpass123", 16))),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_api_input_live(&api, &global_enc_id, Duration::from_secs(15)).await?;
+    let global_enc_read = ffprobe(&srt_read_url(
+        ports.srt,
+        "policy-global-enc",
+        Some(("globalpass123", 16)),
+    ))
+    .await?;
+    assert_media_only(&global_enc_read, "global encrypted read")?;
+    let global_enc_read_fail = expect_srt_read_failure(
+        &srt_read_url(ports.srt, "policy-global-enc", None),
+        "global encrypted plaintext read",
+    )
+    .await?;
+    stop_child(&mut global_enc_pub).await;
+    wait_for_api_input_off(&api, &global_enc_id, Duration::from_secs(10)).await?;
+    let global_enc_publish_fail = expect_ingest_rejected(
+        &api,
+        &global_enc_id,
+        &fixture,
+        &srt_publish_url(ports.srt, "policy-global-enc", None),
+        "global encrypted plaintext publish",
+    )
+    .await?;
+    results.insert(
+        "globalEncrypted16Inherit".to_string(),
+        json!({
+            "passed": true,
+            "readProbe": global_enc_read,
+            "plaintextReadRejected": global_enc_read_fail,
+            "plaintextPublishRejected": global_enc_publish_fail,
+        }),
+    );
+
+    let plain_override = api
+        .post_json(
+            "/pipelines",
+            json!({"name": "policy-plain-override", "streamKey": "policy-plain-override", "srtIngestPolicy": {"mode": "plaintext"}}),
+        )
+        .await?;
+    let plain_override_id = plain_override["pipeline"]["id"]
+        .as_str()
+        .ok_or("plain override pipeline id missing")?
+        .to_string();
+    let mut plain_override_pub = spawn_publisher(
+        &fixture,
+        &srt_publish_url(ports.srt, "policy-plain-override", None),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_api_input_live(&api, &plain_override_id, Duration::from_secs(15)).await?;
+    let plain_override_read =
+        ffprobe(&srt_read_url(ports.srt, "policy-plain-override", None)).await?;
+    assert_media_only(&plain_override_read, "plain override read")?;
+    stop_child(&mut plain_override_pub).await;
+    wait_for_api_input_off(&api, &plain_override_id, Duration::from_secs(10)).await?;
+    results.insert(
+        "globalEncrypted16PipelinePlaintext".to_string(),
+        json!({"passed": true, "readProbe": plain_override_read}),
+    );
+
+    api.patch_json(
+        "/config",
+        json!({"srtIngest": {"mode": "plaintext", "pbkeylen": 16, "passphrase": null}}),
+    )
+    .await?;
+    for (label, stream_key, passphrase, pbkeylen) in [
+        ("pipelineEncrypted24", "policy-enc-24", "pipepass1234", 24u32),
+        ("pipelineEncrypted32", "policy-enc-32", "pipepass12345", 32u32),
+    ] {
+        let pipeline = api
+            .post_json(
+                "/pipelines",
+                json!({
+                    "name": label,
+                    "streamKey": stream_key,
+                    "srtIngestPolicy": {"mode": "encrypted", "passphrase": passphrase, "pbkeylen": pbkeylen}
+                }),
+            )
+            .await?;
+        let pipeline_id = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("encrypted override pipeline id missing")?
+            .to_string();
+        let mut pub_ok = spawn_publisher(
+            &fixture,
+            &srt_publish_url(ports.srt, stream_key, Some((passphrase, pbkeylen))),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
+        let read_ok = ffprobe(&srt_read_url(
+            ports.srt,
+            stream_key,
+            Some((passphrase, pbkeylen)),
+        ))
+        .await?;
+        assert_media_only(&read_ok, label)?;
+        let read_plain_fail = expect_srt_read_failure(
+            &srt_read_url(ports.srt, stream_key, None),
+            &format!("{label} plaintext read"),
+        )
+        .await?;
+        let read_wrong_pass_fail = expect_srt_read_failure(
+            &srt_read_url(ports.srt, stream_key, Some(("wrongpass123", pbkeylen))),
+            &format!("{label} wrong passphrase read"),
+        )
+        .await?;
+        stop_child(&mut pub_ok).await;
+        wait_for_api_input_off(&api, &pipeline_id, Duration::from_secs(10)).await?;
+        let publish_plain_fail = expect_ingest_rejected(
+            &api,
+            &pipeline_id,
+            &fixture,
+            &srt_publish_url(ports.srt, stream_key, None),
+            &format!("{label} plaintext publish"),
+        )
+        .await?;
+        results.insert(
+            label.to_string(),
+            json!({
+                "passed": true,
+                "readProbe": read_ok,
+                "plaintextReadRejected": read_plain_fail,
+                "wrongPassphraseReadRejected": read_wrong_pass_fail,
+                "plaintextPublishRejected": publish_plain_fail,
+            }),
+        );
+    }
+
+    stop_child(&mut child).await;
+    let value = Value::Object(results);
+    let path = work_dir.join("results.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&value).unwrap());
+    Ok(value)
 }
 
 /// Test: SRT ingest -> HLS HTTP PUT upload for YouTube-style and path-style sinks.
