@@ -246,14 +246,23 @@ graph TD
 ### Path 1: RTMP ingest → RTMP egress (source, passthrough)
 
 **Current flow:**
-```
-TCP socket → RTMP parser (inline tokio task)
-  → FLV demux → MediaPacket(Flv format)
-  → source RingBuffer.push() [DECOUPLING #1]
-  ↓
-RingBuffer.pull() (per egress task, 1+ readers)
-  → FLV mux (payload.clone() only, zero-copy)
-  → TCP socket.write()
+```mermaid
+graph TD
+    A["TCP socket<br/>(RTMP)"]
+    B["RTMP parser<br/>(tokio task)"]
+    C["FLV demux"]
+    D["MediaPacket<br/>(FLV format)"]
+    E["source RingBuffer<br/>[DECOUPLING #1]"]
+    F["RingBuffer.pull<br/>(per egress task<br/>1+ readers)"]
+    G["FLV mux<br/>(zero-copy)"]
+    H["TCP socket.write"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H
+    
+    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style B fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style E fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style H fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
 ```
 
 **Run-to-completion potential: 🟠 Medium**
@@ -273,21 +282,28 @@ RingBuffer.pull() (per egress task, 1+ readers)
 ### Path 2: RTMP ingest → SRT egress (source, passthrough)
 
 **Current flow:**
-```
-TCP socket (RTMP) → FLV demux → MediaPacket(Flv)
-  → source RingBuffer.push() [DECOUPLING #1]
-  ↓
-RingBuffer.pull() (SRT egress task)
-  → video_for_ts() [strip FLV header, validate codec]
-  → TsMuxer (inline, ~0.6µs/pkt)
-  → TsChunkRing.push() [DECOUPLING #2]
-  ↓
-TsChunkRing.pull() (per SRT connection)
-  → MemoryQueue.write() [DECOUPLING #3]
-  ↓
-OS thread (libsrt_send blocker)
-  → srt_send() (blocks indefinitely)
-  → kernel UDP buffer
+```mermaid
+graph TD
+    A["TCP socket<br/>(RTMP)"]
+    B["FLV demux"]
+    C["MediaPacket<br/>(Flv)"]
+    D["source RingBuffer<br/>[DECOUPLING #1]"]
+    E["RingBuffer.pull<br/>(SRT egress)"]
+    F["video_for_ts<br/>TsMuxer"]
+    G["TsChunkRing<br/>[DECOUPLING #2]"]
+    H["MemoryQueue<br/>[DECOUPLING #3]"]
+    I["OS thread"]
+    J["srt_send<br/>blocks"]
+    K["UDP kernel buffer"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+    
+    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style D fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style G fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style H fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style I fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style K fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
 ```
 
 **Run-to-completion potential: 🔴 Low**
@@ -309,17 +325,24 @@ OS thread (libsrt_send blocker)
 ### Path 3: SRT ingest → RTMP egress (source, passthrough)
 
 **Current flow:**
-```
-UDP socket (SRT) → libsrt recv (non-blocking in epoll loop)
-  → TsDemuxer (inline async task, parse MPEG-TS)
-  → MediaPacket(Raw format, Annex-B)
-  → source RingBuffer.push() [DECOUPLING #1]
-  ↓
-RingBuffer.pull() (RTMP egress task)
-  → build_avcc_seq_hdr() [reconstruct AVCC from Raw Annex-B]
-  → video_for_rtmp() (AVCC wrap, allocates ~2 small Vecs for NALUs)
-  → RTMP FLV mux (inline)
-  → TCP socket.write()
+```mermaid
+graph TD
+    A["UDP socket<br/>(SRT)"]
+    B["libsrt recv<br/>(epoll)"]
+    C["TsDemuxer<br/>(async)"]
+    D["MediaPacket<br/>(Raw/Annex-B)"]
+    E["source RingBuffer<br/>[DECOUPLING #1]"]
+    F["RingBuffer.pull<br/>(RTMP egress)"]
+    G["build_avcc_seq_hdr"]
+    H["video_for_rtmp<br/>(AVCC wrap)"]
+    I["FLV mux"]
+    J["TCP socket.write"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    
+    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style E fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style J fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
 ```
 
 **Run-to-completion potential: 🟠 Medium**
@@ -338,19 +361,27 @@ RingBuffer.pull() (RTMP egress task)
 ### Path 4: SRT ingest → SRT egress (source, passthrough)
 
 **Current flow:**
-```
-UDP socket (SRT ingest) → TsDemuxer (inline)
-  → MediaPacket(Raw)
-  → source RingBuffer.push() [DECOUPLING #1]
-  ↓
-RingBuffer.pull() (SRT egress task)
-  → TsMuxer (inline, ~0.6µs/pkt, no codec conversion)
-  → TsChunkRing.push() [DECOUPLING #2]
-  ↓
-TsChunkRing.pull() (per SRT connection)
-  → MemoryQueue.write() [DECOUPLING #3]
-  ↓
-OS thread → srt_send()
+```mermaid
+graph TD
+    A["UDP socket<br/>(SRT ingest)"]
+    B["TsDemuxer<br/>(inline)"]
+    C["MediaPacket<br/>(Raw)"]
+    D["source RingBuffer<br/>[DECOUPLING #1]"]
+    E["RingBuffer.pull<br/>(SRT egress)"]
+    F["TsMuxer<br/>(~0.6µs/pkt)"]
+    G["TsChunkRing<br/>[DECOUPLING #2]"]
+    H["MemoryQueue<br/>[DECOUPLING #3]"]
+    I["OS thread"]
+    J["srt_send"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    
+    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style D fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style G fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style H fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style I fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style J fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
 ```
 
 **Run-to-completion potential: 🔴 Low**
@@ -367,29 +398,29 @@ OS thread → srt_send()
 ### Path 5: RTMP ingest → RTMP egress (720p preset, transcoded)
 
 **Current flow:**
-```
-RTMP ingest → FLV demux → source RingBuffer.push()
-  ↓
-Transcoder feeder task (video:720p)
-  → RingBuffer.pull_burst(32)
-  → video_for_ts() [strip FLV or pass Raw]
-  → TsMuxer [inline, mux to MPEG-TS]
-  → MemoryQueue.write_batch() [DECOUPLING #2a]
-  ↓
-OS thread (external FFmpeg subprocess)
-  stdin ← MPEG-TS from MemoryQueue
-  → [scale=1280:720, libx264]
-  → stdout MPEG-TS
-  ↓
-Transcoder stdout reader task
-  → TsDemuxer (parse FFmpeg output)
-  → MediaPacket(Raw, H.264 720p)
-  → output_ring.push() [DECOUPLING #3]
-  ↓
-RTMP egress task (reads from output_ring)
-  → video_for_rtmp() [AVCC wrap]
-  → RTMP mux (inline)
-  → TCP socket.write()
+```mermaid
+graph TD
+    A["RTMP ingest"]
+    B["FLV demux"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    D["Transcoder feeder<br/>video:720p"]
+    E["RingBuffer.pull_burst"]
+    F["video_for_ts + TsMuxer"]
+    G["MemoryQueue<br/>[DECOUPLING #2a]"]
+    H["FFmpeg subprocess<br/>scale + libx264"]
+    I["Transcoder<br/>stdout reader"]
+    J["TsDemuxer<br/>output_ring<br/>[DECOUPLING #3]"]
+    K["RTMP egress<br/>output_ring.pull"]
+    L["video_for_rtmp<br/>RTMP mux"]
+    M["TCP socket.write"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style H fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style J fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style M fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
 ```
 
 **Decoupling points:**
@@ -420,24 +451,33 @@ RTMP egress task (reads from output_ring)
 ### Path 6: SRT ingest → SRT egress (720p preset, transcoded)
 
 **Current flow:**
-```
-SRT ingest → TsDemuxer (inline) → source RingBuffer
-  ↓
-Transcoder feeder (video:720p, shared)
-  → RingBuffer.pull_burst(32)
-  → TsMuxer [Raw → MPEG-TS, inject SPS/PPS]
-  → MemoryQueue.write_batch() [DECOUPLING #2a]
-  ↓
-FFmpeg subprocess [decode, scale, re-encode]
-  ↓
-Transcoder stdout reader
-  → TsDemuxer → output_ring.push() [DECOUPLING #3]
-  ↓
-SRT egress task
-  → TsMuxer (output_ring → TsChunkRing)
-  → TsChunkRing.pull() → MemoryQueue.write() [DECOUPLING #3b]
-  ↓
-OS thread → srt_send()
+```mermaid
+graph TD
+    A["SRT ingest"]
+    B["TsDemuxer<br/>(inline)"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    D["Transcoder feeder<br/>video:720p"]
+    E["RingBuffer.pull_burst"]
+    F["TsMuxer<br/>Raw→MPEG-TS"]
+    G["MemoryQueue<br/>[DECOUPLING #2a]"]
+    H["FFmpeg subprocess<br/>decode/scale/encode"]
+    I["Transcoder<br/>stdout reader"]
+    J["TsDemuxer<br/>output_ring<br/>[DECOUPLING #3]"]
+    K["SRT egress<br/>output_ring.pull"]
+    L["TsMuxer<br/>TsChunkRing"]
+    M["MemoryQueue<br/>[DECOUPLING #3b]"]
+    N["OS thread"]
+    O["srt_send"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M --> N --> O
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style H fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style J fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style M fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style N fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style O fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
 ```
 
 **Run-to-completion potential: 🔴 Very Low**
@@ -449,21 +489,31 @@ OS thread → srt_send()
 ### Path 7: RTMP ingest → HLS egress (source, passthrough)
 
 **Current flow:**
-```
-RTMP ingest → FLV demux → source RingBuffer.push()
-  ↓
-HLS segmenter task (inline, per pipeline)
-  → RingBuffer.pull_burst(32)
-  → video_for_ts_into() [strip FLV hdr, reuse scratch buffer]
-  → TsMuxer (inline, ~0.6µs/pkt)
-  → accumulate TS bytes in segment buffer
-  → on keyframe + min_duration:
-      HLS_store.push_segment() [DECOUPLING #2]
-      └─ Mutex<VecDeque<HlsSegment>>
-  ↓
-Axum GET handler (HTTP request)
-  → HLS_store.read() [fetch latest segments]
-  → send m3u8 + .ts chunks
+```mermaid
+graph TD
+    A["RTMP ingest"]
+    B["FLV demux"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    D["HLS segmenter<br/>(inline)"]
+    E["RingBuffer.pull_burst"]
+    F["video_for_ts_into"]
+    G["TsMuxer<br/>~0.6µs/pkt"]
+    H["Accumulate<br/>TS bytes"]
+    I["Keyframe +<br/>min_duration?"]
+    J["HLS_store<br/>Mutex<br/>[DECOUPLING #2]"]
+    K["Axum GET handler<br/>HTTP request"]
+    L["HLS_store.read<br/>latest segments"]
+    M["Send m3u8 + .ts<br/>over HTTP"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I
+    I -->|YES| J
+    I -->|NO| H
+    K --> L --> M
+    J --> L
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style J fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style M fill:#a5d6a7,stroke:#388e3c,stroke-width:2px,color:#000
 ```
 
 **Run-to-completion potential: 🟢 High**
@@ -487,18 +537,27 @@ Axum GET handler (HTTP request)
 ### Path 8: RTMP ingest → Recording (source, passthrough)
 
 **Current flow:**
-```
-RTMP ingest → FLV demux → source RingBuffer.push()
-  ↓
-Recording feeder task (per active recording)
-  → RingBuffer.pull_burst(32)
-  → video_for_ts_into() [strip FLV hdr]
-  → MemoryQueue.write_batch() [DECOUPLING #2]
-  ↓
-OS thread (TS file writer)
-  → MemoryQueue.read() [blocked on Condvar while empty]
-  → fwrite() to disk (blocking I/O)
-  └─ data.db (raw MPEG-TS)
+```mermaid
+graph TD
+    A["RTMP ingest"]
+    B["FLV demux"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    D["Recording feeder<br/>(per recording)"]
+    E["RingBuffer.pull_burst"]
+    F["video_for_ts_into"]
+    G["MemoryQueue<br/>[DECOUPLING #2]"]
+    H["OS thread<br/>writer"]
+    I["MemoryQueue.read<br/>Condvar wait"]
+    J["fwrite<br/>to disk"]
+    K["data.db<br/>MPEG-TS"]
+    
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style H fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style J fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style K fill:#ffcc80,stroke:#ef6c00,stroke-width:2px,color:#333
 ```
 
 **Run-to-completion potential: 🔴 Low**
@@ -522,31 +581,51 @@ OS thread (TS file writer)
 ### Path 9: SRT ingest → H.265 RTMP egress with H.265→H.264 conversion
 
 **Current flow:**
-```
-SRT ingest (H.265) → TsDemuxer → source RingBuffer(H.265)
-  ↓
-┌─ SRT-src (passthrough): 
-│   → TsMuxer → MPEG-TS (H.265 native) → SRT socket
-│
-├─ RTMP-src (needs conversion):
-│   → TsMuxer → MPEG-TS (H.265)
-│   → MemoryQueue.write() [DECOUPLING #2a]
-│   ↓
-│   OS thread (hevc_to_h264:from:source)
-│   → [libavcodec H.265→H.264]
-│   → TsDemuxer → h264_src_ring.push() [DECOUPLING #2b]
-│   ↓
-│   RTMP egress task
-│   → video_for_rtmp() → RTMP socket
-│
-└─ 720p-preset (all outputs share one transcoder):
-    → FFmpeg subprocess (scale + libx265)
-    → output_ring
-    ├─ SRT-720p: TsMuxer → TsChunkRing → MemoryQueue → srt_send()
-    └─ RTMP-720p (needs conversion):
-        → TsMuxer → MemoryQueue (RTMP-specific)
-        → OS thread (hevc_to_h264:from:720p)
-        → h264_720p_ring → RTMP socket
+```mermaid
+graph TD
+    A["SRT ingest<br/>(H.265)"]
+    B["TsDemuxer"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    
+    D["SRT-src<br/>passthrough"]
+    E["TsMuxer<br/>H.265 native"]
+    F["SRT socket"]
+    
+    G["RTMP-src<br/>needs conversion"]
+    H["TsMuxer<br/>H.265 MPEG-TS"]
+    I["MemoryQueue<br/>[DECOUPLING #2a]"]
+    J["OS thread<br/>hevc_to_h264"]
+    K["libavcodec"]
+    L["TsDemuxer<br/>h264_src_ring<br/>[DECOUPLING #2b]"]
+    M["RTMP egress"]
+    N["RTMP socket"]
+    
+    O["720p-preset<br/>transcoder"]
+    P["FFmpeg subprocess<br/>scale + libx265"]
+    Q["output_ring"]
+    R["SRT-720p<br/>passthrough"]
+    S["SRT socket"]
+    T["RTMP-720p<br/>needs conversion"]
+    U["MemoryQueue<br/>RTMP-specific"]
+    V["OS thread<br/>hevc_to_h264"]
+    W["h264_720p_ring"]
+    X["RTMP socket"]
+    
+    A --> B --> C
+    C --> D --> E --> F
+    C --> G --> H --> I --> J --> K --> L --> M --> N
+    C --> O --> P --> Q
+    Q --> R --> S
+    Q --> T --> U --> V --> W --> X
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style I fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style J fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style L fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style P fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style Q fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style U fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style V fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
 ```
 
 **Decoupling potential: 🔴 Very Low**
@@ -570,20 +649,40 @@ SRT ingest (H.265) → TsDemuxer → source RingBuffer(H.265)
 ### Path 10: SRT ingest with 2 audio tracks → 720p preset + audio track selection
 
 **Current flow:**
-```
-SRT ingest (H.264 + 2 AAC tracks) → TsDemuxer → source RingBuffer
-  ↓
-video:720p transcoder (shared, ONE subprocess)
-  → output_ring(H.264 + 2 AAC track0 + track1)
-  ├─ RTMP-720p encoding="720p+atrack:0" (select track 0 only)
-  │   → audio:atrack:0:from:720p (tokio task, packet filter)
-  │   → audio0_ring(H.264 + track0)
-  │   → video_for_rtmp() → RTMP socket
-  │
-  └─ SRT-720p encoding="720p+atrack:0,1" (keep both)
-      → audio:atrack:0,1:from:720p (tokio task)
-      → audio01_ring(H.264 + track0 + track1)
-      → TsMuxer → TsChunkRing → MemoryQueue → srt_send()
+```mermaid
+graph TD
+    A["SRT ingest<br/>H.264 + 2 AAC"]
+    B["TsDemuxer"]
+    C["source RingBuffer<br/>[DECOUPLING #1]"]
+    D["video:720p<br/>transcoder<br/>ONE subprocess"]
+    E["output_ring<br/>H.264 + AAC0 + AAC1<br/>[DECOUPLING #2]"]
+    
+    F["RTMP-720p<br/>encoding:720p<br/>atrack:0"]
+    G["audio:atrack:0<br/>tokio filter"]
+    H["audio0_ring<br/>[DECOUPLING #3a]"]
+    I["video_for_rtmp"]
+    J["RTMP socket"]
+    
+    K["SRT-720p<br/>encoding:720p<br/>atrack:0,1"]
+    L["audio:atrack:0,1<br/>tokio filter"]
+    M["audio01_ring<br/>[DECOUPLING #3b]"]
+    N["TsMuxer"]
+    O["TsChunkRing"]
+    P["MemoryQueue"]
+    Q["srt_send"]
+    
+    A --> B --> C --> D --> E
+    E --> F --> G --> H --> I --> J
+    E --> K --> L --> M --> N --> O --> P --> Q
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style E fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style D fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style H fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style M fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style O fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style P fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style Q fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
 ```
 
 **Decoupling points:**
@@ -617,174 +716,119 @@ But this requires knowing output count ahead of time. Current design is general.
 
 ### Path 1 & 4: RTMP/SRT Passthrough (No Transcode)
 
-```
-┌────────────────┐    ┌─────────────────┐
-│ RTMP/SRT       │───▶│ SOURCE RING     │
-│ INGEST         │    │ (multi-consumer)│
-│ (demux)        │    └────────┬────────┘
-└────────────────┘             │
-                    ┌──────────┼──────────┬─────────────┐
-                    │          │          │             │
-                    ▼          ▼          ▼             ▼
-          ┌────────────────┐ ┌─────────────────┐ ┌──────────────┐
-          │ RTMP EGRESS    │ │ SRT EGRESS      │ │ HLS SEGMENTER│
-          ├────────────────┤ ├─────────────────┤ ├──────────────┤
-          │ FLV mux        │ │ TS mux          │ │ TsMuxer      │
-          │ Payload clone  │ │ TsChunkRing     │ │ Accum buf    │
-          └────────┬───────┘ │ MemoryQueue     │ │ Mutex        │
-                   │         │ srt_send()      │ └──────┬───────┘
-                   ▼         └────────┬────────┘        │
-              ┌─────────┐             ▼                 ▼
-              │ TCP     │        ┌──────────┐      ┌──────────┐
-              │ SOCKET  │        │ SRT      │      │ HTTP     │
-              │ (egress)│        │ SOCKET   │      │ CLIENTS  │
-              └─────────┘        │ (egress) │      └──────────┘
-                                 └──────────┘
-
-                    ┌────────────────────┐
-                    │ RECORDING          │
-                    ├────────────────────┤
-                    │ MemoryQueue        │
-                    │ fwrite()           │
-                    └────────┬───────────┘
-                             ▼
-                        ┌─────────────┐
-                        │ DISK FILE   │
-                        └─────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
-  • Ring necessary for multi-consumer isolation
-  • Each consumer has independent buffering
-  • Cheap operations (FLV/TS mux): ~0.6-1µs per packet
-  • Socket writes decouple naturally (network speed)
+```mermaid
+graph TD
+    A["RTMP/SRT INGEST<br/>(demux)"]
+    B["SOURCE RING<br/>(multi-consumer)"]
+    
+    C["RTMP EGRESS<br/>FLV mux<br/>Payload clone"]
+    D["TCP SOCKET<br/>(egress)"]
+    
+    E["SRT EGRESS<br/>TS mux<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
+    F["SRT SOCKET<br/>(egress)"]
+    
+    G["HLS SEGMENTER<br/>TsMuxer<br/>Accum buf<br/>Mutex"]
+    H["HTTP CLIENTS"]
+    
+    I["RECORDING<br/>MemoryQueue<br/>fwrite"]
+    J["DISK FILE"]
+    
+    A --> B
+    B --> C --> D
+    B --> E --> F
+    B --> G --> H
+    B --> I --> J
+    
+    style B fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
+    style C fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style E fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style G fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style I fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style D fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
+    style F fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style H fill:#a5d6a7,stroke:#388e3c,stroke-width:2px,color:#000
+    style J fill:#ffcc80,stroke:#ef6c00,stroke-width:2px,color:#333
 ```
 
 ### Path 5 & 6: Transcoded (720p, External FFmpeg)
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ SOURCE RING (also feeds HLS, Recording)                  │
-└────────────┬─────────────────────────────────────────────┘
-             │
-             ▼
-       ┌──────────────────────┐
-       │ TRANSCODER FEEDER    │
-       │ (pull_burst)         │
-       └──────────┬───────────┘
-                  │
-                  ▼
-       ┌──────────────────────┐
-       │ TS MUXER             │
-       │ MemoryQueue          │
-       └──────────┬───────────┘
-                  │
-                  ▼
-       ┌──────────────────────┐
-       │ FFMPEG SUBPROCESS    │
-       │ scale=1280:720       │
-       │ libx264/libx265      │
-       └──────────┬───────────┘
-                  │
-                  ▼
-       ┌──────────────────────┐
-       │ FFMPEG STDOUT        │
-       │ TS DEMUXER           │
-       └──────────┬───────────┘
-                  │
-                  ▼
-      ┌─────────────────────────────┐
-      │ OUTPUT RING (4096 slots)    │
-      │ (multi-consumer SRT+RTMP)   │
-      └──────┬──────────────┬───────┘
-             │              │
-             ▼              ▼
-      ┌─────────────┐  ┌──────────────┐
-      │ SRT EGRESS  │  │ RTMP EGRESS  │
-      ├─────────────┤  ├──────────────┤
-      │ TS MUXER    │  │ AVCC wrap    │
-      │ TsChunkRing │  │ FLV mux      │
-      │ MemoryQueue │  └──────┬───────┘
-      │ srt_send()  │         │
-      │ (OS thread) │         ▼
-      └──────┬──────┘  ┌──────────────┐
-             │         │ RTMP SOCKET  │
-             ▼         │ (egress)     │
-      ┌──────────────┐ └──────────────┘
-      │ SRT SOCKET   │
-      │ (egress)     │
-      └──────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🔴 Very Low
-  • FFmpeg decode: ~100-500ms per second of video
-  • FFmpeg encode: ~500ms-2s per second of video
-  • MUST be off async runtime (blocks everything else)
-  • Output ring needed for multiple egress (SRT + RTMP)
-  • MemoryQueues: input (feeder↔FFmpeg) + output (egress↔srt_send)
+```mermaid
+graph TD
+    A["SOURCE RING<br/>(feeds HLS, Recording)"]
+    B["TRANSCODER FEEDER<br/>pull_burst"]
+    C["TS MUXER<br/>MemoryQueue"]
+    D["FFMPEG SUBPROCESS<br/>scale=1280:720<br/>libx264/libx265"]
+    E["FFMPEG STDOUT<br/>TS DEMUXER"]
+    F["OUTPUT RING<br/>4096 slots<br/>multi-consumer"]
+    
+    G["SRT EGRESS<br/>TS MUXER<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
+    H["SRT SOCKET"]
+    
+    I["RTMP EGRESS<br/>AVCC wrap<br/>FLV mux"]
+    J["RTMP SOCKET"]
+    
+    A --> B --> C --> D --> E --> F
+    F --> G --> H
+    F --> I --> J
+    
+    style A fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
+    style C fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style D fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style F fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style G fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style I fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style H fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style J fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
 ```
 
 ### Path 3 & 9: SRT Ingest with H.265→H.264 Conversion
 
-```
-┌─────────────────────┐
-│ SRT INGEST (H.265)  │
-│ (TS format)         │
-└──────────┬──────────┘
-           │
-           ▼
-       ┌────────────┐
-       │ TS DEMUXER │
-       └──────┬─────┘
-              │
-              ▼
-    ┌──────────────────────┐
-    │ SOURCE RING (H.265)  │
-    └────┬──────────┬──────┘
-         │          │
-         │          └──────────────────────────────┐
-         │                                         │
-         ▼                                         ▼
-    ┌──────────────┐                  ┌──────────────────────┐
-    │ SRT-src PATH │                  │ 720p TRANSCODER PATH │
-    │ (passthrough)│                  │ (FFmpeg subprocess)  │
-    ├──────────────┤                  └──────────┬───────────┘
-    │ TS MUXER     │                             │
-    │ TS (H.265)   │                  ┌──────────▼──────────┐
-    └──────┬───────┘                  │ OUTPUT RING (H.264) │
-           │                          │ + AAC tracks        │
-           ▼                          └────┬──────┬─────────┘
-    ┌──────────────┐                      │      │
-    │ SRT SOCKET   │         ┌────────────┘      └─────────┐
-    │ (H.265 out)  │         │                              │
-    └──────────────┘         ▼                              ▼
-                      ┌──────────────────┐    ┌──────────────────┐
-         ┌──────────┐ │ SRT-720p (H.265) │    │ RTMP-720p PATH   │
-         │ RTMP-src │ │ TS MUXER         │    │ (H.265→H.264 cvt)│
-         │ PATH     │ └────────┬─────────┘    ├──────────────────┤
-         │(conversion) │        ▼              │ MemoryQueue      │
-         ├──────────┤ │  SRT SOCKET (H.265)   │ hevc_to_h264      │
-         │TS MUXER  │ │                        │ (libavcodec)     │
-         │→TS H.265 │ └────────────────────────│ (OS thread)      │
-         │MemoryQ   │                          │ h264_ring        │
-         │ hevc_to  │                          └────────┬─────────┘
-         │ h264 cdc │                                   │
-         │(libavc)  │                                   ▼
-         │(OS thrd) │                          ┌──────────────────┐
-         │h264_ring │                          │ RTMP SOCKET      │
-         └────┬─────┘                          │ (H.264 out)      │
-              │                                └──────────────────┘
-              ▼
-         ┌────────────┐
-         │ RTMP SOCKET│
-         │ (H.264 out)│
-         └────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🔴 Very Low
-  • Three sources of decoupling:
-    1. SOURCE RING (multi-egress isolation)
-    2. HEVC_TO_H264 MemoryQueue (async↔blocking codec work)
-    3. FFmpeg transcoder (async↔blocking subprocess)
-  • H.265→H.264 conversion MANDATORY for RTMP (protocol limitation)
-  • Two independent conversion threads if both passthrough+preset RTMP
+```mermaid
+graph TD
+    A["SRT INGEST<br/>(H.265/TS)"]
+    B["TS DEMUXER"]
+    C["SOURCE RING<br/>(H.265)"]
+    
+    D["SRT-src PATH<br/>passthrough"]
+    E["TS MUXER<br/>H.265"]
+    F["SRT SOCKET<br/>(H.265 out)"]
+    
+    G["RTMP-src PATH<br/>needs conversion"]
+    H["TS MUXER"]
+    I["MemoryQueue"]
+    J["OS thread<br/>hevc_to_h264<br/>libavcodec"]
+    K["h264_src_ring"]
+    L["RTMP EGRESS"]
+    M["RTMP SOCKET<br/>(H.264 out)"]
+    
+    N["720p TRANSCODER PATH<br/>FFmpeg subprocess"]
+    O["OUTPUT RING<br/>H.264 + AAC"]
+    
+    P["SRT-720p<br/>passthrough H.265"]
+    Q["TS MUXER"]
+    R["SRT SOCKET<br/>(H.265 out)"]
+    
+    S["RTMP-720p<br/>H.265→H.264"]
+    T["MemoryQueue<br/>RTMP-specific"]
+    U["OS thread<br/>hevc_to_h264"]
+    V["h264_720p_ring"]
+    W["RTMP SOCKET<br/>(H.264 out)"]
+    
+    A --> B --> C
+    C --> D --> E --> F
+    C --> G --> H --> I --> J --> K --> L --> M
+    C --> N --> O
+    O --> P --> Q --> R
+    O --> S --> T --> U --> V --> W
+    
+    style C fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
+    style I fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style J fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style K fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style O fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style T fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style U fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style V fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
 ```
 
 ### Path 7: HLS Segmentation (Best Run-to-Completion)
@@ -899,67 +943,37 @@ RUN-TO-COMPLETION POTENTIAL: 🔴 Low
 
 ### Path 10: Multi-Audio Track Selection
 
-```
-┌────────────────────────┐
-│ SOURCE RING            │
-└─────────────┬──────────┘
-              │
-              ▼
-   ┌──────────────────────────┐
-   │ video:720p TRANSCODER    │
-   │ (shared FFmpeg subprocess)
-   └────────────┬─────────────┘
-                │
-                ▼
-   ┌──────────────────────────────┐
-   │ OUTPUT RING (H.264 + AAC)    │
-   │ track0, track1               │
-   └──────┬────────────────┬──────┘
-          │                │
-          ▼                ▼
-  ┌──────────────────┐  ┌──────────────────┐
-  │ audio:ATRACK:0   │  │ audio:ATRACK:0,1 │
-  │ (packet filter)  │  │ (packet filter)  │
-  │ select track 0   │  │ keep both tracks │
-  └────────┬─────────┘  └────────┬─────────┘
-           │                     │
-           ▼                     ▼
-  ┌──────────────────┐  ┌──────────────────┐
-  │ audio0_ring      │  │ audio01_ring     │
-  │ (track selection)│  │ (track selection)│
-  └────────┬─────────┘  └────────┬─────────┘
-           │                     │
-           ▼                     ▼
-  ┌──────────────────┐  ┌──────────────────┐
-  │ RTMP EGRESS      │  │ SRT EGRESS       │
-  │ (AVCC wrap)      │  │ (TS MUXER)       │
-  │ FLV mux          │  │ (TsChunkRing)    │
-  └────────┬─────────┘  │ (MemoryQueue)    │
-           │            │ (srt_send)       │
-           ▼            │ (OS thread)      │
-  ┌──────────────────┐  └────────┬─────────┘
-  │ RTMP SOCKET      │           │
-  │ (egress)         │           ▼
-  └──────────────────┘  ┌──────────────────┐
-                        │ SRT SOCKET       │
-                        │ (egress)         │
-                        └──────────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
-  • Audio routing is CHEAP (packet filter, no codec work)
-  • Routing tasks run on Tokio (not blocking)
-  • Could inline if only ONE output per audio config
-    (currently general: supports N outputs per config)
-  • Each audio config creates separate ring (by design)
-  • Trade-off: generality vs. latency
-  
-OPTIMIZATION OPPORTUNITY:
-  If single-output-per-config is common:
-    output_ring → [inline filter: atrack:0] → RTMP mux
-                → [inline filter: atrack:0,1] → SRT mux
-  
-  But requires statically knowing output count at config time.
-  Current approach is more flexible for multi-output scenarios.
+```mermaid
+graph TD
+    A["SOURCE RING"]
+    B["video:720p<br/>TRANSCODER<br/>FFmpeg subprocess"]
+    C["OUTPUT RING<br/>H.264 + AAC<br/>track0, track1"]
+    
+    D["audio:ATRACK:0<br/>packet filter<br/>select track 0"]
+    E["audio0_ring<br/>track selection"]
+    F["RTMP EGRESS<br/>AVCC wrap<br/>FLV mux"]
+    G["RTMP SOCKET"]
+    
+    H["audio:ATRACK:0,1<br/>packet filter<br/>keep both"]
+    I["audio01_ring<br/>track selection"]
+    J["SRT EGRESS<br/>TS MUXER<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
+    K["SRT SOCKET"]
+    
+    A --> B --> C
+    C --> D --> E --> F --> G
+    C --> H --> I --> J --> K
+    
+    style A fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style B fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style C fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style D fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style E fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style F fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style G fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
+    style H fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style I fill:#b39ddb,stroke:#512da8,stroke-width:2px,color:#fff
+    style J fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style K fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
 ```
 
 ---
