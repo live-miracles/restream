@@ -129,17 +129,20 @@ Token costs grow with context length. To keep sessions efficient:
 Current session model is the ceiling — never spawn a subagent at a higher tier.
 Pick the lowest model that can reliably complete the work:
 
+Model tiers (lowest to highest): `haiku` → `sonnet` → `opus`
+
 | Task type | Model |
 |-----------|-------|
 | Search, grep, file lookup, single-file read | `haiku` |
 | Code explanation, simple Q&A, rename/format | `haiku` |
 | Bug fix, small feature, test writing | `sonnet` |
 | Multi-file refactor, architecture, complex analysis | `sonnet` |
+| Deep reasoning, novel design, high-stakes decisions | `opus` |
 
-Apply this when spawning Agent subagents — set `model: "haiku"` for Explore/search agents
-and read-only research; use `model: "sonnet"` for agents that write or edit code.
-For the main session task itself: if it fits the haiku tier, tell the user
-"This is a simple task — you could switch to Haiku (`/model haiku`) for lower cost."
+Apply this when spawning Agent subagents — pick the lowest tier sufficient for the work,
+never exceeding the current session model. For the main session task itself: if it fits
+a lower tier, tell the user (e.g. "This is a simple task — you could switch to Haiku
+(`/model haiku`) for lower cost.").
 
 ## Key References
 
