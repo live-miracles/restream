@@ -312,7 +312,7 @@ export function buildFfmpegOutputArgs({
         if (remap) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         } else if (atracks) {
-            args.push('-c:a', 'copy');
+            args.push('-c:a', 'aac');
         } else if (downmixTrack !== null) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         }
@@ -347,7 +347,7 @@ export function buildFfmpegOutputArgs({
             for (const track of tracks) {
                 args.push('-map', `0:a:${track}`);
             }
-            args.push('-c:v', 'copy', '-c:a', 'copy');
+            args.push('-c:v', 'copy', '-c:a', 'aac');
         } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
             const track = parseDownmixEncoding(normalizedEncoding)!;
             args.push(

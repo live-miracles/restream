@@ -102,7 +102,7 @@ test('buildFfmpegOutputArgs maps selected tracks for atrack encoding', () => {
     });
     const joined = args.join(' ');
     assert.ok(joined.includes('-map 0:v -map 0:a:0 -map 0:a:1 -map 0:a:3'), joined);
-    assert.ok(joined.includes('-c:v copy -c:a copy'), joined);
+    assert.ok(joined.includes('-c:v copy -c:a aac'), joined);
     assert.ok(joined.includes('-f mpegts'), joined);
 });
 
@@ -220,12 +220,10 @@ test('buildFfmpegOutputArgs: video preset + atrack routing (SRT output)', () => 
     assert.ok(joined.includes('-map 0:v -map 0:a:0 -map 0:a:1'), joined);
     // Video is re-encoded (contains libx264)
     assert.ok(joined.includes('libx264'), joined);
-    // Audio tracks are copied (not re-encoded)
-    assert.ok(joined.includes('-c:a copy'), joined);
+    // Audio tracks are re-encoded to AAC for platform compatibility
+    assert.ok(joined.includes('-c:a aac'), joined);
     // SRT mux format
     assert.ok(joined.includes('-f mpegts'), joined);
-    // No accidental -c:a aac from video preset leaking into output
-    assert.ok(!joined.includes('-c:a aac'), joined);
 });
 
 test('buildFfmpegOutputArgs: source passthrough + downmix (RTMP output)', () => {
@@ -266,8 +264,7 @@ test('buildFfmpegOutputArgs: 1080p + remap audio channel (RTMP output)', () => {
     assert.ok(joined.includes('-f flv'), joined);
 });
 
-test('buildFfmpegOutputArgs: pure audio-only encoding unchanged (backward compat)', () => {
-    // atrack without video prefix should still produce same output as before
+test('buildFfmpegOutputArgs: pure audio-only atrack re-encodes audio', () => {
     const args = buildFfmpegOutputArgs({
         inputUrl: 'rtmp://localhost:1935/live/test',
         outputUrl: 'srt://example.com:10080',
@@ -275,7 +272,7 @@ test('buildFfmpegOutputArgs: pure audio-only encoding unchanged (backward compat
     });
     const joined = args.join(' ');
     assert.ok(joined.includes('-map 0:v -map 0:a:0 -map 0:a:1 -map 0:a:3'), joined);
-    assert.ok(joined.includes('-c:v copy -c:a copy'), joined);
+    assert.ok(joined.includes('-c:v copy -c:a aac'), joined);
     assert.ok(joined.includes('-f mpegts'), joined);
 });
 
