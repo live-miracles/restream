@@ -167,9 +167,7 @@ impl SrtPipelineIngestConfig {
                     .passphrase
                     .clone()
                     .ok_or_else(|| "missing per-pipeline SRT passphrase".to_string())?,
-                pbkeylen: normalize_srt_pbkeylen(
-                    self.pbkeylen.unwrap_or(DEFAULT_SRT_PBKEYLEN),
-                )?,
+                pbkeylen: normalize_srt_pbkeylen(self.pbkeylen.unwrap_or(DEFAULT_SRT_PBKEYLEN))?,
             }),
         }
     }

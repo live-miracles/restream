@@ -191,7 +191,9 @@ async fn ensure_column_exists(
 ) -> Result<(), sqlx::Error> {
     let pragma = format!("PRAGMA table_info({table})");
     let rows = sqlx::query(&pragma).fetch_all(pool).await?;
-    let exists = rows.iter().any(|row| row.get::<String, _>("name") == column);
+    let exists = rows
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column);
     if exists {
         return Ok(());
     }

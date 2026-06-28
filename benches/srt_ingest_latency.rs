@@ -131,7 +131,12 @@ fn make_srt_pair(crypto: CryptoMode) -> (SRTSOCKET, SRTSOCKET) {
         "bind: {}",
         srt_error()
     );
-    assert_eq!(unsafe { srt_listen(listener, 1) }, 0, "listen: {}", srt_error());
+    assert_eq!(
+        unsafe { srt_listen(listener, 1) },
+        0,
+        "listen: {}",
+        srt_error()
+    );
 
     let actual_port = os_port(listener);
 
@@ -162,9 +167,7 @@ fn bench_ingest(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
     let mut group = c.benchmark_group(format!("srt_ingest/{}", crypto.label));
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(30);
-    group.throughput(Throughput::Bytes(
-        (payload.len() * PACKETS_PER_ITER) as u64,
-    ));
+    group.throughput(Throughput::Bytes((payload.len() * PACKETS_PER_ITER) as u64));
 
     group.bench_function("recv_path", |b| {
         b.iter_custom(|iters| {
@@ -211,9 +214,7 @@ fn bench_egress(c: &mut Criterion, payload: &[u8], crypto: CryptoMode) {
     let mut group = c.benchmark_group(format!("srt_egress/{}", crypto.label));
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(30);
-    group.throughput(Throughput::Bytes(
-        (payload.len() * PACKETS_PER_ITER) as u64,
-    ));
+    group.throughput(Throughput::Bytes((payload.len() * PACKETS_PER_ITER) as u64));
 
     group.bench_function("send_path", |b| {
         b.iter_custom(|iters| {

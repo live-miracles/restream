@@ -183,7 +183,6 @@ impl HarnessSrtCrypto {
             (Some(_), None) => "encrypted".to_string(),
         }
     }
-
 }
 
 fn harness_srt_crypto_from_env() -> HarnessSrtCrypto {
@@ -281,13 +280,6 @@ impl TestPorts {
         }
     }
 
-    fn from_env_or(http: u16, rtmp: u16, srt: u16) -> Self {
-        Self {
-            http: env_u16("RESTREAM_HTTP", http),
-            rtmp: env_u16("RESTREAM_RTMP", rtmp),
-            srt: env_u16("RESTREAM_SRT", srt),
-        }
-    }
 }
 
 async fn start_restream_child(
@@ -315,12 +307,18 @@ async fn start_restream_child_opts(
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    let log_dir = log_path
+        .parent()
+        .map(|parent| parent.join("logs"))
+        .unwrap_or_else(|| PathBuf::from("logs"));
+    std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
     let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
     let mut child = Command::new(bin)
         .env("RESTREAM_HTTP_PORT", ports.http.to_string())
         .env("RESTREAM_RTMP_PORT", ports.rtmp.to_string())
         .env("RESTREAM_SRT_PORT", ports.srt.to_string())
+        .env("RESTREAM_LOG_DIR", &log_dir)
         .env("RESTREAM_DB_PATH", db_path.to_string_lossy().to_string())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr_log))
@@ -1749,16 +1747,35 @@ async fn srt_crypto_matrix() -> Result<Value, String> {
         let mut variant_env = env.clone();
         variant_env.resource.srt_crypto = crypto.clone();
         variant_env.resource.work_dir = parent_work_dir.join(&crypto.label);
-        variant_env.resource.summary_json = variant_env.resource.work_dir.join("branch-matrix-results.json");
-        variant_env.resource.summary_csv = variant_env.resource.work_dir.join("branch-matrix-results.csv");
-        variant_env.resource.samples_jsonl = variant_env.resource.work_dir.join("branch-matrix-samples.jsonl");
+        variant_env.resource.summary_json = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-results.json");
+        variant_env.resource.summary_csv = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-results.csv");
+        variant_env.resource.samples_jsonl = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-samples.jsonl");
         variant_env.resource.restream_log = variant_env.resource.work_dir.join("restream.log");
         variant_env.resource.mediamtx_log = variant_env.resource.work_dir.join("mediamtx.log");
         variant_env.resource.mediamtx_config = variant_env.resource.work_dir.join("mediamtx.yml");
-        variant_env.resource.restream_db_path = variant_env.resource.work_dir.join("branch-matrix.db");
-        variant_env.summary_json = variant_env.resource.work_dir.join("branch-matrix-results.json");
-        variant_env.summary_csv = variant_env.resource.work_dir.join("branch-matrix-results.csv");
-        variant_env.summary_md = variant_env.resource.work_dir.join("branch-matrix-summary.md");
+        variant_env.resource.restream_db_path =
+            variant_env.resource.work_dir.join("branch-matrix.db");
+        variant_env.summary_json = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-results.json");
+        variant_env.summary_csv = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-results.csv");
+        variant_env.summary_md = variant_env
+            .resource
+            .work_dir
+            .join("branch-matrix-summary.md");
         runs.push(run_branch_matrix_variant(&variant_env).await?);
     }
 
@@ -3014,9 +3031,12 @@ fn spawn_resource_publisher_with_bitrate(
         ));
     } else {
         cmd.args(["-f", "mpegts"]);
-        cmd.arg(append_srt_crypto(format!(
-            "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
-        ), srt_crypto));
+        cmd.arg(append_srt_crypto(
+            format!(
+                "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
+            ),
+            srt_crypto,
+        ));
     }
     let log_path = work_dir.join(format!("publisher-{stream_key}.log"));
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
@@ -3556,7 +3576,9 @@ fn write_branch_matrix_markdown(
     let mut text = String::new();
     text.push_str("# Branch Matrix\n\n");
     text.push_str(&format!("- Backend: `{backend}`\n"));
-    text.push_str(&format!("- SRT ingest transport: `{srt_ingest_transport}`\n"));
+    text.push_str(&format!(
+        "- SRT ingest transport: `{srt_ingest_transport}`\n"
+    ));
     if let Some(row) = selected.first() {
         text.push_str(&format!("- Lifecycle: `{}`\n", row.lifecycle));
         text.push_str(&format!("- Fanout per group: `{}`\n", row.label));
@@ -3905,38 +3927,17 @@ fn ensure_ramp_artifacts(env: &RampEnv) -> Result<(), String> {
 }
 
 async fn start_ramp_restream(env: &RampEnv) -> Result<Child, String> {
-    if !env.restream_bin.exists() {
-        return Err(format!(
-            "restream binary not found at {}",
-            env.restream_bin.display()
-        ));
-    }
-    cleanup_ramp_db(&env.restream_db_path);
-    let log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
-    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
-    let mut child = Command::new(&env.restream_bin)
-        .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
-        .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
-        .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
-        .env(
-            "RESTREAM_DB_PATH",
-            env.restream_db_path.to_string_lossy().to_string(),
-        )
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr_log))
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if let Err(err) = wait_for_http_ok(
-        &format!("http://127.0.0.1:{}/healthz", env.restream_http),
-        Duration::from_secs(30),
+    start_restream_child(
+        &env.restream_bin,
+        &TestPorts {
+            http: env.restream_http,
+            rtmp: env.restream_rtmp,
+            srt: env.restream_srt,
+        },
+        &env.restream_db_path,
+        &env.restream_log,
     )
     .await
-    {
-        stop_child(&mut child).await;
-        return Err(format!("restream did not become ready: {err}"));
-    }
-    Ok(child)
 }
 
 fn cleanup_ramp_db(path: &Path) {
@@ -4718,38 +4719,17 @@ fn ensure_mixed_artifacts(env: &MixedEnv) -> Result<(), String> {
 }
 
 async fn start_mixed_restream(env: &MixedEnv) -> Result<Child, String> {
-    if !env.restream_bin.exists() {
-        return Err(format!(
-            "restream binary not found at {}",
-            env.restream_bin.display()
-        ));
-    }
-    cleanup_ramp_db(&env.restream_db_path);
-    let log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
-    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
-    let mut child = Command::new(&env.restream_bin)
-        .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
-        .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
-        .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
-        .env(
-            "RESTREAM_DB_PATH",
-            env.restream_db_path.to_string_lossy().to_string(),
-        )
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr_log))
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if let Err(err) = wait_for_http_ok(
-        &format!("http://127.0.0.1:{}/healthz", env.restream_http),
-        Duration::from_secs(30),
+    start_restream_child(
+        &env.restream_bin,
+        &TestPorts {
+            http: env.restream_http,
+            rtmp: env.restream_rtmp,
+            srt: env.restream_srt,
+        },
+        &env.restream_db_path,
+        &env.restream_log,
     )
     .await
-    {
-        stop_child(&mut child).await;
-        return Err(format!("restream did not become ready: {err}"));
-    }
-    Ok(child)
 }
 
 async fn start_mixed_mediamtx(env: &MixedEnv) -> Result<Child, String> {
@@ -7024,23 +7004,16 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
     }
 }
 
-fn srt_publish_url(
-    port: u16,
-    stream_key: &str,
-    crypto: Option<(&str, u32)>,
-) -> String {
-    let mut url = format!("srt://127.0.0.1:{port}?streamid=publish:live/{stream_key}&pkt_size=1316");
+fn srt_publish_url(port: u16, stream_key: &str, crypto: Option<(&str, u32)>) -> String {
+    let mut url =
+        format!("srt://127.0.0.1:{port}?streamid=publish:live/{stream_key}&pkt_size=1316");
     if let Some((passphrase, pbkeylen)) = crypto {
         url.push_str(&format!("&passphrase={passphrase}&pbkeylen={pbkeylen}"));
     }
     url
 }
 
-fn srt_read_url(
-    port: u16,
-    stream_key: &str,
-    crypto: Option<(&str, u32)>,
-) -> String {
+fn srt_read_url(port: u16, stream_key: &str, crypto: Option<(&str, u32)>) -> String {
     let mut url = format!(
         "srt://127.0.0.1:{port}?streamid=read:live/{stream_key}&mode=caller&transtype=live&latency=100"
     );
@@ -7220,8 +7193,18 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     )
     .await?;
     for (label, stream_key, passphrase, pbkeylen) in [
-        ("pipelineEncrypted24", "policy-enc-24", "pipepass1234", 24u32),
-        ("pipelineEncrypted32", "policy-enc-32", "pipepass12345", 32u32),
+        (
+            "pipelineEncrypted24",
+            "policy-enc-24",
+            "pipepass1234",
+            24u32,
+        ),
+        (
+            "pipelineEncrypted32",
+            "policy-enc-32",
+            "pipepass12345",
+            32u32,
+        ),
     ] {
         let pipeline = api
             .post_json(
@@ -7287,8 +7270,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     stop_child(&mut child).await;
     let value = Value::Object(results);
     let path = work_dir.join("results.json");
-    std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&value).unwrap());
     Ok(value)
 }
