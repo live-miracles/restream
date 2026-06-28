@@ -532,8 +532,12 @@ fn benchmark_seal_and_forward(c: &mut Criterion) {
     });
 
     // N readers all migrating after a single seal.
+    // On 2026-06-28 this measured ~615 ns at 1 reader, ~16.6 us at 32 readers,
+    // and ~3.85 ms at 512 readers, with fanout cost steepening noticeably past 64 readers.
     // Same pre-push trick: one packet on new ring so all readers unblock promptly.
-    for n in [1, 4, 8, 16] {
+    // Range covers 1→512 (powers of 2); 512 matches the 500-reader extreme fanout
+    // tested in benchmark_ring_buffer_concurrency.
+    for n in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
         group.bench_with_input(
             BenchmarkId::new("seal_N_readers_migrate", n),
             &n,
