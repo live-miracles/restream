@@ -154,12 +154,11 @@ socket cost with:
 scripts/resource-limit cargo bench --bench srt_ingest_latency -- srt_(ingest|egress)
 ```
 
-That bench now emits separate `srt_ingest/{plain,encrypted}/recv_path/<size>`
-and `srt_egress/{plain,encrypted}/send_path/<size>` cases for a small transfer
-ladder (`1`, `8`, and `64` live-mode packets per timed iteration, or `1316 B`,
-`10528 B`, and `84224 B` transferred per iteration). This keeps each individual
-SRT payload within live-mode limits while still making it easier to see whether
-crypto cost is real or just loopback noise from the tiny single-packet path.
+That bench fixes the transport shape at `8 x 1316-byte` live-mode packets per
+timed iteration and compares `plain`, `aes128`, `aes192`, and `aes256` via
+`SRTO_PBKEYLEN=16/24/32`. That keeps the MPEG-TS-over-SRT packet shape stable
+and makes the benchmark answer the narrower question we actually care about:
+whether stronger SRT encryption changes hot-path cost.
 
 For the optimization roadmap behind those benches, see
 [High-Performance Data Path](high-performance-data-path.md).

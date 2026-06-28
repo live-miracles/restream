@@ -51,12 +51,12 @@ The SRT bench is a socket-pair microbenchmark, not a live pipeline test. It is
 meant to answer narrow questions such as "what did enabling SRT encryption cost
 on loopback?" by comparing:
 
-- `srt_ingest/plain/recv_path/<size>` vs `srt_ingest/encrypted/recv_path/<size>`
-- `srt_egress/plain/send_path/<size>` vs `srt_egress/encrypted/send_path/<size>`
+- `srt_ingest/plain|aes128|aes192|aes256/recv_path`
+- `srt_egress/plain|aes128|aes192|aes256/send_path`
 
-It intentionally includes multiple payload sizes so we can see whether an
-apparent "encrypted is faster" result disappears once more bytes are moved per
-iteration.
+Each case uses the same fixed transfer shape: `8` live-mode SRT packets of
+`1316` bytes per timed iteration. The only benchmark variable is the negotiated
+SRT encryption key length through `SRTO_PBKEYLEN`.
 
 Use the full `cargo test` suite, full benchmark suites, or live integration
 modes as a broader confidence pass when a change crosses module boundaries,
@@ -623,6 +623,9 @@ member closes.
 
 Note: `bonding` runs on the host network (random ports) so it is exempt from
 the netns wrapper even without `--host`.
+For real multi-NIC or dual-WAN validation, remember that upstream SRT also
+recommends `ENABLE_PKTINFO=ON`; otherwise a wildcard listener may reply from
+the wrong source IP and make a healthy bonding implementation look broken.
 
 ### `burst-verify` — Closed-GOP reader telemetry matrix
 
