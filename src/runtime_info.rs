@@ -417,7 +417,7 @@ pub fn status_and_sbom(bonding_available: bool) -> (Value, Value) {
         "sbom": {
             "format": "CycloneDX",
             "specVersion": "1.5",
-            "endpoint": "/api/status/sbom",
+            "endpoint": "/api/v1/engine/sbom",
             "componentCount": rust_component_count + native_component_count,
             "rustComponentCount": rust_component_count,
             "nativeComponentCount": native_component_count,
