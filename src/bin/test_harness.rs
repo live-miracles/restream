@@ -40,6 +40,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "resource-sweep",
     "bitrate-sweep",
     "branch-matrix",
+    "srt-crypto-matrix",
 ];
 
 const SINK_PORT: u16 = 12935;
@@ -90,13 +91,15 @@ async fn run() -> Result<(), String> {
         "resource-sweep" => resource_sweep().await,
         "bitrate-sweep" => bitrate_sweep().await,
         "branch-matrix" => branch_matrix().await,
+        "srt-crypto-matrix" => srt_crypto_matrix().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
               correctness-rtmp, correctness-srt, correctness-srt-rtmp, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-resilience, mixed-file-h264, resource-sweep, bitrate-sweep, or branch-matrix"
+              fault-resilience, mixed-file-h264, resource-sweep, bitrate-sweep, \
+              branch-matrix, or srt-crypto-matrix"
         )),
     };
 
@@ -147,25 +150,112 @@ fn harness_srt_pbkeylen() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn append_harness_srt_crypto(url: String) -> String {
-    let Some(passphrase) = harness_srt_passphrase() else {
+#[derive(Clone, Debug)]
+struct HarnessSrtCrypto {
+    label: String,
+    passphrase: Option<String>,
+    pbkeylen: Option<String>,
+}
+
+impl HarnessSrtCrypto {
+    fn plaintext() -> Self {
+        Self {
+            label: "plaintext".to_string(),
+            passphrase: None,
+            pbkeylen: None,
+        }
+    }
+
+    fn encrypted(pbkeylen: u32) -> Self {
+        Self {
+            label: format!("encrypted-{pbkeylen}"),
+            passphrase: Some("0123456789abcd".to_string()),
+            pbkeylen: Some(pbkeylen.to_string()),
+        }
+    }
+
+    fn transport_label(&self) -> String {
+        match (&self.passphrase, &self.pbkeylen) {
+            (None, _) => "plaintext".to_string(),
+            (Some(_), Some(len)) => format!("encrypted-{len}"),
+            (Some(_), None) => "encrypted".to_string(),
+        }
+    }
+
+}
+
+fn harness_srt_crypto_from_env() -> HarnessSrtCrypto {
+    match harness_srt_passphrase() {
+        Some(passphrase) => HarnessSrtCrypto {
+            label: match harness_srt_pbkeylen() {
+                Some(len) => format!("encrypted-{len}"),
+                None => "encrypted".to_string(),
+            },
+            passphrase: Some(passphrase),
+            pbkeylen: harness_srt_pbkeylen(),
+        },
+        None => HarnessSrtCrypto::plaintext(),
+    }
+}
+
+fn parse_srt_crypto_variants(name: &str, default: &str) -> Result<Vec<HarnessSrtCrypto>, String> {
+    let mut out = Vec::new();
+    for part in std::env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let variant = match part.to_ascii_lowercase().as_str() {
+            "plaintext" | "plain" => HarnessSrtCrypto::plaintext(),
+            "encrypted-16" | "enc16" | "aes128" | "128" => HarnessSrtCrypto::encrypted(16),
+            "encrypted-24" | "enc24" | "aes192" | "192" => HarnessSrtCrypto::encrypted(24),
+            "encrypted-32" | "enc32" | "aes256" | "256" => HarnessSrtCrypto::encrypted(32),
+            other => {
+                return Err(format!(
+                    "{name} contains unsupported SRT crypto variant '{other}'"
+                ));
+            }
+        };
+        if out
+            .iter()
+            .all(|existing: &HarnessSrtCrypto| existing.label != variant.label)
+        {
+            out.push(variant);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("{name} did not resolve to any SRT crypto variants"));
+    }
+    Ok(out)
+}
+
+fn append_srt_crypto(url: String, crypto: &HarnessSrtCrypto) -> String {
+    let Some(passphrase) = crypto.passphrase.as_deref() else {
         return url;
     };
     let separator = if url.contains('?') { '&' } else { '?' };
     let mut out = format!("{url}{separator}passphrase={passphrase}");
-    if let Some(pbkeylen) = harness_srt_pbkeylen() {
+    if let Some(pbkeylen) = crypto.pbkeylen.as_deref() {
         out.push_str(&format!("&pbkeylen={pbkeylen}"));
     }
     out
 }
 
-fn apply_harness_srt_listener_env(cmd: &mut Command) {
-    if let Some(passphrase) = harness_srt_passphrase() {
+fn apply_srt_listener_env(cmd: &mut Command, crypto: &HarnessSrtCrypto) {
+    if let Some(passphrase) = crypto.passphrase.as_deref() {
         cmd.env("RESTREAM_SRT_PASSPHRASE", passphrase);
-        if let Some(pbkeylen) = harness_srt_pbkeylen() {
+        if let Some(pbkeylen) = crypto.pbkeylen.as_deref() {
             cmd.env("RESTREAM_SRT_PBKEYLEN", pbkeylen);
         }
+    } else {
+        cmd.env_remove("RESTREAM_SRT_PASSPHRASE");
+        cmd.env_remove("RESTREAM_SRT_PBKEYLEN");
     }
+}
+
+fn apply_harness_srt_listener_env(cmd: &mut Command) {
+    apply_srt_listener_env(cmd, &harness_srt_crypto_from_env());
 }
 
 // ── Shared test infrastructure (Phase 1) ────────────────────────────────────
@@ -940,6 +1030,7 @@ impl ResourceSweepLifecycle {
     }
 }
 
+#[derive(Clone)]
 struct ResourceSweepEnv {
     work_dir: PathBuf,
     summary_json: PathBuf,
@@ -964,6 +1055,7 @@ struct ResourceSweepEnv {
     scenario_filter: Option<HashSet<String>>,
     lifecycle: ResourceSweepLifecycle,
     no_cleanup: bool,
+    srt_crypto: HarnessSrtCrypto,
 }
 
 impl ResourceSweepEnv {
@@ -1004,6 +1096,7 @@ impl ResourceSweepEnv {
             no_cleanup: std::env::var("RESOURCE_SWEEP_NO_CLEANUP")
                 .ok()
                 .is_some_and(|v| v == "1"),
+            srt_crypto: harness_srt_crypto_from_env(),
             work_dir,
         })
     }
@@ -1167,13 +1260,14 @@ struct ResourceSweepStack {
     restream_pid: u32,
 }
 
+#[derive(Clone)]
 struct BranchMatrixEnv {
     resource: ResourceSweepEnv,
     summary_json: PathBuf,
     summary_csv: PathBuf,
     summary_md: PathBuf,
     backend: String,
-    srt_ingest_encrypted: bool,
+    srt_variants: Vec<HarnessSrtCrypto>,
     scenario_filter: Option<HashSet<String>>,
 }
 
@@ -1203,7 +1297,7 @@ impl BranchMatrixEnv {
             } else {
                 "external".to_string()
             },
-            srt_ingest_encrypted: harness_srt_passphrase().is_some(),
+            srt_variants: vec![harness_srt_crypto_from_env()],
             scenario_filter: parse_string_set("BRANCH_MATRIX_SCENARIOS"),
             resource,
         })
@@ -1627,6 +1721,40 @@ async fn resource_sweep() -> Result<Value, String> {
 
 async fn branch_matrix() -> Result<Value, String> {
     let env = BranchMatrixEnv::from_env()?;
+    run_branch_matrix_variant(&env).await
+}
+
+async fn srt_crypto_matrix() -> Result<Value, String> {
+    let mut env = BranchMatrixEnv::from_env()?;
+    env.srt_variants =
+        parse_srt_crypto_variants("SRT_CRYPTO_MATRIX_VARIANTS", "plaintext,enc16,enc24,enc32")?;
+
+    let parent_work_dir = env.resource.work_dir.clone();
+    let mut runs = Vec::new();
+    for crypto in env.srt_variants.clone() {
+        let mut variant_env = env.clone();
+        variant_env.resource.srt_crypto = crypto.clone();
+        variant_env.resource.work_dir = parent_work_dir.join(&crypto.label);
+        variant_env.resource.summary_json = variant_env.resource.work_dir.join("branch-matrix-results.json");
+        variant_env.resource.summary_csv = variant_env.resource.work_dir.join("branch-matrix-results.csv");
+        variant_env.resource.samples_jsonl = variant_env.resource.work_dir.join("branch-matrix-samples.jsonl");
+        variant_env.resource.restream_log = variant_env.resource.work_dir.join("restream.log");
+        variant_env.resource.mediamtx_log = variant_env.resource.work_dir.join("mediamtx.log");
+        variant_env.resource.mediamtx_config = variant_env.resource.work_dir.join("mediamtx.yml");
+        variant_env.resource.restream_db_path = variant_env.resource.work_dir.join("branch-matrix.db");
+        variant_env.summary_json = variant_env.resource.work_dir.join("branch-matrix-results.json");
+        variant_env.summary_csv = variant_env.resource.work_dir.join("branch-matrix-results.csv");
+        variant_env.summary_md = variant_env.resource.work_dir.join("branch-matrix-summary.md");
+        runs.push(run_branch_matrix_variant(&variant_env).await?);
+    }
+
+    Ok(json!({
+        "mode": "srt-crypto-matrix",
+        "variants": runs,
+    }))
+}
+
+async fn run_branch_matrix_variant(env: &BranchMatrixEnv) -> Result<Value, String> {
     let resource = &env.resource;
     std::fs::create_dir_all(&resource.work_dir).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&env.summary_csv);
@@ -1701,13 +1829,13 @@ async fn branch_matrix() -> Result<Value, String> {
     write_branch_matrix_markdown(
         &env.summary_md,
         &env.backend,
-        env.srt_ingest_encrypted,
+        &resource.srt_crypto.transport_label(),
         &aggregates,
     )?;
     let result = json!({
         "mode": "branch-matrix",
         "backend": env.backend,
-        "srtIngestEncrypted": env.srt_ingest_encrypted,
+        "srtIngestTransport": resource.srt_crypto.transport_label(),
         "lifecycle": resource.lifecycle.as_str(),
         "artifacts": {
             "summaryJson": env.summary_json,
@@ -1786,10 +1914,12 @@ async fn run_bitrate_case(
         bitrate.label.to_ascii_lowercase().replace('.', "_")
     );
     let pipeline_id = create_resource_pipeline(&stack.api, config.name, &stream_key).await?;
+    let srt_crypto = harness_srt_crypto_from_env();
     let mut publisher = spawn_resource_publisher_with_bitrate(
         env.restream_rtmp,
         env.restream_srt,
         &env.work_dir,
+        &srt_crypto,
         config,
         &stream_key,
         &bitrate.label,
@@ -2458,7 +2588,7 @@ async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSw
         .stdout(Stdio::from(restream_log))
         .stderr(Stdio::from(restream_err))
         .kill_on_drop(true);
-    apply_harness_srt_listener_env(&mut restream_cmd);
+    apply_srt_listener_env(&mut restream_cmd, &env.srt_crypto);
     let mut restream = restream_cmd.spawn().map_err(|e| e.to_string())?;
     if let Err(err) = wait_for_http_ok(
         &format!("http://127.0.0.1:{}/healthz", env.restream_http),
@@ -2802,6 +2932,7 @@ fn spawn_resource_publisher(
         env.restream_rtmp,
         env.restream_srt,
         &env.work_dir,
+        &env.srt_crypto,
         config,
         stream_key,
         "1.5M",
@@ -2812,6 +2943,7 @@ fn spawn_resource_publisher_with_bitrate(
     restream_rtmp: u16,
     restream_srt: u16,
     work_dir: &Path,
+    srt_crypto: &HarnessSrtCrypto,
     config: SweepConfig,
     stream_key: &str,
     bitrate: &str,
@@ -2868,9 +3000,9 @@ fn spawn_resource_publisher_with_bitrate(
         ));
     } else {
         cmd.args(["-f", "mpegts"]);
-        cmd.arg(append_harness_srt_crypto(format!(
+        cmd.arg(append_srt_crypto(format!(
             "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
-        )));
+        ), srt_crypto));
     }
     let log_path = work_dir.join(format!("publisher-{stream_key}.log"));
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
@@ -3394,7 +3526,7 @@ fn write_resource_sweep_csv(path: &Path, rows: &[ResourceAggregate]) -> Result<(
 fn write_branch_matrix_markdown(
     path: &Path,
     backend: &str,
-    srt_ingest_encrypted: bool,
+    srt_ingest_transport: &str,
     rows: &[ResourceAggregate],
 ) -> Result<(), String> {
     let mut selected: Vec<&ResourceAggregate> = rows.iter().collect();
@@ -3410,14 +3542,7 @@ fn write_branch_matrix_markdown(
     let mut text = String::new();
     text.push_str("# Branch Matrix\n\n");
     text.push_str(&format!("- Backend: `{backend}`\n"));
-    text.push_str(&format!(
-        "- SRT ingest transport: `{}`\n",
-        if srt_ingest_encrypted {
-            "encrypted"
-        } else {
-            "plaintext"
-        }
-    ));
+    text.push_str(&format!("- SRT ingest transport: `{srt_ingest_transport}`\n"));
     if let Some(row) = selected.first() {
         text.push_str(&format!("- Lifecycle: `{}`\n", row.lifecycle));
         text.push_str(&format!("- Fanout per group: `{}`\n", row.label));

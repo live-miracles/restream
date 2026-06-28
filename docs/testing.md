@@ -598,6 +598,35 @@ Useful env vars:
 - `HARNESS_SRT_PASSPHRASE=0123456789abcd` and `HARNESS_SRT_PBKEYLEN=16` to
   rerun the matrix with encrypted SRT ingest
 
+### `srt-crypto-matrix` — plaintext vs AES-128/192/256 ingest
+
+```sh
+scripts/resource-limit cargo build --profile bench --bin test_harness --bin restream
+RESTREAM_BIN=target/release/restream \
+./target/release/test_harness srt-crypto-matrix
+```
+
+Runs the branch-matrix sweep four times against the same focused H.264 SRT
+ingest scenario family:
+
+- plaintext
+- encrypted AES-128 (`pbkeylen=16`)
+- encrypted AES-192 (`pbkeylen=24`)
+- encrypted AES-256 (`pbkeylen=32`)
+
+Each variant gets its own subdirectory under `test/artifacts/branch-matrix/`.
+The harness configures both sides of each ingest consistently: the Restream SRT
+listener gets the matching passphrase/key length, and every SRT publisher URL in
+that run gets the corresponding `passphrase`/`pbkeylen` query parameters.
+
+Useful env vars:
+
+- `SRT_CRYPTO_MATRIX_VARIANTS=plaintext,enc16,enc24,enc32`
+- `BRANCH_MATRIX_SCENARIOS=egress-growth-source-mixed`
+- `BRANCH_MATRIX_EGRESS_COUNT=1`
+- `RESOURCE_SWEEP_SAMPLE_SECS=2`
+- `RESOURCE_SWEEP_SETTLE_SECS=1`
+
 ### `bonding` — SRT socket bonding
 
 ```sh

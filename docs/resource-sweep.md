@@ -90,6 +90,11 @@ HARNESS_SRT_PASSPHRASE=0123456789abcd \
 HARNESS_SRT_PBKEYLEN=16 \
 RESOURCE_SWEEP_SCENARIOS=ingest-only,egress-growth-source-mixed \
 ./target/release/test_harness resource-sweep
+
+RESTREAM_BIN=target/release/restream \
+SRT_CRYPTO_MATRIX_VARIANTS=plaintext,enc16,enc24,enc32 \
+BRANCH_MATRIX_SCENARIOS=egress-growth-source-mixed \
+./target/release/test_harness srt-crypto-matrix
 ```
 
 To leave the last scenario up for interactive inspection:
