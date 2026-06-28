@@ -7,59 +7,51 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 ## Complete System Architecture
 
 ```mermaid
-graph TD
-    RTMP["🔴 RTMP Ingest<br/>TCP + FLV<br/>demux"] 
-    SRT["🔴 SRT Ingest<br/>UDP + TS<br/>demux"]
-    File["🔴 File Ingest<br/>FFmpeg<br/>decode"]
+graph LR
+    RTMP["🔴 RTMP<br/>TCP+FLV"] --> SourceRing
+    SRT["🔴 SRT<br/>UDP+TS"] --> SourceRing
+    File["🔴 File<br/>FFmpeg"] --> SourceRing
     
-    RTMP --> SourceRing
-    SRT --> SourceRing
-    File --> SourceRing
+    SourceRing["⭐ SOURCE<br/>RING 4096<br/>SPMC [B#1]"]
     
-    SourceRing["⭐ SOURCE RING 4096 slots<br/>Lock-free SPMC<br/>[B#1]"]
+    SourceRing --> RTMP_EGR["🟦 RTMP<br/>Egress"]
+    SourceRing --> SRT_EGR["🟦 SRT<br/>Egress"]
+    SourceRing --> HLS_EGR["🟦 HLS<br/>Segment"]
+    SourceRing --> RECORD["🟦 Rec<br/>Feeder"]
+    SourceRing --> XCODE_F["🟦 Xcode<br/>Feeder"]
     
-    SourceRing --> Branch{Multi-egress<br/>paths}
+    RTMP_EGR --> RTMP_TCP["TCP<br/>socket"]
     
-    Branch -->|passthrough| RTMP_EGR["🟦 RTMP Egress<br/>async task"]
-    Branch -->|passthrough| SRT_EGR["🟦 SRT Egress<br/>async task"]
-    Branch -->|segmenting| HLS_EGR["🟦 HLS Segment<br/>async task"]
-    Branch -->|feeder| RECORD["🟦 Recording<br/>async task"]
-    Branch -->|feeder| XCODE_F["🟦 Transcoder<br/>Feeder"]
+    SRT_EGR --> SRT_MUX["🟨 ChunkRing<br/>[B#2]"]
+    SRT_MUX --> SRT_QUEUE["🟧 MemQ<br/>[B#3]"]
+    SRT_QUEUE --> SRT_SEND["srt_send<br/>OS"]
+    SRT_SEND --> SRT_NET["Network"]
     
-    RTMP_EGR --> RTMP_TCP["📤 TCP<br/>socket"]
+    HLS_EGR --> HLS_M["Mutex<br/>[B#8]"]
+    HLS_M --> HTTP["HTTP<br/>GET"]
     
-    SRT_EGR --> SRT_MUX["🟨 TsChunkRing<br/>[B#2]"]
-    SRT_MUX --> SRT_QUEUE["🟧 MemoryQueue<br/>[B#3]"]
-    SRT_QUEUE --> |OS Thread| SRT_SEND["srt_send()<br/>blocking"]
-    SRT_SEND --> SRT_NET["📤 Network"]
+    RECORD --> REC_Q["🟧 MemQ<br/>[B#9]"]
+    REC_Q --> FWRITE["fwrite<br/>OS"]
+    FWRITE --> DISK["Disk"]
     
-    HLS_EGR --> HLS_MUTEX["🟩 Mutex<br/>0.17Hz [B#8]"]
-    HLS_MUTEX --> HTTP["📤 HTTP GET"]
-    
-    RECORD --> REC_QUEUE["🟧 MemoryQueue<br/>[B#9]"]
-    REC_QUEUE --> |OS Thread| FWRITE["fwrite()<br/>blocking"]
-    FWRITE --> DISK["📄 Disk"]
-    
-    XCODE_F --> XCODE_QUEUE["🟧 MemoryQueue<br/>[B#4]"]
-    XCODE_QUEUE --> |Subprocess| FFMPEG["FFmpeg<br/>decode+encode"]
-    FFMPEG --> OUTPUT["⭐ OUTPUT RING<br/>[B#5]"]
-    OUTPUT --> XCODE_OUT["🟦 Egress tasks<br/>async"]
-    XCODE_OUT --> |multiple| RTMP_TCP
-    XCODE_OUT --> |multiple| SRT_NET
+    XCODE_F --> XCODE_Q["🟧 MemQ<br/>[B#4]"]
+    XCODE_Q --> FFMPEG["FFmpeg<br/>subprocess"]
+    FFMPEG --> OUTPUT["⭐ OUT<br/>RING [B#5]"]
+    OUTPUT --> XCODE_OUT["Egress<br/>tasks"]
+    XCODE_OUT --> RTMP_TCP
+    XCODE_OUT --> SRT_NET
     
     classDef ingest fill:#2e7d32,stroke:#1b5e20,stroke-width:2px,color:#fff
     classDef ring fill:#fbc02d,stroke:#f57f17,stroke-width:3px,color:#000
     classDef task fill:#1565c0,stroke:#0d47a1,stroke-width:2px,color:#fff
     classDef thread fill:#e65100,stroke:#bf360c,stroke-width:2px,color:#fff
     classDef queue fill:#ff7043,stroke:#d84315,stroke-width:2px,color:#fff
-    classDef output fill:#558b2f,stroke:#33691e,stroke-width:2px,color:#fff
     
     class RTMP,SRT,File ingest
     class SourceRing,OUTPUT ring
-    class RTMP_EGR,SRT_EGR,HLS_EGR,RECORD,XCODE_F,XCODE_OUT,FFMPEG task
+    class RTMP_EGR,SRT_EGR,HLS_EGR,RECORD,XCODE_F,XCODE_OUT task
     class SRT_SEND,FWRITE thread
-    class SRT_QUEUE,REC_QUEUE,XCODE_QUEUE queue
-    class RTMP_TCP,SRT_NET,HTTP,DISK output
+    class SRT_QUEUE,REC_Q,XCODE_Q queue
 ```
 
 ---
@@ -67,69 +59,48 @@ graph TD
 ## Thread and Task Topology
 
 ```mermaid
-graph TB
+graph LR
     subgraph Tokio ["🔵 TOKIO ASYNC RUNTIME"]
-        Ingest["Ingest<br/>RTMP/SRT/File"]
-        Egress["Egress<br/>RTMP/SRT/HLS"]
-        Feeder["Feeder<br/>Transcoder"]
-        Reader["Reader<br/>Transcoder"]
-        Audio["Audio<br/>Routing"]
-        Record_Feeder["Recording<br/>Feeder"]
-        Recon["Reconciler<br/>& HTTP"]
-        
-        Ring1["⭐ SOURCE RING"]
-        Ring2["⭐ OUTPUT RING"]
+        Ingest["Ingest<br/>RTMP/SRT"]
+        Ring1["⭐ SOURCE<br/>RING"]
+        Egress["Egress<br/>RTMP/SRT"]
+        Feeder["Feeder"]
+        Ring2["⭐ OUTPUT<br/>RING"]
+        Audio["Audio"]
+        Rec["Rec<br/>Feed"]
         
         Ingest --> Ring1
         Ring1 --> Egress
-        Ring1 --> Feeder
-        Feeder --> Ring2
-        Ring2 --> Reader
-        Reader --> Egress
+        Ring1 --> Feeder --> Ring2
         Ring1 --> Audio
-        Ring1 --> Record_Feeder
+        Ring1 --> Rec
     end
     
-    Boundary["🔶 ASYNC ↔ BLOCKING BOUNDARY<br/>MemoryQueue + Condvar"]
-    
-    Tokio --> Boundary
+    Boundary["🔶 BOUNDARY<br/>MemoryQueue"]
     
     subgraph OS ["🟠 OS THREADS"]
-        SRT_SEND["SRT senders<br/>(N threads)<br/>srt_send()"]
-        FFmpeg["FFmpeg<br/>subprocess<br/>decode+encode"]
-        Codec["H.265→H.264<br/>converters<br/>(per stage)"]
-        REC_WRITE["Recording<br/>writers<br/>fwrite()"]
-        
-        Queue1["MemoryQueue"]
-        Queue2["MemoryQueue"]
-        Queue3["MemoryQueue"]
-        
-        Queue1 --> SRT_SEND
-        Queue2 --> FFmpeg
-        Queue3 --> Codec
-        Record_Feeder --> Queue3
+        SRT["srt_send<br/>threads"]
+        FF["FFmpeg<br/>proc"]
+        H265["h265→h264<br/>codecs"]
+        REC["Rec<br/>writers"]
     end
     
-    Boundary --> Queue1
-    Boundary --> Queue2
+    Tokio --> Boundary --> SRT
+    Boundary --> FF
+    Ring2 -.->|Feed| FF
     
-    SRT_SEND --> NET["Network<br/>UDP"]
-    FFmpeg --> Ring2
-    Codec --> Ring_Audio["Audio Ring"]
-    REC_WRITE --> DISK["Disk<br/>I/O"]
-    Record_Feeder --> REC_WRITE
+    SRT --> NET["Network"]
+    FF --> Ring2
+    H265 --> Ring_A["Audio"]
+    REC --> DISK["Disk"]
     
     classDef tokio fill:#1565c0,stroke:#0d47a1,stroke-width:2px,color:#fff
     classDef os fill:#e65100,stroke:#bf360c,stroke-width:2px,color:#fff
-    classDef boundary fill:#ff7043,stroke:#d84315,stroke-width:3px,color:#fff
     classDef ring fill:#fbc02d,stroke:#f57f17,stroke-width:2px,color:#000
-    classDef queue fill:#2e7d32,stroke:#1b5e20,stroke-width:2px,color:#fff
     
     class Tokio tokio
     class OS os
-    class Boundary boundary
-    class Ring1,Ring2,Ring_Audio ring
-    class Queue1,Queue2,Queue3 queue
+    class Ring1,Ring2,Ring_A ring
 ```
 
 ---
@@ -200,19 +171,17 @@ graph LR
 ## Blocking Boundaries (Cannot Be Removed)
 
 ```mermaid
-graph TD
-    Tokio["<b>ASYNC RUNTIME</b><br/>(Tokio)<br/>═════════<br/>• Socket recv<br/>• Demuxing<br/>• Muxing<br/>• Packet filtering<br/>• Ring pub/consume<br/>• HTTP handling"]
+graph LR
+    Tokio["<b>ASYNC RUNTIME</b><br/>(Tokio)<br/>─────<br/>Socket recv<br/>Demuxing<br/>Muxing<br/>Filtering"]
     
-    Boundary["<b>MemoryQueue</b><br/>+ Condvar<br/>(spawn_blocking)"]
+    Boundary["<b>MemoryQueue</b><br/>Condvar"]
     
-    Threads["<b>OS THREADS</b><br/>Blocking I/O<br/>═════════<br/>• libsrt_send()<br/>• FFmpeg subprocess<br/>• H.265→H.264 codecs<br/>• fwrite() to disk"]
+    Threads["<b>OS THREADS</b><br/>─────<br/>srt_send()<br/>FFmpeg<br/>H.265→H.264<br/>fwrite()"]
     
     Tokio -->|Decoupling| Boundary
     Boundary -->|Isolate| Threads
     
-    Why["<b>Why Separation Is Essential</b><br/>• Tokio worker blocked = all tasks stalled<br/>• FFmpeg blocks 0.5–2 seconds/frame<br/>• libsrt_send blocks on network congestion<br/>• Disk I/O stalls 100+ milliseconds"]
-    
-    Threads -.->|Must isolate| Why
+    Why["<b>Why Essential</b><br/>Tokio blocked ⟹<br/>all tasks stalled<br/>FFmpeg: 0.5-2s<br/>libsrt: network<br/>Disk: 100+ ms"]
     
     style Tokio fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
     style Boundary fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#000
@@ -247,17 +216,9 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["TCP socket<br/>(RTMP)"]
-    B["RTMP parser<br/>(tokio task)"]
-    C["FLV demux"]
-    D["MediaPacket<br/>(FLV format)"]
-    E["source RingBuffer<br/>[DECOUPLING #1]"]
-    F["RingBuffer.pull<br/>(per egress task<br/>1+ readers)"]
-    G["FLV mux<br/>(zero-copy)"]
-    H["TCP socket.write"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H
+graph LR
+    A["TCP<br/>RTMP"] --> B["RTMP<br/>parser"] --> C["FLV<br/>demux"] --> D["Packet<br/>FLV"]
+    D --> E["RingBuffer<br/>#1"] --> F["pull<br/>egress"] --> G["FLV<br/>mux"] --> H["TCP<br/>write"]
     
     style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
     style B fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
@@ -283,20 +244,10 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["TCP socket<br/>(RTMP)"]
-    B["FLV demux"]
-    C["MediaPacket<br/>(Flv)"]
-    D["source RingBuffer<br/>[DECOUPLING #1]"]
-    E["RingBuffer.pull<br/>(SRT egress)"]
-    F["video_for_ts<br/>TsMuxer"]
-    G["TsChunkRing<br/>[DECOUPLING #2]"]
-    H["MemoryQueue<br/>[DECOUPLING #3]"]
-    I["OS thread"]
-    J["srt_send<br/>blocks"]
-    K["UDP kernel buffer"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+graph LR
+    A["TCP<br/>RTMP"] --> B["FLV<br/>demux"] --> C["Packet<br/>Flv"] --> D["RingBuffer<br/>#1"]
+    D --> E["pull<br/>egress"] --> F["video_for_ts<br/>TsMuxer"] --> G["TsChunkRing<br/>#2"]
+    G --> H["MemoryQueue<br/>#3"] --> I["OS<br/>thread"] --> J["srt_send"] --> K["Network<br/>buffer"]
     
     style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
     style D fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
@@ -326,19 +277,10 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["UDP socket<br/>(SRT)"]
-    B["libsrt recv<br/>(epoll)"]
-    C["TsDemuxer<br/>(async)"]
-    D["MediaPacket<br/>(Raw/Annex-B)"]
-    E["source RingBuffer<br/>[DECOUPLING #1]"]
-    F["RingBuffer.pull<br/>(RTMP egress)"]
-    G["build_avcc_seq_hdr"]
-    H["video_for_rtmp<br/>(AVCC wrap)"]
-    I["FLV mux"]
-    J["TCP socket.write"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+graph LR
+    A["UDP<br/>SRT"] --> B["libsrt<br/>recv"] --> C["TsDemuxer"] --> D["Packet<br/>Annex-B"]
+    D --> E["RingBuffer<br/>#1"] --> F["pull<br/>egress"] --> G["build_avcc"] --> H["video_for_rtmp"]
+    H --> I["FLV<br/>mux"] --> J["TCP<br/>write"]
     
     style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
     style E fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
@@ -362,19 +304,10 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["UDP socket<br/>(SRT ingest)"]
-    B["TsDemuxer<br/>(inline)"]
-    C["MediaPacket<br/>(Raw)"]
-    D["source RingBuffer<br/>[DECOUPLING #1]"]
-    E["RingBuffer.pull<br/>(SRT egress)"]
-    F["TsMuxer<br/>(~0.6µs/pkt)"]
-    G["TsChunkRing<br/>[DECOUPLING #2]"]
-    H["MemoryQueue<br/>[DECOUPLING #3]"]
-    I["OS thread"]
-    J["srt_send"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+graph LR
+    A["UDP<br/>SRT"] --> B["TsDemuxer"] --> C["Packet<br/>Raw"] --> D["RingBuffer<br/>#1"]
+    D --> E["pull<br/>egress"] --> F["TsMuxer"] --> G["TsChunkRing<br/>#2"]
+    G --> H["MemoryQueue<br/>#3"] --> I["OS<br/>thread"] --> J["srt_send"]
     
     style A fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
     style D fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
@@ -399,22 +332,11 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["RTMP ingest"]
-    B["FLV demux"]
-    C["source RingBuffer<br/>[DECOUPLING #1]"]
-    D["Transcoder feeder<br/>video:720p"]
-    E["RingBuffer.pull_burst"]
-    F["video_for_ts + TsMuxer"]
-    G["MemoryQueue<br/>[DECOUPLING #2a]"]
-    H["FFmpeg subprocess<br/>scale + libx264"]
-    I["Transcoder<br/>stdout reader"]
-    J["TsDemuxer<br/>output_ring<br/>[DECOUPLING #3]"]
-    K["RTMP egress<br/>output_ring.pull"]
-    L["video_for_rtmp<br/>RTMP mux"]
-    M["TCP socket.write"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M
+graph LR
+    A["RTMP<br/>ingest"] --> B["FLV<br/>demux"] --> C["RingBuffer<br/>#1"] --> D["Feeder<br/>720p"]
+    D --> E["pull_burst"] --> F["video_for_ts"] --> G["MemoryQueue<br/>#2a"] --> H["FFmpeg"]
+    H --> I["stdout<br/>reader"] --> J["output_ring<br/>#3"] --> K["egress<br/>pull"] --> L["video_for_rtmp"]
+    L --> M["TCP<br/>write"]
     
     style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
@@ -452,24 +374,10 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["SRT ingest"]
-    B["TsDemuxer<br/>(inline)"]
-    C["source RingBuffer<br/>[DECOUPLING #1]"]
-    D["Transcoder feeder<br/>video:720p"]
-    E["RingBuffer.pull_burst"]
-    F["TsMuxer<br/>Raw→MPEG-TS"]
-    G["MemoryQueue<br/>[DECOUPLING #2a]"]
-    H["FFmpeg subprocess<br/>decode/scale/encode"]
-    I["Transcoder<br/>stdout reader"]
-    J["TsDemuxer<br/>output_ring<br/>[DECOUPLING #3]"]
-    K["SRT egress<br/>output_ring.pull"]
-    L["TsMuxer<br/>TsChunkRing"]
-    M["MemoryQueue<br/>[DECOUPLING #3b]"]
-    N["OS thread"]
-    O["srt_send"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M --> N --> O
+graph LR
+    A["SRT<br/>ingest"] --> B["TsDemuxer"] --> C["RingBuffer<br/>#1"] --> D["Feeder<br/>720p"] --> E["pull_burst"]
+    E --> F["TsMuxer"] --> G["MemoryQueue<br/>#2a"] --> H["FFmpeg"] --> I["stdout"] --> J["output_ring<br/>#3"]
+    J --> K["egress"] --> L["TsMuxer"] --> M["MemoryQueue<br/>#3b"] --> N["OS"] --> O["srt_send"]
     
     style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
@@ -490,26 +398,12 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["RTMP ingest"]
-    B["FLV demux"]
-    C["source RingBuffer<br/>[DECOUPLING #1]"]
-    D["HLS segmenter<br/>(inline)"]
-    E["RingBuffer.pull_burst"]
-    F["video_for_ts_into"]
-    G["TsMuxer<br/>~0.6µs/pkt"]
-    H["Accumulate<br/>TS bytes"]
-    I["Keyframe +<br/>min_duration?"]
-    J["HLS_store<br/>Mutex<br/>[DECOUPLING #2]"]
-    K["Axum GET handler<br/>HTTP request"]
-    L["HLS_store.read<br/>latest segments"]
-    M["Send m3u8 + .ts<br/>over HTTP"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I
-    I -->|YES| J
+graph LR
+    A["RTMP<br/>ingest"] --> B["FLV<br/>demux"] --> C["RingBuffer<br/>#1"] --> D["Segmenter<br/>inline"]
+    D --> E["pull_burst"] --> F["video_for_ts"] --> G["TsMuxer"] --> H["Accum<br/>bytes"]
+    H --> I{"Keyframe<br/>+min_dur?"} -->|YES| J["HLS_store<br/>Mutex<br/>#2"] --> L["read<br/>segments"]
     I -->|NO| H
-    K --> L --> M
-    J --> L
+    K["HTTP<br/>GET"] --> L --> M["Send<br/>m3u8+ts"]
     
     style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style J fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
@@ -538,20 +432,10 @@ graph TD
 
 **Current flow:**
 ```mermaid
-graph TD
-    A["RTMP ingest"]
-    B["FLV demux"]
-    C["source RingBuffer<br/>[DECOUPLING #1]"]
-    D["Recording feeder<br/>(per recording)"]
-    E["RingBuffer.pull_burst"]
-    F["video_for_ts_into"]
-    G["MemoryQueue<br/>[DECOUPLING #2]"]
-    H["OS thread<br/>writer"]
-    I["MemoryQueue.read<br/>Condvar wait"]
-    J["fwrite<br/>to disk"]
-    K["data.db<br/>MPEG-TS"]
-    
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+graph LR
+    A["RTMP<br/>ingest"] --> B["FLV<br/>demux"] --> C["RingBuffer<br/>#1"] --> D["Feeder"]
+    D --> E["pull_burst"] --> F["video_for_ts"] --> G["MemoryQueue<br/>#2"] --> H["OS<br/>writer"]
+    H --> I["read<br/>Condvar"] --> J["fwrite"] --> K["data.db"]
     
     style C fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style G fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
@@ -717,27 +601,17 @@ But this requires knowing output count ahead of time. Current design is general.
 ### Path 1 & 4: RTMP/SRT Passthrough (No Transcode)
 
 ```mermaid
-graph TD
-    A["RTMP/SRT INGEST<br/>(demux)"]
-    B["SOURCE RING<br/>(multi-consumer)"]
+graph LR
+    A["RTMP/SRT<br/>INGEST"] --> B["SOURCE RING<br/>multi-consumer"]
+    B --> C["RTMP<br/>EGRESS"]
+    B --> E["SRT<br/>EGRESS"]
+    B --> G["HLS<br/>SEGMENT"]
+    B --> I["REC<br/>FEEDER"]
     
-    C["RTMP EGRESS<br/>FLV mux<br/>Payload clone"]
-    D["TCP SOCKET<br/>(egress)"]
-    
-    E["SRT EGRESS<br/>TS mux<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
-    F["SRT SOCKET<br/>(egress)"]
-    
-    G["HLS SEGMENTER<br/>TsMuxer<br/>Accum buf<br/>Mutex"]
-    H["HTTP CLIENTS"]
-    
-    I["RECORDING<br/>MemoryQueue<br/>fwrite"]
-    J["DISK FILE"]
-    
-    A --> B
-    B --> C --> D
-    B --> E --> F
-    B --> G --> H
-    B --> I --> J
+    C --> D["TCP<br/>SOCKET"]
+    E --> F["SRT<br/>SOCKET"]
+    G --> H["HTTP<br/>CLIENTS"]
+    I --> J["DISK<br/>FILE"]
     
     style B fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
     style C fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
@@ -753,73 +627,33 @@ graph TD
 ### Path 5 & 6: Transcoded (720p, External FFmpeg)
 
 ```mermaid
-graph TD
-    A["SOURCE RING<br/>(feeds HLS, Recording)"]
-    B["TRANSCODER FEEDER<br/>pull_burst"]
-    C["TS MUXER<br/>MemoryQueue"]
-    D["FFMPEG SUBPROCESS<br/>scale=1280:720<br/>libx264/libx265"]
-    E["FFMPEG STDOUT<br/>TS DEMUXER"]
-    F["OUTPUT RING<br/>4096 slots<br/>multi-consumer"]
-    
-    G["SRT EGRESS<br/>TS MUXER<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
-    H["SRT SOCKET"]
-    
-    I["RTMP EGRESS<br/>AVCC wrap<br/>FLV mux"]
-    J["RTMP SOCKET"]
-    
-    A --> B --> C --> D --> E --> F
-    F --> G --> H
-    F --> I --> J
+graph LR
+    A["SOURCE<br/>RING"] --> B["FEEDER<br/>pull_burst"] --> C["TS<br/>MUXER"] --> D["MemQ"] --> E["FFmpeg"]
+    E --> F["STDOUT<br/>DEMUX"] --> G["OUTPUT<br/>RING"]
+    G --> H["SRT<br/>EGRESS"] --> I["SRT<br/>SOCKET"]
+    G --> J["RTMP<br/>EGRESS"] --> K["RTMP<br/>SOCKET"]
     
     style A fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
     style C fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
-    style D fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
-    style F fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
-    style G fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
-    style I fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
-    style H fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
-    style J fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
+    style D fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style E fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style G fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#333
+    style H fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style J fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style I fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style K fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000
 ```
 
 ### Path 3 & 9: SRT Ingest with H.265→H.264 Conversion
 
 ```mermaid
-graph TD
-    A["SRT INGEST<br/>(H.265/TS)"]
-    B["TS DEMUXER"]
-    C["SOURCE RING<br/>(H.265)"]
-    
-    D["SRT-src PATH<br/>passthrough"]
-    E["TS MUXER<br/>H.265"]
-    F["SRT SOCKET<br/>(H.265 out)"]
-    
-    G["RTMP-src PATH<br/>needs conversion"]
-    H["TS MUXER"]
-    I["MemoryQueue"]
-    J["OS thread<br/>hevc_to_h264<br/>libavcodec"]
-    K["h264_src_ring"]
-    L["RTMP EGRESS"]
-    M["RTMP SOCKET<br/>(H.264 out)"]
-    
-    N["720p TRANSCODER PATH<br/>FFmpeg subprocess"]
-    O["OUTPUT RING<br/>H.264 + AAC"]
-    
-    P["SRT-720p<br/>passthrough H.265"]
-    Q["TS MUXER"]
-    R["SRT SOCKET<br/>(H.265 out)"]
-    
-    S["RTMP-720p<br/>H.265→H.264"]
-    T["MemoryQueue<br/>RTMP-specific"]
-    U["OS thread<br/>hevc_to_h264"]
-    V["h264_720p_ring"]
-    W["RTMP SOCKET<br/>(H.264 out)"]
-    
-    A --> B --> C
-    C --> D --> E --> F
-    C --> G --> H --> I --> J --> K --> L --> M
-    C --> N --> O
-    O --> P --> Q --> R
-    O --> S --> T --> U --> V --> W
+graph LR
+    A["SRT<br/>INGEST"] --> B["DEMUX"] --> C["SOURCE<br/>RING"]
+    C --> D["SRT-src"] --> E["TS<br/>MUXER"] --> F["SRT<br/>OUT"]
+    C --> G["RTMP-src"] --> H["TS<br/>MUXER"] --> I["MemQ"] --> J["hevc_to_h264"] --> K["ring"] --> L["RTMP"]
+    C --> M["720p<br/>XCODE"] --> N["FFmpeg"] --> O["OUT<br/>RING"]
+    O --> P["SRT-720p"] --> Q["TS"] --> R["SRT<br/>OUT"]
+    O --> S["RTMP-720p"] --> T["MemQ"] --> U["h264"] --> V["ring"] --> W["RTMP<br/>OUT"]
     
     style C fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
     style I fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
@@ -834,28 +668,11 @@ graph TD
 ### Path 7: HLS Segmentation (Best Run-to-Completion)
 
 ```mermaid
-graph TD
-    A["SOURCE RING<br/>(all proto)"]
-    B["HLS SEGMENTER TASK<br/>(1 per pipeline)"]
-    
-    C["video_for_ts<br/>scratch buf<br/>TS MUXER<br/>~0.6µs/pkt<br/>Accumulate<br/>TS bytes"]
-    
-    D["Per segment?<br/>keyframe +<br/>min_duration"]
-    
-    E["Mutex lock<br/>segment<br/>complete"]
-    
-    F["HLS_STORE<br/>Mutex<br/>SegmentVecDeque<br/>in memory"]
-    
-    G["HTTP GET<br/>/playlist.m3u8<br/>Handlers<br/>async"]
-    
-    H["Read from<br/>HLS_STORE<br/>Send m3u8 +<br/>.ts chunks<br/>over HTTP"]
-    
-    A --> B
-    B --> C
-    B --> D
-    D -->|YES| E --> F
+graph LR
+    A["SOURCE<br/>RING"] --> B["SEGMENTER<br/>TASK"] --> C["video_for_ts<br/>TsMuxer"]
+    B --> D{"Segment<br/>ready?"}
+    D -->|YES| E["Mutex<br/>lock"] --> F["HLS_STORE"] --> G["HTTP<br/>GET"] --> H["Read+<br/>Send"]
     D -->|NO| C
-    F --> G --> H
     
     style A fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
     style C fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
@@ -868,15 +685,8 @@ graph TD
 ### Path 8: Recording (Disk I/O Blocking)
 
 ```mermaid
-graph TD
-    A["SOURCE RING"]
-    B["RECORDING FEEDER<br/>(1 per recording)"]
-    C["video_for_ts_into<br/>scratch buf<br/>MemoryQueue<br/>write_batch"]
-    D["OS THREAD: WRITER<br/>MemoryQueue.read<br/>Condvar wait"]
-    E["fwrite<br/>to disk<br/>0-100+ ms stall"]
-    F["data.db<br/>MPEG-TS<br/>persistent storage"]
-    
-    A --> B --> C --> D --> E --> F
+graph LR
+    A["SOURCE<br/>RING"] --> B["FEEDER"] --> C["video_for_ts<br/>MemQ"] --> D["OS<br/>WRITER"] --> E["fwrite"] --> F["data.db"]
     
     style A fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style C fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
@@ -888,24 +698,10 @@ graph TD
 ### Path 10: Multi-Audio Track Selection
 
 ```mermaid
-graph TD
-    A["SOURCE RING"]
-    B["video:720p<br/>TRANSCODER<br/>FFmpeg subprocess"]
-    C["OUTPUT RING<br/>H.264 + AAC<br/>track0, track1"]
-    
-    D["audio:ATRACK:0<br/>packet filter<br/>select track 0"]
-    E["audio0_ring<br/>track selection"]
-    F["RTMP EGRESS<br/>AVCC wrap<br/>FLV mux"]
-    G["RTMP SOCKET"]
-    
-    H["audio:ATRACK:0,1<br/>packet filter<br/>keep both"]
-    I["audio01_ring<br/>track selection"]
-    J["SRT EGRESS<br/>TS MUXER<br/>TsChunkRing<br/>MemoryQueue<br/>srt_send"]
-    K["SRT SOCKET"]
-    
-    A --> B --> C
-    C --> D --> E --> F --> G
-    C --> H --> I --> J --> K
+graph LR
+    A["SOURCE<br/>RING"] --> B["XCODE<br/>FFmpeg"] --> C["OUTPUT<br/>RING"]
+    C --> D["ATRACK:0<br/>filter"] --> E["ring"] --> F["RTMP<br/>EGRESS"] --> G["RTMP"]
+    C --> H["ATRACK:0,1<br/>filter"] --> I["ring"] --> J["SRT<br/>EGRESS"] --> K["SRT"]
     
     style A fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
     style B fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
@@ -1021,30 +817,28 @@ graph TD
 ## Path Comparison Chart
 
 ```mermaid
-graph TD
-    Title["<b>RUN-TO-COMPLETION POTENTIAL RANKING</b>"]
+graph LR
+    R1["<b>1. HLS<br/>segmenting</b><br/>🟢 High<br/>1 Decoup<br/>Mutex"]
     
-    R1["<b>1. HLS segmenting</b><br/>🟢 High Potential<br/>1 Decoupling (Mutex)<br/>Bottleneck: HTTP clients"]
+    R2["<b>2. RTMP→RTMP<br/>passthrough</b><br/>🟠 Medium<br/>1 ring<br/>Multi-C"]
     
-    R2["<b>2. RTMP→RTMP passthrough</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    R3["<b>3. Audio<br/>routing</b><br/>🟠 Medium<br/>1 ring<br/>Multi-C"]
     
-    R3["<b>3. Audio routing</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    R4["<b>4. SRT<br/>demux</b><br/>🟠 Medium<br/>1 ring<br/>Multi-C"]
     
-    R4["<b>4. SRT ingest demux</b><br/>🟠 Medium Potential<br/>1 Decoupling (ring)<br/>Bottleneck: Multi-consumer"]
+    R5["<b>5. SRT→SRT<br/>pass</b><br/>🔴 Low<br/>3 Decoup<br/>srt_send"]
     
-    R5["<b>5. SRT→SRT passthrough</b><br/>🔴 Low Potential<br/>3 Decoupling (ring+chunk+Q)<br/>Bottleneck: libsrt_send"]
+    R6["<b>6. SRT→RTMP<br/>codec</b><br/>🔴 Low<br/>2 Decoup<br/>AVCC"]
     
-    R6["<b>6. SRT→RTMP + codec</b><br/>🔴 Low Potential<br/>2 Decoupling (ring+Q)<br/>Bottleneck: AVCC codec"]
+    R7["<b>7. Rec<br/>disk</b><br/>🔴 Low<br/>2 Decoup<br/>Disk I/O"]
     
-    R7["<b>7. Recording</b><br/>🔴 Low Potential<br/>2 Decoupling (ring+Q)<br/>Bottleneck: Disk I/O"]
+    R8["<b>8. Multi<br/>audio</b><br/>🔴 Low<br/>2-3 rings<br/>srt_send"]
     
-    R8["<b>8. Multi-audio routing</b><br/>🔴 Low Potential<br/>2-3 Decoupling (rings)<br/>Bottleneck: libsrt_send"]
+    R9["<b>9. RTMP<br/>720p</b><br/>🔴 Very Low<br/>4 Decoup<br/>FFmpeg"]
     
-    R9["<b>9. Transcoded RTMP 720p</b><br/>🔴 Very Low Potential<br/>4 Decoupling (ring+Q+ring+Q)<br/>Bottleneck: FFmpeg encode"]
+    R10["<b>10. SRT<br/>H.265</b><br/>🔴 Very Low<br/>6+ Decoup<br/>FFmpeg"]
     
-    R10["<b>10. Transcoded SRT H.265</b><br/>🔴 Very Low Potential<br/>6+ Decoupling (multiple)<br/>Bottleneck: FFmpeg + H.265→H.264"]
-    
-    Title --> R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7 --> R8 --> R9 --> R10
+    R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7 --> R8 --> R9 --> R10
     
     style R1 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
     style R2 fill:#fff176,stroke:#f57f17,stroke-width:2px,color:#333
@@ -1056,7 +850,6 @@ graph TD
     style R8 fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
     style R9 fill:#ff1744,stroke:#b71c1c,stroke-width:2px,color:#fff
     style R10 fill:#ff1744,stroke:#b71c1c,stroke-width:2px,color:#fff
-    style Title fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,color:#000
 ```
 
 ---
