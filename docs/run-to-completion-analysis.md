@@ -6,6 +6,8 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 
 ## Complete System Architecture
 
+**SVG Diagram:** [View Full Architecture](diagrams/system_architecture.svg)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                              RESTREAM MEDIA PIPELINE                            │
@@ -124,6 +126,8 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 
 ## Thread and Task Topology
 
+**SVG Diagram:** [View Thread Topology](diagrams/thread_topology.svg)
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    TOKIO RUNTIME (num_cpus workers)                  │
@@ -188,6 +192,8 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 ---
 
 ## Decoupling Boundaries Summary
+
+**SVG Diagram:** [View All 9 Decoupling Boundaries](diagrams/decoupling_boundaries.svg)
 
 All 9 boundaries and their purposes:
 

@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 800" width="1100" height="800">
+  <defs>
+    <style>
+      .title { font-size: 22px; font-weight: bold; fill: #1a1a1a; }
+      .section-title { font-size: 16px; font-weight: bold; fill: #ffffff; font-family: Arial, sans-serif; }
+      .box-label { font-size: 12px; font-weight: 600; fill: #1a1a1a; font-family: Arial, sans-serif; }
+      .small-text { font-size: 11px; fill: #555555; font-family: Arial, sans-serif; }
+      .connector { stroke: #333; stroke-width: 2; fill: none; }
+      .arrow { stroke: #666; stroke-width: 2; fill: none; marker-end: url(#arrowhead); stroke-dasharray: 5,5; }
+      .tokio-bg { fill: #e3f2fd; stroke: #2196f3; stroke-width: 2; }
+      .osthread-bg { fill: #ffe0b2; stroke: #ff6f00; stroke-width: 2; }
+      .subprocess-bg { fill: #f8bbd0; stroke: #e91e63; stroke-width: 2; }
+      .section-bg { fill: #f9f9f9; stroke: #ddd; stroke-width: 2; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#666" />
+    </marker>
+  </defs>
+
+  <text x="550" y="30" text-anchor="middle" class="title">Thread & Task Topology</text>
+
+  <!-- TOKIO RUNTIME SECTION -->
+  <rect x="20" y="50" width="520" height="400" class="section-bg" rx="8"/>
+  <rect x="30" y="50" width="500" height="30" class="tokio-bg"/>
+  <text x="280" y="72" text-anchor="middle" class="section-title">TOKIO RUNTIME (async, non-blocking)</text>
+
+  <!-- INGRESS TASKS -->
+  <g transform="translate(50, 95)">
+    <text y="0" class="box-label" font-weight="bold">Ingress Tasks</text>
+    <rect x="0" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="45" y="30" text-anchor="middle" class="box-label">RTMP</text>
+    <text x="45" y="45" text-anchor="middle" class="small-text">ingest</text>
+
+    <rect x="110" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="155" y="30" text-anchor="middle" class="box-label">SRT</text>
+    <text x="155" y="45" text-anchor="middle" class="small-text">ingest</text>
+
+    <rect x="220" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="265" y="30" text-anchor="middle" class="box-label">File</text>
+    <text x="265" y="45" text-anchor="middle" class="small-text">ingest</text>
+  </g>
+
+  <!-- EGRESS TASKS -->
+  <g transform="translate(50, 175)">
+    <text y="0" class="box-label" font-weight="bold">Egress Tasks</text>
+    <rect x="0" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="45" y="30" text-anchor="middle" class="box-label">RTMP</text>
+    <text x="45" y="45" text-anchor="middle" class="small-text">egress</text>
+
+    <rect x="110" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="155" y="30" text-anchor="middle" class="box-label">SRT</text>
+    <text x="155" y="45" text-anchor="middle" class="small-text">muxer</text>
+
+    <rect x="220" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="265" y="30" text-anchor="middle" class="box-label">HLS</text>
+    <text x="265" y="45" text-anchor="middle" class="small-text">segment</text>
+  </g>
+
+  <!-- PROCESSING TASKS -->
+  <g transform="translate(50, 255)">
+    <text y="0" class="box-label" font-weight="bold">Processing Tasks (cheap/fast)</text>
+    <rect x="0" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="45" y="28" text-anchor="middle" class="box-label">Transcoder</text>
+    <text x="45" y="43" text-anchor="middle" class="box-label">feeder</text>
+
+    <rect x="110" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="155" y="28" text-anchor="middle" class="box-label">Transcoder</text>
+    <text x="155" y="43" text-anchor="middle" class="box-label">reader</text>
+
+    <rect x="220" y="10" width="90" height="50" class="tokio-bg" rx="4"/>
+    <text x="265" y="28" text-anchor="middle" class="box-label">Audio</text>
+    <text x="265" y="43" text-anchor="middle" class="box-label">routing</text>
+  </g>
+
+  <!-- CONTROL PLANE -->
+  <g transform="translate(50, 335)">
+    <text y="0" class="box-label" font-weight="bold">Control Plane Tasks</text>
+    <rect x="0" y="10" width="150" height="50" class="tokio-bg" rx="4"/>
+    <text x="75" y="28" text-anchor="middle" class="box-label">Reconciler</text>
+    <text x="75" y="43" text-anchor="middle" class="small-text">(1/sec tick)</text>
+
+    <rect x="170" y="10" width="150" height="50" class="tokio-bg" rx="4"/>
+    <text x="245" y="28" text-anchor="middle" class="box-label">Axum HTTP</text>
+    <text x="245" y="43" text-anchor="middle" class="small-text">handlers</text>
+  </g>
+
+  <!-- Arrow down to OS threads -->
+  <line x1="280" y1="470" x2="280" y2="510" class="arrow"/>
+  <text x="290" y="495" class="small-text">spawn_blocking</text>
+
+  <!-- OS THREADS SECTION -->
+  <rect x="20" y="510" width="520" height="270" class="section-bg" rx="8"/>
+  <rect x="30" y="510" width="500" height="30" class="osthread-bg"/>
+  <text x="280" y="532" text-anchor="middle" class="section-title">OS THREADS (blocking operations)</text>
+
+  <!-- BLOCKING THREADS -->
+  <g transform="translate(50, 560)">
+    <text y="0" class="box-label" font-weight="bold">Dedicated Threads (blocking I/O)</text>
+
+    <rect x="0" y="10" width="100" height="60" class="osthread-bg" rx="4"/>
+    <text x="50" y="28" text-anchor="middle" class="box-label">SRT accept</text>
+    <text x="50" y="43" text-anchor="middle" class="small-text">loop (1)</text>
+    <text x="50" y="58" text-anchor="middle" class="small-text">[srt_accept]</text>
+
+    <rect x="120" y="10" width="100" height="60" class="osthread-bg" rx="4"/>
+    <text x="170" y="28" text-anchor="middle" class="box-label">SRT egress</text>
+    <text x="170" y="43" text-anchor="middle" class="small-text">sender (N)</text>
+    <text x="170" y="58" text-anchor="middle" class="small-text">[srt_send]</text>
+
+    <rect x="240" y="10" width="100" height="60" class="osthread-bg" rx="4"/>
+    <text x="290" y="28" text-anchor="middle" class="box-label">Recording</text>
+    <text x="290" y="43" text-anchor="middle" class="small-text">writer (1/rec)</text>
+    <text x="290" y="58" text-anchor="middle" class="small-text">[fwrite]</text>
+  </g>
+
+  <!-- CODEC THREADS -->
+  <g transform="translate(50, 650)">
+    <text y="0" class="box-label" font-weight="bold">Codec Threads (per stage)</text>
+
+    <rect x="0" y="10" width="110" height="60" class="osthread-bg" rx="4"/>
+    <text x="55" y="28" text-anchor="middle" class="box-label">H.265→H.264</text>
+    <text x="55" y="43" text-anchor="middle" class="small-text">converter</text>
+    <text x="55" y="58" text-anchor="middle" class="small-text">[libavcodec]</text>
+
+    <rect x="130" y="10" width="110" height="60" class="osthread-bg" rx="4"/>
+    <text x="185" y="28" text-anchor="middle" class="box-label">AVIO input</text>
+    <text x="185" y="43" text-anchor="middle" class="small-text">feeder (M)</text>
+    <text x="185" y="58" text-anchor="middle" class="small-text">[FFmpeg]</text>
+  </g>
+
+  <!-- Arrow to child processes -->
+  <line x1="280" y1="780" x2="280" y2="790" class="arrow"/>
+
+  <!-- SUBPROCESS SECTION -->
+  <rect x="580" y="50" width="500" height="730" class="section-bg" rx="8"/>
+  <rect x="590" y="50" width="480" height="30" class="subprocess-bg"/>
+  <text x="840" y="72" text-anchor="middle" class="section-title">CHILD PROCESSES (external blocking)</text>
+
+  <!-- FFmpeg processes -->
+  <g transform="translate(610, 100)">
+    <text y="0" class="box-label" font-weight="bold">FFmpeg Subprocesses (1+ per preset)</text>
+
+    <rect x="0" y="15" width="140" height="70" class="subprocess-bg" rx="4"/>
+    <text x="70" y="35" text-anchor="middle" class="box-label">FFmpeg stdin</text>
+    <text x="70" y="50" text-anchor="middle" class="small-text">feeder (TS)</text>
+    <text x="70" y="65" text-anchor="middle" class="small-text">(1/preset)</text>
+
+    <rect x="170" y="15" width="140" height="70" class="subprocess-bg" rx="4"/>
+    <text x="240" y="35" text-anchor="middle" class="box-label">FFmpeg</text>
+    <text x="240" y="50" text-anchor="middle" class="small-text">subprocess</text>
+    <text x="240" y="65" text-anchor="middle" class="small-text">(1/preset)</text>
+
+    <rect x="340" y="15" width="140" height="70" class="subprocess-bg" rx="4"/>
+    <text x="410" y="35" text-anchor="middle" class="box-label">FFmpeg stdout</text>
+    <text x="410" y="50" text-anchor="middle" class="small-text">reader (TS)</text>
+    <text x="410" y="65" text-anchor="middle" class="small-text">(1/preset)</text>
+  </g>
+
+  <!-- KEY INSIGHTS BOX -->
+  <rect x="610" y="220" width="440" height="540" class="section-bg" rx="8"/>
+  <rect x="620" y="220" width="420" height="25" fill="#555" rx="4"/>
+  <text x="830" y="239" text-anchor="middle" class="section-title">KEY INSIGHTS & DECOUPLING</text>
+
+  <g transform="translate(630, 260)">
+    <text y="0" class="box-label" font-weight="bold">Why Decoupling is Necessary:</text>
+
+    <text y="25" class="small-text">1. FFmpeg Blocking (500ms-2s per frame)</text>
+    <text y="40" class="small-text">   → Must run on OS thread, not Tokio</text>
+
+    <text y="65" class="small-text">2. libsrt_send() Indefinite Blocking</text>
+    <text y="80" class="small-text">   → Network congestion blocks OS thread only</text>
+
+    <text y="105" class="small-text">3. Multi-Egress at Different Rates</text>
+    <text y="120" class="small-text">   → Ring isolation prevents backpressure cascade</text>
+
+    <text y="145" class="small-text">4. Disk I/O Unpredictable (100+ ms stalls)</text>
+    <text y="160" class="small-text">   → MemoryQueue buffers between async/sync</text>
+
+    <text y="185" class="box-label" font-weight="bold" fill="#ff6f00">Boundaries Summary:</text>
+
+    <text y="210" class="small-text">B#1: Source Ring - multi-consumer isolation</text>
+    <text y="225" class="small-text">B#2: TS Chunk Ring - shared mux result</text>
+    <text y="240" class="small-text">B#3-6: MemoryQueues - async ↔ blocking</text>
+    <text y="255" class="small-text">B#7: Audio rings - per-config isolation</text>
+    <text y="270" class="small-text">B#8: HLS Mutex - segment store (0.17Hz)</text>
+    <text y="285" class="small-text">B#9: Recording MemoryQueue - disk I/O</text>
+
+    <text y="315" class="box-label" font-weight="bold">Run-to-Completion Ranking:</text>
+
+    <text y="340" class="small-text">🟢 HIGH: HLS (only Mutex ~0.17Hz)</text>
+    <text y="355" class="small-text">🟠 MEDIUM: RTMP/SRT passthrough (ring needed)</text>
+    <text y="370" class="small-text">🔴 LOW: SRT with H.265→H.264, Recording</text>
+    <text y="385" class="small-text">🔴 VERY LOW: Transcoding (FFmpeg blocking)</text>
+  </g>
+</svg>
