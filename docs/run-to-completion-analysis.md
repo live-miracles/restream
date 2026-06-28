@@ -833,112 +833,56 @@ graph TD
 
 ### Path 7: HLS Segmentation (Best Run-to-Completion)
 
-```
-┌──────────────────────────┐
-│ SOURCE RING (all proto)  │
-└────────────┬─────────────┘
-             │
-             ▼
-    ┌──────────────────────┐
-    │ HLS SEGMENTER TASK   │
-    │ (1 per pipeline)     │
-    └────────────┬─────────┘
-                 │
-        ┌────────┴─────────┐
-        │                  │
-        ▼ (Per packet)     ▼ (Per segment: on keyframe + min_dur)
-   ┌─────────────┐    ┌──────────────┐
-   │video_for_ts │    │ Mutex lock   │
-   │(scratch buf)│    │ (segment     │
-   │TS MUXER     │    │  complete)   │
-   │(~0.6µs/pkt) │    └──────┬───────┘
-   │Accumulate   │           │
-   │TS bytes     │           ▼
-   └─────┬───────┘    ┌──────────────────────┐
-         │            │ HLS_STORE (Mutex)    │
-         │            │ SegmentVecDeque      │
-         │            │ in memory            │
-         │            └──────────┬───────────┘
-         │                       │
-         ├───────────────────────┤
-         │                       │
-         ▼                       ▼
-    ┌─────────────┐      ┌─────────────┐
-    │             │      │ HTTP GET    │
-    │             │      │ /playlist.  │
-    │             │      │ m3u8        │
-    │             │      │ Handlers    │
-    │             │      │ (async)     │
-    │             │      └──────┬──────┘
-    │             │             │
-    │             │             ▼
-    │             │      ┌──────────────┐
-    │             │      │ Read from    │
-    │             │      │ HLS_STORE    │
-    │             │      │ Send m3u8 +  │
-    │             │      │ .ts chunks   │
-    │             │      │ over HTTP    │
-    │             │      └──────────────┘
-    └─────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🟢 High (Best path!)
-  • Only ONE Mutex at segment boundaries (~6 second intervals)
-  • Contention is ~0.17 Hz (1 lock per 6 seconds)
-  • No MemoryQueue, no OS threads
-  • No codec conversion (passthrough, inline TS mux)
-  • Could eliminate Mutex with lock-free atomic swaps (if needed)
-  • Currently near-optimal design with minimal decoupling
+```mermaid
+graph TD
+    A["SOURCE RING<br/>(all proto)"]
+    B["HLS SEGMENTER TASK<br/>(1 per pipeline)"]
+    
+    C["video_for_ts<br/>scratch buf<br/>TS MUXER<br/>~0.6µs/pkt<br/>Accumulate<br/>TS bytes"]
+    
+    D["Per segment?<br/>keyframe +<br/>min_duration"]
+    
+    E["Mutex lock<br/>segment<br/>complete"]
+    
+    F["HLS_STORE<br/>Mutex<br/>SegmentVecDeque<br/>in memory"]
+    
+    G["HTTP GET<br/>/playlist.m3u8<br/>Handlers<br/>async"]
+    
+    H["Read from<br/>HLS_STORE<br/>Send m3u8 +<br/>.ts chunks<br/>over HTTP"]
+    
+    A --> B
+    B --> C
+    B --> D
+    D -->|YES| E --> F
+    D -->|NO| C
+    F --> G --> H
+    
+    style A fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#000
+    style C fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    style E fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style F fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#333
+    style G fill:#2196f3,stroke:#1565c0,stroke-width:2px,color:#fff
+    style H fill:#a5d6a7,stroke:#388e3c,stroke-width:2px,color:#000
 ```
 
 ### Path 8: Recording (Disk I/O Blocking)
 
-```
-┌────────────────────┐
-│ SOURCE RING        │
-└─────────┬──────────┘
-          │
-          ▼
-   ┌──────────────────┐
-   │ RECORDING FEEDER │
-   │ (1 per recording)│
-   └─────────┬────────┘
-             │
-             ▼
-   ┌──────────────────────┐
-   │ video_for_ts_into    │
-   │ (reuse scratch buf)  │
-   │                      │
-   │ MemoryQueue          │
-   │ .write_batch()       │
-   └─────────┬────────────┘
-             │
-             ▼
-   ┌──────────────────────┐
-   │ OS THREAD: WRITER    │
-   │                      │
-   │ MemoryQueue.read()   │
-   │ (Condvar: wait if    │
-   │  empty)              │
-   │                      │
-   │ fwrite() to disk     │
-   │ (0-100+ ms stall)    │
-   └─────────┬────────────┘
-             │
-             ▼
-   ┌──────────────────────┐
-   │ data.db (MPEG-TS)    │
-   │ (persistent storage) │
-   └──────────────────────┘
-
-RUN-TO-COMPLETION POTENTIAL: 🔴 Low
-  • fwrite() blocks indefinitely (cannot be on Tokio)
-  • Disk I/O stalls (page cache, fsync delays)
-  • MemoryQueue mandatory to isolate from async runtime
-  • Already using write_batch() for burst efficiency
-  • Could use io-uring (async I/O), but:
-    - Adds kernel version dependency
-    - Minimal benefit on typical hardware
-    - Complexity not justified for non-critical path
+```mermaid
+graph TD
+    A["SOURCE RING"]
+    B["RECORDING FEEDER<br/>(1 per recording)"]
+    C["video_for_ts_into<br/>scratch buf<br/>MemoryQueue<br/>write_batch"]
+    D["OS THREAD: WRITER<br/>MemoryQueue.read<br/>Condvar wait"]
+    E["fwrite<br/>to disk<br/>0-100+ ms stall"]
+    F["data.db<br/>MPEG-TS<br/>persistent storage"]
+    
+    A --> B --> C --> D --> E --> F
+    
+    style A fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    style C fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
+    style D fill:#ffb74d,stroke:#e65100,stroke-width:2px,color:#333
+    style E fill:#ff6f6f,stroke:#c62828,stroke-width:2px,color:#fff
+    style F fill:#ffcc80,stroke:#ef6c00,stroke-width:2px,color:#333
 ```
 
 ### Path 10: Multi-Audio Track Selection
