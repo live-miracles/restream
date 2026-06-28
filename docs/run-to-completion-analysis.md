@@ -187,35 +187,99 @@ This document maps every ingest/egress/transcoding branch, identifies decoupling
 
 ## Decoupling Boundaries Summary
 
-```
-DATA FLOW WITH BOUNDARIES:
+All 9 boundaries and their purposes:
 
-Ingest (Task)
-  └─→ [BOUNDARY #1: SOURCE RING] ◄─── Multi-egress isolation
-      ├─→ RTMP egress (Task)
-      │   └─→ Socket write
-      ├─→ SRT egress (Task)
-      │   └─→ TsMuxer (Task)
-      │       └─→ [BOUNDARY #2: TS CHUNK RING] ◄─── Shared mux result
-      │           └─→ [BOUNDARY #3: MEMORY QUEUE] ◄─── Async↔Blocking
-      │               └─→ OS Thread: libsrt_send()
-      ├─→ Transcoder feeder (Task)
-      │   └─→ [BOUNDARY #4: MEMORY QUEUE] ◄─── Async↔Blocking
-      │       └─→ OS Thread: FFmpeg subprocess
-      │           └─→ [BOUNDARY #5: OUTPUT RING] ◄─── Shared output
-      │               ├─→ RTMP egress (Task)
-      │               └─→ SRT egress (Task)
-      │                   └─→ [BOUNDARY #6: MEMORY QUEUE] ◄─── Async↔Blocking
-      │                       └─→ OS Thread: libsrt_send()
-      ├─→ Audio routing (Task)
-      │   └─→ [BOUNDARY #7: AUDIO RING] ◄─── Per-config isolation
-      │       └─→ Egress (Task)
-      ├─→ HLS segmenter (Task)
-      │   └─→ [BOUNDARY #8: MUTEX] ◄─── Segment store lock
-      │       └─→ HTTP GET handlers (Tasks)
-      └─→ Recording feeder (Task)
-          └─→ [BOUNDARY #9: MEMORY QUEUE] ◄─── Async↔Blocking
-              └─→ OS Thread: fwrite()
+```
+                        ┌──────────────┐
+                        │ INGEST TASKS │
+                        └───────┬──────┘
+                                │
+                                ▼
+              ┌─────────────────────────────────┐
+              │ [B#1] SOURCE RING               │
+              │ Multi-egress SPMC isolation     │
+              └──┬──────────┬──────┬────────┬───┘
+                 │          │      │        │
+         ┌───────┘  ┌───────┘  ┌───┴────┐ ┌┴──────┐
+         │          │          │        │ │       │
+         ▼          ▼          ▼        ▼ ▼       │
+    ┌─────────┐ ┌──────────┐ ┌─────┐ ┌────┐     │
+    │ RTMP    │ │ SRT      │ │HLS  │ │Rec │     │
+    │ EGRESS  │ │ EGRESS   │ │SEG  │ │Feed│     │
+    │ (Task)  │ │ (Task)   │ │(Tsk)│ │    │     │
+    └────┬────┘ └────┬─────┘ └──┬──┘ └──┬─┘     │
+         │           │          │       │       │
+         ▼           ▼          ▼       ▼       │
+    TCP Socket  ┌──────────┐  Mutex  ┌──────┐  │
+               │ [B#2]    │         │[B#9]│  │
+               │TS CHUNK  │         │Memory│  │
+               │ RING     │         │Queue │  │
+               └────┬─────┘         └──┬───┘  │
+                    │ SRT conn         │      │
+                    ▼                  ▼      │
+               ┌──────────┐        ┌────────┐ │
+               │ [B#3]    │        │OS Thrd:│ │
+               │ MEMORY   │        │fwrite()│ │
+               │ QUEUE    │        └────────┘ │
+               └────┬─────┘                   │
+                    ▼                          │
+               ┌──────────┐                   │
+               │OS Thread:│                   │
+               │srt_send()│                   │
+               └──────────┘                   │
+                                             │
+            ┌────────────────────────────────┘
+            │
+            └──→ TRANSCODING PATH
+                 │
+                 ▼
+            ┌──────────────┐
+            │ Transcoder   │
+            │ FEEDER task  │
+            └────────┬─────┘
+                     │
+                     ▼
+            ┌──────────────┐
+            │ [B#4]        │
+            │ MEMORY QUEUE │
+            │ (async↔block)│
+            └────────┬─────┘
+                     │
+                     ▼
+            ┌──────────────┐
+            │ OS THREAD:   │
+            │ FFmpeg       │
+            │ subprocess   │
+            └────────┬─────┘
+                     │
+                     ▼
+            ┌──────────────────────┐
+            │ [B#5] OUTPUT RING    │
+            │ Transcoded packets   │
+            └────┬─────────┬───────┘
+                 │         │
+                 ▼         ▼
+            ┌────────┐  ┌────────────┐
+            │ RTMP   │  │ SRT        │
+            │ EGRESS │  │ EGRESS     │
+            │(AVCC)  │  │ (TsMuxer)  │
+            └──┬─────┘  └────┬───────┘
+               │              ▼
+               │         ┌─────────────┐
+               │         │ [B#6]       │
+               │         │ MEMORY QUEUE│
+               │         │ (srt_send)  │
+               │         └────┬────────┘
+               │              │
+               │              ▼
+               │         ┌──────────┐
+               │         │OS Thread:│
+               │         │srt_send()│
+               │         └──────────┘
+
+AUDIO ROUTING (if multi-audio):
+  [B#7] Audio routing rings (per track config)
+        → Async packet filters → egress
 ```
 
 ---
@@ -657,25 +721,42 @@ But this requires knowing output count ahead of time. Current design is general.
 ### Path 1 & 4: RTMP/SRT Passthrough (No Transcode)
 
 ```
-RTMP INGEST (FLV) ──→ SOURCE RING ◄──────────────────────────┐
-                        │                                     │
-                        ├──→ RTMP egress ──→ TCP socket      │
-                        ├──→ SRT egress ──→ TsMuxer ──→      │
-                        │                    TsChunkRing ──→ │
-                        │                    MemoryQueue ──→ │
-                        │                    srt_send()       │
-                        │                                     │
-                        ├──→ HLS segmenter ──→ TsMuxer ──→   │
-                        │                      Mutex ──→      │
-                        │                      HTTP clients   │
-                        │                                     │
-                        ├──→ Recording feeder ──→             │
-                        │      MemoryQueue ──→ fwrite()       │
-                        │                                     │
-                        └──→ (other consumers share ring)     │
+┌────────────────┐    ┌─────────────────┐
+│ RTMP/SRT       │───▶│ SOURCE RING     │
+│ INGEST         │    │ (multi-consumer)│
+│ (demux)        │    └────────┬────────┘
+└────────────────┘             │
+                    ┌──────────┼──────────┬─────────────┐
+                    │          │          │             │
+                    ▼          ▼          ▼             ▼
+          ┌────────────────┐ ┌─────────────────┐ ┌──────────────┐
+          │ RTMP EGRESS    │ │ SRT EGRESS      │ │ HLS SEGMENTER│
+          ├────────────────┤ ├─────────────────┤ ├──────────────┤
+          │ FLV mux        │ │ TS mux          │ │ TsMuxer      │
+          │ Payload clone  │ │ TsChunkRing     │ │ Accum buf    │
+          └────────┬───────┘ │ MemoryQueue     │ │ Mutex        │
+                   │         │ srt_send()      │ └──────┬───────┘
+                   ▼         └────────┬────────┘        │
+              ┌─────────┐             ▼                 ▼
+              │ TCP     │        ┌──────────┐      ┌──────────┐
+              │ SOCKET  │        │ SRT      │      │ HTTP     │
+              │ (egress)│        │ SOCKET   │      │ CLIENTS  │
+              └─────────┘        │ (egress) │      └──────────┘
+                                 └──────────┘
+
+                    ┌────────────────────┐
+                    │ RECORDING          │
+                    ├────────────────────┤
+                    │ MemoryQueue        │
+                    │ fwrite()           │
+                    └────────┬───────────┘
+                             ▼
+                        ┌─────────────┐
+                        │ DISK FILE   │
+                        └─────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
-  • Ring is necessary for multi-consumer isolation
+  • Ring necessary for multi-consumer isolation
   • Each consumer has independent buffering
   • Cheap operations (FLV/TS mux): ~0.6-1µs per packet
   • Socket writes decouple naturally (network speed)
@@ -684,164 +765,304 @@ RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
 ### Path 5 & 6: Transcoded (720p, External FFmpeg)
 
 ```
-SOURCE RING ──→ Transcoder feeder ──→ TsMuxer ──→
-   │                                       │
-   │                                 MemoryQueue ──→
-   │                                 (Condvar wait)
-   │                                       │
-   │                                       ▼
-   │                                  FFmpeg subprocess
-   │                                  (scale=1280:720
-   │                                   libx264/libx265)
-   │                                       │
-   │                                       ▼
-   │                               FFmpeg stdout ──→
-   │                               TsDemuxer ──→
-   │                               OUTPUT RING ◄───────────────┐
-   │                                   │                        │
-   └──→ (also feeds HLS, Recording) ──→ OUTPUT RING ──→         │
-                                        ├──→ SRT egress ──→     │
-                                        │   TsMuxer ──→         │
-                                        │   TsChunkRing ──→     │
-                                        │   MemoryQueue ──→     │
-                                        │   srt_send()          │
-                                        │                       │
-                                        └──→ RTMP egress ──→    │
-                                            video_for_rtmp ──→  │
-                                            RTMP socket         │
+┌──────────────────────────────────────────────────────────┐
+│ SOURCE RING (also feeds HLS, Recording)                  │
+└────────────┬─────────────────────────────────────────────┘
+             │
+             ▼
+       ┌──────────────────────┐
+       │ TRANSCODER FEEDER    │
+       │ (pull_burst)         │
+       └──────────┬───────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │ TS MUXER             │
+       │ MemoryQueue          │
+       └──────────┬───────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │ FFMPEG SUBPROCESS    │
+       │ scale=1280:720       │
+       │ libx264/libx265      │
+       └──────────┬───────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │ FFMPEG STDOUT        │
+       │ TS DEMUXER           │
+       └──────────┬───────────┘
+                  │
+                  ▼
+      ┌─────────────────────────────┐
+      │ OUTPUT RING (4096 slots)    │
+      │ (multi-consumer SRT+RTMP)   │
+      └──────┬──────────────┬───────┘
+             │              │
+             ▼              ▼
+      ┌─────────────┐  ┌──────────────┐
+      │ SRT EGRESS  │  │ RTMP EGRESS  │
+      ├─────────────┤  ├──────────────┤
+      │ TS MUXER    │  │ AVCC wrap    │
+      │ TsChunkRing │  │ FLV mux      │
+      │ MemoryQueue │  └──────┬───────┘
+      │ srt_send()  │         │
+      │ (OS thread) │         ▼
+      └──────┬──────┘  ┌──────────────┐
+             │         │ RTMP SOCKET  │
+             ▼         │ (egress)     │
+      ┌──────────────┐ └──────────────┘
+      │ SRT SOCKET   │
+      │ (egress)     │
+      └──────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🔴 Very Low
   • FFmpeg decode: ~100-500ms per second of video
   • FFmpeg encode: ~500ms-2s per second of video
   • MUST be off async runtime (blocks everything else)
-  • Output ring still needed for multiple egress
-  • Two MemoryQueues: input (feeder↔FFmpeg) + output (egress↔srt_send)
+  • Output ring needed for multiple egress (SRT + RTMP)
+  • MemoryQueues: input (feeder↔FFmpeg) + output (egress↔srt_send)
 ```
 
 ### Path 3 & 9: SRT Ingest with H.265→H.264 Conversion
 
 ```
-SRT INGEST (H.265) ──→ TsDemuxer ──→ SOURCE RING ◄────────────┐
-                                         │                     │
-                                         ├──→ SRT-src ──→      │
-                                         │   TsMuxer ──→       │
-                                         │   TS (H.265) ──→    │
-                                         │   SRT socket        │
-                                         │                     │
-                                         ├──→ RTMP-src ──→     │
-                                         │   TsMuxer ──→       │
-                                         │   TS (H.265) ──→    │
-                                         │   MemoryQueue ──→   │
-                                         │   hevc_to_h264 ──→  │
-                                         │   TsDemuxer ──→     │
-                                         │   h264_ring ──→     │
-                                         │   video_for_rtmp    │
-                                         │   ──→ RTMP socket   │
-                                         │                     │
-                                         └──→ (720p preset) ── FFmpeg ──→
-                                             (shared transcoder)
-                                             ├──→ SRT-720p (H.265, no convert)
-                                             └──→ RTMP-720p ──→ hevc_to_h264 ──→
-                                                 (separate stage, independent thread)
+┌─────────────────────┐
+│ SRT INGEST (H.265)  │
+│ (TS format)         │
+└──────────┬──────────┘
+           │
+           ▼
+       ┌────────────┐
+       │ TS DEMUXER │
+       └──────┬─────┘
+              │
+              ▼
+    ┌──────────────────────┐
+    │ SOURCE RING (H.265)  │
+    └────┬──────────┬──────┘
+         │          │
+         │          └──────────────────────────────┐
+         │                                         │
+         ▼                                         ▼
+    ┌──────────────┐                  ┌──────────────────────┐
+    │ SRT-src PATH │                  │ 720p TRANSCODER PATH │
+    │ (passthrough)│                  │ (FFmpeg subprocess)  │
+    ├──────────────┤                  └──────────┬───────────┘
+    │ TS MUXER     │                             │
+    │ TS (H.265)   │                  ┌──────────▼──────────┐
+    └──────┬───────┘                  │ OUTPUT RING (H.264) │
+           │                          │ + AAC tracks        │
+           ▼                          └────┬──────┬─────────┘
+    ┌──────────────┐                      │      │
+    │ SRT SOCKET   │         ┌────────────┘      └─────────┐
+    │ (H.265 out)  │         │                              │
+    └──────────────┘         ▼                              ▼
+                      ┌──────────────────┐    ┌──────────────────┐
+         ┌──────────┐ │ SRT-720p (H.265) │    │ RTMP-720p PATH   │
+         │ RTMP-src │ │ TS MUXER         │    │ (H.265→H.264 cvt)│
+         │ PATH     │ └────────┬─────────┘    ├──────────────────┤
+         │(conversion) │        ▼              │ MemoryQueue      │
+         ├──────────┤ │  SRT SOCKET (H.265)   │ hevc_to_h264      │
+         │TS MUXER  │ │                        │ (libavcodec)     │
+         │→TS H.265 │ └────────────────────────│ (OS thread)      │
+         │MemoryQ   │                          │ h264_ring        │
+         │ hevc_to  │                          └────────┬─────────┘
+         │ h264 cdc │                                   │
+         │(libavc)  │                                   ▼
+         │(OS thrd) │                          ┌──────────────────┐
+         │h264_ring │                          │ RTMP SOCKET      │
+         └────┬─────┘                          │ (H.264 out)      │
+              │                                └──────────────────┘
+              ▼
+         ┌────────────┐
+         │ RTMP SOCKET│
+         │ (H.264 out)│
+         └────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🔴 Very Low
   • Three sources of decoupling:
-    1. SOURCE RING (multi-egress)
-    2. HEVC_TO_H264 MemoryQueue (async↔blocking)
+    1. SOURCE RING (multi-egress isolation)
+    2. HEVC_TO_H264 MemoryQueue (async↔blocking codec work)
     3. FFmpeg transcoder (async↔blocking subprocess)
-  • H.265→H.264 conversion is MANDATORY for RTMP (protocol limitation)
-  • Two independent conversion threads if both passthrough + preset RTMP exist
-    (keying: hevc_to_h264:from:source vs. hevc_to_h264:from:720p)
+  • H.265→H.264 conversion MANDATORY for RTMP (protocol limitation)
+  • Two independent conversion threads if both passthrough+preset RTMP
 ```
 
 ### Path 7: HLS Segmentation (Best Run-to-Completion)
 
 ```
-SOURCE RING ──→ HLS segmenter (inline, single task)
-                    │
-                    ├──→ video_for_ts_into (reuse scratch buf)
-                    ├──→ TsMuxer (inline, ~0.6µs/pkt)
-                    ├──→ Accumulate TS bytes in BytesMut
-                    │
-                    ├──→ On keyframe + min_duration:
-                    │    └──→ HLS_store.push_segment()
-                    │         [Mutex lock, ~0.17 Hz contention]
-                    │         └──→ Segment in memory
-                    │
-                    └──→ Axum GET handlers (independent tasks)
-                         ├──→ Read HLS_store (Mutex)
-                         ├──→ Fetch segments from memory
-                         └──→ Send m3u8 + .ts chunks over HTTP
+┌──────────────────────────┐
+│ SOURCE RING (all proto)  │
+└────────────┬─────────────┘
+             │
+             ▼
+    ┌──────────────────────┐
+    │ HLS SEGMENTER TASK   │
+    │ (1 per pipeline)     │
+    └────────────┬─────────┘
+                 │
+        ┌────────┴─────────┐
+        │                  │
+        ▼ (Per packet)     ▼ (Per segment: on keyframe + min_dur)
+   ┌─────────────┐    ┌──────────────┐
+   │video_for_ts │    │ Mutex lock   │
+   │(scratch buf)│    │ (segment     │
+   │TS MUXER     │    │  complete)   │
+   │(~0.6µs/pkt) │    └──────┬───────┘
+   │Accumulate   │           │
+   │TS bytes     │           ▼
+   └─────┬───────┘    ┌──────────────────────┐
+         │            │ HLS_STORE (Mutex)    │
+         │            │ SegmentVecDeque      │
+         │            │ in memory            │
+         │            └──────────┬───────────┘
+         │                       │
+         ├───────────────────────┤
+         │                       │
+         ▼                       ▼
+    ┌─────────────┐      ┌─────────────┐
+    │             │      │ HTTP GET    │
+    │             │      │ /playlist.  │
+    │             │      │ m3u8        │
+    │             │      │ Handlers    │
+    │             │      │ (async)     │
+    │             │      └──────┬──────┘
+    │             │             │
+    │             │             ▼
+    │             │      ┌──────────────┐
+    │             │      │ Read from    │
+    │             │      │ HLS_STORE    │
+    │             │      │ Send m3u8 +  │
+    │             │      │ .ts chunks   │
+    │             │      │ over HTTP    │
+    │             │      └──────────────┘
+    └─────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🟢 High (Best path!)
   • Only ONE Mutex at segment boundaries (~6 second intervals)
   • Contention is ~0.17 Hz (1 lock per 6 seconds)
   • No MemoryQueue, no OS threads
-  • No codec conversion (passthrough)
+  • No codec conversion (passthrough, inline TS mux)
   • Could eliminate Mutex with lock-free atomic swaps (if needed)
-  • Currently near-optimal design
+  • Currently near-optimal design with minimal decoupling
 ```
 
 ### Path 8: Recording (Disk I/O Blocking)
 
 ```
-SOURCE RING ──→ Recording feeder (task)
-                    │
-                    ├──→ video_for_ts_into (reuse scratch)
-                    ├──→ MemoryQueue.write_batch()
-                    │    [Condvar wait if full]
-                    │
-                    └──→ OS Thread: TS writer
-                         ├──→ MemoryQueue.read()
-                         │    [Condvar wait if empty]
-                         ├──→ fwrite() to disk
-                         └──→ disk I/O (may stall 100+ ms)
+┌────────────────────┐
+│ SOURCE RING        │
+└─────────┬──────────┘
+          │
+          ▼
+   ┌──────────────────┐
+   │ RECORDING FEEDER │
+   │ (1 per recording)│
+   └─────────┬────────┘
+             │
+             ▼
+   ┌──────────────────────┐
+   │ video_for_ts_into    │
+   │ (reuse scratch buf)  │
+   │                      │
+   │ MemoryQueue          │
+   │ .write_batch()       │
+   └─────────┬────────────┘
+             │
+             ▼
+   ┌──────────────────────┐
+   │ OS THREAD: WRITER    │
+   │                      │
+   │ MemoryQueue.read()   │
+   │ (Condvar: wait if    │
+   │  empty)              │
+   │                      │
+   │ fwrite() to disk     │
+   │ (0-100+ ms stall)    │
+   └─────────┬────────────┘
+             │
+             ▼
+   ┌──────────────────────┐
+   │ data.db (MPEG-TS)    │
+   │ (persistent storage) │
+   └──────────────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🔴 Low
-  • fwrite() blocks indefinitely
-  • Disk I/O stalls (page cache evictions, fsync)
-  • MemoryQueue is mandatory to isolate from Tokio
+  • fwrite() blocks indefinitely (cannot be on Tokio)
+  • Disk I/O stalls (page cache, fsync delays)
+  • MemoryQueue mandatory to isolate from async runtime
   • Already using write_batch() for burst efficiency
   • Could use io-uring (async I/O), but:
     - Adds kernel version dependency
     - Minimal benefit on typical hardware
-    - Complexity not justified
+    - Complexity not justified for non-critical path
 ```
 
 ### Path 10: Multi-Audio Track Selection
 
 ```
-SOURCE RING ──→ video:720p transcoder (shared)
-                    │
-                    └──→ OUTPUT RING (H.264 + AAC track0 + track1)
-                            │
-                            ├──→ audio:atrack:0 (Tokio task)
-                            │    [Packet filter: select track 0]
-                            │    └──→ audio0_ring ──→
-                            │        RTMP egress ──→ socket
-                            │
-                            └──→ audio:atrack:0,1 (Tokio task)
-                                 [Packet filter: keep both]
-                                 └──→ audio01_ring ──→
-                                     SRT egress ──→ TsMuxer ──→
-                                     TsChunkRing ──→ MemoryQueue ──→
-                                     srt_send()
+┌────────────────────────┐
+│ SOURCE RING            │
+└─────────────┬──────────┘
+              │
+              ▼
+   ┌──────────────────────────┐
+   │ video:720p TRANSCODER    │
+   │ (shared FFmpeg subprocess)
+   └────────────┬─────────────┘
+                │
+                ▼
+   ┌──────────────────────────────┐
+   │ OUTPUT RING (H.264 + AAC)    │
+   │ track0, track1               │
+   └──────┬────────────────┬──────┘
+          │                │
+          ▼                ▼
+  ┌──────────────────┐  ┌──────────────────┐
+  │ audio:ATRACK:0   │  │ audio:ATRACK:0,1 │
+  │ (packet filter)  │  │ (packet filter)  │
+  │ select track 0   │  │ keep both tracks │
+  └────────┬─────────┘  └────────┬─────────┘
+           │                     │
+           ▼                     ▼
+  ┌──────────────────┐  ┌──────────────────┐
+  │ audio0_ring      │  │ audio01_ring     │
+  │ (track selection)│  │ (track selection)│
+  └────────┬─────────┘  └────────┬─────────┘
+           │                     │
+           ▼                     ▼
+  ┌──────────────────┐  ┌──────────────────┐
+  │ RTMP EGRESS      │  │ SRT EGRESS       │
+  │ (AVCC wrap)      │  │ (TS MUXER)       │
+  │ FLV mux          │  │ (TsChunkRing)    │
+  └────────┬─────────┘  │ (MemoryQueue)    │
+           │            │ (srt_send)       │
+           ▼            │ (OS thread)      │
+  ┌──────────────────┐  └────────┬─────────┘
+  │ RTMP SOCKET      │           │
+  │ (egress)         │           ▼
+  └──────────────────┘  ┌──────────────────┐
+                        │ SRT SOCKET       │
+                        │ (egress)         │
+                        └──────────────────┘
 
 RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
   • Audio routing is CHEAP (packet filter, no codec work)
+  • Routing tasks run on Tokio (not blocking)
   • Could inline if only ONE output per audio config
     (currently general: supports N outputs per config)
-  • Each audio config creates a separate ring (by design)
+  • Each audio config creates separate ring (by design)
   • Trade-off: generality vs. latency
   
 OPTIMIZATION OPPORTUNITY:
   If single-output-per-config is common:
-    output_ring
-      ├──→ [inline filter: atrack:0] ──→ RTMP mux
-      └──→ [inline filter: atrack:0,1] ──→ SRT mux
+    output_ring → [inline filter: atrack:0] → RTMP mux
+                → [inline filter: atrack:0,1] → SRT mux
   
-  But this requires statically knowing output count at config time.
-  Current approach is more flexible.
+  But requires statically knowing output count at config time.
+  Current approach is more flexible for multi-output scenarios.
 ```
 
 ---
