@@ -47,12 +47,12 @@ graph TD
     XCODE_OUT --> |multiple| RTMP_TCP
     XCODE_OUT --> |multiple| SRT_NET
     
-    classDef ingest fill:#4caf50,stroke:#1b5e20,color:#fff
-    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:3px,color:#333
-    classDef task fill:#2196f3,stroke:#1565c0,color:#fff
-    classDef thread fill:#ffb74d,stroke:#e65100,color:#333
-    classDef queue fill:#ffccbc,stroke:#d84315,stroke-width:2px,color:#333
-    classDef output fill:#ffcc80,stroke:#ef6c00,color:#333
+    classDef ingest fill:#2e7d32,stroke:#1b5e20,stroke-width:2px,color:#fff
+    classDef ring fill:#fbc02d,stroke:#f57f17,stroke-width:3px,color:#000
+    classDef task fill:#1565c0,stroke:#0d47a1,stroke-width:2px,color:#fff
+    classDef thread fill:#e65100,stroke:#bf360c,stroke-width:2px,color:#fff
+    classDef queue fill:#ff7043,stroke:#d84315,stroke-width:2px,color:#fff
+    classDef output fill:#558b2f,stroke:#33691e,stroke-width:2px,color:#fff
     
     class RTMP,SRT,File ingest
     class SourceRing,OUTPUT ring
@@ -119,11 +119,11 @@ graph TB
     REC_WRITE --> DISK["Disk<br/>I/O"]
     Record_Feeder --> REC_WRITE
     
-    classDef tokio fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#333
-    classDef os fill:#ffe0b2,stroke:#e65100,stroke-width:2px,color:#333
-    classDef boundary fill:#ffccbc,stroke:#d84315,stroke-width:3px,color:#333
-    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#333
-    classDef queue fill:#c8e6c9,stroke:#388e3c,color:#333
+    classDef tokio fill:#1565c0,stroke:#0d47a1,stroke-width:2px,color:#fff
+    classDef os fill:#e65100,stroke:#bf360c,stroke-width:2px,color:#fff
+    classDef boundary fill:#ff7043,stroke:#d84315,stroke-width:3px,color:#fff
+    classDef ring fill:#fbc02d,stroke:#f57f17,stroke-width:2px,color:#000
+    classDef queue fill:#2e7d32,stroke:#1b5e20,stroke-width:2px,color:#fff
     
     class Tokio tokio
     class OS os
@@ -169,13 +169,13 @@ graph LR
     B1 --> Audio["🟨 B#7<br/>Audio<br/>Rings"]
     Audio --> AudioOut["🟦 Audio"]
     
-    classDef ingest fill:#4caf50,stroke:#1b5e20,color:#fff
-    classDef ring fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    classDef queue fill:#ffccbc,stroke:#d84315
-    classDef mutex fill:#c8e6c9,stroke:#388e3c
-    classDef task fill:#2196f3,stroke:#1565c0,color:#fff
-    classDef thread fill:#ffb74d,stroke:#e65100
-    classDef output fill:#ffcc80,stroke:#ef6c00
+    classDef ingest fill:#2e7d32,stroke:#1b5e20,stroke-width:2px,color:#fff
+    classDef ring fill:#fbc02d,stroke:#f57f17,stroke-width:2px,color:#000
+    classDef queue fill:#ff7043,stroke:#d84315,stroke-width:2px,color:#fff
+    classDef mutex fill:#388e3c,stroke:#1b5e20,stroke-width:2px,color:#fff
+    classDef task fill:#1565c0,stroke:#0d47a1,stroke-width:2px,color:#fff
+    classDef thread fill:#e65100,stroke:#bf360c,stroke-width:2px,color:#fff
+    classDef output fill:#558b2f,stroke:#33691e,stroke-width:2px,color:#fff
     
     class Ingest ingest
     class B1,B2,B5 ring
