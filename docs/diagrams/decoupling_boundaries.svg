@@ -1,148 +1,185 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1200" width="1000" height="1200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1000">
   <defs>
     <style>
-      .title { font-size: 24px; font-weight: bold; fill: #1a1a1a; }
-      .boundary-label { font-size: 13px; font-weight: bold; fill: #ffffff; }
-      .box-label { font-size: 11px; font-weight: 600; fill: #1a1a1a; }
-      .small-text { font-size: 10px; fill: #555555; }
-      .reason-text { font-size: 10px; fill: #333; font-style: italic; }
-      .connector { stroke: #666; stroke-width: 2; fill: none; }
-      .arrow { stroke: #333; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
-      .boundary-box { fill: #fff3cd; stroke: #ff9800; stroke-width: 2.5; }
-      .component-box { fill: #e8f5e9; stroke: #4caf50; stroke-width: 2; }
-      .essential { stroke: #d32f2f; stroke-width: 3; }
-      .optional { stroke: #fbc02d; stroke-width: 2; }
+      text { font-family: sans-serif; }
+      .title { font-size: 32px; font-weight: bold; }
+      .label { font-size: 14px; font-weight: bold; }
+      .small { font-size: 11px; }
+      .tiny { font-size: 9px; }
+      .arrow { stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+      .boundary-line { stroke-width: 3; stroke-dasharray: 8,3; stroke: #ff9800; }
     </style>
     <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
       <polygon points="0 0, 10 3, 0 6" fill="#333" />
     </marker>
   </defs>
 
-  <text x="500" y="35" text-anchor="middle" class="title">All 9 Decoupling Boundaries & Why They Exist</text>
+  <text x="700" y="40" text-anchor="middle" class="title">9 DECOUPLING BOUNDARIES</text>
 
-  <!-- BOUNDARY #1 -->
-  <g transform="translate(50, 60)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#1</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">SOURCE RING (4096 slots)</text>
-    <text x="75" y="35" class="reason-text">Multi-egress isolation: Different consumers (RTMP, SRT, HLS, Recording) run at independent rates</text>
-    <text x="75" y="50" class="reason-text">Cannot run end-to-end: One slow egress (network congestion, disk stall) must not block others</text>
-    <text x="75" y="65" class="reason-text">Cost: 1 ring, lock-free SPMC (Arc allocation per packet). Necessary for scalability.</text>
+  <!-- BOUNDARY #1: SOURCE RING -->
+  <g id="boundary1">
+    <line x1="50" y1="100" x2="1350" y2="100" stroke="#f5f5f5" stroke-width="1"/>
+    <text x="60" y="75" class="label" fill="#ff9800">[B#1] SOURCE RING</text>
+
+    <rect x="50" y="100" width="250" height="120" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+    <text x="175" y="140" text-anchor="middle" class="small" fill="white" font-weight="bold">RTMP ingest</text>
+    <text x="175" y="155" text-anchor="middle" class="small" fill="white">+</text>
+    <text x="175" y="170" text-anchor="middle" class="small" fill="white" font-weight="bold">SRT ingest</text>
+    <text x="175" y="185" text-anchor="middle" class="small" fill="white">+</text>
+    <text x="175" y="200" text-anchor="middle" class="small" fill="white" font-weight="bold">File ingest</text>
+
+    <path d="M 300 160 L 380 160" class="arrow" stroke="#333"/>
+
+    <rect x="380" y="100" width="200" height="120" fill="#fff9c4" stroke="#f57f17" stroke-width="3" rx="6"/>
+    <text x="480" y="140" text-anchor="middle" class="label" fill="#333">SOURCE</text>
+    <text x="480" y="160" text-anchor="middle" class="label" fill="#333">RING</text>
+    <text x="480" y="180" text-anchor="middle" class="tiny" fill="#666">4096 slots</text>
+    <text x="480" y="195" text-anchor="middle" class="tiny" fill="#666">lock-free SPMC</text>
+
+    <path d="M 580 160 L 650 160" class="arrow" stroke="#333"/>
+
+    <rect x="650" y="100" width="280" height="120" fill="#4caf50" stroke="#2e7d32" stroke-width="2" rx="6"/>
+    <text x="790" y="140" text-anchor="middle" class="small" fill="white" font-weight="bold">RTMP egress</text>
+    <text x="790" y="155" text-anchor="middle" class="small" fill="white">+</text>
+    <text x="790" y="170" text-anchor="middle" class="small" fill="white" font-weight="bold">SRT/HLS/Record</text>
+    <text x="790" y="185" text-anchor="middle" class="small" fill="white">+</text>
+    <text x="790" y="200" text-anchor="middle" class="small" fill="white" font-weight="bold">Transcoder</text>
+
+    <text x="380" y="235" class="tiny" fill="#666">Why: Multi-consumer fan-out, independent rates</text>
+    <text x="380" y="250" class="tiny" fill="#666">Run-to-completion: ❌ Cannot (needs ring isolation)</text>
   </g>
 
-  <!-- Arrow -->
-  <line x1="500" y1="160" x2="500" y2="190" class="arrow"/>
+  <!-- BOUNDARY #2-3: SRT PATH -->
+  <g id="boundaries2-3">
+    <line x1="50" y1="300" x2="1350" y2="300" stroke="#f5f5f5" stroke-width="1"/>
+    <text x="60" y="275" class="label" fill="#ff9800">[B#2-3] SRT SENDER PATH</text>
 
-  <!-- BOUNDARY #2 -->
-  <g transform="translate(50, 190)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#2</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">TS CHUNK RING (per preset)</text>
-    <text x="75" y="35" class="reason-text">Shared mux result: SRT muxer produces one TsMuxer output, multiple SRT connections read it</text>
-    <text x="75" y="50" class="reason-text">Decouples egress producer from multiple egress consumers at different rates</text>
-    <text x="75" y="65" class="reason-text">Alternative: Per-connection muxing (inefficient, duplicates work per connection)</text>
+    <rect x="50" y="300" width="180" height="100" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+    <text x="140" y="340" text-anchor="middle" class="small" fill="white" font-weight="bold">SRT muxer</text>
+    <text x="140" y="360" text-anchor="middle" class="tiny" fill="white">(async)</text>
+
+    <path d="M 230 350 L 300 350" class="arrow" stroke="#333"/>
+
+    <rect x="300" y="300" width="150" height="100" fill="#b39ddb" stroke="#512da8" stroke-width="2" rx="6"/>
+    <text x="375" y="340" text-anchor="middle" class="small" fill="#333" font-weight="bold">TsChunk</text>
+    <text x="375" y="360" text-anchor="middle" class="tiny" fill="#333">Ring [B#2]</text>
+
+    <path d="M 450 350 L 520 350" class="arrow" stroke="#333"/>
+
+    <rect x="520" y="300" width="180" height="100" fill="#ffccbc" stroke="#d84315" stroke-width="3" rx="6"/>
+    <text x="610" y="340" text-anchor="middle" class="small" fill="#333" font-weight="bold">MemoryQueue</text>
+    <text x="610" y="360" text-anchor="middle" class="tiny" fill="#333">Condvar [B#3]</text>
+
+    <path d="M 700 350 L 770 350" class="arrow" stroke="#ff6f00"/>
+
+    <rect x="770" y="300" width="180" height="100" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="6"/>
+    <text x="860" y="340" text-anchor="middle" class="small" fill="#333" font-weight="bold">srt_send()</text>
+    <text x="860" y="360" text-anchor="middle" class="tiny" fill="#333">(OS thread)</text>
+
+    <path d="M 950" y="350 L 1020 350" class="arrow" stroke="#ff6f00"/>
+
+    <rect x="1020" y="300" width="180" height="100" fill="#ffcc80" stroke="#ef6c00" stroke-width="2" rx="6"/>
+    <text x="1110" y="340" text-anchor="middle" class="small" fill="#333" font-weight="bold">Network</text>
+    <text x="1110" y="360" text-anchor="middle" class="tiny" fill="#333">socket</text>
+
+    <text x="50" y="425" class="tiny" fill="#666">B#2: Shared muxer output → multiple SRT connections</text>
+    <text x="50" y="440" class="tiny" fill="#666">B#3: MANDATORY: libsrt_send() blocks, must isolate from Tokio</text>
+    <text x="50" y="455" class="tiny" fill="#666">Run-to-completion: ❌ Cannot (blocking I/O)</text>
   </g>
 
-  <!-- Arrow -->
-  <line x1="500" y1="290" x2="500" y2="320" class="arrow"/>
+  <!-- BOUNDARY #4-5: TRANSCODING PATH -->
+  <g id="boundaries4-5">
+    <line x1="50" y1="500" x2="1350" y2="500" stroke="#f5f5f5" stroke-width="1"/>
+    <text x="60" y="475" class="label" fill="#ff9800">[B#4-5] TRANSCODING PATH</text>
 
-  <!-- BOUNDARY #3 -->
-  <g transform="translate(50, 320)">
-    <rect x="0" y="0" width="900" height="100" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#3</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">MEMORY QUEUE (SRT sender isolation)</text>
-    <text x="75" y="35" class="reason-text">Async ↔ Blocking boundary: libsrt_send() blocks indefinitely on network congestion</text>
-    <text x="75" y="50" class="reason-text">Cannot run on Tokio: Blocking one worker thread ≠ blocking all tasks (OS thread is isolated)</text>
-    <text x="75" y="65" class="reason-text">Backpressure: Full queue tells Tokio to slow down; empty queue blocks OS thread</text>
-    <text x="75" y="80" class="reason-text">Cost: 1 Condvar-based queue per SRT output. Non-negotiable for SRT protocol.</text>
+    <rect x="50" y="500" width="180" height="100" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+    <text x="140" y="540" text-anchor="middle" class="small" fill="white" font-weight="bold">Feeder task</text>
+    <text x="140" y="560" text-anchor="middle" class="tiny" fill="white">(Tokio)</text>
+
+    <path d="M 230 550 L 300 550" class="arrow" stroke="#333"/>
+
+    <rect x="300" y="500" width="180" height="100" fill="#ffccbc" stroke="#d84315" stroke-width="3" rx="6"/>
+    <text x="390" y="540" text-anchor="middle" class="small" fill="#333" font-weight="bold">MemoryQueue</text>
+    <text x="390" y="560" text-anchor="middle" class="tiny" fill="#333">[B#4]</text>
+
+    <path d="M 480 550 L 550 550" class="arrow" stroke="#ff6f00"/>
+
+    <rect x="550" y="500" width="180" height="100" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="6"/>
+    <text x="640" y="540" text-anchor="middle" class="small" fill="#333" font-weight="bold">FFmpeg</text>
+    <text x="640" y="560" text-anchor="middle" class="tiny" fill="#333">subprocess</text>
+
+    <path d="M 730 550 L 800 550" class="arrow" stroke="#9c27b0"/>
+
+    <rect x="800" y="500" width="180" height="100" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2" rx="6"/>
+    <text x="890" y="540" text-anchor="middle" class="small" fill="#333" font-weight="bold">Output Ring</text>
+    <text x="890" y="560" text-anchor="middle" class="tiny" fill="#333">[B#5]</text>
+
+    <path d="M 980 550 L 1050 550" class="arrow" stroke="#333"/>
+
+    <rect x="1050" y="500" width="180" height="100" fill="#4caf50" stroke="#2e7d32" stroke-width="2" rx="6"/>
+    <text x="1140" y="540" text-anchor="middle" class="small" fill="white" font-weight="bold">Egress tasks</text>
+    <text x="1140" y="560" text-anchor="middle" class="tiny" fill="white">(multi-consumer)</text>
+
+    <text x="50" y="625" class="tiny" fill="#666">B#4: MANDATORY: FFmpeg blocking, isolate from Tokio runtime</text>
+    <text x="50" y="640" class="tiny" fill="#666">B#5: Multi-consumer: transcoded packets to multiple egress at independent rates</text>
+    <text x="50" y="655" class="tiny" fill="#666">Run-to-completion: ❌ Cannot (blocking subprocess + multi-consumer)</text>
   </g>
 
-  <!-- Arrow -->
-  <line x1="500" y1="430" x2="500" y2="460" class="arrow"/>
+  <!-- BOUNDARY #6-9: SPECIAL PATHS -->
+  <g id="boundaries6-9">
+    <line x1="50" y1="700" x2="1350" y2="700" stroke="#f5f5f5" stroke-width="1"/>
+    <text x="60" y="675" class="label" fill="#ff9800">[B#6-9] RECORDING, HLS, AUDIO, CODEC CONVERSION</text>
 
-  <!-- BOUNDARY #4 -->
-  <g transform="translate(50, 460)">
-    <rect x="0" y="0" width="900" height="100" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#4</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">MEMORY QUEUE (FFmpeg stdin feeder)</text>
-    <text x="75" y="35" class="reason-text">Async ↔ Blocking boundary: FFmpeg subprocess is blocking, must run on OS thread</text>
-    <text x="75" y="50" class="reason-text">Input buffering: Feeder task (Tokio) writes TS packets into queue; subprocess reads continuously</text>
-    <text x="75" y="65" class="reason-text">Decouples Tokio ingest rate from FFmpeg decode rate (highly variable)</text>
-    <text x="75" y="80" class="reason-text">Cost: 1 queue per preset. Essential for transcoding to not block ingest.</text>
+    <!-- Recording -->
+    <g>
+      <rect x="50" y="700" width="160" height="80" fill="#ffccbc" stroke="#d84315" stroke-width="2" rx="5"/>
+      <text x="130" y="730" text-anchor="middle" class="tiny" fill="#333" font-weight="bold">MemoryQueue</text>
+      <text x="130" y="745" text-anchor="middle" class="tiny" fill="#333">[B#9]</text>
+      <path d="M 210 740 L 280 740" class="arrow" stroke="#ff6f00"/>
+      <rect x="280" y="700" width="140" height="80" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="5"/>
+      <text x="350" y="735" text-anchor="middle" class="tiny" fill="#333" font-weight="bold">fwrite()</text>
+    </g>
+
+    <!-- HLS (best case) -->
+    <g>
+      <rect x="480" y="700" width="160" height="80" fill="#c8e6c9" stroke="#2e7d32" stroke-width="2" rx="5"/>
+      <text x="560" y="730" text-anchor="middle" class="tiny" fill="#333" font-weight="bold">Mutex</text>
+      <text x="560" y="745" text-anchor="middle" class="tiny" fill="#333">[B#8]</text>
+      <path d="M 640 740 L 710 740" class="arrow" stroke="#2e7d32"/>
+      <rect x="710" y="700" width="140" height="80" fill="#a5d6a7" stroke="#388e3c" stroke-width="2" rx="5"/>
+      <text x="780" y="735" text-anchor="middle" class="tiny" fill="#333" font-weight="bold">HTTP GET</text>
+    </g>
+
+    <!-- Audio routing -->
+    <g>
+      <rect x="910" y="700" width="160" height="80" fill="#b39ddb" stroke="#512da8" stroke-width="2" rx="5"/>
+      <text x="990" y="730" text-anchor="middle" class="tiny" fill="#333" font-weight="bold">Audio rings</text>
+      <text x="990" y="745" text-anchor="middle" class="tiny" fill="#333">[B#7]</text>
+      <path d="M 1070 740 L 1140 740" class="arrow" stroke="#333"/>
+      <rect x="1140" y="700" width="140" height="80" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="5"/>
+      <text x="1210" y="735" text-anchor="middle" class="tiny" fill="white" font-weight="bold">Muxers</text>
+    </g>
+
+    <text x="50" y="820" class="tiny" fill="#666">B#6: Per-SRT-connection reader state isolation</text>
+    <text x="50" y="835" class="tiny" fill="#666">B#7: Audio track routing (async packet filters)</text>
+    <text x="50" y="850" class="tiny" fill="#666">B#8: HLS segment store (low contention ~0.17 Hz) ✅ BEST CASE</text>
+    <text x="50" y="865" class="tiny" fill="#666">B#9: Recording disk I/O isolation (low-priority path)</text>
   </g>
 
-  <!-- Arrow -->
-  <line x1="500" y1="570" x2="500" y2="600" class="arrow"/>
+  <!-- Key insights -->
+  <g id="insights">
+    <line x1="50" y1="910" x2="1350" y2="910" stroke="#f5f5f5" stroke-width="1"/>
 
-  <!-- BOUNDARY #5 -->
-  <g transform="translate(50, 600)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#5</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">OUTPUT RING (transcoded packets, per preset)</text>
-    <text x="75" y="35" class="reason-text">Multi-consumer fan-out: Transcoded output shared by multiple egress paths (RTMP, SRT, etc.)</text>
-    <text x="75" y="50" class="reason-text">Isolates FFmpeg stdout reader from multiple egress tasks at different rates</text>
-    <text x="75" y="65" class="reason-text">Cost: 1 ring per preset. Necessary for efficient transcoder sharing.</text>
-  </g>
+    <rect x="50" y="920" width="420" height="60" fill="#ffe0b2" stroke="#e65100" stroke-width="1" rx="5"/>
+    <text x="260" y="940" text-anchor="middle" class="small" fill="#333" font-weight="bold">❌ Cannot Remove</text>
+    <text x="260" y="955" text-anchor="middle" class="tiny" fill="#333">B#1 (multi-egress), B#3 (libsrt), B#4 (FFmpeg), B#5 (transcoding)</text>
 
-  <!-- Arrow -->
-  <line x1="500" y1="700" x2="500" y2="730" class="arrow"/>
+    <rect x="490" y="920" width="420" height="60" fill="#fff9c4" stroke="#f57f17" stroke-width="1" rx="5"/>
+    <text x="700" y="940" text-anchor="middle" class="small" fill="#333" font-weight="bold">⚠️ Maybe Remove</text>
+    <text x="700" y="955" text-anchor="middle" class="tiny" fill="#333">B#2 (single SRT only), B#6 (single consumer), B#7 (single audio)</text>
 
-  <!-- BOUNDARY #6 -->
-  <g transform="translate(50, 730)">
-    <rect x="0" y="0" width="900" height="100" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#6</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">MEMORY QUEUE (H.265→H.264 codec)</text>
-    <text x="75" y="35" class="reason-text">Async ↔ Blocking boundary: libavcodec H.265→H.264 conversion blocks</text>
-    <text x="75" y="50" class="reason-text">Only for RTMP egress: RTMP protocol cannot carry H.265, must convert</text>
-    <text x="75" y="65" class="reason-text">Per-stage keying: Independent threads for (H.265→H.264:from:source) and (:from:720p)</text>
-    <text x="75" y="80" class="reason-text">Cost: 2 OS threads when both RTMP-src + RTMP-720p with H.265 ingest. Allows parallelization.</text>
-  </g>
-
-  <!-- Arrow -->
-  <line x1="500" y1="840" x2="500" y2="870" class="arrow"/>
-
-  <!-- BOUNDARY #7 -->
-  <g transform="translate(50, 870)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box optional" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#fbc02d" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#7</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">AUDIO ROUTING RINGS (per track config)</text>
-    <text x="75" y="35" class="reason-text">Multi-consumer isolation: Different egress outputs need different audio track selections</text>
-    <text x="75" y="50" class="reason-text">Could inline if only 1 output per config, but design is general for multi-output</text>
-    <text x="75" y="65" class="reason-text">Cost: 1 ring per audio configuration. Optional optimization: merge if single-output-per-config.</text>
-  </g>
-
-  <!-- Arrow -->
-  <line x1="500" y1="970" x2="500" y2="1000" class="arrow"/>
-
-  <!-- BOUNDARY #8 -->
-  <g transform="translate(50, 1000)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box optional" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#fbc02d" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#8</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">HLS SEGMENT STORE (Mutex)</text>
-    <text x="75" y="35" class="reason-text">Shared read/write: Segmenter writes completed segments; HTTP handlers read them</text>
-    <text x="75" y="50" class="reason-text">Low contention (~0.17 Hz = 1 lock per 6 seconds). BEST run-to-completion case.</text>
-    <text x="75" y="65" class="reason-text">Cost: 1 Mutex. Could use lock-free atomic swaps (if contention increases), but currently optimal.</text>
-  </g>
-
-  <!-- Final boundary marker -->
-  <line x1="500" y1="1100" x2="500" y2="1130" class="arrow"/>
-
-  <!-- BOUNDARY #9 -->
-  <g transform="translate(50, 1130)">
-    <rect x="0" y="0" width="900" height="90" class="boundary-box essential" rx="6"/>
-    <rect x="10" y="8" width="60" height="25" fill="#ff9800" rx="3"/>
-    <text x="40" y="27" text-anchor="middle" class="boundary-label">B#9</text>
-    <text x="75" y="20" class="box-label" font-weight="bold">MEMORY QUEUE (Recording disk writer)</text>
-    <text x="75" y="35" class="reason-text">Async ↔ Blocking boundary: fwrite() to disk blocks unpredictably (100+ ms stalls)</text>
-    <text x="75" y="50" class="reason-text">Not in hot path: Recording is optional feature. Per-recording queue isolates from Tokio.</text>
-    <text x="75" y="65" class="reason-text">Cost: 1 queue per active recording. Could use io-uring for async I/O (not worth complexity).</text>
+    <rect x="930" y="920" width="420" height="60" fill="#c8e6c9" stroke="#2e7d32" stroke-width="1" rx="5"/>
+    <text x="1140" y="940" text-anchor="middle" class="small" fill="#333" font-weight="bold">✅ Well-Designed</text>
+    <text x="1140" y="955" text-anchor="middle" class="tiny" fill="#333">B#8 (HLS ~0.17 Hz), B#9 (recording low-priority)</text>
   </g>
 </svg>

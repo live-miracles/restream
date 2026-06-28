@@ -770,8 +770,6 @@ RUN-TO-COMPLETION POTENTIAL: 🟠 Medium
   • Socket writes decouple naturally (network speed)
 ```
 
-**SVG Rendering:** ![Path 1 & 4 Diagram](diagrams/path1_diagram.svg)
-
 ### Path 5 & 6: Transcoded (720p, External FFmpeg)
 
 ```
@@ -834,8 +832,6 @@ RUN-TO-COMPLETION POTENTIAL: 🔴 Very Low
   • Output ring needed for multiple egress (SRT + RTMP)
   • MemoryQueues: input (feeder↔FFmpeg) + output (egress↔srt_send)
 ```
-
-**SVG Rendering:** ![Path 5 & 6 Transcoding](diagrams/path5_transcoding.svg)
 
 ### Path 3 & 9: SRT Ingest with H.265→H.264 Conversion
 
@@ -960,8 +956,6 @@ RUN-TO-COMPLETION POTENTIAL: 🟢 High (Best path!)
   • Could eliminate Mutex with lock-free atomic swaps (if needed)
   • Currently near-optimal design with minimal decoupling
 ```
-
-**SVG Rendering:** ![Path 7 HLS Best Case](diagrams/hls_best_case.svg)
 
 ### Path 8: Recording (Disk I/O Blocking)
 

@@ -6,9 +6,6 @@ The preferred integration entry point is the native Rust harness mode:
 ./target/release/test_harness resource-sweep
 ```
 
-`test/run-resource-sweep.py` remains available as a lighter-weight exploratory
-driver, but the methodology is now captured in `test_harness` too.
-
 The sweep measures `restream` CPU and memory across a fixed set of live
 integration scenarios:
 
@@ -34,7 +31,13 @@ The sweep combines:
 - OS-level process memory from `/proc/<pid>/status` and `/proc/<pid>/smaps_rollup`
 - CPU deltas from `/proc/<pid>/stat`
 - internal payload accounting from `GET /api/v1/engine/telemetry`
-- child FFmpeg RSS from `/proc`
+- child FFmpeg RSS and CPU from `/proc`
+
+For transcode scenarios the CSV/JSON now split CPU into:
+
+- `restream_cpu_*`: CPU consumed inside the `restream` process
+- `ffmpeg_cpu_*`: CPU consumed by child `ffmpeg` processes
+- `total_cpu_*`: combined CPU for the scenario
 
 Run it with the current optimized binary:
 

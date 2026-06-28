@@ -495,15 +495,32 @@ scripts/resource-limit cargo build --profile bench --bin test_harness
 
 Measures current-code CPU and memory across baseline, ingest-only, ingest
 growth, egress growth, source-vs-transcode, and HEVC bridge scenarios. The
-script records:
+Rust harness records:
 
 - process RSS plus `smaps_rollup` (`Anonymous`, `Private_Dirty`, `Shared_Clean`, `Pss`)
 - internal memory accounting from `/api/v1/engine/telemetry`
-- child FFmpeg RSS
+- child FFmpeg RSS and CPU
 - 1 Hz raw samples and per-stage aggregates
 
 See [resource-sweep.md](resource-sweep.md) for the artifact layout and env
 knobs.
+
+### `run-bitrate-scale-test.py` — exploratory bitrate sweep
+
+```sh
+python3 test/run-bitrate-scale-test.py
+```
+
+This remains a Python-based exploratory utility, not the canonical integration
+harness path. It still owns three things that are not yet ported into Rust:
+
+- bitrate-parametrized ingest generation across the five ingest shapes
+- PNG chart generation via `matplotlib`
+- a single-run report focused on bitrate sensitivity rather than the broader
+  resource lifecycle matrix
+
+Keep it only if those plots are still useful. If we want Python out of the test
+path entirely, this is the next candidate to port into `test_harness`.
 
 ### `bonding` — SRT socket bonding
 

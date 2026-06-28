@@ -1,172 +1,164 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="1200" height="900">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800">
   <defs>
     <style>
-      .title { font-size: 24px; font-weight: bold; fill: #1a1a1a; }
-      .section-label { font-size: 14px; font-weight: bold; fill: #ffffff; }
-      .box-label { font-size: 12px; font-weight: 600; fill: #1a1a1a; }
-      .small-text { font-size: 11px; fill: #555555; }
-      .connector { stroke: #333; stroke-width: 2; fill: none; }
-      .arrow { stroke: #333; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
-      .decoupling-box { fill: #fff3cd; stroke: #ff9800; stroke-width: 2; }
-      .async-box { fill: #e3f2fd; stroke: #2196f3; stroke-width: 2; }
-      .thread-box { fill: #ffe0b2; stroke: #ff6f00; stroke-width: 2; }
-      .ring-box { fill: #f3e5f5; stroke: #9c27b0; stroke-width: 2; }
-      .section-bg { fill: #f5f5f5; stroke: #cccccc; stroke-width: 1; }
+      text { font-family: sans-serif; }
+      .title { font-size: 32px; font-weight: bold; }
+      .label { font-size: 14px; font-weight: bold; }
+      .small { font-size: 11px; }
+      .arrow { stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+      .decoupling { stroke-width: 3; stroke-dasharray: 8,3; }
     </style>
     <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
       <polygon points="0 0, 10 3, 0 6" fill="#333" />
     </marker>
   </defs>
 
-  <!-- Title -->
-  <text x="600" y="35" text-anchor="middle" class="title">RESTREAM MEDIA PIPELINE - Run-to-Completion Analysis</text>
+  <text x="600" y="40" text-anchor="middle" class="title">RESTREAM MEDIA PIPELINE</text>
 
-  <!-- Section 1: INGRESS LAYER -->
-  <rect x="20" y="60" width="1160" height="120" class="section-bg" rx="8"/>
-  <text x="40" y="85" class="section-label" font-size="16">INGRESS LAYER</text>
+  <!-- INGRESS: Three input sources at top -->
+  <g id="ingress">
+    <!-- RTMP -->
+    <rect x="80" y="80" width="140" height="90" fill="#4caf50" stroke="#1b5e20" stroke-width="2" rx="8"/>
+    <text x="150" y="115" text-anchor="middle" class="label" fill="white">RTMP</text>
+    <text x="150" y="135" text-anchor="middle" class="small" fill="white">TCP+FLV</text>
+    <text x="150" y="150" text-anchor="middle" class="small" fill="white">demux</text>
 
-  <rect x="60" y="95" width="150" height="60" class="async-box" rx="6"/>
-  <text x="135" y="115" text-anchor="middle" class="box-label">RTMP ingest</text>
-  <text x="135" y="135" text-anchor="middle" class="small-text">(FLV demux)</text>
+    <!-- SRT -->
+    <rect x="380" y="80" width="140" height="90" fill="#4caf50" stroke="#1b5e20" stroke-width="2" rx="8"/>
+    <text x="450" y="115" text-anchor="middle" class="label" fill="white">SRT</text>
+    <text x="450" y="135" text-anchor="middle" class="small" fill="white">UDP+TS</text>
+    <text x="450" y="150" text-anchor="middle" class="small" fill="white">demux</text>
 
-  <rect x="260" y="95" width="150" height="60" class="async-box" rx="6"/>
-  <text x="335" y="115" text-anchor="middle" class="box-label">SRT ingest</text>
-  <text x="335" y="135" text-anchor="middle" class="small-text">(TS demux)</text>
-
-  <rect x="460" y="95" width="150" height="60" class="async-box" rx="6"/>
-  <text x="535" y="115" text-anchor="middle" class="box-label">File ingest</text>
-  <text x="535" y="135" text-anchor="middle" class="small-text">(FFmpeg)</text>
-
-  <!-- Arrow to SOURCE RING -->
-  <line x1="135" y1="155" x2="135" y2="190" class="arrow"/>
-  <line x1="335" y1="155" x2="335" y2="190" class="arrow"/>
-  <line x1="535" y1="155" x2="535" y2="190" class="arrow"/>
-  <line x1="100" y1="190" x2="570" y2="190" class="connector"/>
-
-  <!-- Section 2: SOURCE RING (DECOUPLING POINT #1) -->
-  <rect x="120" y="190" width="430" height="80" class="decoupling-box" rx="6"/>
-  <text x="335" y="215" text-anchor="middle" class="box-label">SOURCE RING (4096 slots) - [B#1]</text>
-  <text x="335" y="235" text-anchor="middle" class="small-text">Lock-free SPMC: 1 producer, N consumers</text>
-  <text x="335" y="255" text-anchor="middle" class="small-text">Multi-egress isolation: different outputs at independent rates</text>
-
-  <!-- Arrow to processing branches -->
-  <line x1="335" y1="270" x2="335" y2="300" class="arrow"/>
-
-  <!-- Section 3: MAIN BRANCHES -->
-  <rect x="20" y="300" width="1160" height="500" class="section-bg" rx="8"/>
-
-  <!-- RTMP PASSTHROUGH -->
-  <rect x="40" y="320" width="120" height="70" class="async-box" rx="6"/>
-  <text x="100" y="345" text-anchor="middle" class="box-label">RTMP</text>
-  <text x="100" y="363" text-anchor="middle" class="box-label">EGRESS</text>
-  <line x1="100" y1="390" x2="100" y2="420" class="arrow"/>
-  <rect x="50" y="420" width="100" height="50" class="async-box" rx="6"/>
-  <text x="100" y="450" text-anchor="middle" class="box-label">TCP socket</text>
-
-  <!-- SRT PASSTHROUGH - COMPLEX PATH -->
-  <rect x="200" y="320" width="120" height="70" class="async-box" rx="6"/>
-  <text x="260" y="345" text-anchor="middle" class="box-label">SRT</text>
-  <text x="260" y="363" text-anchor="middle" class="box-label">EGRESS</text>
-  <line x1="260" y1="390" x2="260" y2="420" class="arrow"/>
-  <rect x="200" y="420" width="120" height="60" class="ring-box" rx="6"/>
-  <text x="260" y="440" text-anchor="middle" class="box-label">TsChunkRing</text>
-  <text x="260" y="458" text-anchor="middle" class="small-text">[B#2]</text>
-  <line x1="260" y1="480" x2="260" y2="510" class="arrow"/>
-  <rect x="200" y="510" width="120" height="60" class="decoupling-box" rx="6"/>
-  <text x="260" y="530" text-anchor="middle" class="box-label">MemoryQueue</text>
-  <text x="260" y="548" text-anchor="middle" class="small-text">[B#3]</text>
-  <line x1="260" y1="570" x2="260" y2="600" class="arrow"/>
-  <rect x="200" y="600" width="120" height="60" class="thread-box" rx="6"/>
-  <text x="260" y="620" text-anchor="middle" class="box-label">OS Thread:</text>
-  <text x="260" y="638" text-anchor="middle" class="box-label">srt_send()</text>
-  <line x1="260" y1="660" x2="260" y2="690" class="arrow"/>
-  <rect x="210" y="690" width="100" height="50" class="thread-box" rx="6"/>
-  <text x="260" y="720" text-anchor="middle" class="box-label">SRT socket</text>
-
-  <!-- HLS SEGMENTATION - BEST CASE -->
-  <rect x="380" y="320" width="120" height="70" class="async-box" rx="6"/>
-  <text x="440" y="345" text-anchor="middle" class="box-label">HLS</text>
-  <text x="440" y="363" text-anchor="middle" class="box-label">SEGMENT</text>
-  <line x1="440" y1="390" x2="440" y2="420" class="arrow"/>
-  <rect x="370" y="420" width="140" height="60" class="decoupling-box" rx="6"/>
-  <text x="440" y="440" text-anchor="middle" class="box-label">Mutex (0.17Hz)</text>
-  <text x="440" y="458" text-anchor="middle" class="small-text">[B#8]</text>
-  <line x1="440" y1="480" x2="440" y2="510" class="arrow"/>
-  <rect x="380" y="510" width="120" height="60" class="async-box" rx="6"/>
-  <text x="440" y="530" text-anchor="middle" class="box-label">HTTP GET</text>
-  <text x="440" y="548" text-anchor="middle" class="small-text">handlers</text>
-  <line x1="440" y1="570" x2="440" y2="600" class="arrow"/>
-  <rect x="390" y="600" width="100" height="60" class="async-box" rx="6"/>
-  <text x="440" y="625" text-anchor="middle" class="box-label">Browser</text>
-  <text x="440" y="643" text-anchor="middle" class="box-label">clients</text>
-
-  <!-- RECORDING -->
-  <rect x="560" y="320" width="120" height="70" class="async-box" rx="6"/>
-  <text x="620" y="345" text-anchor="middle" class="box-label">RECORDING</text>
-  <text x="620" y="363" text-anchor="middle" class="box-label">FEEDER</text>
-  <line x1="620" y1="390" x2="620" y2="420" class="arrow"/>
-  <rect x="560" y="420" width="120" height="60" class="decoupling-box" rx="6"/>
-  <text x="620" y="440" text-anchor="middle" class="box-label">MemoryQueue</text>
-  <text x="620" y="458" text-anchor="middle" class="small-text">[B#9]</text>
-  <line x1="620" y1="480" x2="620" y2="510" class="arrow"/>
-  <rect x="560" y="510" width="120" height="60" class="thread-box" rx="6"/>
-  <text x="620" y="530" text-anchor="middle" class="box-label">OS Thread:</text>
-  <text x="620" y="548" text-anchor="middle" class="box-label">fwrite()</text>
-  <line x1="620" y1="570" x2="620" y2="600" class="arrow"/>
-  <rect x="570" y="600" width="100" height="50" class="thread-box" rx="6"/>
-  <text x="620" y="625" text-anchor="middle" class="box-label">Disk file</text>
-
-  <!-- TRANSCODING PATH -->
-  <rect x="740" y="320" width="140" height="70" class="async-box" rx="6"/>
-  <text x="810" y="345" text-anchor="middle" class="box-label">TRANSCODER</text>
-  <text x="810" y="363" text-anchor="middle" class="box-label">FEEDER</text>
-  <line x1="810" y1="390" x2="810" y2="420" class="arrow"/>
-  <rect x="740" y="420" width="140" height="60" class="decoupling-box" rx="6"/>
-  <text x="810" y="440" text-anchor="middle" class="box-label">MemoryQueue</text>
-  <text x="810" y="458" text-anchor="middle" class="small-text">[B#4]</text>
-  <line x1="810" y1="480" x2="810" y2="510" class="arrow"/>
-  <rect x="750" y="510" width="120" height="60" class="thread-box" rx="6"/>
-  <text x="810" y="530" text-anchor="middle" class="box-label">FFmpeg</text>
-  <text x="810" y="548" text-anchor="middle" class="box-label">subprocess</text>
-  <line x1="810" y1="570" x2="810" y2="600" class="arrow"/>
-  <rect x="740" y="600" width="140" height="60" class="ring-box" rx="6"/>
-  <text x="810" y="620" text-anchor="middle" class="box-label">OUTPUT RING</text>
-  <text x="810" y="638" text-anchor="middle" class="small-text">[B#5]</text>
-  <line x1="810" y1="660" x2="810" y2="690" class="arrow"/>
-  <text x="810" y="710" text-anchor="middle" class="small-text">→ RTMP/SRT egress</text>
-
-  <!-- AUDIO ROUTING (if multi-audio) -->
-  <rect x="950" y="320" width="130" height="70" class="async-box" rx="6"/>
-  <text x="1015" y="345" text-anchor="middle" class="box-label">AUDIO</text>
-  <text x="1015" y="363" text-anchor="middle" class="box-label">ROUTING</text>
-  <line x1="1015" y1="390" x2="1015" y2="420" class="arrow"/>
-  <rect x="945" y="420" width="140" height="60" class="ring-box" rx="6"/>
-  <text x="1015" y="440" text-anchor="middle" class="box-label">Audio rings</text>
-  <text x="1015" y="458" text-anchor="middle" class="small-text">[B#7]</text>
-  <line x1="1015" y1="480" x2="1015" y2="510" class="arrow"/>
-  <rect x="950" y="510" width="130" height="60" class="async-box" rx="6"/>
-  <text x="1015" y="530" text-anchor="middle" class="box-label">Packet</text>
-  <text x="1015" y="548" text-anchor="middle" class="box-label">filters</text>
-
-  <!-- Legend -->
-  <g transform="translate(40, 820)">
-    <text x="0" y="0" class="section-label" font-size="14">Legend:</text>
-    <rect x="0" y="10" width="80" height="30" class="async-box" rx="4"/>
-    <text x="40" y="32" text-anchor="middle" class="small-text">Tokio Task</text>
-    <rect x="100" y="10" width="80" height="30" class="thread-box" rx="4"/>
-    <text x="140" y="32" text-anchor="middle" class="small-text">OS Thread</text>
-    <rect x="200" y="10" width="80" height="30" class="ring-box" rx="4"/>
-    <text x="240" y="32" text-anchor="middle" class="small-text">Ring/Queue</text>
-    <rect x="300" y="10" width="80" height="30" class="decoupling-box" rx="4"/>
-    <text x="340" y="32" text-anchor="middle" class="small-text">Boundary</text>
+    <!-- File -->
+    <rect x="680" y="80" width="140" height="90" fill="#4caf50" stroke="#1b5e20" stroke-width="2" rx="8"/>
+    <text x="750" y="115" text-anchor="middle" class="label" fill="white">File</text>
+    <text x="750" y="135" text-anchor="middle" class="small" fill="white">FFmpeg</text>
+    <text x="750" y="150" text-anchor="middle" class="small" fill="white">decode</text>
   </g>
 
-  <!-- Key metrics -->
-  <g transform="translate(520, 820)">
-    <text class="section-label" font-size="12">Key Metrics:</text>
-    <text y="18" class="small-text">• Source Ring: 4096 slots (~24s @ 4K60)</text>
-    <text y="33" class="small-text">• TsMuxer: ~0.6µs/packet</text>
-    <text y="48" class="small-text">• FFmpeg: 0.5-2s per frame (blocking)</text>
-    <text y="63" class="small-text">• HLS Mutex: 0.17 Hz contention (~6s intervals)</text>
+  <!-- Arrows to SOURCE RING -->
+  <path d="M 150 170 L 150 210" class="arrow" stroke="#333"/>
+  <path d="M 450 170 L 450 210" class="arrow" stroke="#333"/>
+  <path d="M 750 170 L 750 210" class="arrow" stroke="#333"/>
+
+  <!-- SOURCE RING - DECOUPLING BOUNDARY #1 -->
+  <rect x="150" y="210" width="900" height="80" fill="#fff9c4" stroke="#f57f17" stroke-width="3" rx="8"/>
+  <text x="600" y="245" text-anchor="middle" class="label" fill="#333">SOURCE RING (4096 slots)</text>
+  <text x="600" y="265" text-anchor="middle" class="small" fill="#666">Lock-free SPMC: all ingest → all egress (independent rates)</text>
+  <rect x="950" y="220" width="60" height="60" fill="#ff9800" stroke="#e65100" stroke-width="2" rx="4"/>
+  <text x="980" y="250" text-anchor="middle" class="label" fill="white">[B#1]</text>
+
+  <!-- Arrows to processing branches -->
+  <path d="M 300 290 L 300 340" class="arrow" stroke="#333"/>
+  <path d="M 450 290 L 450 340" class="arrow" stroke="#333"/>
+  <path d="M 600 290 L 600 340" class="arrow" stroke="#333"/>
+  <path d="M 750 290 L 750 340" class="arrow" stroke="#333"/>
+  <path d="M 900 290 L 900 340" class="arrow" stroke="#333"/>
+
+  <!-- PROCESSING BRANCHES -->
+  <g id="branches">
+    <!-- RTMP PASSTHROUGH -->
+    <g>
+      <rect x="240" y="340" width="120" height="70" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+      <text x="300" y="370" text-anchor="middle" class="small" fill="white" font-weight="bold">RTMP</text>
+      <text x="300" y="385" text-anchor="middle" class="small" fill="white">Egress</text>
+      <path d="M 300 410 L 300 450" class="arrow" stroke="#2196f3"/>
+      <rect x="250" y="450" width="100" height="50" fill="#81d4fa" stroke="#0277bd" stroke-width="2" rx="5"/>
+      <text x="300" y="480" text-anchor="middle" class="small" fill="#333" font-weight="bold">TCP</text>
+    </g>
+
+    <!-- SRT PASSTHROUGH (complex) -->
+    <g>
+      <rect x="390" y="340" width="120" height="70" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+      <text x="450" y="370" text-anchor="middle" class="small" fill="white" font-weight="bold">SRT</text>
+      <text x="450" y="385" text-anchor="middle" class="small" fill="white">Egress</text>
+      <path d="M 450 410 L 450 450" class="arrow" stroke="#2196f3"/>
+      <rect x="390" y="450" width="120" height="50" fill="#b39ddb" stroke="#512da8" stroke-width="2" rx="5"/>
+      <text x="450" y="480" text-anchor="middle" class="small" fill="#333" font-weight="bold">Ring+Queue</text>
+      <path d="M 450 500 L 450 550" class="arrow" stroke="#ff6f00"/>
+      <rect x="380" y="550" width="140" height="50" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="5"/>
+      <text x="450" y="580" text-anchor="middle" class="small" fill="#333" font-weight="bold">srt_send()</text>
+      <path d="M 450 600 L 450 650" class="arrow" stroke="#ff6f00"/>
+      <rect x="390" y="650" width="120" height="30" fill="#ffcc80" stroke="#ef6c00" stroke-width="2" rx="4"/>
+      <text x="450" y="669" text-anchor="middle" class="small" fill="#333">Network</text>
+    </g>
+
+    <!-- HLS (best case) -->
+    <g>
+      <rect x="540" y="340" width="120" height="70" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+      <text x="600" y="370" text-anchor="middle" class="small" fill="white" font-weight="bold">HLS</text>
+      <text x="600" y="385" text-anchor="middle" class="small" fill="white">Segment</text>
+      <path d="M 600 410 L 600 450" class="arrow" stroke="#2196f3"/>
+      <rect x="540" y="450" width="120" height="50" fill="#c8e6c9" stroke="#2e7d32" stroke-width="2" rx="5"/>
+      <text x="600" y="480" text-anchor="middle" class="small" fill="#333" font-weight="bold">Mutex</text>
+      <text x="600" y="495" text-anchor="middle" class="small" fill="#666">(0.17Hz)</text>
+      <path d="M 600 500 L 600 550" class="arrow" stroke="#2e7d32"/>
+      <rect x="540" y="550" width="120" height="50" fill="#a5d6a7" stroke="#388e3c" stroke-width="2" rx="5"/>
+      <text x="600" y="580" text-anchor="middle" class="small" fill="#333" font-weight="bold">HTTP GET</text>
+      <path d="M 600 600 L 600 650" class="arrow" stroke="#2e7d32"/>
+      <rect x="540" y="650" width="120" height="30" fill="#c8e6c9" stroke="#2e7d32" stroke-width="2" rx="4"/>
+      <text x="600" y="669" text-anchor="middle" class="small" fill="#333">Browsers</text>
+    </g>
+
+    <!-- RECORDING -->
+    <g>
+      <rect x="690" y="340" width="120" height="70" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+      <text x="750" y="370" text-anchor="middle" class="small" fill="white" font-weight="bold">Record</text>
+      <text x="750" y="385" text-anchor="middle" class="small" fill="white">Feeder</text>
+      <path d="M 750 410 L 750 450" class="arrow" stroke="#2196f3"/>
+      <rect x="690" y="450" width="120" height="50" fill="#ffccbc" stroke="#d84315" stroke-width="2" rx="5"/>
+      <text x="750" y="480" text-anchor="middle" class="small" fill="#333" font-weight="bold">Memory</text>
+      <text x="750" y="495" text-anchor="middle" class="small" fill="#333" font-weight="bold">Queue</text>
+      <path d="M 750 500 L 750 550" class="arrow" stroke="#ff6f00"/>
+      <rect x="690" y="550" width="120" height="50" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="5"/>
+      <text x="750" y="580" text-anchor="middle" class="small" fill="#333" font-weight="bold">fwrite()</text>
+      <path d="M 750 600 L 750 650" class="arrow" stroke="#ff6f00"/>
+      <rect x="690" y="650" width="120" height="30" fill="#ffcc80" stroke="#ef6c00" stroke-width="2" rx="4"/>
+      <text x="750" y="669" text-anchor="middle" class="small" fill="#333">Disk</text>
+    </g>
+
+    <!-- TRANSCODING -->
+    <g>
+      <rect x="840" y="340" width="120" height="70" fill="#2196f3" stroke="#1565c0" stroke-width="2" rx="6"/>
+      <text x="900" y="365" text-anchor="middle" class="small" fill="white" font-weight="bold">Transcoder</text>
+      <text x="900" y="385" text-anchor="middle" class="small" fill="white">Feeder</text>
+      <path d="M 900 410 L 900 450" class="arrow" stroke="#2196f3"/>
+      <rect x="840" y="450" width="120" height="50" fill="#ffccbc" stroke="#d84315" stroke-width="2" rx="5"/>
+      <text x="900" y="480" text-anchor="middle" class="small" fill="#333" font-weight="bold">Memory</text>
+      <text x="900" y="495" text-anchor="middle" class="small" fill="#333" font-weight="bold">Queue</text>
+      <path d="M 900 500 L 900 550" class="arrow" stroke="#ff6f00"/>
+      <rect x="840" y="550" width="120" height="50" fill="#ffb74d" stroke="#e65100" stroke-width="2" rx="5"/>
+      <text x="900" y="580" text-anchor="middle" class="small" fill="#333" font-weight="bold">FFmpeg</text>
+      <path d="M 900 600 L 900 650" class="arrow" stroke="#ff6f00"/>
+      <rect x="840" y="650" width="120" height="30" fill="#ffcc80" stroke="#ef6c00" stroke-width="2" rx="4"/>
+      <text x="900" y="669" text-anchor="middle" class="small" fill="#333">Subprocess</text>
+    </g>
+  </g>
+
+  <!-- Decoupling boundary markers -->
+  <g id="boundaries" opacity="0.7">
+    <circle cx="1050" cy="340" r="12" fill="none" stroke="#ff9800" stroke-width="2"/>
+    <text x="1050" y="348" text-anchor="middle" class="small" font-weight="bold" fill="#ff9800">B#1</text>
+
+    <circle cx="1050" cy="520" r="12" fill="none" stroke="#ff9800" stroke-width="2"/>
+    <text x="1050" y="528" text-anchor="middle" class="small" font-weight="bold" fill="#ff9800">B#2-9</text>
+  </g>
+
+  <!-- Legend -->
+  <g id="legend" transform="translate(40, 730)">
+    <rect x="0" y="0" width="120" height="40" fill="#4caf50" stroke="#1b5e20" stroke-width="1" rx="4"/>
+    <text x="60" y="25" text-anchor="middle" class="small" fill="white" font-weight="bold">Ingest</text>
+
+    <rect x="140" y="0" width="120" height="40" fill="#2196f3" stroke="#1565c0" stroke-width="1" rx="4"/>
+    <text x="200" y="25" text-anchor="middle" class="small" fill="white" font-weight="bold">Tokio Task</text>
+
+    <rect x="280" y="0" width="120" height="40" fill="#ffb74d" stroke="#e65100" stroke-width="1" rx="4"/>
+    <text x="340" y="25" text-anchor="middle" class="small" fill="#333" font-weight="bold">OS Thread</text>
+
+    <rect x="420" y="0" width="120" height="40" fill="#fff9c4" stroke="#f57f17" stroke-width="1" rx="4"/>
+    <text x="480" y="25" text-anchor="middle" class="small" fill="#333" font-weight="bold">Ring/Queue</text>
+
+    <circle cx="600" cy="20" r="8" fill="none" stroke="#ff9800" stroke-width="2"/>
+    <text x="630" y="25" class="small" fill="#ff9800" font-weight="bold">Boundary</text>
   </g>
 </svg>
