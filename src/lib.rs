@@ -51,7 +51,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 #[cfg(restream_ffmpeg_needs_avcodec_close_shim)]
 #[unsafe(no_mangle)]

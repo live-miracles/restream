@@ -12,7 +12,7 @@ use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, R
 use crate::media::stage_metrics::StageMetrics;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 /// Zero-copy wrapper: holds an `ffmpeg_next::Packet` so `bytes::Bytes::from_owner`
 /// can serve the encoded/demuxed buffer to ring-buffer readers without a `memcpy`.

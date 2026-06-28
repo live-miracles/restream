@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::error;
 
 type KeyframeTimes = Arc<std::sync::Mutex<Vec<i64>>>;
 type IngestRuntime = (Arc<AtomicU64>, Arc<StageMetrics>, KeyframeTimes);

@@ -39,7 +39,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};

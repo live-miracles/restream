@@ -15,7 +15,7 @@
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use crate::domain::stage::StageKey;
 use crate::media::avio::MemoryQueue;

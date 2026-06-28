@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 use crate::alerts;
 use crate::db;

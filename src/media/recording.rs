@@ -15,7 +15,7 @@ use crate::media::ring_buffer::{Reader, RingBuffer};
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 const MIN_DURATION_SECS: u64 = 5;
 

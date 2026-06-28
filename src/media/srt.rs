@@ -53,7 +53,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::media::engine::{MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};

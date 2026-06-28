@@ -15,7 +15,7 @@
 use crate::api::EmbeddedAssets;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 static FFMPEG_BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
