@@ -5,6 +5,7 @@ import {
     type TranscodeProfile,
     type TranscodeProfiles,
 } from '../core/api.js';
+import type { SrtGlobalIngestConfig } from '../types.js';
 import { showErrorAlert } from '../core/utils.js';
 import { state } from '../core/state.js';
 import { withBasePath } from '../core/base-path.js';
@@ -18,6 +19,7 @@ export async function loadSettings({ embedded = false }: { embedded?: boolean } 
     const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
     if (hostInput) hostInput.value = state.config?.ingestHost || '';
     populateIngestSecuritySettings();
+    populateSrtIngestSettings();
     loadTranscodeProfiles();
 }
 
@@ -61,6 +63,7 @@ function ensureSettingsNav(container: Element): void {
     nav.innerHTML = `
         <div class="flex flex-wrap gap-2">
             <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+            <a class="btn btn-sm btn-ghost" href="#srt-settings-section">SRT</a>
             <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
         </div>`;
     title?.insertAdjacentElement('afterend', nav);
@@ -88,6 +91,7 @@ export function registerSettingsGlobals(): void {
     window.saveServerName = saveServerName;
     window.saveIngestHost = saveIngestHost;
     window.saveIngestSecurity = saveIngestSecurity;
+    window.saveSrtIngest = saveSrtIngest;
     window.saveTranscodeProfiles = saveTranscodeProfiles;
     window.addTranscodeProfile = addTranscodeProfile;
     window.saveDashboardPassword = saveDashboardPassword;
@@ -105,6 +109,7 @@ export function renderSettingsPanel(container: HTMLElement): void {
                 </div>
                 <nav class="border-base-content/10 bg-base-200 rounded-lg border p-1" aria-label="Settings sections">
                     <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+                    <a class="btn btn-sm btn-ghost" href="#srt-settings-section">SRT</a>
                     <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
                 </nav>
             </div>
@@ -191,6 +196,41 @@ export function renderSettingsPanel(container: HTMLElement): void {
                             <div class="flex items-center gap-3">
                                 <button class="btn btn-accent btn-sm" onclick="saveIngestSecurity()">Save</button>
                                 <span id="ingest-security-saved" class="text-success hidden text-sm">Saved</span>
+                            </div>
+                        </fieldset>
+                    </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <div id="srt-settings-section" class="space-y-2">
+                    <div class="text-sm font-medium">Global SRT Ingest</div>
+                    <p class="text-base-content/60 text-sm">Default listener policy for SRT publishers. Pipelines can inherit this, force plaintext, or use their own passphrase.</p>
+                    <div class="flex flex-wrap items-end gap-3">
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Mode</legend>
+                            <select id="srt-ingest-mode-input" class="select select-sm w-40">
+                                <option value="plaintext">Plaintext</option>
+                                <option value="encrypted">Encrypted</option>
+                            </select>
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Passphrase</legend>
+                            <input type="password" id="srt-ingest-passphrase-input" class="input input-sm w-52" placeholder="10-79 bytes" />
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend">Key Length</legend>
+                            <select id="srt-ingest-pbkeylen-input" class="select select-sm w-28">
+                                <option value="16">AES-128</option>
+                                <option value="24">AES-192</option>
+                                <option value="32">AES-256</option>
+                            </select>
+                        </fieldset>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend invisible">_</legend>
+                            <div class="flex items-center gap-3">
+                                <button class="btn btn-accent btn-sm" onclick="saveSrtIngest()">Save</button>
+                                <span id="srt-ingest-saved" class="text-success hidden text-sm">Saved</span>
                             </div>
                         </fieldset>
                     </div>
@@ -331,6 +371,81 @@ function showSavedFeedback(id: string): void {
     if (!el) return;
     el.classList.remove('hidden');
     setTimeout(() => el.classList.add('hidden'), 2000);
+}
+
+function getSrtPbkeylenInputValue(id: string): 16 | 24 | 32 {
+    const value = Number((document.getElementById(id) as HTMLSelectElement | null)?.value || 16);
+    return value === 24 || value === 32 ? value : 16;
+}
+
+function setSrtModeUi(mode: 'plaintext' | 'encrypted'): void {
+    const passphraseInput = document.getElementById(
+        'srt-ingest-passphrase-input',
+    ) as HTMLInputElement | null;
+    const pbkeylenInput = document.getElementById(
+        'srt-ingest-pbkeylen-input',
+    ) as HTMLSelectElement | null;
+    const encrypted = mode === 'encrypted';
+    if (passphraseInput) {
+        passphraseInput.disabled = !encrypted;
+        passphraseInput.classList.toggle('input-disabled', !encrypted);
+    }
+    if (pbkeylenInput) {
+        pbkeylenInput.disabled = !encrypted;
+        pbkeylenInput.classList.toggle('select-disabled', !encrypted);
+    }
+}
+
+function populateSrtIngestSettings(): void {
+    const cfg = state.config?.srtIngest || { mode: 'plaintext', pbkeylen: 16 };
+    const modeInput = document.getElementById('srt-ingest-mode-input') as HTMLSelectElement | null;
+    const passphraseInput = document.getElementById(
+        'srt-ingest-passphrase-input',
+    ) as HTMLInputElement | null;
+    const pbkeylenInput = document.getElementById(
+        'srt-ingest-pbkeylen-input',
+    ) as HTMLSelectElement | null;
+    if (modeInput) {
+        modeInput.value = cfg.mode;
+        modeInput.onchange = () =>
+            setSrtModeUi(modeInput.value === 'encrypted' ? 'encrypted' : 'plaintext');
+    }
+    if (passphraseInput) passphraseInput.value = cfg.passphrase || '';
+    if (pbkeylenInput) pbkeylenInput.value = String(cfg.pbkeylen || 16);
+    setSrtModeUi(cfg.mode === 'encrypted' ? 'encrypted' : 'plaintext');
+}
+
+function readSrtIngestSettings(): SrtGlobalIngestConfig | null {
+    const mode =
+        (document.getElementById('srt-ingest-mode-input') as HTMLSelectElement | null)?.value ===
+        'encrypted'
+            ? 'encrypted'
+            : 'plaintext';
+    const passphrase =
+        (
+            document.getElementById('srt-ingest-passphrase-input') as HTMLInputElement | null
+        )?.value.trim() || '';
+    const pbkeylen = getSrtPbkeylenInputValue('srt-ingest-pbkeylen-input');
+    if (mode === 'encrypted' && (passphrase.length < 10 || passphrase.length > 79)) {
+        showErrorAlert('SRT passphrase must be 10-79 bytes');
+        return null;
+    }
+    return {
+        mode,
+        passphrase: mode === 'encrypted' ? passphrase : null,
+        pbkeylen,
+    };
+}
+
+export async function saveSrtIngest(): Promise<void> {
+    const srtIngest = readSrtIngestSettings();
+    if (!srtIngest) return;
+    const result = await patchConfig({ srtIngest });
+    if (result) {
+        state.config = { ...state.config, srtIngest: result.srtIngest };
+        populateSrtIngestSettings();
+        showSavedFeedback('srt-ingest-saved');
+    }
 }
 
 // ── Transcode Profiles ─────────────────────────────────

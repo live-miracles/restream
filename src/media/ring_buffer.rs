@@ -47,10 +47,10 @@
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
+use tracing::{debug, info, warn};
 
 pub const DEFAULT_RING_CAPACITY: usize = 1024;
 const MIN_RING_CAPACITY: usize = 64;

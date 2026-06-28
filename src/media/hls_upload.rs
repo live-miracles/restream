@@ -5,9 +5,9 @@
 //! segments beside it. This module supports both shapes.
 
 use std::collections::HashSet;
-use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, error, info, warn};
 
 use reqwest::{Client, Url};
 use tokio_util::sync::CancellationToken;

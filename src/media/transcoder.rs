@@ -6,13 +6,13 @@
 //! are parsed to select/remap audio streams.
 
 use crate::domain::stage::StageKey;
-use tracing::{debug, error, info, warn};
 use crate::media::engine::AudioMeta;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::stage_metrics::StageMetrics;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 /// Zero-copy wrapper: holds an `ffmpeg_next::Packet` so `bytes::Bytes::from_owner`
 /// can serve the encoded/demuxed buffer to ring-buffer readers without a `memcpy`.
@@ -330,8 +330,12 @@ pub async fn start_transcoder(
             }
         }));
         match result {
-            Ok(Err(e)) => error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, err = ?e, "FFmpeg transcode thread failed"),
-            Err(_) => error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, "FFmpeg transcode thread panicked"),
+            Ok(Err(e)) => {
+                error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, err = ?e, "FFmpeg transcode thread failed")
+            }
+            Err(_) => {
+                error!(pipeline_id = %pipeline_id_clone, preset = %preset_clone, "FFmpeg transcode thread panicked")
+            }
             _ => {}
         }
         cancel_on_exit.cancel();

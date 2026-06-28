@@ -361,12 +361,17 @@ pub fn init(db_pool: SqlitePool) -> LoggingHandles {
     };
 
     // ── RUST_LOG / EnvFilter ──
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // ── assemble subscriber ──
-    let db_layer = DbLayer { tx: db_tx.clone(), spans: db_spans };
-    let bc_layer = BroadcastLayer { tx: broadcast_tx.clone(), spans: bc_spans };
+    let db_layer = DbLayer {
+        tx: db_tx.clone(),
+        spans: db_spans,
+    };
+    let bc_layer = BroadcastLayer {
+        tx: broadcast_tx.clone(),
+        spans: bc_spans,
+    };
 
     let fmt_layer_stdout = tracing_subscriber::fmt::layer()
         .with_writer(SplitWriter)

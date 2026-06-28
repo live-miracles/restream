@@ -199,6 +199,12 @@ runs separate-process broadcast and backup/failover tests before packaging.
 This does not require a second ingest endpoint: all member tuples join the
 group accepted from the shared listener.
 
+Practical note: if you validate bonded ingest or egress across multiple NICs or
+WAN paths with one wildcard listener, upstream SRT recommends a build with
+`ENABLE_PKTINFO=ON`. Without packet-info support, replies from a wildcard
+listener can leave from the wrong source IP, which breaks real multi-interface
+bonding even though same-host or single-interface tests may still pass.
+
 ## HLS Pull and Authorization
 
 The in-memory HLS store is served at:

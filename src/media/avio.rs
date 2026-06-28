@@ -12,12 +12,12 @@
 
 use ffmpeg_next as ffmpeg;
 use std::collections::VecDeque;
-use tracing::debug;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use tracing::debug;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
 
@@ -183,7 +183,11 @@ impl MemoryQueue {
         self.space_available.notify_waiters();
         let high = self.high_water_bytes.load(Ordering::Relaxed);
         let blocked = self.blocked_writes.load(Ordering::Relaxed);
-        debug!(high_water_bytes = high, blocked_writes = blocked, "memory queue closed");
+        debug!(
+            high_water_bytes = high,
+            blocked_writes = blocked,
+            "memory queue closed"
+        );
     }
 
     pub fn is_closed(&self) -> bool {

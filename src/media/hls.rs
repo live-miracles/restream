@@ -726,6 +726,10 @@ mod tests {
         store.push_segment(2.0, Bytes::from_static(b"seg0"));
         // index 99 doesn't exist — the put should be silently dropped
         store.put_variant_segment(99, HlsSegmentVariant::Audio(0), Bytes::from_static(b"v"));
-        assert!(store.get_variant_segment(99, HlsSegmentVariant::Audio(0)).is_none());
+        assert!(
+            store
+                .get_variant_segment(99, HlsSegmentVariant::Audio(0))
+                .is_none()
+        );
     }
 }

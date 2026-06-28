@@ -374,48 +374,60 @@ mod tests {
 
     #[test]
     fn message_contains_identifying_info_for_all_variants() {
-        assert!(EventKind::IngestConnected {
-            pipeline_id: "p".into(),
-            protocol: "rtmp".into(),
-            stream_key: "k".into()
-        }
-        .message()
-        .contains("RTMP"));
+        assert!(
+            EventKind::IngestConnected {
+                pipeline_id: "p".into(),
+                protocol: "rtmp".into(),
+                stream_key: "k".into()
+            }
+            .message()
+            .contains("RTMP")
+        );
 
-        assert!(EventKind::IngestDisconnected {
-            pipeline_id: "p".into(),
-            protocol: "srt".into()
-        }
-        .message()
-        .contains("SRT"));
+        assert!(
+            EventKind::IngestDisconnected {
+                pipeline_id: "p".into(),
+                protocol: "srt".into()
+            }
+            .message()
+            .contains("SRT")
+        );
 
-        assert!(EventKind::StageStarted {
-            pipeline_id: "p".into(),
-            encoding: "720p".into()
-        }
-        .message()
-        .contains("720p"));
+        assert!(
+            EventKind::StageStarted {
+                pipeline_id: "p".into(),
+                encoding: "720p".into()
+            }
+            .message()
+            .contains("720p")
+        );
 
-        assert!(EventKind::StageStopped {
-            pipeline_id: "p".into(),
-            encoding: "source".into()
-        }
-        .message()
-        .contains("source"));
+        assert!(
+            EventKind::StageStopped {
+                pipeline_id: "p".into(),
+                encoding: "source".into()
+            }
+            .message()
+            .contains("source")
+        );
 
-        assert!(EventKind::EgressStarted {
-            pipeline_id: "p".into(),
-            output_id: "out-abc".into()
-        }
-        .message()
-        .contains("out-abc"));
+        assert!(
+            EventKind::EgressStarted {
+                pipeline_id: "p".into(),
+                output_id: "out-abc".into()
+            }
+            .message()
+            .contains("out-abc")
+        );
 
-        assert!(EventKind::EgressStopped {
-            pipeline_id: "p".into(),
-            output_id: "out-abc".into()
-        }
-        .message()
-        .contains("out-abc"));
+        assert!(
+            EventKind::EgressStopped {
+                pipeline_id: "p".into(),
+                output_id: "out-abc".into()
+            }
+            .message()
+            .contains("out-abc")
+        );
 
         let failed_msg = EventKind::EgressFailed {
             pipeline_id: "p".into(),

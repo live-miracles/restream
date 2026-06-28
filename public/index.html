@@ -159,6 +159,35 @@
               </fieldset>
             </div>
           </div>
+
+          <div id="pipe-srt-ingest-fields" class="border-base-content/10 bg-base-200 rounded-lg border p-3">
+            <div class="mb-2">
+              <div class="text-sm font-medium">SRT Ingest Policy</div>
+              <p class="text-base-content/60 text-xs">Controls whether this pipeline inherits the global listener policy, stays plaintext, or requires its own passphrase.</p>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-[12rem_1fr_8rem]">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Mode</legend>
+                <select class="select w-full" id="pipe-srt-ingest-mode-input">
+                  <option value="inherit">Inherit Global</option>
+                  <option value="plaintext">Force Plaintext</option>
+                  <option value="encrypted">Per-Pipeline Encrypted</option>
+                </select>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Passphrase</legend>
+                <input type="password" id="pipe-srt-ingest-passphrase-input" class="input w-full" placeholder="10-79 bytes" />
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Key Length</legend>
+                <select class="select w-full" id="pipe-srt-ingest-pbkeylen-input">
+                  <option value="16">AES-128</option>
+                  <option value="24">AES-192</option>
+                  <option value="32">AES-256</option>
+                </select>
+              </fieldset>
+            </div>
+          </div>
         </div>
 
         <div class="modal-action">

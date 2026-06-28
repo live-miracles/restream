@@ -35,11 +35,11 @@
 //! via Rust FFI; prefer the external backend until the FFI layer hardens.
 
 use std::process::Stdio;
-use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};

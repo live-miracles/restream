@@ -34,10 +34,10 @@ pub mod alerts;
 pub mod api;
 pub mod db;
 pub mod diag;
-pub mod logging;
 pub mod domain;
 pub mod events;
 pub mod ffmpeg_extract;
+pub mod logging;
 pub mod media;
 pub mod planner;
 pub mod runtime_info;
@@ -46,12 +46,12 @@ pub mod types;
 use crate::domain::stage::{EncodingStagePlan, StageKey};
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
-use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
+use tracing::{debug, error, info, warn};
 
 pub struct ServerPorts {
     pub http: u16,
@@ -229,6 +229,12 @@ pub async fn run_app() {
     let security = Arc::new(crate::media::security::IngestSecurityService::new(
         sec_config,
     ));
+    let srt_ingest_global = crate::media::srt::load_global_srt_ingest_config(&pool).await;
+    let srt_ingest_pipelines = db::list_pipelines(&pool).await.unwrap_or_default();
+    let srt_ingest_policy_store = Arc::new(crate::media::srt::SrtIngestPolicyStore::new(
+        srt_ingest_global,
+        &srt_ingest_pipelines,
+    ));
     let sessions = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
@@ -239,9 +245,7 @@ pub async fn run_app() {
         // Drain the event channel so the EventLog broadcast stays live.
         // Persistence is handled by the tracing DbLayer — lifecycle events emitted
         // via tracing macros in the reconciler land in app_logs automatically.
-        tokio::spawn(async move {
-            while event_rx.recv().await.is_some() {}
-        });
+        tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
     }
     // Keep a clone of sessions for the reconciler's hourly prune tick.
     let sessions_for_reconciler = sessions.clone();
@@ -253,6 +257,7 @@ pub async fn run_app() {
     let state = Arc::new(crate::api::AppState {
         db: pool.clone(),
         security: security.clone(),
+        ingest_policy_store: srt_ingest_policy_store.clone(),
         sessions,
         engine: engine.clone(),
         ports: crate::api::PortConfig {
@@ -301,6 +306,7 @@ pub async fn run_app() {
         pool.clone(),
         engine.clone(),
         security.clone(),
+        srt_ingest_policy_store,
     ));
     let srt_port = ports.srt;
     let srt_handle = tokio::spawn(async move {
@@ -917,7 +923,10 @@ pub async fn run_app() {
 }
 
 fn normalize_sbom_for_repo_compare(sbom: &mut serde_json::Value) {
-    if let Some(metadata) = sbom.get_mut("metadata").and_then(|value| value.as_object_mut()) {
+    if let Some(metadata) = sbom
+        .get_mut("metadata")
+        .and_then(|value| value.as_object_mut())
+    {
         metadata.remove("timestamp");
     }
 }
@@ -937,13 +946,20 @@ pub async fn emit_repo_sbom(path: &Path) -> Result<bool, String> {
     }
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create SBOM directory {}: {error}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create SBOM directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
     let bytes = serde_json::to_vec_pretty(&sbom)
         .map_err(|error| format!("failed to serialize SBOM JSON: {error}"))?;
-    std::fs::write(path, format!("{}\n", String::from_utf8_lossy(&bytes)).as_bytes())
-        .map_err(|error| format!("failed to write SBOM file {}: {error}", path.display()))?;
+    std::fs::write(
+        path,
+        format!("{}\n", String::from_utf8_lossy(&bytes)).as_bytes(),
+    )
+    .map_err(|error| format!("failed to write SBOM file {}: {error}", path.display()))?;
     Ok(true)
 }
 

@@ -45,7 +45,13 @@ import {
 import type { AudioCaps, AudioProtocol } from '../core/audio-caps.js';
 import { state } from '../core/state.js';
 import { refreshDashboard } from './dashboard.js';
-import type { AudioTrack, PipelineView, OutputView, StreamKey } from '../types.js';
+import type {
+    AudioTrack,
+    PipelineView,
+    OutputView,
+    SrtPipelineIngestConfig,
+    StreamKey,
+} from '../types.js';
 
 function getDefaultOutputHost(): string {
     return state.config?.ingestHost || 'localhost';
@@ -834,11 +840,93 @@ async function openPipeModal(mode: PipeModalMode, pipe: PipelineView | null = nu
         };
     }
 
+    populatePipeSrtIngestFields(pipe?.srtIngestPolicy || null);
+
     (document.getElementById('edit-pipe-modal') as HTMLDialogElement).showModal();
 }
 
 function isPipelineKeyChangeLocked(pipe: PipelineView): boolean {
     return !!pipe?.outs?.some((o) => o.status === 'on' || o.status === 'running' || o.status === 'warning');
+}
+
+function setPipeSrtIngestModeUi(mode: 'inherit' | 'plaintext' | 'encrypted'): void {
+    const passphraseInput = document.getElementById(
+        'pipe-srt-ingest-passphrase-input',
+    ) as HTMLInputElement | null;
+    const pbkeylenInput = document.getElementById(
+        'pipe-srt-ingest-pbkeylen-input',
+    ) as HTMLSelectElement | null;
+    const encrypted = mode === 'encrypted';
+    if (passphraseInput) {
+        passphraseInput.disabled = !encrypted;
+        passphraseInput.classList.toggle('input-disabled', !encrypted);
+    }
+    if (pbkeylenInput) {
+        pbkeylenInput.disabled = !encrypted;
+        pbkeylenInput.classList.toggle('select-disabled', !encrypted);
+    }
+}
+
+function populatePipeSrtIngestFields(policy?: SrtPipelineIngestConfig | null): void {
+    const modeInput = document.getElementById(
+        'pipe-srt-ingest-mode-input',
+    ) as HTMLSelectElement | null;
+    const passphraseInput = document.getElementById(
+        'pipe-srt-ingest-passphrase-input',
+    ) as HTMLInputElement | null;
+    const pbkeylenInput = document.getElementById(
+        'pipe-srt-ingest-pbkeylen-input',
+    ) as HTMLSelectElement | null;
+    const mode = policy?.mode || 'inherit';
+    if (modeInput) {
+        modeInput.value = mode;
+        modeInput.onchange = () =>
+            setPipeSrtIngestModeUi(
+                modeInput.value === 'encrypted'
+                    ? 'encrypted'
+                    : modeInput.value === 'plaintext'
+                      ? 'plaintext'
+                      : 'inherit',
+            );
+    }
+    if (passphraseInput) passphraseInput.value = policy?.passphrase || '';
+    if (pbkeylenInput) pbkeylenInput.value = String(policy?.pbkeylen || 16);
+    setPipeSrtIngestModeUi(
+        mode === 'encrypted' ? 'encrypted' : mode === 'plaintext' ? 'plaintext' : 'inherit',
+    );
+}
+
+function readPipeSrtIngestPolicy(): SrtPipelineIngestConfig | null {
+    const modeValue =
+        (document.getElementById('pipe-srt-ingest-mode-input') as HTMLSelectElement | null)
+            ?.value || 'inherit';
+    const mode =
+        modeValue === 'encrypted'
+            ? 'encrypted'
+            : modeValue === 'plaintext'
+              ? 'plaintext'
+              : 'inherit';
+    const passphrase =
+        (
+            document.getElementById('pipe-srt-ingest-passphrase-input') as HTMLInputElement | null
+        )?.value.trim() || '';
+    const pbkeylenValue = Number(
+        (
+            document.getElementById('pipe-srt-ingest-pbkeylen-input') as HTMLSelectElement | null
+        )?.value || 16,
+    );
+    const pbkeylen = pbkeylenValue === 24 || pbkeylenValue === 32 ? pbkeylenValue : 16;
+
+    if (mode === 'encrypted' && (passphrase.length < 10 || passphrase.length > 79)) {
+        showErrorAlert('Per-pipeline SRT passphrase must be 10-79 bytes');
+        return null;
+    }
+
+    return {
+        mode,
+        passphrase: mode === 'encrypted' ? passphrase : null,
+        pbkeylen: mode === 'encrypted' ? (pbkeylen as 16 | 24 | 32) : null,
+    };
 }
 
 export async function pipeFormBtn(event: Event): Promise<void> {
@@ -870,6 +958,9 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     }
     fileSelect?.classList.remove('select-error');
 
+    const srtIngestPolicy = readPipeSrtIngestPolicy();
+    if (!srtIngestPolicy) return;
+
     const streamKey =
         (document.getElementById('pipe-stream-key-input') as HTMLSelectElement | null)?.value || '';
     const loopFlag =
@@ -886,13 +977,23 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     }
 
     if (currentPipeModalMode === 'create') {
-        const response = (await createPipeline({ name, streamKey, inputSource })) as {
+        const response = (await createPipeline({
+            name,
+            streamKey,
+            inputSource,
+            srtIngestPolicy,
+        })) as {
             pipeline?: { id: string };
         } | null;
         if (response === null) return;
         savedPipeId = response.pipeline?.id || '';
     } else {
-        const response = await updatePipeline(pipeId, { name, streamKey, inputSource });
+        const response = await updatePipeline(pipeId, {
+            name,
+            streamKey,
+            inputSource,
+            srtIngestPolicy,
+        });
         if (response === null) return;
     }
 

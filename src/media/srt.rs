@@ -45,10 +45,11 @@
 //! 10. Raw pointer writes to `sockaddr` fields target correctly-typed pointers
 //!     obtained from a `sockaddr_storage` cast, with the family field set first.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -57,6 +58,10 @@ use tracing::{debug, error, info, warn};
 use crate::media::engine::{MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
+use crate::types::{
+    DEFAULT_SRT_PBKEYLEN, Pipeline, ResolvedSrtIngestConfig, SrtGlobalIngestConfig,
+    SrtGlobalIngestMode, SrtPipelineIngestConfig,
+};
 
 // 256 slots covers the mux wakeup → SRT socket-write latency (sub-millisecond
 // to single-digit milliseconds in practice). The SRT protocol's own send buffer
@@ -67,6 +72,79 @@ const DEFAULT_TS_RING_CAPACITY: usize = 256;
 const MIN_TS_RING_CAPACITY: usize = 32;
 const MAX_TS_RING_CAPACITY: usize = 16_384;
 static TS_RING_CAPACITY: OnceLock<usize> = OnceLock::new();
+pub const SRT_INGEST_GLOBAL_CONFIG_META_KEY: &str = "srt_ingest_global_config";
+
+pub struct SrtIngestPolicyStore {
+    inner: RwLock<SrtIngestPolicySnapshot>,
+}
+
+#[derive(Clone)]
+struct SrtIngestPolicySnapshot {
+    global: SrtGlobalIngestConfig,
+    per_stream_key: HashMap<String, ResolvedSrtIngestConfig>,
+}
+
+impl SrtIngestPolicyStore {
+    pub fn new(global: SrtGlobalIngestConfig, pipelines: &[Pipeline]) -> Self {
+        Self {
+            inner: RwLock::new(build_policy_snapshot(global, pipelines)),
+        }
+    }
+
+    pub fn replace(&self, global: SrtGlobalIngestConfig, pipelines: &[Pipeline]) {
+        let mut guard = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        *guard = build_policy_snapshot(global, pipelines);
+    }
+
+    pub fn global_config(&self) -> SrtGlobalIngestConfig {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .global
+            .clone()
+    }
+
+    fn resolved_policy(&self, stream_key: &str) -> Option<ResolvedSrtIngestConfig> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .per_stream_key
+            .get(stream_key)
+            .cloned()
+    }
+}
+
+fn build_policy_snapshot(
+    global: SrtGlobalIngestConfig,
+    pipelines: &[Pipeline],
+) -> SrtIngestPolicySnapshot {
+    let mut per_stream_key = HashMap::with_capacity(pipelines.len());
+    for pipeline in pipelines {
+        let pipeline_policy =
+            parse_pipeline_srt_ingest_policy_json(pipeline.srt_ingest_policy_json.as_deref())
+                .unwrap_or_default();
+        match pipeline_policy.resolve(&global) {
+            Ok(resolved) => {
+                per_stream_key.insert(pipeline.stream_key.clone(), resolved);
+            }
+            Err(error) => {
+                warn!(
+                    pipeline_id = %pipeline.id,
+                    stream_key = %pipeline.stream_key,
+                    err = %error,
+                    "ignoring invalid persisted SRT ingest policy"
+                );
+                if let Ok(resolved) = global.resolve() {
+                    per_stream_key.insert(pipeline.stream_key.clone(), resolved);
+                }
+            }
+        }
+    }
+    SrtIngestPolicySnapshot {
+        global,
+        per_stream_key,
+    }
+}
 
 fn ts_ring_capacity() -> usize {
     *TS_RING_CAPACITY.get_or_init(|| {
@@ -238,6 +316,19 @@ unsafe extern "C" {
     pub fn srt_close(u: SRTSOCKET) -> c_int;
     pub fn srt_bind(u: SRTSOCKET, name: *const sockaddr_in, namelen: c_int) -> c_int;
     pub fn srt_listen(u: SRTSOCKET, backlog: c_int) -> c_int;
+    pub fn srt_listen_callback(
+        lsn: SRTSOCKET,
+        hook_fn: Option<
+            unsafe extern "C" fn(
+                opaq: *mut c_void,
+                ns: SRTSOCKET,
+                hsversion: c_int,
+                peeraddr: *const libc::sockaddr,
+                streamid: *const c_char,
+            ) -> c_int,
+        >,
+        hook_opaque: *mut c_void,
+    ) -> c_int;
     pub fn srt_accept(u: SRTSOCKET, addr: *mut sockaddr_in, addrlen: *mut c_int) -> SRTSOCKET;
     pub fn srt_getsockname(u: SRTSOCKET, name: *mut sockaddr_in, namelen: *mut c_int) -> c_int;
     pub fn srt_connect(u: SRTSOCKET, name: *const sockaddr_in, namelen: c_int) -> c_int;
@@ -294,6 +385,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn srt_getlasterror(locp: *mut c_int) -> c_int;
     pub fn srt_getlasterror_str() -> *const c_char;
+    pub fn srt_setrejectreason(sock: SRTSOCKET, value: c_int) -> c_int;
     pub fn srt_bistats(
         u: SRTSOCKET,
         perf: *mut SrtTraceBStats,
@@ -964,6 +1056,63 @@ fn parse_srt_stream_id(streamid: &str) -> ParsedStreamId {
     ParsedStreamId { mode, stream_key }
 }
 
+const SRT_REJX_UNAUTHORIZED: c_int = 1401;
+const SRT_REJX_BAD_MODE: c_int = 1405;
+const SRT_REJX_ISE: c_int = 1500;
+
+unsafe extern "C" fn srt_listener_policy_callback(
+    opaq: *mut c_void,
+    ns: SRTSOCKET,
+    _hsversion: c_int,
+    _peeraddr: *const libc::sockaddr,
+    streamid: *const c_char,
+) -> c_int {
+    if opaq.is_null() {
+        unsafe {
+            srt_setrejectreason(ns, SRT_REJX_ISE);
+        }
+        return -1;
+    }
+
+    let store = unsafe { &*(opaq as *const SrtIngestPolicyStore) };
+    let streamid = if streamid.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(streamid) }
+            .to_string_lossy()
+            .to_string()
+    };
+    let parsed = parse_srt_stream_id(&streamid);
+    if !matches!(
+        parsed.mode,
+        SrtConnectionMode::Publish | SrtConnectionMode::Read
+    ) || parsed.stream_key.is_empty()
+    {
+        unsafe {
+            srt_setrejectreason(ns, SRT_REJX_BAD_MODE);
+        }
+        return -1;
+    }
+
+    let Some(policy) = store.resolved_policy(&parsed.stream_key) else {
+        unsafe {
+            srt_setrejectreason(ns, SRT_REJX_UNAUTHORIZED);
+        }
+        return -1;
+    };
+
+    if let Some(crypto) = srt_crypto_from_resolved(policy)
+        && apply_srt_crypto_socket(ns, &crypto).is_err()
+    {
+        unsafe {
+            srt_setrejectreason(ns, SRT_REJX_ISE);
+        }
+        return -1;
+    }
+
+    0
+}
+
 #[cfg(test)]
 fn video_codec_id(codec: &str) -> Option<ffmpeg_next::ffi::AVCodecID> {
     match codec {
@@ -1081,6 +1230,7 @@ pub struct SrtServer {
     db: sqlx::SqlitePool,
     engine: Arc<MediaEngine>,
     security: Arc<crate::media::security::IngestSecurityService>,
+    ingest_policy_store: Arc<SrtIngestPolicyStore>,
 }
 
 impl SrtServer {
@@ -1088,6 +1238,7 @@ impl SrtServer {
         db: sqlx::SqlitePool,
         engine: Arc<MediaEngine>,
         security: Arc<crate::media::security::IngestSecurityService>,
+        ingest_policy_store: Arc<SrtIngestPolicyStore>,
     ) -> Self {
         // SAFETY: srt_startup must be called once before any other SRT
         // function. This is the only call site, at server construction time,
@@ -1100,6 +1251,7 @@ impl SrtServer {
             db,
             engine,
             security,
+            ingest_policy_store,
         }
     }
 
@@ -1123,6 +1275,33 @@ impl SrtServer {
                 SRTO_TRANSTYPE,
                 &live_mode as *const _ as *const c_void,
                 std::mem::size_of::<c_int>() as c_int,
+            );
+        }
+        let listener_store_ptr =
+            Arc::as_ptr(&self.ingest_policy_store) as *const SrtIngestPolicyStore as *mut c_void;
+        let callback_res = unsafe {
+            srt_listen_callback(
+                server_sock,
+                Some(srt_listener_policy_callback),
+                listener_store_ptr,
+            )
+        };
+        if callback_res < 0 {
+            error!("[srt] failed to install listener policy callback");
+            unsafe {
+                srt_close(server_sock);
+            }
+            return;
+        }
+        if let Some(crypto) = srt_crypto_from_resolved(
+            self.ingest_policy_store
+                .global_config()
+                .resolve()
+                .unwrap_or(ResolvedSrtIngestConfig::Plaintext),
+        ) {
+            info!(
+                "[srt] default listener ingest encryption enabled (pbkeylen={})",
+                crypto.pbkeylen
             );
         }
         match enable_srt_group_connect(server_sock) {
@@ -2856,6 +3035,8 @@ struct SrtEgressUrl {
     host_port: String,
     streamid: String,
     bond_addrs: Vec<String>,
+    passphrase: String,
+    pbkeylen: Option<c_int>,
 }
 
 fn parse_srt_egress_url(url: &str) -> SrtEgressUrl {
@@ -2865,12 +3046,16 @@ fn parse_srt_egress_url(url: &str) -> SrtEgressUrl {
 
     let mut streamid = String::new();
     let mut bond_addrs: Vec<String> = Vec::new();
+    let mut passphrase = String::new();
+    let mut pbkeylen = None;
     if parts.len() > 1 {
         for param in parts[1].split('&') {
             let key_val: Vec<&str> = param.splitn(2, '=').collect();
             if key_val.len() == 2 {
                 match key_val[0] {
                     "streamid" => streamid = percent_decode(key_val[1]),
+                    "passphrase" => passphrase = percent_decode(key_val[1]),
+                    "pbkeylen" => pbkeylen = key_val[1].parse::<c_int>().ok(),
                     "bond" => {
                         bond_addrs = key_val[1].split(',').map(|s| s.to_string()).collect();
                     }
@@ -2883,7 +3068,131 @@ fn parse_srt_egress_url(url: &str) -> SrtEgressUrl {
         host_port,
         streamid,
         bond_addrs,
+        passphrase,
+        pbkeylen,
     }
+}
+
+#[derive(Clone)]
+struct SrtCryptoConfig {
+    passphrase: String,
+    pbkeylen: c_int,
+}
+
+fn srt_crypto_from_resolved(config: ResolvedSrtIngestConfig) -> Option<SrtCryptoConfig> {
+    match config {
+        ResolvedSrtIngestConfig::Plaintext => None,
+        ResolvedSrtIngestConfig::Encrypted {
+            passphrase,
+            pbkeylen,
+        } => Some(SrtCryptoConfig {
+            passphrase,
+            pbkeylen,
+        }),
+    }
+}
+
+pub fn legacy_srt_global_config_from_env() -> Option<SrtGlobalIngestConfig> {
+    let passphrase = std::env::var("RESTREAM_SRT_PASSPHRASE").ok()?;
+    if passphrase.is_empty() {
+        return None;
+    }
+    let pbkeylen = std::env::var("RESTREAM_SRT_PBKEYLEN")
+        .ok()
+        .and_then(|value| value.parse::<c_int>().ok())
+        .unwrap_or(DEFAULT_SRT_PBKEYLEN);
+    Some(SrtGlobalIngestConfig {
+        mode: SrtGlobalIngestMode::Encrypted,
+        passphrase: Some(passphrase),
+        pbkeylen,
+    })
+}
+
+pub async fn load_global_srt_ingest_config(db: &sqlx::SqlitePool) -> SrtGlobalIngestConfig {
+    let from_db = crate::db::get_meta(db, SRT_INGEST_GLOBAL_CONFIG_META_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<SrtGlobalIngestConfig>(&raw).ok());
+    let mut config = from_db
+        .or_else(legacy_srt_global_config_from_env)
+        .unwrap_or_default();
+    if let Err(error) = config.validate() {
+        warn!(err = %error, "invalid global SRT ingest config; falling back to plaintext");
+        config = SrtGlobalIngestConfig::default();
+    }
+    config
+}
+
+pub fn parse_pipeline_srt_ingest_policy_json(raw: Option<&str>) -> Option<SrtPipelineIngestConfig> {
+    raw.and_then(|value| serde_json::from_str::<SrtPipelineIngestConfig>(value).ok())
+}
+
+pub fn serialize_pipeline_srt_ingest_policy_json(
+    config: &SrtPipelineIngestConfig,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(config)
+}
+
+fn apply_srt_crypto_socket(sock: SRTSOCKET, crypto: &SrtCryptoConfig) -> Result<(), String> {
+    let passphrase =
+        std::ffi::CString::new(crypto.passphrase.as_str()).map_err(|_| "invalid SRT passphrase")?;
+    let enforced: c_int = 1;
+    let pbkeylen = crypto.pbkeylen;
+    unsafe {
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_PASSPHRASE,
+            passphrase.as_ptr() as *const c_void,
+            crypto.passphrase.len() as c_int,
+        );
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_PBKEYLEN,
+            &pbkeylen as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+        srt_setsockopt(
+            sock,
+            0,
+            SRTO_ENFORCEDENCRYPTION,
+            &enforced as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+    }
+    Ok(())
+}
+
+unsafe fn apply_srt_crypto_config(
+    config: *mut SrtSockOptConfig,
+    crypto: &SrtCryptoConfig,
+) -> Result<(), String> {
+    let passphrase =
+        std::ffi::CString::new(crypto.passphrase.as_str()).map_err(|_| "invalid SRT passphrase")?;
+    let enforced: c_int = 1;
+    unsafe {
+        srt_config_add(
+            config,
+            SRTO_PASSPHRASE,
+            passphrase.as_ptr() as *const c_void,
+            crypto.passphrase.len() as c_int,
+        );
+        srt_config_add(
+            config,
+            SRTO_PBKEYLEN,
+            &crypto.pbkeylen as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+        srt_config_add(
+            config,
+            SRTO_ENFORCEDENCRYPTION,
+            &enforced as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as c_int,
+        );
+    }
+    Ok(())
 }
 
 pub fn start_shared_ts_muxer(
@@ -3119,6 +3428,10 @@ pub async fn start_srt_egress(
     let host_port = &parsed.host_port;
     let streamid = parsed.streamid;
     let bond_addrs = parsed.bond_addrs;
+    let url_crypto = (!parsed.passphrase.is_empty()).then_some(SrtCryptoConfig {
+        passphrase: parsed.passphrase,
+        pbkeylen: parsed.pbkeylen.unwrap_or(16),
+    });
 
     engine.update_egress_phase(&output_id, "resolving").await;
     let addr = match resolve_host(host_port).await {
@@ -3191,6 +3504,20 @@ pub async fn start_srt_egress(
                             streamid_c.as_ptr() as *const c_void,
                             streamid.len() as c_int,
                         );
+                    }
+                    if let Some(crypto) = &url_crypto
+                        && let Err(error) = unsafe { apply_srt_crypto_config(config, crypto) }
+                    {
+                        unsafe {
+                            srt_delete_config(config);
+                        }
+                        unsafe {
+                            srt_close(client_sock);
+                        }
+                        engine
+                            .record_egress_error(&output_id, "connect", error)
+                            .await;
+                        return;
                     }
                 }
 
@@ -3320,6 +3647,17 @@ pub async fn start_srt_egress(
             return;
         }
         srt_set_highbitrate_opts(client_sock);
+        if let Some(crypto) = &url_crypto {
+            if let Err(error) = apply_srt_crypto_socket(client_sock, crypto) {
+                engine
+                    .record_egress_error(&output_id, "connect", error)
+                    .await;
+                unsafe {
+                    srt_close(client_sock);
+                }
+                return;
+            }
+        }
 
         if !streamid.is_empty() {
             let streamid_c = match std::ffi::CString::new(streamid.as_str()) {

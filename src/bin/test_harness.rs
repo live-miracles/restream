@@ -10,6 +10,7 @@ use rml_rtmp::sessions::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "mixed-file-h264",
     "resource-sweep",
     "bitrate-sweep",
+    "branch-matrix",
 ];
 
 const SINK_PORT: u16 = 12935;
@@ -87,13 +89,14 @@ async fn run() -> Result<(), String> {
         "mixed-file-h264" => mixed_file_h264_correctness().await,
         "resource-sweep" => resource_sweep().await,
         "bitrate-sweep" => bitrate_sweep().await,
+        "branch-matrix" => branch_matrix().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
               correctness-rtmp, correctness-srt, correctness-srt-rtmp, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-resilience, mixed-file-h264, resource-sweep, or bitrate-sweep"
+              fault-resilience, mixed-file-h264, resource-sweep, bitrate-sweep, or branch-matrix"
         )),
     };
 
@@ -130,6 +133,39 @@ fn env_secs(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn harness_srt_passphrase() -> Option<String> {
+    std::env::var("HARNESS_SRT_PASSPHRASE")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn harness_srt_pbkeylen() -> Option<String> {
+    std::env::var("HARNESS_SRT_PBKEYLEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn append_harness_srt_crypto(url: String) -> String {
+    let Some(passphrase) = harness_srt_passphrase() else {
+        return url;
+    };
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let mut out = format!("{url}{separator}passphrase={passphrase}");
+    if let Some(pbkeylen) = harness_srt_pbkeylen() {
+        out.push_str(&format!("&pbkeylen={pbkeylen}"));
+    }
+    out
+}
+
+fn apply_harness_srt_listener_env(cmd: &mut Command) {
+    if let Some(passphrase) = harness_srt_passphrase() {
+        cmd.env("RESTREAM_SRT_PASSPHRASE", passphrase);
+        if let Some(pbkeylen) = harness_srt_pbkeylen() {
+            cmd.env("RESTREAM_SRT_PBKEYLEN", pbkeylen);
+        }
+    }
 }
 
 // ── Shared test infrastructure (Phase 1) ────────────────────────────────────
@@ -925,15 +961,20 @@ struct ResourceSweepEnv {
     settle_secs: u64,
     ingest_counts: Vec<usize>,
     egress_counts: Vec<usize>,
+    scenario_filter: Option<HashSet<String>>,
     lifecycle: ResourceSweepLifecycle,
     no_cleanup: bool,
 }
 
 impl ResourceSweepEnv {
     fn from_env() -> Result<Self, String> {
+        Self::from_env_with_default_dir("test/artifacts/resource-sweep")
+    }
+
+    fn from_env_with_default_dir(default_dir: &str) -> Result<Self, String> {
         let work_dir = std::env::var_os("WORK_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("test/artifacts/resource-sweep"));
+            .unwrap_or_else(|| PathBuf::from(default_dir));
         Ok(Self {
             summary_json: work_dir.join("resource-sweep-results.json"),
             summary_csv: work_dir.join("resource-sweep-results.csv"),
@@ -958,12 +999,19 @@ impl ResourceSweepEnv {
             settle_secs: env_secs("RESOURCE_SWEEP_SETTLE_SECS", 4),
             ingest_counts: parse_usize_list("RESOURCE_SWEEP_INGEST_COUNTS", "1,3,5"),
             egress_counts: parse_usize_list("RESOURCE_SWEEP_EGRESS_COUNTS", "1,5,10"),
+            scenario_filter: parse_string_set("RESOURCE_SWEEP_SCENARIOS"),
             lifecycle: ResourceSweepLifecycle::from_env()?,
             no_cleanup: std::env::var("RESOURCE_SWEEP_NO_CLEANUP")
                 .ok()
                 .is_some_and(|v| v == "1"),
             work_dir,
         })
+    }
+
+    fn scenario_enabled(&self, scenario: &str) -> bool {
+        self.scenario_filter
+            .as_ref()
+            .is_none_or(|filter| filter.contains(scenario))
     }
 }
 
@@ -974,6 +1022,17 @@ fn parse_usize_list(name: &str, default: &str) -> Vec<usize> {
         .filter_map(|part| part.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .collect()
+}
+
+fn parse_string_set(name: &str) -> Option<HashSet<String>> {
+    let values: HashSet<String> = std::env::var(name)
+        .ok()?
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    (!values.is_empty()).then_some(values)
 }
 
 fn parse_bitrate_specs(name: &str, default: &str) -> Result<Vec<BitrateSpec>, String> {
@@ -1019,7 +1078,11 @@ fn parse_sweep_configs(name: &str) -> Result<Vec<SweepConfig>, String> {
             .join(",")
     });
     let mut out = Vec::new();
-    for part in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let config = SWEEP_CONFIGS
             .iter()
             .copied()
@@ -1080,6 +1143,8 @@ enum SweepOutputKind {
     SrtSource,
     Rtmp720p,
     Srt720p,
+    Rtmp1080p,
+    Srt1080p,
 }
 
 impl SweepOutputKind {
@@ -1089,6 +1154,8 @@ impl SweepOutputKind {
             Self::SrtSource => "srt-source",
             Self::Rtmp720p => "rtmp-720p",
             Self::Srt720p => "srt-720p",
+            Self::Rtmp1080p => "rtmp-1080p",
+            Self::Srt1080p => "srt-1080p",
         }
     }
 }
@@ -1098,6 +1165,55 @@ struct ResourceSweepStack {
     restream: Child,
     api: RampApi,
     restream_pid: u32,
+}
+
+struct BranchMatrixEnv {
+    resource: ResourceSweepEnv,
+    summary_json: PathBuf,
+    summary_csv: PathBuf,
+    summary_md: PathBuf,
+    backend: String,
+    srt_ingest_encrypted: bool,
+    scenario_filter: Option<HashSet<String>>,
+}
+
+impl BranchMatrixEnv {
+    fn from_env() -> Result<Self, String> {
+        let mut resource =
+            ResourceSweepEnv::from_env_with_default_dir("test/artifacts/branch-matrix")?;
+        let work_dir = resource.work_dir.clone();
+        let egress_count = env_usize("BRANCH_MATRIX_EGRESS_COUNT", 10).max(1);
+        resource.egress_counts = vec![egress_count];
+        resource.ingest_counts = vec![1];
+        resource.summary_json = work_dir.join("branch-matrix-results.json");
+        resource.summary_csv = work_dir.join("branch-matrix-results.csv");
+        resource.samples_jsonl = work_dir.join("branch-matrix-samples.jsonl");
+        if std::env::var_os("RESTREAM_DB_PATH").is_none() {
+            resource.restream_db_path = work_dir.join("branch-matrix.db");
+        }
+        Ok(Self {
+            summary_json: work_dir.join("branch-matrix-results.json"),
+            summary_csv: work_dir.join("branch-matrix-results.csv"),
+            summary_md: work_dir.join("branch-matrix-summary.md"),
+            backend: if std::env::var("RESTREAM_USE_INTERNAL_TRANSCODER")
+                .ok()
+                .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            {
+                "internal".to_string()
+            } else {
+                "external".to_string()
+            },
+            srt_ingest_encrypted: harness_srt_passphrase().is_some(),
+            scenario_filter: parse_string_set("BRANCH_MATRIX_SCENARIOS"),
+            resource,
+        })
+    }
+
+    fn scenario_enabled(&self, scenario: &str) -> bool {
+        self.scenario_filter
+            .as_ref()
+            .is_none_or(|filter| filter.contains(scenario))
+    }
 }
 
 struct BitrateSweepEnv {
@@ -1333,75 +1449,148 @@ async fn resource_sweep() -> Result<Value, String> {
     let mut retained_publishers: Vec<Child> = Vec::new();
     let mut aggregates = Vec::new();
 
-    aggregates.push(
-        run_resource_baseline(&env, &mut stack, &mut retained_publishers).await?,
-    );
-    for config in SWEEP_CONFIGS {
-        aggregates.push(
-            run_resource_ingest_only(&env, &mut stack, &mut retained_publishers, *config).await?,
+    if env.scenario_enabled("baseline-empty") {
+        aggregates.push(run_resource_baseline(&env, &mut stack, &mut retained_publishers).await?);
+    }
+    if env.scenario_enabled("ingest-only") {
+        for config in SWEEP_CONFIGS {
+            aggregates.push(
+                run_resource_ingest_only(&env, &mut stack, &mut retained_publishers, *config)
+                    .await?,
+            );
+        }
+    }
+    if env.scenario_enabled("ingest-growth-same") {
+        aggregates.extend(
+            run_resource_ingest_growth(&env, &mut stack, &mut retained_publishers, false).await?,
         );
     }
-    aggregates.extend(
-        run_resource_ingest_growth(&env, &mut stack, &mut retained_publishers, false).await?,
-    );
-    aggregates.extend(
-        run_resource_ingest_growth(&env, &mut stack, &mut retained_publishers, true).await?,
-    );
-    aggregates.extend(
-        run_resource_egress_growth(
-            &env,
-            &mut stack,
-            &mut retained_publishers,
-            "egress-growth-source-same",
-            SWEEP_CONFIGS[1],
-            &[SweepOutputKind::RtmpSource],
-        )
-        .await?,
-    );
-    aggregates.extend(
-        run_resource_egress_growth(
-            &env,
-            &mut stack,
-            &mut retained_publishers,
-            "egress-growth-source-mixed",
-            SWEEP_CONFIGS[1],
-            &[SweepOutputKind::RtmpSource, SweepOutputKind::SrtSource],
-        )
-        .await?,
-    );
-    aggregates.extend(
-        run_resource_egress_growth(
-            &env,
-            &mut stack,
-            &mut retained_publishers,
-            "egress-growth-transcode-same",
-            SWEEP_CONFIGS[1],
-            &[SweepOutputKind::Rtmp720p],
-        )
-        .await?,
-    );
-    aggregates.extend(
-        run_resource_egress_growth(
-            &env,
-            &mut stack,
-            &mut retained_publishers,
-            "egress-growth-transcode-mixed",
-            SWEEP_CONFIGS[1],
-            &[SweepOutputKind::Rtmp720p, SweepOutputKind::Srt720p],
-        )
-        .await?,
-    );
-    aggregates.extend(
-        run_resource_egress_growth(
-            &env,
-            &mut stack,
-            &mut retained_publishers,
-            "egress-growth-hevc-bridge",
-            SWEEP_CONFIGS[2],
-            &[SweepOutputKind::RtmpSource],
-        )
-        .await?,
-    );
+    if env.scenario_enabled("ingest-growth-mixed") {
+        aggregates.extend(
+            run_resource_ingest_growth(&env, &mut stack, &mut retained_publishers, true).await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-source-same") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-source-same",
+                SWEEP_CONFIGS[1],
+                &[SweepOutputKind::RtmpSource],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-source-mixed") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-source-mixed",
+                SWEEP_CONFIGS[1],
+                &[SweepOutputKind::RtmpSource, SweepOutputKind::SrtSource],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-transcode-same") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-transcode-same",
+                SWEEP_CONFIGS[1],
+                &[SweepOutputKind::Rtmp720p],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-transcode-mixed") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-transcode-mixed",
+                SWEEP_CONFIGS[1],
+                &[SweepOutputKind::Rtmp720p, SweepOutputKind::Srt720p],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-source-plus-transcode-mixed") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-source-plus-transcode-mixed",
+                SWEEP_CONFIGS[1],
+                &[
+                    SweepOutputKind::RtmpSource,
+                    SweepOutputKind::SrtSource,
+                    SweepOutputKind::Rtmp720p,
+                    SweepOutputKind::Srt720p,
+                ],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-transcode-dual-mixed") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-transcode-dual-mixed",
+                SWEEP_CONFIGS[1],
+                &[
+                    SweepOutputKind::Rtmp720p,
+                    SweepOutputKind::Srt720p,
+                    SweepOutputKind::Rtmp1080p,
+                    SweepOutputKind::Srt1080p,
+                ],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-source-plus-transcode-dual-mixed") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-source-plus-transcode-dual-mixed",
+                SWEEP_CONFIGS[1],
+                &[
+                    SweepOutputKind::RtmpSource,
+                    SweepOutputKind::SrtSource,
+                    SweepOutputKind::Rtmp720p,
+                    SweepOutputKind::Srt720p,
+                    SweepOutputKind::Rtmp1080p,
+                    SweepOutputKind::Srt1080p,
+                ],
+            )
+            .await?,
+        );
+    }
+    if env.scenario_enabled("egress-growth-hevc-bridge") {
+        aggregates.extend(
+            run_resource_egress_growth(
+                &env,
+                &mut stack,
+                &mut retained_publishers,
+                "egress-growth-hevc-bridge",
+                SWEEP_CONFIGS[2],
+                &[SweepOutputKind::RtmpSource],
+            )
+            .await?,
+        );
+    }
 
     write_resource_sweep_csv(&env.summary_csv, &aggregates)?;
     let result = json!({
@@ -1416,11 +1605,128 @@ async fn resource_sweep() -> Result<Value, String> {
         },
         "aggregates": aggregates.iter().map(resource_aggregate_json).collect::<Vec<_>>(),
     });
-    std::fs::write(&env.summary_json, serde_json::to_vec_pretty(&result).unwrap())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &env.summary_json,
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
 
     if env.no_cleanup {
         println!("resource-sweep no-cleanup: leaving final stack running");
+    } else {
+        for child in &mut retained_publishers {
+            stop_child(child).await;
+        }
+        if let Some(stack) = stack.as_mut() {
+            stop_child(&mut stack.restream).await;
+            stop_child(&mut stack.mediamtx).await;
+        }
+    }
+    Ok(result)
+}
+
+async fn branch_matrix() -> Result<Value, String> {
+    let env = BranchMatrixEnv::from_env()?;
+    let resource = &env.resource;
+    std::fs::create_dir_all(&resource.work_dir).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&env.summary_csv);
+    let _ = std::fs::remove_file(&env.summary_json);
+    let _ = std::fs::remove_file(&env.summary_md);
+    let _ = std::fs::remove_file(&resource.samples_jsonl);
+
+    let mut stack = if resource.lifecycle == ResourceSweepLifecycle::Isolated {
+        None
+    } else {
+        Some(start_resource_sweep_stack(resource).await?)
+    };
+    let mut retained_publishers: Vec<Child> = Vec::new();
+    let mut aggregates = Vec::new();
+
+    for (scenario_name, output_kinds) in [
+        (
+            "egress-growth-source-mixed",
+            vec![SweepOutputKind::RtmpSource, SweepOutputKind::SrtSource],
+        ),
+        (
+            "egress-growth-transcode-mixed",
+            vec![SweepOutputKind::Rtmp720p, SweepOutputKind::Srt720p],
+        ),
+        (
+            "egress-growth-source-plus-transcode-mixed",
+            vec![
+                SweepOutputKind::RtmpSource,
+                SweepOutputKind::SrtSource,
+                SweepOutputKind::Rtmp720p,
+                SweepOutputKind::Srt720p,
+            ],
+        ),
+        (
+            "egress-growth-transcode-dual-mixed",
+            vec![
+                SweepOutputKind::Rtmp720p,
+                SweepOutputKind::Srt720p,
+                SweepOutputKind::Rtmp1080p,
+                SweepOutputKind::Srt1080p,
+            ],
+        ),
+        (
+            "egress-growth-source-plus-transcode-dual-mixed",
+            vec![
+                SweepOutputKind::RtmpSource,
+                SweepOutputKind::SrtSource,
+                SweepOutputKind::Rtmp720p,
+                SweepOutputKind::Srt720p,
+                SweepOutputKind::Rtmp1080p,
+                SweepOutputKind::Srt1080p,
+            ],
+        ),
+    ] {
+        if !env.scenario_enabled(scenario_name) {
+            continue;
+        }
+        aggregates.extend(
+            run_resource_egress_growth(
+                resource,
+                &mut stack,
+                &mut retained_publishers,
+                scenario_name,
+                SWEEP_CONFIGS[1],
+                &output_kinds,
+            )
+            .await?,
+        );
+    }
+
+    write_resource_sweep_csv(&env.summary_csv, &aggregates)?;
+    write_branch_matrix_markdown(
+        &env.summary_md,
+        &env.backend,
+        env.srt_ingest_encrypted,
+        &aggregates,
+    )?;
+    let result = json!({
+        "mode": "branch-matrix",
+        "backend": env.backend,
+        "srtIngestEncrypted": env.srt_ingest_encrypted,
+        "lifecycle": resource.lifecycle.as_str(),
+        "artifacts": {
+            "summaryJson": env.summary_json,
+            "summaryCsv": env.summary_csv,
+            "summaryMarkdown": env.summary_md,
+            "samplesJsonl": resource.samples_jsonl,
+            "restreamLog": resource.restream_log,
+            "mediamtxLog": resource.mediamtx_log,
+        },
+        "aggregates": aggregates.iter().map(resource_aggregate_json).collect::<Vec<_>>(),
+    });
+    std::fs::write(
+        &env.summary_json,
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    if resource.no_cleanup {
+        println!("branch-matrix no-cleanup: leaving final stack running");
     } else {
         for child in &mut retained_publishers {
             stop_child(child).await;
@@ -1460,8 +1766,11 @@ async fn bitrate_sweep() -> Result<Value, String> {
         },
         "cases": rows.iter().map(bitrate_sweep_case_json).collect::<Vec<_>>(),
     });
-    std::fs::write(&env.summary_json, serde_json::to_vec_pretty(&result).unwrap())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &env.summary_json,
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(result)
 }
 
@@ -1507,8 +1816,13 @@ async fn run_bitrate_case(
             probe_specs.push((kind, name, expected.to_string()));
         }
     }
-    wait_for_outputs_progress(&stack.api, &pipeline_id, &output_ids, Duration::from_secs(30))
-        .await?;
+    wait_for_outputs_progress(
+        &stack.api,
+        &pipeline_id,
+        &output_ids,
+        Duration::from_secs(30),
+    )
+    .await?;
 
     let samples = sample_bitrate_window(env, &mut stack, config, bitrate, &pipeline_id).await?;
     let mut correctness_ok = true;
@@ -1580,7 +1894,8 @@ async fn start_bitrate_sweep_stack(env: &BitrateSweepEnv) -> Result<ResourceSwee
 
     let restream_log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
     let restream_err = restream_log.try_clone().map_err(|e| e.to_string())?;
-    let mut restream = Command::new(&env.restream_bin)
+    let mut restream_cmd = Command::new(&env.restream_bin);
+    restream_cmd
         .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
         .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
         .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
@@ -1591,9 +1906,9 @@ async fn start_bitrate_sweep_stack(env: &BitrateSweepEnv) -> Result<ResourceSwee
         )
         .stdout(Stdio::from(restream_log))
         .stderr(Stdio::from(restream_err))
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .kill_on_drop(true);
+    apply_harness_srt_listener_env(&mut restream_cmd);
+    let mut restream = restream_cmd.spawn().map_err(|e| e.to_string())?;
     if let Err(err) = wait_for_http_ok(
         &format!("http://127.0.0.1:{}/healthz", env.restream_http),
         Duration::from_secs(30),
@@ -1622,7 +1937,11 @@ struct BitrateOutputNames {
     srt_720p: String,
 }
 
-fn bitrate_case_output_names(config_name: &str, bitrate_label: &str, index: usize) -> BitrateOutputNames {
+fn bitrate_case_output_names(
+    config_name: &str,
+    bitrate_label: &str,
+    index: usize,
+) -> BitrateOutputNames {
     let suffix = bitrate_label.to_ascii_lowercase().replace('.', "_");
     BitrateOutputNames {
         rtmp_source: format!("{config_name}-{suffix}-rtmp-src-{index}"),
@@ -1644,7 +1963,10 @@ fn bitrate_output_url(
             "source".to_string(),
         ),
         SweepOutputKind::SrtSource => (
-            format!("srt://127.0.0.1:{}?streamid=publish:live/{name}", env.mtx_srt),
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{name}",
+                env.mtx_srt
+            ),
             "source".to_string(),
         ),
         SweepOutputKind::Rtmp720p => (
@@ -1656,11 +1978,33 @@ fn bitrate_output_url(
             },
         ),
         SweepOutputKind::Srt720p => (
-            format!("srt://127.0.0.1:{}?streamid=publish:live/{name}", env.mtx_srt),
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{name}",
+                env.mtx_srt
+            ),
             if config.multi_audio {
                 "720p+atrack:0,1".to_string()
             } else {
                 "720p".to_string()
+            },
+        ),
+        SweepOutputKind::Rtmp1080p => (
+            format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp),
+            if config.multi_audio {
+                "1080p+atrack:0".to_string()
+            } else {
+                "1080p".to_string()
+            },
+        ),
+        SweepOutputKind::Srt1080p => (
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{name}",
+                env.mtx_srt
+            ),
+            if config.multi_audio {
+                "1080p+atrack:0,1".to_string()
+            } else {
+                "1080p".to_string()
             },
         ),
     }
@@ -1668,10 +2012,10 @@ fn bitrate_output_url(
 
 fn bitrate_probe_url(env: &BitrateSweepEnv, kind: SweepOutputKind, name: &str) -> String {
     match kind {
-        SweepOutputKind::RtmpSource | SweepOutputKind::Rtmp720p => {
+        SweepOutputKind::RtmpSource | SweepOutputKind::Rtmp720p | SweepOutputKind::Rtmp1080p => {
             format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp)
         }
-        SweepOutputKind::SrtSource | SweepOutputKind::Srt720p => {
+        SweepOutputKind::SrtSource | SweepOutputKind::Srt720p | SweepOutputKind::Srt1080p => {
             format!(
                 "srt://127.0.0.1:{}?streamid=read:live/{name}&timeout=30000000",
                 env.mtx_srt
@@ -1788,7 +2132,10 @@ async fn sample_bitrate_window(
         };
         append_line(
             &env.samples_jsonl,
-            &format!("{}\n", serde_json::to_string(&bitrate_sweep_sample_json(&sample)).unwrap()),
+            &format!(
+                "{}\n",
+                serde_json::to_string(&bitrate_sweep_sample_json(&sample)).unwrap()
+            ),
         )?;
         samples.push(sample);
     }
@@ -1835,8 +2182,15 @@ fn summarize_bitrate_case(
         .map(|sample| sample.retained_payload_kb)
         .max()
         .unwrap_or(0);
-    let retained_final_kb = samples.last().map(|sample| sample.retained_payload_kb).unwrap_or(0);
-    let elapsed_min = (samples.last().map(|sample| sample.elapsed_secs).unwrap_or(0) as f64) / 60.0;
+    let retained_final_kb = samples
+        .last()
+        .map(|sample| sample.retained_payload_kb)
+        .unwrap_or(0);
+    let elapsed_min = (samples
+        .last()
+        .map(|sample| sample.elapsed_secs)
+        .unwrap_or(0) as f64)
+        / 60.0;
     Ok(BitrateSweepCase {
         config: config.name.to_string(),
         ingest_proto: config.ingest_proto.to_string(),
@@ -1870,7 +2224,11 @@ fn summarize_bitrate_case(
             .max()
             .unwrap_or(restream_rss_final_kb + ffmpeg.rss_kb),
         restream_cpu_avg_pct: round2(
-            samples.iter().map(|sample| sample.restream_cpu_pct).sum::<f64>() / samples.len() as f64,
+            samples
+                .iter()
+                .map(|sample| sample.restream_cpu_pct)
+                .sum::<f64>()
+                / samples.len() as f64,
         ),
         restream_cpu_peak_pct: round2(
             samples
@@ -1879,7 +2237,11 @@ fn summarize_bitrate_case(
                 .fold(0.0, f64::max),
         ),
         ffmpeg_cpu_avg_pct: round2(
-            samples.iter().map(|sample| sample.ffmpeg_cpu_pct).sum::<f64>() / samples.len() as f64,
+            samples
+                .iter()
+                .map(|sample| sample.ffmpeg_cpu_pct)
+                .sum::<f64>()
+                / samples.len() as f64,
         ),
         ffmpeg_cpu_peak_pct: round2(
             samples
@@ -1888,7 +2250,11 @@ fn summarize_bitrate_case(
                 .fold(0.0, f64::max),
         ),
         total_cpu_avg_pct: round2(
-            samples.iter().map(|sample| sample.total_cpu_pct).sum::<f64>() / samples.len() as f64,
+            samples
+                .iter()
+                .map(|sample| sample.total_cpu_pct)
+                .sum::<f64>()
+                / samples.len() as f64,
         ),
         total_cpu_peak_pct: round2(
             samples
@@ -1929,7 +2295,10 @@ fn summarize_bitrate_case(
             .map(|sample| sample.avio_hwm_kb)
             .max()
             .unwrap_or(0),
-        overflow_count_final: samples.last().map(|sample| sample.overflow_count).unwrap_or(0),
+        overflow_count_final: samples
+            .last()
+            .map(|sample| sample.overflow_count)
+            .unwrap_or(0),
         correctness_ok,
     })
 }
@@ -2076,7 +2445,8 @@ async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSw
 
     let restream_log = std::fs::File::create(&env.restream_log).map_err(|e| e.to_string())?;
     let restream_err = restream_log.try_clone().map_err(|e| e.to_string())?;
-    let mut restream = Command::new(&env.restream_bin)
+    let mut restream_cmd = Command::new(&env.restream_bin);
+    restream_cmd
         .env("RESTREAM_HTTP_PORT", env.restream_http.to_string())
         .env("RESTREAM_RTMP_PORT", env.restream_rtmp.to_string())
         .env("RESTREAM_SRT_PORT", env.restream_srt.to_string())
@@ -2087,9 +2457,9 @@ async fn start_resource_sweep_stack(env: &ResourceSweepEnv) -> Result<ResourceSw
         )
         .stdout(Stdio::from(restream_log))
         .stderr(Stdio::from(restream_err))
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .kill_on_drop(true);
+    apply_harness_srt_listener_env(&mut restream_cmd);
+    let mut restream = restream_cmd.spawn().map_err(|e| e.to_string())?;
     if let Err(err) = wait_for_http_ok(
         &format!("http://127.0.0.1:{}/healthz", env.restream_http),
         Duration::from_secs(30),
@@ -2118,7 +2488,9 @@ async fn ensure_resource_stack<'a>(
     if stack.is_none() {
         *stack = Some(start_resource_sweep_stack(env).await?);
     }
-    stack.as_mut().ok_or("resource sweep stack missing".to_string())
+    stack
+        .as_mut()
+        .ok_or("resource sweep stack missing".to_string())
 }
 
 async fn teardown_resource_stack(
@@ -2251,9 +2623,12 @@ async fn run_resource_ingest_growth(
             SWEEP_CONFIGS[1]
         };
         let stream_key = format!("resource-growth-{index}-{}", config.name);
-        let pipeline_id =
-            create_resource_pipeline(&active.api, &format!("{}-{index}", config.name), &stream_key)
-                .await?;
+        let pipeline_id = create_resource_pipeline(
+            &active.api,
+            &format!("{}-{index}", config.name),
+            &stream_key,
+        )
+        .await?;
         let publisher = spawn_resource_publisher(env, config, &stream_key)?;
         wait_for_api_input_live(&active.api, &pipeline_id, Duration::from_secs(45)).await?;
         publishers.push(publisher);
@@ -2338,14 +2713,19 @@ async fn run_resource_egress_growth(
         for kind in output_kinds {
             let name = format!("{scenario_name}-{}-{index}", kind.label());
             let (url, encoding) = resource_output_url(env, config, *kind, &name);
-            let output_id = create_mixed_output(&active.api, &pipeline_id, &name, &url, &encoding)
-                .await?;
+            let output_id =
+                create_mixed_output(&active.api, &pipeline_id, &name, &url, &encoding).await?;
             start_mixed_output(&active.api, &pipeline_id, &output_id).await?;
             output_ids.push(output_id);
         }
         if env.egress_counts.contains(&index) {
-            wait_for_outputs_progress(&active.api, &pipeline_id, &output_ids, Duration::from_secs(30))
-                .await?;
+            wait_for_outputs_progress(
+                &active.api,
+                &pipeline_id,
+                &output_ids,
+                Duration::from_secs(30),
+            )
+            .await?;
             out.push(
                 sample_resource_window(
                     env,
@@ -2361,10 +2741,15 @@ async fn run_resource_egress_growth(
                             .map(|kind| kind.label())
                             .collect::<Vec<_>>()
                             .join(","),
-                        transcode: if output_kinds
-                            .iter()
-                            .any(|kind| matches!(kind, SweepOutputKind::Rtmp720p | SweepOutputKind::Srt720p))
-                        {
+                        transcode: if output_kinds.iter().any(|kind| {
+                            matches!(
+                                kind,
+                                SweepOutputKind::Rtmp720p
+                                    | SweepOutputKind::Srt720p
+                                    | SweepOutputKind::Rtmp1080p
+                                    | SweepOutputKind::Srt1080p
+                            )
+                        }) {
                             "yes"
                         } else {
                             "no"
@@ -2390,7 +2775,11 @@ async fn run_resource_egress_growth(
     Ok(out)
 }
 
-async fn create_resource_pipeline(api: &RampApi, name: &str, stream_key: &str) -> Result<String, String> {
+async fn create_resource_pipeline(
+    api: &RampApi,
+    name: &str,
+    stream_key: &str,
+) -> Result<String, String> {
     let pipeline = api
         .post_json("/pipelines", json!({"name": name, "streamKey": stream_key}))
         .await?;
@@ -2458,7 +2847,14 @@ fn spawn_resource_publisher_with_bitrate(
             "log-level=none",
         ]);
     } else {
-        cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]);
+        cmd.args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+        ]);
     }
     cmd.args(["-map", "0:v", "-map", "1:a"]);
     if config.multi_audio {
@@ -2467,12 +2863,14 @@ fn spawn_resource_publisher_with_bitrate(
     cmd.args(["-g", "30", "-b:v", bitrate, "-c:a", "aac", "-b:a", "64k"]);
     if config.ingest_proto == "rtmp" {
         cmd.args(["-f", "flv"]);
-        cmd.arg(format!("rtmp://127.0.0.1:{restream_rtmp}/live/{stream_key}"));
+        cmd.arg(format!(
+            "rtmp://127.0.0.1:{restream_rtmp}/live/{stream_key}"
+        ));
     } else {
         cmd.args(["-f", "mpegts"]);
-        cmd.arg(format!(
+        cmd.arg(append_harness_srt_crypto(format!(
             "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
-        ));
+        )));
     }
     let log_path = work_dir.join(format!("publisher-{stream_key}.log"));
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
@@ -2518,6 +2916,25 @@ fn resource_output_url(
                 "720p+atrack:0,1".to_string()
             } else {
                 "720p".to_string()
+            },
+        ),
+        SweepOutputKind::Rtmp1080p => (
+            format!("rtmp://127.0.0.1:{}/live/{name}", env.mtx_rtmp),
+            if config.multi_audio {
+                "1080p+atrack:0".to_string()
+            } else {
+                "1080p".to_string()
+            },
+        ),
+        SweepOutputKind::Srt1080p => (
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{name}",
+                env.mtx_srt
+            ),
+            if config.multi_audio {
+                "1080p+atrack:0,1".to_string()
+            } else {
+                "1080p".to_string()
             },
         ),
     }
@@ -2589,8 +3006,7 @@ async fn sample_resource_window(
         prev_ticks = ticks;
         prev_ffmpeg_ticks = next_ffmpeg_ticks;
         prev_instant = now;
-        let rss_kb =
-            read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log)?;
+        let rss_kb = read_proc_status_kb_checked(stack.restream_pid, "VmRSS", &env.restream_log)?;
         let rollup = read_smaps_rollup(stack.restream_pid)?;
         let telemetry = stack.api.get_json("/api/v1/engine/telemetry").await?;
         let health = stack.api.get_json("/health").await?;
@@ -2656,15 +3072,27 @@ async fn sample_resource_window(
             avio_len_kb,
             avio_hwm_kb,
             active_transcoder_buffers: telemetry["activeTranscoderBuffers"].as_u64().unwrap_or(0),
-            ingests: telemetry["ingests"].as_array().map(|v| v.len()).unwrap_or(0),
-            egresses: telemetry["egresses"].as_array().map(|v| v.len()).unwrap_or(0),
+            ingests: telemetry["ingests"]
+                .as_array()
+                .map(|v| v.len())
+                .unwrap_or(0),
+            egresses: telemetry["egresses"]
+                .as_array()
+                .map(|v| v.len())
+                .unwrap_or(0),
             stages: telemetry["stages"].as_array().map(|v| v.len()).unwrap_or(0),
-            pipeline_count: health["pipelines"].as_object().map(|v| v.len()).unwrap_or(0),
+            pipeline_count: health["pipelines"]
+                .as_object()
+                .map(|v| v.len())
+                .unwrap_or(0),
             unattributed_kb: rss_kb.saturating_sub(retained_kb + avio_len_kb),
         };
         append_line(
             &env.samples_jsonl,
-            &format!("{}\n", serde_json::to_string(&resource_sample_json(&sample)).unwrap()),
+            &format!(
+                "{}\n",
+                serde_json::to_string(&resource_sample_json(&sample)).unwrap()
+            ),
         )?;
         samples.push(sample);
     }
@@ -2698,19 +3126,9 @@ fn summarize_resource_samples(
                 .fold(0.0, f64::max),
         ),
         ffmpeg_cpu_avg_pct: round2(ffmpeg_cpu_sum / samples.len().max(1) as f64),
-        ffmpeg_cpu_peak_pct: round2(
-            samples
-                .iter()
-                .map(|s| s.ffmpeg_cpu_pct)
-                .fold(0.0, f64::max),
-        ),
+        ffmpeg_cpu_peak_pct: round2(samples.iter().map(|s| s.ffmpeg_cpu_pct).fold(0.0, f64::max)),
         total_cpu_avg_pct: round2(total_cpu_sum / samples.len().max(1) as f64),
-        total_cpu_peak_pct: round2(
-            samples
-                .iter()
-                .map(|s| s.total_cpu_pct)
-                .fold(0.0, f64::max),
-        ),
+        total_cpu_peak_pct: round2(samples.iter().map(|s| s.total_cpu_pct).fold(0.0, f64::max)),
         rss_avg_kb: round2(rss_sum as f64 / samples.len().max(1) as f64),
         rss_peak_kb: samples.iter().map(|s| s.rss_kb).max().unwrap_or(0),
         ffmpeg_rss_peak_kb: samples.iter().map(|s| s.ffmpeg_rss_kb).max().unwrap_or(0),
@@ -2730,17 +3148,9 @@ fn summarize_resource_samples(
             .map(|s| s.private_dirty_kb)
             .max()
             .unwrap_or(0),
-        shared_clean_peak_kb: samples
-            .iter()
-            .map(|s| s.shared_clean_kb)
-            .max()
-            .unwrap_or(0),
+        shared_clean_peak_kb: samples.iter().map(|s| s.shared_clean_kb).max().unwrap_or(0),
         pss_peak_kb: samples.iter().map(|s| s.pss_kb).max().unwrap_or(0),
-        unattributed_peak_kb: samples
-            .iter()
-            .map(|s| s.unattributed_kb)
-            .max()
-            .unwrap_or(0),
+        unattributed_peak_kb: samples.iter().map(|s| s.unattributed_kb).max().unwrap_or(0),
         active_transcoder_buffers_peak: samples
             .iter()
             .map(|s| s.active_transcoder_buffers)
@@ -2936,7 +3346,9 @@ fn resource_aggregate_json(aggregate: &ResourceAggregate) -> Value {
 }
 
 fn write_resource_sweep_csv(path: &Path, rows: &[ResourceAggregate]) -> Result<(), String> {
-    let mut text = String::from("scenario,label,lifecycle,pipelines,outputs,ingest_types,egress_mix,transcode,sample_count,restream_cpu_avg_pct,restream_cpu_peak_pct,ffmpeg_cpu_avg_pct,ffmpeg_cpu_peak_pct,total_cpu_avg_pct,total_cpu_peak_pct,rss_avg_kb,rss_peak_kb,ffmpeg_rss_peak_kb,retained_peak_kb,source_ring_peak_kb,transcoder_ring_peak_kb,tsmux_ring_peak_kb,avio_len_peak_kb,avio_hwm_peak_kb,anonymous_peak_kb,private_dirty_peak_kb,shared_clean_peak_kb,pss_peak_kb,unattributed_peak_kb,active_transcoder_buffers_peak,ingests_peak,egresses_peak,stages_peak,pipeline_count_peak\n");
+    let mut text = String::from(
+        "scenario,label,lifecycle,pipelines,outputs,ingest_types,egress_mix,transcode,sample_count,restream_cpu_avg_pct,restream_cpu_peak_pct,ffmpeg_cpu_avg_pct,ffmpeg_cpu_peak_pct,total_cpu_avg_pct,total_cpu_peak_pct,rss_avg_kb,rss_peak_kb,ffmpeg_rss_peak_kb,retained_peak_kb,source_ring_peak_kb,transcoder_ring_peak_kb,tsmux_ring_peak_kb,avio_len_peak_kb,avio_hwm_peak_kb,anonymous_peak_kb,private_dirty_peak_kb,shared_clean_peak_kb,pss_peak_kb,unattributed_peak_kb,active_transcoder_buffers_peak,ingests_peak,egresses_peak,stages_peak,pipeline_count_peak\n",
+    );
     for row in rows {
         text.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -2977,6 +3389,111 @@ fn write_resource_sweep_csv(path: &Path, rows: &[ResourceAggregate]) -> Result<(
         ));
     }
     std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+fn write_branch_matrix_markdown(
+    path: &Path,
+    backend: &str,
+    srt_ingest_encrypted: bool,
+    rows: &[ResourceAggregate],
+) -> Result<(), String> {
+    let mut selected: Vec<&ResourceAggregate> = rows.iter().collect();
+    selected.sort_by_key(|row| match row.scenario.as_str() {
+        "egress-growth-source-mixed" => 0,
+        "egress-growth-transcode-mixed" => 1,
+        "egress-growth-source-plus-transcode-mixed" => 2,
+        "egress-growth-transcode-dual-mixed" => 3,
+        "egress-growth-source-plus-transcode-dual-mixed" => 4,
+        _ => 99,
+    });
+
+    let mut text = String::new();
+    text.push_str("# Branch Matrix\n\n");
+    text.push_str(&format!("- Backend: `{backend}`\n"));
+    text.push_str(&format!(
+        "- SRT ingest transport: `{}`\n",
+        if srt_ingest_encrypted {
+            "encrypted"
+        } else {
+            "plaintext"
+        }
+    ));
+    if let Some(row) = selected.first() {
+        text.push_str(&format!("- Lifecycle: `{}`\n", row.lifecycle));
+        text.push_str(&format!("- Fanout per group: `{}`\n", row.label));
+    }
+    text.push('\n');
+    text.push_str("| Shape | Outputs | Restream MB | Child FFmpeg MB | Combined MB | Total CPU % | Stages |\n");
+    text.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
+    for row in &selected {
+        let combined_mb = (row.rss_peak_kb + row.ffmpeg_rss_peak_kb) as f64 / 1024.0;
+        text.push_str(&format!(
+            "| {} | {} | {:.1} | {:.1} | {:.1} | {:.2} | {} |\n",
+            branch_shape_label(&row.scenario),
+            row.outputs,
+            row.rss_peak_kb as f64 / 1024.0,
+            row.ffmpeg_rss_peak_kb as f64 / 1024.0,
+            combined_mb,
+            row.total_cpu_avg_pct,
+            row.stages_peak,
+        ));
+    }
+
+    if let (Some(single), Some(single_plus_source), Some(dual), Some(dual_plus_source)) = (
+        selected
+            .iter()
+            .find(|row| row.scenario == "egress-growth-transcode-mixed"),
+        selected
+            .iter()
+            .find(|row| row.scenario == "egress-growth-source-plus-transcode-mixed"),
+        selected
+            .iter()
+            .find(|row| row.scenario == "egress-growth-transcode-dual-mixed"),
+        selected
+            .iter()
+            .find(|row| row.scenario == "egress-growth-source-plus-transcode-dual-mixed"),
+    ) {
+        text.push_str("\n## Deltas\n\n");
+        text.push_str("| Comparison | Output Delta | Combined MB Delta | Total CPU Delta |\n");
+        text.push_str("|---|---:|---:|---:|\n");
+        text.push_str(&format!(
+            "| Add passthrough on top of one transcode family | {} | {:.1} | {:.2} |\n",
+            single_plus_source.outputs.saturating_sub(single.outputs),
+            ((single_plus_source.rss_peak_kb + single_plus_source.ffmpeg_rss_peak_kb)
+                .saturating_sub(single.rss_peak_kb + single.ffmpeg_rss_peak_kb)) as f64
+                / 1024.0,
+            single_plus_source.total_cpu_avg_pct - single.total_cpu_avg_pct,
+        ));
+        text.push_str(&format!(
+            "| Add a second transcode family | {} | {:.1} | {:.2} |\n",
+            dual.outputs.saturating_sub(single.outputs),
+            ((dual.rss_peak_kb + dual.ffmpeg_rss_peak_kb)
+                .saturating_sub(single.rss_peak_kb + single.ffmpeg_rss_peak_kb)) as f64
+                / 1024.0,
+            dual.total_cpu_avg_pct - single.total_cpu_avg_pct,
+        ));
+        text.push_str(&format!(
+            "| Add passthrough on top of two transcode families | {} | {:.1} | {:.2} |\n",
+            dual_plus_source.outputs.saturating_sub(dual.outputs),
+            ((dual_plus_source.rss_peak_kb + dual_plus_source.ffmpeg_rss_peak_kb)
+                .saturating_sub(dual.rss_peak_kb + dual.ffmpeg_rss_peak_kb)) as f64
+                / 1024.0,
+            dual_plus_source.total_cpu_avg_pct - dual.total_cpu_avg_pct,
+        ));
+    }
+
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+fn branch_shape_label(scenario: &str) -> &'static str {
+    match scenario {
+        "egress-growth-source-mixed" => "source only",
+        "egress-growth-transcode-mixed" => "one transcode family (720p)",
+        "egress-growth-source-plus-transcode-mixed" => "source + one transcode family",
+        "egress-growth-transcode-dual-mixed" => "two transcode families (720p + 1080p)",
+        "egress-growth-source-plus-transcode-dual-mixed" => "source + two transcode families",
+        _ => "custom",
+    }
 }
 
 fn csv_escape(value: &str) -> String {
@@ -5191,7 +5708,9 @@ async fn run_mixed_srt_multi_config(
         match api.get_json(&telem_path).await {
             Ok(telem) => {
                 let cap = telem["sourceRing"]["capacity"].as_u64().unwrap_or(0);
-                let depth = telem["sourceRing"]["bufferDepthSecs"].as_f64().unwrap_or(0.0);
+                let depth = telem["sourceRing"]["bufferDepthSecs"]
+                    .as_f64()
+                    .unwrap_or(0.0);
                 let overflows: u64 = telem["sourceRing"]["readers"]
                     .as_array()
                     .map(|rs| {
@@ -5237,7 +5756,11 @@ async fn run_mixed_srt_multi_config(
             }
             Err(e) => {
                 emit_mixed_result(
-                    env, cfg, &ring_check_id, "fail", started.elapsed(),
+                    env,
+                    cfg,
+                    &ring_check_id,
+                    "fail",
+                    started.elapsed(),
                     Some(json!({"error": e})),
                 )?;
             }
@@ -7709,11 +8232,7 @@ async fn run_mixed_file_h264_config(
         generate_fixture_h264(&fixture).await?;
     }
 
-    let fixture_name = fixture
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let fixture_name = fixture.file_name().unwrap().to_string_lossy().to_string();
     let media_dir =
         PathBuf::from(std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".into()));
     let media_dest = media_dir.join(&fixture_name);
@@ -7738,7 +8257,10 @@ async fn run_mixed_file_h264_config(
     let ingest_list = api.get_json("/api/ingests").await?;
     let ingest_id = ingest_list
         .as_array()
-        .and_then(|arr| arr.iter().find(|i| i["streamKey"].as_str() == Some(&stream_key)))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|i| i["streamKey"].as_str() == Some(&stream_key))
+        })
         .and_then(|i| i["id"].as_str())
         .ok_or("file ingest not found in list")?
         .to_string();
@@ -7748,7 +8270,13 @@ async fn run_mixed_file_h264_config(
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, "baseline (file ingest live, 0 outputs)").await?;
+        snapshot_mixed(
+            env,
+            restream_pid,
+            cfg,
+            "baseline (file ingest live, 0 outputs)",
+        )
+        .await?;
     }
 
     let mut output_ids = Vec::with_capacity(total);
@@ -8088,11 +8616,8 @@ async fn fault_resilience() -> Result<Value, String> {
         .await?;
         wait_for_api_input_live(&api, &pid, timeout).await?;
 
-        api.post_json(
-            &format!("/pipelines/{pid}/outputs/{oid}/start"),
-            json!({}),
-        )
-        .await?;
+        api.post_json(&format!("/pipelines/{pid}/outputs/{oid}/start"), json!({}))
+            .await?;
 
         let deadline = Instant::now() + timeout;
         while sink_bytes.load(Ordering::Relaxed) < 50_000 {
@@ -8136,21 +8661,14 @@ async fn fault_resilience() -> Result<Value, String> {
                         .as_str()
                         .map(|e| !e.is_empty())
                         .unwrap_or(false);
-                    phase = s["phase"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                        .to_string();
+                    phase = s["phase"].as_str().unwrap_or("unknown").to_string();
                     if s.get("error").is_some() {
                         // {"error": "output not active"} — cleaned up
                         phase = "cleaned-up".to_string();
                         passed = true;
                         break;
                     }
-                    if has_error
-                        || phase == "error"
-                        || phase == "failed"
-                        || phase == "connecting"
-                    {
+                    if has_error || phase == "error" || phase == "failed" || phase == "connecting" {
                         passed = true;
                         break;
                     }
@@ -8229,11 +8747,8 @@ async fn fault_resilience() -> Result<Value, String> {
         .await?;
         wait_for_api_input_live(&api, &pid, timeout).await?;
 
-        api.post_json(
-            &format!("/pipelines/{pid}/outputs/{oid}/start"),
-            json!({}),
-        )
-        .await?;
+        api.post_json(&format!("/pipelines/{pid}/outputs/{oid}/start"), json!({}))
+            .await?;
 
         // Wait for the sink pipeline to see data
         let deadline = Instant::now() + timeout;
@@ -8311,11 +8826,8 @@ async fn fault_resilience() -> Result<Value, String> {
     });
 
     let result_path = work_dir.join("fault-resilience.json");
-    std::fs::write(
-        &result_path,
-        serde_json::to_string_pretty(&result).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(&result_path, serde_json::to_string_pretty(&result).unwrap())
+        .map_err(|e| e.to_string())?;
     println!("artifact={}", result_path.display());
 
     if !all_passed {

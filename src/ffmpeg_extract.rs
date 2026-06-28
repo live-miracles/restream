@@ -13,9 +13,9 @@
 //! so the external transcoder and other consumers don't need environment variables.
 
 use crate::api::EmbeddedAssets;
-use tracing::{debug, error, info, warn};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use tracing::{debug, error, info, warn};
 
 static FFMPEG_BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 

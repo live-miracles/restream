@@ -4,6 +4,8 @@ import type {
     ConfigData,
     HealthData,
     IngestSecurityConfig,
+    SrtGlobalIngestConfig,
+    SrtPipelineIngestConfig,
     SystemMetrics,
     StreamKey,
 } from '../types.js';
@@ -116,6 +118,7 @@ interface CreatePipelineArgs {
     streamKey: string;
     inputSource?: string | null;
     encoding?: string | null;
+    srtIngestPolicy?: SrtPipelineIngestConfig | null;
 }
 
 async function createPipeline(args: CreatePipelineArgs): Promise<unknown | null> {
@@ -319,17 +322,20 @@ async function patchConfig(body: {
     serverName?: string;
     ingestHost?: string;
     ingestSecurity?: Partial<IngestSecurityConfig>;
+    srtIngest?: SrtGlobalIngestConfig;
     transcodeProfiles?: TranscodeProfiles;
 }): Promise<{
     serverName: string;
     ingestHost: string;
     ingestSecurity: IngestSecurityConfig;
+    srtIngest: SrtGlobalIngestConfig;
     transcodeProfiles?: TranscodeProfiles;
 } | null> {
     return apiRequest<{
         serverName: string;
         ingestHost: string;
         ingestSecurity: IngestSecurityConfig;
+        srtIngest: SrtGlobalIngestConfig;
         transcodeProfiles?: TranscodeProfiles;
     }>('/config', { method: 'PATCH', body });
 }

@@ -33,6 +33,18 @@ export interface IngestUrls {
     srt: string | null;
 }
 
+export interface SrtGlobalIngestConfig {
+    mode: 'plaintext' | 'encrypted';
+    passphrase?: string | null;
+    pbkeylen: 16 | 24 | 32;
+}
+
+export interface SrtPipelineIngestConfig {
+    mode: 'inherit' | 'plaintext' | 'encrypted';
+    passphrase?: string | null;
+    pbkeylen?: 16 | 24 | 32 | null;
+}
+
 export interface PublisherQuality {
     inboundRTPPacketsLost?: number;
     inboundRTPPacketsInError?: number;
@@ -83,6 +95,7 @@ export interface ConfigPipeline {
     name: string;
     streamKey: string;
     inputSource?: string | null;
+    srtIngestPolicy?: SrtPipelineIngestConfig | null;
     ingestUrls?: IngestUrls;
 }
 
@@ -113,6 +126,7 @@ export interface ConfigData {
     serverName?: string;
     ingestHost?: string;
     ingestSecurity?: IngestSecurityConfig;
+    srtIngest?: SrtGlobalIngestConfig;
     transcodeProfiles?: Record<string, TranscodeProfileEntry>;
     pipelines: ConfigPipeline[];
     outputs: ConfigOutput[];
@@ -259,6 +273,7 @@ export interface PipelineView {
     name: string;
     key: string | null;
     inputSource: string | null;
+    srtIngestPolicy?: SrtPipelineIngestConfig | null;
     ingestUrls: IngestUrls;
     input: InputView;
     outs: OutputView[];

@@ -26,9 +26,9 @@
 //! - `width/height: 0` → passthrough (match source resolution)
 
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 
 /// Meta key in the DB `meta` table.
 pub const META_KEY: &str = "transcode_profiles";

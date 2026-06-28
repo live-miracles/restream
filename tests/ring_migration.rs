@@ -69,7 +69,10 @@ fn drain(reader: &mut Reader) -> Vec<u64> {
 
 /// Seal `old` and install `new_ring` as successor; returns the new ring.
 fn seal(old: &Arc<RingBuffer>, new_capacity: usize) -> Arc<RingBuffer> {
-    let new = Arc::new(RingBuffer::new_continuing(new_capacity, old.get_write_idx()));
+    let new = Arc::new(RingBuffer::new_continuing(
+        new_capacity,
+        old.get_write_idx(),
+    ));
     old.seal_and_forward(new.clone());
     new
 }
@@ -95,7 +98,10 @@ fn p1_p2_reader_caught_up_at_seal_time() {
         r.wait_for_data().await;
         let got2 = drain(&mut r);
         assert_eq!(got2, (10..15).collect::<Vec<_>>(), "P1: next 5 delivered");
-        assert!(Arc::ptr_eq(r.current_ring(), &new), "P3: reader on new ring");
+        assert!(
+            Arc::ptr_eq(r.current_ring(), &new),
+            "P3: reader on new ring"
+        );
     });
 }
 
@@ -133,7 +139,11 @@ fn p1_p2_reader_has_lag_at_seal_time() {
             .copied()
             .collect();
 
-        assert_eq!(all, (0..25).collect::<Vec<_>>(), "P1: all 25 delivered in order");
+        assert_eq!(
+            all,
+            (0..25).collect::<Vec<_>>(),
+            "P1: all 25 delivered in order"
+        );
 
         // P2: verify no duplicates.
         let mut sorted = all.clone();
@@ -141,7 +151,10 @@ fn p1_p2_reader_has_lag_at_seal_time() {
         sorted.dedup();
         assert_eq!(sorted.len(), all.len(), "P2: no duplicates");
 
-        assert!(Arc::ptr_eq(r.current_ring(), &new), "P3: reader on new ring");
+        assert!(
+            Arc::ptr_eq(r.current_ring(), &new),
+            "P3: reader on new ring"
+        );
     });
 }
 
@@ -169,12 +182,19 @@ fn p3_write_index_continuity_zero_lag() {
     // P3 invariant: new ring must start at or beyond reader's position.
     // If new_ring.write_idx < reader.read_idx the reader would incorrectly appear
     // "ahead" of the writer after migration and spin in wait_for_data indefinitely.
-    assert_eq!(new.get_write_idx(), 50,
-        "P3: new ring write cursor equals old ring's final write cursor");
+    assert_eq!(
+        new.get_write_idx(),
+        50,
+        "P3: new ring write cursor equals old ring's final write cursor"
+    );
 
     // A new packet to the new ring must be at a greater index than the reader's position.
     push_seq(&new, 50, 1);
-    assert_eq!(new.get_write_idx(), 51, "P3: write_idx advances past reader position");
+    assert_eq!(
+        new.get_write_idx(),
+        51,
+        "P3: write_idx advances past reader position"
+    );
 
     // Now migrate and verify: read_idx == 50, write_idx == 51, lag == 1.
     let rt = Runtime::new().unwrap();
@@ -183,7 +203,11 @@ fn p3_write_index_continuity_zero_lag() {
         Arc::ptr_eq(r.current_ring(), &new),
         "P3: reader migrated to new ring"
     );
-    assert_eq!(r.lag(), 1, "P3: reader exactly one packet behind after migration");
+    assert_eq!(
+        r.lag(),
+        1,
+        "P3: reader exactly one packet behind after migration"
+    );
 }
 
 // ─── P5  chain migration ─────────────────────────────────────────────────────
@@ -242,7 +266,10 @@ fn p6_isolation_between_pipelines() {
         // Reader on B should deliver packets 100..110 unaffected.
         let got = drain(&mut r_b);
         assert_eq!(got, (100..110).collect::<Vec<_>>(), "P6: ring B unaffected");
-        assert!(Arc::ptr_eq(r_b.current_ring(), &ring_b), "P6: reader stays on ring B");
+        assert!(
+            Arc::ptr_eq(r_b.current_ring(), &ring_b),
+            "P6: reader stays on ring B"
+        );
     });
 }
 
@@ -271,11 +298,14 @@ async fn p4_concurrent_seal_while_reader_waiting() {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(5)).await;
         old2.seal_and_forward(new2.clone()); // fires old notify, reader migrates
-        new2.push(pkt(5));                   // write_idx 5→6, fires new notify
+        new2.push(pkt(5)); // write_idx 5→6, fires new notify
     });
 
     let result = timeout(Duration::from_secs(2), r.wait_for_data()).await;
-    assert!(result.is_ok(), "P4: wait_for_data must not sleep forever after seal");
+    assert!(
+        result.is_ok(),
+        "P4: wait_for_data must not sleep forever after seal"
+    );
 
     let got = drain(&mut r);
     assert_eq!(got, vec![5u64], "P4: packet from new ring delivered");
@@ -297,12 +327,9 @@ async fn p4_seal_before_reader_reaches_wait() {
 
     // wait_for_data detects seal immediately (next is already set), migrates,
     // and sees write_idx (4) > read_idx (3).
-    tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        r.wait_for_data(),
-    )
-    .await
-    .expect("P4: should not block when seal already set and new data present");
+    tokio::time::timeout(std::time::Duration::from_millis(100), r.wait_for_data())
+        .await
+        .expect("P4: should not block when seal already set and new data present");
 
     let got = drain(&mut r);
     assert_eq!(got, vec![3u64], "P4: packet after pre-seal migrate");
@@ -426,7 +453,10 @@ fn p7_overflow_then_seal() {
 
         // After overflow, fast-forward lands the reader near the tail.
         // The new ring's packets (100..105) must arrive intact.
-        assert!(post.windows(2).all(|w| w[1] > w[0]), "P7: monotone after overflow+migrate");
+        assert!(
+            post.windows(2).all(|w| w[1] > w[0]),
+            "P7: monotone after overflow+migrate"
+        );
         // All new-ring packets must appear.
         assert!(
             post.iter().any(|&s| s >= 100),
@@ -437,6 +467,10 @@ fn p7_overflow_then_seal() {
         let mut deduped = post_seal.clone();
         deduped.sort_unstable();
         deduped.dedup();
-        assert_eq!(deduped.len(), post_seal.len(), "P7: no duplicates from new ring");
+        assert_eq!(
+            deduped.len(),
+            post_seal.len(),
+            "P7: no duplicates from new ring"
+        );
     });
 }

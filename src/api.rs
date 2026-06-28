@@ -4,7 +4,6 @@
 //! disk-first fallback for development hot-reload.
 
 use axum::extract::DefaultBodyLimit;
-use tracing::{debug, error, info, warn};
 use axum::http::HeaderValue;
 use axum::{
     Json, Router,
@@ -28,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
+use tracing::{debug, error, info, warn};
 
 use crate::alerts;
 use crate::db;
@@ -37,6 +37,10 @@ use crate::media::engine::MediaEngine;
 use crate::media::hls::{HlsSegmentVariant, HlsStore};
 use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
+use crate::media::srt::{
+    SRT_INGEST_GLOBAL_CONFIG_META_KEY, SrtIngestPolicyStore, load_global_srt_ingest_config,
+    parse_pipeline_srt_ingest_policy_json, serialize_pipeline_srt_ingest_policy_json,
+};
 use crate::types::*;
 
 /// Maximum byte lengths for user-supplied string fields stored in SQLite.
@@ -116,6 +120,7 @@ pub struct PortConfig {
 pub struct AppState {
     pub db: SqlitePool,
     pub security: Arc<IngestSecurityService>,
+    pub ingest_policy_store: Arc<SrtIngestPolicyStore>,
     pub sessions: Arc<TokioRwLock<HashSet<String>>>,
     pub engine: Arc<MediaEngine>,
     pub ports: PortConfig,
@@ -191,6 +196,34 @@ async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
         .await?
         .filter(|host| !host.is_empty())
         .unwrap_or_else(|| DEFAULT_INGEST_HOST.to_string()))
+}
+
+async fn refresh_srt_ingest_policy_store(state: &AppState) {
+    let global = load_global_srt_ingest_config(&state.db).await;
+    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
+    state.ingest_policy_store.replace(global, &pipelines);
+}
+
+fn pipeline_response_json(
+    pipeline: &Pipeline,
+    effective_ingest_host: &str,
+    rtmp_port: u16,
+    srt_port: u16,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": pipeline.id,
+        "name": pipeline.name,
+        "streamKey": pipeline.stream_key,
+        "inputSource": pipeline.input_source,
+        "encoding": pipeline.encoding,
+        "srtIngestPolicy": parse_pipeline_srt_ingest_policy_json(
+            pipeline.srt_ingest_policy_json.as_deref()
+        ),
+        "ingestUrls": {
+            "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, rtmp_port, pipeline.stream_key),
+            "srt": format!("srt://{}:{}?streamid=publish:live/{}", effective_ingest_host, srt_port, pipeline.stream_key)
+        }
+    })
 }
 
 // Hex encoding helper
@@ -879,20 +912,17 @@ async fn config_get_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let mut pipelines = Vec::new();
-    for p in raw_pipelines {
-        pipelines.push(serde_json::json!({
-            "id": p.id,
-            "name": p.name,
-            "streamKey": p.stream_key,
-            "inputSource": p.input_source,
-            "encoding": p.encoding,
-            "ingestUrls": {
-                "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, state.ports.rtmp, p.stream_key),
-                "srt": format!("srt://{}:{}?streamid=publish:live/{}", effective_ingest_host, state.ports.srt, p.stream_key)
-            }
-        }));
-    }
+    let pipelines = raw_pipelines
+        .iter()
+        .map(|pipeline| {
+            pipeline_response_json(
+                pipeline,
+                effective_ingest_host,
+                state.ports.rtmp,
+                state.ports.srt,
+            )
+        })
+        .collect::<Vec<_>>();
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
@@ -901,6 +931,7 @@ async fn config_get_handler(
         .unwrap_or(Some("Name".to_string()))
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
+    let srt_ingest = load_global_srt_ingest_config(&state.db).await;
 
     // Transcode profiles from runtime cache, with built-ins exposed when unset.
     let transcode_profiles = crate::media::profiles::current_effective().await;
@@ -909,6 +940,7 @@ async fn config_get_handler(
         "serverName": server_name,
         "ingestHost": ingest_host,
         "ingestSecurity": sec,
+        "srtIngest": srt_ingest,
         "transcodeProfiles": transcode_profiles,
         "pipelines": pipelines,
         "outputs": outputs,
@@ -923,6 +955,7 @@ struct ConfigPatchPayload {
     server_name: Option<String>,
     ingest_host: Option<String>,
     ingest_security: Option<IngestSecurityConfig>,
+    srt_ingest: Option<SrtGlobalIngestConfig>,
     transcode_profiles: Option<crate::media::profiles::TranscodeProfiles>,
 }
 
@@ -963,6 +996,23 @@ async fn config_patch_handler(
         }
     }
 
+    if let Some(mut srt_ingest) = payload.srt_ingest.clone() {
+        if let Err(error) = srt_ingest.validate() {
+            return (StatusCode::BAD_REQUEST, error).into_response();
+        }
+        let raw_json = match serde_json::to_string(&srt_ingest) {
+            Ok(value) => value,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        if db::set_meta(&state.db, SRT_INGEST_GLOBAL_CONFIG_META_KEY, &raw_json)
+            .await
+            .is_err()
+        {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        refresh_srt_ingest_policy_store(&state).await;
+    }
+
     if let Some(ref profiles) = payload.transcode_profiles {
         for (name, profile) in profiles {
             if let Err(err) = profile.validate() {
@@ -988,12 +1038,14 @@ async fn config_patch_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let sec = state.security.get_config();
+    let srt_ingest = load_global_srt_ingest_config(&state.db).await;
     let transcode_profiles = crate::media::profiles::current_effective().await;
 
     Json(serde_json::json!({
         "serverName": server_name,
         "ingestHost": ingest_host,
         "ingestSecurity": sec,
+        "srtIngest": srt_ingest,
         "transcodeProfiles": transcode_profiles
     }))
     .into_response()
@@ -1012,7 +1064,23 @@ async fn pipelines_get_handler(
     }
 
     match db::list_pipelines(&state.db).await {
-        Ok(pipelines) => Json(serde_json::json!({ "pipelines": pipelines })).into_response(),
+        Ok(pipelines) => {
+            let ingest_host = get_ingest_host(&state.db)
+                .await
+                .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
+            let pipelines = pipelines
+                .iter()
+                .map(|pipeline| {
+                    pipeline_response_json(
+                        pipeline,
+                        &ingest_host,
+                        state.ports.rtmp,
+                        state.ports.srt,
+                    )
+                })
+                .collect::<Vec<_>>();
+            Json(serde_json::json!({ "pipelines": pipelines })).into_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -1024,6 +1092,7 @@ struct PipelinePayload {
     stream_key: Option<String>,
     input_source: Option<Option<String>>,
     encoding: Option<String>,
+    srt_ingest_policy: Option<SrtPipelineIngestConfig>,
 }
 
 async fn pipelines_post_handler(
@@ -1056,6 +1125,11 @@ async fn pipelines_post_handler(
         && let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN)
     {
         return r;
+    }
+    if let Some(mut policy) = payload.srt_ingest_policy.clone()
+        && let Err(error) = policy.validate()
+    {
+        return (StatusCode::BAD_REQUEST, error).into_response();
     }
     if payload.name.trim().is_empty() {
         return (
@@ -1101,6 +1175,13 @@ async fn pipelines_post_handler(
         .input_source
         .as_ref()
         .and_then(|source| source.as_deref());
+    let srt_ingest_policy_json = match payload.srt_ingest_policy.as_ref() {
+        Some(policy) => match serialize_pipeline_srt_ingest_policy_json(policy) {
+            Ok(value) => Some(value),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        None => None,
+    };
 
     match db::create_pipeline(
         &state.db,
@@ -1109,14 +1190,29 @@ async fn pipelines_post_handler(
         &stream_key,
         input_source,
         payload.encoding.as_deref(),
+        srt_ingest_policy_json.as_deref(),
     )
     .await
     {
-        Ok(pipeline) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({"message": "Pipeline created", "pipeline": pipeline})),
-        )
-            .into_response(),
+        Ok(pipeline) => {
+            refresh_srt_ingest_policy_store(&state).await;
+            let ingest_host = get_ingest_host(&state.db)
+                .await
+                .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "message": "Pipeline created",
+                    "pipeline": pipeline_response_json(
+                        &pipeline,
+                        &ingest_host,
+                        state.ports.rtmp,
+                        state.ports.srt
+                    )
+                })),
+            )
+                .into_response()
+        }
         Err(err) => {
             if err.to_string().contains("duplicate stream key") {
                 (
@@ -1163,6 +1259,11 @@ async fn pipelines_update_handler(
     {
         return r;
     }
+    if let Some(mut policy) = payload.srt_ingest_policy.clone()
+        && let Err(error) = policy.validate()
+    {
+        return (StatusCode::BAD_REQUEST, error).into_response();
+    }
     if payload.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1176,9 +1277,24 @@ async fn pipelines_update_handler(
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
-    let stream_key = payload.stream_key.unwrap_or(existing.stream_key);
-    let input_source = payload.input_source.unwrap_or(existing.input_source);
-    let encoding = payload.encoding.or(existing.encoding);
+    let existing_stream_key = existing.stream_key.clone();
+    let existing_input_source = existing.input_source.clone();
+    let existing_encoding = existing.encoding.clone();
+    let existing_srt_ingest_policy_json = existing.srt_ingest_policy_json.clone();
+
+    let stream_key = payload.stream_key.unwrap_or(existing_stream_key);
+    let input_source = payload.input_source.unwrap_or(existing_input_source);
+    let encoding = payload.encoding.or(existing_encoding);
+    let srt_ingest_policy_json = match payload
+        .srt_ingest_policy
+        .as_ref()
+        .map(serialize_pipeline_srt_ingest_policy_json)
+        .transpose()
+    {
+        Ok(Some(value)) => Some(value),
+        Ok(None) => existing_srt_ingest_policy_json,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     if let Ok(active_pipelines) = db::list_pipelines(&state.db).await
         && active_pipelines
@@ -1199,12 +1315,25 @@ async fn pipelines_update_handler(
         &stream_key,
         input_source.as_deref(),
         encoding.as_deref(),
+        srt_ingest_policy_json.as_deref(),
     )
     .await
     {
         Ok(Some(updated)) => {
-            Json(serde_json::json!({"message": "Pipeline updated", "pipeline": updated}))
-                .into_response()
+            refresh_srt_ingest_policy_store(&state).await;
+            let ingest_host = get_ingest_host(&state.db)
+                .await
+                .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
+            Json(serde_json::json!({
+                "message": "Pipeline updated",
+                "pipeline": pipeline_response_json(
+                    &updated,
+                    &ingest_host,
+                    state.ports.rtmp,
+                    state.ports.srt
+                )
+            }))
+            .into_response()
         }
         Err(err) => {
             if err.to_string().contains("duplicate stream key") {
@@ -1273,6 +1402,7 @@ async fn pipelines_delete_handler(
 
     match db::delete_pipeline(&state.db, &id).await {
         Ok(true) => {
+            refresh_srt_ingest_policy_store(&state).await;
             Json(serde_json::json!({"message": format!("Pipeline {} deleted", id)})).into_response()
         }
         _ => (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
@@ -1556,7 +1686,9 @@ async fn logs_handler(
         order: query.order,
     };
 
-    let logs = db::list_app_logs(&state.db, &filters).await.unwrap_or_default();
+    let logs = db::list_app_logs(&state.db, &filters)
+        .await
+        .unwrap_or_default();
     let has_more = logs.len() >= filters.limit.unwrap_or(200).clamp(1, 1000) as usize;
 
     Json(serde_json::json!({
@@ -1612,9 +1744,9 @@ async fn logs_stream_handler(
         let level_passes = |level: &str| -> bool {
             match min_level.as_str() {
                 "error" => level == "ERROR",
-                "warn"  => matches!(level, "ERROR" | "WARN"),
+                "warn" => matches!(level, "ERROR" | "WARN"),
                 "debug" => matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG"),
-                _       => matches!(level, "ERROR" | "WARN" | "INFO"),
+                _ => matches!(level, "ERROR" | "WARN" | "INFO"),
             }
         };
         // 1. Backfill entries missed since last_event_id.
@@ -1647,7 +1779,9 @@ async fn logs_stream_handler(
                     "outputId": row.output_id,
                 });
                 let frame = format!("id: {}\nevent: log\ndata: {}\n\n", row.id, data);
-                if tx.send(frame).await.is_err() { return; }
+                if tx.send(frame).await.is_err() {
+                    return;
+                }
             }
         }
 
@@ -1701,7 +1835,7 @@ async fn logs_stream_handler(
         ],
         body,
     )
-    .into_response()
+        .into_response()
 }
 
 async fn custom_encoding_get(
@@ -2021,6 +2155,7 @@ async fn pipeline_file_ingest_put_handler(
         &pipeline.stream_key,
         Some(&input_source),
         pipeline.encoding.as_deref(),
+        pipeline.srt_ingest_policy_json.as_deref(),
     )
     .await
     .is_err()
@@ -2063,6 +2198,7 @@ async fn pipeline_file_ingest_delete_handler(
         &pipeline.stream_key,
         None,
         pipeline.encoding.as_deref(),
+        pipeline.srt_ingest_policy_json.as_deref(),
     )
     .await
     .is_err()

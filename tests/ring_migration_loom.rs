@@ -11,8 +11,8 @@
 
 #[cfg(loom)]
 mod loom_tests {
-    use loom::sync::{Arc, Condvar, Mutex};
     use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use loom::sync::{Arc, Condvar, Mutex};
     use loom::thread;
 
     struct FakeRing {

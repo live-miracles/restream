@@ -4,18 +4,20 @@
 //! to build the JSON returned by `/health`.
 
 use ffmpeg_next as ffmpeg;
-use tracing::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
 use crate::media::hls::HlsStore;
-use crate::media::ring_buffer::{RingBuffer, default_ring_capacity, default_transcoder_ring_capacity};
+use crate::media::ring_buffer::{
+    RingBuffer, default_ring_capacity, default_transcoder_ring_capacity,
+};
 use crate::media::ts_chunk_ring::TsChunkRing;
 use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 
@@ -590,8 +592,7 @@ impl MediaEngine {
         children.retain(|id, child| match child.try_wait() {
             Ok(None) => true,
             _ => {
-                info!("File ingest child process {} has exited/stopped", id
-                );
+                info!("File ingest child process {} has exited/stopped", id);
                 stopped.push(id.clone());
                 false
             }
@@ -646,7 +647,7 @@ impl MediaEngine {
         audio_track_count: usize,
     ) -> Option<Arc<RingBuffer>> {
         const AUDIO_PKT_RATE: f64 = 50.0; // AAC 48 kHz, 960 samples/frame
-        const HEADROOM_SECS: f64 = 6.0;   // 20 % margin above the 5 s requirement
+        const HEADROOM_SECS: f64 = 6.0; // 20 % margin above the 5 s requirement
         const MAX_RING_CAPACITY: usize = 16_384;
 
         let pkt_rate = video_fps.max(0.0) + audio_track_count as f64 * AUDIO_PKT_RATE;
@@ -4007,7 +4008,10 @@ mod tests {
         engine.get_or_create_pipeline("p").await;
 
         let result = engine.adapt_pipeline_ring("p", 30.0, 1).await;
-        assert!(result.is_none(), "no resize needed for single-track 1080p30");
+        assert!(
+            result.is_none(),
+            "no resize needed for single-track 1080p30"
+        );
 
         let ring = engine.get_or_create_pipeline("p").await;
         assert_eq!(ring.capacity(), default_ring_capacity());
@@ -4039,7 +4043,10 @@ mod tests {
         engine.get_or_create_pipeline("p").await;
 
         let result = engine.adapt_pipeline_ring("p", 60.0, 1).await;
-        assert!(result.is_none(), "default 1024 already covers 4K60 single-track");
+        assert!(
+            result.is_none(),
+            "default 1024 already covers 4K60 single-track"
+        );
     }
 
     #[tokio::test]
@@ -4071,11 +4078,19 @@ mod tests {
         assert_eq!(new_ring.capacity(), 4980);
 
         let ring2 = engine.get_or_create_pipeline("p").await;
-        assert_eq!(ring2.capacity(), 4980, "adapted ring must persist across calls");
+        assert_eq!(
+            ring2.capacity(),
+            4980,
+            "adapted ring must persist across calls"
+        );
 
         let _reader = crate::media::ring_buffer::Reader::new("hold".to_string(), ring2.clone());
         let ring3 = engine.get_or_create_pipeline("p").await;
-        assert_eq!(ring3.capacity(), 4980, "ring must not change with active reader");
+        assert_eq!(
+            ring3.capacity(),
+            4980,
+            "ring must not change with active reader"
+        );
     }
 
     #[tokio::test]
@@ -4088,10 +4103,17 @@ mod tests {
 
         // Lighter re-publish: 1v1a = 80 pkt/s → needed = 480 < 4980 → no resize.
         let result = engine.adapt_pipeline_ring("p", 30.0, 1).await;
-        assert!(result.is_none(), "no resize when ring is already large enough");
+        assert!(
+            result.is_none(),
+            "no resize when ring is already large enough"
+        );
 
         let ring = engine.get_or_create_pipeline("p").await;
-        assert_eq!(ring.capacity(), 4980, "capacity preserved from heavier session");
+        assert_eq!(
+            ring.capacity(),
+            4980,
+            "capacity preserved from heavier session"
+        );
         let depth = ring.buffer_depth_secs().unwrap();
         // telemetry now reflects the lighter stream's real depth: 4980/80 ≈ 62 s
         assert!(depth > 60.0, "4980/80 ≈ 62.3 s; got {depth}");

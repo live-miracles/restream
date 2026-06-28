@@ -47,11 +47,13 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
             stream_key TEXT NOT NULL,
             encoding TEXT,
             input_ever_seen_live INTEGER NOT NULL DEFAULT 0,
-            input_source TEXT
+            input_source TEXT,
+            srt_ingest_policy TEXT
         );",
     )
     .execute(pool)
     .await?;
+    ensure_column_exists(pool, "pipelines", "srt_ingest_policy", "TEXT").await?;
 
     // Outputs
     sqlx::query(
@@ -102,8 +104,12 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     ).execute(pool).await?;
 
     // Drop legacy tables on schema migration — data is superseded by app_logs.
-    sqlx::query("DROP TABLE IF EXISTS job_logs;").execute(pool).await?;
-    sqlx::query("DROP TABLE IF EXISTS lifecycle_events;").execute(pool).await?;
+    sqlx::query("DROP TABLE IF EXISTS job_logs;")
+        .execute(pool)
+        .await?;
+    sqlx::query("DROP TABLE IF EXISTS lifecycle_events;")
+        .execute(pool)
+        .await?;
 
     // Ingests
     sqlx::query(
@@ -159,11 +165,14 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_ts ON app_logs(ts DESC);")
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level, ts DESC);")
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_app_logs_target ON app_logs(target, ts DESC);")
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_app_logs_pipeline ON app_logs(pipeline_id, ts DESC) WHERE pipeline_id IS NOT NULL;"
     ).execute(pool).await?;
@@ -171,6 +180,23 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
         "CREATE INDEX IF NOT EXISTS idx_app_logs_history ON app_logs(pipeline_id, output_id, event_class, ts) WHERE pipeline_id IS NOT NULL;"
     ).execute(pool).await?;
 
+    Ok(())
+}
+
+async fn ensure_column_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    column_type: &str,
+) -> Result<(), sqlx::Error> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+    let exists = rows.iter().any(|row| row.get::<String, _>("name") == column);
+    if exists {
+        return Ok(());
+    }
+    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
+    sqlx::query(&alter).execute(pool).await?;
     Ok(())
 }
 
@@ -183,6 +209,7 @@ pub async fn create_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
+    srt_ingest_policy_json: Option<&str>,
 ) -> Result<Pipeline, sqlx::Error> {
     let exists =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pipelines WHERE stream_key = ?")
@@ -194,13 +221,14 @@ pub async fn create_pipeline(
     }
 
     sqlx::query(
-        "INSERT INTO pipelines (id, name, stream_key, input_source, encoding) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO pipelines (id, name, stream_key, input_source, encoding, srt_ingest_policy) VALUES (?, ?, ?, ?, ?, ?)"
     )
     .bind(id)
     .bind(name)
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
+    .bind(srt_ingest_policy_json)
     .execute(pool)
     .await?;
 
@@ -211,7 +239,7 @@ pub async fn create_pipeline(
 
 pub async fn get_pipeline(pool: &SqlitePool, id: &str) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding FROM pipelines WHERE id = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -223,7 +251,7 @@ pub async fn get_pipeline_by_stream_key(
     stream_key: &str,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding FROM pipelines WHERE stream_key = ?",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines WHERE stream_key = ?",
     )
     .bind(stream_key)
     .fetch_optional(pool)
@@ -232,7 +260,7 @@ pub async fn get_pipeline_by_stream_key(
 
 pub async fn list_pipelines(pool: &SqlitePool) -> Result<Vec<Pipeline>, sqlx::Error> {
     sqlx::query_as::<_, Pipeline>(
-        "SELECT id, name, stream_key, input_source, encoding FROM pipelines",
+        "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy AS srt_ingest_policy_json FROM pipelines",
     )
     .fetch_all(pool)
     .await
@@ -245,6 +273,7 @@ pub async fn update_pipeline(
     stream_key: &str,
     input_source: Option<&str>,
     encoding: Option<&str>,
+    srt_ingest_policy_json: Option<&str>,
 ) -> Result<Option<Pipeline>, sqlx::Error> {
     let duplicate = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pipelines WHERE stream_key = ? AND id != ?",
@@ -258,12 +287,13 @@ pub async fn update_pipeline(
     }
 
     let result = sqlx::query(
-        "UPDATE pipelines SET name = ?, stream_key = ?, input_source = ?, encoding = ? WHERE id = ?"
+        "UPDATE pipelines SET name = ?, stream_key = ?, input_source = ?, encoding = ?, srt_ingest_policy = ? WHERE id = ?"
     )
     .bind(name)
     .bind(stream_key)
     .bind(input_source)
     .bind(encoding)
+    .bind(srt_ingest_policy_json)
     .bind(id)
     .execute(pool)
     .await?;
@@ -557,19 +587,31 @@ pub async fn list_app_logs(
 
     let levels: &[&str] = match filters.level.as_deref().unwrap_or("info") {
         "error" => &["ERROR"],
-        "warn"  => &["ERROR", "WARN"],
+        "warn" => &["ERROR", "WARN"],
         "debug" => &["ERROR", "WARN", "INFO", "DEBUG"],
-        _       => &["ERROR", "WARN", "INFO"],
+        _ => &["ERROR", "WARN", "INFO"],
     };
     let placeholders = levels.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     clauses.push(format!("level IN ({})", placeholders));
 
-    if filters.target.is_some()       { clauses.push("target LIKE ?".to_string()); }
-    if filters.pipeline_id.is_some()  { clauses.push("pipeline_id = ?".to_string()); }
-    if filters.output_id.is_some()    { clauses.push("output_id = ?".to_string()); }
-    if filters.event_class.is_some()  { clauses.push("event_class = ?".to_string()); }
-    if filters.since.is_some()        { clauses.push("ts >= ?".to_string()); }
-    if filters.until.is_some()        { clauses.push("ts < ?".to_string()); }
+    if filters.target.is_some() {
+        clauses.push("target LIKE ?".to_string());
+    }
+    if filters.pipeline_id.is_some() {
+        clauses.push("pipeline_id = ?".to_string());
+    }
+    if filters.output_id.is_some() {
+        clauses.push("output_id = ?".to_string());
+    }
+    if filters.event_class.is_some() {
+        clauses.push("event_class = ?".to_string());
+    }
+    if filters.since.is_some() {
+        clauses.push("ts >= ?".to_string());
+    }
+    if filters.until.is_some() {
+        clauses.push("ts < ?".to_string());
+    }
 
     // Comma-separated message prefix filter (e.g. "stderr,exit,control")
     if let Some(ref prefix) = filters.prefix {
@@ -584,7 +626,11 @@ pub async fn list_app_logs(
         }
     }
 
-    let order = if filters.order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
+    let order = if filters.order.as_deref() == Some("asc") {
+        "ASC"
+    } else {
+        "DESC"
+    };
     let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
     let where_clause = if clauses.is_empty() {
         String::new()
@@ -598,13 +644,27 @@ pub async fn list_app_logs(
     );
 
     let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(&sql);
-    for l in levels { q = q.bind(l); }
-    if let Some(ref t) = filters.target      { q = q.bind(format!("{}%", t)); }
-    if let Some(ref p) = filters.pipeline_id { q = q.bind(p); }
-    if let Some(ref o) = filters.output_id   { q = q.bind(o); }
-    if let Some(ref ec) = filters.event_class { q = q.bind(ec); }
-    if let Some(ref s) = filters.since        { q = q.bind(s); }
-    if let Some(ref u) = filters.until        { q = q.bind(u); }
+    for l in levels {
+        q = q.bind(l);
+    }
+    if let Some(ref t) = filters.target {
+        q = q.bind(format!("{}%", t));
+    }
+    if let Some(ref p) = filters.pipeline_id {
+        q = q.bind(p);
+    }
+    if let Some(ref o) = filters.output_id {
+        q = q.bind(o);
+    }
+    if let Some(ref ec) = filters.event_class {
+        q = q.bind(ec);
+    }
+    if let Some(ref s) = filters.since {
+        q = q.bind(s);
+    }
+    if let Some(ref u) = filters.until {
+        q = q.bind(u);
+    }
     if let Some(ref prefix) = filters.prefix {
         for p in prefix.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             q = q.bind(format!("{}%", p));

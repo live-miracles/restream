@@ -104,6 +104,7 @@ function parsePipelinesInfo(
             name: p.name,
             key: p.streamKey,
             inputSource: p.inputSource || null,
+            srtIngestPolicy: p.srtIngestPolicy || null,
             ingestUrls: resolveIngestUrls(p),
             input: {
                 status: inputStatus,
@@ -144,6 +145,7 @@ function parsePipelinesInfo(
                 name: 'Undefined',
                 key: null,
                 inputSource: null,
+                srtIngestPolicy: null,
                 input: {
                     status: 'off',
                     time: null,
