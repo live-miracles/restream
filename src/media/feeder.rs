@@ -75,7 +75,9 @@ impl TsPacketFeeder {
             .map(parse_video_sequence_header)
             .unwrap_or((4, Vec::new()));
         let num_streams = video.is_some() as usize + audio_tracks.len();
-        let service_metadata = config.service_metadata.unwrap_or_default();
+        let service_metadata = config
+            .service_metadata
+            .unwrap_or_else(TsServiceMetadata::disabled);
 
         Self {
             muxer: TsMuxer::new_with_metadata(video, &audio_tracks, service_metadata),

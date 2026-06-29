@@ -7,13 +7,14 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post, put},
 };
+use reqwest::Url;
 use rust_embed::RustEmbed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
@@ -176,6 +177,18 @@ async fn require_authenticated(
     }
 }
 
+async fn require_hls_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Option<axum::response::Response> {
+    if uri.path().starts_with("/preview/hls/") {
+        None
+    } else {
+        require_authenticated(state, headers).await
+    }
+}
+
 // Session cookie helper
 fn make_session_cookie(token: &str, max_age: i64) -> String {
     format!(
@@ -320,6 +333,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(config_get_handler).patch(config_patch_handler),
         )
         .route("/api/v1/stream-keys", get(stream_keys_handler))
+        .route(
+            "/api/v1/monitoring/youtube-status",
+            get(youtube_monitoring_status_handler),
+        )
         .route(
             "/api/v1/pipelines",
             get(pipelines_get_handler).post(pipelines_post_handler),
@@ -1492,6 +1509,141 @@ fn normalize_monitoring_url(url: Option<&str>) -> Option<String> {
 
 fn is_supported_monitoring_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("srt://")
+}
+
+#[derive(Deserialize)]
+struct YoutubeMonitoringStatusQuery {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct YoutubeMonitoringStatusResponse {
+    canonical_watch_url: String,
+    live_now: bool,
+    live_content: bool,
+    upcoming: bool,
+    title: Option<String>,
+}
+
+fn normalize_youtube_watch_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed
+        .host_str()?
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    let path_parts = parsed
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let video_id = if host == "youtu.be" {
+        path_parts
+            .first()
+            .copied()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    } else if host.ends_with("youtube.com") {
+        parsed
+            .query_pairs()
+            .find(|(key, _)| key == "v")
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                if matches!(
+                    path_parts.first().copied(),
+                    Some("live" | "embed" | "shorts")
+                ) {
+                    path_parts.get(1).map(|value| (*value).to_string())
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    }?;
+    Some(format!("https://www.youtube.com/watch?v={video_id}"))
+}
+
+fn youtube_watch_page_contains_flag(html: &str, flag: &str) -> bool {
+    html.contains(flag)
+}
+
+fn extract_html_title(html: &str) -> Option<String> {
+    let start = html.find("<title>")?;
+    let rest = &html[start + "<title>".len()..];
+    let end = rest.find("</title>")?;
+    let title = rest[..end].trim();
+    (!title.is_empty()).then(|| {
+        title
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+    })
+}
+
+fn parse_youtube_monitoring_status(
+    canonical_watch_url: String,
+    html: &str,
+) -> YoutubeMonitoringStatusResponse {
+    YoutubeMonitoringStatusResponse {
+        canonical_watch_url,
+        live_now: youtube_watch_page_contains_flag(html, "\"isLiveNow\":true"),
+        live_content: youtube_watch_page_contains_flag(html, "\"isLiveContent\":true"),
+        upcoming: youtube_watch_page_contains_flag(html, "\"isUpcoming\":true"),
+        title: extract_html_title(html).map(|title| title.replace(" - YouTube", "")),
+    }
+}
+
+async fn youtube_monitoring_status_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<YoutubeMonitoringStatusQuery>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    if let Some(response) = check_field_len("url", &query.url, MAX_URL_LEN) {
+        return response;
+    }
+    let canonical_watch_url = match normalize_youtube_watch_url(query.url.trim()) {
+        Some(url) => url,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Expected a YouTube monitoring URL"})),
+            )
+                .into_response();
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
+        .build();
+    let Ok(client) = client else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let response = match client.get(&canonical_watch_url).send().await {
+        Ok(response) => response,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "Failed to fetch YouTube metadata"})),
+            )
+                .into_response();
+        }
+    };
+    let html = match response.text().await {
+        Ok(html) => html,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": "Failed to read YouTube metadata"})),
+            )
+                .into_response();
+        }
+    };
+    Json(parse_youtube_monitoring_status(canonical_watch_url, &html)).into_response()
 }
 
 async fn outputs_create_handler(
@@ -5570,58 +5722,11 @@ fn quote_hls_attr(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn hls_track_name(track: &crate::media::engine::AudioMeta, position: usize) -> String {
-    let base = track
-        .title
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            track
-                .language
-                .as_ref()
-                .filter(|value| !value.trim().is_empty() && value.trim() != "und")
-                .map(|value| value.trim().to_ascii_uppercase())
-        })
-        .unwrap_or_else(|| "Track".to_string());
-    format!("{} {}", base, position + 1)
-}
-
 fn build_hls_master_playlist(
     video: Option<&crate::media::engine::VideoMeta>,
     audio_tracks: &[crate::media::engine::AudioMeta],
 ) -> String {
     let mut playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n".to_string();
-    let group_id = "source-audio";
-
-    for (position, track) in audio_tracks.iter().enumerate() {
-        let mut attrs = vec![
-            "TYPE=AUDIO".to_string(),
-            format!("GROUP-ID={}", quote_hls_attr(group_id)),
-            format!("NAME={}", quote_hls_attr(&hls_track_name(track, position))),
-            format!("DEFAULT={}", if position == 0 { "YES" } else { "NO" }),
-            "AUTOSELECT=YES".to_string(),
-        ];
-        if let Some(language) = track
-            .language
-            .as_ref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            attrs.push(format!("LANGUAGE={}", quote_hls_attr(language.trim())));
-        }
-        if track.channels > 0 {
-            attrs.push(format!(
-                "CHANNELS={}",
-                quote_hls_attr(&track.channels.to_string())
-            ));
-        }
-        attrs.push(format!(
-            "URI={}",
-            quote_hls_attr(&format!("audio/{}/index.m3u8", track.track_index))
-        ));
-        playlist.push_str(&format!("#EXT-X-MEDIA:{}\n", attrs.join(",")));
-    }
-
     let bandwidth = estimate_hls_master_bandwidth(video, audio_tracks);
     let mut stream_attrs = vec![
         format!("BANDWIDTH={bandwidth}"),
@@ -5638,11 +5743,8 @@ fn build_hls_master_playlist(
     if let Some(codecs) = build_hls_codec_list(video, audio_tracks) {
         stream_attrs.push(format!("CODECS={}", quote_hls_attr(&codecs)));
     }
-    if !audio_tracks.is_empty() {
-        stream_attrs.push(format!("AUDIO={}", quote_hls_attr(group_id)));
-    }
     playlist.push_str(&format!("#EXT-X-STREAM-INF:{}\n", stream_attrs.join(",")));
-    playlist.push_str("video/index.m3u8\n");
+    playlist.push_str("index.m3u8\n");
     playlist
 }
 
@@ -5813,10 +5915,11 @@ fn hls_variant_segment_response(
 async fn hls_playlist_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
 
     let store = match get_or_start_hls_store(&state, &pipeline_id).await {
@@ -5837,10 +5940,11 @@ async fn hls_playlist_handler(
 async fn hls_master_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
     let store = match get_or_start_hls_store(&state, &pipeline_id).await {
         Ok(store) => store,
@@ -5862,16 +5966,17 @@ async fn hls_master_handler(
 async fn hls_video_playlist_handler(
     State(state): State<Arc<AppState>>,
     Path(pipeline_id): Path<String>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
     let store = match get_or_start_hls_store(&state, &pipeline_id).await {
         Ok(store) => store,
         Err(response) => return response,
     };
-    match store.get_playlist_with_segment_uri(|index| format!("seg{index}.ts")) {
+    match store.get_playlist() {
         Some(playlist) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
@@ -5885,10 +5990,11 @@ async fn hls_video_playlist_handler(
 async fn hls_audio_playlist_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, track_index)): Path<(String, u32)>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
     let store = match get_or_start_hls_store(&state, &pipeline_id).await {
         Ok(store) => store,
@@ -5901,7 +6007,7 @@ async fn hls_audio_playlist_handler(
     {
         return (StatusCode::NOT_FOUND, "Audio track not found").into_response();
     }
-    match store.get_playlist_with_segment_uri(|index| format!("seg{index}.ts")) {
+    match store.get_playlist() {
         Some(playlist) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")],
@@ -5915,10 +6021,11 @@ async fn hls_audio_playlist_handler(
 async fn hls_segment_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, segment)): Path<(String, String)>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
 
     state.engine.touch_hls(&pipeline_id).await;
@@ -5943,10 +6050,11 @@ async fn hls_segment_handler(
 async fn hls_video_segment_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, segment)): Path<(String, String)>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
     state.engine.touch_hls(&pipeline_id).await;
     let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
@@ -5966,10 +6074,11 @@ async fn hls_video_segment_handler(
 async fn hls_audio_segment_handler(
     State(state): State<Arc<AppState>>,
     Path((pipeline_id, track_index, segment)): Path<(String, u32, String)>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !request_is_authenticated(&state, &headers).await {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_hls_access(&state, &headers, &uri).await {
+        return response;
     }
     state.engine.touch_hls(&pipeline_id).await;
     let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
@@ -6020,7 +6129,47 @@ mod tests {
     }
 
     #[test]
-    fn hls_master_playlist_uses_audio_rendition_uris() {
+    fn normalize_youtube_watch_url_accepts_live_watch_and_short_urls() {
+        assert_eq!(
+            normalize_youtube_watch_url("https://www.youtube.com/watch?v=0CD5-dEB8LY"),
+            Some("https://www.youtube.com/watch?v=0CD5-dEB8LY".to_string())
+        );
+        assert_eq!(
+            normalize_youtube_watch_url("https://www.youtube.com/live/0CD5-dEB8LY?feature=share"),
+            Some("https://www.youtube.com/watch?v=0CD5-dEB8LY".to_string())
+        );
+        assert_eq!(
+            normalize_youtube_watch_url("https://youtu.be/0CD5-dEB8LY"),
+            Some("https://www.youtube.com/watch?v=0CD5-dEB8LY".to_string())
+        );
+        assert_eq!(
+            normalize_youtube_watch_url("https://example.com/video"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_youtube_monitoring_status_uses_watch_page_flags() {
+        let html = r#"
+            <html>
+                <head><title>Sample Live - YouTube</title></head>
+                <body>
+                    {"isLiveContent":true,"isLiveNow":true,"isUpcoming":false}
+                </body>
+            </html>
+        "#;
+        let meta = parse_youtube_monitoring_status(
+            "https://www.youtube.com/watch?v=0CD5-dEB8LY".to_string(),
+            html,
+        );
+        assert!(meta.live_content);
+        assert!(meta.live_now);
+        assert!(!meta.upcoming);
+        assert_eq!(meta.title.as_deref(), Some("Sample Live"));
+    }
+
+    #[test]
+    fn hls_master_playlist_points_to_combined_media_playlist() {
         let video = crate::media::engine::VideoMeta {
             codec: "h264".to_string(),
             width: 1920,
@@ -6062,18 +6211,11 @@ mod tests {
         let playlist = build_hls_master_playlist(Some(&video), &audio_tracks);
 
         assert!(playlist.starts_with("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n"));
-        assert!(playlist.contains("#EXT-X-MEDIA:TYPE=AUDIO"));
-        assert!(playlist.contains("GROUP-ID=\"source-audio\""));
-        assert!(playlist.contains("DEFAULT=YES"));
-        assert!(playlist.contains("DEFAULT=NO"));
-        assert!(playlist.contains("URI=\"audio/0/index.m3u8\""));
-        assert!(playlist.contains("URI=\"audio/15/index.m3u8\""));
         assert!(playlist.contains("#EXT-X-STREAM-INF:"));
         assert!(playlist.contains("AVERAGE-BANDWIDTH="));
         assert!(playlist.contains("CODECS=\"avc1.640028,mp4a.40.2\""));
         assert!(playlist.contains("RESOLUTION=1920x1080"));
-        assert!(playlist.contains("AUDIO=\"source-audio\""));
-        assert!(playlist.ends_with("video/index.m3u8\n"));
+        assert!(playlist.ends_with("index.m3u8\n"));
     }
 
     #[test]

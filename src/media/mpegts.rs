@@ -711,7 +711,7 @@ impl TsMuxer {
     ///
     /// `flv_payloads`: if true, payloads have FLV wrappers that need stripping.
     pub fn new(video: Option<&VideoMeta>, audio_tracks: &[AudioMeta]) -> Self {
-        Self::new_with_metadata(video, audio_tracks, TsServiceMetadata::default())
+        Self::new_with_metadata(video, audio_tracks, TsServiceMetadata::disabled())
     }
 
     pub fn new_with_metadata(
@@ -810,7 +810,11 @@ impl TsMuxer {
         if should_insert_tables {
             self.write_pat();
             self.write_pmt();
-            self.write_sdt();
+            if !self.service_metadata.provider_name.is_empty()
+                || !self.service_metadata.service_name.is_empty()
+            {
+                self.write_sdt();
+            }
             self.last_pat_pmt_dts = Some(dts_ms);
         }
 
@@ -914,9 +918,8 @@ impl TsMuxer {
             // payload region, without ever building a contiguous PES buffer.
             let payload_space = TS_PACKET_SIZE - header_end;
             let copy_len = remaining_pes.min(payload_space);
-            let dst_start = TS_PACKET_SIZE - copy_len;
             copy_pes_slices(
-                &mut ts[dst_start..],
+                &mut ts[header_end..header_end + copy_len],
                 &pes_hdr[..hdr_len],
                 payload,
                 pes_offset,
@@ -1165,6 +1168,15 @@ impl Default for TsServiceMetadata {
         Self {
             provider_name: "Restream".to_string(),
             service_name: "Restream Recording".to_string(),
+        }
+    }
+}
+
+impl TsServiceMetadata {
+    pub fn disabled() -> Self {
+        Self {
+            provider_name: String::new(),
+            service_name: String::new(),
         }
     }
 }
@@ -1997,6 +2009,8 @@ impl<'a> BitReader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     #[test]
@@ -2006,6 +2020,42 @@ mod tests {
         write_timestamp(&mut buf, ts, 0x02);
         let parsed = parse_timestamp(&buf);
         assert_eq!(parsed, ts);
+    }
+
+    fn fixture_h264_multiaudio_ts() -> Vec<u8> {
+        let ffmpeg = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+        let fixture = crate::test_fixtures::checked_in_fixture("media/colorbar-timer-2v16a.mp4")
+            .expect("2v16a fixture should exist");
+        let output = Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                fixture.to_str().expect("utf-8 fixture path"),
+                "-map",
+                "0:v:1",
+                "-map",
+                "0:a",
+                "-c",
+                "copy",
+                "-t",
+                "1",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ])
+            .output()
+            .expect("spawn bundled ffmpeg for multiaudio fixture");
+        assert!(
+            output.status.success(),
+            "ffmpeg multiaudio fixture extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.stdout.is_empty(),
+            "fixture TS segment should not be empty"
+        );
+        output.stdout
     }
 
     #[test]
@@ -2633,6 +2683,46 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             32
+        );
+    }
+
+    #[test]
+    fn real_fixture_probe_recovers_all_16_audio_tracks() {
+        let ts = fixture_h264_multiaudio_ts();
+        let mut demuxer = TsDemuxer::new();
+        demuxer.feed(&ts);
+        demuxer.flush();
+        let packets = demuxer.drain();
+        let probe = demuxer
+            .take_probe()
+            .expect("fixture probe should discover stream metadata");
+
+        assert!(
+            probe.video.is_some(),
+            "fixture should contain a video stream"
+        );
+        assert_eq!(
+            probe.audio_tracks.len(),
+            16,
+            "fixture should expose 16 audio tracks"
+        );
+        assert_eq!(
+            probe
+                .audio_tracks
+                .iter()
+                .map(|track| track.track_index)
+                .collect::<Vec<_>>(),
+            (0..16).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            packets
+                .iter()
+                .filter(|packet| packet.media_type == MediaType::Audio)
+                .map(|packet| packet.track_index)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            16,
+            "fixture packets should cover all 16 logical audio tracks"
         );
     }
 

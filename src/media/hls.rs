@@ -26,7 +26,6 @@ const SEGMENT_CAPACITY: usize = 8 * 1024 * 1024;
 // Keep a longer live window so preview clients can still fetch segments that are
 // still referenced by the playlist while the stream is moving forward.
 const MAX_SEGMENTS: usize = 20;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HlsConfig {
     pub min_segment_secs: f64,
@@ -114,7 +113,9 @@ impl Default for HlsStore {
 
 impl HlsStore {
     pub fn new() -> Self {
-        Self::with_config(HlsConfig::from_env())
+        let config = HlsConfig::from_env();
+        tracing::info!(?config, "loaded config");
+        Self::with_config(config)
     }
 
     pub fn with_config(config: HlsConfig) -> Self {
@@ -140,6 +141,7 @@ impl HlsStore {
         inner.segments.clear();
         inner.next_index = 0;
         inner.target_duration = TARGET_DURATION_SECS;
+        inner.variant_segments.clear();
     }
 
     pub fn push_segment(&self, duration: f64, data: Bytes) {
@@ -226,7 +228,6 @@ impl HlsStore {
         if inner.segments.is_empty() {
             return None;
         }
-
         let first_seq = inner.segments.front().map(|s| s.index).unwrap_or(0);
         let target_dur = inner.target_duration.ceil() as u64;
         let mut playlist = format!(
@@ -298,7 +299,9 @@ pub async fn start_hls_segmenter(
                             if got_first_keyframe {
                                 let elapsed = segment_start.elapsed().as_secs_f64();
                                 if elapsed >= config.min_segment_secs && !accumulator.is_empty() {
-                                    store.push_segment(elapsed, accumulator.split().freeze());
+                                    let ts_segment = accumulator.split().freeze();
+                                    store.push_segment(elapsed, ts_segment);
+                                    feeder = None;
                                     accumulator.reserve(config.segment_capacity);
                                     segment_start = Instant::now();
                                 }
@@ -395,7 +398,8 @@ pub async fn start_hls_segmenter(
     // Flush remaining data as final segment
     if !accumulator.is_empty() {
         let elapsed = segment_start.elapsed().as_secs_f64();
-        store.push_segment(elapsed, accumulator.freeze());
+        let ts_segment = accumulator.freeze();
+        store.push_segment(elapsed, ts_segment);
     }
 }
 

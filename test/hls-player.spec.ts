@@ -2,6 +2,8 @@ import { test, expect, type Page, request } from '@playwright/test';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 
+const TEST_BASE_URL = process.env.BASE_URL || 'http://localhost:3030';
+
 async function login(page: Page): Promise<void> {
     await page.goto('/login');
     await page.fill('#password-input', 'admin');
@@ -69,28 +71,55 @@ test.describe('HLS Player — pure helpers', () => {
     });
 
     test('getPreviewAudioMetadata matches track by index and position', async ({ page }) => {
-        const result = await page.evaluate(() => {
+        const result = await page.evaluate(async () => {
             const tracks = [
                 { index: 0, codec: 'aac', channels: 2, sample_rate: 48000 },
                 { index: 2, codec: 'opus', channels: 1, sample_rate: 48000 },
             ];
-            const fn = (pipe: { input: { audioTracks: typeof tracks } }, position: number) => {
-                return (
-                    tracks.find((track) => track.index === position) ||
-                    tracks.find((_, index) => index === position) ||
-                    null
-                );
-            };
+            const { getPreviewAudioMetadata } = await import('/js/features/input-preview.js');
             const pipe = { input: { audioTracks: tracks } };
             return {
-                matchByIndex: fn(pipe, 0)?.codec,
-                matchByPosition: fn(pipe, 1)?.codec,
-                noMatch: fn(pipe, 99),
+                matchByIndex: getPreviewAudioMetadata(pipe as never, 0)?.codec,
+                matchByPosition: getPreviewAudioMetadata(pipe as never, 1)?.codec,
+                noMatch: getPreviewAudioMetadata(pipe as never, 99),
             };
         });
         expect(result.matchByIndex).toBe('aac');
         expect(result.matchByPosition).toBe('opus');
         expect(result.noMatch).toBeNull();
+    });
+
+    test('getPreviewAudioMetadata preserves 16-track and sparse-track mappings', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const { getPreviewAudioMetadata } = await import('/js/features/input-preview.js');
+            const denseTracks = Array.from({ length: 16 }, (_, index) => ({
+                index,
+                codec: 'aac',
+                channels: index % 2 === 0 ? 2 : 1,
+                sample_rate: 48000,
+                language: `lang${index}`,
+            }));
+            const sparseTracks = [0, 2, 5, 15].map((index) => ({
+                index,
+                codec: 'aac',
+                channels: 2,
+                sample_rate: 48000,
+                language: `lang${index}`,
+            }));
+            return {
+                denseLastIndex: getPreviewAudioMetadata({ input: { audioTracks: denseTracks } } as never, 15)?.index,
+                denseLastLanguage: getPreviewAudioMetadata({ input: { audioTracks: denseTracks } } as never, 15)?.language,
+                sparseExactIndex: getPreviewAudioMetadata({ input: { audioTracks: sparseTracks } } as never, 15)?.index,
+                sparseFallbackIndex: getPreviewAudioMetadata({ input: { audioTracks: sparseTracks } } as never, 3)?.index,
+                sparseFallbackLanguage: getPreviewAudioMetadata({ input: { audioTracks: sparseTracks } } as never, 3)?.language,
+            };
+        });
+
+        expect(result.denseLastIndex).toBe(15);
+        expect(result.denseLastLanguage).toBe('lang15');
+        expect(result.sparseExactIndex).toBe(15);
+        expect(result.sparseFallbackIndex).toBe(15);
+        expect(result.sparseFallbackLanguage).toBe('lang15');
     });
 
     test('formatCodecName returns friendly names', async ({ page }) => {
@@ -152,20 +181,17 @@ test.describe('HLS Player — pure helpers', () => {
     });
 
     test('buildInputPreviewUrl constructs correct HLS URL', async ({ page }) => {
-        const result = await page.evaluate(() => {
-            const withBasePath = (path: string): string => path;
-            const fn = (pipelineId: string): string => {
-                return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/index.m3u8`);
-            };
+        const result = await page.evaluate(async () => {
+            const { buildInputPreviewUrl } = await import('/js/features/input-preview.js');
             return {
-                simple: fn('abc123'),
-                specialChars: fn('pipe/id+1'),
-                unicode: fn('pipeline-ñ'),
+                simple: buildInputPreviewUrl('abc123'),
+                specialChars: buildInputPreviewUrl('pipe/id+1'),
+                unicode: buildInputPreviewUrl('pipeline-ñ'),
             };
         });
-        expect(result.simple).toBe('/hls/abc123/index.m3u8');
-        expect(result.specialChars).toBe('/hls/pipe%2Fid%2B1/index.m3u8');
-        expect(result.unicode).toBe('/hls/pipeline-%C3%B1/index.m3u8');
+        expect(result.simple).toBe('/hls/abc123/master.m3u8');
+        expect(result.specialChars).toBe('/hls/pipe%2Fid%2B1/master.m3u8');
+        expect(result.unicode).toBe('/hls/pipeline-%C3%B1/master.m3u8');
     });
 });
 
@@ -247,10 +273,10 @@ test.describe('HLS Player — DOM rendering', () => {
         expect(result.videoMuted).toBe(true);
         expect(result.videoPlaysInline).toBe(true);
         expect(result.videoPreload).toBe('none');
-        expect(result.videoPreviewSrc).toContain('/hls/test-pipe-1/index.m3u8');
+        expect(result.videoPreviewSrc).toContain('/hls/test-pipe-1/master.m3u8');
         expect(result.overlayExists).toBe(true);
         expect(result.playButtonText).toBe('Play preview');
-        expect(result.containerDataset).toContain('/hls/test-pipe-1/index.m3u8');
+        expect(result.containerDataset).toContain('/hls/test-pipe-1/master.m3u8');
     });
 
     test('renderInputPreview shows message when pipeline has no key', async ({ page }) => {
@@ -426,13 +452,15 @@ test.describe('HLS Player — DOM rendering', () => {
 });
 
 test.describe('HLS Player — integration', () => {
-    test('player page loads successfully after login', async ({ page }) => {
+    test.beforeEach(async ({ page }) => {
         await login(page);
+    });
+
+    test('player page loads successfully after login', async ({ page }) => {
         await expect(page.locator('body')).toBeVisible();
     });
 
     test('dashboard has video-player container (hidden by default)', async ({ page }) => {
-        await login(page);
         const playerContainer = page.locator('#video-player');
         await expect(playerContainer).toBeAttached();
         await expect(playerContainer).toBeEmpty();
@@ -462,7 +490,7 @@ test.describe.serial('HLS Player — live playback', () => {
     let livePipelineName: string;
 
     test.beforeAll(async () => {
-        const ctx = await request.newContext({ baseURL: 'http://localhost:3030' });
+        const ctx = await request.newContext({ baseURL: TEST_BASE_URL });
 
         // login
         await ctx.post('/api/v1/auth/login', { data: { password: 'admin' } });
@@ -483,7 +511,7 @@ test.describe.serial('HLS Player — live playback', () => {
         ffmproc = spawn('ffmpeg', [
             '-nostdin', '-re', '-stream_loop', '-1',
             '-i', INPUT_FILE,
-            '-map', '0:1', '-map', '0:3',
+            '-map', '0:v:1', '-map', '0:a:0',
             '-c', 'copy', '-f', 'flv', target,
         ], { stdio: ['ignore', 'pipe', 'pipe'] });
         ffmproc.on('error', (err) => {
@@ -515,7 +543,7 @@ test.describe.serial('HLS Player — live playback', () => {
             ffmproc = null;
         }
         if (livePipelineId) {
-            const ctx = await request.newContext({ baseURL: 'http://localhost:3030' });
+            const ctx = await request.newContext({ baseURL: TEST_BASE_URL });
             await ctx.post('/api/v1/auth/login', { data: { password: 'admin' } });
             await ctx.delete(`/api/v1/pipelines/${livePipelineId}`).catch(() => {});
             await ctx.dispose();
@@ -576,8 +604,9 @@ test.describe.serial('HLS Player — live playback', () => {
     });
 
     test('HLS segmenter auto-started on first playlist request', async ({ page }) => {
+        const pipeKey = `autotest_${Date.now()}`;
         const createResp = await page.request.post('/api/v1/pipelines', {
-            data: { name: 'AutoStartTest', streamKey: 'autotest' },
+            data: { name: 'AutoStartTest', streamKey: pipeKey },
             headers: { 'Content-Type': 'application/json' },
         });
         expect(createResp.ok()).toBe(true);
@@ -586,12 +615,13 @@ test.describe.serial('HLS Player — live playback', () => {
 
         const healthBefore = await page.request.get('/api/v1/engine/health');
         const healthJson = await healthBefore.json();
-        expect(healthJson.pipelines[pipeId]).toBeUndefined();
+        expect(healthJson.pipelines[pipeId].hlsPreview.active).toBe(false);
 
         await page.request.delete(`/api/v1/pipelines/${pipeId}`);
     });
 
     test('select pipeline and click Play preview triggers HLS load', async ({ page }) => {
+        await page.getByRole('button', { name: 'Pipeline', exact: true }).click();
         const pipelineItem = page.locator('#pipelines li', {
             hasText: livePipelineName,
         });
@@ -617,14 +647,15 @@ test.describe.serial('HLS Player — live playback', () => {
             expect(videoSrc).toBeTruthy();
             expect(videoSrc).toContain('blob:');
             const vidPreviewSrc = await video.getAttribute('data-preview-src');
-            expect(vidPreviewSrc).toContain(`/hls/${livePipelineId}/index.m3u8`);
+            expect(vidPreviewSrc).toContain(`/hls/${livePipelineId}/master.m3u8`);
         } else {
             const videoSrc = await video.getAttribute('src');
-            expect(videoSrc).toContain(`/hls/${livePipelineId}/index.m3u8`);
+            expect(videoSrc).toContain(`/hls/${livePipelineId}/master.m3u8`);
         }
     });
 
     test('video starts playback after clicking Play preview', async ({ page }) => {
+        await page.getByRole('button', { name: 'Pipeline', exact: true }).click();
         const pipelineItem = page.locator('#pipelines li', {
             hasText: livePipelineName,
         });
@@ -656,7 +687,7 @@ test.describe.serial('HLS Player — live playback', () => {
         expect(currentSrc).toBeTruthy();
     });
 
-    test('HLS playlist plays MPEG-TS segments with media sequence advancing', async ({ page }) => {
+    test('HLS playlist advances media sequence while streaming', async ({ page }) => {
         const getSeq = async (): Promise<number> => {
             for (let attempt = 1; attempt <= 20; attempt++) {
                 const resp = await page.request.get(`/hls/${livePipelineId}/index.m3u8`);
