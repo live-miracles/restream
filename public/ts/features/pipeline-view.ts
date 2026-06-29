@@ -101,6 +101,13 @@ function formatSampleRate(value: number | null | undefined): string {
   return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;
 }
 
+function formatShortDurationMs(value: number | null | undefined): string {
+  if (!Number.isFinite(value) || (value as number) < 0) return "--";
+  const totalSeconds = Math.round((value as number) / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return msToHHMMSS(totalSeconds * 1000) || "--";
+}
+
 function formatAudioTrackIdentity(track: AudioTrack, label: string): string {
   const parts: string[] = [];
   if (Number.isFinite(track.pid as number)) {
@@ -621,6 +628,22 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   const healthBadge = publisher
     ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-quality-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
     : "";
+  const hlsPreview = pipe.hlsPreview;
+  const hlsPreviewTitle = [
+    hlsPreview.active
+      ? "Browser preview segmenter is active."
+      : "Browser preview segmenter is idle.",
+    `segments=${hlsPreview.segments}`,
+    `playlistBytes=${hlsPreview.playlistBytes}`,
+    `persistentConsumers=${hlsPreview.persistentConsumers}`,
+    `lastAccess=${formatShortDurationMs(hlsPreview.lastAccessAgeMs)} ago`,
+  ].join(" ");
+  const hlsPreviewBadge =
+    hlsPreview.active ||
+    hlsPreview.segments > 0 ||
+    hlsPreview.persistentConsumers > 0
+      ? `<span class="badge ${hlsPreview.active ? "badge-success" : "badge-outline"} text-sm px-3" title="${escapeHtml(hlsPreviewTitle)}">${hlsPreview.active ? "Preview live" : "Preview idle"}</span>`
+      : "";
 
   publisherMeta.innerHTML = [
     pipe.input.time !== null
@@ -636,6 +659,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
       ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
       : "",
     healthBadge,
+    hlsPreviewBadge,
     unexpectedCount > 0
       ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? "" : "s"}</span>`
       : "",

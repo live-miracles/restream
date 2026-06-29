@@ -23,6 +23,7 @@ pub(crate) async fn health_snapshot(
     let egresses = engine.egresses.active.read().await;
     let rec_tokens = engine.recordings.cancel_tokens.read().await;
     let hls_consumers = engine.hls.consumers.read().await;
+    let hls_stores = engine.hls.stores.read().await;
     let pipelines = engine.ingests.pipelines.read().await;
 
     let mut pipelines_json = serde_json::Map::new();
@@ -165,9 +166,26 @@ pub(crate) async fn health_snapshot(
         let rec_active = rec_tokens
             .get(pipeline_id.as_str())
             .is_some_and(|token| !token.is_cancelled());
-        let hls_active = hls_consumers
-            .get(pipeline_id.as_str())
-            .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
+        let hls_consumer = hls_consumers.get(pipeline_id.as_str());
+        let hls_store = hls_stores.get(pipeline_id.as_str());
+        let hls_active = hls_consumer.is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
+        let hls_persistent_consumers = hls_consumer
+            .map(|consumer| consumer.persistent.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        let hls_last_access_age_ms = hls_consumer.map(|consumer| {
+            let now = consumer.reference_instant.elapsed().as_millis() as u64;
+            let last = consumer.last_access_ms.load(Ordering::Relaxed);
+            now.saturating_sub(last)
+        });
+        let hls_snapshot = hls_store.and_then(|store| store.snapshot());
+        let hls_segments = hls_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.segments.len())
+            .unwrap_or(0);
+        let hls_playlist_bytes = hls_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.playlist.len())
+            .unwrap_or(0);
 
         pipelines_json.insert(
             pipeline_id.clone(),
@@ -175,7 +193,13 @@ pub(crate) async fn health_snapshot(
                 "input": input_json,
                 "outputs": serde_json::Value::Object(outputs_json),
                 "recording": { "enabled": rec_enabled, "active": rec_active },
-                "hlsPreview": { "active": hls_active }
+                "hlsPreview": {
+                    "active": hls_active,
+                    "persistentConsumers": hls_persistent_consumers,
+                    "lastAccessAgeMs": hls_last_access_age_ms,
+                    "segments": hls_segments,
+                    "playlistBytes": hls_playlist_bytes,
+                }
             }),
         );
     }

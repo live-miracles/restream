@@ -119,6 +119,12 @@ function parsePipelinesInfo(
       inputTime = Math.max(0, nowMs - publishStartedTs);
     }
 
+    const rawHlsPreview = healthByPipeline[p.id]?.hlsPreview;
+    const rawHlsLastAccessAgeMs = rawHlsPreview?.lastAccessAgeMs;
+    const hlsLastAccessAgeMs = Number.isFinite(rawHlsLastAccessAgeMs as number)
+      ? Number(rawHlsLastAccessAgeMs)
+      : null;
+
     newPipelines.push({
       id: p.id,
       name: p.name,
@@ -154,6 +160,13 @@ function parsePipelinesInfo(
       recording: healthByPipeline[p.id]?.recording ?? {
         enabled: false,
         active: false,
+      },
+      hlsPreview: {
+        active: Boolean(rawHlsPreview?.active),
+        persistentConsumers: Number(rawHlsPreview?.persistentConsumers || 0),
+        lastAccessAgeMs: hlsLastAccessAgeMs,
+        segments: Number(rawHlsPreview?.segments || 0),
+        playlistBytes: Number(rawHlsPreview?.playlistBytes || 0),
       },
     });
   });
@@ -200,6 +213,13 @@ function parsePipelinesInfo(
           unexpectedReadersCount: 0,
         },
         recording: { enabled: false, active: false },
+        hlsPreview: {
+          active: false,
+          persistentConsumers: 0,
+          lastAccessAgeMs: null,
+          segments: 0,
+          playlistBytes: 0,
+        },
       };
       newPipelines.push(pipe);
     }

@@ -180,10 +180,19 @@ export interface OutputHealth {
   failurePhase?: string | null;
 }
 
+export interface HlsPreviewHealth {
+  active?: boolean;
+  persistentConsumers?: number;
+  lastAccessAgeMs?: number | null;
+  segments?: number;
+  playlistBytes?: number;
+}
+
 export interface PipelineHealth {
   input?: InputHealth;
   outputs?: Record<string, OutputHealth>;
   recording?: { enabled: boolean; active: boolean };
+  hlsPreview?: HlsPreviewHealth;
 }
 
 export interface HealthData {
@@ -306,6 +315,13 @@ export interface PipelineView {
   outs: OutputView[];
   stats: PipelineStats;
   recording: { enabled: boolean; active: boolean };
+  hlsPreview: {
+    active: boolean;
+    persistentConsumers: number;
+    lastAccessAgeMs: number | null;
+    segments: number;
+    playlistBytes: number;
+  };
 }
 
 export interface AppLogRow {

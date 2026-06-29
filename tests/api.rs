@@ -1670,6 +1670,10 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     engine
         .record_egress_error(&oid, "send", "connection reset by peer")
         .await;
+    let (store, _) = engine.ensure_hls_segmenter(&pid).await;
+    engine.add_hls_persistent_consumer(&pid).await;
+    engine.touch_hls(&pid).await;
+    store.push_segment(2.0, bytes::Bytes::from_static(b"segment"));
 
     let resp = app
         .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
@@ -1691,6 +1695,13 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     assert!(output["lastErrorAt"].is_string());
     assert!(output["lastProgressAt"].is_string());
     assert!(output["lastProgressAgeMs"].as_u64().is_some());
+
+    let hls_preview = &ready["pipelines"][&pid]["hlsPreview"];
+    assert_eq!(hls_preview["active"], true);
+    assert_eq!(hls_preview["persistentConsumers"], 1);
+    assert!(hls_preview["lastAccessAgeMs"].as_u64().is_some());
+    assert_eq!(hls_preview["segments"], 1);
+    assert!(hls_preview["playlistBytes"].as_u64().unwrap_or(0) > 0);
 }
 
 // --- Regression: Round 6 #2 — Security headers ---
