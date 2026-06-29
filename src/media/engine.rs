@@ -1708,6 +1708,10 @@ impl MediaEngine {
         backoff_ms: u64,
         remaining_ms: u64,
     ) {
+        if self.has_active_egress(output_id).await {
+            self.egresses.retry.write().await.remove(output_id);
+            return;
+        }
         let next_retry_at_ms = Self::now_epoch_ms().saturating_add(remaining_ms);
         self.egresses.retry.write().await.insert(
             output_id.to_string(),
@@ -4182,6 +4186,36 @@ mod tests {
 
         assert!(engine.recent_egress_outcome("out-1").await.is_none());
         assert!(engine.egress_retry_state("out-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn late_retry_state_update_is_ignored_after_output_restarts() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .record_egress_error("out-1", "send", "connection reset by peer")
+            .await;
+        engine.unregister_egress("out-1").await;
+
+        // Simulate the reconciler starting a fresh output session before the
+        // old task's cleanup path gets to publish its retry backoff state.
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .update_egress_retry_state("out-1", 2, 20_000, 15_000)
+            .await;
+
+        assert!(engine.egress_retry_state("out-1").await.is_none());
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["retrying"], false);
+        assert!(status["retryAttempts"].is_null());
+        assert!(status["retryBackoffMs"].is_null());
+        assert!(status["retryRemainingMs"].is_null());
     }
 
     #[tokio::test]
