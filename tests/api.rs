@@ -614,6 +614,7 @@ async fn config_get_returns_structured_data() {
     assert!(json["jobs"].is_array());
     assert!(json["serverName"].is_string());
     assert_eq!(json["ingestHost"], "");
+    assert_eq!(json["recordingSettings"]["retainSourceTs"], false);
     assert_eq!(
         json["pipelines"][0]["ingestUrls"]["rtmp"],
         "rtmp://localhost:1935/live/key01"
@@ -706,6 +707,47 @@ async fn config_patch_ingest_host_persists_and_updates_ingest_urls() {
         json["pipelines"][0]["ingestUrls"]["rtmp"],
         "rtmp://localhost:1935/live/key01"
     );
+}
+
+#[tokio::test]
+async fn config_patch_recording_settings_persists() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["recordingSettings"]["retainSourceTs"], false);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/api/v1/settings",
+            &cookie,
+            Some(r#"{"recordingSettings":{"retainSourceTs":true}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["recordingSettings"]["retainSourceTs"], true);
+
+    let stored = restream::media::recording::load_recording_settings(&pool).await;
+    assert!(stored.retain_source_ts);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["recordingSettings"]["retainSourceTs"], true);
 }
 
 // --- Audio caps ---
@@ -2711,6 +2753,7 @@ async fn v1_engine_and_settings_endpoints_return_structured_payloads() {
     assert_eq!(resp.status(), StatusCode::OK);
     let settings = body_json(resp).await;
     assert!(settings["serverName"].is_string());
+    assert!(settings["recordingSettings"].is_object());
     assert!(settings["transcodeProfiles"].is_object());
 }
 

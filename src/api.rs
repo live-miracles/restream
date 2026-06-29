@@ -929,6 +929,7 @@ async fn config_get_handler(
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
     let srt_ingest = load_global_srt_ingest_config(&state.db).await;
+    let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
 
     // Transcode profiles from runtime cache, with built-ins exposed when unset.
     let transcode_profiles = crate::media::profiles::current_effective().await;
@@ -937,6 +938,7 @@ async fn config_get_handler(
         "serverName": server_name,
         "ingestHost": ingest_host,
         "ingestSecurity": sec,
+        "recordingSettings": recording_settings,
         "srtIngest": srt_ingest,
         "transcodeProfiles": transcode_profiles,
         "pipelines": pipelines,
@@ -952,6 +954,7 @@ struct ConfigPatchPayload {
     server_name: Option<String>,
     ingest_host: Option<String>,
     ingest_security: Option<IngestSecurityConfig>,
+    recording_settings: Option<crate::media::recording::RecordingSettings>,
     srt_ingest: Option<SrtGlobalIngestConfig>,
     transcode_profiles: Option<crate::media::profiles::TranscodeProfiles>,
 }
@@ -991,6 +994,14 @@ async fn config_patch_handler(
         if let Ok(raw_json) = serde_json::to_string(sec) {
             let _ = db::set_meta(&state.db, INGEST_SECURITY_CONFIG_META_KEY, &raw_json).await;
         }
+    }
+
+    if let Some(ref recording_settings) = payload.recording_settings
+        && crate::media::recording::save_recording_settings(&state.db, recording_settings)
+            .await
+            .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     if let Some(mut srt_ingest) = payload.srt_ingest.clone() {
@@ -1035,6 +1046,7 @@ async fn config_patch_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let sec = state.security.get_config();
+    let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
     let srt_ingest = load_global_srt_ingest_config(&state.db).await;
     let transcode_profiles = crate::media::profiles::current_effective().await;
 
@@ -1042,6 +1054,7 @@ async fn config_patch_handler(
         "serverName": server_name,
         "ingestHost": ingest_host,
         "ingestSecurity": sec,
+        "recordingSettings": recording_settings,
         "srtIngest": srt_ingest,
         "transcodeProfiles": transcode_profiles
     }))
@@ -5940,12 +5953,14 @@ async fn recording_start_handler(
         let input_source = pipeline.input_source.clone();
         let engine_rec = engine.clone();
         let media_dir = state.media_dir.clone();
+        let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
         tokio::spawn(async move {
             crate::media::recording::start_recording(
                 pipe_name,
                 pid.clone(),
                 input_source,
                 media_dir,
+                recording_settings,
                 ring_buf,
                 engine_rec,
                 cancel_token,

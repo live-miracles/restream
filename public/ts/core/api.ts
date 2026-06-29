@@ -4,6 +4,7 @@ import type {
   ConfigData,
   HealthData,
   IngestSecurityConfig,
+  RecordingSettings,
   SrtGlobalIngestConfig,
   SrtPipelineIngestConfig,
   SystemMetrics,
@@ -387,12 +388,14 @@ async function patchConfig(body: {
   serverName?: string;
   ingestHost?: string;
   ingestSecurity?: Partial<IngestSecurityConfig>;
+  recordingSettings?: RecordingSettings;
   srtIngest?: SrtGlobalIngestConfig;
   transcodeProfiles?: TranscodeProfiles;
 }): Promise<{
   serverName: string;
   ingestHost: string;
   ingestSecurity: IngestSecurityConfig;
+  recordingSettings: RecordingSettings;
   srtIngest: SrtGlobalIngestConfig;
   transcodeProfiles?: TranscodeProfiles;
 } | null> {
@@ -400,6 +403,7 @@ async function patchConfig(body: {
     serverName: string;
     ingestHost: string;
     ingestSecurity: IngestSecurityConfig;
+    recordingSettings: RecordingSettings;
     srtIngest: SrtGlobalIngestConfig;
     transcodeProfiles?: TranscodeProfiles;
   }>("/api/v1/settings", { method: "PATCH", body });

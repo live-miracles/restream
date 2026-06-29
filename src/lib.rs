@@ -1080,12 +1080,15 @@ pub async fn run_app() {
                 let input_source = pipeline.input_source.clone();
                 let engine_rec = engine_c.clone();
                 let media_dir_rec = reconciler_media_dir.clone();
+                let recording_settings =
+                    crate::media::recording::load_recording_settings(&pool).await;
                 tokio::spawn(async move {
                     crate::media::recording::start_recording(
                         pipe_name,
                         pid.clone(),
                         input_source,
                         media_dir_rec,
+                        recording_settings,
                         ring_buf,
                         engine_rec,
                         cancel_token,

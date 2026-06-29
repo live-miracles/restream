@@ -124,11 +124,16 @@ export interface ConfigData {
   serverName?: string;
   ingestHost?: string;
   ingestSecurity?: IngestSecurityConfig;
+  recordingSettings?: RecordingSettings;
   srtIngest?: SrtGlobalIngestConfig;
   transcodeProfiles?: Record<string, TranscodeProfileEntry>;
   pipelines: ConfigPipeline[];
   outputs: ConfigOutput[];
   jobs: Job[];
+}
+
+export interface RecordingSettings {
+  retainSourceTs: boolean;
 }
 
 export interface TranscodeProfileEntry {

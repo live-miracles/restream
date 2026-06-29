@@ -1,106 +1,121 @@
 import {
-    patchConfig,
-    logout,
-    changePassword,
-    type TranscodeProfile,
-    type TranscodeProfiles,
-} from '../core/api.js';
-import type { SrtGlobalIngestConfig } from '../types.js';
-import { showErrorAlert } from '../core/utils.js';
-import { state } from '../core/state.js';
-import { withBasePath } from '../core/base-path.js';
+  patchConfig,
+  logout,
+  changePassword,
+  type TranscodeProfile,
+  type TranscodeProfiles,
+} from "../core/api.js";
+import type { RecordingSettings, SrtGlobalIngestConfig } from "../types.js";
+import { showErrorAlert } from "../core/utils.js";
+import { state } from "../core/state.js";
+import { withBasePath } from "../core/base-path.js";
 
 // ── Load ──────────────────────────────────────────────
 
-export async function loadSettings({ embedded = false }: { embedded?: boolean } = {}): Promise<void> {
-    if (!embedded) applySettingsChrome();
-    const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
-    if (nameInput) nameInput.value = state.config?.serverName || '';
-    const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
-    if (hostInput) hostInput.value = state.config?.ingestHost || '';
-    populateIngestSecuritySettings();
-    populateSrtIngestSettings();
-    loadTranscodeProfiles();
+export async function loadSettings({
+  embedded = false,
+}: { embedded?: boolean } = {}): Promise<void> {
+  if (!embedded) applySettingsChrome();
+  const nameInput = document.getElementById(
+    "settings-server-name",
+  ) as HTMLInputElement | null;
+  if (nameInput) nameInput.value = state.config?.serverName || "";
+  const hostInput = document.getElementById(
+    "settings-ingest-host",
+  ) as HTMLInputElement | null;
+  if (hostInput) hostInput.value = state.config?.ingestHost || "";
+  populateIngestSecuritySettings();
+  populateRecordingSettings();
+  populateSrtIngestSettings();
+  loadTranscodeProfiles();
 }
 
 function escapeHtml(value: string): string {
-    return value.replace(/[&<>"']/g, (char) => {
-        switch (char) {
-            case '&':
-                return '&amp;';
-            case '<':
-                return '&lt;';
-            case '>':
-                return '&gt;';
-            case '"':
-                return '&quot;';
-            case "'":
-                return '&#39;';
-            default:
-                return char;
-        }
-    });
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
 }
 
 function settingsSectionFor(childId: string): HTMLElement | null {
-    return document.getElementById(childId)?.closest('section') as HTMLElement | null;
+  return document
+    .getElementById(childId)
+    ?.closest("section") as HTMLElement | null;
 }
 
 function styleSettingsSection(section: HTMLElement | null, id: string): void {
-    if (!section) return;
-    section.id = id;
-    section.className = 'border-base-content/10 bg-base-200 space-y-5 rounded-lg border p-5 shadow-none';
-    section.querySelector('h2')?.classList.add('text-base', 'font-semibold');
+  if (!section) return;
+  section.id = id;
+  section.className =
+    "border-base-content/10 bg-base-200 space-y-5 rounded-lg border p-5 shadow-none";
+  section.querySelector("h2")?.classList.add("text-base", "font-semibold");
 }
 
 function ensureSettingsNav(container: Element): void {
-    if (document.getElementById('settings-admin-nav')) return;
-    const title = container.querySelector('h1');
-    const nav = document.createElement('nav');
-    nav.id = 'settings-admin-nav';
-    nav.className = 'border-base-content/10 bg-base-200 rounded-lg border p-2';
-    nav.setAttribute('aria-label', 'Admin sections');
-    nav.innerHTML = `
+  if (document.getElementById("settings-admin-nav")) return;
+  const title = container.querySelector("h1");
+  const nav = document.createElement("nav");
+  nav.id = "settings-admin-nav";
+  nav.className = "border-base-content/10 bg-base-200 rounded-lg border p-2";
+  nav.setAttribute("aria-label", "Admin sections");
+  nav.innerHTML = `
         <div class="flex flex-wrap gap-2">
             <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+            <a class="btn btn-sm btn-ghost" href="#recording-settings-section">Recording</a>
             <a class="btn btn-sm btn-ghost" href="#srt-settings-section">SRT</a>
             <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
         </div>`;
-    title?.insertAdjacentElement('afterend', nav);
+  title?.insertAdjacentElement("afterend", nav);
 }
 
 function applySettingsChrome(): void {
-    const container = document.querySelector('.flex-1.overflow-y-auto > div');
-    if (container instanceof HTMLElement) {
-        container.className = 'mx-auto max-w-5xl space-y-5';
-        const title = container.querySelector('h1');
-        if (title) {
-            title.textContent = 'Admin';
-            title.className = 'text-lg font-semibold';
-        }
-        ensureSettingsNav(container);
+  const container = document.querySelector(".flex-1.overflow-y-auto > div");
+  if (container instanceof HTMLElement) {
+    container.className = "mx-auto max-w-5xl space-y-5";
+    const title = container.querySelector("h1");
+    if (title) {
+      title.textContent = "Admin";
+      title.className = "text-lg font-semibold";
     }
+    ensureSettingsNav(container);
+  }
 
-    const serverSection = settingsSectionFor('settings-server-name');
-    styleSettingsSection(serverSection, 'server-settings-section');
-    const profilesSection = document.getElementById('transcode-profiles-list')?.parentElement;
-    if (profilesSection instanceof HTMLElement) profilesSection.id = 'transcode-profiles-section';
+  const serverSection = settingsSectionFor("settings-server-name");
+  styleSettingsSection(serverSection, "server-settings-section");
+  const profilesSection = document.getElementById(
+    "transcode-profiles-list",
+  )?.parentElement;
+  if (profilesSection instanceof HTMLElement)
+    profilesSection.id = "transcode-profiles-section";
 }
 
 export function registerSettingsGlobals(): void {
-    window.saveServerName = saveServerName;
-    window.saveIngestHost = saveIngestHost;
-    window.saveIngestSecurity = saveIngestSecurity;
-    window.saveSrtIngest = saveSrtIngest;
-    window.saveTranscodeProfiles = saveTranscodeProfiles;
-    window.addTranscodeProfile = addTranscodeProfile;
-    window.saveDashboardPassword = saveDashboardPassword;
-    window.logoutUser = logoutUser;
+  window.saveServerName = saveServerName;
+  window.saveIngestHost = saveIngestHost;
+  window.saveIngestSecurity = saveIngestSecurity;
+  window.saveRecordingSettings = saveRecordingSettings;
+  window.saveSrtIngest = saveSrtIngest;
+  window.saveTranscodeProfiles = saveTranscodeProfiles;
+  window.addTranscodeProfile = addTranscodeProfile;
+  window.saveDashboardPassword = saveDashboardPassword;
+  window.logoutUser = logoutUser;
 }
 
 export function renderSettingsPanel(container: HTMLElement): void {
-    registerSettingsGlobals();
-    container.innerHTML = `
+  registerSettingsGlobals();
+  container.innerHTML = `
         <div class="mx-auto max-w-5xl space-y-5">
             <div class="flex flex-wrap items-end justify-between gap-3">
                 <div>
@@ -109,6 +124,7 @@ export function renderSettingsPanel(container: HTMLElement): void {
                 </div>
                 <nav class="border-base-content/10 bg-base-200 rounded-lg border p-1" aria-label="Settings sections">
                     <a class="btn btn-sm btn-ghost" href="#server-settings-section">Server</a>
+                    <a class="btn btn-sm btn-ghost" href="#recording-settings-section">Recording</a>
                     <a class="btn btn-sm btn-ghost" href="#srt-settings-section">SRT</a>
                     <a class="btn btn-sm btn-ghost" href="#transcode-profiles-section">Profiles</a>
                 </nav>
@@ -203,6 +219,29 @@ export function renderSettingsPanel(container: HTMLElement): void {
 
                 <div class="divider my-0"></div>
 
+                <div id="recording-settings-section" class="space-y-2">
+                    <div class="text-sm font-medium">Recording</div>
+                    <p class="text-base-content/60 text-sm">Choose whether completed recordings keep the original MPEG-TS source after a successful MP4 conversion.</p>
+                    <div class="flex flex-wrap items-end gap-3">
+                        <label class="border-base-content/10 bg-base-100 flex min-w-[22rem] flex-1 items-start gap-3 rounded-lg border px-3 py-3">
+                            <input type="checkbox" id="recording-retain-source-ts" class="checkbox checkbox-sm mt-0.5" />
+                            <div class="space-y-1">
+                                <div class="text-sm font-medium">Keep original <code>.ts</code> after successful conversion</div>
+                                <div class="text-base-content/60 text-sm">Unchecked by default to save storage. Failed conversions always keep the source file.</div>
+                            </div>
+                        </label>
+                        <fieldset class="fieldset">
+                            <legend class="fieldset-legend invisible">_</legend>
+                            <div class="flex items-center gap-3">
+                                <button class="btn btn-accent btn-sm" onclick="saveRecordingSettings()">Save</button>
+                                <span id="recording-settings-saved" class="text-success hidden text-sm">Saved</span>
+                            </div>
+                        </fieldset>
+                    </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
                 <div id="srt-settings-section" class="space-y-2">
                     <div class="text-sm font-medium">Global SRT Ingest</div>
                     <p class="text-base-content/60 text-sm">Default listener policy for SRT publishers. Pipelines can inherit this, force plaintext, or use their own passphrase.</p>
@@ -261,252 +300,333 @@ export function renderSettingsPanel(container: HTMLElement): void {
 // ── Server Name ───────────────────────────────────────
 
 export async function saveServerName(): Promise<void> {
-    const nameInput = document.getElementById('settings-server-name') as HTMLInputElement | null;
-    const name = nameInput?.value?.trim();
-    if (!name) {
-        showErrorAlert('Server name cannot be empty');
-        return;
-    }
-    const result = await patchConfig({ serverName: name });
-    if (result) {
-        state.config = { ...state.config, serverName: result.serverName };
-        showSavedFeedback('server-name-saved');
-    }
+  const nameInput = document.getElementById(
+    "settings-server-name",
+  ) as HTMLInputElement | null;
+  const name = nameInput?.value?.trim();
+  if (!name) {
+    showErrorAlert("Server name cannot be empty");
+    return;
+  }
+  const result = await patchConfig({ serverName: name });
+  if (result) {
+    state.config = { ...state.config, serverName: result.serverName };
+    showSavedFeedback("server-name-saved");
+  }
 }
 
 // ── Ingest Host ───────────────────────────────────────
 
 export async function saveIngestHost(): Promise<void> {
-    const hostInput = document.getElementById('settings-ingest-host') as HTMLInputElement | null;
-    const ingestHost = hostInput?.value?.trim() ?? '';
-    const result = await patchConfig({ ingestHost });
-    if (result) {
-        state.config = { ...state.config, ingestHost: result.ingestHost };
-        if (hostInput) hostInput.value = result.ingestHost;
-        showSavedFeedback('ingest-host-saved');
-    }
+  const hostInput = document.getElementById(
+    "settings-ingest-host",
+  ) as HTMLInputElement | null;
+  const ingestHost = hostInput?.value?.trim() ?? "";
+  const result = await patchConfig({ ingestHost });
+  if (result) {
+    state.config = { ...state.config, ingestHost: result.ingestHost };
+    if (hostInput) hostInput.value = result.ingestHost;
+    showSavedFeedback("ingest-host-saved");
+  }
 }
 
 // ── Dashboard Password ────────────────────────────────
 
 export async function saveDashboardPassword(): Promise<void> {
-    const currentInput = document.getElementById(
-        'current-password-input',
-    ) as HTMLInputElement | null;
-    const newInput = document.getElementById('new-password-input') as HTMLInputElement | null;
-    const confirmInput = document.getElementById(
-        'confirm-password-input',
-    ) as HTMLInputElement | null;
+  const currentInput = document.getElementById(
+    "current-password-input",
+  ) as HTMLInputElement | null;
+  const newInput = document.getElementById(
+    "new-password-input",
+  ) as HTMLInputElement | null;
+  const confirmInput = document.getElementById(
+    "confirm-password-input",
+  ) as HTMLInputElement | null;
 
-    const currentPassword = currentInput?.value ?? '';
-    const newPassword = newInput?.value ?? '';
-    const confirmPassword = confirmInput?.value ?? '';
+  const currentPassword = currentInput?.value ?? "";
+  const newPassword = newInput?.value ?? "";
+  const confirmPassword = confirmInput?.value ?? "";
 
-    if (!currentPassword || !newPassword || newPassword !== confirmPassword) {
-        showErrorAlert('Enter the current password and matching new password');
-        return;
-    }
+  if (!currentPassword || !newPassword || newPassword !== confirmPassword) {
+    showErrorAlert("Enter the current password and matching new password");
+    return;
+  }
 
-    const result = await changePassword(currentPassword, newPassword);
-    if (!result) return;
+  const result = await changePassword(currentPassword, newPassword);
+  if (!result) return;
 
-    if (currentInput) currentInput.value = '';
-    if (newInput) newInput.value = '';
-    if (confirmInput) confirmInput.value = '';
-    showSavedFeedback('dashboard-password-saved');
+  if (currentInput) currentInput.value = "";
+  if (newInput) newInput.value = "";
+  if (confirmInput) confirmInput.value = "";
+  showSavedFeedback("dashboard-password-saved");
 }
 
 export async function logoutUser(): Promise<void> {
-    await logout();
-    window.location.href = withBasePath('/login');
+  await logout();
+  window.location.href = withBasePath("/login");
 }
 
 // ── Ingest Security ───────────────────────────────────
 
 function getNumberInputValue(id: string): number | null {
-    const input = document.getElementById(id) as HTMLInputElement | null;
-    const value = Number(input?.value);
-    if (!Number.isFinite(value) || value < 1) return null;
-    return Math.floor(value);
+  const input = document.getElementById(id) as HTMLInputElement | null;
+  const value = Number(input?.value);
+  if (!Number.isFinite(value) || value < 1) return null;
+  return Math.floor(value);
 }
 
 function setNumberInputValue(id: string, value: number | undefined): void {
-    const input = document.getElementById(id) as HTMLInputElement | null;
-    if (!input || value === undefined) return;
-    input.value = String(value);
+  const input = document.getElementById(id) as HTMLInputElement | null;
+  if (!input || value === undefined) return;
+  input.value = String(value);
 }
 
 function populateIngestSecuritySettings(): void {
-    const cfg = state.config?.ingestSecurity;
-    if (!cfg) return;
-    setNumberInputValue('ingest-security-failure-limit', cfg.failureLimit);
-    setNumberInputValue('ingest-security-failure-window-ms', cfg.failureWindowMs);
-    setNumberInputValue('ingest-security-ban-ms', cfg.banMs);
-    setNumberInputValue('ingest-security-tracked-ip-limit', cfg.trackedIpLimit);
+  const cfg = state.config?.ingestSecurity;
+  if (!cfg) return;
+  setNumberInputValue("ingest-security-failure-limit", cfg.failureLimit);
+  setNumberInputValue("ingest-security-failure-window-ms", cfg.failureWindowMs);
+  setNumberInputValue("ingest-security-ban-ms", cfg.banMs);
+  setNumberInputValue("ingest-security-tracked-ip-limit", cfg.trackedIpLimit);
 }
 
 export async function saveIngestSecurity(): Promise<void> {
-    const failureLimit = getNumberInputValue('ingest-security-failure-limit');
-    const failureWindowMs = getNumberInputValue('ingest-security-failure-window-ms');
-    const banMs = getNumberInputValue('ingest-security-ban-ms');
-    const trackedIpLimit = getNumberInputValue('ingest-security-tracked-ip-limit');
+  const failureLimit = getNumberInputValue("ingest-security-failure-limit");
+  const failureWindowMs = getNumberInputValue(
+    "ingest-security-failure-window-ms",
+  );
+  const banMs = getNumberInputValue("ingest-security-ban-ms");
+  const trackedIpLimit = getNumberInputValue(
+    "ingest-security-tracked-ip-limit",
+  );
 
-    if (!failureLimit || !failureWindowMs || !banMs || !trackedIpLimit) {
-        showErrorAlert('Ingest security values must be positive numbers');
-        return;
-    }
+  if (!failureLimit || !failureWindowMs || !banMs || !trackedIpLimit) {
+    showErrorAlert("Ingest security values must be positive numbers");
+    return;
+  }
 
-    const result = await patchConfig({
-        ingestSecurity: { failureLimit, failureWindowMs, banMs, trackedIpLimit },
-    });
-    if (result) {
-        state.config = { ...state.config, ingestSecurity: result.ingestSecurity };
-        populateIngestSecuritySettings();
-        showSavedFeedback('ingest-security-saved');
-    }
+  const result = await patchConfig({
+    ingestSecurity: { failureLimit, failureWindowMs, banMs, trackedIpLimit },
+  });
+  if (result) {
+    state.config = { ...state.config, ingestSecurity: result.ingestSecurity };
+    populateIngestSecuritySettings();
+    showSavedFeedback("ingest-security-saved");
+  }
+}
+
+function effectiveRecordingSettings(): RecordingSettings {
+  return {
+    retainSourceTs: state.config?.recordingSettings?.retainSourceTs ?? false,
+  };
+}
+
+function populateRecordingSettings(): void {
+  const input = document.getElementById(
+    "recording-retain-source-ts",
+  ) as HTMLInputElement | null;
+  if (!input) return;
+  input.checked = effectiveRecordingSettings().retainSourceTs;
+}
+
+export async function saveRecordingSettings(): Promise<void> {
+  const input = document.getElementById(
+    "recording-retain-source-ts",
+  ) as HTMLInputElement | null;
+  const recordingSettings: RecordingSettings = {
+    retainSourceTs: input?.checked ?? false,
+  };
+  const result = await patchConfig({ recordingSettings });
+  if (result) {
+    state.config = {
+      ...state.config,
+      recordingSettings: result.recordingSettings,
+    };
+    populateRecordingSettings();
+    showSavedFeedback("recording-settings-saved");
+  }
 }
 
 function showSavedFeedback(id: string): void {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 2000);
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 2000);
 }
 
 function getSrtPbkeylenInputValue(id: string): 16 | 24 | 32 {
-    const value = Number((document.getElementById(id) as HTMLSelectElement | null)?.value || 16);
-    return value === 24 || value === 32 ? value : 16;
+  const value = Number(
+    (document.getElementById(id) as HTMLSelectElement | null)?.value || 16,
+  );
+  return value === 24 || value === 32 ? value : 16;
 }
 
-function setSrtModeUi(mode: 'plaintext' | 'encrypted'): void {
-    const passphraseInput = document.getElementById(
-        'srt-ingest-passphrase-input',
-    ) as HTMLInputElement | null;
-    const pbkeylenInput = document.getElementById(
-        'srt-ingest-pbkeylen-input',
-    ) as HTMLSelectElement | null;
-    const encrypted = mode === 'encrypted';
-    if (passphraseInput) {
-        passphraseInput.disabled = !encrypted;
-        passphraseInput.classList.toggle('input-disabled', !encrypted);
-    }
-    if (pbkeylenInput) {
-        pbkeylenInput.disabled = !encrypted;
-        pbkeylenInput.classList.toggle('select-disabled', !encrypted);
-    }
+function setSrtModeUi(mode: "plaintext" | "encrypted"): void {
+  const passphraseInput = document.getElementById(
+    "srt-ingest-passphrase-input",
+  ) as HTMLInputElement | null;
+  const pbkeylenInput = document.getElementById(
+    "srt-ingest-pbkeylen-input",
+  ) as HTMLSelectElement | null;
+  const encrypted = mode === "encrypted";
+  if (passphraseInput) {
+    passphraseInput.disabled = !encrypted;
+    passphraseInput.classList.toggle("input-disabled", !encrypted);
+  }
+  if (pbkeylenInput) {
+    pbkeylenInput.disabled = !encrypted;
+    pbkeylenInput.classList.toggle("select-disabled", !encrypted);
+  }
 }
 
 function populateSrtIngestSettings(): void {
-    const cfg = state.config?.srtIngest || { mode: 'plaintext', pbkeylen: 16 };
-    const modeInput = document.getElementById('srt-ingest-mode-input') as HTMLSelectElement | null;
-    const passphraseInput = document.getElementById(
-        'srt-ingest-passphrase-input',
-    ) as HTMLInputElement | null;
-    const pbkeylenInput = document.getElementById(
-        'srt-ingest-pbkeylen-input',
-    ) as HTMLSelectElement | null;
-    if (modeInput) {
-        modeInput.value = cfg.mode;
-        modeInput.onchange = () =>
-            setSrtModeUi(modeInput.value === 'encrypted' ? 'encrypted' : 'plaintext');
-    }
-    if (passphraseInput) passphraseInput.value = cfg.passphrase || '';
-    if (pbkeylenInput) pbkeylenInput.value = String(cfg.pbkeylen || 16);
-    setSrtModeUi(cfg.mode === 'encrypted' ? 'encrypted' : 'plaintext');
+  const cfg = state.config?.srtIngest || { mode: "plaintext", pbkeylen: 16 };
+  const modeInput = document.getElementById(
+    "srt-ingest-mode-input",
+  ) as HTMLSelectElement | null;
+  const passphraseInput = document.getElementById(
+    "srt-ingest-passphrase-input",
+  ) as HTMLInputElement | null;
+  const pbkeylenInput = document.getElementById(
+    "srt-ingest-pbkeylen-input",
+  ) as HTMLSelectElement | null;
+  if (modeInput) {
+    modeInput.value = cfg.mode;
+    modeInput.onchange = () =>
+      setSrtModeUi(modeInput.value === "encrypted" ? "encrypted" : "plaintext");
+  }
+  if (passphraseInput) passphraseInput.value = cfg.passphrase || "";
+  if (pbkeylenInput) pbkeylenInput.value = String(cfg.pbkeylen || 16);
+  setSrtModeUi(cfg.mode === "encrypted" ? "encrypted" : "plaintext");
 }
 
 function readSrtIngestSettings(): SrtGlobalIngestConfig | null {
-    const mode =
-        (document.getElementById('srt-ingest-mode-input') as HTMLSelectElement | null)?.value ===
-        'encrypted'
-            ? 'encrypted'
-            : 'plaintext';
-    const passphrase =
-        (
-            document.getElementById('srt-ingest-passphrase-input') as HTMLInputElement | null
-        )?.value.trim() || '';
-    const pbkeylen = getSrtPbkeylenInputValue('srt-ingest-pbkeylen-input');
-    if (mode === 'encrypted' && (passphrase.length < 10 || passphrase.length > 79)) {
-        showErrorAlert('SRT passphrase must be 10-79 bytes');
-        return null;
-    }
-    return {
-        mode,
-        passphrase: mode === 'encrypted' ? passphrase : null,
-        pbkeylen,
-    };
+  const mode =
+    (
+      document.getElementById(
+        "srt-ingest-mode-input",
+      ) as HTMLSelectElement | null
+    )?.value === "encrypted"
+      ? "encrypted"
+      : "plaintext";
+  const passphrase =
+    (
+      document.getElementById(
+        "srt-ingest-passphrase-input",
+      ) as HTMLInputElement | null
+    )?.value.trim() || "";
+  const pbkeylen = getSrtPbkeylenInputValue("srt-ingest-pbkeylen-input");
+  if (
+    mode === "encrypted" &&
+    (passphrase.length < 10 || passphrase.length > 79)
+  ) {
+    showErrorAlert("SRT passphrase must be 10-79 bytes");
+    return null;
+  }
+  return {
+    mode,
+    passphrase: mode === "encrypted" ? passphrase : null,
+    pbkeylen,
+  };
 }
 
 export async function saveSrtIngest(): Promise<void> {
-    const srtIngest = readSrtIngestSettings();
-    if (!srtIngest) return;
-    const result = await patchConfig({ srtIngest });
-    if (result) {
-        state.config = { ...state.config, srtIngest: result.srtIngest };
-        populateSrtIngestSettings();
-        showSavedFeedback('srt-ingest-saved');
-    }
+  const srtIngest = readSrtIngestSettings();
+  if (!srtIngest) return;
+  const result = await patchConfig({ srtIngest });
+  if (result) {
+    state.config = { ...state.config, srtIngest: result.srtIngest };
+    populateSrtIngestSettings();
+    showSavedFeedback("srt-ingest-saved");
+  }
 }
 
 // ── Transcode Profiles ─────────────────────────────────
 
-const PRESET_OPTIONS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'];
-const TUNE_OPTIONS = ['zerolatency', 'fastdecode', 'film', 'animation', 'grain', 'stillimage', 'psnr', 'ssim'];
-const BUILT_IN_PROFILE_ORDER = ['h264', '720p', '1080p'];
+const PRESET_OPTIONS = [
+  "ultrafast",
+  "superfast",
+  "veryfast",
+  "faster",
+  "fast",
+  "medium",
+  "slow",
+  "slower",
+];
+const TUNE_OPTIONS = [
+  "zerolatency",
+  "fastdecode",
+  "film",
+  "animation",
+  "grain",
+  "stillimage",
+  "psnr",
+  "ssim",
+];
+const BUILT_IN_PROFILE_ORDER = ["h264", "720p", "1080p"];
 const BUILT_IN_TRANSCODE_PROFILES: TranscodeProfiles = {
-    h264: {
-        preset: 'ultrafast',
-        tune: 'zerolatency',
-        crf: 23,
-        gop: 60,
-        bframes: 0,
-        bitrate: 0,
-        maxBitrate: 0,
-        width: 0,
-        height: 0,
-    },
-    '720p': {
-        preset: 'ultrafast',
-        tune: 'zerolatency',
-        crf: 23,
-        gop: 60,
-        bframes: 0,
-        bitrate: 0,
-        maxBitrate: 0,
-        width: 1280,
-        height: 720,
-    },
-    '1080p': {
-        preset: 'ultrafast',
-        tune: 'zerolatency',
-        crf: 23,
-        gop: 60,
-        bframes: 0,
-        bitrate: 0,
-        maxBitrate: 0,
-        width: 1920,
-        height: 1080,
-    },
+  h264: {
+    preset: "ultrafast",
+    tune: "zerolatency",
+    crf: 23,
+    gop: 60,
+    bframes: 0,
+    bitrate: 0,
+    maxBitrate: 0,
+    width: 0,
+    height: 0,
+  },
+  "720p": {
+    preset: "ultrafast",
+    tune: "zerolatency",
+    crf: 23,
+    gop: 60,
+    bframes: 0,
+    bitrate: 0,
+    maxBitrate: 0,
+    width: 1280,
+    height: 720,
+  },
+  "1080p": {
+    preset: "ultrafast",
+    tune: "zerolatency",
+    crf: 23,
+    gop: 60,
+    bframes: 0,
+    bitrate: 0,
+    maxBitrate: 0,
+    width: 1920,
+    height: 1080,
+  },
 };
 
 function effectiveTranscodeProfiles(): TranscodeProfiles {
-    return { ...BUILT_IN_TRANSCODE_PROFILES, ...(state.config?.transcodeProfiles ?? {}) };
+  return {
+    ...BUILT_IN_TRANSCODE_PROFILES,
+    ...(state.config?.transcodeProfiles ?? {}),
+  };
 }
 
 function renderProfileRow(name: string, profile: TranscodeProfile): string {
-    const presetOpts = PRESET_OPTIONS.map((p) => `<option value="${p}" ${profile.preset === p ? 'selected' : ''}>${p}</option>`).join('');
-    const tuneOpts = TUNE_OPTIONS.map((t) => `<option value="${t}" ${profile.tune === t ? 'selected' : ''}>${t}</option>`).join('');
-    const safeName = escapeHtml(name);
-    const isBuiltIn = BUILT_IN_PROFILE_ORDER.includes(name);
-    const deleteButton = isBuiltIn
-        ? '<button class="btn btn-sm btn-ghost" disabled>Built-in</button>'
-        : `<button class="btn btn-sm btn-error btn-outline js-profile-delete" data-name="${safeName}">Delete</button>`;
-    return `
+  const presetOpts = PRESET_OPTIONS.map(
+    (p) =>
+      `<option value="${p}" ${profile.preset === p ? "selected" : ""}>${p}</option>`,
+  ).join("");
+  const tuneOpts = TUNE_OPTIONS.map(
+    (t) =>
+      `<option value="${t}" ${profile.tune === t ? "selected" : ""}>${t}</option>`,
+  ).join("");
+  const safeName = escapeHtml(name);
+  const isBuiltIn = BUILT_IN_PROFILE_ORDER.includes(name);
+  const deleteButton = isBuiltIn
+    ? '<button class="btn btn-sm btn-ghost" disabled>Built-in</button>'
+    : `<button class="btn btn-sm btn-error btn-outline js-profile-delete" data-name="${safeName}">Delete</button>`;
+  return `
         <div class="border-base-content/10 bg-base-100 space-y-3 rounded-lg border px-3 py-3" data-profile-name="${safeName}">
             <div class="flex flex-wrap items-end gap-2">
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Name</legend>
-                    <input type="text" class="input input-sm w-36 font-mono js-profile-name" value="${safeName}" placeholder="profile name" ${isBuiltIn ? 'readonly' : ''} />
+                    <input type="text" class="input input-sm w-36 font-mono js-profile-name" value="${safeName}" placeholder="profile name" ${isBuiltIn ? "readonly" : ""} />
                 </fieldset>
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Preset</legend>
@@ -531,92 +651,129 @@ function renderProfileRow(name: string, profile: TranscodeProfile): string {
 }
 
 export function loadTranscodeProfiles(): void {
-    const list = document.getElementById('transcode-profiles-list');
-    if (!list) return;
-    const profiles = effectiveTranscodeProfiles();
-    const entries = Object.entries(profiles).sort(([a], [b]) => {
-        const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
-        const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);
-        if (ai !== -1 || bi !== -1) {
-            if (ai === -1) return 1;
-            if (bi === -1) return -1;
-            return ai - bi;
-        }
-        return a.localeCompare(b);
-    });
-    if (entries.length === 0) {
-        list.innerHTML =
-            '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No profiles configured. Using built-in defaults.</div>';
-        return;
+  const list = document.getElementById("transcode-profiles-list");
+  if (!list) return;
+  const profiles = effectiveTranscodeProfiles();
+  const entries = Object.entries(profiles).sort(([a], [b]) => {
+    const ai = BUILT_IN_PROFILE_ORDER.indexOf(a);
+    const bi = BUILT_IN_PROFILE_ORDER.indexOf(b);
+    if (ai !== -1 || bi !== -1) {
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
     }
-    list.innerHTML = entries.map(([name, p]) => renderProfileRow(name, p)).join('');
-    list.querySelectorAll<HTMLButtonElement>('.js-profile-delete').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            const row = btn.closest('[data-profile-name]');
-            if (row) row.remove();
-        });
+    return a.localeCompare(b);
+  });
+  if (entries.length === 0) {
+    list.innerHTML =
+      '<div class="border-base-content/10 bg-base-100 rounded-lg border px-3 py-4 text-sm opacity-70">No profiles configured. Using built-in defaults.</div>';
+    return;
+  }
+  list.innerHTML = entries
+    .map(([name, p]) => renderProfileRow(name, p))
+    .join("");
+  list
+    .querySelectorAll<HTMLButtonElement>(".js-profile-delete")
+    .forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const row = btn.closest("[data-profile-name]");
+        if (row) row.remove();
+      });
     });
 }
 
 export function addTranscodeProfile(): void {
-    const list = document.getElementById('transcode-profiles-list');
-    if (!list) return;
-    if (!list.querySelector('[data-profile-name]')) {
-        list.innerHTML = '';
-    }
-    const existing = new Set(
-        Array.from(list.querySelectorAll<HTMLInputElement>('.js-profile-name')).map((input) =>
-            input.value.trim(),
-        ),
-    );
-    let nextName = 'new_profile';
-    let suffix = 2;
-    while (existing.has(nextName)) {
-        nextName = `new_profile_${suffix}`;
-        suffix += 1;
-    }
-    const div = document.createElement('div');
-    div.innerHTML = renderProfileRow(nextName, {
-        preset: 'ultrafast',
-        tune: 'zerolatency',
-        crf: 23,
-        gop: 60,
-        bframes: 0,
-        bitrate: 0,
-        maxBitrate: 0,
-        width: 0,
-        height: 0,
-    });
-    const row = div.firstElementChild as HTMLElement | null;
-    if (row) {
-        list.appendChild(row);
-        row.querySelector<HTMLButtonElement>('.js-profile-delete')?.addEventListener('click', () => row.remove());
-    }
+  const list = document.getElementById("transcode-profiles-list");
+  if (!list) return;
+  if (!list.querySelector("[data-profile-name]")) {
+    list.innerHTML = "";
+  }
+  const existing = new Set(
+    Array.from(list.querySelectorAll<HTMLInputElement>(".js-profile-name")).map(
+      (input) => input.value.trim(),
+    ),
+  );
+  let nextName = "new_profile";
+  let suffix = 2;
+  while (existing.has(nextName)) {
+    nextName = `new_profile_${suffix}`;
+    suffix += 1;
+  }
+  const div = document.createElement("div");
+  div.innerHTML = renderProfileRow(nextName, {
+    preset: "ultrafast",
+    tune: "zerolatency",
+    crf: 23,
+    gop: 60,
+    bframes: 0,
+    bitrate: 0,
+    maxBitrate: 0,
+    width: 0,
+    height: 0,
+  });
+  const row = div.firstElementChild as HTMLElement | null;
+  if (row) {
+    list.appendChild(row);
+    row
+      .querySelector<HTMLButtonElement>(".js-profile-delete")
+      ?.addEventListener("click", () => row.remove());
+  }
 }
 
 export async function saveTranscodeProfiles(): Promise<void> {
-    const list = document.getElementById('transcode-profiles-list');
-    if (!list) return;
-    const profiles: TranscodeProfiles = {};
-    list.querySelectorAll<HTMLElement>('[data-profile-name]').forEach((row) => {
-        const name = (row.querySelector('.js-profile-name') as HTMLInputElement)?.value?.trim();
-        if (!name) return;
-        profiles[name] = {
-            preset: (row.querySelector('.js-profile-preset') as HTMLSelectElement)?.value || 'ultrafast',
-            tune: (row.querySelector('.js-profile-tune') as HTMLSelectElement)?.value || 'zerolatency',
-            crf: Number((row.querySelector('.js-profile-crf') as HTMLInputElement)?.value) || 23,
-            gop: Number((row.querySelector('.js-profile-gop') as HTMLInputElement)?.value) || 60,
-            bframes: Number((row.querySelector('.js-profile-bframes') as HTMLInputElement)?.value) || 0,
-            bitrate: Number((row.querySelector('.js-profile-bitrate') as HTMLInputElement)?.value) || 0,
-            maxBitrate: Number((row.querySelector('.js-profile-maxbitrate') as HTMLInputElement)?.value) || 0,
-            width: Number((row.querySelector('.js-profile-width') as HTMLInputElement)?.value) || 0,
-            height: Number((row.querySelector('.js-profile-height') as HTMLInputElement)?.value) || 0,
-        };
-    });
-    const result = await patchConfig({ transcodeProfiles: profiles });
-    if (result) {
-        state.config = { ...state.config, transcodeProfiles: result.transcodeProfiles };
-        loadTranscodeProfiles();
-        showSavedFeedback('transcode-profiles-saved');
-    }
+  const list = document.getElementById("transcode-profiles-list");
+  if (!list) return;
+  const profiles: TranscodeProfiles = {};
+  list.querySelectorAll<HTMLElement>("[data-profile-name]").forEach((row) => {
+    const name = (
+      row.querySelector(".js-profile-name") as HTMLInputElement
+    )?.value?.trim();
+    if (!name) return;
+    profiles[name] = {
+      preset:
+        (row.querySelector(".js-profile-preset") as HTMLSelectElement)?.value ||
+        "ultrafast",
+      tune:
+        (row.querySelector(".js-profile-tune") as HTMLSelectElement)?.value ||
+        "zerolatency",
+      crf:
+        Number(
+          (row.querySelector(".js-profile-crf") as HTMLInputElement)?.value,
+        ) || 23,
+      gop:
+        Number(
+          (row.querySelector(".js-profile-gop") as HTMLInputElement)?.value,
+        ) || 60,
+      bframes:
+        Number(
+          (row.querySelector(".js-profile-bframes") as HTMLInputElement)?.value,
+        ) || 0,
+      bitrate:
+        Number(
+          (row.querySelector(".js-profile-bitrate") as HTMLInputElement)?.value,
+        ) || 0,
+      maxBitrate:
+        Number(
+          (row.querySelector(".js-profile-maxbitrate") as HTMLInputElement)
+            ?.value,
+        ) || 0,
+      width:
+        Number(
+          (row.querySelector(".js-profile-width") as HTMLInputElement)?.value,
+        ) || 0,
+      height:
+        Number(
+          (row.querySelector(".js-profile-height") as HTMLInputElement)?.value,
+        ) || 0,
+    };
+  });
+  const result = await patchConfig({ transcodeProfiles: profiles });
+  if (result) {
+    state.config = {
+      ...state.config,
+      transcodeProfiles: result.transcodeProfiles,
+    };
+    loadTranscodeProfiles();
+    showSavedFeedback("transcode-profiles-saved");
+  }
 }

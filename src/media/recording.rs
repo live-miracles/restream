@@ -13,6 +13,7 @@ use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use tracing::{error, info, warn};
 
 const MIN_DURATION_SECS: u64 = 5;
 const MP4_MUXER_NAME: &str = "mov";
+const RECORDING_SETTINGS_META_KEY: &str = "recording_settings";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +41,12 @@ pub struct RecordingConversionState {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecordingSettings {
+    pub retain_source_ts: bool,
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -133,6 +141,26 @@ pub(crate) fn load_conversion_state(ts_path: &Path) -> Option<RecordingConversio
     serde_json::from_slice(&bytes).ok()
 }
 
+pub async fn load_recording_settings(db: &SqlitePool) -> RecordingSettings {
+    crate::db::get_meta(db, RECORDING_SETTINGS_META_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<RecordingSettings>(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub async fn save_recording_settings(
+    db: &SqlitePool,
+    settings: &RecordingSettings,
+) -> Result<(), sqlx::Error> {
+    let raw = serde_json::to_string(settings)
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    crate::db::set_meta(db, RECORDING_SETTINGS_META_KEY, &raw)
+        .await
+        .map(|_| ())
+}
+
 fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
     vec![
         "-y".to_string(),
@@ -207,7 +235,7 @@ fn ffmpeg_supports_mp4_muxer() -> bool {
     })
 }
 
-async fn remux_recording_to_mp4(ts_path: PathBuf) {
+async fn remux_recording_to_mp4(ts_path: PathBuf, settings: RecordingSettings) {
     if !ffmpeg_supports_mp4_muxer() {
         write_conversion_state(
             &ts_path,
@@ -255,7 +283,28 @@ async fn remux_recording_to_mp4(ts_path: PathBuf) {
                 return;
             }
 
-            write_conversion_state(&ts_path, RecordingConversionStatus::Ready, None).await;
+            if settings.retain_source_ts {
+                write_conversion_state(&ts_path, RecordingConversionStatus::Ready, None).await;
+            } else if let Err(error) = tokio::fs::remove_file(&ts_path).await {
+                write_conversion_state(&ts_path, RecordingConversionStatus::Ready, None).await;
+                warn!(
+                    source = %ts_path.display(),
+                    output = %mp4_path.display(),
+                    err = %error,
+                    "recording remux succeeded but source ts cleanup failed"
+                );
+            } else {
+                let state_path = build_conversion_state_path(&ts_path);
+                if let Err(error) = tokio::fs::remove_file(&state_path).await
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(
+                        state = %state_path.display(),
+                        err = %error,
+                        "recording remux succeeded but conversion state cleanup failed"
+                    );
+                }
+            }
             info!(
                 source = %ts_path.display(),
                 output = %mp4_path.display(),
@@ -321,6 +370,7 @@ pub async fn start_recording(
     pipeline_id: String,
     input_source: Option<String>,
     media_dir: String,
+    recording_settings: RecordingSettings,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
@@ -472,7 +522,10 @@ pub async fn start_recording(
             None,
         )
         .await;
-        tokio::spawn(remux_recording_to_mp4(PathBuf::from(&file_path)));
+        tokio::spawn(remux_recording_to_mp4(
+            PathBuf::from(&file_path),
+            recording_settings,
+        ));
     }
 
     engine.remove_stage_metrics(&rec_stage_key).await;
@@ -614,10 +667,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn recording_settings_default_to_deleting_source_ts() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should connect");
+        crate::db::setup_database_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        assert_eq!(
+            load_recording_settings(&pool).await,
+            RecordingSettings {
+                retain_source_ts: false
+            }
+        );
+    }
+
     #[test]
     fn build_recording_remux_args_targets_faststart_mp4_copy() {
         let input = Path::new("/tmp/input.ts");
-        let output = Path::new("/tmp/output.mp4.tmp");
+        let output = Path::new("/tmp/output.tmp.mp4");
         let args = build_recording_remux_args(input, output);
 
         assert!(args.windows(2).any(|pair| pair == ["-i", "/tmp/input.ts"]));
@@ -631,7 +701,7 @@ mod tests {
                 .any(|pair| pair == ["-bsf:a", "aac_adtstoasc"])
         );
         assert!(args.windows(2).any(|pair| pair == ["-f", "mov"]));
-        assert_eq!(args.last().map(String::as_str), Some("/tmp/output.mp4.tmp"));
+        assert_eq!(args.last().map(String::as_str), Some("/tmp/output.tmp.mp4"));
     }
 
     #[test]
@@ -653,8 +723,9 @@ mod tests {
         assert!(!ffmpeg_muxers_include_mp4(listing));
     }
 
-    #[tokio::test]
-    async fn remux_recording_to_mp4_creates_mp4_and_keeps_source_ts() {
+    async fn remux_recording_fixture(
+        settings: RecordingSettings,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         assert!(
             ffmpeg_supports_mp4_muxer(),
             "bundled ffmpeg must expose mp4 muxing for recording remux"
@@ -669,12 +740,75 @@ mod tests {
         std::fs::copy(&fixture, &source).expect("fixture should copy");
 
         write_conversion_state(&source, RecordingConversionStatus::Converting, None).await;
-        remux_recording_to_mp4(source.clone()).await;
+        remux_recording_to_mp4(source.clone(), settings).await;
 
         let mp4_path = build_mp4_path(&source);
+        let state_path = build_conversion_state_path(&source);
+
+        (temp_dir, source, mp4_path, state_path)
+    }
+
+    #[tokio::test]
+    async fn remux_recording_to_mp4_deletes_source_ts_when_retention_disabled() {
+        let (temp_dir, source, mp4_path, state_path) = remux_recording_fixture(RecordingSettings {
+            retain_source_ts: false,
+        })
+        .await;
+
+        assert!(
+            !source.exists(),
+            "source TS should be deleted after successful remux by default"
+        );
+        assert!(mp4_path.exists(), "remux should create an MP4 sibling");
+        assert!(
+            !state_path.exists(),
+            "conversion state should be removed once source retention is disabled"
+        );
+
+        let roundtrip_ts = temp_dir.join("roundtrip.ts");
+        let status = TokioCommand::new(crate::ffmpeg_extract::ffmpeg_bin_path())
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                &mp4_path.display().to_string(),
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                &roundtrip_ts.display().to_string(),
+            ])
+            .status()
+            .await
+            .expect("bundled ffmpeg should validate remuxed mp4");
+        assert!(
+            status.success(),
+            "remuxed mp4 should be readable by bundled ffmpeg"
+        );
+        assert!(
+            roundtrip_ts.exists() && std::fs::metadata(&roundtrip_ts).unwrap().len() > 0,
+            "round-trip remux should produce TS output"
+        );
+
+        let _ = std::fs::remove_file(roundtrip_ts);
+        let _ = std::fs::remove_file(mp4_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn remux_recording_to_mp4_keeps_source_ts_when_retention_enabled() {
+        let (temp_dir, source, mp4_path, state_path) = remux_recording_fixture(RecordingSettings {
+            retain_source_ts: true,
+        })
+        .await;
+
         assert!(
             source.exists(),
-            "source TS should remain after successful remux"
+            "source TS should remain after successful remux when retention is enabled"
         );
         assert!(mp4_path.exists(), "remux should create an MP4 sibling");
 
@@ -716,7 +850,7 @@ mod tests {
 
         let _ = std::fs::remove_file(roundtrip_ts);
         let _ = std::fs::remove_file(mp4_path);
-        let _ = std::fs::remove_file(build_conversion_state_path(&source));
+        let _ = std::fs::remove_file(state_path);
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
