@@ -295,6 +295,90 @@ async fn stale_job_update_cannot_clobber_replacement_attempt() {
 }
 
 #[tokio::test]
+async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
+    let pool = test_pool().await;
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
+        .await
+        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+
+    db::create_job(
+        &pool,
+        "j1",
+        "p1",
+        "o1",
+        Some(100),
+        "running",
+        "2024-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+    db::create_job(
+        &pool,
+        "j2",
+        "p1",
+        "o1",
+        Some(200),
+        "running",
+        "2024-01-01T00:10:00Z",
+    )
+    .await
+    .unwrap();
+    let newest = db::create_job(
+        &pool,
+        "j3",
+        "p1",
+        "o1",
+        Some(300),
+        "running",
+        "2024-01-01T00:20:00Z",
+    )
+    .await
+    .unwrap();
+    assert_eq!(newest.id, "j3");
+
+    let stale_j1 = db::update_job(
+        &pool,
+        "j1",
+        None,
+        Some("failed"),
+        Some("2024-01-01T00:05:00Z"),
+        Some(1),
+        None,
+    )
+    .await
+    .unwrap();
+    let stale_j2 = db::update_job(
+        &pool,
+        "j2",
+        None,
+        Some("failed"),
+        Some("2024-01-01T00:15:00Z"),
+        Some(1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(stale_j1.is_none());
+    assert!(stale_j2.is_none());
+
+    let running = db::get_running_job_for(&pool, "p1", "o1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.id, "j3");
+    assert_eq!(running.status, "running");
+    assert_eq!(running.pid, Some(300));
+    assert_eq!(running.started_at, "2024-01-01T00:20:00Z");
+    assert!(running.ended_at.is_none());
+    assert!(running.exit_code.is_none());
+}
+
+#[tokio::test]
 async fn app_logs_can_be_queried_by_output_scope() {
     let pool = test_pool().await;
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)

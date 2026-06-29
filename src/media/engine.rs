@@ -4302,6 +4302,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_late_retry_updates_cannot_poison_newest_output_attempt() {
+        let engine = MediaEngine::new();
+
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .record_egress_error("out-1", "send", "attempt 1 failed")
+            .await;
+        engine.unregister_egress("out-1").await;
+
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .update_egress_retry_state("out-1", 1, 10_000, 8_000)
+            .await;
+        assert!(
+            engine.egress_retry_state("out-1").await.is_none(),
+            "the first stale retry publication must be ignored once a replacement attempt is active"
+        );
+
+        engine
+            .record_egress_error("out-1", "connect", "attempt 2 failed")
+            .await;
+        engine.unregister_egress("out-1").await;
+
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine.update_egress_phase("out-1", "sending").await;
+        engine.record_egress_progress("out-1", 4096).await;
+        engine
+            .update_egress_retry_state("out-1", 2, 20_000, 15_000)
+            .await;
+        engine
+            .update_egress_retry_state("out-1", 3, 40_000, 35_000)
+            .await;
+
+        assert!(
+            engine.egress_retry_state("out-1").await.is_none(),
+            "stale retry publications from any older attempt must not reattach retry state"
+        );
+        assert!(
+            engine.recent_egress_outcome("out-1").await.is_none(),
+            "the newest active attempt must not inherit a stale recent-failure snapshot"
+        );
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["phase"], "sending");
+        assert_eq!(status["bytesOut"], 4096);
+        assert_eq!(status["retrying"], false);
+        assert!(status["retryAttempts"].is_null());
+        assert!(status["retryBackoffMs"].is_null());
+        assert!(status["retryRemainingMs"].is_null());
+        assert!(status["lastError"].is_null());
+        assert!(status["failurePhase"].is_null());
+    }
+
+    #[tokio::test]
     async fn output_status_surfaces_retry_backoff_after_failure() {
         let engine = MediaEngine::new();
         engine
