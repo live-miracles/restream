@@ -50,6 +50,58 @@ function getEventData(
   }
 }
 
+function getCorrelationId(log: AppLogRow | null | undefined): string | null {
+  const data = getEventData(log);
+  if (!data) return null;
+
+  const rawValue =
+    typeof data.correlation_id === "string"
+      ? data.correlation_id
+      : typeof data.correlationId === "string"
+        ? data.correlationId
+        : "";
+  const correlationId = rawValue.trim();
+  return correlationId || null;
+}
+
+function formatCorrelationIdLabel(correlationId: string): string {
+  const value = String(correlationId || "").trim();
+  if (value.length <= 22) return value;
+  return `${value.slice(0, 10)}...${value.slice(-8)}`;
+}
+
+function renderCorrelationBadge(
+  correlationId: string,
+  sizeClass: "badge-xs" | "badge-sm" = "badge-sm",
+): string {
+  const full = sanitizeLogMessage(correlationId, true);
+  const compact = sanitizeLogMessage(
+    formatCorrelationIdLabel(correlationId),
+    true,
+  );
+  return `<span class="badge ${sizeClass} badge-ghost" title="${full}">Corr ${compact}</span>`;
+}
+
+function getDistinctCorrelationIds(logs: AppLogRow[]): string[] {
+  return Array.from(
+    new Set(
+      (Array.isArray(logs) ? logs : [])
+        .map((log) => getCorrelationId(log))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+function getRawHistoryHaystack(log: AppLogRow): string {
+  const fields =
+    typeof log?.fields === "string"
+      ? log.fields
+      : log?.fields
+        ? JSON.stringify(log.fields)
+        : "";
+  return `${log?.ts || ""}\n${log?.message || ""}\n${fields}`.toLowerCase();
+}
+
 function inferIntentionalStop(logs: AppLogRow[], index: number): boolean {
   const entries = Array.isArray(logs) ? logs : [];
   const target = entries[index];
@@ -99,6 +151,7 @@ interface HistoryEventClassification {
 
 interface PipelineIncident {
   badgeClass: string;
+  correlationIds: string[];
   detailBadges: string[];
   endedAt: string | undefined;
   headline: string;
@@ -641,6 +694,7 @@ function getPipelineInputState(log: AppLogRow): string | null {
 function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
   const entries = Array.isArray(logs) ? logs : [];
   const eventTypes = new Set(entries.map((log) => getNormalizedEventType(log)));
+  const correlationIds = getDistinctCorrelationIds(entries);
   const inputStates = new Set(
     entries
       .map((log) => getPipelineInputState(log))
@@ -787,6 +841,7 @@ function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
 
   return {
     badgeClass,
+    correlationIds,
     detailBadges,
     endedAt: entries[entries.length - 1]?.ts,
     headline,
@@ -844,7 +899,14 @@ function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
 function renderEventDataSummary(log: AppLogRow): string {
   const data = getEventData(log);
   if (!data) return "";
-  const hiddenKeys = new Set(["kind", "timestamp", "seq", "streamKey"]);
+  const hiddenKeys = new Set([
+    "correlation_id",
+    "correlationId",
+    "kind",
+    "timestamp",
+    "seq",
+    "streamKey",
+  ]);
   const entries = Object.entries(data)
     .filter(([key]) => !hiddenKeys.has(key))
     .slice(0, 5);
@@ -901,7 +963,7 @@ export function getMatchingRawOutputLogs(
   const query = getRawHistorySearchValue(state);
   if (!query) return [];
   return getFilteredRawOutputLogs(state).filter((log) => {
-    const haystack = `${log?.ts || ""}\n${log?.message || ""}`.toLowerCase();
+    const haystack = getRawHistoryHaystack(log);
     return haystack.includes(query);
   });
 }
@@ -1100,15 +1162,18 @@ export function renderOutputHistory(
     let matchCounter = 0;
     list.innerHTML = rawLogs
       .map((log) => {
-        const haystack =
-          `${log?.ts || ""}\n${log?.message || ""}`.toLowerCase();
+        const haystack = getRawHistoryHaystack(log);
         const isMatch = hasSearchQuery && haystack.includes(query);
         const matchIndex = isMatch ? matchCounter++ : -1;
         const focused = isMatch && matchIndex === state.rawMatchIndex;
+        const correlationId = getCorrelationId(log);
         return `<div class="rounded border ${focused ? "border-success" : "border-transparent"} bg-base-100 p-2"
                               ${isMatch ? `data-raw-match-index="${matchIndex}"` : ""}>
                     <div class="flex items-center justify-between gap-2">
-                        <span class="badge badge-sm badge-ghost">Log</span>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="badge badge-sm badge-ghost">Log</span>
+                            ${correlationId ? renderCorrelationBadge(correlationId) : ""}
+                        </div>
                         <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
                     </div>
                     <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-raw-msg"></pre>
@@ -1129,6 +1194,7 @@ export function renderOutputHistory(
   const timelineLogs = getOrderedOutputLogs(state.lifecycleLogs, state.order);
   timelineLogs.forEach((log, index) => {
     const event = classifyHistoryEvent(log, timelineLogs, index);
+    const correlationId = getCorrelationId(log);
     const contextLogs = getTimelineContextLogs(state, log);
     const contextKey = getOutputHistoryContextKey(log);
     const expanded = state.expandedContextKeys.has(contextKey);
@@ -1176,6 +1242,7 @@ export function renderOutputHistory(
                         ${contextLoading ? "…" : expanded ? "▾" : "▸"}
                     </button>
                     <span class="badge badge-sm ${event.badgeClass}">${event.label}</span>
+                    ${correlationId ? renderCorrelationBadge(correlationId) : ""}
                 </div>
                 <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
             </div>
@@ -1243,6 +1310,17 @@ export function renderPipelineHistory(
               )
               .join("")}</div>`
           : "";
+      const correlationHtml =
+        incident.correlationIds.length > 0
+          ? `<div class="mt-2 flex flex-wrap gap-1">${incident.correlationIds
+              .slice(0, 2)
+              .map((correlationId) => renderCorrelationBadge(correlationId))
+              .join("")}${
+              incident.correlationIds.length > 2
+                ? `<span class="badge badge-sm badge-ghost">+${incident.correlationIds.length - 2} more</span>`
+                : ""
+            }</div>`
+          : "";
 
       return `<div class="border-base-content/10 bg-base-100 rounded-xl border p-3">
                 <div class="flex items-start justify-between gap-3">
@@ -1252,6 +1330,7 @@ export function renderPipelineHistory(
                             <span class="badge badge-sm badge-ghost">${incident.logs.length} event${incident.logs.length === 1 ? "" : "s"}</span>
                         </div>
                         <p class="mt-2 text-sm opacity-80">${incident.summary}</p>
+                        ${correlationHtml}
                         ${detailsHtml}
                     </div>
                     <div class="shrink-0 text-right text-xs opacity-70">${timeRange}</div>
@@ -1259,9 +1338,13 @@ export function renderPipelineHistory(
                 <div class="mt-3 space-y-2">${incident.logs
                   .map((log, logIndex) => {
                     const event = classifyPipelineHistoryEvent(log);
+                    const correlationId = getCorrelationId(log);
                     return `<div class="border-base-content/10 bg-base-200/45 rounded-lg border p-2">
                                 <div class="flex items-center justify-between gap-2">
-                                    <span class="badge badge-xs ${event.badgeClass}">${event.label}</span>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="badge badge-xs ${event.badgeClass}">${event.label}</span>
+                                        ${correlationId ? renderCorrelationBadge(correlationId, "badge-xs") : ""}
+                                    </div>
                                     <span class="text-[11px] opacity-70">${formatHistoryTime(log.ts)}</span>
                                 </div>
                                 <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-incident-msg" data-incident-index="${incidentIndex}" data-log-index="${logIndex}"></pre>
