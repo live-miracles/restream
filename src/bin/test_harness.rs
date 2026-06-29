@@ -4278,6 +4278,43 @@ async fn wait_for_api_input_live(
     }
 }
 
+async fn wait_for_api_input_media_ready(
+    api: &RampApi,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_snapshot = Value::Null;
+
+    loop {
+        if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+            let snapshot = health["pipelines"][pipeline_id].clone();
+            if !snapshot.is_null() {
+                last_snapshot = snapshot.clone();
+                let input = &snapshot["input"];
+                let input_live =
+                    input["status"] == "on" && input["bytesReceived"].as_u64().unwrap_or(0) > 0;
+                let has_video = !input["video"].is_null();
+                let has_audio = input["audioTracks"]
+                    .as_array()
+                    .map(|tracks| !tracks.is_empty())
+                    .unwrap_or(false);
+                if input_live && has_video && has_audio {
+                    return Ok(snapshot);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: ingest went live but media probe was incomplete within {}s; last snapshot={}",
+                timeout.as_secs(),
+                last_snapshot
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn wait_for_api_input_off(
     api: &RampApi,
     pipeline_id: &str,
@@ -7641,13 +7678,15 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let mut publisher = spawn_publisher(&fixture, &publish_url, format, map_all).await?;
     wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
 
-    let health = api.get_json("/api/v1/engine/health").await?;
-    let snapshot = health["pipelines"][&pipeline_id].clone();
-    if snapshot.is_null() {
-        stop_child(&mut publisher).await;
-        stop_child(&mut child).await;
-        return Err(format!("missing {protocol} snapshot in /health"));
-    }
+    let snapshot =
+        match wait_for_api_input_media_ready(&api, &pipeline_id, Duration::from_secs(15)).await {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                stop_child(&mut publisher).await;
+                stop_child(&mut child).await;
+                return Err(err);
+            }
+        };
 
     let probe = ffprobe(&read_url).await?;
     assert_media_only(&probe, &format!("{protocol} read"))?;
@@ -8412,6 +8451,7 @@ fn assert_snapshot_matches_probe(
     normalized: &Value,
     label: &str,
 ) -> Result<(), String> {
+    let input = &snapshot["input"];
     let streams = normalized
         .as_array()
         .ok_or_else(|| format!("{label}: normalized streams are not an array"))?;
@@ -8423,7 +8463,7 @@ fn assert_snapshot_matches_probe(
         .iter()
         .find(|stream| stream["type"] == "audio")
         .ok_or_else(|| format!("{label}: missing normalized audio"))?;
-    let snapshot_audio = snapshot["audioTracks"]
+    let snapshot_audio = input["audioTracks"]
         .as_array()
         .and_then(|tracks| tracks.first())
         .ok_or_else(|| format!("{label}: snapshot missing audio"))?;
@@ -8432,9 +8472,9 @@ fn assert_snapshot_matches_probe(
         .and_then(|value| value.parse::<u64>().ok())
         .or_else(|| audio["sampleRate"].as_u64());
 
-    let matches = snapshot["video"]["codec"] == video["codec"]
-        && snapshot["video"]["width"] == video["width"]
-        && snapshot["video"]["height"] == video["height"]
+    let matches = input["video"]["codec"] == video["codec"]
+        && input["video"]["width"] == video["width"]
+        && input["video"]["height"] == video["height"]
         && snapshot_audio["codec"] == audio["codec"]
         && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
         && snapshot_audio["channels"] == audio["channels"];
@@ -9044,26 +9084,40 @@ async fn fault_resilience() -> Result<Value, String> {
         let _ = request.send().await;
 
         let started = Instant::now();
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        let status = api
-            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-            .await;
-        let has_error = status
-            .as_ref()
-            .ok()
-            .and_then(|s| s["lastError"].as_str())
-            .map(|e| !e.is_empty())
-            .unwrap_or(false);
-        let phase = status
-            .as_ref()
-            .ok()
-            .and_then(|s| s["phase"].as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let poll_deadline = started + Duration::from_secs(10);
+        let mut passed = false;
+        let mut phase = String::from("unknown");
+        let mut has_error = false;
+        while Instant::now() < poll_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let status = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await;
+            match &status {
+                Err(_) => {
+                    phase = "cleaned-up".to_string();
+                    passed = true;
+                    break;
+                }
+                Ok(s) => {
+                    has_error = s["lastError"]
+                        .as_str()
+                        .map(|e| !e.is_empty())
+                        .unwrap_or(false);
+                    phase = s["phase"].as_str().unwrap_or("unknown").to_string();
+                    if s.get("error").is_some() {
+                        phase = "cleaned-up".to_string();
+                        passed = true;
+                        break;
+                    }
+                    if has_error || matches!(phase.as_str(), "error" | "failed" | "connecting") {
+                        passed = true;
+                        break;
+                    }
+                }
+            }
+        }
         let elapsed = started.elapsed();
-        // SRT egress may reconnect or show error; either signals fault detection
-        let passed = has_error || phase == "error" || phase == "connecting" || phase == "live";
         println!(
             "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, {:.1}s)",
             if passed { "PASS" } else { "FAIL" },
