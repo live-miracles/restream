@@ -237,10 +237,12 @@ Lagging receivers are closed; the browser reconnects automatically using
 
 ### `GET /api/v1/pipelines/:pipelineId/outputs/:outputId/status`
 
-Returns live egress telemetry for a single active output: `phase`, `bytesOut`,
-`lastProgressAt`, `lastError`, `failurePhase`, `uptimeSecs`, `protocol`,
-`targetAddr`, `quality`, and `metrics`. Returns `404` when the output is not
-actively running.
+Returns live egress telemetry for a single output. While active, this is the
+current runtime state. After teardown/cleanup, the endpoint preserves the most
+recent classified output snapshot, including `status`, `phase`, `lastError`,
+`failurePhase`, and `endedAt`, so failure cleanup does not erase operator
+context. Returns `404` only when the output has no active or recent runtime
+state.
 
 ## Probe, Graph, and Diagnostics
 
@@ -483,7 +485,16 @@ Authenticated native state snapshot:
           }
         }
       },
-      "outputs": {},
+      "outputs": {
+        "output_id": {
+          "status": "failed",
+          "phase": "failed",
+          "lastError": "connection reset by peer",
+          "failurePhase": "send",
+          "endedAt": "2026-06-20T12:00:05Z",
+          "endedAgeMs": 250
+        }
+      },
       "recording": { "enabled": false, "active": false }
     }
   },

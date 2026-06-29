@@ -9,9 +9,15 @@ pub(crate) async fn output_status(
     output_id: &str,
 ) -> Option<serde_json::Value> {
     let egresses = engine.egresses.active.read().await;
-    egresses
+    if let Some(egress) = egresses.get(output_id) {
+        return Some(MediaEngine::egress_runtime_json(egress, false, true));
+    }
+    drop(egresses);
+
+    let recent = engine.egresses.recent.read().await;
+    recent
         .get(output_id)
-        .map(|egress| MediaEngine::egress_runtime_json(egress, false, true))
+        .map(|outcome| MediaEngine::recent_egress_runtime_json(outcome, false))
 }
 
 pub(crate) async fn health_snapshot(
@@ -25,6 +31,7 @@ pub(crate) async fn health_snapshot(
     let hls_consumers = engine.hls.consumers.read().await;
     let hls_stores = engine.hls.stores.read().await;
     let recent_ingests = engine.ingests.recent.read().await;
+    let recent_egresses = engine.egresses.recent.read().await;
     let pipelines = engine.ingests.pipelines.read().await;
 
     let mut pipelines_json = serde_json::Map::new();
@@ -179,6 +186,15 @@ pub(crate) async fn health_snapshot(
                 output_json["totalSize"] = serde_json::json!(bytes_sent);
                 output_json["bitrateKbps"] = serde_json::json!(bitrate_kbps);
                 output_json["startedAt"] = serde_json::Value::String(egress.started_at.clone());
+                outputs_json.insert(output_id.to_string(), output_json);
+            }
+        }
+        for (output_id, outcome) in recent_egresses.iter() {
+            if outcome.pipeline_id == *pipeline_id && !outputs_json.contains_key(output_id) {
+                let mut output_json = MediaEngine::recent_egress_runtime_json(outcome, false);
+                output_json["totalSize"] = serde_json::json!(outcome.bytes_sent);
+                output_json["bitrateKbps"] = serde_json::Value::Null;
+                output_json["startedAt"] = serde_json::Value::String(outcome.started_at.clone());
                 outputs_json.insert(output_id.to_string(), output_json);
             }
         }

@@ -1529,6 +1529,88 @@ async fn health_shows_registered_egress() {
 }
 
 #[tokio::test]
+async fn output_status_and_health_preserve_recent_egress_failure_after_unregister() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13082"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13082", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    engine.update_egress_phase(&oid, "sending").await;
+    engine.record_egress_progress(&oid, 1316).await;
+    engine
+        .record_egress_error(&oid, "send", "connection reset by peer")
+        .await;
+    engine.unregister_egress(&oid).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status = body_json(resp).await;
+    assert_eq!(status["status"], "failed");
+    assert_eq!(status["rawStatus"], "running");
+    assert_eq!(status["phase"], "failed");
+    assert_eq!(status["failurePhase"], "send");
+    assert_eq!(status["lastError"], "connection reset by peer");
+    assert!(status["lastErrorAt"].is_string());
+    assert!(status["endedAt"].is_string());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = body_json(resp).await;
+    let output = &health["pipelines"][&pid]["outputs"][&oid];
+    assert_eq!(output["status"], "failed");
+    assert_eq!(output["phase"], "failed");
+    assert_eq!(output["failurePhase"], "send");
+    assert_eq!(output["lastError"], "connection reset by peer");
+    assert!(output["endedAt"].is_string());
+}
+
+#[tokio::test]
 async fn delete_output_cancels_egress() {
     let (app, _, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;

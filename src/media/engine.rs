@@ -280,6 +280,28 @@ pub struct RecentIngestOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub struct RecentEgressOutcome {
+    pub output_id: String,
+    pub pipeline_id: String,
+    pub protocol: String,
+    pub target_url: String,
+    pub target_addr: Option<String>,
+    pub status: String,
+    pub raw_status: String,
+    pub phase: String,
+    pub started_at: String,
+    pub uptime_secs: f64,
+    pub bytes_sent: u64,
+    pub last_progress_ms: u64,
+    pub last_error: Option<String>,
+    pub last_error_ms: u64,
+    pub failure_phase: Option<String>,
+    pub quality: PublisherQuality,
+    pub metrics: serde_json::Value,
+    pub ended_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct IngestDiagSnapshot {
     pub protocol: String,
     pub uptime_secs: f64,
@@ -613,6 +635,58 @@ impl MediaEngine {
         });
         if include_target_url {
             value["targetUrl"] = serde_json::Value::String(egress.target_url.clone());
+        }
+        value
+    }
+
+    fn recent_egress_status(egress: &ActiveEgress, has_ingest: bool) -> String {
+        let phase = egress
+            .phase
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if phase == "failed"
+            || egress
+                .last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+        {
+            return "failed".to_string();
+        }
+        if !has_ingest {
+            return "stopped".to_string();
+        }
+        Self::egress_effective_status(egress, has_ingest)
+    }
+
+    pub(crate) fn recent_egress_runtime_json(
+        outcome: &RecentEgressOutcome,
+        include_target_url: bool,
+    ) -> serde_json::Value {
+        let now_ms = Self::now_epoch_ms();
+        let mut value = serde_json::json!({
+            "outputId": outcome.output_id,
+            "pipelineId": outcome.pipeline_id,
+            "protocol": outcome.protocol,
+            "targetAddr": outcome.target_addr,
+            "status": outcome.status,
+            "rawStatus": outcome.raw_status,
+            "phase": outcome.phase,
+            "uptimeSecs": outcome.uptime_secs,
+            "bytesOut": outcome.bytes_sent,
+            "lastProgressAt": Self::epoch_ms_to_rfc3339(outcome.last_progress_ms),
+            "lastProgressAgeMs": (outcome.last_progress_ms > 0).then(|| now_ms.saturating_sub(outcome.last_progress_ms)),
+            "lastError": outcome.last_error,
+            "lastErrorAt": Self::epoch_ms_to_rfc3339(outcome.last_error_ms),
+            "failurePhase": outcome.failure_phase,
+            "quality": outcome.quality,
+            "metrics": outcome.metrics,
+            "endedAt": Self::epoch_ms_to_rfc3339(outcome.ended_at_ms),
+            "endedAgeMs": now_ms.saturating_sub(outcome.ended_at_ms),
+        });
+        if include_target_url {
+            value["targetUrl"] = serde_json::Value::String(outcome.target_url.clone());
         }
         value
     }
@@ -1413,6 +1487,8 @@ impl MediaEngine {
         pipeline_id: &str,
         url: &str,
     ) -> CancellationToken {
+        self.egresses.recent.write().await.remove(output_id);
+
         let mut tokens = self.egresses.cancel_tokens.write().await;
         let token = CancellationToken::new();
         tokens.insert(output_id.to_string(), token.clone());
@@ -1464,8 +1540,64 @@ impl MediaEngine {
             .get(output_id)
             .map(|e| e.pipeline_id.clone())
             .unwrap_or_default();
+        let recent_outcome = egresses.get(output_id).map(|egress| {
+            let has_ingest = self
+                .ingests
+                .active
+                .try_read()
+                .map(|ingests| ingests.contains_key(egress.pipeline_id.as_str()))
+                .unwrap_or(false);
+            RecentEgressOutcome {
+                output_id: egress.output_id.clone(),
+                pipeline_id: egress.pipeline_id.clone(),
+                protocol: egress.protocol.clone(),
+                target_url: egress.target_url.clone(),
+                target_addr: egress
+                    .target_addr
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                status: Self::recent_egress_status(egress, has_ingest),
+                raw_status: egress.status.clone(),
+                phase: egress
+                    .phase
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                started_at: egress.started_at.clone(),
+                uptime_secs: egress.start_instant.elapsed().as_secs_f64(),
+                bytes_sent: egress.bytes_sent.load(Ordering::Relaxed),
+                last_progress_ms: egress.last_progress_ms.load(Ordering::Relaxed),
+                last_error: egress
+                    .last_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                last_error_ms: egress.last_error_ms.load(Ordering::Relaxed),
+                failure_phase: egress
+                    .failure_phase
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                quality: egress
+                    .quality
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                metrics: egress.metrics.snapshot(),
+                ended_at_ms: Self::now_epoch_ms(),
+            }
+        });
         egresses.remove(output_id);
         drop(egresses);
+
+        if let Some(outcome) = recent_outcome {
+            self.egresses
+                .recent
+                .write()
+                .await
+                .insert(output_id.to_string(), outcome);
+        }
 
         if !pipeline_id.is_empty() {
             self.runtime
@@ -1526,6 +1658,10 @@ impl MediaEngine {
         egresses
             .get(output_id)
             .is_some_and(|egress| egress.last_progress_ms.load(Ordering::Relaxed) > 0)
+    }
+
+    pub async fn recent_egress_outcome(&self, output_id: &str) -> Option<RecentEgressOutcome> {
+        self.egresses.recent.read().await.get(output_id).cloned()
     }
 
     pub async fn record_egress_error(
@@ -3899,9 +4035,85 @@ mod tests {
         engine.unregister_egress("out-1").await;
         assert!(token.is_cancelled());
         assert!(
-            engine.output_status("out-1").await.is_none(),
-            "output_status must return None after unregister"
+            engine.output_status("out-1").await.is_some(),
+            "output_status must preserve the last classified egress state after unregister"
         );
+    }
+
+    #[tokio::test]
+    async fn recent_egress_failure_survives_unregister_and_preserves_error_fields() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine.update_egress_phase("out-1", "sending").await;
+        engine.record_egress_progress("out-1", 2048).await;
+        engine
+            .record_egress_error("out-1", "send", "connection reset by peer")
+            .await;
+
+        engine.unregister_egress("out-1").await;
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["status"], "failed");
+        assert_eq!(status["rawStatus"], "running");
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["failurePhase"], "send");
+        assert_eq!(status["lastError"], "connection reset by peer");
+        assert_eq!(status["bytesOut"], 2048);
+        assert_eq!(status["totalSize"], serde_json::Value::Null);
+        assert!(status["lastErrorAt"].is_string());
+        assert!(status["endedAt"].is_string());
+        assert!(status["endedAgeMs"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_keeps_recent_egress_status_visible_after_unregister() {
+        let engine = MediaEngine::new();
+        let pipeline_id = "pipe-1".to_string();
+        engine.get_or_create_pipeline(&pipeline_id).await;
+        engine
+            .register_egress(
+                "out-1",
+                &pipeline_id,
+                "srt://example.com:10080?streamid=live/test",
+            )
+            .await;
+        engine.update_egress_phase("out-1", "sending").await;
+        engine
+            .record_egress_error("out-1", "connect", "connection failed")
+            .await;
+
+        engine.unregister_egress("out-1").await;
+
+        let snapshot = engine
+            .health_snapshot(&[pipeline_id], &HashMap::new())
+            .await;
+        let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["phase"], "failed");
+        assert_eq!(output["failurePhase"], "connect");
+        assert_eq!(output["lastError"], "connection failed");
+        assert!(output["endedAt"].is_string());
+    }
+
+    #[tokio::test]
+    async fn re_register_egress_clears_recent_snapshot() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .record_egress_error("out-1", "connect", "connection refused")
+            .await;
+        engine.unregister_egress("out-1").await;
+        assert!(engine.recent_egress_outcome("out-1").await.is_some());
+
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+
+        assert!(engine.recent_egress_outcome("out-1").await.is_none());
     }
 
     // ── adaptive ring sizing ──────────────────────────────────────────────────

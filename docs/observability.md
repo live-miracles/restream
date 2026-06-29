@@ -130,12 +130,14 @@ Active native egresses appear in `pipelines[id].outputs`:
 | `startedAt` | Egress registration timestamp |
 | `lastProgressAt` | Last successful protocol send or HLS PUT completion |
 | `lastProgressAgeMs` | Age of the last successful send/upload sample |
-| `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure observed while the egress is active |
+| `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure. These fields are preserved in recent output status after teardown so cleanup does not erase the cause. |
 | `quality` | Egress transport quality. RTMP/RTMPS expose sender-side `TCP_INFO`/`SO_MEMINFO`; SRT exposes sender-side `srt_bistats()` and bonded group member state when available. |
+| `endedAt`, `endedAgeMs` | Present on recent output snapshots after unregister/cleanup so operators can tell when the last classified egress state ended |
 
-Stopped configured outputs are absent rather than being emitted with `off`.
-The dashboard merges those definitions from `/api/v1/settings`; active output counters
-come from `/api/v1/engine/health`.
+Stopped configured outputs are still defined by `/api/v1/settings`, but
+`/api/v1/engine/health` now also preserves the most recent classified output
+state after cleanup. That means the dashboard can keep showing `failed` or
+`stopped` plus the last error instead of collapsing immediately to `off`.
 
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.
