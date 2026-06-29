@@ -303,7 +303,12 @@ pub async fn run_app() {
     let app = crate::api::create_router(state);
     let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
-        .unwrap_or_else(|_| panic!("Failed to bind TCP listener on port {}", ports.http));
+        .unwrap_or_else(|err| {
+            panic!(
+                "Failed to bind TCP listener on port {}: {}",
+                ports.http, err
+            )
+        });
     info!(addr = %http_addr, "dashboard API server listening");
 
     tokio::spawn(async move {

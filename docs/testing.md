@@ -342,6 +342,10 @@ scripts/resource-limit ./test/run-integration.sh [--host] [--fast] [--json path]
 By default every mode that manages its own server processes runs inside a
 private loopback network namespace (`unshare --net`) so ports never conflict
 with the host. Pass `--host` to skip the namespace wrapper.
+When no explicit `RESTREAM_*` or `MTX_*` port env vars are set, the harness
+also synthesizes a per-process high-port bundle instead of reusing the legacy
+3030/1935/10080 defaults, so correctness runs stay isolated even when the
+namespace wrapper is unavailable or constrained.
 
 Required tools: `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, `jq`.
 On Debian/Ubuntu, `./scripts/bootstrap-dev.sh` installs everything above.

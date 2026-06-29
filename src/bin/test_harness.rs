@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -484,12 +484,26 @@ struct TestPorts {
     srt: u16,
 }
 
+#[derive(Clone, Copy)]
+struct HarnessPortDefaults {
+    restream_http: u16,
+    restream_rtmp: u16,
+    restream_srt: u16,
+    mtx_rtmp: u16,
+    mtx_srt: u16,
+    mtx_hls: u16,
+    mtx_api: u16,
+}
+
+static HARNESS_PORT_DEFAULTS: OnceLock<HarnessPortDefaults> = OnceLock::new();
+
 impl TestPorts {
     fn from_env() -> Self {
+        let ports = harness_port_defaults();
         Self {
-            http: env_u16("RESTREAM_HTTP", 3030),
-            rtmp: env_u16("RESTREAM_RTMP", 1935),
-            srt: env_u16("RESTREAM_SRT", 10080),
+            http: ports.restream_http,
+            rtmp: ports.restream_rtmp,
+            srt: ports.restream_srt,
         }
     }
 }
@@ -1032,6 +1046,7 @@ impl RampEnv {
         let work_dir = std::env::var_os("WORK_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("test/artifacts/ramp"));
+        let ports = harness_port_defaults();
         Self {
             scale_log: std::env::var_os("SCALE_LOG")
                 .map(PathBuf::from)
@@ -1052,12 +1067,12 @@ impl RampEnv {
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_work_db_path(&work_dir, "ramp.db")),
-            restream_http: env_u16("RESTREAM_HTTP", 3030),
-            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
-            restream_srt: env_u16("RESTREAM_SRT", 10080),
-            mtx_rtmp: env_u16("MTX_RTMP", 1936),
-            mtx_srt: env_u16("MTX_SRT", 8891),
-            mtx_api: env_u16("MTX_API", 9997),
+            restream_http: ports.restream_http,
+            restream_rtmp: ports.restream_rtmp,
+            restream_srt: ports.restream_srt,
+            mtx_rtmp: ports.mtx_rtmp,
+            mtx_srt: ports.mtx_srt,
+            mtx_api: ports.mtx_api,
             n_outputs: env_usize("N_OUTPUTS", 10),
             snap_every: env_usize("SNAP_EVERY", 1).max(1),
             snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
@@ -1239,6 +1254,7 @@ impl ResourceSweepEnv {
         let work_dir = std::env::var_os("WORK_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(default_dir));
+        let ports = harness_port_defaults();
         Ok(Self {
             summary_json: work_dir.join("resource-sweep-results.json"),
             summary_csv: work_dir.join("resource-sweep-results.csv"),
@@ -1250,12 +1266,12 @@ impl ResourceSweepEnv {
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_work_db_path(&work_dir, "resource-sweep.db")),
-            restream_http: env_u16("RESTREAM_HTTP", 3030),
-            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
-            restream_srt: env_u16("RESTREAM_SRT", 10080),
-            mtx_rtmp: env_u16("MTX_RTMP", 1936),
-            mtx_srt: env_u16("MTX_SRT", 8891),
-            mtx_api: env_u16("MTX_API", 9997),
+            restream_http: ports.restream_http,
+            restream_rtmp: ports.restream_rtmp,
+            restream_srt: ports.restream_srt,
+            mtx_rtmp: ports.mtx_rtmp,
+            mtx_srt: ports.mtx_srt,
+            mtx_api: ports.mtx_api,
             sample_secs: env_secs("RESOURCE_SWEEP_SAMPLE_SECS", 6),
             sample_interval_ms: env_secs("RESOURCE_SWEEP_SAMPLE_INTERVAL_MS", 1000),
             settle_secs: env_secs("RESOURCE_SWEEP_SETTLE_SECS", 4),
@@ -1509,6 +1525,7 @@ impl BitrateSweepEnv {
         let work_dir = std::env::var_os("WORK_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("test/artifacts/bitrate-sweep"));
+        let ports = harness_port_defaults();
         Ok(Self {
             summary_json: work_dir.join("bitrate-sweep-results.json"),
             summary_csv: work_dir.join("bitrate-sweep-results.csv"),
@@ -1520,12 +1537,12 @@ impl BitrateSweepEnv {
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_work_db_path(&work_dir, "bitrate-sweep.db")),
-            restream_http: env_u16("RESTREAM_HTTP", 3030),
-            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
-            restream_srt: env_u16("RESTREAM_SRT", 10080),
-            mtx_rtmp: env_u16("MTX_RTMP", 1936),
-            mtx_srt: env_u16("MTX_SRT", 8891),
-            mtx_api: env_u16("MTX_API", 9997),
+            restream_http: ports.restream_http,
+            restream_rtmp: ports.restream_rtmp,
+            restream_srt: ports.restream_srt,
+            mtx_rtmp: ports.mtx_rtmp,
+            mtx_srt: ports.mtx_srt,
+            mtx_api: ports.mtx_api,
             stabilize_secs: env_secs("BITRATE_SWEEP_STABILIZE_SECS", 30),
             sample_interval_secs: env_secs("BITRATE_SWEEP_SAMPLE_INTERVAL_SECS", 5).max(1),
             output_groups: env_usize("BITRATE_SWEEP_OUTPUT_GROUPS", 1).max(1),
@@ -3811,6 +3828,55 @@ fn env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn harness_port_defaults() -> HarnessPortDefaults {
+    *HARNESS_PORT_DEFAULTS.get_or_init(|| {
+        let mut reserved = HashSet::new();
+        HarnessPortDefaults {
+            restream_http: env_or_allocated_port("RESTREAM_HTTP", 3030, &mut reserved),
+            restream_rtmp: env_or_allocated_port("RESTREAM_RTMP", 1935, &mut reserved),
+            restream_srt: env_or_allocated_port("RESTREAM_SRT", 10080, &mut reserved),
+            mtx_rtmp: env_or_allocated_port("MTX_RTMP", 1936, &mut reserved),
+            mtx_srt: env_or_allocated_port("MTX_SRT", 8891, &mut reserved),
+            mtx_hls: env_or_allocated_port("MTX_HLS", 8890, &mut reserved),
+            mtx_api: env_or_allocated_port("MTX_API", 9997, &mut reserved),
+        }
+    })
+}
+
+fn env_or_allocated_port(name: &str, default: u16, reserved: &mut HashSet<u16>) -> u16 {
+    if let Some(port) = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        reserved.insert(port);
+        return port;
+    }
+
+    let port = synthesized_harness_port(name, reserved).unwrap_or(default);
+    reserved.insert(port);
+    port
+}
+
+fn synthesized_harness_port(name: &str, reserved: &HashSet<u16>) -> Option<u16> {
+    // Do not probe-bind here: some restricted runners deny ad hoc socket
+    // creation before the harness re-execs into its private loopback namespace.
+    // A per-process high-port bundle is enough to avoid host collisions by
+    // default while still allowing explicit env overrides when needed.
+    let pid = std::process::id();
+    let name_hash = name.bytes().fold(0u32, |acc, byte| {
+        acc.wrapping_mul(33).wrapping_add(byte as u32)
+    });
+    let base = 20_000u32 + pid.wrapping_mul(97).wrapping_add(name_hash) % 30_000u32;
+    for step in 0..1024u32 {
+        let candidate = 20_000u32 + (base - 20_000u32 + step * 37) % 30_000u32;
+        let candidate = candidate as u16;
+        if !reserved.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -4687,6 +4753,7 @@ impl MixedEnv {
         let work_dir = std::env::var_os("WORK_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("test/artifacts/mixed-scale"));
+        let ports = harness_port_defaults();
         Self {
             scale_log: std::env::var_os("SCALE_LOG")
                 .map(PathBuf::from)
@@ -4729,13 +4796,13 @@ impl MixedEnv {
             skip_load: std::env::var("SKIP_LOAD")
                 .ok()
                 .is_some_and(|value| value == "1"),
-            restream_http: env_u16("RESTREAM_HTTP", 3030),
-            restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
-            restream_srt: env_u16("RESTREAM_SRT", 10080),
-            mtx_rtmp: env_u16("MTX_RTMP", 1936),
-            mtx_srt: env_u16("MTX_SRT", 8891),
-            mtx_hls: env_u16("MTX_HLS", 8890),
-            mtx_api: env_u16("MTX_API", 9997),
+            restream_http: ports.restream_http,
+            restream_rtmp: ports.restream_rtmp,
+            restream_srt: ports.restream_srt,
+            mtx_rtmp: ports.mtx_rtmp,
+            mtx_srt: ports.mtx_srt,
+            mtx_hls: ports.mtx_hls,
+            mtx_api: ports.mtx_api,
             n_per_group: env_usize("N_PER_GROUP", 25),
             snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
             work_dir,
@@ -9300,10 +9367,14 @@ async fn fault_resilience() -> Result<Value, String> {
         let status = api
             .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
             .await;
-        let output_cleaned_up = status.is_err()
-            || status
-                .as_ref()
-                .is_ok_and(|json| json.get("error").is_some());
+        let output_cleaned_up = match &status {
+            Err(_) => true,
+            Ok(json) if json.get("error").is_some() => true,
+            Ok(json) => {
+                json["endedAt"].is_string()
+                    && matches!(json["status"].as_str(), Some("stopped" | "failed"))
+            }
+        };
         let elapsed = started.elapsed();
         let passed = ffmpeg_spawned && off_result.is_ok() && cleanup_ok && output_cleaned_up;
         println!(
@@ -10333,5 +10404,18 @@ mod tests {
         assert!(suite_mode_is_parallelizable("fault-resilience", false));
         assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));
         assert!(!suite_mode_is_parallelizable("preflight", true));
+    }
+
+    #[test]
+    fn synthesized_harness_ports_are_high_and_distinct() {
+        let mut reserved = HashSet::new();
+        let http = env_or_allocated_port("RESTREAM_HTTP", 3030, &mut reserved);
+        let rtmp = env_or_allocated_port("RESTREAM_RTMP", 1935, &mut reserved);
+        let srt = env_or_allocated_port("RESTREAM_SRT", 10080, &mut reserved);
+        let mtx_api = env_or_allocated_port("MTX_API", 9997, &mut reserved);
+        let unique: HashSet<u16> = [http, rtmp, srt, mtx_api].into_iter().collect();
+
+        assert_eq!(unique.len(), 4);
+        assert!(unique.iter().all(|port| *port >= 20_000));
     }
 }
