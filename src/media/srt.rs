@@ -2673,6 +2673,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_ts_muxer_cancels_and_recreates_after_probe_wait_exit() {
+        let engine = Arc::new(crate::media::engine::MediaEngine::new());
+        let pipeline_id = "test-pipe-probe-exit";
+        let source_ring = engine.get_or_create_pipeline(pipeline_id).await;
+
+        engine
+            .try_register_ingest(pipeline_id, "key", "srt")
+            .await
+            .unwrap();
+
+        let stage1 = engine
+            .get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring.clone())
+            .await;
+
+        engine.unregister_ingest(pipeline_id).await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), stage1.cancel.cancelled())
+            .await
+            .expect("shared muxer should cancel when ingest disappears before probe");
+        assert!(stage1.cancel.is_cancelled());
+
+        engine
+            .try_register_ingest(pipeline_id, "key-2", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                pipeline_id,
+                Some(VideoMeta {
+                    codec: "h264".to_string(),
+                    width: 1280,
+                    height: 720,
+                    fps: 30.0,
+                    bw: None,
+                    pid: None,
+                    language: None,
+                    title: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                None,
+                None,
+            )
+            .await;
+
+        let stage2 = engine
+            .get_or_create_ts_muxer_stage(pipeline_id, "play", source_ring)
+            .await;
+
+        assert!(
+            !Arc::ptr_eq(&stage1, &stage2),
+            "cancelled shared muxer stage must not be reused"
+        );
+        assert!(!stage2.cancel.is_cancelled());
+
+        engine.unregister_ingest(pipeline_id).await;
+        stage2.cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn benchmark_srt_sharing() {
         info!("\n=== SRT EGRESS SHARING BENCHMARK ===");
         let n_connections = 10;
