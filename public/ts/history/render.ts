@@ -108,6 +108,7 @@ interface PipelineIncident {
 }
 
 const PIPELINE_INCIDENT_WINDOW_MS = 20_000;
+const PIPELINE_INCIDENT_MAX_SPAN_MS = PIPELINE_INCIDENT_WINDOW_MS * 2;
 
 function classifyHistoryEvent(
   log: AppLogRow,
@@ -801,12 +802,14 @@ function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
 
   const groups: AppLogRow[][] = [];
   let currentGroup: AppLogRow[] = [];
+  let groupStartMs: number | null = null;
   let previousMs: number | null = null;
 
   entries.forEach((log) => {
     const currentMs = parseHistoryTimeMs(log?.ts);
     if (currentGroup.length === 0) {
       currentGroup.push(log);
+      groupStartMs = currentMs;
       previousMs = currentMs;
       return;
     }
@@ -815,10 +818,15 @@ function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
       currentMs !== null &&
       previousMs !== null &&
       currentMs - previousMs <= PIPELINE_INCIDENT_WINDOW_MS;
+    const withinSpan =
+      currentMs !== null &&
+      groupStartMs !== null &&
+      currentMs - groupStartMs <= PIPELINE_INCIDENT_MAX_SPAN_MS;
 
-    if (!withinWindow) {
+    if (!withinWindow || !withinSpan) {
       groups.push(currentGroup);
       currentGroup = [log];
+      groupStartMs = currentMs;
     } else {
       currentGroup.push(log);
     }
