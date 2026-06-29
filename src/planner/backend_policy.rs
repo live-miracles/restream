@@ -3,8 +3,8 @@
 //! The engine owns stage lifecycles; this module owns the policy choice for how
 //! a typed stage should run.
 
+use crate::domain::audio_routing::{AudioRouting, parse_audio_routing};
 use crate::domain::stage::StageKind;
-use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageBackend {
