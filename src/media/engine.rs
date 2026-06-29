@@ -4040,6 +4040,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unregister_ingest_preserves_recent_snapshot_without_explicit_error() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta("p1", None, None, Some("127.0.0.1:7000".to_string()))
+            .await;
+        engine.update_ingest_bytes("p1", 8192).await;
+
+        engine.unregister_ingest("p1").await;
+
+        assert!(
+            engine.has_recent_ingest_disconnect("p1", 1_000).await,
+            "plain unregister should still leave a recent disconnect marker for grace handling"
+        );
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let input = &snap["pipelines"]["p1"]["input"];
+        assert_eq!(input["status"], "off");
+        assert_eq!(input["probeStatus"], "off");
+        assert_eq!(input["lastSessionProtocol"], "rtmp");
+        assert!(input["lastDisconnectAt"].is_string());
+        assert!(input["lastDisconnectAgeMs"].as_u64().is_some());
+        assert_eq!(input["recentDisconnectError"], false);
+        assert_eq!(input["lastRemoteAddr"], "127.0.0.1:7000");
+        assert_eq!(input["lastSessionBytesReceived"], 8192);
+        assert!(input["lastDisconnectReason"].is_null());
+        assert!(input["lastFailurePhase"].is_null());
+    }
+
+    #[tokio::test]
     async fn re_register_ingest_clears_recent_disconnect_details() {
         let engine = MediaEngine::new();
         let pipelines = vec!["p1".to_string()];
