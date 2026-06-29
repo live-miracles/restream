@@ -1,4 +1,4 @@
-import { apiRequest } from "../core/api.js";
+import { getEngineSbomEndpoint, getEngineStatus } from "../core/api.js";
 import { withBasePath } from "../core/base-path.js";
 import {
   copyText,
@@ -265,7 +265,7 @@ export async function loadStatus(): Promise<void> {
   const container = document.getElementById("status-versions");
   if (!container) return;
 
-  const data = await apiRequest<StatusData>("/api/v1/engine");
+  const data = await getEngineStatus<StatusData>();
   if (!data) {
     container.innerHTML =
       '<p class="text-error text-sm">Failed to load status info.</p>';
@@ -276,7 +276,7 @@ export async function loadStatus(): Promise<void> {
   const srt = data.nativeLibraries?.srt;
   const mbedtls = data.nativeLibraries?.mbedtls;
   const sqlite = data.nativeLibraries?.sqlite;
-  const sbomEndpoint = data.sbom?.endpoint || "/api/v1/engine/sbom";
+  const sbomEndpoint = getEngineSbomEndpoint(data);
 
   container.innerHTML = [
     section(

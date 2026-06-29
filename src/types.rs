@@ -1,5 +1,5 @@
 //! Shared domain types mapped to SQLite tables via `sqlx::FromRow`.
-//! All structs use `#[serde(rename_all = "camelCase")]` for JSON API compatibility.
+//! All structs use `#[serde(rename_all = "camelCase")]` for the JSON API.
 
 use serde::{Deserialize, Serialize};
 

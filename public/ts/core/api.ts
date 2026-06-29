@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 
 let activeMutationRequestCount = 0;
+const DEFAULT_ENGINE_SBOM_ENDPOINT = "/api/v1/engine/sbom";
 
 function isMutationMethod(method: string): boolean {
   const normalizedMethod = String(method || "GET").toUpperCase();
@@ -113,6 +114,27 @@ async function getSystemMetrics(): Promise<SystemMetrics | null> {
 
 async function getStreamKeys(): Promise<StreamKey[] | null> {
   return apiRequest<StreamKey[]>("/api/v1/stream-keys");
+}
+
+async function getEngineStatus<T = unknown>(): Promise<T | null> {
+  return apiRequest<T>("/api/v1/engine");
+}
+
+function getEngineSbomEndpoint(
+  status: { sbom?: { endpoint?: string | null } } | null | undefined,
+): string {
+  return status?.sbom?.endpoint || DEFAULT_ENGINE_SBOM_ENDPOINT;
+}
+
+async function getAudioCapsPayload(): Promise<Record<string, unknown> | null> {
+  return apiRequest<Record<string, unknown>>("/api/v1/audio-caps");
+}
+
+function buildPipelineDiagnosticsUrl(
+  pipelineId: string,
+  params: URLSearchParams,
+): string {
+  return `/api/v1/pipelines/${encodeURIComponent(pipelineId)}/diagnostics?${params.toString()}`;
 }
 
 interface CreatePipelineArgs {
@@ -393,6 +415,18 @@ export interface PipelineFileIngestConfig {
   running: boolean;
 }
 
+export interface AudioCapsPayload {
+  caps?: Record<
+    string,
+    {
+      maxTracks?: number | null;
+      maxChannels?: number | null;
+      codecs?: string[] | "any" | null;
+    }
+  >;
+  platformLabels?: Record<string, string>;
+}
+
 async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
   return apiRequest<{ files: MediaFile[] }>("/api/v1/media");
 }
@@ -521,6 +555,10 @@ export {
   getHealth,
   getSystemMetrics,
   getStreamKeys,
+  getEngineStatus,
+  getEngineSbomEndpoint,
+  getAudioCapsPayload,
+  buildPipelineDiagnosticsUrl,
   createPipeline,
   updatePipeline,
   deletePipeline,
@@ -548,4 +586,5 @@ export {
   logout,
   changePassword,
   getProcessingGraph,
+  DEFAULT_ENGINE_SBOM_ENDPOINT,
 };

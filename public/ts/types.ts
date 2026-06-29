@@ -299,5 +299,3 @@ export interface AppLogRow {
   outputId?: string | null;
   eventType?: string | null;
 }
-
-export type HistoryLog = AppLogRow;

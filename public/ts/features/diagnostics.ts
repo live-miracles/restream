@@ -1,3 +1,4 @@
+import { buildPipelineDiagnosticsUrl } from "../core/api.js";
 import { copyText, showCopiedNotification } from "../core/utils.js";
 import { state } from "../core/state.js";
 import type { PipelineView } from "../types.js";
@@ -145,7 +146,7 @@ function runDiagnostics(): void {
   if (publisherProtocol) params.set("publisher", publisherProtocol);
   const since = getPublishStartedAt();
   if (since) params.set("since", since);
-  const url = `/api/v1/pipelines/${encodeURIComponent(diagnosticsPipeId)}/diagnostics?${params}`;
+  const url = buildPipelineDiagnosticsUrl(diagnosticsPipeId, params);
 
   eventSource = new EventSource(url);
 

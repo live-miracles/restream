@@ -65,9 +65,47 @@ jobs:
       - name: Rust clippy (warn only for all targets)
         run: scripts/resource-limit cargo clippy --workspace --all-targets
 
+  api-contract:
+    name: API contract gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config clang iproute2 util-linux
+      - name: Restore static prefix
+        id: cache-static-prefix
+        uses: actions/cache@v4
+        with:
+          path: .build/static/prefix
+          key: static-prefix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-static-build.sh', 'scripts/build-static.sh', 'scripts/build-native.sh') }}
+      - name: Build static prefix
+        if: steps.cache-static-prefix.outputs.cache-hit != 'true'
+        run: scripts/resource-limit ./scripts/setup-static-build.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: api-contract-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: api-contract-${{ runner.os }}-
+      - name: Run API contract gate
+        run: ./scripts/check-api-contract.sh
+
   test:
     name: Unit & integration tests
     runs-on: ubuntu-latest
+    needs: api-contract
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

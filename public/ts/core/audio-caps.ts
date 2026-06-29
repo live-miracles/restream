@@ -5,6 +5,8 @@
 // in memory. If the fetch fails, all lookups return unlimited (safe fallback —
 // the backend still enforces caps on create/update).
 
+import { getAudioCapsPayload, type AudioCapsPayload } from "./api.js";
+
 export type AudioPlatform = "youtube" | "facebook" | "vdocipher" | "generic";
 export type AudioProtocol = "rtmp" | "rtmps" | "hls" | "srt";
 
@@ -33,19 +35,18 @@ let loaded = false;
 // JSON serializes Infinity as null, so we restore null → Infinity here.
 export async function loadAudioCaps(): Promise<void> {
   try {
-    const res = await fetch("/api/v1/audio-caps");
-    if (!res.ok) return;
-    const data = await res.json();
-    const raw = data.caps || {};
-    for (const [key, caps] of Object.entries(raw)) {
-      const c = caps as Record<string, unknown>;
-      raw[key] = {
+    const data = (await getAudioCapsPayload()) as AudioCapsPayload | null;
+    if (!data) return;
+    const normalized: Record<string, AudioCaps> = {};
+    for (const [key, caps] of Object.entries(data.caps || {})) {
+      const c = caps || {};
+      normalized[key] = {
         maxTracks: c.maxTracks ?? Infinity,
         maxChannels: c.maxChannels ?? Infinity,
         codecs: c.codecs ?? "any",
       };
     }
-    capsTable = raw;
+    capsTable = normalized;
     if (data.platformLabels) platformLabels = data.platformLabels;
     loaded = true;
   } catch {

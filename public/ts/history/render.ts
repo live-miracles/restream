@@ -1,5 +1,5 @@
 import { sanitizeLogMessage } from "../core/utils.js";
-import type { HistoryLog } from "../types.js";
+import type { AppLogRow } from "../types.js";
 import type {
   OutputHistoryState,
   PipelineHistoryState,
@@ -7,7 +7,7 @@ import type {
 } from "./state.js";
 
 interface HistoryRenderCallbacks {
-  toggleOutputHistoryContext: ((log: HistoryLog) => void) | null;
+  toggleOutputHistoryContext: ((log: AppLogRow) => void) | null;
 }
 
 const historyRenderCallbacks: HistoryRenderCallbacks = {
@@ -27,14 +27,14 @@ function formatHistoryTime(ts: string | null | undefined): string {
   return d.toLocaleString();
 }
 
-function getNormalizedEventType(log: HistoryLog | null | undefined): string {
+function getNormalizedEventType(log: AppLogRow | null | undefined): string {
   return String(log?.eventType || "")
     .trim()
     .toLowerCase();
 }
 
 function getEventData(
-  log: HistoryLog | null | undefined,
+  log: AppLogRow | null | undefined,
 ): Record<string, unknown> | null {
   const fields = log?.fields;
   if (fields && typeof fields === "object")
@@ -50,7 +50,7 @@ function getEventData(
   }
 }
 
-function inferIntentionalStop(logs: HistoryLog[], index: number): boolean {
+function inferIntentionalStop(logs: AppLogRow[], index: number): boolean {
   const entries = Array.isArray(logs) ? logs : [];
   const target = entries[index];
   if (!target) return false;
@@ -98,8 +98,8 @@ interface HistoryEventClassification {
 }
 
 function classifyHistoryEvent(
-  log: HistoryLog,
-  logs: HistoryLog[] = [],
+  log: AppLogRow,
+  logs: AppLogRow[] = [],
   index = -1,
 ): HistoryEventClassification {
   const eventType = getNormalizedEventType(log);
@@ -344,7 +344,7 @@ function classifyHistoryEvent(
 }
 
 function classifyPipelineHistoryEvent(
-  log: HistoryLog,
+  log: AppLogRow,
 ): HistoryEventClassification {
   const eventType = getNormalizedEventType(log);
   const eventData = getEventData(log);
@@ -480,7 +480,7 @@ function classifyPipelineHistoryEvent(
   return { type: "log", label: "Event", badgeClass: "badge-ghost" };
 }
 
-function getPipelineTimelineLogs(logs: HistoryLog[]): HistoryLog[] {
+function getPipelineTimelineLogs(logs: AppLogRow[]): AppLogRow[] {
   const items = Array.isArray(logs) ? logs : [];
   return items.filter((log) => {
     const eventType = getNormalizedEventType(log);
@@ -500,7 +500,7 @@ function getPipelineTimelineLogs(logs: HistoryLog[]): HistoryLog[] {
   });
 }
 
-function renderEventDataSummary(log: HistoryLog): string {
+function renderEventDataSummary(log: AppLogRow): string {
   const data = getEventData(log);
   if (!data) return "";
   const hiddenKeys = new Set(["kind", "timestamp", "seq", "streamKey"]);
@@ -521,7 +521,7 @@ function renderEventDataSummary(log: HistoryLog): string {
     .join("")}</div>`;
 }
 
-function getOrderedOutputLogs(logs: HistoryLog[], order: string): HistoryLog[] {
+function getOrderedOutputLogs(logs: AppLogRow[], order: string): AppLogRow[] {
   const items = Array.isArray(logs) ? [...logs] : [];
   items.sort((a, b) => {
     const ta = Date.parse(a?.ts || "");
@@ -539,7 +539,7 @@ function parseHistoryTimeMs(ts: string | undefined): number | null {
 }
 
 export function getOutputHistoryContextKey(
-  log: HistoryLog | null | undefined,
+  log: AppLogRow | null | undefined,
 ): string {
   return `${log?.ts || ""}::${log?.message || ""}`;
 }
@@ -550,13 +550,13 @@ function getRawHistorySearchValue(state: OutputHistoryState): string {
     .toLowerCase();
 }
 
-function getFilteredRawOutputLogs(state: OutputHistoryState): HistoryLog[] {
+function getFilteredRawOutputLogs(state: OutputHistoryState): AppLogRow[] {
   return getOrderedOutputLogs(state.rawLogs, state.order);
 }
 
 export function getMatchingRawOutputLogs(
   state: OutputHistoryState,
-): HistoryLog[] {
+): AppLogRow[] {
   const query = getRawHistorySearchValue(state);
   if (!query) return [];
   return getFilteredRawOutputLogs(state).filter((log) => {
@@ -567,15 +567,15 @@ export function getMatchingRawOutputLogs(
 
 function getTimelineContextLogs(
   state: OutputHistoryState,
-  log: HistoryLog,
-): HistoryLog[] {
+  log: AppLogRow,
+): AppLogRow[] {
   return state.contextLogsByKey.get(getOutputHistoryContextKey(log)) || [];
 }
 
 export function getTimelineContextRange(
   state: OutputHistoryState,
   constants: HistoryConstants,
-  log: HistoryLog,
+  log: AppLogRow,
 ): { since: string; until: string } | null {
   const targetMs = parseHistoryTimeMs(log?.ts);
   if (targetMs === null) return null;

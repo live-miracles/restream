@@ -105,14 +105,6 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_pipeline_output_unique ON jobs(pipeline_id, output_id);"
     ).execute(pool).await?;
 
-    // Drop legacy tables on schema migration — data is superseded by app_logs.
-    sqlx::query("DROP TABLE IF EXISTS job_logs;")
-        .execute(pool)
-        .await?;
-    sqlx::query("DROP TABLE IF EXISTS lifecycle_events;")
-        .execute(pool)
-        .await?;
-
     // Ingests
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ingests (
@@ -147,8 +139,8 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     .await?;
 
     // Application process logs (tracing-based, multi-sink).
-    // event_type and event_class are promoted from tracing fields for history
-    // query efficiency without JSON extraction.
+    // event_type and event_class are promoted from tracing fields so scoped log
+    // queries do not need JSON extraction.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS app_logs (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,8 +170,11 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_app_logs_pipeline ON app_logs(pipeline_id, ts DESC) WHERE pipeline_id IS NOT NULL;"
     ).execute(pool).await?;
+    sqlx::query("DROP INDEX IF EXISTS idx_app_logs_history;")
+        .execute(pool)
+        .await?;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_app_logs_history ON app_logs(pipeline_id, output_id, event_class, ts) WHERE pipeline_id IS NOT NULL;"
+        "CREATE INDEX IF NOT EXISTS idx_app_logs_scope ON app_logs(pipeline_id, output_id, event_class, ts) WHERE pipeline_id IS NOT NULL;"
     ).execute(pool).await?;
 
     Ok(())
@@ -553,7 +548,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
     .await
 }
 
-/* AppLog Operations — unified process log store backing /api/v1/logs and /api/.../history */
+/* AppLog Operations — unified process log store backing /api/v1/logs and log timeline views */
 
 /// Batch-insert log entries. Called by the DbLayer drain task every 100 ms.
 pub async fn append_app_log_batch(
