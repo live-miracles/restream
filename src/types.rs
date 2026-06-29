@@ -226,7 +226,7 @@ pub struct Job {
     pub exit_signal: Option<String>,
 }
 
-/// Full row returned by /api/logs.
+/// Full row returned by /api/v1/logs.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct AppLogRow {
@@ -255,7 +255,7 @@ pub struct AppLogEntry {
     pub event_class: Option<String>,
 }
 
-/// Filters for the /api/logs endpoint.
+/// Filters for the /api/v1/logs endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppLogFilters {

@@ -553,7 +553,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
     .await
 }
 
-/* AppLog Operations — unified process log store backing /api/logs and /api/.../history */
+/* AppLog Operations — unified process log store backing /api/v1/logs and /api/.../history */
 
 /// Batch-insert log entries. Called by the DbLayer drain task every 100 ms.
 pub async fn append_app_log_batch(
@@ -585,7 +585,7 @@ pub async fn append_app_log_batch(
     Ok(())
 }
 
-/// General query for `/api/logs` — supports level, target, pipeline_id, event_class,
+/// General query for `/api/v1/logs` — supports level, target, pipeline_id, event_class,
 /// prefix (message LIKE), time range, limit, order.
 pub async fn list_app_logs(
     pool: &SqlitePool,

@@ -1,9 +1,9 @@
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use restream::domain::stage::{StageKey, StageKind};
-use restream::events::{Event, EventKind};
 use restream::media::engine::MediaEngine;
 use restream::media::security::IngestSecurityService;
+use restream::types::AppLogEntry;
 use restream::{api, db};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -109,7 +109,7 @@ async fn login(app: &axum::Router) -> String {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/login")
+                .uri("/api/v1/auth/login")
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"password":"admin"}"#))
                 .unwrap(),
@@ -181,6 +181,10 @@ async fn body_bytes(resp: axum::http::Response<axum::body::Body>) -> bytes::Byte
     resp.into_body().collect().await.unwrap().to_bytes()
 }
 
+async fn insert_app_log(pool: &SqlitePool, entry: AppLogEntry) {
+    db::append_app_log_batch(pool, &[entry]).await.unwrap();
+}
+
 // --- Auth tests ---
 
 #[tokio::test]
@@ -207,7 +211,7 @@ async fn login_wrong_password() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/login")
+                .uri("/api/v1/auth/login")
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"password":"wrong"}"#))
                 .unwrap(),
@@ -225,7 +229,7 @@ async fn login_success_and_logout() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("POST", "/api/auth/logout", &cookie, None))
+        .oneshot(auth_req("POST", "/api/v1/auth/logout", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -477,6 +481,7 @@ async fn custom_output_encoding_is_rejected_by_api() {
         "p_custom",
         "O",
         "rtmp://dest/live/key",
+        None,
         "stopped",
         "source",
     )
@@ -710,7 +715,7 @@ async fn audio_caps_no_auth() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/audio-caps")
+                .uri("/api/v1/audio-caps")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -906,30 +911,31 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
 // --- Lifecycle history ---
 
 #[tokio::test]
-async fn pipeline_history_includes_persisted_lifecycle_events_without_stream_keys() {
+async fn pipeline_logs_include_persisted_lifecycle_events_without_stream_keys() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::append_lifecycle_event(
+    insert_app_log(
         &pool,
-        &Event {
-            seq: 1,
-            timestamp: chrono::Utc::now(),
-            kind: EventKind::IngestConnected {
-                pipeline_id: "pipe-history".to_string(),
-                protocol: "rtmp".to_string(),
-                stream_key: "secret-history-key".to_string(),
-            },
+        AppLogEntry {
+            ts: "2026-06-29T00:00:00Z".to_string(),
+            level: "INFO".to_string(),
+            target: "restream::lifecycle".to_string(),
+            message: "RTMP publisher connected".to_string(),
+            fields: Some(r#"{"protocol":"rtmp","pipelineId":"pipe-history"}"#.to_string()),
+            pipeline_id: Some("pipe-history".to_string()),
+            output_id: None,
+            event_type: Some("ingest.connected".to_string()),
+            event_class: Some("lifecycle".to_string()),
         },
     )
-    .await
-    .unwrap();
+    .await;
 
     let resp = app
         .clone()
         .oneshot(auth_req(
             "GET",
-            "/api/v1/pipelines/pipe-history/history?limit=20",
+            "/api/v1/logs?pipeline_id=pipe-history&event_class=lifecycle&limit=20",
             &cookie,
             None,
         ))
@@ -937,7 +943,7 @@ async fn pipeline_history_includes_persisted_lifecycle_events_without_stream_key
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["pipelineId"], "pipe-history");
+    assert_eq!(json["logs"][0]["pipelineId"], "pipe-history");
     assert_eq!(json["logs"][0]["eventType"], "ingest.connected");
     assert_eq!(json["logs"][0]["message"], "RTMP publisher connected");
     assert!(
@@ -948,29 +954,31 @@ async fn pipeline_history_includes_persisted_lifecycle_events_without_stream_key
 }
 
 #[tokio::test]
-async fn output_history_lifecycle_filter_includes_persisted_egress_events() {
+async fn output_logs_lifecycle_filter_includes_persisted_egress_events() {
     let (app, pool) = test_app().await;
     let cookie = login(&app).await;
 
-    db::append_lifecycle_event(
+    insert_app_log(
         &pool,
-        &Event {
-            seq: 2,
-            timestamp: chrono::Utc::now(),
-            kind: EventKind::EgressStarted {
-                pipeline_id: "pipe-history".to_string(),
-                output_id: "out-history".to_string(),
-            },
+        AppLogEntry {
+            ts: "2026-06-29T00:00:01Z".to_string(),
+            level: "INFO".to_string(),
+            target: "restream::lifecycle".to_string(),
+            message: "Egress started".to_string(),
+            fields: Some(r#"{"pipelineId":"pipe-history","outputId":"out-history"}"#.to_string()),
+            pipeline_id: Some("pipe-history".to_string()),
+            output_id: Some("out-history".to_string()),
+            event_type: Some("egress.started".to_string()),
+            event_class: Some("lifecycle".to_string()),
         },
     )
-    .await
-    .unwrap();
+    .await;
 
     let resp = app
         .clone()
         .oneshot(auth_req(
             "GET",
-            "/api/v1/pipelines/pipe-history/outputs/out-history/history?filter=lifecycle",
+            "/api/v1/logs?pipeline_id=pipe-history&output_id=out-history&event_class=lifecycle",
             &cookie,
             None,
         ))
@@ -978,10 +986,12 @@ async fn output_history_lifecycle_filter_includes_persisted_egress_events() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["pipelineId"], "pipe-history");
-    assert_eq!(json["outputId"], "out-history");
+    assert_eq!(json["logs"][0]["pipelineId"], "pipe-history");
+    assert_eq!(json["logs"][0]["outputId"], "out-history");
     assert_eq!(json["logs"][0]["eventType"], "egress.started");
-    assert_eq!(json["logs"][0]["eventData"]["outputId"], "out-history");
+    let fields = json["logs"][0]["fields"].as_str().unwrap();
+    let event_data: serde_json::Value = serde_json::from_str(fields).unwrap();
+    assert_eq!(event_data["outputId"], "out-history");
 }
 
 // --- Custom encoding ---
@@ -1201,8 +1211,7 @@ async fn status_returns_version_info() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert!(json["generatedAt"].is_string());
-    let engine = &json["engine"];
+    let engine = &json;
     assert!(engine["restream"]["version"].is_string());
     assert!(engine["restream"]["commit"].is_string());
     assert!(engine.get("ffmpeg").is_none());
@@ -1390,7 +1399,7 @@ async fn change_password() {
         .clone()
         .oneshot(auth_req(
             "POST",
-            "/api/auth/change-password",
+            "/api/v1/auth/change-password",
             &cookie,
             Some(r#"{"current_password":"admin","new_password":"newpass123"}"#),
         ))
@@ -1404,7 +1413,7 @@ async fn change_password() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/login")
+                .uri("/api/v1/auth/login")
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"password":"admin"}"#))
                 .unwrap(),
@@ -1419,7 +1428,7 @@ async fn change_password() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/login")
+                .uri("/api/v1/auth/login")
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(r#"{"password":"newpass123"}"#))
                 .unwrap(),
@@ -1656,7 +1665,7 @@ async fn media_delete_path_traversal_blocked() {
         .clone()
         .oneshot(auth_req(
             "DELETE",
-            "/api/media/nonexistent.mp4",
+            "/api/v1/media/nonexistent.mp4",
             &cookie,
             None,
         ))
@@ -1669,7 +1678,7 @@ async fn media_delete_path_traversal_blocked() {
         .clone()
         .oneshot(auth_req(
             "DELETE",
-            "/api/media/..%2f..%2fetc%2fpasswd",
+            "/api/v1/media/..%2f..%2fetc%2fpasswd",
             &cookie,
             None,
         ))
@@ -1692,7 +1701,7 @@ async fn media_library_classifies_serves_and_deletes_files() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/api/media", &cookie, None))
+        .oneshot(auth_req("GET", "/api/v1/media", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1727,7 +1736,7 @@ async fn media_library_classifies_serves_and_deletes_files() {
         .clone()
         .oneshot(auth_req(
             "DELETE",
-            "/api/media/sample-source.ts",
+            "/api/v1/media/sample-source.ts",
             &cookie,
             None,
         ))
@@ -2135,9 +2144,8 @@ async fn v1_engine_and_settings_endpoints_return_structured_payloads() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let engine = body_json(resp).await;
-    assert!(engine["generatedAt"].is_string());
-    assert!(engine["engine"]["restream"]["version"].is_string());
-    assert!(engine["engine"]["os"].is_object());
+    assert!(engine["restream"]["version"].is_string());
+    assert!(engine["os"].is_object());
 
     let resp = app
         .clone()
@@ -2181,6 +2189,7 @@ async fn v1_pipeline_list_detail_and_graph_endpoints_return_payloads() {
         "pipe-v1",
         "Output V1",
         "rtmp://example/live/key",
+        None,
         "stopped",
         "source",
     )

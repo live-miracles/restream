@@ -288,9 +288,16 @@ export interface PipelineView {
   recording: { enabled: boolean; active: boolean };
 }
 
-export interface HistoryLog {
+export interface AppLogRow {
+  id?: number;
   ts?: string;
+  level?: string;
+  target?: string;
   message?: string;
-  eventType?: string;
-  eventData?: Record<string, unknown>;
+  fields?: string | Record<string, unknown> | null;
+  pipelineId?: string | null;
+  outputId?: string | null;
+  eventType?: string | null;
 }
+
+export type HistoryLog = AppLogRow;

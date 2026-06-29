@@ -874,7 +874,7 @@ impl RampApi {
     async fn login(&mut self) -> Result<(), String> {
         let response = self
             .client
-            .post(format!("{}/api/auth/login", self.base_url))
+            .post(format!("{}/api/v1/auth/login", self.base_url))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(r#"{"password":"admin"}"#)
             .send()
@@ -8596,7 +8596,7 @@ async fn run_mixed_file_h264_config(
         .ok_or("file ingest not found in list")?
         .to_string();
 
-    api.post_json(&format!("/api/ingests/{ingest_id}/start"), json!({}))
+    api.post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
         .await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
@@ -8682,7 +8682,7 @@ async fn run_mixed_file_h264_config(
         }
     }
 
-    api.post_json(&format!("/api/ingests/{ingest_id}/stop"), json!({}))
+    api.post_json(&format!("/api/v1/ingests/{ingest_id}/stop"), json!({}))
         .await?;
 
     println!(
@@ -8849,12 +8849,12 @@ async fn fault_resilience() -> Result<Value, String> {
             .ok_or("file ingest not found in list")?
             .to_string();
 
-        api.post_json(&format!("/api/ingests/{ingest_id}/start"), json!({}))
+        api.post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
             .await?;
         wait_for_api_input_live(&api, &pid, Duration::from_secs(30)).await?;
         println!("[fault] File ingest live");
 
-        api.post_json(&format!("/api/ingests/{ingest_id}/stop"), json!({}))
+        api.post_json(&format!("/api/v1/ingests/{ingest_id}/stop"), json!({}))
             .await?;
         let started = Instant::now();
         let off_result = wait_for_api_input_off(&api, &pid, timeout).await;

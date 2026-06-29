@@ -245,28 +245,6 @@ interface GetOutputHistoryOptions {
   prefixes?: string[] | null;
 }
 
-// Transform an AppLogRow from /api/logs into the HistoryLog shape the UI expects.
-function appLogToHistoryLog(
-  row: Record<string, unknown>,
-): Record<string, unknown> {
-  const fields =
-    typeof row.fields === "string"
-      ? (() => {
-          try {
-            return JSON.parse(row.fields as string);
-          } catch {
-            return {};
-          }
-        })()
-      : (row.fields ?? {});
-  return {
-    ts: row.ts,
-    message: row.message,
-    eventType: row.eventType ?? null,
-    eventData: fields,
-  };
-}
-
 async function getOutputHistory(
   pipeId: string,
   outId: string,
@@ -305,10 +283,10 @@ async function getOutputHistory(
   }
 
   const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
-    `/api/logs?${query.toString()}`,
+    `/api/v1/logs?${query.toString()}`,
   );
   if (!res) return null;
-  return { logs: res.logs.map(appLogToHistoryLog) };
+  return res;
 }
 
 async function getPipelineHistory(
@@ -328,10 +306,10 @@ async function getPipelineHistory(
   });
 
   const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
-    `/api/logs?${query.toString()}`,
+    `/api/v1/logs?${query.toString()}`,
   );
   if (!res) return null;
-  return { logs: res.logs.map(appLogToHistoryLog) };
+  return res;
 }
 
 export interface TranscodeProfile {
@@ -416,14 +394,14 @@ export interface PipelineFileIngestConfig {
 }
 
 async function listMediaFiles(): Promise<{ files: MediaFile[] } | null> {
-  return apiRequest<{ files: MediaFile[] }>("/api/media");
+  return apiRequest<{ files: MediaFile[] }>("/api/v1/media");
 }
 
 async function deleteMediaFile(
   filename: string,
 ): Promise<{ deleted: boolean } | null> {
   return apiRequest<{ deleted: boolean }>(
-    `/api/media/${encodeURIComponent(filename)}`,
+    `/api/v1/media/${encodeURIComponent(filename)}`,
     {
       method: "DELETE",
     },
@@ -516,14 +494,16 @@ async function deletePipelineFileIngest(
 }
 
 async function logout(): Promise<{ ok: boolean } | null> {
-  return apiRequest<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
+  return apiRequest<{ ok: boolean }>("/api/v1/auth/logout", {
+    method: "POST",
+  });
 }
 
 async function changePassword(
   currentPassword: string,
   newPassword: string,
 ): Promise<{ ok: boolean } | null> {
-  return apiRequest<{ ok: boolean }>("/api/auth/change-password", {
+  return apiRequest<{ ok: boolean }>("/api/v1/auth/change-password", {
     method: "POST",
     body: { currentPassword, newPassword },
   });

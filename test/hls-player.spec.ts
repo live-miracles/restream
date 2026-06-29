@@ -465,12 +465,12 @@ test.describe.serial('HLS Player — live playback', () => {
         const ctx = await request.newContext({ baseURL: 'http://localhost:3030' });
 
         // login
-        await ctx.post('/api/auth/login', { data: { password: 'admin' } });
+        await ctx.post('/api/v1/auth/login', { data: { password: 'admin' } });
 
         // create pipeline
         livePipelineName = `PlaywrightHls_${Date.now()}`;
         const pipeKey = `pw_hls_${Date.now()}`;
-        const createResp = await ctx.post('/pipelines', {
+        const createResp = await ctx.post('/api/v1/pipelines', {
             data: { name: livePipelineName, streamKey: pipeKey },
         });
         expect(createResp.ok()).toBe(true);
@@ -492,7 +492,7 @@ test.describe.serial('HLS Player — live playback', () => {
 
         // wait for pipeline input to go "on"
         for (let i = 0; i < 30; i++) {
-            const healthResp = await ctx.get('/health');
+            const healthResp = await ctx.get('/api/v1/engine/health');
             if (!healthResp.ok()) { await new Promise(r => setTimeout(r, 1000)); continue; }
             const health = await healthResp.json();
             const status = health.pipelines?.[livePipelineId]?.input?.status;
@@ -516,8 +516,8 @@ test.describe.serial('HLS Player — live playback', () => {
         }
         if (livePipelineId) {
             const ctx = await request.newContext({ baseURL: 'http://localhost:3030' });
-            await ctx.post('/api/auth/login', { data: { password: 'admin' } });
-            await ctx.delete(`/pipelines/${livePipelineId}`).catch(() => {});
+            await ctx.post('/api/v1/auth/login', { data: { password: 'admin' } });
+            await ctx.delete(`/api/v1/pipelines/${livePipelineId}`).catch(() => {});
             await ctx.dispose();
         }
     });
@@ -576,19 +576,19 @@ test.describe.serial('HLS Player — live playback', () => {
     });
 
     test('HLS segmenter auto-started on first playlist request', async ({ page }) => {
-        const pipeId = `pipeline_auto_${Date.now()}`;
-
-        const createResp = await page.request.post('/pipelines', {
+        const createResp = await page.request.post('/api/v1/pipelines', {
             data: { name: 'AutoStartTest', streamKey: 'autotest' },
             headers: { 'Content-Type': 'application/json' },
         });
         expect(createResp.ok()).toBe(true);
+        const createJson = await createResp.json();
+        const pipeId = createJson.pipeline.id;
 
-        const healthBefore = await page.request.get('/health');
+        const healthBefore = await page.request.get('/api/v1/engine/health');
         const healthJson = await healthBefore.json();
         expect(healthJson.pipelines[pipeId]).toBeUndefined();
 
-        await page.request.delete(`/pipelines/${pipeId}`);
+        await page.request.delete(`/api/v1/pipelines/${pipeId}`);
     });
 
     test('select pipeline and click Play preview triggers HLS load', async ({ page }) => {

@@ -10,7 +10,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -128,7 +128,7 @@ pub struct AppState {
     /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
     pub media_dir: String,
     pub alert_tracker: alerts::AlertTracker,
-    /// Broadcast sender for the /api/logs/stream SSE endpoint.
+    /// Broadcast sender for the /api/v1/logs/stream SSE endpoint.
     pub log_broadcast: tokio::sync::broadcast::Sender<crate::logging::LogBroadcast>,
     #[cfg(feature = "agent-execution")]
     pub agent_execution: Arc<crate::agent_execution::AgentExecutionStore>,
@@ -308,57 +308,68 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/status.html", get(status_html_redirect_handler))
         .route("/logo.png", get(logo_handler))
         .route("/output.css", get(css_handler))
-        .route("/api/auth/login", post(login_post_handler))
-        .route("/api/auth/logout", post(logout_handler))
-        .route("/api/auth/change-password", post(change_password_handler))
-        .route("/audio-caps", get(audio_caps_handler))
+        .route("/api/v1/auth/login", post(login_post_handler))
+        .route("/api/v1/auth/logout", post(logout_handler))
         .route(
-            "/config",
+            "/api/v1/auth/change-password",
+            post(change_password_handler),
+        )
+        .route("/api/v1/audio-caps", get(audio_caps_handler))
+        .route(
+            "/api/v1/settings",
             get(config_get_handler).patch(config_patch_handler),
         )
-        .route("/stream-keys", get(stream_keys_handler))
+        .route("/api/v1/stream-keys", get(stream_keys_handler))
         .route(
-            "/pipelines",
+            "/api/v1/pipelines",
             get(pipelines_get_handler).post(pipelines_post_handler),
         )
         .route(
-            "/pipelines/:id",
-            post(pipelines_update_handler).delete(pipelines_delete_handler),
+            "/api/v1/pipelines/:id",
+            get(pipeline_detail_handler)
+                .patch(pipelines_update_handler)
+                .delete(pipelines_delete_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/file-ingest",
+            "/api/v1/pipelines/:pipeline_id/file-ingest",
             get(pipeline_file_ingest_get_handler)
                 .put(pipeline_file_ingest_put_handler)
                 .delete(pipeline_file_ingest_delete_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/outputs",
+            "/api/v1/pipelines/:pipeline_id/outputs",
             post(outputs_create_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/outputs/:output_id",
-            post(outputs_update_handler).delete(outputs_delete_handler),
+            "/api/v1/pipelines/:pipeline_id/outputs/:output_id",
+            patch(outputs_update_handler).delete(outputs_delete_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/start",
+            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/start",
             post(outputs_start_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/stop",
+            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/stop",
             post(outputs_stop_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/outputs/:output_id/status",
+            "/api/v1/pipelines/:pipeline_id/outputs/:output_id/status",
             get(output_status_handler),
         )
-        .route("/pipelines/:pipeline_id/probe", get(pipeline_probe_handler))
-        .route("/pipelines/:pipeline_id/graph", get(pipeline_graph_handler))
         .route(
-            "/pipelines/:pipeline_id/alerts",
+            "/api/v1/pipelines/:pipeline_id/probe",
+            get(pipeline_probe_handler),
+        )
+        .route(
+            "/api/v1/pipelines/:pipeline_id/graph",
+            get(pipeline_graph_handler),
+        )
+        .route(
+            "/api/v1/pipelines/:pipeline_id/alerts",
             get(pipeline_alerts_handler),
         )
-        .route("/api/logs", get(logs_handler))
-        .route("/api/logs/stream", get(logs_stream_handler))
+        .route("/api/v1/logs", get(logs_handler))
+        .route("/api/v1/logs/stream", get(logs_stream_handler))
         .route("/api/v1/alerts", get(aggregate_alerts_handler))
         .route("/api/v1/events", get(v1_events_handler))
         .route("/api/v1/overview", get(v1_overview_handler))
@@ -415,39 +426,38 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(v1_pipeline_summary_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/diagnostics",
+            "/api/v1/pipelines/:pipeline_id/diagnostics",
             get(pipeline_diagnostics_sse_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/recording/start",
+            "/api/v1/pipelines/:pipeline_id/recording/start",
             post(recording_start_handler),
         )
         .route(
-            "/pipelines/:pipeline_id/recording/stop",
+            "/api/v1/pipelines/:pipeline_id/recording/stop",
             post(recording_stop_handler),
         )
         .route(
-            "/encodings/custom",
+            "/api/v1/encodings/custom",
             get(custom_encoding_get).put(custom_encoding_put),
         )
         .route(
-            "/api/ingests",
+            "/api/v1/ingests",
             get(ingests_get_handler).post(ingests_post_handler),
         )
         .route(
-            "/api/ingests/:id",
+            "/api/v1/ingests/:id",
             put(ingests_update_handler).delete(ingests_delete_handler),
         )
-        .route("/api/ingests/:id/start", post(ingests_start_handler))
-        .route("/api/ingests/:id/stop", post(ingests_stop_handler))
-        .route("/api/status", get(status_get_handler))
-        .route("/api/status/sbom", get(status_sbom_get_handler))
-        .route("/api/media", get(media_list_handler))
-        .route("/api/media/:filename", delete(media_delete_handler))
+        .route("/api/v1/ingests/:id/start", post(ingests_start_handler))
+        .route("/api/v1/ingests/:id/stop", post(ingests_stop_handler))
+        .route("/api/v1/engine", get(status_get_handler))
+        .route("/api/v1/engine/sbom", get(status_sbom_get_handler))
+        .route("/api/v1/engine/health", get(v1_engine_health_handler))
+        .route("/api/v1/media", get(media_list_handler))
+        .route("/api/v1/media/:filename", delete(media_delete_handler))
         .route("/media/:filename", get(media_file_handler))
         // HLS routes are registered with CORS headers in the merged sub-router below.
-        // Deprecated compatibility aliases. New clients should use /hls/.
-        .route("/health", get(health_get_handler))
         .route("/healthz", get(healthz_get_handler))
         .route("/metrics/system", get(metrics_system_handler))
         .fallback(get(spa_fallback_handler))
@@ -1085,6 +1095,40 @@ async fn pipelines_get_handler(
     }
 }
 
+async fn pipeline_detail_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let pipeline = match db::get_pipeline(&state.db, &id).await {
+        Ok(Some(pipeline)) => pipeline,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let outputs = match db::list_outputs_for_pipeline(&state.db, &id).await {
+        Ok(outputs) => outputs,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let ingest_host = get_ingest_host(&state.db)
+        .await
+        .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
+
+    Json(serde_json::json!({
+        "pipeline": pipeline_response_json(
+            &pipeline,
+            &ingest_host,
+            state.ports.rtmp,
+            state.ports.srt
+        ),
+        "outputs": outputs,
+    }))
+    .into_response()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PipelinePayload {
@@ -1719,7 +1763,7 @@ async fn output_status_handler(
     }
 }
 
-// ── /api/logs — paginated query ──────────────────────────────────────────────
+// ── /api/v1/logs — paginated query ───────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct LogsQuery {
@@ -1774,7 +1818,7 @@ async fn logs_handler(
     .into_response()
 }
 
-// ── /api/logs/stream — SSE live tail ─────────────────────────────────────────
+// ── /api/v1/logs/stream — SSE live tail ──────────────────────────────────────
 
 #[derive(Deserialize)]
 struct LogsStreamQuery {
@@ -2747,12 +2791,8 @@ async fn status_get_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
     }
 
     let sys = System::new_all();
@@ -2765,6 +2805,38 @@ async fn status_get_handler(
     status["os"] = system_status(&sys);
 
     Json(status).into_response()
+}
+
+async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
+    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
+        Err(_) => vec![],
+    };
+    let mut recording_enabled = std::collections::HashMap::new();
+    for pid in &pipeline_ids {
+        let rec_key = format!("recording_enabled:{}", pid);
+        let rec = db::get_meta(&state.db, &rec_key)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        recording_enabled.insert(pid.clone(), rec);
+    }
+    state
+        .engine
+        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .await
+}
+
+async fn v1_engine_health_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    Json(build_health_snapshot(&state).await).into_response()
 }
 
 fn system_status(sys: &System) -> serde_json::Value {
@@ -3081,29 +3153,6 @@ async fn media_delete_handler(
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
-}
-
-async fn health_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
-        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
-        Err(_) => vec![],
-    };
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
-    let snapshot = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
-    Json(snapshot)
 }
 
 async fn healthz_get_handler() -> impl IntoResponse {
@@ -3458,12 +3507,16 @@ async fn pipeline_graph_handler(
     headers: HeaderMap,
     Path(pipeline_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(token) = get_session_token_from_headers(&headers) {
-        if !state.is_authenticated(&token).await {
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-        }
-    } else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+    if !db::list_pipelines(&state.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|pipeline| pipeline.id == pipeline_id)
+    {
+        return (StatusCode::NOT_FOUND, "Pipeline not found").into_response();
     }
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
@@ -4934,7 +4987,7 @@ fn agent_diagnostics_summary(
         pipeline_reports.push(serde_json::json!({
             "pipelineId": pipeline.id,
             "passive": true,
-            "activeProbeEndpoint": format!("/pipelines/{}/diagnostics", pipeline.id),
+            "activeProbeEndpoint": format!("/api/v1/pipelines/{}/diagnostics", pipeline.id),
             "supportedProbeQueryValues": ["rtmp", "srt"],
             "includedActiveProbeResults": false,
             "reason": "The context endpoint is read-only and does not open active SSE diagnostics probes.",
@@ -4944,7 +4997,7 @@ fn agent_diagnostics_summary(
     }
 
     serde_json::json!({
-        "streamingEndpointTemplate": "/pipelines/:pipeline_id/diagnostics?probe=:probe",
+        "streamingEndpointTemplate": "/api/v1/pipelines/:pipeline_id/diagnostics?probe=:probe",
         "includedActiveProbeResults": false,
         "pipelines": pipeline_reports,
     })
@@ -6016,8 +6069,8 @@ mod tests {
             pid: None,
             language: None,
             title: None,
-            profile: None,
-            level: None,
+            profile: Some("High".to_string()),
+            level: Some("4.0".to_string()),
             pixel_format: None,
         };
         let audio_tracks = vec![

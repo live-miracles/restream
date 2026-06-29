@@ -80,11 +80,6 @@ interface StatusData {
   };
 }
 
-interface EngineEnvelope {
-  generatedAt?: string;
-  engine?: StatusData;
-}
-
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "--";
   if (typeof value === "boolean") return value ? "yes" : "no";
@@ -270,8 +265,7 @@ export async function loadStatus(): Promise<void> {
   const container = document.getElementById("status-versions");
   if (!container) return;
 
-  const envelope = await apiRequest<EngineEnvelope>("/api/v1/engine");
-  const data = envelope?.engine;
+  const data = await apiRequest<StatusData>("/api/v1/engine");
   if (!data) {
     container.innerHTML =
       '<p class="text-error text-sm">Failed to load status info.</p>';
