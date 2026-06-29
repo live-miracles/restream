@@ -240,9 +240,9 @@ Lagging receivers are closed; the browser reconnects automatically using
 Returns live egress telemetry for a single output. While active, this is the
 current runtime state. After teardown/cleanup, the endpoint preserves the most
 recent classified output snapshot, including `status`, `phase`, `lastError`,
-`failurePhase`, and `endedAt`, so failure cleanup does not erase operator
-context. Returns `404` only when the output has no active or recent runtime
-state.
+`failurePhase`, `endedAt`, and active retry-backoff fields such as
+`retrying`/`nextRetryAt`, so failure cleanup does not erase operator context.
+Returns `404` only when the output has no active or recent runtime state.
 
 ## Probe, Graph, and Diagnostics
 

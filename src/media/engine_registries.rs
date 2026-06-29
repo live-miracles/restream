@@ -7,8 +7,8 @@ use crate::domain::stage::StageKey;
 use crate::events::EventLog;
 use crate::media::avio::MemoryQueue;
 use crate::media::engine::{
-    ActiveEgress, ActiveIngest, HlsConsumers, ListenerSocketStats, RecentEgressOutcome,
-    RecentIngestOutcome,
+    ActiveEgress, ActiveIngest, EgressRetryState, HlsConsumers, ListenerSocketStats,
+    RecentEgressOutcome, RecentIngestOutcome,
 };
 use crate::media::hls::HlsStore;
 use crate::media::pipe_metrics::PipeMetrics;
@@ -41,6 +41,7 @@ pub struct EgressRegistry {
     pub active: TokioRwLock<HashMap<String, ActiveEgress>>,
     pub queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
     pub recent: TokioRwLock<HashMap<String, RecentEgressOutcome>>,
+    pub retry: TokioRwLock<HashMap<String, EgressRetryState>>,
 }
 
 impl EgressRegistry {
@@ -50,6 +51,7 @@ impl EgressRegistry {
             active: TokioRwLock::new(HashMap::new()),
             queues: TokioRwLock::new(HashMap::new()),
             recent: TokioRwLock::new(HashMap::new()),
+            retry: TokioRwLock::new(HashMap::new()),
         }
     }
 }

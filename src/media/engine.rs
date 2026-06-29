@@ -302,6 +302,13 @@ pub struct RecentEgressOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub struct EgressRetryState {
+    pub attempts: u32,
+    pub backoff_ms: u64,
+    pub next_retry_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct IngestDiagSnapshot {
     pub protocol: String,
     pub uptime_secs: f64,
@@ -630,6 +637,11 @@ impl MediaEngine {
             "lastError": egress.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "lastErrorAt": Self::epoch_ms_to_rfc3339(last_error_ms),
             "failurePhase": egress.failure_phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "retrying": false,
+            "retryAttempts": serde_json::Value::Null,
+            "retryBackoffMs": serde_json::Value::Null,
+            "nextRetryAt": serde_json::Value::Null,
+            "retryRemainingMs": serde_json::Value::Null,
             "quality": egress.quality.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "metrics": egress.metrics.snapshot(),
         });
@@ -680,6 +692,11 @@ impl MediaEngine {
             "lastError": outcome.last_error,
             "lastErrorAt": Self::epoch_ms_to_rfc3339(outcome.last_error_ms),
             "failurePhase": outcome.failure_phase,
+            "retrying": false,
+            "retryAttempts": serde_json::Value::Null,
+            "retryBackoffMs": serde_json::Value::Null,
+            "nextRetryAt": serde_json::Value::Null,
+            "retryRemainingMs": serde_json::Value::Null,
             "quality": outcome.quality,
             "metrics": outcome.metrics,
             "endedAt": Self::epoch_ms_to_rfc3339(outcome.ended_at_ms),
@@ -689,6 +706,25 @@ impl MediaEngine {
             value["targetUrl"] = serde_json::Value::String(outcome.target_url.clone());
         }
         value
+    }
+
+    pub(crate) fn apply_egress_retry_state_json(
+        value: &mut serde_json::Value,
+        retry: Option<&EgressRetryState>,
+    ) {
+        let Some(retry) = retry else {
+            return;
+        };
+
+        let remaining_ms = retry.next_retry_at_ms.saturating_sub(Self::now_epoch_ms());
+        value["status"] = serde_json::Value::String("retrying".to_string());
+        value["retrying"] = serde_json::Value::Bool(true);
+        value["retryAttempts"] = serde_json::json!(retry.attempts);
+        value["retryBackoffMs"] = serde_json::json!(retry.backoff_ms);
+        value["nextRetryAt"] = Self::epoch_ms_to_rfc3339(retry.next_retry_at_ms)
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null);
+        value["retryRemainingMs"] = serde_json::json!(remaining_ms);
     }
 
     pub async fn output_status(&self, output_id: &str) -> Option<serde_json::Value> {
@@ -1488,6 +1524,7 @@ impl MediaEngine {
         url: &str,
     ) -> CancellationToken {
         self.egresses.recent.write().await.remove(output_id);
+        self.egresses.retry.write().await.remove(output_id);
 
         let mut tokens = self.egresses.cancel_tokens.write().await;
         let token = CancellationToken::new();
@@ -1662,6 +1699,32 @@ impl MediaEngine {
 
     pub async fn recent_egress_outcome(&self, output_id: &str) -> Option<RecentEgressOutcome> {
         self.egresses.recent.read().await.get(output_id).cloned()
+    }
+
+    pub async fn update_egress_retry_state(
+        &self,
+        output_id: &str,
+        attempts: u32,
+        backoff_ms: u64,
+        remaining_ms: u64,
+    ) {
+        let next_retry_at_ms = Self::now_epoch_ms().saturating_add(remaining_ms);
+        self.egresses.retry.write().await.insert(
+            output_id.to_string(),
+            EgressRetryState {
+                attempts,
+                backoff_ms,
+                next_retry_at_ms,
+            },
+        );
+    }
+
+    pub async fn clear_egress_retry_state(&self, output_id: &str) {
+        self.egresses.retry.write().await.remove(output_id);
+    }
+
+    pub async fn egress_retry_state(&self, output_id: &str) -> Option<EgressRetryState> {
+        self.egresses.retry.read().await.get(output_id).cloned()
     }
 
     pub async fn record_egress_error(
@@ -4107,13 +4170,62 @@ mod tests {
             .record_egress_error("out-1", "connect", "connection refused")
             .await;
         engine.unregister_egress("out-1").await;
+        engine
+            .update_egress_retry_state("out-1", 2, 20_000, 15_000)
+            .await;
         assert!(engine.recent_egress_outcome("out-1").await.is_some());
+        assert!(engine.egress_retry_state("out-1").await.is_some());
 
         engine
             .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
             .await;
 
         assert!(engine.recent_egress_outcome("out-1").await.is_none());
+        assert!(engine.egress_retry_state("out-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn output_status_surfaces_retry_backoff_after_failure() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-1", "key01_retry_engine", "rtmp")
+            .await
+            .expect("ingest registration should succeed");
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
+            .await;
+        engine
+            .record_egress_error("out-1", "send", "connection reset by peer")
+            .await;
+        engine.unregister_egress("out-1").await;
+        engine
+            .update_egress_retry_state("out-1", 2, 20_000, 15_000)
+            .await;
+
+        let status = engine.output_status("out-1").await.unwrap();
+        assert_eq!(status["status"], "retrying");
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["failurePhase"], "send");
+        assert_eq!(status["lastError"], "connection reset by peer");
+        assert_eq!(status["retrying"], true);
+        assert_eq!(status["retryAttempts"], 2);
+        assert_eq!(status["retryBackoffMs"], 20_000);
+        assert!(status["nextRetryAt"].is_string());
+        assert!(status["retryRemainingMs"].as_u64().unwrap_or(0) > 0);
+
+        let snapshot = engine
+            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
+            .await;
+        let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
+        assert_eq!(output["status"], "retrying");
+        assert_eq!(output["phase"], "failed");
+        assert_eq!(output["failurePhase"], "send");
+        assert_eq!(output["lastError"], "connection reset by peer");
+        assert_eq!(output["retrying"], true);
+        assert_eq!(output["retryAttempts"], 2);
+        assert_eq!(output["retryBackoffMs"], 20_000);
+        assert!(output["nextRetryAt"].is_string());
+        assert!(output["retryRemainingMs"].as_u64().unwrap_or(0) > 0);
     }
 
     // ── adaptive ring sizing ──────────────────────────────────────────────────

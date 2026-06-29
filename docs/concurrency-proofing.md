@@ -113,6 +113,8 @@ surface already covers it.
 - `tests/api.rs`
   - `health_endpoint_exposes_probe_and_egress_fault_fields`
   - `output_status_and_health_preserve_recent_egress_failure_after_unregister`
+- `src/media/engine.rs`
+  - `output_status_surfaces_retry_backoff_after_failure`
 - `src/bin/test_harness.rs`
   - `fault-resilience`
 
@@ -123,4 +125,4 @@ current gate set. Remaining high-value areas include:
 
 - More model-checked coverage for lifecycle registries beyond the TS muxer seam
 - Property tests for lifecycle permutations where loom is not the right tool
-- More live chaos cases for restart under sink recovery or slow-sink isolation
+- More live chaos cases for slow-sink isolation and repeated downstream flaps

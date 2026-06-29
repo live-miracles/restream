@@ -9421,7 +9421,7 @@ async fn fault_resilience() -> Result<Value, String> {
             .ok_or("missing id")?
             .to_string();
 
-        let sink_bytes = Arc::new(AtomicU64::new(0));
+        let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
         let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
             .await
             .map_err(|e| format!("sink bind: {e}"))?;
@@ -9429,27 +9429,16 @@ async fn fault_resilience() -> Result<Value, String> {
         let reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
             Arc::new(Mutex::new(Vec::new()));
         let reader_handles_inner = reader_handles.clone();
-        let sink_bytes_inner = sink_bytes.clone();
+        let sink_metrics_inner = sink_metrics.clone();
         let sink_cancel_inner = sink_cancel.clone();
         let sink_task = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     result = sink_listener.accept() => {
                         if let Ok((socket, _)) = result {
-                            let bytes = sink_bytes_inner.clone();
+                            let metrics = sink_metrics_inner.clone();
                             let h = tokio::spawn(async move {
-                                let mut buf = [0u8; 65536];
-                                loop {
-                                    match socket.readable().await {
-                                        Ok(()) => match socket.try_read(&mut buf) {
-                                            Ok(0) => break,
-                                            Ok(n) => { bytes.fetch_add(n as u64, Ordering::Relaxed); }
-                                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                                            Err(_) => break,
-                                        },
-                                        Err(_) => break,
-                                    }
-                                }
+                                let _ = handle_generalized_sink_client(socket, metrics).await;
                             });
                             reader_handles_inner.lock().unwrap().push(h);
                         }
@@ -9487,7 +9476,7 @@ async fn fault_resilience() -> Result<Value, String> {
         .await?;
 
         let deadline = Instant::now() + timeout;
-        while sink_bytes.load(Ordering::Relaxed) < 50_000 {
+        while sink_metrics.video_count.load(Ordering::Relaxed) < 10 {
             if Instant::now() >= deadline {
                 break;
             }
@@ -9543,19 +9532,75 @@ async fn fault_resilience() -> Result<Value, String> {
             }
         }
         let elapsed = started.elapsed();
+        let recovery_metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let recovered_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink rebind: {e}"))?;
+        let recovered_cancel = CancellationToken::new();
+        let recovered_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let recovered_handles_inner = recovered_handles.clone();
+        let recovery_metrics_inner = recovery_metrics.clone();
+        let recovered_cancel_inner = recovered_cancel.clone();
+        let recovered_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = recovered_listener.accept() => {
+                        if let Ok((socket, _)) = result {
+                            let metrics = recovery_metrics_inner.clone();
+                            let h = tokio::spawn(async move {
+                                let _ = handle_generalized_sink_client(socket, metrics).await;
+                            });
+                            recovered_handles_inner.lock().unwrap().push(h);
+                        }
+                    }
+                    _ = recovered_cancel_inner.cancelled() => break,
+                }
+            }
+        });
+
+        let recovery_started = Instant::now();
+        let recovery_deadline = recovery_started + Duration::from_secs(25);
+        let mut recovered = false;
+        let mut recovery_status = String::from("unknown");
+        while Instant::now() < recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
+            }
+            if recovery_metrics.video_count.load(Ordering::Relaxed) >= 10 {
+                recovered = true;
+                break;
+            }
+        }
+        recovered_cancel.cancel();
+        recovered_task.abort();
+        {
+            let handles = recovered_handles.lock().unwrap();
+            for h in handles.iter() {
+                h.abort();
+            }
+        }
         println!(
-            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, {:.1}s)",
-            if passed { "PASS" } else { "FAIL" },
+            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, recovered={}, recoveryStatus={}, {:.1}s)",
+            if passed && recovered { "PASS" } else { "FAIL" },
             phase,
             has_error,
+            recovered,
+            recovery_status,
             elapsed.as_secs_f64()
         );
         results.push(json!({
             "test": "rtmp-egress-sink-disappear",
-            "passed": passed,
+            "passed": passed && recovered,
             "phase": phase,
             "hasError": has_error,
             "elapsedMs": elapsed.as_millis(),
+            "recovered": recovered,
+            "recoveryStatus": recovery_status,
         }));
 
         stop_child(&mut pub_child).await;

@@ -8,16 +8,21 @@ pub(crate) async fn output_status(
     engine: &MediaEngine,
     output_id: &str,
 ) -> Option<serde_json::Value> {
+    let retry = engine.egresses.retry.read().await.get(output_id).cloned();
     let egresses = engine.egresses.active.read().await;
     if let Some(egress) = egresses.get(output_id) {
-        return Some(MediaEngine::egress_runtime_json(egress, false, true));
+        let mut value = MediaEngine::egress_runtime_json(egress, false, true);
+        MediaEngine::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        return Some(value);
     }
     drop(egresses);
 
     let recent = engine.egresses.recent.read().await;
-    recent
-        .get(output_id)
-        .map(|outcome| MediaEngine::recent_egress_runtime_json(outcome, false))
+    recent.get(output_id).map(|outcome| {
+        let mut value = MediaEngine::recent_egress_runtime_json(outcome, false);
+        MediaEngine::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        value
+    })
 }
 
 pub(crate) async fn health_snapshot(
@@ -32,6 +37,7 @@ pub(crate) async fn health_snapshot(
     let hls_stores = engine.hls.stores.read().await;
     let recent_ingests = engine.ingests.recent.read().await;
     let recent_egresses = engine.egresses.recent.read().await;
+    let retry_egresses = engine.egresses.retry.read().await;
     let pipelines = engine.ingests.pipelines.read().await;
 
     let mut pipelines_json = serde_json::Map::new();
@@ -183,6 +189,10 @@ pub(crate) async fn health_snapshot(
                 let has_ingest = ingests.contains_key(pipeline_id.as_str());
 
                 let mut output_json = MediaEngine::egress_runtime_json(egress, false, has_ingest);
+                MediaEngine::apply_egress_retry_state_json(
+                    &mut output_json,
+                    retry_egresses.get(output_id),
+                );
                 output_json["totalSize"] = serde_json::json!(bytes_sent);
                 output_json["bitrateKbps"] = serde_json::json!(bitrate_kbps);
                 output_json["startedAt"] = serde_json::Value::String(egress.started_at.clone());
@@ -192,6 +202,10 @@ pub(crate) async fn health_snapshot(
         for (output_id, outcome) in recent_egresses.iter() {
             if outcome.pipeline_id == *pipeline_id && !outputs_json.contains_key(output_id) {
                 let mut output_json = MediaEngine::recent_egress_runtime_json(outcome, false);
+                MediaEngine::apply_egress_retry_state_json(
+                    &mut output_json,
+                    retry_egresses.get(output_id),
+                );
                 output_json["totalSize"] = serde_json::json!(outcome.bytes_sent);
                 output_json["bitrateKbps"] = serde_json::Value::Null;
                 output_json["startedAt"] = serde_json::Value::String(outcome.started_at.clone());

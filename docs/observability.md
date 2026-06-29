@@ -131,6 +131,7 @@ Active native egresses appear in `pipelines[id].outputs`:
 | `lastProgressAt` | Last successful protocol send or HLS PUT completion |
 | `lastProgressAgeMs` | Age of the last successful send/upload sample |
 | `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure. These fields are preserved in recent output status after teardown so cleanup does not erase the cause. |
+| `retrying`, `retryAttempts`, `retryBackoffMs`, `nextRetryAt`, `retryRemainingMs` | Present while reconciler backoff is actively delaying the next automatic egress start. During this window the output `status` is promoted to `retrying` even though the preserved runtime phase remains `failed`. |
 | `quality` | Egress transport quality. RTMP/RTMPS expose sender-side `TCP_INFO`/`SO_MEMINFO`; SRT exposes sender-side `srt_bistats()` and bonded group member state when available. |
 | `endedAt`, `endedAgeMs` | Present on recent output snapshots after unregister/cleanup so operators can tell when the last classified egress state ended |
 
@@ -138,6 +139,9 @@ Stopped configured outputs are still defined by `/api/v1/settings`, but
 `/api/v1/engine/health` now also preserves the most recent classified output
 state after cleanup. That means the dashboard can keep showing `failed` or
 `stopped` plus the last error instead of collapsing immediately to `off`.
+When a desired-running output is still inside destination retry backoff, the
+same preserved snapshot also shows when the next retry is due instead of
+looking like a static terminal failure.
 
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.

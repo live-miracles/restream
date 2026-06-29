@@ -97,6 +97,18 @@ interface HistoryEventClassification {
   badgeClass: string;
 }
 
+interface PipelineIncident {
+  badgeClass: string;
+  detailBadges: string[];
+  endedAt: string | undefined;
+  headline: string;
+  logs: AppLogRow[];
+  summary: string;
+  startedAt: string | undefined;
+}
+
+const PIPELINE_INCIDENT_WINDOW_MS = 20_000;
+
 function classifyHistoryEvent(
   log: AppLogRow,
   logs: AppLogRow[] = [],
@@ -459,6 +471,25 @@ function classifyPipelineHistoryEvent(
       badgeClass: "badge-error",
     };
   }
+  if (eventType === "lifecycle.start") {
+    return {
+      type: "egress",
+      label: "Output Start Issued",
+      badgeClass: "badge-info",
+    };
+  }
+  if (eventType === "lifecycle.stop") {
+    const message = String(log?.message || "");
+    return {
+      type: "egress",
+      label: /ingest is no longer active/i.test(message)
+        ? "Output Stop for Input Loss"
+        : "Output Stop Issued",
+      badgeClass: /ingest is no longer active/i.test(message)
+        ? "badge-warning"
+        : "badge-stopped",
+    };
+  }
 
   const message = String(log?.message || "");
   const target = String(log?.target || "");
@@ -542,7 +573,9 @@ function getPipelineTimelineLogs(logs: AppLogRow[]): AppLogRow[] {
       eventType.startsWith("pipeline.input_state.") ||
       eventType.startsWith("ingest.") ||
       eventType.startsWith("stage.") ||
-      eventType.startsWith("egress.")
+      eventType.startsWith("egress.") ||
+      eventType === "lifecycle.start" ||
+      eventType === "lifecycle.stop"
     ) {
       return true;
     }
@@ -562,6 +595,242 @@ function getPipelineTimelineLogs(logs: AppLogRow[]): AppLogRow[] {
       message.startsWith("[config]") || message.startsWith("[input_state]")
     );
   });
+}
+
+function distinctNonEmptyCount(
+  values: Array<string | null | undefined>,
+): number {
+  return new Set(
+    values
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length > 0),
+  ).size;
+}
+
+function getPipelineInputState(log: AppLogRow): string | null {
+  const eventType = getNormalizedEventType(log);
+  const eventData = getEventData(log);
+
+  if (eventType === "pipeline.input_state.initialized") {
+    const state = String(eventData?.state || "")
+      .trim()
+      .toLowerCase();
+    return state || null;
+  }
+  if (eventType === "pipeline.input_state.transitioned") {
+    const state = String(eventData?.to || "")
+      .trim()
+      .toLowerCase();
+    return state || null;
+  }
+  if (eventType === "pipeline.input_state.reset") {
+    return "reset";
+  }
+
+  const message = String(log?.message || "");
+  if (!message.startsWith("[input_state]")) return null;
+  if (message.includes("->")) {
+    const state = message.split("->").pop()?.trim().toLowerCase() || "";
+    return state || null;
+  }
+  const match = message.match(/initial_state\s*=\s*([a-z_]+)/i);
+  return match?.[1]?.toLowerCase() || null;
+}
+
+function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
+  const entries = Array.isArray(logs) ? logs : [];
+  const eventTypes = new Set(entries.map((log) => getNormalizedEventType(log)));
+  const inputStates = new Set(
+    entries
+      .map((log) => getPipelineInputState(log))
+      .filter((value): value is string => Boolean(value)),
+  );
+  const hasFfmpegFault = entries.some((log) => {
+    const target = String(log?.target || "");
+    const message = String(log?.message || "");
+    const level = String(log?.level || "").toUpperCase();
+    return (
+      target.includes("external_transcoder") &&
+      (level === "ERROR" ||
+        level === "WARN" ||
+        message.includes("failed to spawn ffmpeg") ||
+        message.includes("stdin write failed") ||
+        message.includes("ffmpeg stderr"))
+    );
+  });
+  const hasConfigChange = entries.some((log) => {
+    const eventType = getNormalizedEventType(log);
+    const message = String(log?.message || "");
+    return (
+      eventType.startsWith("pipeline.config.") || message.startsWith("[config]")
+    );
+  });
+  const hasIngestDisconnect =
+    eventTypes.has("ingest.disconnected") || inputStates.has("off");
+  const hasIngestConnect =
+    eventTypes.has("ingest.connected") || inputStates.has("on");
+  const outputFailureCount = distinctNonEmptyCount(
+    entries
+      .filter((log) => getNormalizedEventType(log) === "egress.failed")
+      .map((log) => log.outputId),
+  );
+  const outputStopCount = distinctNonEmptyCount(
+    entries
+      .filter((log) => {
+        const eventType = getNormalizedEventType(log);
+        return eventType === "egress.stopped" || eventType === "lifecycle.stop";
+      })
+      .map((log) => log.outputId),
+  );
+  const outputStartCount = distinctNonEmptyCount(
+    entries
+      .filter((log) => {
+        const eventType = getNormalizedEventType(log);
+        return (
+          eventType === "egress.started" || eventType === "lifecycle.start"
+        );
+      })
+      .map((log) => log.outputId),
+  );
+  const stageStopCount = entries.filter(
+    (log) => getNormalizedEventType(log) === "stage.stopped",
+  ).length;
+  const stageStartCount = entries.filter(
+    (log) => getNormalizedEventType(log) === "stage.started",
+  ).length;
+
+  let headline = "Pipeline activity burst";
+  let summary = `${entries.length} related pipeline events were recorded close together.`;
+  let badgeClass = "badge-ghost";
+  const detailBadges: string[] = [];
+
+  if (
+    hasIngestDisconnect &&
+    (outputFailureCount > 0 || outputStopCount > 0 || stageStopCount > 0)
+  ) {
+    headline = "Input loss cascaded downstream";
+    summary =
+      "Publisher/input loss was followed by downstream output or stage changes.";
+    badgeClass = outputFailureCount > 0 ? "badge-error" : "badge-warning";
+    detailBadges.push("Cause: input disconnected");
+  } else if (hasFfmpegFault && (outputFailureCount > 0 || stageStopCount > 0)) {
+    headline = "External stage fault impacted outputs";
+    summary =
+      "The external FFmpeg stage emitted warnings or errors around the same time downstream behavior changed.";
+    badgeClass = outputFailureCount > 0 ? "badge-error" : "badge-warning";
+    detailBadges.push("Cause: external FFmpeg stage");
+  } else if (outputFailureCount > 0) {
+    headline = "Output delivery incident";
+    summary = "One or more outputs failed during this activity burst.";
+    badgeClass = "badge-error";
+  } else if (
+    hasIngestConnect &&
+    (outputStartCount > 0 || stageStartCount > 0)
+  ) {
+    headline = "Pipeline came online";
+    summary =
+      "Publisher connectivity was followed by stage spin-up and output startup.";
+    badgeClass = "badge-success";
+    detailBadges.push("Cause: publisher connected");
+  } else if (
+    hasConfigChange &&
+    (outputStartCount > 0 ||
+      outputStopCount > 0 ||
+      stageStartCount > 0 ||
+      stageStopCount > 0)
+  ) {
+    headline = "Config change rolled through pipeline";
+    summary =
+      "A config update clustered with downstream stage or output lifecycle changes.";
+    badgeClass = "badge-secondary";
+    detailBadges.push("Context: config change");
+  } else if (hasConfigChange) {
+    headline = "Pipeline config changed";
+    summary = "Configuration-related events were recorded for this pipeline.";
+    badgeClass = "badge-secondary";
+  } else if (inputStates.has("warning") || inputStates.has("error")) {
+    headline = "Input health shifted";
+    summary = "Input state changed into warning or error during this burst.";
+    badgeClass = inputStates.has("error") ? "badge-error" : "badge-warning";
+  } else if (outputStartCount > 0 || outputStopCount > 0) {
+    headline = "Output lifecycle changed";
+    summary =
+      "Output start or stop activity clustered together in this window.";
+    badgeClass = outputStopCount > 0 ? "badge-warning" : "badge-info";
+  } else if (stageStartCount > 0 || stageStopCount > 0) {
+    headline = "Stage lifecycle changed";
+    summary =
+      "Stage startup or shutdown events clustered together in this window.";
+    badgeClass = stageStopCount > 0 ? "badge-warning" : "badge-info";
+  }
+
+  if (outputFailureCount > 0) {
+    detailBadges.push(
+      `Impact: ${outputFailureCount} output failure${outputFailureCount === 1 ? "" : "s"}`,
+    );
+  } else if (outputStopCount > 0) {
+    detailBadges.push(
+      `Impact: ${outputStopCount} output stop${outputStopCount === 1 ? "" : "s"}`,
+    );
+  } else if (outputStartCount > 0) {
+    detailBadges.push(
+      `Impact: ${outputStartCount} output start${outputStartCount === 1 ? "" : "s"}`,
+    );
+  }
+
+  if (stageStopCount > 0) {
+    detailBadges.push(`Stages: ${stageStopCount} stopped`);
+  } else if (stageStartCount > 0) {
+    detailBadges.push(`Stages: ${stageStartCount} started`);
+  }
+
+  return {
+    badgeClass,
+    detailBadges,
+    endedAt: entries[entries.length - 1]?.ts,
+    headline,
+    logs: entries,
+    summary,
+    startedAt: entries[0]?.ts,
+  };
+}
+
+function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
+  const entries = Array.isArray(logs) ? logs : [];
+  if (entries.length === 0) return [];
+
+  const groups: AppLogRow[][] = [];
+  let currentGroup: AppLogRow[] = [];
+  let previousMs: number | null = null;
+
+  entries.forEach((log) => {
+    const currentMs = parseHistoryTimeMs(log?.ts);
+    if (currentGroup.length === 0) {
+      currentGroup.push(log);
+      previousMs = currentMs;
+      return;
+    }
+
+    const withinWindow =
+      currentMs !== null &&
+      previousMs !== null &&
+      currentMs - previousMs <= PIPELINE_INCIDENT_WINDOW_MS;
+
+    if (!withinWindow) {
+      groups.push(currentGroup);
+      currentGroup = [log];
+    } else {
+      currentGroup.push(log);
+    }
+
+    previousMs = currentMs;
+  });
+
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+
+  return groups.map(summarizePipelineIncident);
 }
 
 function renderEventDataSummary(log: AppLogRow): string {
@@ -947,22 +1216,60 @@ export function renderPipelineHistory(
 
   empty.classList.add("hidden");
 
-  const logs = getPipelineTimelineLogs(state.logs);
-  list.innerHTML = logs
-    .map((log) => {
-      const event = classifyPipelineHistoryEvent(log);
-      return `<div class="rounded bg-base-100 p-2">
-                    <div class="flex items-center justify-between gap-2">
-                        <span class="badge badge-sm ${event.badgeClass}">${event.label}</span>
-                        <span class="text-xs opacity-70">${formatHistoryTime(log.ts)}</span>
+  const logs = getOrderedOutputLogs(getPipelineTimelineLogs(state.logs), "asc");
+  const incidents = buildPipelineIncidents(logs).reverse();
+  list.innerHTML = incidents
+    .map((incident, incidentIndex) => {
+      const timeRange =
+        incident.startedAt &&
+        incident.endedAt &&
+        incident.startedAt !== incident.endedAt
+          ? `${formatHistoryTime(incident.startedAt)} -> ${formatHistoryTime(incident.endedAt)}`
+          : formatHistoryTime(incident.endedAt || incident.startedAt);
+      const detailsHtml =
+        incident.detailBadges.length > 0
+          ? `<div class="mt-2 flex flex-wrap gap-1">${incident.detailBadges
+              .map(
+                (detail) =>
+                  `<span class="border-base-content/10 bg-base-200/70 rounded-md border px-2 py-1 text-[11px]">${sanitizeLogMessage(detail, true)}</span>`,
+              )
+              .join("")}</div>`
+          : "";
+
+      return `<div class="border-base-content/10 bg-base-100 rounded-xl border p-3">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="badge badge-sm ${incident.badgeClass}">${incident.headline}</span>
+                            <span class="badge badge-sm badge-ghost">${incident.logs.length} event${incident.logs.length === 1 ? "" : "s"}</span>
+                        </div>
+                        <p class="mt-2 text-sm opacity-80">${incident.summary}</p>
+                        ${detailsHtml}
                     </div>
-                    <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-msg"></pre>
-                    ${renderEventDataSummary(log)}
-                </div>`;
+                    <div class="shrink-0 text-right text-xs opacity-70">${timeRange}</div>
+                </div>
+                <div class="mt-3 space-y-2">${incident.logs
+                  .map((log, logIndex) => {
+                    const event = classifyPipelineHistoryEvent(log);
+                    return `<div class="border-base-content/10 bg-base-200/45 rounded-lg border p-2">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="badge badge-xs ${event.badgeClass}">${event.label}</span>
+                                    <span class="text-[11px] opacity-70">${formatHistoryTime(log.ts)}</span>
+                                </div>
+                                <pre class="mt-1 text-xs whitespace-pre-wrap break-words js-incident-msg" data-incident-index="${incidentIndex}" data-log-index="${logIndex}"></pre>
+                                ${renderEventDataSummary(log)}
+                            </div>`;
+                  })
+                  .join("")}</div>
+            </div>`;
     })
     .join("");
-  list.querySelectorAll<HTMLPreElement>(".js-msg").forEach((pre, i) => {
-    pre.textContent = String(logs[i].message || "");
+  list.querySelectorAll<HTMLPreElement>(".js-incident-msg").forEach((pre) => {
+    const incidentIndex = Number(pre.dataset.incidentIndex);
+    const logIndex = Number(pre.dataset.logIndex);
+    pre.textContent = String(
+      incidents[incidentIndex]?.logs[logIndex]?.message || "",
+    );
   });
 
   if (scrollToTop) list.scrollTop = 0;
