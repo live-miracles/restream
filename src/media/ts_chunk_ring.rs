@@ -51,17 +51,28 @@ impl TsChunkRing {
 
 pub struct TsChunkReader {
     inner: Reader,
+    cancel: CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TsChunkWaitResult {
+    Data,
+    Cancelled,
 }
 
 impl TsChunkReader {
     pub fn new(name: String, ring: &TsChunkRing) -> Self {
         Self {
             inner: Reader::new(name, ring.ring.clone()),
+            cancel: ring.cancel.clone(),
         }
     }
 
-    pub async fn wait_for_data(&mut self) {
-        self.inner.wait_for_data().await;
+    pub async fn wait_for_data_or_cancelled(&mut self) -> TsChunkWaitResult {
+        tokio::select! {
+            _ = self.cancel.cancelled() => TsChunkWaitResult::Cancelled,
+            _ = self.inner.wait_for_data() => TsChunkWaitResult::Data,
+        }
     }
 
     pub fn pull_burst(
@@ -113,5 +124,19 @@ mod tests {
             payloads2,
             vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]
         );
+    }
+
+    #[tokio::test]
+    async fn wait_for_data_unblocks_when_ring_is_cancelled() {
+        let cancel = CancellationToken::new();
+        let ts_ring = TsChunkRing::new(16, cancel.clone());
+        let mut reader = TsChunkReader::new("reader".to_string(), &ts_ring);
+
+        let wait_task = tokio::spawn(async move { reader.wait_for_data_or_cancelled().await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        assert_eq!(wait_task.await.unwrap(), TsChunkWaitResult::Cancelled);
     }
 }

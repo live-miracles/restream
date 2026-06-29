@@ -45,7 +45,7 @@ mod loom_tests {
         /// Returns true if the reader should migrate (ring is sealed and write_idx
         /// matches the reader's position — no more data coming).
         fn wait_for_data(&self, read_idx: &mut usize) -> bool {
-            let guard = self.mu.lock().unwrap();
+            let mut guard = self.mu.lock().unwrap();
             loop {
                 let w = self.write_idx.load(Ordering::Acquire);
                 if w > *read_idx {
@@ -55,7 +55,7 @@ mod loom_tests {
                 if self.sealed.load(Ordering::Acquire) {
                     return true; // sealed, reader should migrate
                 }
-                let _guard = self.cvar.wait(guard).unwrap();
+                guard = self.cvar.wait(guard).unwrap();
             }
         }
     }

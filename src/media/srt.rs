@@ -1970,6 +1970,7 @@ impl SrtServer {
         };
         let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
+        let out_queue_c = out_queue.clone();
         let play_sender_handle = std::thread::spawn(move || {
             let _permit = permit; // dropped when thread exits → releases semaphore slot
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1999,6 +2000,7 @@ impl SrtServer {
                     pid_log
                 );
             }
+            out_queue_c.close();
             // SAFETY: client_sock was created during handle_client and
             // passed to this thread. It is closed exactly once here after
             // the sender loop exits (either normal disconnect or error).
@@ -2013,7 +2015,10 @@ impl SrtServer {
         let mut ts_batch: Vec<u8> = Vec::with_capacity(65536);
 
         loop {
-            reader.wait_for_data().await;
+            let wake = reader.wait_for_data_or_cancelled().await;
+            if out_queue.is_closed() {
+                break;
+            }
             loop {
                 pull_packets.clear();
                 match reader.pull_burst(&mut pull_packets, 32) {
@@ -2032,13 +2037,18 @@ impl SrtServer {
                 }
             }
             // Check if ingest is still alive before waiting again
-            if !self
-                .engine
-                .ingests
-                .active
-                .read()
-                .await
-                .contains_key(pipeline_id)
+            if out_queue.is_closed()
+                || !self
+                    .engine
+                    .ingests
+                    .active
+                    .read()
+                    .await
+                    .contains_key(pipeline_id)
+                || matches!(
+                    wake,
+                    crate::media::ts_chunk_ring::TsChunkWaitResult::Cancelled
+                )
             {
                 break;
             }
@@ -3246,6 +3256,7 @@ pub fn start_shared_ts_muxer(
                     "[srt-shared-muxer] Ingest gone while waiting for probe: {}",
                     pipeline_id_str
                 );
+                cancel.cancel();
                 return;
             }
         };
@@ -3407,6 +3418,7 @@ pub fn start_shared_ts_muxer(
                 break;
             }
         }
+        cancel.cancel();
     });
 
     ts_ring
@@ -3799,6 +3811,7 @@ pub async fn start_srt_egress(
             return;
         }
     };
+    let cancel_token_c = cancel_token.clone();
     let egress_sender_handle = std::thread::spawn(move || {
         let _permit = permit; // dropped when thread exits → releases semaphore slot
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3839,6 +3852,7 @@ pub async fn start_srt_egress(
                             Ordering::Relaxed,
                         );
                     }
+                    cancel_token_c.cancel();
                     break;
                 }
                 if let Some(ref counter) = egress_bytes_sent {
@@ -3905,7 +3919,7 @@ pub async fn start_srt_egress(
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => break,
-            _ = reader.wait_for_data() => {
+            wake = reader.wait_for_data_or_cancelled() => {
                 packets.clear();
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     for pkt in &packets {
@@ -3918,6 +3932,9 @@ pub async fn start_srt_egress(
                         out_queue.write(&ts_batch).await;
                         ts_batch.clear();
                     }
+                }
+                if matches!(wake, crate::media::ts_chunk_ring::TsChunkWaitResult::Cancelled) {
+                    break;
                 }
             }
         }

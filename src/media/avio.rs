@@ -521,6 +521,7 @@ unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -739,6 +740,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blocked_write_unblocks_when_queue_closes() {
+        let queue = Arc::new(MemoryQueue::new_with_capacity(5));
+        queue.write(b"hello").await;
+
+        let writer_queue = queue.clone();
+        let blocked_write = tokio::spawn(async move {
+            writer_queue.write(b"blocked").await;
+            writer_queue.is_closed()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!blocked_write.is_finished());
+
+        queue.close();
+
+        assert!(
+            blocked_write.await.unwrap(),
+            "blocked writer should observe queue closure and return"
+        );
+    }
+
+    #[tokio::test]
     async fn read_wakes_on_write() {
         let queue = Arc::new(MemoryQueue::new());
         let q = queue.clone();
@@ -751,5 +774,33 @@ mod tests {
         assert_eq!(n, 6);
         assert_eq!(&buf, b"wakeup");
         handle.join().unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn write_batch_round_trips_random_chunks(
+            chunks in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..64),
+                0..16
+            )
+        ) {
+            let total_bytes: usize = chunks.iter().map(Vec::len).sum();
+            let queue = MemoryQueue::new_with_capacity(total_bytes.max(1));
+            let expected: Vec<u8> = chunks.iter().flatten().copied().collect();
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            let slices: Vec<&[u8]> = chunks.iter().map(Vec::as_slice).collect();
+            let written = runtime.block_on(queue.write_batch(slices.iter().copied()));
+
+            prop_assert_eq!(written, total_bytes);
+
+            let mut actual = vec![0u8; total_bytes];
+            let read = queue.read_nonblocking(&mut actual);
+            prop_assert_eq!(read, total_bytes);
+            prop_assert_eq!(actual, expected);
+        }
     }
 }
