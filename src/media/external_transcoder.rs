@@ -258,7 +258,9 @@ pub async fn start_external_transcoder_stage(
 ) {
     let input_codec = input_codec_override.as_deref().unwrap_or("h264");
     let args = build_stage_ffmpeg_args(&encoding, input_codec);
+    let correlation_id = crate::logging::next_correlation_id("stage");
     info!(
+        correlation_id = %correlation_id,
         pipeline_id = %pipeline_id,
         stage_encoding = %encoding,
         stage_backend = "external_ffmpeg",
@@ -278,6 +280,7 @@ pub async fn start_external_transcoder_stage(
         Ok(c) => c,
         Err(e) => {
             error!(
+                correlation_id = %correlation_id,
                 pipeline_id = %pipeline_id,
                 stage_encoding = %encoding,
                 stage_backend = "external_ffmpeg",
@@ -304,6 +307,7 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                correlation_id = %correlation_id,
                 pipeline_id = %pipeline_id,
                 stage_encoding = %encoding,
                 stage_backend = "external_ffmpeg",
@@ -328,6 +332,7 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                correlation_id = %correlation_id,
                 pipeline_id = %pipeline_id,
                 stage_encoding = %encoding,
                 stage_backend = "external_ffmpeg",
@@ -352,6 +357,7 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                correlation_id = %correlation_id,
                 pipeline_id = %pipeline_id,
                 stage_encoding = %encoding,
                 stage_backend = "external_ffmpeg",
@@ -382,6 +388,7 @@ pub async fn start_external_transcoder_stage(
     // Logs which path was chosen so operators can see it in the stage output.
     if !timing::calibrate() {
         info!(
+            correlation_id = %correlation_id,
             pipeline_id = %pipeline_id,
             stage_encoding = %encoding,
             stage_backend = "external_ffmpeg",
@@ -404,6 +411,7 @@ pub async fn start_external_transcoder_stage(
     let label = format!("{}:{}", pipeline_id, encoding);
     {
         let label = label.clone();
+        let stderr_correlation_id = correlation_id.clone();
         let stderr_pipeline_id = pipeline_id.clone();
         let stderr_encoding = encoding.clone();
         let mut stderr = stderr;
@@ -422,6 +430,7 @@ pub async fn start_external_transcoder_stage(
                         } else if !truncated {
                             truncated = true;
                             error!(
+                                correlation_id = %stderr_correlation_id,
                                 pipeline_id = %stderr_pipeline_id,
                                 stage_encoding = %stderr_encoding,
                                 stage_backend = "external_ffmpeg",
@@ -435,6 +444,7 @@ pub async fn start_external_transcoder_stage(
             }
             if !all.is_empty() {
                 error!(
+                    correlation_id = %stderr_correlation_id,
                     pipeline_id = %stderr_pipeline_id,
                     stage_encoding = %stderr_encoding,
                     stage_backend = "external_ffmpeg",
@@ -579,6 +589,7 @@ pub async fn start_external_transcoder_stage(
                         let t0 = timing_clock.now();
                         if stdin.write_all(&ts_batch).await.is_err() {
                             error!(
+                                correlation_id = %correlation_id,
                                 pipeline_id = %pipeline_id,
                                 stage_encoding = %encoding,
                                 stage_backend = "external_ffmpeg",
@@ -615,6 +626,7 @@ pub async fn start_external_transcoder_stage(
         });
 
     info!(
+        correlation_id = %correlation_id,
         pipeline_id = %pipeline_id,
         stage_encoding = %encoding,
         stage_backend = "external_ffmpeg",

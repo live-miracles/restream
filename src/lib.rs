@@ -26,8 +26,14 @@
 // bin/test_harness.rs is exempt (test output is intentional).
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 
+#[cfg(any(feature = "mcp-http-backend", feature = "mcp-embedded"))]
+pub mod agent_backends;
+#[cfg(feature = "mcp-core")]
+pub mod agent_core;
 #[cfg(feature = "agent-execution")]
 pub mod agent_execution;
+#[cfg(feature = "mcp-core")]
+pub mod agent_mcp;
 #[cfg(feature = "agent-plane")]
 pub mod agent_plane;
 pub mod alerts;
@@ -562,6 +568,7 @@ pub async fn run_app() {
                         drop(lf);
                         engine.clear_egress_retry_state(&output.id).await;
                         warn!(
+                            correlation_id = %crate::logging::next_correlation_id("out"),
                             output_id = %output.id,
                             output_name = %output.name,
                             max_retries = tuning.output_max_retries,
@@ -595,7 +602,9 @@ pub async fn run_app() {
                 }
                 drop(lf);
 
+                let output_correlation_id = crate::logging::next_correlation_id("out");
                 info!(
+                    correlation_id = %output_correlation_id,
                     output_id = %output.id,
                     output_name = %output.name,
                     pipeline_id = %output.pipeline_id,
@@ -737,6 +746,7 @@ pub async fn run_app() {
                 let pool_c = pool.clone();
                 let last_failed_c = last_failed.clone();
                 let tuning_c = tuning;
+                let output_correlation_id_c = output_correlation_id.clone();
 
                 tokio::spawn(async move {
                     // Unsupported URL: reject immediately before the panic-safe
@@ -782,6 +792,16 @@ pub async fn run_app() {
                         } else {
                             engine_c.clear_egress_retry_state(&output_id_c).await;
                         }
+                        error!(
+                            correlation_id = %output_correlation_id_c,
+                            output_id = %output_id_c,
+                            pipeline_id = %pipeline_id_c,
+                            event_class = "lifecycle",
+                            event_type = "egress.failed",
+                            failure_reason = "unsupported_url_scheme",
+                            url = %url_c,
+                            "output rejected unsupported URL scheme",
+                        );
                         return;
                     }
 
@@ -821,7 +841,12 @@ pub async fn run_app() {
                                 let Some(hls_cancel) =
                                     engine_c.get_hls_cancel_token(&pipeline_id_c).await
                                 else {
-                                    warn!(pipeline_id = %pipeline_id_c, "HLS segmenter token missing — skipping");
+                                    warn!(
+                                        correlation_id = %output_correlation_id_c,
+                                        pipeline_id = %pipeline_id_c,
+                                        output_id = %output_id_c,
+                                        "HLS segmenter token missing — skipping"
+                                    );
                                     return;
                                 };
                                 let eng2 = engine_c.clone();
@@ -852,7 +877,9 @@ pub async fn run_app() {
                                 )
                                 .await;
                             } else {
-                                engine_c.update_egress_phase(&output_id_c, "segmenting").await;
+                                engine_c
+                                    .update_egress_phase(&output_id_c, "segmenting")
+                                    .await;
                                 cancel_token.cancelled().await;
                             }
                             // remove_hls_persistent_consumer is intentionally called
@@ -866,7 +893,15 @@ pub async fn run_app() {
                     .is_err();
 
                     if panicked {
-                        error!(output_id = %output_id_c, pipeline_id = %pipeline_id_c, "panic in egress task");
+                        error!(
+                            correlation_id = %output_correlation_id_c,
+                            output_id = %output_id_c,
+                            pipeline_id = %pipeline_id_c,
+                            event_class = "lifecycle",
+                            event_type = "egress.failed",
+                            failure_reason = "panic",
+                            "panic in egress task"
+                        );
                     }
 
                     // Cleanup always runs — even after a panic in the egress fn.
@@ -936,6 +971,7 @@ pub async fn run_app() {
                 });
             } else if output.desired_state == "running" && is_active && !effective_has_ingest {
                 info!(
+                    correlation_id = %crate::logging::next_correlation_id("out"),
                     output_id = %output.id,
                     output_name = %output.name,
                     pipeline_id = %output.pipeline_id,
@@ -947,6 +983,7 @@ pub async fn run_app() {
                 engine.clear_egress_retry_state(&output.id).await;
             } else if output.desired_state == "stopped" && is_active {
                 info!(
+                    correlation_id = %crate::logging::next_correlation_id("out"),
                     output_id = %output.id,
                     output_name = %output.name,
                     pipeline_id = %output.pipeline_id,
