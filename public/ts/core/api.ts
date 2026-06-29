@@ -58,32 +58,7 @@ async function parseJsonResponse<T>(response: Response): Promise<T | null> {
   }
 }
 
-const inFlightRequests = new Map<string, Promise<any>>();
-
 async function apiRequest<T = unknown>(
-  url: string,
-  { method = "GET", body = null }: { method?: string; body?: unknown } = {},
-): Promise<T | null> {
-  const normalizedMethod = String(method || "GET").toUpperCase();
-  if (normalizedMethod === "GET" && body === null) {
-    const key = url;
-    if (inFlightRequests.has(key)) {
-      return inFlightRequests.get(key) as Promise<T | null>;
-    }
-    const promise = (async () => {
-      try {
-        return await apiRequestReal<T>(url, { method, body });
-      } finally {
-        inFlightRequests.delete(key);
-      }
-    })();
-    inFlightRequests.set(key, promise);
-    return promise;
-  }
-  return apiRequestReal<T>(url, { method, body });
-}
-
-async function apiRequestReal<T = unknown>(
   url: string,
   { method = "GET", body = null }: { method?: string; body?: unknown } = {},
 ): Promise<T | null> {
@@ -502,6 +477,20 @@ async function deleteMediaFile(
   );
 }
 
+async function renameMediaFile(
+  filename: string,
+  newName: string,
+): Promise<{ renamed: boolean; name: string; updatedIngests?: number } | null> {
+  return apiRequest<{
+    renamed: boolean;
+    name: string;
+    updatedIngests?: number;
+  }>(`/api/v1/media/${encodeURIComponent(filename)}`, {
+    method: "PATCH",
+    body: { newName },
+  });
+}
+
 async function listIngests(): Promise<IngestConfig[] | null> {
   return apiRequest<IngestConfig[]>("/api/v1/ingests");
 }
@@ -643,6 +632,7 @@ export {
   stopRecording,
   listMediaFiles,
   deleteMediaFile,
+  renameMediaFile,
   listIngests,
   createIngest,
   updateIngest,
