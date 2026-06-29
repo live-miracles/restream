@@ -45,6 +45,109 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
 ];
 
 const SINK_PORT: u16 = 12935;
+
+fn path_profile(path: &Path) -> Option<&'static str> {
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        if component.as_os_str() == "target" {
+            return components
+                .next()
+                .and_then(|value| value.as_os_str().to_str())
+                .and_then(|value| match value {
+                    "debug" => Some("debug"),
+                    "release" => Some("release"),
+                    "bench" => Some("bench"),
+                    _ => None,
+                });
+        }
+    }
+    None
+}
+
+fn is_bench_profile(path: &Path) -> bool {
+    matches!(path_profile(path), Some("bench"))
+}
+
+// Measurement-oriented modes are only meaningful when both binaries come from
+// the lightweight bench profile, so we fail fast instead of recording skewed
+// numbers from debug or release builds.
+fn measurement_mode_requires_bench_profile(mode: &str) -> bool {
+    matches!(
+        mode,
+        "ramp-family"
+            | "mixed-h264-rtmp"
+            | "mixed-anchor"
+            | "mixed-h265-srt"
+            | "mixed-h264-srt-multi"
+            | "mixed-h265-srt-multi"
+            | "fault-resilience"
+            | "resource-sweep"
+            | "bitrate-sweep"
+            | "branch-matrix"
+            | "srt-crypto-matrix"
+    )
+}
+
+fn suite_modes_require_bench_profile(raw: &[String]) -> Result<bool, String> {
+    let mut modes: Vec<String> = SUITE_DEFAULT_MODES.iter().map(|s| s.to_string()).collect();
+    let mut preflight_only = false;
+
+    let mut i = 0;
+    while i < raw.len() {
+        match raw[i].as_str() {
+            "--only-modes" => {
+                i += 1;
+                modes = raw
+                    .get(i)
+                    .ok_or("--only-modes requires a value")?
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            "--run-id" | "--work-root" => {
+                i += 1;
+                raw.get(i)
+                    .ok_or_else(|| format!("{} requires a value", raw[i - 1]))?;
+            }
+            "--continue-on-fail" => {}
+            "--preflight-only" => preflight_only = true,
+            other => return Err(format!("unknown suite option: {other}")),
+        }
+        i += 1;
+    }
+
+    if modes.is_empty() {
+        return Err("--only-modes produced an empty mode list".to_string());
+    }
+
+    Ok(preflight_only
+        || modes
+            .iter()
+            .any(|mode| measurement_mode_requires_bench_profile(mode)))
+}
+
+fn ensure_measurement_profile(command: &str, raw: &[String]) -> Result<(), String> {
+    let needs_bench = if command == "suite" {
+        suite_modes_require_bench_profile(raw)?
+    } else {
+        command == "preflight" || measurement_mode_requires_bench_profile(command)
+    };
+    if !needs_bench {
+        return Ok(());
+    }
+
+    let harness_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let restream_path = default_restream_bin();
+    if is_bench_profile(&harness_path) && is_bench_profile(&restream_path) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{command} requires bench-profile binaries for valid measurements; build them with `scripts/build-bench-harness.sh` and run `target/bench/test_harness`"
+    ))
+}
+
 fn default_restream_bin() -> PathBuf {
     if let Some(path) = std::env::var_os("RESTREAM_BIN").map(PathBuf::from) {
         return path;
@@ -80,9 +183,9 @@ fn ensure_loopback() {
 
 async fn run() -> Result<(), String> {
     ensure_loopback();
-    let command = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "suite".to_string());
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let command = raw.first().cloned().unwrap_or_else(|| "suite".to_string());
+    ensure_measurement_profile(&command, &raw[1..])?;
     let result = match command.as_str() {
         "api-smoke" => api_smoke().await,
         "correctness" => correctness().await,
@@ -9387,6 +9490,7 @@ fn suite_append_result(
 
 async fn preflight_check() -> Result<Value, String> {
     let restream_bin = default_restream_bin();
+    let harness_bin = std::env::current_exe().map_err(|e| e.to_string())?;
 
     let binary_check = if std::fs::metadata(&restream_bin)
         .map(|m| {
@@ -9445,12 +9549,32 @@ async fn preflight_check() -> Result<Value, String> {
         }
     };
 
+    let profile_check = if is_bench_profile(&harness_bin) && is_bench_profile(&restream_bin) {
+        json!({
+            "check": "profile",
+            "harness": harness_bin.display().to_string(),
+            "restream": restream_bin.display().to_string(),
+            "required": "bench",
+            "status": "ok"
+        })
+    } else {
+        json!({
+            "check": "profile",
+            "harness": harness_bin.display().to_string(),
+            "restream": restream_bin.display().to_string(),
+            "required": "bench",
+            "status": "fail",
+            "hint": "measurement modes require bench-profile binaries; run `scripts/build-bench-harness.sh` and use `target/bench/test_harness`"
+        })
+    };
+
     let all_ok = binary_check["status"] == "ok"
         && deps_check["status"] == "ok"
-        && disk_check["status"] != "fail";
+        && disk_check["status"] != "fail"
+        && profile_check["status"] == "ok";
 
     let result = json!({
-        "checks": [binary_check, deps_check, disk_check],
+        "checks": [binary_check, deps_check, disk_check, profile_check],
         "status": if all_ok { "ok" } else { "fail" },
     });
 
