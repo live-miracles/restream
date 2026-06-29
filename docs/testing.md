@@ -347,6 +347,18 @@ also synthesizes a per-process high-port bundle instead of reusing the legacy
 3030/1935/10080 defaults, so correctness runs stay isolated even when the
 namespace wrapper is unavailable or constrained.
 
+For concurrency-sensitive changes, run the focused proof gate first:
+
+```sh
+bash ./scripts/check-concurrency-proof-fast.sh
+```
+
+Then run the full live contract gate:
+
+```sh
+bash ./scripts/check-concurrency-contract.sh
+```
+
 Required tools: `ffmpeg`, `ffprobe`, `mediamtx`, `curl`, `jq`.
 On Debian/Ubuntu, `./scripts/bootstrap-dev.sh` installs everything above.
 

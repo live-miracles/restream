@@ -50,10 +50,12 @@ run_loom_target ring_migration_loom
 run_loom_target ts_chunk_ring_loom
 run_loom_target ts_muxer_stage_loom
 
-scripts/resource-limit cargo test health_endpoint_exposes_probe_and_egress_fault_fields --test api -- --nocapture
-scripts/resource-limit cargo test output_status_and_health_preserve_recent_egress_failure_after_unregister --test api -- --nocapture
-scripts/resource-limit cargo build --bin restream --bin test_harness
+scripts/resource-limit cargo test \
+  health_endpoint_exposes_probe_and_egress_fault_fields \
+  --test api -- --nocapture
+scripts/resource-limit cargo test \
+  output_status_and_health_preserve_recent_egress_failure_after_unregister \
+  --test api -- --nocapture
 
-RESTREAM_BIN=target/debug/restream \
-  WORK_DIR=test/artifacts/concurrency-contract \
-  target/debug/test_harness fault-resilience
+scripts/resource-limit cargo test recent_egress --lib -- --nocapture
+scripts/resource-limit cargo test --bin test_harness -- --nocapture
