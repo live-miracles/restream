@@ -2195,6 +2195,112 @@ async fn media_library_classifies_serves_and_deletes_files() {
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
+#[tokio::test]
+async fn media_library_groups_recording_conversion_artifacts_and_renames_companions() {
+    let (app, cookie, temp_dir, _pool) = authenticated_app_with_temp_media().await;
+    let recording_ts = temp_dir.join("recording_20260629T235959_demo.ts");
+    let recording_mp4 = temp_dir.join("recording_20260629T235959_demo.mp4");
+    let recording_state = temp_dir.join("recording_20260629T235959_demo.ts.conversion.json");
+    tokio::fs::write(&recording_ts, b"ts bytes").await.unwrap();
+    tokio::fs::write(&recording_mp4, b"mp4 bytes")
+        .await
+        .unwrap();
+    tokio::fs::write(
+        &recording_state,
+        serde_json::to_vec(&restream::media::recording::RecordingConversionState {
+            status: restream::media::recording::RecordingConversionStatus::Ready,
+            updated_at: "2026-06-29T18:30:00Z".to_string(),
+            error: None,
+        })
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/media", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let files = json["files"].as_array().unwrap();
+    assert_eq!(
+        files.len(),
+        1,
+        "recording ts/mp4 should collapse into one row"
+    );
+    let recording = &files[0];
+    assert_eq!(recording["name"], "recording_20260629T235959_demo.ts");
+    assert_eq!(recording["playName"], "recording_20260629T235959_demo.mp4");
+    assert_eq!(recording["sourceName"], "recording_20260629T235959_demo.ts");
+    assert_eq!(
+        recording["convertedName"],
+        "recording_20260629T235959_demo.mp4"
+    );
+    assert_eq!(recording["conversionStatus"], "ready");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/api/v1/media/recording_20260629T235959_demo.ts",
+            &cookie,
+            Some(r#"{"newName":"recording_20260629T235959_renamed.ts"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(
+        temp_dir
+            .join("recording_20260629T235959_renamed.ts")
+            .exists()
+    );
+    assert!(
+        temp_dir
+            .join("recording_20260629T235959_renamed.mp4")
+            .exists()
+    );
+    assert!(
+        temp_dir
+            .join("recording_20260629T235959_renamed.ts.conversion.json")
+            .exists()
+    );
+    assert!(!recording_ts.exists());
+    assert!(!recording_mp4.exists());
+    assert!(!recording_state.exists());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "DELETE",
+            "/api/v1/media/recording_20260629T235959_renamed.ts",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        !temp_dir
+            .join("recording_20260629T235959_renamed.ts")
+            .exists()
+    );
+    assert!(
+        !temp_dir
+            .join("recording_20260629T235959_renamed.mp4")
+            .exists()
+    );
+    assert!(
+        !temp_dir
+            .join("recording_20260629T235959_renamed.ts.conversion.json")
+            .exists()
+    );
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
 // --- Round 7 #4: transcode profile field validation ---
 #[tokio::test]
 async fn config_patch_invalid_transcode_profile_rejected() {

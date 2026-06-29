@@ -12,6 +12,7 @@ use crate::media::engine::MediaEngine;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,7 +22,24 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 const MIN_DURATION_SECS: u64 = 5;
-const MP4_MUXER_NAME: &str = "mov,mp4,m4a,3gp,3g2,mj2";
+const MP4_MUXER_NAME: &str = "mov";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordingConversionStatus {
+    Converting,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingConversionState {
+    pub status: RecordingConversionStatus,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
 
 fn sanitize_name(name: &str) -> String {
     let mut sanitized = String::with_capacity(name.len());
@@ -53,12 +71,66 @@ fn build_filename(pipe_name: &str) -> String {
     format!("recording_{}_{}.ts", now.format("%Y%m%dT%H%M%S"), safe_name)
 }
 
-fn build_mp4_path(ts_path: &Path) -> PathBuf {
+pub(crate) fn is_recording_source_filename(filename: &str) -> bool {
+    filename.ends_with(".ts") && filename.to_ascii_lowercase().contains("recording")
+}
+
+pub(crate) fn build_mp4_path(ts_path: &Path) -> PathBuf {
     ts_path.with_extension("mp4")
 }
 
 fn build_mp4_temp_path(mp4_path: &Path) -> PathBuf {
-    mp4_path.with_extension("mp4.tmp")
+    let stem = mp4_path
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "recording".to_string());
+    mp4_path.with_file_name(format!("{stem}.tmp.mp4"))
+}
+
+pub(crate) fn build_conversion_state_path(ts_path: &Path) -> PathBuf {
+    ts_path.with_extension("ts.conversion.json")
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+async fn write_conversion_state(
+    ts_path: &Path,
+    status: RecordingConversionStatus,
+    error: Option<String>,
+) {
+    let state_path = build_conversion_state_path(ts_path);
+    let state = RecordingConversionState {
+        status,
+        updated_at: now_rfc3339(),
+        error,
+    };
+    match serde_json::to_vec(&state) {
+        Ok(bytes) => {
+            if let Err(write_error) = tokio::fs::write(&state_path, bytes).await {
+                warn!(
+                    state = %state_path.display(),
+                    err = %write_error,
+                    "failed to persist recording conversion state"
+                );
+            }
+        }
+        Err(serialize_error) => {
+            warn!(
+                state = %state_path.display(),
+                err = %serialize_error,
+                "failed to serialize recording conversion state"
+            );
+        }
+    }
+}
+
+pub(crate) fn load_conversion_state(ts_path: &Path) -> Option<RecordingConversionState> {
+    let state_path = build_conversion_state_path(ts_path);
+    let bytes = std::fs::read(state_path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
@@ -82,6 +154,8 @@ fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<Stri
         "+faststart".to_string(),
         "-bsf:a".to_string(),
         "aac_adtstoasc".to_string(),
+        "-f".to_string(),
+        "mov".to_string(),
         output_path.display().to_string(),
     ]
 }
@@ -89,7 +163,13 @@ fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<Stri
 fn ffmpeg_muxers_include_mp4(listing: &str) -> bool {
     listing.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed.starts_with('E') && trimmed.contains(MP4_MUXER_NAME)
+        let mut parts = trimmed.split_whitespace();
+        let flags = parts.next().unwrap_or_default();
+        let muxer_names = parts.next().unwrap_or_default();
+        flags.contains('E')
+            && muxer_names
+                .split(',')
+                .any(|name| name == MP4_MUXER_NAME || name == "mp4")
     })
 }
 
@@ -129,6 +209,12 @@ fn ffmpeg_supports_mp4_muxer() -> bool {
 
 async fn remux_recording_to_mp4(ts_path: PathBuf) {
     if !ffmpeg_supports_mp4_muxer() {
+        write_conversion_state(
+            &ts_path,
+            RecordingConversionStatus::Failed,
+            Some("Configured FFmpeg binary does not expose the mov/mp4 muxer".to_string()),
+        )
+        .await;
         info!(
             source = %ts_path.display(),
             muxer = MP4_MUXER_NAME,
@@ -154,6 +240,12 @@ async fn remux_recording_to_mp4(ts_path: PathBuf) {
         Ok(output) if output.status.success() => {
             if let Err(error) = tokio::fs::rename(&temp_path, &mp4_path).await {
                 let _ = tokio::fs::remove_file(&temp_path).await;
+                write_conversion_state(
+                    &ts_path,
+                    RecordingConversionStatus::Failed,
+                    Some(format!("Finalized MP4 rename failed: {error}")),
+                )
+                .await;
                 error!(
                     source = %ts_path.display(),
                     output = %mp4_path.display(),
@@ -163,24 +255,22 @@ async fn remux_recording_to_mp4(ts_path: PathBuf) {
                 return;
             }
 
-            if let Err(error) = tokio::fs::remove_file(&ts_path).await {
-                warn!(
-                    source = %ts_path.display(),
-                    output = %mp4_path.display(),
-                    err = %error,
-                    "recording remux succeeded but source ts cleanup failed"
-                );
-            } else {
-                info!(
-                    source = %ts_path.display(),
-                    output = %mp4_path.display(),
-                    "recording remux completed"
-                );
-            }
+            write_conversion_state(&ts_path, RecordingConversionStatus::Ready, None).await;
+            info!(
+                source = %ts_path.display(),
+                output = %mp4_path.display(),
+                "recording remux completed"
+            );
         }
         Ok(output) => {
             let _ = tokio::fs::remove_file(&temp_path).await;
             let stderr = String::from_utf8_lossy(&output.stderr);
+            write_conversion_state(
+                &ts_path,
+                RecordingConversionStatus::Failed,
+                Some(stderr.trim().to_string()),
+            )
+            .await;
             warn!(
                 source = %ts_path.display(),
                 output = %mp4_path.display(),
@@ -191,6 +281,12 @@ async fn remux_recording_to_mp4(ts_path: PathBuf) {
         }
         Err(error) => {
             let _ = tokio::fs::remove_file(&temp_path).await;
+            write_conversion_state(
+                &ts_path,
+                RecordingConversionStatus::Failed,
+                Some(format!("Failed to spawn ffmpeg: {error}")),
+            )
+            .await;
             warn!(
                 source = %ts_path.display(),
                 output = %mp4_path.display(),
@@ -370,6 +466,12 @@ pub async fn start_recording(
         let _ = fs::remove_file(&file_path);
         info!(filename = %filename, "deleted short recording");
     } else {
+        write_conversion_state(
+            Path::new(&file_path),
+            RecordingConversionStatus::Converting,
+            None,
+        )
+        .await;
         tokio::spawn(remux_recording_to_mp4(PathBuf::from(&file_path)));
     }
 
@@ -428,6 +530,7 @@ mod tests {
     use super::*;
     use crate::media::avio::MemoryQueue;
     use std::sync::Arc;
+    use tokio::process::Command as TokioCommand;
     use tokio_util::sync::CancellationToken;
 
     #[test]
@@ -494,6 +597,24 @@ mod tests {
     }
 
     #[test]
+    fn build_mp4_temp_path_preserves_mp4_extension_for_muxer_inference() {
+        let mp4 = Path::new("/tmp/recording_20260629_demo.mp4");
+        assert_eq!(
+            build_mp4_temp_path(mp4),
+            PathBuf::from("/tmp/recording_20260629_demo.tmp.mp4")
+        );
+    }
+
+    #[test]
+    fn build_conversion_state_path_adds_sidecar_suffix() {
+        let ts = Path::new("/tmp/recording_20260629_demo.ts");
+        assert_eq!(
+            build_conversion_state_path(ts),
+            PathBuf::from("/tmp/recording_20260629_demo.ts.conversion.json")
+        );
+    }
+
+    #[test]
     fn build_recording_remux_args_targets_faststart_mp4_copy() {
         let input = Path::new("/tmp/input.ts");
         let output = Path::new("/tmp/output.mp4.tmp");
@@ -509,6 +630,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-bsf:a", "aac_adtstoasc"])
         );
+        assert!(args.windows(2).any(|pair| pair == ["-f", "mov"]));
         assert_eq!(args.last().map(String::as_str), Some("/tmp/output.mp4.tmp"));
     }
 
@@ -519,10 +641,84 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_muxers_include_mp4_detects_plain_mov_muxer_name() {
+        let listing = "Formats:\n D.. = Demuxing supported\n .E. = Muxing supported\n ---\n  E mov             QuickTime / MOV\n  E mpegts          MPEG-TS (MPEG-2 Transport Stream)\n";
+        assert!(ffmpeg_muxers_include_mp4(listing));
+    }
+
+    #[test]
     fn ffmpeg_muxers_include_mp4_rejects_missing_mov_muxer() {
         let listing =
             "Formats:\n .E. = Muxing supported\n ---\n  E matroska Matroska\n  E mpegts MPEG-TS\n";
         assert!(!ffmpeg_muxers_include_mp4(listing));
+    }
+
+    #[tokio::test]
+    async fn remux_recording_to_mp4_creates_mp4_and_keeps_source_ts() {
+        assert!(
+            ffmpeg_supports_mp4_muxer(),
+            "bundled ffmpeg must expose mp4 muxing for recording remux"
+        );
+
+        let fixture = crate::test_fixtures::canonical_h264_ts_fixture()
+            .expect("checked-in TS fixture should exist");
+        let temp_dir =
+            std::env::temp_dir().join(format!("recording-remux-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let source = temp_dir.join("recording_fixture.ts");
+        std::fs::copy(&fixture, &source).expect("fixture should copy");
+
+        write_conversion_state(&source, RecordingConversionStatus::Converting, None).await;
+        remux_recording_to_mp4(source.clone()).await;
+
+        let mp4_path = build_mp4_path(&source);
+        assert!(
+            source.exists(),
+            "source TS should remain after successful remux"
+        );
+        assert!(mp4_path.exists(), "remux should create an MP4 sibling");
+
+        let state = load_conversion_state(&source).expect("conversion state should exist");
+        assert_eq!(state.status, RecordingConversionStatus::Ready);
+        assert!(
+            state.error.is_none(),
+            "successful remux should not persist an error"
+        );
+
+        let roundtrip_ts = temp_dir.join("roundtrip.ts");
+        let status = TokioCommand::new(crate::ffmpeg_extract::ffmpeg_bin_path())
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                &mp4_path.display().to_string(),
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                &roundtrip_ts.display().to_string(),
+            ])
+            .status()
+            .await
+            .expect("bundled ffmpeg should validate remuxed mp4");
+        assert!(
+            status.success(),
+            "remuxed mp4 should be readable by bundled ffmpeg"
+        );
+        assert!(
+            roundtrip_ts.exists() && std::fs::metadata(&roundtrip_ts).unwrap().len() > 0,
+            "round-trip remux should produce TS output"
+        );
+
+        let _ = std::fs::remove_file(roundtrip_ts);
+        let _ = std::fs::remove_file(mp4_path);
+        let _ = std::fs::remove_file(build_conversion_state_path(&source));
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

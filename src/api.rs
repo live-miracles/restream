@@ -3151,9 +3151,30 @@ async fn media_list_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let mut files = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(&state.media_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
+    #[derive(Clone)]
+    struct MediaDirEntry {
+        name: String,
+        size: u64,
+        modified_at: String,
+        modified_ms: i64,
+    }
+
+    fn entry_modified(metadata: &std::fs::Metadata) -> (String, i64) {
+        let modified_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        let modified_at = chrono::DateTime::from_timestamp_millis(modified_ms)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        (modified_at, modified_ms)
+    }
+
+    let mut entries = HashMap::<String, MediaDirEntry>::new();
+    if let Ok(mut media_dir_entries) = tokio::fs::read_dir(&state.media_dir).await {
+        while let Ok(Some(entry)) = media_dir_entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             if (name.ends_with(".ts")
                 || name.ends_with(".mkv")
@@ -3161,32 +3182,122 @@ async fn media_list_handler(
                 || name.ends_with(".mov"))
                 && let Ok(metadata) = entry.metadata().await
             {
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .and_then(|d| chrono::DateTime::from_timestamp_millis(d.as_millis() as i64))
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default();
-
-                let ingests = db::list_ingests_for_filename(&state.db, &name)
-                    .await
-                    .unwrap_or_default();
-                let lower_name = name.to_ascii_lowercase();
-                let kind = if lower_name.contains("recording") {
-                    "recording"
-                } else {
-                    "source"
-                };
-                files.push(serde_json::json!({
-                    "name": name,
-                    "size": metadata.len(),
-                    "modifiedAt": modified,
-                    "ingestCount": ingests.len(),
-                    "kind": kind
-                }));
+                let (modified_at, modified_ms) = entry_modified(&metadata);
+                entries.insert(
+                    name.clone(),
+                    MediaDirEntry {
+                        name,
+                        size: metadata.len(),
+                        modified_at,
+                        modified_ms,
+                    },
+                );
             }
         }
+    }
+
+    let mut files = Vec::new();
+    let mut consumed = HashSet::new();
+    let mut names = entries.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        if !consumed.insert(name.clone()) {
+            continue;
+        }
+        let Some(entry) = entries.get(&name).cloned() else {
+            continue;
+        };
+        if name.ends_with(".mp4") {
+            let companion_source_name = std::path::Path::new(&name)
+                .with_extension("ts")
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string());
+            if let Some(companion_source_name) = companion_source_name
+                && crate::media::recording::is_recording_source_filename(&companion_source_name)
+                && entries.contains_key(&companion_source_name)
+            {
+                continue;
+            }
+        }
+        let ingests = db::list_ingests_for_filename(&state.db, &name)
+            .await
+            .unwrap_or_default();
+        let lower_name = name.to_ascii_lowercase();
+        let kind = if lower_name.contains("recording") {
+            "recording"
+        } else {
+            "source"
+        };
+
+        if crate::media::recording::is_recording_source_filename(&name) {
+            let source_path = std::path::Path::new(&state.media_dir).join(&name);
+            let converted_name = crate::media::recording::build_mp4_path(&source_path)
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .filter(|candidate| entries.contains_key(candidate));
+            let converted_entry = converted_name
+                .as_ref()
+                .and_then(|candidate| entries.get(candidate).cloned());
+            if let Some(converted_name) = &converted_name {
+                consumed.insert(converted_name.clone());
+            }
+            let conversion_state = crate::media::recording::load_conversion_state(&source_path);
+            let conversion_status = if converted_entry.is_some() {
+                Some("ready")
+            } else {
+                conversion_state.as_ref().map(|state| match state.status {
+                    crate::media::recording::RecordingConversionStatus::Converting => "converting",
+                    crate::media::recording::RecordingConversionStatus::Ready => "ready",
+                    crate::media::recording::RecordingConversionStatus::Failed => "failed",
+                })
+            };
+            let conversion_error = conversion_state
+                .as_ref()
+                .and_then(|state| state.error.as_deref());
+            let conversion_updated_at = conversion_state
+                .as_ref()
+                .map(|state| state.updated_at.as_str());
+            let converted_size = converted_entry.as_ref().map(|value| value.size);
+            let total_size = entry.size + converted_size.unwrap_or(0);
+            let modified = converted_entry
+                .as_ref()
+                .filter(|value| value.modified_ms > entry.modified_ms)
+                .map(|value| value.modified_at.clone())
+                .unwrap_or_else(|| entry.modified_at.clone());
+
+            files.push(serde_json::json!({
+                "name": name,
+                "size": total_size,
+                "modifiedAt": modified,
+                "ingestCount": ingests.len(),
+                "kind": kind,
+                "sourceName": entry.name,
+                "sourceSize": entry.size,
+                "convertedName": converted_entry.as_ref().map(|value| value.name.clone()),
+                "convertedSize": converted_size,
+                "playName": converted_entry.as_ref().map(|value| value.name.clone()),
+                "conversionStatus": conversion_status,
+                "conversionError": conversion_error,
+                "conversionUpdatedAt": conversion_updated_at,
+            }));
+            continue;
+        }
+
+        files.push(serde_json::json!({
+            "name": name,
+            "size": entry.size,
+            "modifiedAt": entry.modified_at,
+            "ingestCount": ingests.len(),
+            "kind": kind,
+            "sourceName": entry.name,
+            "sourceSize": entry.size,
+            "convertedName": serde_json::Value::Null,
+            "convertedSize": serde_json::Value::Null,
+            "playName": entry.name,
+            "conversionStatus": serde_json::Value::Null,
+            "conversionError": serde_json::Value::Null,
+            "conversionUpdatedAt": serde_json::Value::Null,
+        }));
     }
 
     Json(serde_json::json!({ "files": files })).into_response()
@@ -3341,8 +3452,25 @@ async fn media_delete_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
     };
 
-    match tokio::fs::remove_file(canonical_path).await {
-        Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
+    let mut delete_paths = vec![canonical_path.clone()];
+    if crate::media::recording::is_recording_source_filename(&filename) {
+        let converted_path = crate::media::recording::build_mp4_path(&canonical_path);
+        if converted_path.exists() {
+            delete_paths.push(converted_path);
+        }
+        let state_path = crate::media::recording::build_conversion_state_path(&canonical_path);
+        if state_path.exists() {
+            delete_paths.push(state_path);
+        }
+    }
+
+    match tokio::fs::remove_file(&canonical_path).await {
+        Ok(_) => {
+            for extra_path in delete_paths.into_iter().skip(1) {
+                let _ = tokio::fs::remove_file(extra_path).await;
+            }
+            Json(serde_json::json!({ "deleted": true })).into_response()
+        }
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
 }
@@ -3405,12 +3533,49 @@ async fn media_rename_handler(
             .into_response();
     }
 
-    if let Err(error) = tokio::fs::rename(&source_path, &destination_path).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to rename media file: {error}")})),
-        )
-            .into_response();
+    let mut rename_pairs = vec![(source_path.clone(), destination_path.clone())];
+    if crate::media::recording::is_recording_source_filename(&filename) {
+        let source_converted = crate::media::recording::build_mp4_path(&source_path);
+        let destination_converted = crate::media::recording::build_mp4_path(&destination_path);
+        if source_converted.exists() {
+            if destination_converted.exists() {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "A converted MP4 with that name already exists"})),
+                )
+                    .into_response();
+            }
+            rename_pairs.push((source_converted, destination_converted));
+        }
+
+        let source_state = crate::media::recording::build_conversion_state_path(&source_path);
+        let destination_state =
+            crate::media::recording::build_conversion_state_path(&destination_path);
+        if source_state.exists() {
+            if destination_state.exists() {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "A conversion state file with that name already exists"})),
+                )
+                    .into_response();
+            }
+            rename_pairs.push((source_state, destination_state));
+        }
+    }
+
+    let mut completed = Vec::new();
+    for (from, to) in &rename_pairs {
+        if let Err(error) = tokio::fs::rename(from, to).await {
+            for (rollback_from, rollback_to) in completed.into_iter().rev() {
+                let _ = tokio::fs::rename(rollback_to, rollback_from).await;
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to rename media file: {error}")})),
+            )
+                .into_response();
+        }
+        completed.push((from.clone(), to.clone()));
     }
 
     let ingests = db::list_ingests_for_filename(&state.db, &filename)
@@ -3427,7 +3592,9 @@ async fn media_rename_handler(
         )
         .await
         {
-            let _ = tokio::fs::rename(&destination_path, &source_path).await;
+            for (rollback_from, rollback_to) in completed.into_iter().rev() {
+                let _ = tokio::fs::rename(rollback_to, rollback_from).await;
+            }
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("Failed to update ingest references: {error}")})),

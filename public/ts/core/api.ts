@@ -429,6 +429,14 @@ export interface MediaFile {
   modifiedAt: string;
   ingestCount?: number;
   kind?: "recording" | "source";
+  sourceName?: string;
+  sourceSize?: number;
+  convertedName?: string | null;
+  convertedSize?: number | null;
+  playName?: string | null;
+  conversionStatus?: "converting" | "ready" | "failed" | null;
+  conversionError?: string | null;
+  conversionUpdatedAt?: string | null;
 }
 
 export interface IngestConfig {

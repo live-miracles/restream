@@ -50,8 +50,10 @@ function sectionEmpty(label: string): string {
   return `<div class="border-base-content/10 bg-base-100/70 rounded-lg border px-3 py-4 text-sm opacity-70">No ${escapeHtml(label)}.</div>`;
 }
 
-function mediaContentType(file: MediaFile): string | null {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+function mediaContentTypeForName(
+  name: string | null | undefined,
+): string | null {
+  const extension = name?.split(".").pop()?.toLowerCase() ?? "";
   switch (extension) {
     case "mp4":
       return "video/mp4";
@@ -74,7 +76,7 @@ function getNativePlaybackProbe(): HTMLVideoElement | null {
 }
 
 function isNativelyPlayable(file: MediaFile): boolean {
-  const contentType = mediaContentType(file);
+  const contentType = mediaContentTypeForName(file.playName ?? file.name);
   const probe = getNativePlaybackProbe();
   if (!contentType || !probe) return false;
   return probe.canPlayType(contentType).trim() !== "";
@@ -82,27 +84,57 @@ function isNativelyPlayable(file: MediaFile): boolean {
 
 function mediaFileRow(file: MediaFile): string {
   const safeName = escapeHtml(file.name);
-  const mediaUrl = withBasePath(`/media/${encodeURIComponent(file.name)}`);
+  const sourceName = file.sourceName || file.name;
+  const sourceUrl = withBasePath(`/media/${encodeURIComponent(sourceName)}`);
+  const playName = file.playName || null;
+  const playUrl = playName
+    ? withBasePath(`/media/${encodeURIComponent(playName)}`)
+    : null;
+  const convertedName = file.convertedName || null;
+  const convertedUrl =
+    convertedName && convertedName !== sourceName
+      ? withBasePath(`/media/${encodeURIComponent(convertedName)}`)
+      : null;
   const hasIngests = (file.ingestCount ?? 0) > 0;
   const deleteDisabled = hasIngests
     ? 'disabled title="Remove configured ingests first"'
     : "";
   const canPlay = isNativelyPlayable(file);
-  const playAction = canPlay
-    ? `<a href="${mediaUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>`
-    : '<button type="button" class="btn btn-xs btn-accent btn-outline shrink-0" disabled title="This format is not natively playable in Chrome">Play</button>';
+  const playAction =
+    canPlay && playUrl
+      ? `<a href="${playUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-accent btn-outline shrink-0">Play</a>`
+      : '<button type="button" class="btn btn-xs btn-accent btn-outline shrink-0" disabled title="This file is not ready for native Chrome playback yet">Play</button>';
+  const conversionStatusBadge =
+    file.conversionStatus === "converting"
+      ? '<span class="badge badge-sm badge-warning">Converting</span>'
+      : file.conversionStatus === "ready"
+        ? '<span class="badge badge-sm badge-success">MP4 Ready</span>'
+        : file.conversionStatus === "failed"
+          ? `<span class="badge badge-sm badge-error" title="${escapeHtml(file.conversionError || "Conversion failed")}">Conversion Failed</span>`
+          : "";
+  const downloadActions = convertedUrl
+    ? `<a href="${convertedUrl}" download="${escapeHtml(convertedName || "")}" class="btn btn-xs btn-accent btn-outline shrink-0">Download MP4</a>
+        <a href="${sourceUrl}" download="${escapeHtml(sourceName)}" class="btn btn-xs btn-outline shrink-0">Download TS</a>`
+    : `<a href="${sourceUrl}" download="${escapeHtml(sourceName)}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>`;
+  const sizeLabel =
+    convertedUrl && file.convertedSize
+      ? `${formatFileSize(file.sourceSize ?? file.size)} TS / ${formatFileSize(file.convertedSize)} MP4`
+      : formatFileSize(file.sourceSize ?? file.size);
 
   return `<div class="border-base-content/10 bg-base-100 flex min-h-18 flex-wrap items-center gap-3 rounded-lg border px-3 py-2" data-filename="${safeName}">
         <div class="min-w-0 flex-1">
-            <div class="truncate text-sm font-semibold" title="${safeName}">${safeName}</div>
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <div class="truncate text-sm font-semibold" title="${safeName}">${safeName}</div>
+                ${conversionStatusBadge}
+            </div>
             <div class="text-base-content/55 mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-                <span>${formatFileSize(file.size)}</span>
+                <span>${escapeHtml(sizeLabel)}</span>
                 <span>${escapeHtml(formatModified(file.modifiedAt))}</span>
                 ${hasIngests ? `<span>${file.ingestCount} ingest${file.ingestCount === 1 ? "" : "s"}</span>` : ""}
             </div>
         </div>
         ${playAction}
-        <a href="${mediaUrl}" download="${safeName}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
+        ${downloadActions}
         <button class="btn btn-xs btn-outline shrink-0 js-rename-media" data-filename="${safeName}">Rename</button>
         <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${safeName}" ${deleteDisabled}>Delete</button>
     </div>`;
@@ -178,6 +210,11 @@ function fileListSignature(files: MediaFile[]): string {
       file.modifiedAt,
       file.ingestCount ?? 0,
       mediaKind(file),
+      file.sourceName ?? "",
+      file.convertedName ?? "",
+      file.playName ?? "",
+      file.conversionStatus ?? "",
+      file.conversionError ?? "",
     ]),
   );
 }
