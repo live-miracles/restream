@@ -278,6 +278,7 @@ async fn app_logs_can_be_queried_by_output_scope() {
             since: None,
             until: None,
             target: None,
+            scope: None,
             pipeline_id: Some("p1".to_string()),
             output_id: Some("o1".to_string()),
             event_class: None,
@@ -298,6 +299,7 @@ async fn app_logs_can_be_queried_by_output_scope() {
             since: None,
             until: None,
             target: None,
+            scope: None,
             pipeline_id: Some("p1".to_string()),
             output_id: Some("o1".to_string()),
             event_class: Some("lifecycle".to_string()),
@@ -369,6 +371,7 @@ async fn filtered_app_logs_honor_prefix_and_event_class_filters() {
             since: None,
             until: None,
             target: None,
+            scope: None,
             pipeline_id: Some("p1".to_string()),
             output_id: Some("o1".to_string()),
             event_class: None,
@@ -389,6 +392,7 @@ async fn filtered_app_logs_honor_prefix_and_event_class_filters() {
             since: None,
             until: None,
             target: None,
+            scope: None,
             pipeline_id: Some("p1".to_string()),
             output_id: Some("o1".to_string()),
             event_class: Some("lifecycle".to_string()),
@@ -400,6 +404,70 @@ async fn filtered_app_logs_honor_prefix_and_event_class_filters() {
     .await
     .unwrap();
     assert_eq!(lifecycle_logs.len(), 2);
+}
+
+#[tokio::test]
+async fn scoped_app_logs_can_be_limited_to_restream_only_entries() {
+    let pool = test_pool().await;
+
+    db::append_app_log_batch(
+        &pool,
+        &[
+            app_log_entry(
+                "2024-01-01T00:00:00Z",
+                None,
+                None,
+                Some("restream.http.ready"),
+                Some("lifecycle"),
+                "dashboard API server listening",
+                None,
+            ),
+            app_log_entry(
+                "2024-01-01T00:00:01Z",
+                Some("p1"),
+                None,
+                Some("ingest.connected"),
+                Some("lifecycle"),
+                "publisher connected",
+                None,
+            ),
+            app_log_entry(
+                "2024-01-01T00:00:02Z",
+                Some("p1"),
+                Some("o1"),
+                Some("egress.failed"),
+                Some("lifecycle"),
+                "output failed",
+                None,
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let restream_logs = db::list_app_logs(
+        &pool,
+        &AppLogFilters {
+            level: Some("info".to_string()),
+            since: None,
+            until: None,
+            target: None,
+            scope: Some("restream".to_string()),
+            pipeline_id: None,
+            output_id: None,
+            event_class: None,
+            prefix: None,
+            limit: Some(10),
+            order: Some("asc".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(restream_logs.len(), 1);
+    assert_eq!(
+        restream_logs[0].event_type.as_deref(),
+        Some("restream.http.ready")
+    );
 }
 
 #[tokio::test]

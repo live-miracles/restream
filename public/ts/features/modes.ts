@@ -1,3 +1,4 @@
+import { getRestreamHistory } from "../core/api.js";
 import {
   escapeHtml,
   getUrlParam,
@@ -17,7 +18,7 @@ import {
   isOutputUnexpectedlyDown,
   selectPipeline,
 } from "./render.js";
-import type { OutputView, PipelineView } from "../types.js";
+import type { AppLogRow, OutputView, PipelineView } from "../types.js";
 
 type DashboardMode =
   | "overview"
@@ -58,6 +59,9 @@ type OverviewMetricKey =
 type SummaryCounts = ReturnType<typeof summaryCounts>;
 
 const OVERVIEW_HISTORY_LIMIT = 28;
+const OVERVIEW_ACTIVITY_LIMIT = 6;
+const OVERVIEW_ACTIVITY_FETCH_LIMIT = 24;
+const OVERVIEW_ACTIVITY_STALE_MS = 15_000;
 const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
   inputs: [],
   outputs: [],
@@ -67,6 +71,126 @@ const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
   engineMemory: [],
 };
 let lastOverviewMetricsSampleKey: string | null = null;
+let overviewActivityLogs: AppLogRow[] = [];
+let overviewActivityFetchedAt = 0;
+let overviewActivityInFlight: Promise<void> | null = null;
+
+function normalizeActivityEventType(log: AppLogRow | null | undefined): string {
+  return String(log?.eventType || "")
+    .trim()
+    .toLowerCase();
+}
+
+function classifyOverviewActivity(log: AppLogRow): {
+  label: string;
+  badgeClass: string;
+} {
+  const eventType = normalizeActivityEventType(log);
+  const message = String(log?.message || "");
+  const level = String(log?.level || "").toUpperCase();
+
+  if (eventType === "restream.http.ready") {
+    return { label: "API Ready", badgeClass: "badge-success" };
+  }
+  if (eventType === "restream.shutdown.requested") {
+    return { label: "Shutdown Requested", badgeClass: "badge-warning" };
+  }
+  if (eventType === "restream.shutdown.started") {
+    return { label: "Stopping", badgeClass: "badge-warning" };
+  }
+  if (eventType === "restream.shutdown.completed") {
+    return { label: "Stopped", badgeClass: "badge-stopped" };
+  }
+  if (/task exited unexpectedly/i.test(message)) {
+    return { label: "Server Task Exit", badgeClass: "badge-error" };
+  }
+  if (/server listening/i.test(message)) {
+    return { label: "Listener Ready", badgeClass: "badge-success" };
+  }
+  if (level === "ERROR") {
+    return { label: "Error", badgeClass: "badge-error" };
+  }
+  if (level === "WARN") {
+    return { label: "Warning", badgeClass: "badge-warning" };
+  }
+  return { label: "Process", badgeClass: "badge-ghost" };
+}
+
+function isOverviewActivityLog(log: AppLogRow): boolean {
+  const eventType = normalizeActivityEventType(log);
+  const message = String(log?.message || "");
+  const level = String(log?.level || "").toUpperCase();
+
+  if (eventType.startsWith("restream.")) return true;
+  if (level === "WARN" || level === "ERROR") return true;
+  return /listening|shutdown|exited unexpectedly|raised file descriptor limit|loaded profiles|updated profiles/i.test(
+    message,
+  );
+}
+
+function formatOverviewActivityTime(ts: string | null | undefined): string {
+  if (!ts) return "--";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleTimeString();
+}
+
+function refreshOverviewActivityIfStale(): void {
+  if (currentMode !== null && currentMode !== "overview") return;
+  if (overviewActivityInFlight) return;
+  if (Date.now() - overviewActivityFetchedAt < OVERVIEW_ACTIVITY_STALE_MS)
+    return;
+
+  overviewActivityInFlight = (async () => {
+    const res = await getRestreamHistory({
+      limit: OVERVIEW_ACTIVITY_FETCH_LIMIT,
+      order: "desc",
+    });
+    overviewActivityFetchedAt = Date.now();
+    if (res && Array.isArray(res.logs)) {
+      overviewActivityLogs = res.logs as AppLogRow[];
+    }
+  })()
+    .catch(() => {})
+    .finally(() => {
+      overviewActivityInFlight = null;
+      if (currentMode === "overview" || currentMode === null) renderOverview();
+    });
+}
+
+function overviewActivitySection(): string {
+  const items = overviewActivityLogs
+    .filter(isOverviewActivityLog)
+    .slice(0, OVERVIEW_ACTIVITY_LIMIT);
+  const loading = overviewActivityInFlight !== null && items.length === 0;
+  const body = loading
+    ? '<div class="text-base-content/60 text-sm">Loading recent restream activity...</div>'
+    : items.length === 0
+      ? '<div class="text-base-content/60 text-sm">No recent restream-wide activity yet.</div>'
+      : `<div class="space-y-2">${items
+          .map((log) => {
+            const event = classifyOverviewActivity(log);
+            return `<div class="bg-base-100 rounded-lg p-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="badge badge-sm ${event.badgeClass}">${escapeHtml(event.label)}</span>
+                        <span class="text-xs opacity-70">${escapeHtml(formatOverviewActivityTime(log.ts))}</span>
+                    </div>
+                    <pre class="mt-2 whitespace-pre-wrap break-words text-xs">${escapeHtml(sanitizeLogMessage(log.message || "", true))}</pre>
+                </div>`;
+          })
+          .join("")}</div>`;
+
+  return `<section class="border-base-content/10 bg-base-200/80 rounded-lg border">
+        <div class="border-base-content/10 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+            <div>
+                <h2 class="text-base font-semibold">Restream Activity</h2>
+                <p class="text-base-content/60 mt-1 text-sm">Recent operator events outside pipeline and output scope.</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" id="overview-open-status-btn">Open Status</button>
+        </div>
+        <div class="p-4">${body}</div>
+    </section>`;
+}
 
 function normalizeMode(mode: string | null): DashboardMode {
   if (mode === "admin") return "settings";
@@ -399,6 +523,7 @@ function rateOverviewPill(kbps: number | null | undefined): string {
 function renderOverview(): void {
   const container = document.getElementById("overview-mode-content");
   if (!container) return;
+  refreshOverviewActivityIfStale();
 
   const counts = summaryCounts();
   recordOverviewMetricSamples(counts);
@@ -483,7 +608,8 @@ function renderOverview(): void {
                     <tbody>${pipelineRows || '<tr><td colspan="7" class="text-base-content/60 px-4 py-6">No pipelines configured.</td></tr>'}</tbody>
                 </table>
             </div>
-        </section>`;
+        </section>
+        ${overviewActivitySection()}`;
 
   container
     .querySelectorAll<HTMLElement>(".js-open-pipeline")
@@ -496,6 +622,10 @@ function renderOverview(): void {
     });
   const addBtn = document.getElementById("overview-add-pipeline-btn");
   if (addBtn) addBtn.onclick = () => void window.addPipeBtn();
+  const statusBtn = document.getElementById("overview-open-status-btn");
+  if (statusBtn) {
+    statusBtn.onclick = () => setDashboardMode("status");
+  }
 }
 
 function overviewMetric(

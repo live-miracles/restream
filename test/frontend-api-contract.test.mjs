@@ -123,7 +123,9 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
   await api.getConfig();
   await api.updatePipeline("pipe-1", { name: "Updated" });
   await api.updateOutput("pipe-1", "out-1", { name: "Output" });
+  await api.getPipelineHistory("pipe-1", 25);
   await api.getOutputHistory("pipe-1", "out-1", { filter: "lifecycle" });
+  await api.getRestreamHistory({ limit: 50, order: "desc" });
   await api.listMediaFiles();
   await api.logout();
 
@@ -133,10 +135,12 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
       ["GET", "/api/v1/settings"],
       ["PATCH", "/api/v1/pipelines/pipe-1"],
       ["PATCH", "/api/v1/pipelines/pipe-1/outputs/out-1"],
+      ["GET", "/api/v1/logs?pipeline_id=pipe-1&limit=25"],
       [
         "GET",
         "/api/v1/logs?pipeline_id=pipe-1&output_id=out-1&event_class=lifecycle",
       ],
+      ["GET", "/api/v1/logs?scope=restream&limit=50&order=desc"],
       ["GET", "/api/v1/media"],
       ["POST", "/api/v1/auth/logout"],
     ],

@@ -263,6 +263,7 @@ pub struct AppLogFilters {
     pub since: Option<String>,
     pub until: Option<String>,
     pub target: Option<String>,
+    pub scope: Option<String>,
     pub pipeline_id: Option<String>,
     pub output_id: Option<String>,
     pub event_class: Option<String>,

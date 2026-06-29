@@ -137,6 +137,28 @@ function classifyHistoryEvent(
       badgeClass: "badge-error",
     };
   }
+  if (eventType === "lifecycle.start") {
+    return {
+      type: "starting",
+      label: "Start issued",
+      badgeClass: "badge-info",
+    };
+  }
+  if (eventType === "lifecycle.stop") {
+    const message = String(log?.message || "");
+    if (/ingest is no longer active/i.test(message)) {
+      return {
+        type: "stopping",
+        label: "Stopped for input loss",
+        badgeClass: "badge-warning",
+      };
+    }
+    return {
+      type: "stopping",
+      label: "Stop issued",
+      badgeClass: "badge-stopped",
+    };
+  }
   if (eventType === "lifecycle.stop_requested") {
     return {
       type: "stopping",
@@ -439,6 +461,37 @@ function classifyPipelineHistoryEvent(
   }
 
   const message = String(log?.message || "");
+  const target = String(log?.target || "");
+  const level = String(log?.level || "").toUpperCase();
+
+  if (target.includes("external_transcoder")) {
+    if (message.includes("failed to spawn ffmpeg")) {
+      return {
+        type: "ffmpeg",
+        label: "FFmpeg Spawn Failed",
+        badgeClass: "badge-error",
+      };
+    }
+    if (message.includes("stdin write failed")) {
+      return {
+        type: "ffmpeg",
+        label: "FFmpeg Pipe Failed",
+        badgeClass: "badge-error",
+      };
+    }
+    if (message.includes("ffmpeg stderr")) {
+      return {
+        type: "ffmpeg",
+        label: "FFmpeg stderr",
+        badgeClass: level === "ERROR" ? "badge-error" : "badge-warning",
+      };
+    }
+    return {
+      type: "ffmpeg",
+      label: "External Stage",
+      badgeClass: level === "ERROR" ? "badge-error" : "badge-info",
+    };
+  }
 
   if (message.startsWith("[config] created")) {
     return {
@@ -493,7 +546,18 @@ function getPipelineTimelineLogs(logs: AppLogRow[]): AppLogRow[] {
     ) {
       return true;
     }
+    const target = String(log?.target || "");
+    const level = String(log?.level || "").toUpperCase();
     const message = String(log?.message || "");
+    if (target.includes("external_transcoder")) {
+      return (
+        level === "WARN" ||
+        level === "ERROR" ||
+        message.includes("ffmpeg stderr") ||
+        message.includes("failed to spawn ffmpeg") ||
+        message.includes("stdin write failed")
+      );
+    }
     return (
       message.startsWith("[config]") || message.startsWith("[input_state]")
     );

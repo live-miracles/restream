@@ -321,7 +321,7 @@ async function getOutputHistory(
 
 async function getPipelineHistory(
   pipeId: string,
-  limit = 200,
+  limit = 400,
 ): Promise<{ logs: unknown[] } | null> {
   if (!pipeId) {
     showErrorAlert("Pipeline id is required");
@@ -331,9 +331,36 @@ async function getPipelineHistory(
   const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
   const query = new URLSearchParams({
     pipeline_id: pipeId,
-    event_class: "lifecycle",
     limit: String(safeLimit),
   });
+
+  const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
+    `/api/v1/logs?${query.toString()}`,
+  );
+  if (!res) return null;
+  return res;
+}
+
+interface GetRestreamHistoryOptions {
+  limit?: number;
+  order?: string | null;
+  filter?: string | null;
+}
+
+async function getRestreamHistory(
+  options: GetRestreamHistoryOptions = {},
+): Promise<{ logs: unknown[] } | null> {
+  const { limit = 200, order = null, filter = null } = options;
+  const safeLimit = Number.isFinite(Number(limit)) ? Number(limit) : 200;
+  const query = new URLSearchParams({
+    scope: "restream",
+    limit: String(safeLimit),
+  });
+
+  if (order) query.set("order", String(order));
+  if (filter === "lifecycle") {
+    query.set("event_class", "lifecycle");
+  }
 
   const res = await apiRequest<{ logs: Record<string, unknown>[] }>(
     `/api/v1/logs?${query.toString()}`,
@@ -585,6 +612,7 @@ export {
   stopOut,
   getOutputHistory,
   getPipelineHistory,
+  getRestreamHistory,
   patchConfig,
   startRecording,
   stopRecording,

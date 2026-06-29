@@ -259,8 +259,12 @@ pub async fn start_external_transcoder_stage(
     let input_codec = input_codec_override.as_deref().unwrap_or("h264");
     let args = build_stage_ffmpeg_args(&encoding, input_codec);
     info!(
+        pipeline_id = %pipeline_id,
+        stage_encoding = %encoding,
+        stage_backend = "external_ffmpeg",
         "[ext-transcoder] stage start  pipeline={} encoding={}",
-        pipeline_id, encoding
+        pipeline_id,
+        encoding
     );
 
     let ffmpeg_bin = crate::ffmpeg_extract::ffmpeg_bin_path();
@@ -274,8 +278,14 @@ pub async fn start_external_transcoder_stage(
         Ok(c) => c,
         Err(e) => {
             error!(
+                pipeline_id = %pipeline_id,
+                stage_encoding = %encoding,
+                stage_backend = "external_ffmpeg",
+                err = %e,
                 "[ext-transcoder] failed to spawn ffmpeg ({}:{}): {}",
-                pipeline_id, encoding, e
+                pipeline_id,
+                encoding,
+                e
             );
             engine
                 .runtime
@@ -294,8 +304,12 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                pipeline_id = %pipeline_id,
+                stage_encoding = %encoding,
+                stage_backend = "external_ffmpeg",
                 "[ext-transcoder] ffmpeg stdin unavailable ({}:{})",
-                pipeline_id, encoding
+                pipeline_id,
+                encoding
             );
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -314,8 +328,12 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                pipeline_id = %pipeline_id,
+                stage_encoding = %encoding,
+                stage_backend = "external_ffmpeg",
                 "[ext-transcoder] ffmpeg stdout unavailable ({}:{})",
-                pipeline_id, encoding
+                pipeline_id,
+                encoding
             );
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -334,8 +352,12 @@ pub async fn start_external_transcoder_stage(
         Some(s) => s,
         None => {
             error!(
+                pipeline_id = %pipeline_id,
+                stage_encoding = %encoding,
+                stage_backend = "external_ffmpeg",
                 "[ext-transcoder] ffmpeg stderr unavailable ({}:{})",
-                pipeline_id, encoding
+                pipeline_id,
+                encoding
             );
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -360,6 +382,9 @@ pub async fn start_external_transcoder_stage(
     // Logs which path was chosen so operators can see it in the stage output.
     if !timing::calibrate() {
         info!(
+            pipeline_id = %pipeline_id,
+            stage_encoding = %encoding,
+            stage_backend = "external_ffmpeg",
             "[ext-transcoder] pipe timing: Instant fallback \
              (invariant TSC absent or calibration out of bounds)"
         );
@@ -379,6 +404,8 @@ pub async fn start_external_transcoder_stage(
     let label = format!("{}:{}", pipeline_id, encoding);
     {
         let label = label.clone();
+        let stderr_pipeline_id = pipeline_id.clone();
+        let stderr_encoding = encoding.clone();
         let mut stderr = stderr;
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
@@ -395,6 +422,9 @@ pub async fn start_external_transcoder_stage(
                         } else if !truncated {
                             truncated = true;
                             error!(
+                                pipeline_id = %stderr_pipeline_id,
+                                stage_encoding = %stderr_encoding,
+                                stage_backend = "external_ffmpeg",
                                 "[ext-transcoder] ffmpeg stderr ({}) truncated at 1 MB — \
                                  further output discarded",
                                 label
@@ -405,6 +435,9 @@ pub async fn start_external_transcoder_stage(
             }
             if !all.is_empty() {
                 error!(
+                    pipeline_id = %stderr_pipeline_id,
+                    stage_encoding = %stderr_encoding,
+                    stage_backend = "external_ffmpeg",
                     "[ext-transcoder] ffmpeg stderr ({}): {}",
                     label,
                     String::from_utf8_lossy(&all).trim()
@@ -546,8 +579,12 @@ pub async fn start_external_transcoder_stage(
                         let t0 = timing_clock.now();
                         if stdin.write_all(&ts_batch).await.is_err() {
                             error!(
+                                pipeline_id = %pipeline_id,
+                                stage_encoding = %encoding,
+                                stage_backend = "external_ffmpeg",
                                 "[ext-transcoder] stdin write failed ({}:{}) — ffmpeg exited",
-                                pipeline_id, encoding
+                                pipeline_id,
+                                encoding
                             );
                             break 'outer;
                         }
@@ -578,8 +615,12 @@ pub async fn start_external_transcoder_stage(
         });
 
     info!(
+        pipeline_id = %pipeline_id,
+        stage_encoding = %encoding,
+        stage_backend = "external_ffmpeg",
         "[ext-transcoder] stage exit   pipeline={} encoding={}",
-        pipeline_id, encoding
+        pipeline_id,
+        encoding
     );
 }
 

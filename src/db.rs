@@ -580,8 +580,8 @@ pub async fn append_app_log_batch(
     Ok(())
 }
 
-/// General query for `/api/v1/logs` — supports level, target, pipeline_id, event_class,
-/// prefix (message LIKE), time range, limit, order.
+/// General query for `/api/v1/logs` — supports level, target, scope, pipeline_id,
+/// event_class, prefix (message LIKE), time range, limit, order.
 pub async fn list_app_logs(
     pool: &SqlitePool,
     filters: &crate::types::AppLogFilters,
@@ -599,6 +599,20 @@ pub async fn list_app_logs(
 
     if filters.target.is_some() {
         clauses.push("target LIKE ?".to_string());
+    }
+    match filters.scope.as_deref() {
+        Some("restream") => {
+            clauses.push("pipeline_id IS NULL".to_string());
+            clauses.push("output_id IS NULL".to_string());
+        }
+        Some("pipeline") => {
+            clauses.push("pipeline_id IS NOT NULL".to_string());
+            clauses.push("output_id IS NULL".to_string());
+        }
+        Some("output") => {
+            clauses.push("output_id IS NOT NULL".to_string());
+        }
+        _ => {}
     }
     if filters.pipeline_id.is_some() {
         clauses.push("pipeline_id = ?".to_string());

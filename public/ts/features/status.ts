@@ -1,11 +1,17 @@
-import { getEngineSbomEndpoint, getEngineStatus } from "../core/api.js";
+import {
+  getEngineSbomEndpoint,
+  getEngineStatus,
+  getRestreamHistory,
+} from "../core/api.js";
 import { withBasePath } from "../core/base-path.js";
 import {
   copyText,
   escapeHtml,
+  sanitizeLogMessage,
   showCopiedNotification,
   showErrorAlert,
 } from "../core/utils.js";
+import type { AppLogRow } from "../types.js";
 
 interface StatusData {
   restream: {
@@ -79,6 +85,9 @@ interface StatusData {
     };
   };
 }
+
+const STATUS_PROCESS_LOG_LIMIT = 80;
+const STATUS_ACTIVITY_LIMIT = 12;
 
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "--";
@@ -194,6 +203,149 @@ function section(title: string, rows: string): string {
     </section>`;
 }
 
+function formatLogTime(ts: string | null | undefined): string {
+  if (!ts) return "--";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+function normalizeEventType(log: AppLogRow | null | undefined): string {
+  return String(log?.eventType || "")
+    .trim()
+    .toLowerCase();
+}
+
+function classifyRestreamActivity(log: AppLogRow): {
+  label: string;
+  badgeClass: string;
+} {
+  const eventType = normalizeEventType(log);
+  const target = String(log?.target || "");
+  const message = String(log?.message || "");
+  const level = String(log?.level || "").toUpperCase();
+
+  if (eventType === "restream.http.ready") {
+    return { label: "API Ready", badgeClass: "badge-success" };
+  }
+  if (eventType === "restream.shutdown.requested") {
+    return { label: "Shutdown Requested", badgeClass: "badge-warning" };
+  }
+  if (eventType === "restream.shutdown.started") {
+    return { label: "Stopping", badgeClass: "badge-warning" };
+  }
+  if (eventType === "restream.shutdown.completed") {
+    return { label: "Stopped", badgeClass: "badge-stopped" };
+  }
+  if (/task exited unexpectedly/i.test(message)) {
+    return { label: "Server Task Exit", badgeClass: "badge-error" };
+  }
+  if (/dashboard api server listening/i.test(message)) {
+    return { label: "API Ready", badgeClass: "badge-success" };
+  }
+  if (/server listening/i.test(message)) {
+    return { label: "Listener Ready", badgeClass: "badge-success" };
+  }
+  if (/raised file descriptor limit/i.test(message)) {
+    return { label: "Limits Raised", badgeClass: "badge-info" };
+  }
+  if (target.includes("profiles") && /loaded|updated/i.test(message)) {
+    return { label: "Profiles Updated", badgeClass: "badge-secondary" };
+  }
+  if (level === "ERROR") {
+    return { label: "Error", badgeClass: "badge-error" };
+  }
+  if (level === "WARN") {
+    return { label: "Warning", badgeClass: "badge-warning" };
+  }
+  return { label: "Process", badgeClass: "badge-ghost" };
+}
+
+function isNotableRestreamActivity(log: AppLogRow): boolean {
+  const eventType = normalizeEventType(log);
+  const message = String(log?.message || "");
+  const level = String(log?.level || "").toUpperCase();
+
+  if (eventType.startsWith("restream.")) return true;
+  if (level === "WARN" || level === "ERROR") return true;
+  return /listening|shutdown|exited unexpectedly|raised file descriptor limit|loaded profiles|updated profiles/i.test(
+    message,
+  );
+}
+
+function renderRestreamActivity(logs: AppLogRow[]): string {
+  const items = logs
+    .filter(isNotableRestreamActivity)
+    .slice(0, STATUS_ACTIVITY_LIMIT);
+  if (items.length === 0) {
+    return `<section class="border-base-content/10 bg-base-200 rounded-lg border p-5">
+            <h2 class="mb-3 text-base font-semibold">Recent Activity</h2>
+            <p class="text-base-content/60 text-sm">No unscoped restream activity has been recorded yet.</p>
+        </section>`;
+  }
+
+  const rows = items
+    .map((log) => {
+      const event = classifyRestreamActivity(log);
+      return `<div class="bg-base-100 rounded-lg p-3">
+                <div class="flex items-center justify-between gap-3">
+                    <span class="badge badge-sm ${event.badgeClass}">${escapeHtml(event.label)}</span>
+                    <span class="text-xs opacity-70">${escapeHtml(formatLogTime(log.ts))}</span>
+                </div>
+                <pre class="mt-2 whitespace-pre-wrap break-words text-xs">${escapeHtml(sanitizeLogMessage(log.message || "", true))}</pre>
+                <div class="text-base-content/55 mt-2 truncate font-mono text-[11px]">${escapeHtml(log.target || "--")}</div>
+            </div>`;
+    })
+    .join("");
+
+  return `<section class="border-base-content/10 bg-base-200 rounded-lg border p-5">
+        <div class="mb-3">
+            <h2 class="text-base font-semibold">Recent Activity</h2>
+            <p class="text-base-content/60 mt-1 text-sm">Restream-wide events that are not tied to a specific pipeline or output.</p>
+        </div>
+        <div class="space-y-2">${rows}</div>
+    </section>`;
+}
+
+function renderProcessLog(logs: AppLogRow[]): string {
+  if (!Array.isArray(logs) || logs.length === 0) {
+    return `<section class="border-base-content/10 bg-base-200 rounded-lg border p-5">
+            <h2 class="mb-3 text-base font-semibold">Process Log</h2>
+            <p class="text-base-content/60 text-sm">No unscoped process log entries are available yet.</p>
+        </section>`;
+  }
+
+  const rows = logs
+    .slice(0, STATUS_PROCESS_LOG_LIMIT)
+    .map(
+      (
+        log,
+      ) => `<div class="border-base-content/10 bg-base-100 rounded-lg border p-3">
+                <div class="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span class="badge badge-sm ${
+                      String(log.level || "").toUpperCase() === "ERROR"
+                        ? "badge-error"
+                        : String(log.level || "").toUpperCase() === "WARN"
+                          ? "badge-warning"
+                          : "badge-ghost"
+                    }">${escapeHtml(log.level || "INFO")}</span>
+                    <span class="opacity-70">${escapeHtml(formatLogTime(log.ts))}</span>
+                    <span class="text-base-content/55 truncate font-mono">${escapeHtml(log.target || "--")}</span>
+                </div>
+                <pre class="whitespace-pre-wrap break-words text-xs">${escapeHtml(sanitizeLogMessage(log.message || "", true))}</pre>
+            </div>`,
+    )
+    .join("");
+
+  return `<section class="border-base-content/10 bg-base-200 rounded-lg border p-5">
+        <div class="mb-3">
+            <h2 class="text-base font-semibold">Process Log</h2>
+            <p class="text-base-content/60 mt-1 text-sm">Latest restream process logs outside pipeline and output scope.</p>
+        </div>
+        <div class="max-h-[32rem] space-y-2 overflow-y-auto pr-1">${rows}</div>
+    </section>`;
+}
+
 function timestampForFilename(): string {
   return new Date()
     .toISOString()
@@ -265,12 +417,18 @@ export async function loadStatus(): Promise<void> {
   const container = document.getElementById("status-versions");
   if (!container) return;
 
-  const data = await getEngineStatus<StatusData>();
+  const [data, processHistory] = await Promise.all([
+    getEngineStatus<StatusData>(),
+    getRestreamHistory({ limit: STATUS_PROCESS_LOG_LIMIT, order: "desc" }),
+  ]);
   if (!data) {
     container.innerHTML =
       '<p class="text-error text-sm">Failed to load status info.</p>';
     return;
   }
+  const processLogs = Array.isArray(processHistory?.logs)
+    ? (processHistory?.logs as AppLogRow[])
+    : [];
 
   const ffmpeg = data.nativeLibraries?.ffmpeg;
   const srt = data.nativeLibraries?.srt;
@@ -343,6 +501,8 @@ export async function loadStatus(): Promise<void> {
         row("Licenses Included", data.sbom?.licensesIncluded),
       ].join(""),
     ),
+    renderRestreamActivity(processLogs),
+    renderProcessLog(processLogs),
     `<div class="flex flex-wrap gap-2">
             <button type="button" class="btn btn-sm btn-outline" id="download-status-btn">Download Status</button>
             <button type="button" class="btn btn-sm btn-outline" id="copy-status-btn">Copy Status</button>

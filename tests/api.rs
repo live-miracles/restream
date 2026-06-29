@@ -994,6 +994,59 @@ async fn output_logs_lifecycle_filter_includes_persisted_egress_events() {
     assert_eq!(event_data["outputId"], "out-history");
 }
 
+#[tokio::test]
+async fn restream_scope_logs_exclude_pipeline_and_output_entries() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    insert_app_log(
+        &pool,
+        AppLogEntry {
+            ts: "2026-06-29T00:00:00Z".to_string(),
+            level: "INFO".to_string(),
+            target: "restream::runtime".to_string(),
+            message: "dashboard API server listening".to_string(),
+            fields: Some(r#"{"addr":"0.0.0.0:3030"}"#.to_string()),
+            pipeline_id: None,
+            output_id: None,
+            event_type: Some("restream.http.ready".to_string()),
+            event_class: Some("lifecycle".to_string()),
+        },
+    )
+    .await;
+    insert_app_log(
+        &pool,
+        AppLogEntry {
+            ts: "2026-06-29T00:00:01Z".to_string(),
+            level: "INFO".to_string(),
+            target: "restream::lifecycle".to_string(),
+            message: "publisher connected".to_string(),
+            fields: None,
+            pipeline_id: Some("pipe-history".to_string()),
+            output_id: None,
+            event_type: Some("ingest.connected".to_string()),
+            event_class: Some("lifecycle".to_string()),
+        },
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/logs?scope=restream&limit=20",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["logs"].as_array().unwrap().len(), 1);
+    assert_eq!(json["logs"][0]["eventType"], "restream.http.ready");
+    assert!(json["logs"][0]["pipelineId"].is_null());
+}
+
 // --- Custom encoding ---
 
 #[tokio::test]
