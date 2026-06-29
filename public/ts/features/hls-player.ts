@@ -10,6 +10,7 @@ interface ManagedHlsOptions {
   className?: string;
   loadingLabel?: string;
   playLabel?: string;
+  controls?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -87,7 +88,7 @@ export function renderManagedHlsPlayer(
   video.dataset.role = "managed-hls-video";
   video.className =
     options.className || "h-full w-full bg-black object-contain";
-  video.controls = true;
+  video.controls = options.controls ?? true;
   video.muted = true;
   video.autoplay = true;
   video.playsInline = true;

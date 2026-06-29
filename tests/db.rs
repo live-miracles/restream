@@ -1,9 +1,34 @@
-use restream::db;
+use restream::{
+    db,
+    types::{AppLogEntry, AppLogFilters},
+};
 
 async fn test_pool() -> sqlx::SqlitePool {
     let pool = db::create_pool("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
     pool
+}
+
+fn app_log_entry(
+    ts: &str,
+    pipeline_id: Option<&str>,
+    output_id: Option<&str>,
+    event_type: Option<&str>,
+    event_class: Option<&str>,
+    message: &str,
+    fields: Option<&str>,
+) -> AppLogEntry {
+    AppLogEntry {
+        ts: ts.to_string(),
+        level: "INFO".to_string(),
+        target: "restream::tests".to_string(),
+        message: message.to_string(),
+        fields: fields.map(str::to_string),
+        pipeline_id: pipeline_id.map(str::to_string),
+        output_id: output_id.map(str::to_string),
+        event_type: event_type.map(str::to_string),
+        event_class: event_class.map(str::to_string),
+    }
 }
 
 #[tokio::test]
@@ -71,6 +96,7 @@ async fn output_crud() {
         "p1",
         "YouTube",
         "rtmp://yt/live",
+        None,
         "stopped",
         "source",
     )
@@ -85,7 +111,7 @@ async fn output_crud() {
     let all = db::list_outputs_for_pipeline(&pool, "p1").await.unwrap();
     assert_eq!(all.len(), 1);
 
-    let updated = db::update_output(&pool, "p1", "o1", "Twitch", "rtmp://tw/live", "720p")
+    let updated = db::update_output(&pool, "p1", "o1", "Twitch", "rtmp://tw/live", None, "720p")
         .await
         .unwrap()
         .unwrap();
@@ -107,9 +133,11 @@ async fn cascade_delete_removes_outputs() {
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
 
     db::delete_pipeline(&pool, "p1").await.unwrap();
     let outputs = db::list_outputs(&pool).await.unwrap();
@@ -122,9 +150,11 @@ async fn job_lifecycle() {
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
 
     let job = db::create_job(
         &pool,
@@ -168,9 +198,11 @@ async fn job_upsert_on_conflict() {
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
 
     db::create_job(
         &pool,
@@ -202,59 +234,172 @@ async fn job_upsert_on_conflict() {
 }
 
 #[tokio::test]
-async fn job_logs() {
+async fn app_logs_can_be_queried_by_output_scope() {
     let pool = test_pool().await;
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
-    db::create_job(
-        &pool,
-        "j1",
-        "p1",
-        "o1",
-        None,
-        "running",
-        "2024-01-01T00:00:00Z",
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
     )
     .await
     .unwrap();
 
-    db::append_job_log(
+    db::append_app_log_batch(
         &pool,
-        Some("j1"),
-        Some("p1"),
-        Some("o1"),
-        "lifecycle.start",
-        None,
-        "2024-01-01T00:00:00Z",
-        "Started",
-    )
-    .await
-    .unwrap();
-    db::append_job_log(
-        &pool,
-        Some("j1"),
-        Some("p1"),
-        Some("o1"),
-        "lifecycle.stop",
-        None,
-        "2024-01-01T00:01:00Z",
-        "Stopped",
+        &[
+            app_log_entry(
+                "2024-01-01T00:00:00Z",
+                Some("p1"),
+                Some("o1"),
+                Some("lifecycle.start"),
+                Some("lifecycle"),
+                "Started",
+                Some(r#"{"jobId":"j1"}"#),
+            ),
+            app_log_entry(
+                "2024-01-01T00:01:00Z",
+                Some("p1"),
+                Some("o1"),
+                Some("lifecycle.stop"),
+                Some("lifecycle"),
+                "Stopped",
+                Some(r#"{"jobId":"j1"}"#),
+            ),
+        ],
     )
     .await
     .unwrap();
 
-    let logs = db::list_job_logs(&pool, "j1").await.unwrap();
+    let logs = db::list_app_logs(
+        &pool,
+        &AppLogFilters {
+            level: Some("info".to_string()),
+            since: None,
+            until: None,
+            target: None,
+            pipeline_id: Some("p1".to_string()),
+            output_id: Some("o1".to_string()),
+            event_class: None,
+            prefix: None,
+            limit: Some(10),
+            order: Some("asc".to_string()),
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(logs.len(), 2);
     assert_eq!(logs[0].message, "Started");
 
-    let by_output = db::list_job_logs_by_output(&pool, "p1", "o1")
+    let lifecycle_only = db::list_app_logs(
+        &pool,
+        &AppLogFilters {
+            level: Some("info".to_string()),
+            since: None,
+            until: None,
+            target: None,
+            pipeline_id: Some("p1".to_string()),
+            output_id: Some("o1".to_string()),
+            event_class: Some("lifecycle".to_string()),
+            prefix: None,
+            limit: Some(10),
+            order: Some("asc".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lifecycle_only.len(), 2);
+    assert_eq!(
+        lifecycle_only[1].event_type.as_deref(),
+        Some("lifecycle.stop")
+    );
+}
+
+#[tokio::test]
+async fn filtered_app_logs_honor_prefix_and_event_class_filters() {
+    let pool = test_pool().await;
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    assert_eq!(by_output.len(), 2);
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+
+    db::append_app_log_batch(
+        &pool,
+        &[
+            app_log_entry(
+                "2024-01-01T00:00:00Z",
+                Some("p1"),
+                Some("o1"),
+                Some("lifecycle.start"),
+                Some("lifecycle"),
+                "[lifecycle] started",
+                None,
+            ),
+            app_log_entry(
+                "2024-01-01T00:00:01Z",
+                Some("p1"),
+                Some("o1"),
+                Some("output"),
+                Some("status"),
+                "frame=100",
+                None,
+            ),
+            app_log_entry(
+                "2024-01-01T00:00:02Z",
+                Some("p1"),
+                Some("o1"),
+                Some("lifecycle.stop"),
+                Some("lifecycle"),
+                "[lifecycle] stopped",
+                None,
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let logs = db::list_app_logs(
+        &pool,
+        &AppLogFilters {
+            level: Some("info".to_string()),
+            since: None,
+            until: None,
+            target: None,
+            pipeline_id: Some("p1".to_string()),
+            output_id: Some("o1".to_string()),
+            event_class: None,
+            prefix: Some("[lifecycle]".to_string()),
+            limit: Some(2),
+            order: Some("asc".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(logs.len(), 2);
+    assert!(logs[0].message.contains("[lifecycle]"));
+
+    let lifecycle_logs = db::list_app_logs(
+        &pool,
+        &AppLogFilters {
+            level: Some("info".to_string()),
+            since: None,
+            until: None,
+            target: None,
+            pipeline_id: Some("p1".to_string()),
+            output_id: Some("o1".to_string()),
+            event_class: Some("lifecycle".to_string()),
+            prefix: None,
+            limit: Some(10),
+            order: Some("asc".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lifecycle_logs.len(), 2);
 }
 
 #[tokio::test]
@@ -316,9 +461,11 @@ async fn reset_running_jobs() {
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
     db::create_job(
         &pool,
         "j1",
@@ -338,73 +485,6 @@ async fn reset_running_jobs() {
     let job = db::get_job(&pool, "j1").await.unwrap().unwrap();
     assert_eq!(job.status, "stopped");
     assert_eq!(job.exit_signal.as_deref(), Some("SIGKILL"));
-}
-
-#[tokio::test]
-async fn filtered_job_logs() {
-    let pool = test_pool().await;
-    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
-        .await
-        .unwrap();
-    db::create_output(&pool, "o1", "p1", "Out", "rtmp://x", "stopped", "source")
-        .await
-        .unwrap();
-
-    db::append_job_log(
-        &pool,
-        Some("j1"),
-        Some("p1"),
-        Some("o1"),
-        "lifecycle.start",
-        None,
-        "2024-01-01T00:00:00Z",
-        "[lifecycle] started",
-    )
-    .await
-    .unwrap();
-    db::append_job_log(
-        &pool,
-        Some("j1"),
-        Some("p1"),
-        Some("o1"),
-        "output",
-        None,
-        "2024-01-01T00:00:01Z",
-        "frame=100",
-    )
-    .await
-    .unwrap();
-    db::append_job_log(
-        &pool,
-        Some("j1"),
-        Some("p1"),
-        Some("o1"),
-        "lifecycle.stop",
-        None,
-        "2024-01-01T00:00:02Z",
-        "[lifecycle] stopped",
-    )
-    .await
-    .unwrap();
-
-    use restream::types::HistoryFilters;
-    let filters = HistoryFilters {
-        since: None,
-        until: None,
-        limit: Some(2),
-        order: Some("asc".to_string()),
-        prefixes: Some(vec!["[lifecycle]".to_string()]),
-    };
-    let logs = db::list_job_logs_by_output_filtered(&pool, "p1", "o1", &filters)
-        .await
-        .unwrap();
-    assert_eq!(logs.len(), 2);
-    assert!(logs[0].message.contains("[lifecycle]"));
-
-    let lifecycle_logs = db::list_lifecycle_logs_by_output(&pool, "p1", "o1")
-        .await
-        .unwrap();
-    assert_eq!(lifecycle_logs.len(), 2);
 }
 
 // ── Regression tests for Round 10 audit fixes ────────────────────────────────

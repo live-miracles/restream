@@ -413,9 +413,13 @@ mod tests {
         result
     }
 
+    fn test_store() -> HlsStore {
+        HlsStore::with_config(HlsConfig::default())
+    }
+
     #[test]
     fn playlist_references_stored_segments() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.25, Bytes::from_static(b"segment-zero"));
         store.push_segment(3.5, Bytes::from_static(b"segment-one"));
 
@@ -432,7 +436,7 @@ mod tests {
 
     #[test]
     fn playlist_can_reference_variant_segment_paths() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.25, Bytes::from_static(b"segment-zero"));
         store.push_segment(3.5, Bytes::from_static(b"segment-one"));
 
@@ -475,7 +479,7 @@ mod tests {
 
     #[test]
     fn target_duration_tracks_longest_segment() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(7.2, Bytes::from_static(b"long-segment"));
 
         let playlist = store.get_playlist().expect("playlist");
@@ -484,7 +488,7 @@ mod tests {
 
     #[test]
     fn playlist_window_is_bounded_and_advances_media_sequence() {
-        let store = HlsStore::new();
+        let store = test_store();
         for index in 0..(MAX_SEGMENTS as u64 + 2) {
             store.push_segment(2.0, Bytes::from(index.to_be_bytes().to_vec()));
         }
@@ -518,7 +522,7 @@ mod tests {
 
     #[test]
     fn keeps_a_longer_live_window_for_preview_clients() {
-        let store = HlsStore::new();
+        let store = test_store();
         for index in 0..14u64 {
             store.push_segment(2.0, Bytes::from(format!("segment-{index}").into_bytes()));
         }
@@ -529,7 +533,7 @@ mod tests {
 
     #[test]
     fn clear_resets_segments_and_index() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.0, Bytes::from_static(b"data"));
         store.clear();
         assert!(store.get_playlist().is_none());
@@ -538,19 +542,19 @@ mod tests {
 
     #[test]
     fn empty_store_playlist_returns_none() {
-        assert!(HlsStore::new().get_playlist().is_none());
+        assert!(test_store().get_playlist().is_none());
     }
 
     #[test]
     fn get_segment_nonexistent_returns_none() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.0, Bytes::from_static(b"data"));
         assert!(store.get_segment(999).is_none());
     }
 
     #[test]
     fn get_segment_finds_by_exact_index() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.0, Bytes::from_static(b"first"));
         store.push_segment(3.0, Bytes::from_static(b"second"));
         assert_eq!(store.get_segment(1).as_deref(), Some(b"second".as_slice()));
@@ -558,7 +562,7 @@ mod tests {
 
     #[test]
     fn target_duration_never_decreases() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(8.0, Bytes::from_static(b"long"));
         store.push_segment(2.0, Bytes::from_static(b"short"));
         let playlist = store.get_playlist().unwrap();
@@ -568,7 +572,7 @@ mod tests {
 
     #[test]
     fn exact_max_segments_does_not_evict_first() {
-        let store = HlsStore::new();
+        let store = test_store();
         for i in 0..MAX_SEGMENTS as u64 {
             store.push_segment(2.0, Bytes::from(i.to_be_bytes().to_vec()));
         }
@@ -577,14 +581,14 @@ mod tests {
 
     #[test]
     fn new_store_has_empty_initial_state() {
-        let store = HlsStore::new();
+        let store = test_store();
         assert!(store.get_playlist().is_none());
         assert!(store.get_segment(0).is_none());
     }
 
     #[test]
     fn push_segment_assigns_sequential_indices() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(1.0, Bytes::from_static(b"a"));
         store.push_segment(1.0, Bytes::from_static(b"b"));
         store.push_segment(1.0, Bytes::from_static(b"c"));
@@ -595,7 +599,7 @@ mod tests {
 
     #[test]
     fn playlist_exact_extinf_format() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.25, Bytes::new());
         let playlist = store.get_playlist().unwrap();
         assert!(playlist.contains("#EXTINF:2.250,"));
@@ -604,7 +608,7 @@ mod tests {
 
     #[test]
     fn get_segment_returns_none_before_first_index() {
-        let store = HlsStore::new();
+        let store = test_store();
         // Start at index 5
         for _ in 0..5 {
             store.push_segment(2.0, Bytes::new());
@@ -621,7 +625,7 @@ mod tests {
 
     #[test]
     fn media_sequence_advances_after_eviction() {
-        let store = HlsStore::new();
+        let store = test_store();
         // Fill beyond MAX_SEGMENTS to trigger eviction
         for _ in 0..(MAX_SEGMENTS as u64 + 5) {
             store.push_segment(2.0, Bytes::new());
@@ -634,7 +638,7 @@ mod tests {
 
     #[test]
     fn playlist_range_covers_entire_window() {
-        let store = HlsStore::new();
+        let store = test_store();
         let n = MAX_SEGMENTS as u64;
         for _ in 0..n {
             store.push_segment(2.0, Bytes::new());
@@ -646,13 +650,13 @@ mod tests {
 
     #[test]
     fn snapshot_returns_none_when_empty() {
-        let store = HlsStore::new();
+        let store = test_store();
         assert!(store.snapshot().is_none());
     }
 
     #[test]
     fn snapshot_contains_playlist_and_all_segments() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.0, Bytes::from_static(b"data0"));
         store.push_segment(3.0, Bytes::from_static(b"data1"));
 
@@ -666,7 +670,7 @@ mod tests {
 
     #[test]
     fn stream_metadata_roundtrip() {
-        let store = HlsStore::new();
+        let store = test_store();
 
         let (v, a) = store.stream_metadata();
         assert!(v.is_none());
@@ -753,7 +757,7 @@ mod tests {
 
     #[test]
     fn put_variant_segment_ignored_for_unknown_source_index() {
-        let store = HlsStore::new();
+        let store = test_store();
         store.push_segment(2.0, Bytes::from_static(b"seg0"));
         // index 99 doesn't exist — the put should be silently dropped
         store.put_variant_segment(99, HlsSegmentVariant::Audio(0), Bytes::from_static(b"v"));

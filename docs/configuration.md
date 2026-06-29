@@ -91,7 +91,7 @@ rtmp://<ingestHost>:1935/live/<streamKey>
 srt://<ingestHost>:10080?streamid=publish:live/<streamKey>
 ```
 
-The application exposes 20 built-in stream keys through `GET /stream-keys`.
+The application exposes 20 built-in stream keys through `GET /api/v1/stream-keys`.
 Pipelines select one of those keys; the API does not currently create or delete
 stream-key records independently.
 
@@ -175,7 +175,7 @@ runtime verification.
 
 Linux startup checks warn when `net.core.rmem_max` or `net.core.wmem_max` cannot
 support the requested UDP buffers. The listener's `/proc/net/udp` receive queue
-and drop count are exported in `/health`.
+and drop count are exported in `/api/v1/engine/health`.
 
 SRT egress backup links can be supplied with:
 

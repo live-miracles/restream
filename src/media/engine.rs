@@ -1,7 +1,7 @@
 //! Central media engine state — owns all active ingests, egresses, ring buffers,
 //! and recordings. Byte counters use `AtomicU64` for lock-free updates from the
 //! hot ingest/egress paths; the `health_snapshot()` method reads them atomically
-//! to build the JSON returned by `/health`.
+//! to build the JSON returned by `/api/v1/engine/health`.
 
 use ffmpeg_next as ffmpeg;
 use std::collections::{HashMap, HashSet};
@@ -1547,7 +1547,8 @@ impl MediaEngine {
         stores.get(pipeline_id).cloned()
     }
 
-    /// Build the full health snapshot JSON that the `/health` endpoint returns.
+    /// Build the full health snapshot JSON that the `/api/v1/engine/health`
+    /// endpoint returns.
     pub async fn health_snapshot(
         &self,
         pipeline_ids: &[String],
