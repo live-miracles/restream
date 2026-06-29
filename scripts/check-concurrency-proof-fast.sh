@@ -18,6 +18,9 @@ scripts/resource-limit cargo test \
   active_output_status_ignores_stale_retry_state_after_restart \
   --test api -- --nocapture
 scripts/resource-limit cargo test \
+  health_endpoint_clears_recent_disconnect_details_after_reconnect \
+  --test api -- --nocapture
+scripts/resource-limit cargo test \
   stale_job_update_cannot_clobber_replacement_attempt \
   --test db -- --nocapture
 scripts/resource-limit cargo test \

@@ -2002,6 +2002,79 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     assert!(disconnected_input["lastDisconnectAgeMs"].as_u64().is_some());
 }
 
+#[tokio::test]
+async fn health_endpoint_clears_recent_disconnect_details_after_reconnect() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13082"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13082", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
+    engine
+        .record_ingest_disconnect(
+            &pid,
+            Some("disconnect"),
+            Some("publisher disconnected".to_string()),
+            false,
+        )
+        .await;
+    engine.unregister_ingest(&pid).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let disconnected = body_json(resp).await;
+    let disconnected_input = &disconnected["pipelines"][&pid]["input"];
+    assert_eq!(disconnected_input["status"], "off");
+    assert_eq!(disconnected_input["probeStatus"], "off");
+    assert_eq!(
+        disconnected_input["lastDisconnectReason"],
+        "publisher disconnected"
+    );
+    assert_eq!(disconnected_input["lastFailurePhase"], "disconnect");
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13082", "srt")
+        .await
+        .expect("reconnect registration should succeed");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let reconnected = body_json(resp).await;
+    let input = &reconnected["pipelines"][&pid]["input"];
+    assert_eq!(input["status"], "on");
+    assert_eq!(input["probeStatus"], "pending");
+    assert_eq!(input["probeReady"], false);
+    assert!(input["lastSessionProtocol"].is_null());
+    assert!(input["lastDisconnectReason"].is_null());
+    assert!(input["lastFailurePhase"].is_null());
+    assert!(input["lastDisconnectAt"].is_null());
+    assert!(input["lastDisconnectAgeMs"].is_null());
+    assert_eq!(input["recentDisconnectError"], false);
+}
+
 // --- Regression: Round 6 #2 — Security headers ---
 
 #[tokio::test]
