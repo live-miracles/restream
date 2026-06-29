@@ -238,15 +238,7 @@ where
         allowed_origins: Arc::new(config.allowed_origins),
     });
 
-    let app = Router::new()
-        .route(
-            "/mcp",
-            post(http_post_handler::<B>)
-                .get(http_get_handler::<B>)
-                .delete(http_delete_handler::<B>),
-        )
-        .route("/", post(http_post_handler::<B>))
-        .with_state(state);
+    let app = http_router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
@@ -255,6 +247,25 @@ where
                 "failed to bind MCP HTTP listener on {bind_addr}: {err}"
             ))
         })?;
+    serve_http_listener(listener, app).await
+}
+
+fn http_router<B: AgentBackend + 'static>(state: Arc<HttpTransportState<B>>) -> Router {
+    Router::new()
+        .route(
+            "/mcp",
+            post(http_post_handler::<B>)
+                .get(http_get_handler::<B>)
+                .delete(http_delete_handler::<B>),
+        )
+        .route("/", post(http_post_handler::<B>))
+        .with_state(state)
+}
+
+async fn serve_http_listener(
+    listener: tokio::net::TcpListener,
+    app: Router,
+) -> Result<(), AgentError> {
     axum::serve(listener, app)
         .await
         .map_err(|err| AgentError::Transport(format!("MCP HTTP server failed: {err}")))
@@ -629,6 +640,8 @@ fn method_not_allowed_response(allow: &str) -> Response {
 mod tests {
     use super::*;
     use crate::agent_core::backend::{AgentBackend, AgentFuture};
+    use std::io::ErrorKind;
+    use tokio::time::{Duration, sleep};
 
     #[derive(Clone, Default)]
     struct DummyBackend;
@@ -739,5 +752,53 @@ mod tests {
             panic!("expected JSON response");
         };
         assert!(payload["result"]["tools"].as_array().unwrap().len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn http_transport_accepts_live_loopback_requests_when_binding_is_allowed() {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+                // Some restricted runners deny loopback binds entirely. Keep the
+                // smoke test non-flaky there while still exercising real TCP in
+                // CI and developer environments that allow it.
+                return;
+            }
+            Err(error) => panic!("failed to bind loopback listener: {error}"),
+        };
+        let addr = listener.local_addr().expect("local addr");
+        let app = http_router(Arc::new(HttpTransportState {
+            handler: Arc::new(AgentToolHandler::new(Arc::new(DummyBackend))),
+            allowed_origins: Arc::new(Vec::new()),
+        }));
+        let server = tokio::spawn(async move {
+            serve_http_listener(listener, app)
+                .await
+                .expect("server should run");
+        });
+
+        sleep(Duration::from_millis(20)).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/mcp"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(
+                serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/list",
+                    "params": {}
+                }))
+                .expect("request body"),
+            )
+            .send()
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_str(&response.text().await.expect("response text"))
+            .expect("json body");
+        assert!(payload["result"]["tools"].as_array().unwrap().len() >= 1);
+
+        server.abort();
+        let _ = server.await;
     }
 }

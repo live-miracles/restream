@@ -209,6 +209,12 @@ recommended release split is:
 That means the production media/control-plane binary does not carry the MCP
 transport unless we explicitly opt into an embedded mode later.
 
+The current sidecar startup path also performs a compatibility probe against
+the target `restream` instance before serving MCP traffic. By default it
+expects the same application version and git commit on both sides. Override for
+development only with `RESTREAM_MCP_VERSION_CHECK=warn` or
+`RESTREAM_MCP_VERSION_CHECK=off`.
+
 ### Embedded mode
 
 ```text
@@ -286,6 +292,16 @@ Run the sidecar against a colocated `restream` instance:
 RESTREAM_AGENT_BASE_URL=http://127.0.0.1:3030 \
 cargo run --release --bin restream-mcp --features mcp-server,mcp-http-backend -- --bind 127.0.0.1:4040
 ```
+
+## Deferred work
+
+Deliberately deferred for a later pass:
+
+- release/deploy automation that always ships `restream` and `restream-mcp`
+  together as one rollout unit
+
+The architecture assumes colocated releases, but the repo does not enforce
+that packaging workflow yet.
 
 ## Auth model
 

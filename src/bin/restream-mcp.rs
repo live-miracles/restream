@@ -8,6 +8,29 @@ fn usage() -> &'static str {
     "usage: restream-mcp [--print-tools] [--stdio] [--bind <addr>]"
 }
 
+#[cfg(feature = "mcp-server")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompatibilityMode {
+    Strict,
+    Warn,
+    Off,
+}
+
+#[cfg(feature = "mcp-server")]
+fn compatibility_mode_from_env() -> Result<CompatibilityMode, String> {
+    match std::env::var("RESTREAM_MCP_VERSION_CHECK") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "" | "strict" => Ok(CompatibilityMode::Strict),
+            "warn" => Ok(CompatibilityMode::Warn),
+            "off" => Ok(CompatibilityMode::Off),
+            other => Err(format!(
+                "invalid RESTREAM_MCP_VERSION_CHECK='{other}' (expected strict, warn, or off)"
+            )),
+        },
+        Err(_) => Ok(CompatibilityMode::Strict),
+    }
+}
+
 #[cfg(not(feature = "mcp-server"))]
 fn main() {
     eprintln!(
@@ -59,6 +82,13 @@ fn main() {
 
     #[cfg(feature = "mcp-http-backend")]
     {
+        let compatibility_mode = match compatibility_mode_from_env() {
+            Ok(mode) => mode,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        };
         let base_url = std::env::var("RESTREAM_AGENT_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:3030".to_string());
         let auth = if let Ok(cookie) =
@@ -106,6 +136,18 @@ fn main() {
             .enable_all()
             .build()
             .expect("Failed to build tokio runtime");
+        if compatibility_mode != CompatibilityMode::Off {
+            match runtime.block_on(backend.verify_target_compatibility()) {
+                Ok(()) => {}
+                Err(error) if compatibility_mode == CompatibilityMode::Warn => {
+                    eprintln!("warning: {error}");
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         let result = runtime.block_on(restream::agent_mcp::run_server(config, Arc::new(backend)));
         if let Err(error) = result {
             eprintln!("{error}");
