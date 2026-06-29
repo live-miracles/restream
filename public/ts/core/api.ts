@@ -10,6 +10,14 @@ import type {
   StreamKey,
 } from "../types.js";
 
+interface YoutubeMonitoringStatus {
+  canonical_watch_url: string;
+  live_now: boolean;
+  live_content: boolean;
+  upcoming: boolean;
+  title: string | null;
+}
+
 let activeMutationRequestCount = 0;
 const DEFAULT_ENGINE_SBOM_ENDPOINT = "/api/v1/engine/sbom";
 
@@ -549,6 +557,14 @@ async function getProcessingGraph(pipelineId: string): Promise<unknown | null> {
   );
 }
 
+async function getYoutubeMonitoringStatus(
+  url: string,
+): Promise<YoutubeMonitoringStatus | null> {
+  return apiRequest<YoutubeMonitoringStatus>(
+    `/api/v1/monitoring/youtube-status?url=${encodeURIComponent(url)}`,
+  );
+}
+
 export {
   apiRequest,
   getConfig,
@@ -586,5 +602,8 @@ export {
   logout,
   changePassword,
   getProcessingGraph,
+  getYoutubeMonitoringStatus,
   DEFAULT_ENGINE_SBOM_ENDPOINT,
 };
+
+export type { YoutubeMonitoringStatus };

@@ -7,7 +7,8 @@ import {
   showErrorAlert,
 } from "../core/utils.js";
 import { withBasePath } from "../core/base-path.js";
-import { updateOutput } from "../core/api.js";
+import { getYoutubeMonitoringStatus, updateOutput } from "../core/api.js";
+import type { YoutubeMonitoringStatus } from "../core/api.js";
 import { state } from "../core/state.js";
 import { clearManagedHlsPlayer, renderManagedHlsPlayer } from "./hls-player.js";
 import { refreshDashboard } from "./dashboard.js";
@@ -24,6 +25,7 @@ interface ControlRoomOutputOption {
   pipelineName: string;
   outputName: string;
   monitoringUrl: string | null;
+  status: string;
 }
 
 interface ControlRoomCardDescriptor {
@@ -39,13 +41,59 @@ interface ControlRoomCardDescriptor {
   outputId: string | null;
   pipelineId: string | null;
   monitoringUrl: string | null;
+  statusLabel?: string | null;
 }
 
-type MonitoringEmbedKind = "hls" | "video" | "iframe" | "unsupported";
+type MonitoringEmbedKind =
+  "hls" | "video" | "youtube" | "iframe" | "unsupported";
+
+interface YouTubePlayerApi {
+  mute(): void;
+  unMute(): void;
+  isMuted(): boolean;
+  playVideo(): void;
+  pauseVideo(): void;
+  getPlayerState?(): number;
+  getVideoData?(): {
+    title?: string;
+    isLive?: boolean;
+    isPlayable?: boolean;
+    errorCode?: string | null;
+  };
+  getDuration?(): number;
+  destroy(): void;
+}
+
+interface YouTubeApiNamespace {
+  Player: new (
+    elementId: string,
+    options: Record<string, unknown>,
+  ) => YouTubePlayerApi;
+}
+
+interface ControlRoomMediaController {
+  destroy(): void;
+  play?(): void;
+  pause?(): void;
+  isPlaying?(): boolean;
+  isMuted?(): boolean;
+  setMuted?(muted: boolean): void;
+}
+
+declare global {
+  interface Window {
+    YT?: YouTubeApiNamespace;
+    onYouTubeIframeAPIReady?: (() => void) | undefined;
+  }
+}
 
 const CONTROL_ROOM_STATE_KEY = "dashboard:control-room-state";
 const OUTPUTS_PER_PAGE = 11;
 const CONTROL_ROOM_PLAYER_HEIGHT_CLASS = "h-[11rem]";
+const CONTROL_ROOM_MONITOR_FRAME_CLASS =
+  "relative isolate w-full overflow-hidden rounded-[0.9rem] bg-neutral-950";
+const CONTROL_ROOM_MONITOR_BUTTON_CLASS =
+  "btn btn-xs border border-white/15 bg-black/55 text-white shadow-sm backdrop-blur hover:border-white/25 hover:bg-black/75";
 
 let controlRoomStateLoaded = false;
 let controlRoomState: ControlRoomState = {
@@ -54,10 +102,31 @@ let controlRoomState: ControlRoomState = {
 };
 const controlRoomMonitoringDrafts = new Map<string, string>();
 const controlRoomMonitoringSavePending = new Set<string>();
+const controlRoomCardWarnings = new Map<string, string>();
+const youtubeMonitoringStatusCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    data: YoutubeMonitoringStatus | null;
+    pending?: Promise<YoutubeMonitoringStatus | null>;
+  }
+>();
+const controlRoomMediaControllers = new WeakMap<
+  HTMLElement,
+  ControlRoomMediaController
+>();
 let pendingMonitoringInputFocusOutputId: string | null = null;
+let youtubeIframeApiPromise: Promise<YouTubeApiNamespace> | null = null;
+const controlRoomNameCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+const YOUTUBE_MONITORING_STATUS_TTL_MS = 60_000;
 
 function listPipelines(): PipelineView[] {
-  return [...state.pipelines].sort((a, b) => a.name.localeCompare(b.name));
+  return [...state.pipelines].sort((a, b) =>
+    controlRoomNameCollator.compare(a.name, b.name),
+  );
 }
 
 function listMonitoringOutputsForPipeline(
@@ -73,8 +142,18 @@ function listMonitoringOutputsForPipeline(
       pipelineName: pipe.name,
       outputName: out.name,
       monitoringUrl: out.monitoringUrl,
+      status: out.status,
     }))
-    .sort((a, b) => a.outputName.localeCompare(b.outputName));
+    .sort((a, b) =>
+      controlRoomNameCollator.compare(a.outputName, b.outputName),
+    );
+}
+
+function isPreviewableOutputStatus(status: string | null | undefined): boolean {
+  const normalized = (status || "").trim().toLowerCase();
+  return (
+    normalized === "on" || normalized === "running" || normalized === "warning"
+  );
 }
 
 function getDefaultPipelineId(): string | null {
@@ -151,7 +230,80 @@ function ensureStateLoaded(): void {
 }
 
 function buildLocalPreviewUrl(pipelineId: string): string {
-  return withBasePath(`/hls/${encodeURIComponent(pipelineId)}/master.m3u8`);
+  return withBasePath(
+    `/preview/hls/${encodeURIComponent(pipelineId)}/master.m3u8`,
+  );
+}
+
+function listMountedMediaControllers(
+  scope: ParentNode = document,
+): Array<{ shell: HTMLElement; controller: ControlRoomMediaController }> {
+  const result: Array<{
+    shell: HTMLElement;
+    controller: ControlRoomMediaController;
+  }> = [];
+  const shells = scope.querySelectorAll<HTMLElement>(
+    '[data-role="control-room-player-shell"]',
+  );
+  shells.forEach((shell) => {
+    const controller = controlRoomMediaControllers.get(shell);
+    if (controller) result.push({ shell, controller });
+  });
+  return result;
+}
+
+function syncGlobalMuteButton(scope: ParentNode = document): void {
+  const mounted = listMountedMediaControllers(scope);
+  let canMute = false;
+  let anyMuted = false;
+  let anyUnmuted = false;
+  for (const { controller } of mounted) {
+    if (!controller.setMuted || !controller.isMuted) continue;
+    canMute = true;
+    if (controller.isMuted()) {
+      anyMuted = true;
+    } else {
+      anyUnmuted = true;
+    }
+  }
+  const muteToggleButton = scope.querySelector<HTMLButtonElement>(
+    '[data-action="control-room-toggle-mute-all"]',
+  );
+  if (muteToggleButton) {
+    muteToggleButton.disabled = !canMute;
+    muteToggleButton.classList.toggle(
+      "btn-disabled",
+      muteToggleButton.disabled,
+    );
+    muteToggleButton.textContent =
+      anyUnmuted || !anyMuted ? "Mute All" : "Unmute All";
+  }
+}
+
+function syncGlobalPlaybackButton(scope: ParentNode = document): void {
+  const mounted = listMountedMediaControllers(scope);
+  const canTogglePlayback = mounted.some(
+    ({ controller }) => !!controller.play || !!controller.pause,
+  );
+  const anyPlaying = mounted.some(
+    ({ controller }) => controller.isPlaying?.() === true,
+  );
+  const playbackToggleButton = scope.querySelector<HTMLButtonElement>(
+    '[data-action="control-room-toggle-playback-all"]',
+  );
+  if (playbackToggleButton) {
+    playbackToggleButton.disabled = !canTogglePlayback;
+    playbackToggleButton.classList.toggle(
+      "btn-disabled",
+      playbackToggleButton.disabled,
+    );
+    playbackToggleButton.textContent = anyPlaying ? "Pause All" : "Play All";
+  }
+}
+
+function syncGlobalMediaButtons(scope: ParentNode = document): void {
+  syncGlobalPlaybackButton(scope);
+  syncGlobalMuteButton(scope);
 }
 
 function compactUrlLabel(url: string | null): string {
@@ -173,19 +325,30 @@ function compactUrlLabel(url: string | null): string {
 
 function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
   const localPreviewUrl = buildLocalPreviewUrl(pipe.id);
+  const inputLive =
+    pipe.input.status === "on" || pipe.input.status === "warning";
   return {
     id: `local:${pipe.id}`,
-    title: "Pipeline Preview",
-    kindLabel: "Pipeline",
+    title: "Local HLS",
+    kindLabel: "Pipeline Preview",
     sourceLabel: pipe.name,
-    mediaUrl: localPreviewUrl,
-    emptyMessage: "Preview not ready yet.",
+    mediaUrl: inputLive ? localPreviewUrl : null,
+    emptyMessage:
+      pipe.input.status === "on" || pipe.input.status === "warning"
+        ? "Waiting for the first HLS segments."
+        : "Pipeline input is offline.",
     openUrl: localPreviewUrl,
     copyUrl: localPreviewUrl,
     editable: false,
     outputId: null,
     pipelineId: null,
     monitoringUrl: localPreviewUrl,
+    statusLabel:
+      pipe.input.status === "on"
+        ? "Live"
+        : pipe.input.status === "warning"
+          ? "Unstable"
+          : "Offline",
   };
 }
 
@@ -193,19 +356,34 @@ function buildOutputCard(
   output: ControlRoomOutputOption,
 ): ControlRoomCardDescriptor {
   const monitoringUrl = output.monitoringUrl || null;
+  const previewable = isPreviewableOutputStatus(output.status);
+  const normalizedStatus = (output.status || "off").trim().toLowerCase();
+  const statusLabel =
+    normalizedStatus === "running" || normalizedStatus === "on"
+      ? "Live"
+      : normalizedStatus === "warning"
+        ? "Unstable"
+        : normalizedStatus === "failed"
+          ? "Down"
+          : "Stopped";
   return {
     id: `output:${output.outputId}`,
     title: output.outputName,
     kindLabel: "Monitor URL",
     sourceLabel: monitoringUrl ? compactUrlLabel(monitoringUrl) : "Not set",
-    mediaUrl: monitoringUrl,
-    emptyMessage: "Monitoring URL not set.",
+    mediaUrl: previewable ? monitoringUrl : null,
+    emptyMessage: monitoringUrl
+      ? previewable
+        ? "Waiting for the monitor feed."
+        : "Output is not running."
+      : "Monitoring URL not set.",
     openUrl: toOpenableMonitoringUrl(monitoringUrl),
     copyUrl: monitoringUrl,
     editable: true,
     outputId: output.outputId,
     pipelineId: output.pipelineId,
     monitoringUrl,
+    statusLabel,
   };
 }
 
@@ -259,13 +437,17 @@ function ensureShell(container: HTMLElement): void {
   if (container.dataset.ready === "true") return;
   container.dataset.ready = "true";
   container.innerHTML = `
-        <div class="space-y-4">
-            <section class="border-base-content/10 bg-base-200 rounded-lg border p-3">
+        <div class="space-y-5">
+            <section class="border-base-content/10 from-base-200 via-base-200 to-base-100 rounded-2xl border bg-gradient-to-br p-4 shadow-sm">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div>
                         <h2 class="text-lg font-semibold">Control Room</h2>
                     </div>
-                    <button type="button" id="control-room-reset-btn" class="btn btn-sm btn-outline">Reset</button>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" class="btn btn-sm btn-outline" data-action="control-room-toggle-playback-all">Play All</button>
+                        <button type="button" class="btn btn-sm btn-outline" data-action="control-room-toggle-mute-all">Mute All</button>
+                        <button type="button" id="control-room-reset-btn" class="btn btn-sm btn-outline">Reset</button>
+                    </div>
                 </div>
                 <div class="mt-3 flex flex-wrap items-end gap-3">
                     <label class="min-w-[18rem] flex-1 text-sm">
@@ -280,7 +462,7 @@ function ensureShell(container: HTMLElement): void {
                 </div>
                 <div class="text-base-content/60 mt-2 text-xs" id="control-room-summary"></div>
             </section>
-            <div id="control-room-grid" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"></div>
+            <div id="control-room-grid" class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"></div>
         </div>`;
 
   container.addEventListener("change", (event) => {
@@ -314,6 +496,32 @@ function ensureShell(container: HTMLElement): void {
       renderControlRoom();
       return;
     }
+    if (action === "control-room-toggle-playback-all") {
+      const mounted = listMountedMediaControllers(container);
+      const shouldPause = mounted.some(
+        ({ controller }) => controller.isPlaying?.() === true,
+      );
+      mounted.forEach(({ controller }) => {
+        if (shouldPause) {
+          controller.pause?.();
+        } else {
+          controller.play?.();
+        }
+      });
+      syncGlobalPlaybackButton(container);
+      return;
+    }
+    if (action === "control-room-toggle-mute-all") {
+      const mounted = listMountedMediaControllers(container);
+      const shouldMute = mounted.some(
+        ({ controller }) => controller.isMuted?.() === false,
+      );
+      mounted.forEach(({ controller }) => {
+        controller.setMuted?.(shouldMute);
+      });
+      syncGlobalMuteButton(container);
+      return;
+    }
     if (action === "control-room-copy-url") {
       const url = button.dataset.url || "";
       if (url && (await copyText(url))) showCopiedNotification();
@@ -321,7 +529,27 @@ function ensureShell(container: HTMLElement): void {
     }
     if (action === "control-room-open-url") {
       const url = button.dataset.url || "";
-      if (url) window.open(url, "_blank", "noopener");
+      const title =
+        button
+          .closest("article")
+          ?.querySelector<HTMLElement>('[data-role="control-room-title"]')
+          ?.textContent?.trim() || "Monitor";
+      if (url) openMonitorUrl(url, title);
+      return;
+    }
+    if (action === "control-room-toggle-fullscreen") {
+      const target = getMediaControllerForAction(button);
+      if (!target) return;
+      await requestMonitorFullscreen(target.shell);
+      return;
+    }
+    if (action === "control-room-toggle-mute") {
+      const target = getMediaControllerForAction(button);
+      if (!target?.controller.setMuted || !target.controller.isMuted) return;
+      const muted = target.controller.isMuted();
+      target.controller.setMuted(!muted);
+      setMuteButtonLabel(button, !muted);
+      syncGlobalMuteButton(container);
       return;
     }
     if (action === "control-room-edit-url") {
@@ -388,8 +616,20 @@ function ensureShell(container: HTMLElement): void {
     });
 }
 
-function clearCardPlayerShell(shell: HTMLElement | null): void {
-  clearManagedHlsPlayer(shell);
+function clearCardPlayerShell(
+  shell: HTMLElement | null,
+  options: { resetMediaKey?: boolean } = {},
+): void {
+  if (!shell) return;
+  controlRoomMediaControllers.get(shell)?.destroy();
+  controlRoomMediaControllers.delete(shell);
+  clearManagedHlsPlayer(
+    shell.querySelector<HTMLElement>('[data-role="control-room-media-frame"]'),
+  );
+  shell.replaceChildren();
+  if (options.resetMediaKey !== false) {
+    delete shell.dataset.mediaKey;
+  }
 }
 
 function setTileMessage(shell: HTMLElement, message: string): void {
@@ -404,15 +644,28 @@ function isDirectVideoMonitoringUrl(url: string): boolean {
   return /\.(mp4|m4v|webm|ogg|mov)(?:$|[?#])/i.test(url);
 }
 
+function isYouTubeMonitoringUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    return host === "youtu.be" || host.endsWith("youtube.com");
+  } catch {
+    return false;
+  }
+}
+
 function applyYouTubeMonitoringParams(embed: URL): string {
   embed.searchParams.set("autoplay", "1");
   embed.searchParams.set("mute", "1");
   embed.searchParams.set("playsinline", "1");
   embed.searchParams.set("controls", "0");
+  embed.searchParams.set("enablejsapi", "1");
+  embed.searchParams.set("modestbranding", "1");
   embed.searchParams.set("disablekb", "1");
   embed.searchParams.set("fs", "0");
   embed.searchParams.set("iv_load_policy", "3");
   embed.searchParams.set("rel", "0");
+  embed.searchParams.set("origin", window.location.origin);
   return embed.toString();
 }
 
@@ -476,10 +729,424 @@ function toOpenableMonitoringUrl(url: string | null): string | null {
   }
 }
 
+function setCardWarning(shell: HTMLElement, message: string | null): void {
+  const article = shell.closest("article");
+  const cardId = article?.dataset.cardId || "";
+  if (cardId) {
+    if (message) {
+      controlRoomCardWarnings.set(cardId, message);
+    } else {
+      controlRoomCardWarnings.delete(cardId);
+    }
+  }
+  const warning = article?.querySelector<HTMLElement>(
+    '[data-role="control-room-card-warning"]',
+  );
+  if (!warning) return;
+  if (!message) {
+    warning.textContent = "";
+    warning.classList.add("hidden");
+    return;
+  }
+  warning.textContent = message;
+  warning.classList.remove("hidden");
+}
+
+function getYouTubeMonitoringWarning(
+  status: YoutubeMonitoringStatus | null,
+): string | null {
+  if (!status) return null;
+  if (status.live_now) return null;
+  return status.live_content || status.upcoming
+    ? "This YouTube monitor is not live right now. Update the monitoring URL if the stream moved or has ended."
+    : "This YouTube monitor resolves to a regular video, not a live stream. Update the monitoring URL to the active live share URL.";
+}
+
+async function fetchYouTubeMonitoringStatus(
+  monitoringUrl: string,
+): Promise<YoutubeMonitoringStatus | null> {
+  const now = Date.now();
+  const cached = youtubeMonitoringStatusCache.get(monitoringUrl);
+  if (cached && cached.expiresAt > now) return cached.data;
+  if (cached?.pending) return cached.pending;
+
+  const pending = getYoutubeMonitoringStatus(monitoringUrl).then((data) => {
+    youtubeMonitoringStatusCache.set(monitoringUrl, {
+      expiresAt: Date.now() + YOUTUBE_MONITORING_STATUS_TTL_MS,
+      data,
+    });
+    return data;
+  });
+
+  youtubeMonitoringStatusCache.set(monitoringUrl, {
+    expiresAt: 0,
+    data: cached?.data || null,
+    pending,
+  });
+  return pending;
+}
+
+function refreshYouTubeCardWarning(
+  shell: HTMLElement,
+  monitoringUrl: string,
+): void {
+  void fetchYouTubeMonitoringStatus(monitoringUrl).then((status) => {
+    if (!document.body.contains(shell)) return;
+    setCardWarning(shell, getYouTubeMonitoringWarning(status));
+  });
+}
+
+function buildMonitorPopupFeatures(): string {
+  const width = Math.min(
+    1600,
+    Math.max(960, Math.floor(window.screen.availWidth * 0.86)),
+  );
+  const height = Math.min(
+    1100,
+    Math.max(720, Math.floor(window.screen.availHeight * 0.9)),
+  );
+  const left = Math.max(0, Math.floor((window.screen.availWidth - width) / 2));
+  const top = Math.max(0, Math.floor((window.screen.availHeight - height) / 2));
+  return `noopener,width=${width},height=${height},left=${left},top=${top}`;
+}
+
+function openSizedPopup(url: string): Window | null {
+  return window.open(url, "_blank", buildMonitorPopupFeatures());
+}
+
+function openHlsMonitorPopup(url: string, title: string): void {
+  const popup = window.open("", "_blank", buildMonitorPopupFeatures());
+  if (!popup) {
+    openSizedPopup(url);
+    return;
+  }
+
+  const scriptSrc = new URL(
+    withBasePath("/js/lib/hls.min.js"),
+    window.location.origin,
+  ).toString();
+  const pageTitle = title || "HLS Monitor";
+  const documentHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(pageTitle)}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 36%),
+          linear-gradient(180deg, #07111f 0%, #020617 100%);
+        color: #e5eefb;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.9rem 1.1rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(2, 6, 23, 0.76);
+        backdrop-filter: blur(14px);
+      }
+      .title {
+        min-width: 0;
+      }
+      .title h1 {
+        margin: 0;
+        font-size: 0.98rem;
+        font-weight: 600;
+      }
+      .title p {
+        margin: 0.25rem 0 0;
+        color: rgba(226, 232, 240, 0.72);
+        font-size: 0.74rem;
+        word-break: break-all;
+      }
+      .status {
+        font-size: 0.78rem;
+        color: rgba(226, 232, 240, 0.8);
+        white-space: nowrap;
+      }
+      main {
+        padding: 1rem;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .frame {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        margin: 0 auto;
+        border-radius: 1rem;
+        overflow: hidden;
+        background: #000;
+        box-shadow: 0 28px 60px rgba(15, 23, 42, 0.45);
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: #000;
+      }
+      .overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(2, 6, 23, 0.45);
+        color: #e5eefb;
+        font-size: 0.9rem;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="title">
+        <h1>${escapeHtml(pageTitle)}</h1>
+        <p>${escapeHtml(url)}</p>
+      </div>
+      <div class="status" id="status">Loading stream...</div>
+    </header>
+    <main>
+      <div class="frame">
+        <video id="player" controls autoplay muted playsinline></video>
+        <div class="overlay" id="overlay">Loading stream...</div>
+      </div>
+    </main>
+    <script src="${scriptSrc}"></script>
+    <script>
+      const sourceUrl = ${JSON.stringify(url)};
+      const player = document.getElementById("player");
+      const status = document.getElementById("status");
+      const overlay = document.getElementById("overlay");
+
+      function setStatus(message, isError = false) {
+        status.textContent = message;
+        status.style.color = isError ? "#fda4af" : "rgba(226, 232, 240, 0.8)";
+      }
+
+      function hideOverlay() {
+        overlay.classList.add("hidden");
+      }
+
+      function showOverlay(message) {
+        overlay.textContent = message;
+        overlay.classList.remove("hidden");
+      }
+
+      async function tryPlay() {
+        try {
+          await player.play();
+          setStatus("Playing");
+          hideOverlay();
+        } catch (_error) {
+          setStatus("Ready");
+          showOverlay("Press play to start");
+        }
+      }
+
+      player.addEventListener("playing", () => {
+        setStatus("Playing");
+        hideOverlay();
+      });
+      player.addEventListener("waiting", () => {
+        setStatus("Buffering...");
+        showOverlay("Buffering...");
+      });
+      player.addEventListener("error", () => {
+        setStatus("Playback failed", true);
+        showOverlay("This stream could not be played in the popup");
+      });
+
+      if (window.Hls && window.Hls.isSupported()) {
+        const hls = new window.Hls({
+          startLevel: -1,
+          enableWorker: true,
+        });
+        hls.loadSource(sourceUrl);
+        hls.attachMedia(player);
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+          setStatus("Ready");
+          void tryPlay();
+        });
+        hls.on(window.Hls.Events.ERROR, (_event, data) => {
+          if (!data || !data.fatal) return;
+          setStatus("Playback failed", true);
+          showOverlay("This stream could not be played in the popup");
+        });
+      } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
+        player.src = sourceUrl;
+        void tryPlay();
+      } else {
+        setStatus("Playback unsupported", true);
+        showOverlay("This browser cannot play HLS in the popup");
+      }
+    </script>
+  </body>
+</html>`;
+
+  popup.document.open();
+  popup.document.write(documentHtml);
+  popup.document.close();
+}
+
+function openMonitorUrl(url: string, _title: string): void {
+  openSizedPopup(url);
+}
+
+function createMonitorFrame(shell: HTMLElement): {
+  frame: HTMLElement;
+  controls: HTMLElement;
+} {
+  shell.innerHTML = "";
+
+  const surface = document.createElement("div");
+  surface.className = `${CONTROL_ROOM_MONITOR_FRAME_CLASS} ${CONTROL_ROOM_PLAYER_HEIGHT_CLASS}`;
+
+  const frame = document.createElement("div");
+  frame.dataset.role = "control-room-media-frame";
+  frame.className = "h-full w-full";
+
+  const topShade = document.createElement("div");
+  topShade.className =
+    "pointer-events-none absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/45 to-transparent";
+
+  const bottomShade = document.createElement("div");
+  bottomShade.className =
+    "pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/65 to-transparent";
+
+  const controls = document.createElement("div");
+  controls.dataset.role = "control-room-media-controls";
+  controls.className =
+    "absolute right-2 top-2 z-10 flex gap-1.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100";
+
+  surface.appendChild(frame);
+  surface.appendChild(topShade);
+  surface.appendChild(bottomShade);
+  surface.appendChild(controls);
+  shell.appendChild(surface);
+  return { frame, controls };
+}
+
+function addMonitorButton(
+  controls: HTMLElement,
+  action: string,
+  label: string,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = CONTROL_ROOM_MONITOR_BUTTON_CLASS;
+  button.dataset.action = action;
+  button.textContent = label;
+  controls.appendChild(button);
+  return button;
+}
+
+async function requestMonitorFullscreen(shell: HTMLElement): Promise<void> {
+  const fullscreenTarget =
+    shell.querySelector<HTMLElement>('[data-role="control-room-media-frame"]')
+      ?.parentElement || shell;
+  if (!document.fullscreenElement) {
+    await fullscreenTarget.requestFullscreen?.();
+    return;
+  }
+  if (document.fullscreenElement === fullscreenTarget) {
+    await document.exitFullscreen?.();
+  } else {
+    await fullscreenTarget.requestFullscreen?.();
+  }
+}
+
+function setMuteButtonLabel(button: HTMLButtonElement, muted: boolean): void {
+  button.textContent = muted ? "Unmute" : "Mute";
+}
+
+function registerMediaController(
+  shell: HTMLElement,
+  controller: ControlRoomMediaController,
+): void {
+  controlRoomMediaControllers.set(shell, controller);
+}
+
+function getMediaControllerForAction(
+  target: Element | null,
+): { shell: HTMLElement; controller: ControlRoomMediaController } | null {
+  const shell = target?.closest?.(
+    '[data-role="control-room-player-shell"]',
+  ) as HTMLElement | null;
+  if (!shell) return null;
+  const controller = controlRoomMediaControllers.get(shell);
+  if (!controller) return null;
+  return { shell, controller };
+}
+
+function loadYouTubeIframeApi(): Promise<YouTubeApiNamespace> {
+  if (window.YT?.Player) {
+    return Promise.resolve(window.YT);
+  }
+  if (youtubeIframeApiPromise) return youtubeIframeApiPromise;
+
+  youtubeIframeApiPromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      'script[data-role="youtube-iframe-api"]',
+    );
+    const cleanup = () => {
+      if (window.onYouTubeIframeAPIReady === handleReady) {
+        window.onYouTubeIframeAPIReady = undefined;
+      }
+    };
+    const handleReady = () => {
+      cleanup();
+      if (window.YT?.Player) {
+        resolve(window.YT);
+        return;
+      }
+      reject(new Error("YouTube iframe API loaded without Player"));
+    };
+
+    window.onYouTubeIframeAPIReady = handleReady;
+
+    if (!existingScript) {
+      const script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+      script.dataset.role = "youtube-iframe-api";
+      script.addEventListener("error", () => {
+        cleanup();
+        reject(new Error("Failed to load YouTube iframe API"));
+      });
+      document.head.appendChild(script);
+      return;
+    }
+
+    existingScript.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("Failed to load YouTube iframe API"));
+    });
+  });
+
+  return youtubeIframeApiPromise;
+}
+
 function detectMonitoringEmbedKind(url: string): MonitoringEmbedKind {
   if (/^srt:\/\//i.test(url)) return "unsupported";
   if (isHlsMonitoringUrl(url)) return "hls";
   if (isDirectVideoMonitoringUrl(url)) return "video";
+  if (isYouTubeMonitoringUrl(url)) return "youtube";
   if (/^https?:\/\//i.test(url)) return "iframe";
   return "unsupported";
 }
@@ -492,8 +1159,8 @@ function syncCardMedia(
 ): void {
   const desiredKey = mediaUrl || `message:${emptyMessage}`;
   if (shell.dataset.mediaKey === desiredKey) return;
+  clearCardPlayerShell(shell, { resetMediaKey: false });
   shell.dataset.mediaKey = desiredKey;
-  clearCardPlayerShell(shell);
 
   if (!mediaUrl) {
     setTileMessage(shell, emptyMessage);
@@ -510,42 +1177,182 @@ function syncCardMedia(
   }
 
   if (embedKind === "hls" || embedKind === "video") {
+    const { frame, controls } = createMonitorFrame(shell);
+    const muteButton = addMonitorButton(
+      controls,
+      "control-room-toggle-mute",
+      "Unmute",
+    );
+    addMonitorButton(controls, "control-room-toggle-fullscreen", "Fullscreen");
+
     if (embedKind === "hls") {
-      renderManagedHlsPlayer(shell, mediaUrl, {
+      renderManagedHlsPlayer(frame, mediaUrl, {
         className: `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full bg-black object-contain`,
         loadingLabel: "Loading...",
         playLabel: "Play",
+        controls: false,
       });
+      const video = frame.querySelector<HTMLVideoElement>(
+        '[data-role="managed-hls-video"]',
+      );
+      if (!video) return;
+      registerMediaController(shell, {
+        destroy: () => clearManagedHlsPlayer(frame),
+        play: () => {
+          void video.play().catch(() => {
+            // Autoplay can still be denied until the browser is ready.
+          });
+        },
+        pause: () => {
+          video.pause();
+        },
+        isPlaying: () => !video.paused && !video.ended,
+        isMuted: () => video.muted,
+        setMuted: (muted: boolean) => {
+          video.muted = muted;
+        },
+      });
+      setMuteButtonLabel(muteButton, video.muted);
     } else {
-      shell.innerHTML = "";
       const video = document.createElement("video");
       video.className = `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full bg-black object-contain`;
-      video.controls = true;
+      video.controls = false;
       video.setAttribute("controlslist", "nodownload");
       video.autoplay = true;
       video.muted = true;
       video.playsInline = true;
-      shell.appendChild(video);
+      frame.appendChild(video);
       video.src = mediaUrl;
       void video.play().catch(() => {
         // Autoplay can be blocked; controls remain available.
       });
+      registerMediaController(shell, {
+        destroy: () => {
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+        },
+        play: () => {
+          void video.play().catch(() => {
+            // Autoplay can still be denied until the browser is ready.
+          });
+        },
+        pause: () => {
+          video.pause();
+        },
+        isPlaying: () => !video.paused && !video.ended,
+        isMuted: () => video.muted,
+        setMuted: (muted: boolean) => {
+          video.muted = muted;
+        },
+      });
+      setMuteButtonLabel(muteButton, video.muted);
     }
     return;
   }
 
-  const iframeUrl = toEmbeddableMonitoringUrl(mediaUrl);
-  shell.innerHTML = "";
-  const iframe = document.createElement("iframe");
-  iframe.src = iframeUrl;
-  iframe.className = `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full bg-black`;
-  iframe.allow =
-    "autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share";
-  iframe.referrerPolicy = "strict-origin-when-cross-origin";
-  iframe.loading = "lazy";
-  iframe.title = "Monitoring player";
-  iframe.setAttribute("allowfullscreen", "true");
-  shell.appendChild(iframe);
+  if (embedKind === "youtube") {
+    const { frame, controls } = createMonitorFrame(shell);
+    const cardId = shell.closest("article")?.dataset.cardId || "";
+    setCardWarning(shell, controlRoomCardWarnings.get(cardId) || null);
+    const muteButton = addMonitorButton(
+      controls,
+      "control-room-toggle-mute",
+      "Unmute",
+    );
+    muteButton.disabled = true;
+    muteButton.classList.add("btn-disabled");
+    addMonitorButton(controls, "control-room-toggle-fullscreen", "Fullscreen");
+
+    const iframeWrap = document.createElement("div");
+    iframeWrap.className = "pointer-events-none absolute inset-[-7%]";
+
+    const iframe = document.createElement("iframe");
+    const iframeId = `control-room-youtube-${Math.random().toString(36).slice(2, 10)}`;
+    iframe.id = iframeId;
+    iframe.src = toEmbeddableMonitoringUrl(mediaUrl);
+    iframe.className = "h-full w-full border-0 bg-black";
+    iframe.allow =
+      "autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share";
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    iframe.loading = "lazy";
+    iframe.title = "Monitoring player";
+    iframe.setAttribute("allowfullscreen", "true");
+    iframeWrap.appendChild(iframe);
+    frame.className = `${frame.className} relative`;
+    frame.appendChild(iframeWrap);
+
+    let player: YouTubePlayerApi | null = null;
+    let disposed = false;
+    registerMediaController(shell, {
+      destroy: () => {
+        disposed = true;
+        player?.destroy();
+      },
+      play: () => {
+        player?.playVideo();
+      },
+      pause: () => {
+        player?.pauseVideo();
+      },
+      isPlaying: () => player?.getPlayerState?.() === 1,
+      isMuted: () => player?.isMuted() ?? true,
+      setMuted: (muted: boolean) => {
+        if (!player) return;
+        if (muted) {
+          player.mute();
+        } else {
+          player.unMute();
+        }
+      },
+    });
+
+    void loadYouTubeIframeApi()
+      .then((YT) => {
+        if (disposed) return;
+        player = new YT.Player(iframeId, {
+          events: {
+            onReady: () => {
+              if (!player) return;
+              player.mute();
+              setMuteButtonLabel(muteButton, true);
+              muteButton.disabled = false;
+              muteButton.classList.remove("btn-disabled");
+              refreshYouTubeCardWarning(shell, mediaUrl);
+            },
+          },
+        });
+      })
+      .catch(() => {
+        muteButton.disabled = true;
+        muteButton.classList.add("btn-disabled");
+        muteButton.textContent = "Unavailable";
+      });
+    return;
+  }
+
+  if (embedKind === "iframe") {
+    const { frame, controls } = createMonitorFrame(shell);
+    addMonitorButton(controls, "control-room-toggle-fullscreen", "Fullscreen");
+    const iframe = document.createElement("iframe");
+    iframe.src = toEmbeddableMonitoringUrl(mediaUrl);
+    iframe.className = `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full border-0 bg-black`;
+    iframe.allow =
+      "autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share";
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    iframe.loading = "lazy";
+    iframe.title = "Monitoring player";
+    iframe.setAttribute("allowfullscreen", "true");
+    frame.appendChild(iframe);
+    registerMediaController(shell, {
+      destroy: () => {
+        iframe.src = "about:blank";
+      },
+    });
+    return;
+  }
+
+  setTileMessage(shell, emptyMessage);
 }
 
 function ensureCardElements(grid: HTMLElement, cardCount: number): void {
@@ -563,13 +1370,13 @@ function ensureCardElements(grid: HTMLElement, cardCount: number): void {
   while (grid.children.length < cardCount) {
     const article = document.createElement("article");
     article.className =
-      "border-base-content/10 bg-base-100 flex min-h-[16.25rem] flex-col rounded-lg border p-3 shadow-sm";
+      "group border-base-content/10 bg-base-100 flex min-h-[17rem] flex-col rounded-2xl border p-3 shadow-[0_18px_45px_rgba(15,23,42,0.12)]";
     article.innerHTML = `
             <div class="min-w-0">
-                <div class="truncate text-sm font-semibold" data-role="control-room-title"></div>
+                <div class="truncate text-sm font-semibold tracking-[0.01em]" data-role="control-room-title"></div>
             </div>
-            <div class="mt-2 min-h-[2.5rem]" data-role="control-room-details"></div>
-            <div class="border-base-content/10 bg-base-200 mt-3 flex-1 overflow-hidden rounded-lg border" data-role="control-room-player-shell"></div>`;
+            <div class="mt-2 min-h-[2rem]" data-role="control-room-details"></div>
+            <div class="border-base-content/10 bg-base-200/70 mt-3 overflow-hidden rounded-[1rem] border p-1" data-role="control-room-player-shell"></div>`;
     grid.appendChild(article);
   }
 }
@@ -580,6 +1387,7 @@ function syncCard(
 ): void {
   const previousId = article.dataset.cardId || "";
   if (previousId && previousId !== descriptor.id) {
+    controlRoomCardWarnings.delete(previousId);
     clearCardPlayerShell(
       article.querySelector<HTMLElement>(
         '[data-role="control-room-player-shell"]',
@@ -667,12 +1475,19 @@ function syncCard(
       : "";
     const copyDisabled = descriptor.copyUrl ? "" : " disabled";
     const openDisabled = descriptor.openUrl ? "" : " disabled";
+    const sourceLabel = descriptor.sourceLabel
+      ? `<div class="text-base-content/65 truncate text-xs">${escapeHtml(descriptor.sourceLabel)}</div>`
+      : "";
+    const statusLabel = descriptor.statusLabel
+      ? `<div class="text-base-content/45 text-[10px] font-medium uppercase tracking-[0.14em]">${escapeHtml(descriptor.statusLabel)}</div>`
+      : "";
     details.innerHTML = `
             <div class="space-y-2">
-                <div class="space-y-1">
+                <div class="flex items-center justify-between gap-2">
                     <div class="text-base-content/45 text-[10px] font-medium uppercase tracking-[0.14em]">${escapeHtml(descriptor.kindLabel)}</div>
-                    <div class="text-base-content/65 truncate text-xs">${escapeHtml(descriptor.sourceLabel || " ")}</div>
+                    ${statusLabel}
                 </div>
+                ${sourceLabel}
                 <div class="flex flex-wrap gap-1.5">
                     ${editButton}
                     <button
@@ -690,7 +1505,17 @@ function syncCard(
                         Open
                     </button>
                 </div>
+                <div class="alert alert-warning hidden px-2 py-1 text-xs leading-5" data-role="control-room-card-warning"></div>
             </div>`;
+  }
+
+  const warning = controlRoomCardWarnings.get(descriptor.id) || null;
+  setCardWarning(playerShell, warning);
+  if (
+    descriptor.monitoringUrl &&
+    isYouTubeMonitoringUrl(descriptor.monitoringUrl)
+  ) {
+    refreshYouTubeCardWarning(playerShell, descriptor.monitoringUrl);
   }
 
   syncCardMedia(
@@ -789,6 +1614,7 @@ function renderControlRoom(): void {
     const article = grid.children[index] as HTMLElement | undefined;
     if (article) syncCard(article, descriptor);
   });
+  syncGlobalMediaButtons(container);
 }
 
 function findOutput(outputId: string): OutputView | null {
