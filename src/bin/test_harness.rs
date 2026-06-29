@@ -93,6 +93,7 @@ fn command_requires_port_namespace(command: &str) -> bool {
             | "egress"
             | "correctness-hevc-rtmp"
             | "correctness-hevc-srt"
+            | "fault-egress-retry"
             | "fault-resilience"
             | "mixed-file-h264"
             | "resource-sweep"
@@ -301,6 +302,7 @@ async fn run() -> Result<(), String> {
         "egress" => egress_correctness().await,
         "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
         "correctness-hevc-srt" => hevc_srt_passthrough_correctness().await,
+        "fault-egress-retry" => fault_egress_retry().await,
         "fault-resilience" => fault_resilience().await,
         "mixed-file-h264" => mixed_file_h264_correctness().await,
         "resource-sweep" => resource_sweep().await,
@@ -313,7 +315,7 @@ async fn run() -> Result<(), String> {
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-resilience, mixed-file-h264, resource-sweep, bitrate-sweep, \
+              fault-egress-retry, fault-resilience, mixed-file-h264, resource-sweep, bitrate-sweep, \
               branch-matrix, or srt-crypto-matrix"
         )),
     };
@@ -8847,6 +8849,450 @@ async fn run_mixed_file_h264_config(
     }))
 }
 
+async fn fault_rtmp_egress_sink_disappear(
+    api: &RampApi,
+    ports: &TestPorts,
+    fixture_h264: &Path,
+    sink_port: u16,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "fault-egress-rtmp", "streamKey": "fault-egress-rtmp"}),
+        )
+        .await?;
+    let pid = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
+    let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+        .await
+        .map_err(|e| format!("sink bind: {e}"))?;
+    let sink_cancel = CancellationToken::new();
+    let reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let reader_handles_inner = reader_handles.clone();
+    let sink_metrics_inner = sink_metrics.clone();
+    let sink_cancel_inner = sink_cancel.clone();
+    let sink_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = sink_listener.accept() => {
+                    if let Ok((socket, _)) = result {
+                        let metrics = sink_metrics_inner.clone();
+                        let h = tokio::spawn(async move {
+                            let _ = handle_generalized_sink_client(socket, metrics).await;
+                        });
+                        reader_handles_inner.lock().unwrap().push(h);
+                    }
+                }
+                _ = sink_cancel_inner.cancelled() => break,
+            }
+        }
+    });
+
+    let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/fault-egress-rtmp-sink");
+    let output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            json!({"name": "rtmp-sink", "url": sink_url, "encoding": "source"}),
+        )
+        .await?;
+    let oid = output["output"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let mut pub_child = spawn_publisher(
+        fixture_h264,
+        &format!("rtmp://127.0.0.1:{}/live/fault-egress-rtmp", ports.rtmp),
+        "flv",
+        false,
+    )
+    .await?;
+    wait_for_api_input_live(api, &pid, timeout).await?;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+        json!({}),
+    )
+    .await?;
+
+    let deadline = Instant::now() + timeout;
+    while sink_metrics.video_count.load(Ordering::Relaxed) < 10 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    println!("[fault] RTMP egress delivering data");
+
+    sink_cancel.cancel();
+    sink_task.abort();
+    {
+        let handles = reader_handles.lock().unwrap();
+        for h in handles.iter() {
+            h.abort();
+        }
+    }
+
+    let started = Instant::now();
+    let poll_deadline = started + Duration::from_secs(10);
+    let mut passed = false;
+    let mut phase = String::from("unknown");
+    let mut has_error = false;
+    let mut saw_retrying = false;
+    let mut retry_attempts: Option<u64> = None;
+    let mut retry_backoff_ms: Option<u64> = None;
+    let mut health_saw_retrying = false;
+    while Instant::now() < poll_deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await;
+        match &status {
+            Err(_) => {
+                phase = "cleaned-up".to_string();
+                passed = true;
+                break;
+            }
+            Ok(s) => {
+                has_error = s["lastError"]
+                    .as_str()
+                    .map(|e| !e.is_empty())
+                    .unwrap_or(false);
+                phase = s["phase"].as_str().unwrap_or("unknown").to_string();
+                if s["status"].as_str() == Some("retrying") {
+                    saw_retrying = true;
+                    retry_attempts = s["retryAttempts"].as_u64();
+                    retry_backoff_ms = s["retryBackoffMs"].as_u64();
+                }
+                if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                    && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
+                        == Some("retrying")
+                {
+                    health_saw_retrying = true;
+                }
+                if saw_retrying && has_error {
+                    passed = true;
+                    break;
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    let recovery_metrics = Arc::new(GeneralizedSinkMetrics::default());
+    let recovered_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+        .await
+        .map_err(|e| format!("sink rebind: {e}"))?;
+    let recovered_cancel = CancellationToken::new();
+    let recovered_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let recovered_handles_inner = recovered_handles.clone();
+    let recovery_metrics_inner = recovery_metrics.clone();
+    let recovered_cancel_inner = recovered_cancel.clone();
+    let recovered_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = recovered_listener.accept() => {
+                    if let Ok((socket, _)) = result {
+                        let metrics = recovery_metrics_inner.clone();
+                        let h = tokio::spawn(async move {
+                            let _ = handle_generalized_sink_client(socket, metrics).await;
+                        });
+                        recovered_handles_inner.lock().unwrap().push(h);
+                    }
+                }
+                _ = recovered_cancel_inner.cancelled() => break,
+            }
+        }
+    });
+
+    let recovery_started = Instant::now();
+    let recovery_deadline = recovery_started + Duration::from_secs(25);
+    let mut recovered = false;
+    let mut recovery_status = String::from("unknown");
+    while Instant::now() < recovery_deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(status) = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+        {
+            recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
+            if recovery_status == "retrying" {
+                saw_retrying = true;
+            }
+        }
+        if recovery_metrics.video_count.load(Ordering::Relaxed) >= 10 {
+            recovered = true;
+            break;
+        }
+    }
+    recovered_cancel.cancel();
+    recovered_task.abort();
+    {
+        let handles = recovered_handles.lock().unwrap();
+        for h in handles.iter() {
+            h.abort();
+        }
+    }
+    let final_status = api
+        .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+        .await
+        .ok();
+    let final_retrying = final_status
+        .as_ref()
+        .and_then(|status| status["retrying"].as_bool())
+        .unwrap_or(false);
+    println!(
+        "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, recovered={}, recoveryStatus={}, finalRetrying={}, {:.1}s)",
+        if passed && recovered && saw_retrying && health_saw_retrying && !final_retrying {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        phase,
+        has_error,
+        saw_retrying,
+        health_saw_retrying,
+        recovered,
+        recovery_status,
+        final_retrying,
+        elapsed.as_secs_f64()
+    );
+
+    stop_child(&mut pub_child).await;
+
+    Ok(json!({
+        "test": "rtmp-egress-sink-disappear",
+        "passed": passed && recovered && saw_retrying && health_saw_retrying && !final_retrying,
+        "phase": phase,
+        "hasError": has_error,
+        "elapsedMs": elapsed.as_millis(),
+        "sawRetrying": saw_retrying,
+        "healthSawRetrying": health_saw_retrying,
+        "retryAttempts": retry_attempts,
+        "retryBackoffMs": retry_backoff_ms,
+        "recovered": recovered,
+        "recoveryStatus": recovery_status,
+        "finalRetrying": final_retrying,
+    }))
+}
+
+async fn fault_srt_egress_sink_disappear(
+    api: &RampApi,
+    ports: &TestPorts,
+    fixture_h264: &Path,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "fault-egress-srt", "streamKey": "fault-egress-srt"}),
+        )
+        .await?;
+    let pid = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let sink_pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "srt-sink-target", "streamKey": "srt-sink-target"}),
+        )
+        .await?;
+    let sink_pid = sink_pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let sink_url = format!(
+        "srt://127.0.0.1:{}?streamid=publish:live/srt-sink-target&pkt_size=1316",
+        ports.srt
+    );
+    let output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            json!({"name": "srt-sink", "url": sink_url, "encoding": "source"}),
+        )
+        .await?;
+    let oid = output["output"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let mut pub_child = spawn_publisher(
+        fixture_h264,
+        &format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/fault-egress-srt&pkt_size=1316",
+            ports.srt
+        ),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_api_input_live(api, &pid, timeout).await?;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+        json!({}),
+    )
+    .await?;
+
+    let deadline = Instant::now() + timeout;
+    let mut sink_live = false;
+    while Instant::now() < deadline {
+        if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+            let status = health["pipelines"][&sink_pid]["input"]["status"]
+                .as_str()
+                .unwrap_or("off");
+            if status == "on" {
+                sink_live = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if sink_live {
+        println!("[fault] SRT egress delivering to sink pipeline");
+    }
+
+    let delete_url = format!("{}/api/v1/pipelines/{sink_pid}", api.base_url);
+    let mut request = api.client.delete(&delete_url);
+    if let Some(cookie) = &api.cookie {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+    let _ = request.send().await;
+
+    let started = Instant::now();
+    let poll_deadline = started + Duration::from_secs(10);
+    let mut passed = false;
+    let mut phase = String::from("unknown");
+    let mut has_error = false;
+    let mut saw_retrying = false;
+    let mut health_saw_retrying = false;
+    let mut retry_attempts: Option<u64> = None;
+    let mut retry_backoff_ms: Option<u64> = None;
+    while Instant::now() < poll_deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await;
+        match &status {
+            Err(_) => {
+                phase = "cleaned-up".to_string();
+                passed = true;
+                break;
+            }
+            Ok(s) => {
+                has_error = s["lastError"]
+                    .as_str()
+                    .map(|e| !e.is_empty())
+                    .unwrap_or(false);
+                phase = s["phase"].as_str().unwrap_or("unknown").to_string();
+                if s["status"].as_str() == Some("retrying") {
+                    saw_retrying = true;
+                    retry_attempts = s["retryAttempts"].as_u64();
+                    retry_backoff_ms = s["retryBackoffMs"].as_u64();
+                }
+                if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                    && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
+                        == Some("retrying")
+                {
+                    health_saw_retrying = true;
+                }
+                if saw_retrying && has_error {
+                    passed = true;
+                    break;
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    let final_status = api
+        .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+        .await
+        .ok();
+    let final_retrying = final_status
+        .as_ref()
+        .and_then(|status| status["retrying"].as_bool())
+        .unwrap_or(false);
+    println!(
+        "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, finalRetrying={}, {:.1}s)",
+        if passed && saw_retrying && health_saw_retrying && final_retrying {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        phase,
+        has_error,
+        saw_retrying,
+        health_saw_retrying,
+        final_retrying,
+        elapsed.as_secs_f64()
+    );
+
+    stop_child(&mut pub_child).await;
+
+    Ok(json!({
+        "test": "srt-egress-sink-disappear",
+        "passed": passed && saw_retrying && health_saw_retrying && final_retrying,
+        "phase": phase,
+        "hasError": has_error,
+        "elapsedMs": elapsed.as_millis(),
+        "sawRetrying": saw_retrying,
+        "healthSawRetrying": health_saw_retrying,
+        "retryAttempts": retry_attempts,
+        "retryBackoffMs": retry_backoff_ms,
+        "finalRetrying": final_retrying,
+    }))
+}
+
+async fn fault_egress_retry() -> Result<Value, String> {
+    let work_dir = artifact_path("fault-egress-retry");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = default_restream_bin();
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let ports = TestPorts::from_env();
+    let timeout = Duration::from_secs(15);
+
+    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let fixture_h264 = checked_h264_fixture()?;
+    let results = vec![
+        fault_rtmp_egress_sink_disappear(&api, &ports, &fixture_h264, sink_port, timeout).await?,
+        fault_srt_egress_sink_disappear(&api, &ports, &fixture_h264, timeout).await?,
+    ];
+
+    stop_child(&mut child).await;
+
+    let all_passed = results.iter().all(|r| r["passed"] == true);
+    let result = json!({
+        "mode": "fault-egress-retry",
+        "passed": all_passed,
+        "tests": results,
+    });
+
+    let result_path = work_dir.join("fault-egress-retry.json");
+    std::fs::write(&result_path, serde_json::to_string_pretty(&result).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("artifact={}", result_path.display());
+
+    if !all_passed {
+        return Err("fault-egress-retry: not all tests passed".to_string());
+    }
+    Ok(result)
+}
+
 async fn fault_resilience() -> Result<Value, String> {
     let work_dir = artifact_path("fault-resilience");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
@@ -9446,405 +9892,12 @@ async fn fault_resilience() -> Result<Value, String> {
     }
 
     // ── 6. RTMP egress sink disappears ──────────────────────────────────
-    // Accept connections and drain data, then abort all reader tasks so
-    // their TcpStreams are dropped, sending TCP RST to the egress writer.
-    {
-        let pipeline = api
-            .post_json(
-                "/api/v1/pipelines",
-                json!({"name": "fault-egress-rtmp", "streamKey": "fault-egress-rtmp"}),
-            )
-            .await?;
-        let pid = pipeline["pipeline"]["id"]
-            .as_str()
-            .ok_or("missing id")?
-            .to_string();
-
-        let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
-        let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
-            .await
-            .map_err(|e| format!("sink bind: {e}"))?;
-        let sink_cancel = CancellationToken::new();
-        let reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let reader_handles_inner = reader_handles.clone();
-        let sink_metrics_inner = sink_metrics.clone();
-        let sink_cancel_inner = sink_cancel.clone();
-        let sink_task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    result = sink_listener.accept() => {
-                        if let Ok((socket, _)) = result {
-                            let metrics = sink_metrics_inner.clone();
-                            let h = tokio::spawn(async move {
-                                let _ = handle_generalized_sink_client(socket, metrics).await;
-                            });
-                            reader_handles_inner.lock().unwrap().push(h);
-                        }
-                    }
-                    _ = sink_cancel_inner.cancelled() => break,
-                }
-            }
-        });
-
-        let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/fault-egress-rtmp-sink");
-        let output = api
-            .post_json(
-                &format!("/api/v1/pipelines/{pid}/outputs"),
-                json!({"name": "rtmp-sink", "url": sink_url, "encoding": "source"}),
-            )
-            .await?;
-        let oid = output["output"]["id"]
-            .as_str()
-            .ok_or("missing id")?
-            .to_string();
-
-        let mut pub_child = spawn_publisher(
-            &fixture_h264,
-            &format!("rtmp://127.0.0.1:{}/live/fault-egress-rtmp", ports.rtmp),
-            "flv",
-            false,
-        )
-        .await?;
-        wait_for_api_input_live(&api, &pid, timeout).await?;
-
-        api.post_json(
-            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
-            json!({}),
-        )
-        .await?;
-
-        let deadline = Instant::now() + timeout;
-        while sink_metrics.video_count.load(Ordering::Relaxed) < 10 {
-            if Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        println!("[fault] RTMP egress delivering data");
-
-        // Stop listener, then abort all reader tasks — aborting drops the
-        // TcpStream owned by each task, which sends TCP RST.
-        sink_cancel.cancel();
-        sink_task.abort();
-        {
-            let handles = reader_handles.lock().unwrap();
-            for h in handles.iter() {
-                h.abort();
-            }
-        }
-
-        let started = Instant::now();
-        let poll_deadline = started + Duration::from_secs(10);
-        let mut passed = false;
-        let mut phase = String::from("unknown");
-        let mut has_error = false;
-        let mut saw_retrying = false;
-        let mut retry_attempts: Option<u64> = None;
-        let mut retry_backoff_ms: Option<u64> = None;
-        let mut health_saw_retrying = false;
-        while Instant::now() < poll_deadline {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let status = api
-                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-                .await;
-            match &status {
-                Err(_) => {
-                    // 404/error = egress was cleaned up after failure (pass)
-                    phase = "cleaned-up".to_string();
-                    passed = true;
-                    break;
-                }
-                Ok(s) => {
-                    has_error = s["lastError"]
-                        .as_str()
-                        .map(|e| !e.is_empty())
-                        .unwrap_or(false);
-                    phase = s["phase"].as_str().unwrap_or("unknown").to_string();
-                    if s["status"].as_str() == Some("retrying") {
-                        saw_retrying = true;
-                        retry_attempts = s["retryAttempts"].as_u64();
-                        retry_backoff_ms = s["retryBackoffMs"].as_u64();
-                    }
-                    if let Ok(health) = api.get_json("/api/v1/engine/health").await
-                        && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
-                            == Some("retrying")
-                    {
-                        health_saw_retrying = true;
-                    }
-                    if saw_retrying && has_error {
-                        passed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        let elapsed = started.elapsed();
-        let recovery_metrics = Arc::new(GeneralizedSinkMetrics::default());
-        let recovered_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
-            .await
-            .map_err(|e| format!("sink rebind: {e}"))?;
-        let recovered_cancel = CancellationToken::new();
-        let recovered_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let recovered_handles_inner = recovered_handles.clone();
-        let recovery_metrics_inner = recovery_metrics.clone();
-        let recovered_cancel_inner = recovered_cancel.clone();
-        let recovered_task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    result = recovered_listener.accept() => {
-                        if let Ok((socket, _)) = result {
-                            let metrics = recovery_metrics_inner.clone();
-                            let h = tokio::spawn(async move {
-                                let _ = handle_generalized_sink_client(socket, metrics).await;
-                            });
-                            recovered_handles_inner.lock().unwrap().push(h);
-                        }
-                    }
-                    _ = recovered_cancel_inner.cancelled() => break,
-                }
-            }
-        });
-
-        let recovery_started = Instant::now();
-        let recovery_deadline = recovery_started + Duration::from_secs(25);
-        let mut recovered = false;
-        let mut recovery_status = String::from("unknown");
-        while Instant::now() < recovery_deadline {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if let Ok(status) = api
-                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-                .await
-            {
-                recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
-                if recovery_status == "retrying" {
-                    saw_retrying = true;
-                }
-            }
-            if recovery_metrics.video_count.load(Ordering::Relaxed) >= 10 {
-                recovered = true;
-                break;
-            }
-        }
-        recovered_cancel.cancel();
-        recovered_task.abort();
-        {
-            let handles = recovered_handles.lock().unwrap();
-            for h in handles.iter() {
-                h.abort();
-            }
-        }
-        let final_status = api
-            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-            .await
-            .ok();
-        let final_retrying = final_status
-            .as_ref()
-            .and_then(|status| status["retrying"].as_bool())
-            .unwrap_or(false);
-        println!(
-            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, recovered={}, recoveryStatus={}, finalRetrying={}, {:.1}s)",
-            if passed && recovered && saw_retrying && health_saw_retrying && !final_retrying {
-                "PASS"
-            } else {
-                "FAIL"
-            },
-            phase,
-            has_error,
-            saw_retrying,
-            health_saw_retrying,
-            recovered,
-            recovery_status,
-            final_retrying,
-            elapsed.as_secs_f64()
-        );
-        results.push(json!({
-            "test": "rtmp-egress-sink-disappear",
-            "passed": passed && recovered && saw_retrying && health_saw_retrying && !final_retrying,
-            "phase": phase,
-            "hasError": has_error,
-            "elapsedMs": elapsed.as_millis(),
-            "sawRetrying": saw_retrying,
-            "healthSawRetrying": health_saw_retrying,
-            "retryAttempts": retry_attempts,
-            "retryBackoffMs": retry_backoff_ms,
-            "recovered": recovered,
-            "recoveryStatus": recovery_status,
-            "finalRetrying": final_retrying,
-        }));
-
-        stop_child(&mut pub_child).await;
-    }
+    results.push(
+        fault_rtmp_egress_sink_disappear(&api, &ports, &fixture_h264, sink_port, timeout).await?,
+    );
 
     // ── 7. SRT egress sink disappears ───────────────────────────────────
-    // Use the SRT port on the same restream instance: egress pushes to a
-    // second pipeline; we delete that pipeline to simulate sink loss.
-    {
-        let pipeline = api
-            .post_json(
-                "/api/v1/pipelines",
-                json!({"name": "fault-egress-srt", "streamKey": "fault-egress-srt"}),
-            )
-            .await?;
-        let pid = pipeline["pipeline"]["id"]
-            .as_str()
-            .ok_or("missing id")?
-            .to_string();
-
-        let sink_pipeline = api
-            .post_json(
-                "/api/v1/pipelines",
-                json!({"name": "srt-sink-target", "streamKey": "srt-sink-target"}),
-            )
-            .await?;
-        let sink_pid = sink_pipeline["pipeline"]["id"]
-            .as_str()
-            .ok_or("missing id")?
-            .to_string();
-
-        let sink_url = format!(
-            "srt://127.0.0.1:{}?streamid=publish:live/srt-sink-target&pkt_size=1316",
-            ports.srt
-        );
-        let output = api
-            .post_json(
-                &format!("/api/v1/pipelines/{pid}/outputs"),
-                json!({"name": "srt-sink", "url": sink_url, "encoding": "source"}),
-            )
-            .await?;
-        let oid = output["output"]["id"]
-            .as_str()
-            .ok_or("missing id")?
-            .to_string();
-
-        let mut pub_child = spawn_publisher(
-            &fixture_h264,
-            &format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/fault-egress-srt&pkt_size=1316",
-                ports.srt
-            ),
-            "mpegts",
-            true,
-        )
-        .await?;
-        wait_for_api_input_live(&api, &pid, timeout).await?;
-
-        api.post_json(
-            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
-            json!({}),
-        )
-        .await?;
-
-        // Wait for the sink pipeline to see data
-        let deadline = Instant::now() + timeout;
-        let mut sink_live = false;
-        while Instant::now() < deadline {
-            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
-                let status = health["pipelines"][&sink_pid]["input"]["status"]
-                    .as_str()
-                    .unwrap_or("off");
-                if status == "on" {
-                    sink_live = true;
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if sink_live {
-            println!("[fault] SRT egress delivering to sink pipeline");
-        }
-
-        // Delete the sink pipeline to simulate sink disappearance
-        let delete_url = format!("{}/api/v1/pipelines/{sink_pid}", api.base_url);
-        let mut request = api.client.delete(&delete_url);
-        if let Some(cookie) = &api.cookie {
-            request = request.header(reqwest::header::COOKIE, cookie);
-        }
-        let _ = request.send().await;
-
-        let started = Instant::now();
-        let poll_deadline = started + Duration::from_secs(10);
-        let mut passed = false;
-        let mut phase = String::from("unknown");
-        let mut has_error = false;
-        let mut saw_retrying = false;
-        let mut health_saw_retrying = false;
-        let mut retry_attempts: Option<u64> = None;
-        let mut retry_backoff_ms: Option<u64> = None;
-        while Instant::now() < poll_deadline {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let status = api
-                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-                .await;
-            match &status {
-                Err(_) => {
-                    phase = "cleaned-up".to_string();
-                    passed = true;
-                    break;
-                }
-                Ok(s) => {
-                    has_error = s["lastError"]
-                        .as_str()
-                        .map(|e| !e.is_empty())
-                        .unwrap_or(false);
-                    phase = s["phase"].as_str().unwrap_or("unknown").to_string();
-                    if s["status"].as_str() == Some("retrying") {
-                        saw_retrying = true;
-                        retry_attempts = s["retryAttempts"].as_u64();
-                        retry_backoff_ms = s["retryBackoffMs"].as_u64();
-                    }
-                    if let Ok(health) = api.get_json("/api/v1/engine/health").await
-                        && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
-                            == Some("retrying")
-                    {
-                        health_saw_retrying = true;
-                    }
-                    if saw_retrying && has_error {
-                        passed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        let elapsed = started.elapsed();
-        let final_status = api
-            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
-            .await
-            .ok();
-        let final_retrying = final_status
-            .as_ref()
-            .and_then(|status| status["retrying"].as_bool())
-            .unwrap_or(false);
-        println!(
-            "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, finalRetrying={}, {:.1}s)",
-            if passed && saw_retrying && health_saw_retrying && final_retrying {
-                "PASS"
-            } else {
-                "FAIL"
-            },
-            phase,
-            has_error,
-            saw_retrying,
-            health_saw_retrying,
-            final_retrying,
-            elapsed.as_secs_f64()
-        );
-        results.push(json!({
-            "test": "srt-egress-sink-disappear",
-            "passed": passed && saw_retrying && health_saw_retrying && final_retrying,
-            "phase": phase,
-            "hasError": has_error,
-            "elapsedMs": elapsed.as_millis(),
-            "sawRetrying": saw_retrying,
-            "healthSawRetrying": health_saw_retrying,
-            "retryAttempts": retry_attempts,
-            "retryBackoffMs": retry_backoff_ms,
-            "finalRetrying": final_retrying,
-        }));
-
-        stop_child(&mut pub_child).await;
-    }
+    results.push(fault_srt_egress_sink_disappear(&api, &ports, &fixture_h264, timeout).await?);
 
     // ── 8. HLS preview tears down after ingest disappears ───────────────
     {
@@ -10547,6 +10600,7 @@ mod tests {
     #[test]
     fn only_non_measurement_modes_parallelize_in_suite() {
         assert!(suite_mode_is_parallelizable("correctness-hevc-srt", false));
+        assert!(suite_mode_is_parallelizable("fault-egress-retry", false));
         assert!(suite_mode_is_parallelizable("fault-resilience", false));
         assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));
         assert!(!suite_mode_is_parallelizable("preflight", true));
