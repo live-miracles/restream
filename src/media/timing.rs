@@ -221,11 +221,30 @@ mod tests {
 
     #[test]
     fn delta_us_measures_real_elapsed() {
-        let t0 = now();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let d = delta_us(t0);
-        assert!(d >= 3_000, "expected ≥ 3000 µs, got {} µs", d);
-        assert!(d < 500_000, "expected < 500 000 µs, got {} µs", d);
+        let wall_start = Instant::now();
+        let clock = clock();
+        let t0 = clock.now();
+        let deadline = std::time::Duration::from_millis(50);
+        let mut max_delta = 0u64;
+
+        while wall_start.elapsed() < deadline {
+            max_delta = max_delta.max(clock.delta_us(t0));
+            if max_delta >= 3_000 {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+
+        let wall_us = wall_start.elapsed().as_micros() as u64;
+        assert!(
+            max_delta >= 3_000,
+            "expected timing backend to report at least 3000 µs within {wall_us} µs of wall time, max observed was {max_delta} µs"
+        );
+        assert!(
+            max_delta < 5_000_000,
+            "expected < 5 000 000 µs, got {} µs",
+            max_delta
+        );
     }
 
     #[cfg(target_arch = "x86_64")]

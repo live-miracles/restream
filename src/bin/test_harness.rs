@@ -68,6 +68,98 @@ fn is_bench_profile(path: &Path) -> bool {
     matches!(path_profile(path), Some("bench"))
 }
 
+fn default_work_db_path(work_dir: &Path, file_name: &str) -> PathBuf {
+    // Keep mutable harness state scoped to each WORK_DIR so long suites do not
+    // contend through a shared repo-root SQLite database.
+    work_dir.join(file_name)
+}
+
+fn command_requires_port_namespace(command: &str) -> bool {
+    matches!(
+        command,
+        "api-smoke"
+            | "correctness"
+            | "correctness-rtmp"
+            | "correctness-srt"
+            | "correctness-srt-rtmp"
+            | "correctness-srt-policy"
+            | "bframe-rtmp"
+            | "ramp-family"
+            | "mixed-h264-rtmp"
+            | "mixed-anchor"
+            | "mixed-h265-srt"
+            | "mixed-h264-srt-multi"
+            | "mixed-h265-srt-multi"
+            | "egress"
+            | "correctness-hevc-rtmp"
+            | "correctness-hevc-srt"
+            | "fault-resilience"
+            | "mixed-file-h264"
+            | "resource-sweep"
+            | "bitrate-sweep"
+            | "branch-matrix"
+            | "srt-crypto-matrix"
+    )
+}
+
+fn command_uses_host_net(raw: &[String]) -> bool {
+    raw.iter().any(|arg| arg == "--no-netns")
+        || std::env::var("TEST_HARNESS_USE_HOST_NET")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+fn strip_netns_opt(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .filter(|arg| arg.as_str() != "--no-netns")
+        .cloned()
+        .collect()
+}
+
+fn netns_available() -> bool {
+    std::process::Command::new("unshare")
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn maybe_reexec_in_port_namespace() -> Result<(), String> {
+    if std::env::var_os("RESTREAM_HARNESS_IN_NETNS").is_some() {
+        return Ok(());
+    }
+
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let command = raw.first().map(String::as_str).unwrap_or("suite");
+    if command == "suite"
+        || command == "preflight"
+        || !command_requires_port_namespace(command)
+        || command_uses_host_net(&raw)
+    {
+        return Ok(());
+    }
+
+    if !netns_available() {
+        return Err(format!(
+            "{command} requires a network namespace by default; install `unshare` support or rerun with --no-netns"
+        ));
+    }
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("unshare")
+        .args(["--net", "--user", "--map-root-user"])
+        .arg(&exe)
+        .args(strip_netns_opt(&raw))
+        .env("RESTREAM_HARNESS_IN_NETNS", "1")
+        .status()
+        .map_err(|e| format!("failed to re-exec {command} inside a network namespace: {e}"))?;
+
+    let code = status.code().unwrap_or(1);
+    unsafe { libc::_exit(code) };
+}
+
 // Measurement-oriented modes are only meaningful when both binaries come from
 // the lightweight bench profile, so we fail fast instead of recording skewed
 // numbers from debug or release builds.
@@ -110,6 +202,7 @@ fn suite_modes_require_bench_profile(raw: &[String]) -> Result<bool, String> {
                 raw.get(i)
                     .ok_or_else(|| format!("{} requires a value", raw[i - 1]))?;
             }
+            "--no-netns" => {}
             "--continue-on-fail" => {}
             "--preflight-only" => preflight_only = true,
             other => return Err(format!("unknown suite option: {other}")),
@@ -165,6 +258,10 @@ fn default_restream_bin() -> PathBuf {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    if let Err(error) = maybe_reexec_in_port_namespace() {
+        eprintln!("test harness failed: {error}");
+        unsafe { libc::_exit(1) };
+    }
     if let Err(error) = run().await {
         eprintln!("test harness failed: {error}");
         // Native FFmpeg/libsrt worker threads can still be alive on a failed
@@ -955,7 +1052,7 @@ impl RampEnv {
             restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("data.db")),
+                .unwrap_or_else(|| default_work_db_path(&work_dir, "ramp.db")),
             restream_http: env_u16("RESTREAM_HTTP", 3030),
             restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
             restream_srt: env_u16("RESTREAM_SRT", 10080),
@@ -1142,7 +1239,7 @@ impl ResourceSweepEnv {
             restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("data.db")),
+                .unwrap_or_else(|| default_work_db_path(&work_dir, "resource-sweep.db")),
             restream_http: env_u16("RESTREAM_HTTP", 3030),
             restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
             restream_srt: env_u16("RESTREAM_SRT", 10080),
@@ -1412,7 +1509,7 @@ impl BitrateSweepEnv {
             restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("data.db")),
+                .unwrap_or_else(|| default_work_db_path(&work_dir, "bitrate-sweep.db")),
             restream_http: env_u16("RESTREAM_HTTP", 3030),
             restream_rtmp: env_u16("RESTREAM_RTMP", 1935),
             restream_srt: env_u16("RESTREAM_SRT", 10080),
@@ -2030,7 +2127,7 @@ async fn run_bitrate_case(
         &stack.api,
         &pipeline_id,
         &output_ids,
-        Duration::from_secs(30),
+        Duration::from_secs(45),
     )
     .await?;
 
@@ -3010,72 +3107,31 @@ fn spawn_resource_publisher_with_bitrate(
     stream_key: &str,
     bitrate: &str,
 ) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-    ]);
-    if config.multi_audio {
-        cmd.args(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono"]);
-    }
-    if config.video_codec == "h265" {
-        cmd.args([
-            "-c:v",
-            "libx265",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-x265-params",
-            "log-level=none",
-        ]);
-    } else {
-        cmd.args([
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-        ]);
-    }
-    cmd.args(["-map", "0:v", "-map", "1:a"]);
-    if config.multi_audio {
-        cmd.args(["-map", "2:a"]);
-    }
-    cmd.args(["-g", "30", "-b:v", bitrate, "-c:a", "aac", "-b:a", "64k"]);
-    if config.ingest_proto == "rtmp" {
-        cmd.args(["-f", "flv"]);
-        cmd.arg(format!(
-            "rtmp://127.0.0.1:{restream_rtmp}/live/{stream_key}"
-        ));
-    } else {
-        cmd.args(["-f", "mpegts"]);
-        cmd.arg(append_srt_crypto(
-            format!(
-                "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
-            ),
-            srt_crypto,
-        ));
-    }
     let log_path = work_dir.join(format!("publisher-{stream_key}.log"));
-    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
-    let err = log.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::from(log))
-        .stderr(Stdio::from(err))
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    let fixture = sweep_fixture(config, bitrate)?;
+    let (url, format, selection) = if config.ingest_proto == "rtmp" {
+        (
+            format!("rtmp://127.0.0.1:{restream_rtmp}/live/{stream_key}"),
+            "flv",
+            PublishTrackSelection::PrimaryAv,
+        )
+    } else {
+        (
+            append_srt_crypto(
+                format!(
+                    "srt://127.0.0.1:{restream_srt}?streamid=publish:live/{stream_key}&latency=200000"
+                ),
+                srt_crypto,
+            ),
+            "mpegts",
+            if config.multi_audio {
+                PublishTrackSelection::AllStreams
+            } else {
+                PublishTrackSelection::PrimaryAv
+            },
+        )
+    };
+    spawn_publisher_with_selection(&fixture, &url, format, selection, Some(&log_path))
 }
 
 fn resource_output_url(
@@ -3147,6 +3203,7 @@ async fn wait_for_outputs_progress(
     loop {
         let health = api.get_json("/api/v1/engine/health").await?;
         let mut progressed = 0usize;
+        let mut stalled = Vec::new();
         for output_id in output_ids {
             let entry = &health["pipelines"][pipeline_id]["outputs"][output_id];
             let bytes_out = entry["bytesOut"].as_u64().unwrap_or(0);
@@ -3154,6 +3211,13 @@ async fn wait_for_outputs_progress(
             let packets_out = entry["metrics"]["packetsOut"].as_u64().unwrap_or(0);
             if bytes_out > 0 || metrics_bytes > 0 || packets_out > 0 {
                 progressed += 1;
+            } else {
+                let phase = entry["phase"].as_str().unwrap_or("unknown");
+                let state = entry["state"].as_str().unwrap_or("unknown");
+                let last_error = entry["lastError"].as_str().unwrap_or("");
+                stalled.push(format!(
+                    "{output_id}[phase={phase},state={state},bytesOut={bytes_out},metricsBytesOut={metrics_bytes},packetsOut={packets_out},lastError={last_error}]"
+                ));
             }
         }
         if progressed == output_ids.len() {
@@ -3161,8 +3225,9 @@ async fn wait_for_outputs_progress(
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "outputs did not make progress for pipeline {pipeline_id}: {progressed}/{}",
-                output_ids.len()
+                "outputs did not make progress for pipeline {pipeline_id}: {progressed}/{}; stalled={}",
+                output_ids.len(),
+                stalled.join(", ")
             ));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -4146,53 +4211,28 @@ async fn spawn_ramp_publisher(
     env: &RampEnv,
     stream_key: &str,
 ) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-b:v",
-        "4M",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-    ]);
-    match config.ingest_proto {
-        "rtmp" => {
-            cmd.args(["-f", "flv"]).arg(format!(
-                "rtmp://127.0.0.1:{}/live/{stream_key}",
-                env.restream_rtmp
-            ));
-        }
-        "srt" => {
-            cmd.args(["-f", "mpegts"]).arg(format!(
+    let fixture = ramp_fixture()?;
+    let (url, format) = match config.ingest_proto {
+        "rtmp" => (
+            format!("rtmp://127.0.0.1:{}/live/{stream_key}", env.restream_rtmp),
+            "flv",
+        ),
+        "srt" => (
+            format!(
                 "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
                 env.restream_srt
-            ));
-        }
+            ),
+            "mpegts",
+        ),
         other => return Err(format!("unsupported ramp ingest protocol {other}")),
-    }
-    cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    };
+    spawn_publisher_with_selection(
+        &fixture,
+        &url,
+        format,
+        PublishTrackSelection::PrimaryAv,
+        None,
+    )
 }
 
 async fn wait_for_api_input_live(
@@ -4507,7 +4547,7 @@ impl MixedEnv {
             restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("data.db")),
+                .unwrap_or_else(|| default_work_db_path(&work_dir, &format!("{log_stem}.db"))),
             assertion_log: std::env::var_os("ASSERTION_LOG")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
@@ -6192,152 +6232,48 @@ async fn run_mixed_srt_multi_config(
 }
 
 async fn spawn_mixed_anchor_publisher(env: &MixedEnv, stream_key: &str) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-map",
-        "0:v",
-        "-map",
-        "1:a",
-        "-b:v",
-        "1.5M",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-f",
-        "mpegts",
-    ]);
-    cmd.arg(format!(
-        "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
-        env.restream_srt
-    ));
     let log_path = env.work_dir.join("mixed-anchor-publisher.log");
-    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
-    let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    let fixture = restream::test_fixtures::bench_transport_fixture("h264", "1.5M", false)?;
+    spawn_publisher_with_selection(
+        &fixture,
+        &format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
+            env.restream_srt
+        ),
+        "mpegts",
+        PublishTrackSelection::PrimaryAv,
+        Some(&log_path),
+    )
 }
 
 async fn spawn_mixed_h265_srt_publisher(env: &MixedEnv, stream_key: &str) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-c:v",
-        "libx265",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-x265-params",
-        "log-level=none",
-        "-map",
-        "0:v",
-        "-map",
-        "1:a",
-        "-b:v",
-        "1.5M",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-f",
-        "mpegts",
-    ]);
-    cmd.arg(format!(
-        "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
-        env.restream_srt
-    ));
     let log_path = env.work_dir.join("mixed-h265-srt-publisher.log");
-    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
-    let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    let fixture = restream::test_fixtures::bench_transport_fixture("h265", "1.5M", false)?;
+    spawn_publisher_with_selection(
+        &fixture,
+        &format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
+            env.restream_srt
+        ),
+        "mpegts",
+        PublishTrackSelection::PrimaryAv,
+        Some(&log_path),
+    )
 }
 
 async fn spawn_mixed_h264_rtmp_publisher(
     env: &MixedEnv,
     stream_key: &str,
 ) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-map",
-        "0:v",
-        "-map",
-        "1:a",
-        "-b:v",
-        "1.5M",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
-        "-f",
-        "flv",
-    ]);
-    cmd.arg(format!(
-        "rtmp://127.0.0.1:{}/live/{stream_key}",
-        env.restream_rtmp
-    ));
     let log_path = env.work_dir.join("mixed-h264-rtmp-publisher.log");
-    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
-    let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    let fixture = restream::test_fixtures::bench_transport_fixture("h264", "1.5M", false)?;
+    spawn_publisher_with_selection(
+        &fixture,
+        &format!("rtmp://127.0.0.1:{}/live/{stream_key}", env.restream_rtmp),
+        "flv",
+        PublishTrackSelection::PrimaryAv,
+        Some(&log_path),
+    )
 }
 
 async fn spawn_mixed_srt_multi_publisher(
@@ -6346,55 +6282,22 @@ async fn spawn_mixed_srt_multi_publisher(
     cfg: &str,
     h265: bool,
 ) -> Result<Child, String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-re",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=44100:cl=mono",
-        "-c:v",
-    ]);
-    if h265 {
-        cmd.args([
-            "libx265",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-x265-params",
-            "log-level=none",
-        ]);
-    } else {
-        cmd.args(["libx264", "-preset", "ultrafast", "-tune", "zerolatency"]);
-    }
-    cmd.args([
-        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-b:v", "1.5M", "-c:a", "aac", "-b:a", "64k",
-        "-f", "mpegts",
-    ]);
-    cmd.arg(format!(
-        "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
-        env.restream_srt
-    ));
     let log_path = env.work_dir.join(format!("{cfg}-publisher.log"));
-    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
-    let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .kill_on_drop(true);
-    cmd.spawn().map_err(|e| e.to_string())
+    let fixture = restream::test_fixtures::bench_transport_fixture(
+        if h265 { "h265" } else { "h264" },
+        "1.5M",
+        true,
+    )?;
+    spawn_publisher_with_selection(
+        &fixture,
+        &format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/{stream_key}&latency=200000",
+            env.restream_srt
+        ),
+        "mpegts",
+        PublishTrackSelection::AllStreams,
+        Some(&log_path),
+    )
 }
 
 async fn create_mixed_output(
@@ -6827,14 +6730,8 @@ async fn correctness() -> Result<Value, String> {
         .to_string();
     println!("[correctness] created pipelines {rtmp_id}, {srt_id}");
 
-    let rtmp_fixture = artifact_path("correctness-h264.ts");
-    if !rtmp_fixture.exists() {
-        generate_fixture_h264(&rtmp_fixture).await?;
-    }
-    let srt_fixture = artifact_path("correctness-h265.ts");
-    if !srt_fixture.exists() {
-        generate_fixture_h265(&srt_fixture).await?;
-    }
+    let rtmp_fixture = checked_h264_fixture()?;
+    let srt_fixture = checked_h265_fixture()?;
 
     let rtmp_publish = format!("rtmp://127.0.0.1:{}/live/e2e-rtmp", ports.rtmp);
     let srt_publish = format!(
@@ -6961,10 +6858,7 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
         }
     });
 
-    let fixture = artifact_path("correctness-h264.ts");
-    if !fixture.exists() {
-        generate_fixture_h264(&fixture).await?;
-    }
+    let fixture = checked_h264_fixture()?;
 
     let mut publisher = spawn_publisher(
         &fixture,
@@ -7084,10 +6978,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     let mut api = RampApi::new(ports.http);
     api.login().await?;
 
-    let fixture = artifact_path("correctness-h264.ts");
-    if !fixture.exists() {
-        generate_fixture_h264(&fixture).await?;
-    }
+    let fixture = checked_h264_fixture()?;
 
     let mut results = serde_json::Map::new();
 
@@ -7601,10 +7492,7 @@ async fn bframe_rtmp_correctness() -> Result<Value, String> {
         }
     });
 
-    let fixture = artifact_path("correctness-h264.ts");
-    if !fixture.exists() {
-        generate_fixture_h264(&fixture).await?;
-    }
+    let fixture = checked_h264_fixture()?;
 
     let mut publisher = spawn_publisher(
         &fixture,
@@ -7709,17 +7597,9 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     println!("[correctness-{protocol}] created pipeline {pipeline_id}");
 
     let fixture = if protocol == "rtmp" {
-        let p = artifact_path("correctness-h264.ts");
-        if !p.exists() {
-            generate_fixture_h264(&p).await?;
-        }
-        p
+        checked_h264_fixture()?
     } else {
-        let p = artifact_path("correctness-h265.ts");
-        if !p.exists() {
-            generate_fixture_h265(&p).await?;
-        }
-        p
+        checked_h265_fixture()?
     };
     let (publish_url, read_url, format) = if protocol == "rtmp" {
         (
@@ -7796,10 +7676,7 @@ async fn egress_correctness() -> Result<Value, String> {
         .ok_or("pipeline create missing id")?
         .to_string();
 
-    let fixture = artifact_path("correctness-h264.ts");
-    if !fixture.exists() {
-        generate_fixture_h264(&fixture).await?;
-    }
+    let fixture = checked_h264_fixture()?;
 
     let mut publisher = spawn_publisher(
         &fixture,
@@ -8026,10 +7903,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
         .ok_or("pipeline create missing id")?
         .to_string();
 
-    let fixture = artifact_path("correctness-h265.ts");
-    if !fixture.exists() {
-        generate_fixture_h265(&fixture).await?;
-    }
+    let fixture = checked_h265_fixture()?;
 
     let mut publisher = spawn_publisher(
         &fixture,
@@ -8161,10 +8035,7 @@ async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
         .ok_or("sink pipeline create missing id")?
         .to_string();
 
-    let fixture = artifact_path("correctness-h265.ts");
-    if !fixture.exists() {
-        generate_fixture_h265(&fixture).await?;
-    }
+    let fixture = checked_h265_fixture()?;
 
     let mut publisher = spawn_publisher(
         &fixture,
@@ -8249,107 +8120,44 @@ async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
     }
 }
 
-async fn generate_fixture_h264(path: &Path) -> Result<(), String> {
-    let status = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=1920x1080:rate=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=48000",
-            "-t",
-            "8",
-            "-map",
-            "0:v",
-            "-map",
-            "1:a",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "slow",
-            "-g",
-            "60",
-            "-bf",
-            "2",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-f",
-            "mpegts",
-        ])
-        .arg(path)
-        .status()
-        .await
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("H.264 fixture generation failed: {status}"))
+#[derive(Clone, Copy)]
+enum PublishTrackSelection {
+    PrimaryAv,
+    AllStreams,
+}
+
+impl PublishTrackSelection {
+    fn needs_all_streams(self) -> bool {
+        matches!(self, Self::AllStreams)
     }
 }
 
-async fn generate_fixture_h265(path: &Path) -> Result<(), String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=1920x1080:rate=30",
-        "-f",
-        "lavfi",
-        "-i",
-        "sine=frequency=440:sample_rate=48000",
-        "-t",
-        "8",
-        "-map",
-        "0:v",
-        "-map",
-        "1:a",
-        "-c:v",
-        "libx265",
-        "-preset",
-        "fast",
-        "-x265-params",
-        "log-level=none",
-        "-g",
-        "60",
-        "-bf",
-        "0",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-ac",
-        "2",
-        "-f",
-        "mpegts",
-    ]);
-    cmd.arg(path);
-    let status = cmd.status().await.map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("H.265 fixture generation failed: {status}"))
-    }
+fn sweep_fixture(config: SweepConfig, bitrate_label: &str) -> Result<PathBuf, String> {
+    restream::test_fixtures::bench_transport_fixture(
+        config.video_codec,
+        bitrate_label,
+        config.multi_audio,
+    )
 }
 
-async fn spawn_publisher(
+fn ramp_fixture() -> Result<PathBuf, String> {
+    restream::test_fixtures::bench_transport_fixture("h264", "4M", false)
+}
+
+fn checked_h264_fixture() -> Result<PathBuf, String> {
+    restream::test_fixtures::canonical_h264_ts_fixture()
+}
+
+fn checked_h265_fixture() -> Result<PathBuf, String> {
+    restream::test_fixtures::canonical_h265_ts_fixture()
+}
+
+fn spawn_publisher_with_selection(
     path: &Path,
     url: &str,
     format: &str,
-    map_all: bool,
+    selection: PublishTrackSelection,
+    log_path: Option<&Path>,
 ) -> Result<Child, String> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
@@ -8363,23 +8171,49 @@ async fn spawn_publisher(
         "-i",
     ]);
     cmd.arg(path);
-    if map_all {
+    if selection.needs_all_streams() {
         cmd.args(["-map", "0"]);
     } else {
         cmd.args(["-map", "0:v", "-map", "0:a:0"]);
     }
     cmd.args(["-c", "copy", "-f", format]).arg(url);
-    // stderr must not be piped without a consumer — the 64KB pipe buffer fills
-    // and blocks ffmpeg, hanging the test. Discard it (errors visible via exit code).
-    cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
+    if let Some(log_path) = log_path {
+        let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
+        let stderr = log.try_clone().map_err(|e| e.to_string())?;
+        cmd.stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr))
+            .kill_on_drop(true);
+    } else {
+        // stderr must not be piped without a consumer — the 64KB pipe buffer
+        // fills and blocks ffmpeg, hanging the test. Discard it when a fixture
+        // publisher does not need a dedicated log file.
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+    }
     cmd.spawn().map_err(|e| e.to_string())
 }
 
-/// Generate H.265 4K60 video from lavfi + 16 audio tracks from a file on disk,
-/// streaming directly to SRT. The file is read by ffmpeg, never loaded into
-/// restream's memory.
+async fn spawn_publisher(
+    path: &Path,
+    url: &str,
+    format: &str,
+    map_all: bool,
+) -> Result<Child, String> {
+    spawn_publisher_with_selection(
+        path,
+        url,
+        format,
+        if map_all {
+            PublishTrackSelection::AllStreams
+        } else {
+            PublishTrackSelection::PrimaryAv
+        },
+        None,
+    )
+}
+
+/// Probe a live stream URL without buffering its contents into the harness.
 async fn ffprobe(url: &str) -> Result<Value, String> {
     // kill_on_drop(true) ensures the subprocess is killed when the timeout
     // drops the future, preventing orphan ffprobe processes (T2 fix).
@@ -8641,10 +8475,7 @@ async fn run_mixed_file_h264_config(
     let total = n * 2;
     let stream_key = format!("sk-{cfg}");
 
-    let fixture = artifact_path("correctness-h264.ts");
-    if !fixture.exists() {
-        generate_fixture_h264(&fixture).await?;
-    }
+    let fixture = checked_h264_fixture()?;
 
     let fixture_name = fixture.file_name().unwrap().to_string_lossy().to_string();
     let media_dir =
@@ -8799,10 +8630,7 @@ async fn fault_resilience() -> Result<Value, String> {
     let mut api = RampApi::new(ports.http);
     api.login().await?;
 
-    let fixture_h264 = artifact_path("correctness-h264.ts");
-    if !fixture_h264.exists() {
-        generate_fixture_h264(&fixture_h264).await?;
-    }
+    let fixture_h264 = checked_h264_fixture()?;
 
     let mut results: Vec<Value> = Vec::new();
 
@@ -9262,11 +9090,99 @@ async fn stop_child(child: &mut Child) {
     let _ = child.wait().await;
 }
 
+fn suite_mode_is_parallelizable(mode: &str, preflight_only: bool) -> bool {
+    !preflight_only && !measurement_mode_requires_bench_profile(mode)
+}
+
+struct SuiteModeOutcome {
+    index: usize,
+    mode: String,
+    mode_dir: PathBuf,
+    started_at: String,
+    finished_at: String,
+    exit_ok: bool,
+}
+
+async fn suite_run_mode(
+    exe: PathBuf,
+    mode: String,
+    mode_dir: PathBuf,
+    command: String,
+    has_unshare: bool,
+    use_host_net: bool,
+    index: usize,
+) -> Result<SuiteModeOutcome, String> {
+    let started_at = Utc::now().to_rfc3339();
+    let spawn_mode_dir = mode_dir.clone();
+    let exit_ok = tokio::task::spawn_blocking(move || {
+        suite_spawn_mode(&exe, &command, &spawn_mode_dir, has_unshare, use_host_net)
+    })
+    .await
+    .map_err(|e| format!("suite worker join failed for {mode}: {e}"))??;
+    let finished_at = Utc::now().to_rfc3339();
+    Ok(SuiteModeOutcome {
+        index,
+        mode,
+        mode_dir,
+        started_at,
+        finished_at,
+        exit_ok,
+    })
+}
+
+async fn suite_run_parallel_batch(
+    exe: &Path,
+    modes: &[String],
+    work_root: &Path,
+    preflight_only: bool,
+    has_unshare: bool,
+    use_host_net: bool,
+) -> Result<Vec<SuiteModeOutcome>, String> {
+    let mut join_set = tokio::task::JoinSet::new();
+    for (offset, mode) in modes.iter().enumerate() {
+        let mode_dir = work_root.join(mode);
+        std::fs::create_dir_all(&mode_dir).map_err(|e| e.to_string())?;
+        let command = if preflight_only {
+            "preflight".to_string()
+        } else {
+            mode.clone()
+        };
+        println!(
+            "[suite] {} {mode}",
+            if preflight_only { "preflight" } else { "run" }
+        );
+        join_set.spawn(suite_run_mode(
+            exe.to_path_buf(),
+            mode.clone(),
+            mode_dir,
+            command,
+            has_unshare,
+            use_host_net,
+            offset,
+        ));
+    }
+
+    let mut outcomes: Vec<Option<SuiteModeOutcome>> = (0..modes.len()).map(|_| None).collect();
+    while let Some(result) = join_set.join_next().await {
+        let outcome = result.map_err(|e| format!("suite batch join failed: {e}"))??;
+        let index = outcome.index;
+        outcomes[index] = Some(outcome);
+    }
+
+    outcomes
+        .into_iter()
+        .map(|outcome| outcome.ok_or("suite batch produced an empty result slot".to_string()))
+        .collect()
+}
+
 async fn suite_run() -> Result<Value, String> {
     let raw: Vec<String> = std::env::args().skip(2).collect();
     let mut modes: Vec<String> = SUITE_DEFAULT_MODES.iter().map(|s| s.to_string()).collect();
     let mut continue_on_fail = false;
     let mut preflight_only = false;
+    let mut use_host_net = std::env::var("TEST_HARNESS_USE_HOST_NET")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     let mut run_id = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut work_root: Option<PathBuf> = std::env::var_os("WORK_ROOT").map(PathBuf::from);
 
@@ -9293,6 +9209,7 @@ async fn suite_run() -> Result<Value, String> {
                     raw.get(i).ok_or("--work-root requires a value")?,
                 ));
             }
+            "--no-netns" => use_host_net = true,
             "--continue-on-fail" => continue_on_fail = true,
             "--preflight-only" => preflight_only = true,
             other => return Err(format!("unknown suite option: {other}")),
@@ -9328,46 +9245,76 @@ async fn suite_run() -> Result<Value, String> {
     )?;
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let has_unshare = std::process::Command::new("unshare")
-        .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let has_unshare = !use_host_net && netns_available();
     let mut overall_ok = true;
 
-    for mode in &modes {
-        let mode_dir = work_root.join(mode);
-        std::fs::create_dir_all(&mode_dir).map_err(|e| e.to_string())?;
-        let mode_started = Utc::now().to_rfc3339();
-
-        let command = if preflight_only {
-            "preflight"
+    let mut index = 0usize;
+    while index < modes.len() {
+        if suite_mode_is_parallelizable(&modes[index], preflight_only) && has_unshare {
+            let batch_end = modes[index..]
+                .iter()
+                .take_while(|mode| suite_mode_is_parallelizable(mode, preflight_only))
+                .count()
+                + index;
+            let outcomes = suite_run_parallel_batch(
+                &exe,
+                &modes[index..batch_end],
+                &work_root,
+                preflight_only,
+                has_unshare,
+                use_host_net,
+            )
+            .await?;
+            for outcome in outcomes {
+                let mode_status = if outcome.exit_ok { "PASS" } else { "FAIL" };
+                if !outcome.exit_ok {
+                    overall_ok = false;
+                }
+                suite_append_result(
+                    &results_jsonl,
+                    &outcome.mode,
+                    mode_status,
+                    &outcome.started_at,
+                    &outcome.finished_at,
+                    &outcome.mode_dir,
+                )?;
+                println!("[suite] {}: {mode_status}", outcome.mode);
+            }
+            index = batch_end;
         } else {
-            mode.as_str()
-        };
-        println!(
-            "[suite] {} {mode}",
-            if preflight_only { "preflight" } else { "run" }
-        );
+            let mode = &modes[index];
+            let mode_dir = work_root.join(mode);
+            std::fs::create_dir_all(&mode_dir).map_err(|e| e.to_string())?;
+            let mode_started = Utc::now().to_rfc3339();
 
-        let exit_ok = suite_spawn_mode(&exe, command, &mode_dir, has_unshare)?;
-        let mode_status = if exit_ok { "PASS" } else { "FAIL" };
-        if !exit_ok {
-            overall_ok = false;
+            let command = if preflight_only {
+                "preflight"
+            } else {
+                mode.as_str()
+            };
+            println!(
+                "[suite] {} {mode}",
+                if preflight_only { "preflight" } else { "run" }
+            );
+
+            let exit_ok = suite_spawn_mode(&exe, command, &mode_dir, has_unshare, use_host_net)?;
+            let mode_status = if exit_ok { "PASS" } else { "FAIL" };
+            if !exit_ok {
+                overall_ok = false;
+            }
+
+            let mode_finished = Utc::now().to_rfc3339();
+            suite_append_result(
+                &results_jsonl,
+                mode,
+                mode_status,
+                &mode_started,
+                &mode_finished,
+                &mode_dir,
+            )?;
+            println!("[suite] {mode}: {mode_status}");
+            index += 1;
         }
-
-        let mode_finished = Utc::now().to_rfc3339();
-        suite_append_result(
-            &results_jsonl,
-            mode,
-            mode_status,
-            &mode_started,
-            &mode_finished,
-            &mode_dir,
-        )?;
-        println!("[suite] {mode}: {mode_status}");
 
         if !overall_ok && !continue_on_fail {
             break;
@@ -9400,6 +9347,7 @@ fn suite_spawn_mode(
     command: &str,
     mode_dir: &Path,
     has_unshare: bool,
+    use_host_net: bool,
 ) -> Result<bool, String> {
     let log_path = mode_dir.join("run.log");
     let log_file = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
@@ -9411,16 +9359,22 @@ fn suite_spawn_mode(
             .arg(exe)
             .arg(command)
             .env("WORK_DIR", mode_dir)
+            .env("RESTREAM_HARNESS_IN_NETNS", "1")
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(log_copy))
             .status()
             .map_err(|e| format!("failed to spawn {command}: {e}"))?
     } else {
-        std::process::Command::new(exe)
+        let mut child = std::process::Command::new(exe);
+        child
             .arg(command)
             .env("WORK_DIR", mode_dir)
             .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::from(log_copy))
+            .stderr(std::process::Stdio::from(log_copy));
+        if use_host_net {
+            child.env("TEST_HARNESS_USE_HOST_NET", "1");
+        }
+        child
             .status()
             .map_err(|e| format!("failed to spawn {command}: {e}"))?
     };
@@ -9585,5 +9539,56 @@ async fn preflight_check() -> Result<Value, String> {
             "preflight failed: {}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_work_db_path_stays_under_work_dir() {
+        let work_dir = Path::new("test/artifacts/example");
+        assert_eq!(
+            default_work_db_path(work_dir, "suite.db"),
+            work_dir.join("suite.db")
+        );
+    }
+
+    #[test]
+    fn harness_source_does_not_use_repo_root_data_db_fallback() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/test_harness.rs"
+        ));
+        assert!(
+            !source.contains("PathBuf::from(\"data.db\")"),
+            "harness modes must keep mutable DB state under WORK_DIR"
+        );
+    }
+
+    #[test]
+    fn strip_netns_opt_removes_only_the_opt_out_flag() {
+        let raw = vec![
+            "bitrate-sweep".to_string(),
+            "--no-netns".to_string(),
+            "--work-root".to_string(),
+            "test/artifacts/example".to_string(),
+        ];
+        assert_eq!(
+            strip_netns_opt(&raw),
+            vec![
+                "bitrate-sweep".to_string(),
+                "--work-root".to_string(),
+                "test/artifacts/example".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_non_measurement_modes_parallelize_in_suite() {
+        assert!(suite_mode_is_parallelizable("correctness-hevc-srt", false));
+        assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));
+        assert!(!suite_mode_is_parallelizable("preflight", true));
     }
 }

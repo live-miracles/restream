@@ -113,6 +113,12 @@ keep a scalar fallback; use runtime feature detection; minimize `unsafe` and doc
 - Run scoped tests first (filtered unit/Criterion for the touched path), then broaden only
   if the change crosses module boundaries or alters shared contracts.
 - Treat unrelated full-suite failures as separate findings — don't let them obscure scoped results.
+- For ad hoc testing and benchmarks, use existing checked-in assets from `test/fixtures/` and `media/` first.
+  Only generate inline media when the test case genuinely cannot be covered by the existing fixture set.
+- Let Cargo keep its normal test parallelism for correctness work; do not shard multiple heavy
+  `cargo test` invocations across the same tree unless there is explicit process/resource isolation.
+- Only correctness-oriented harness slices may parallelize by default. Criterion runs and
+  measurement-oriented harness modes stay serial unless the run is intentionally resource-isolated.
 - `cargo test av_sync` for timestamp/DTS/PTS changes; protocol-matched probes for RTMP/SRT.
 - UI changes: `npx tsc` + relevant Playwright tests.
 - Scale/integration: `scripts/resource-limit ./test/run-integration.sh mixed-scale` (ramp, bonding).

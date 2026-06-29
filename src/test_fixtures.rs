@@ -10,6 +10,15 @@ use std::path::PathBuf;
 pub const REQUIRED_CHECKED_IN_FIXTURES: &[&str] = &[
     "test/fixtures/correctness-h264.ts",
     "test/fixtures/correctness-h265.ts",
+    "test/fixtures/bench-h264-1_5m.ts",
+    "test/fixtures/bench-h264-4m.ts",
+    "test/fixtures/bench-h264-8m.ts",
+    "test/fixtures/bench-h264-1_5m-2a.ts",
+    "test/fixtures/bench-h265-1_5m.ts",
+    "test/fixtures/bench-h265-4m.ts",
+    "test/fixtures/bench-h265-8m.ts",
+    "test/fixtures/bench-h265-1_5m-2a.ts",
+    "test/fixtures/hls-first-audio-only-6s.ts",
     "media/colorbar-timer-2v16a.mp4",
     "test/mediamtx-sink.yml",
 ];
@@ -44,4 +53,19 @@ pub fn canonical_ts_fixture(codec: &str) -> Result<PathBuf, String> {
         "h265" | "hevc" => canonical_h265_ts_fixture(),
         other => Err(format!("unsupported transport fixture codec {other:?}")),
     }
+}
+
+pub fn bench_transport_fixture(
+    codec: &str,
+    bitrate_label: &str,
+    multi_audio: bool,
+) -> Result<PathBuf, String> {
+    let codec = match codec {
+        "h264" | "avc" => "h264",
+        "h265" | "hevc" => "h265",
+        other => return Err(format!("unsupported benchmark fixture codec {other:?}")),
+    };
+    let bitrate = bitrate_label.to_ascii_lowercase().replace('.', "_");
+    let suffix = if multi_audio { "-2a" } else { "" };
+    checked_in_fixture(&format!("test/fixtures/bench-{codec}-{bitrate}{suffix}.ts"))
 }

@@ -9,14 +9,31 @@ scripts/resource-limit cargo test
 ```
 
 As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
-integration, harness, and doctest targets. The broad suite currently has one
-known flaky wall-clock timing test (`media::timing::tests::delta_us_measures_real_elapsed`);
-that failure is ambient and reproduces on main independently of engine
-decomposition work.
+integration, harness, and doctest targets.
 
 Checked-in fixture contracts now cover the committed benchmark/test media under
 `test/fixtures/`, so the transcoder and fixture-dependent suites no longer rely
 on ad-hoc local artifacts.
+
+## Parallelism Policy
+
+Keep correctness throughput high, but treat measurement fidelity as a separate
+constraint.
+
+- Rust unit and integration tests: prefer a single `scripts/resource-limit cargo test ...`
+  invocation and let Cargo own compile and test-thread parallelism. Avoid
+  launching multiple heavy `cargo test` commands against the same worktree at
+  once; that just trades useful concurrency for lock contention and noisier logs.
+- Live harness correctness modes: `src/bin/test_harness.rs` may batch
+  correctness-only suite modes in parallel when each mode is isolated in its
+  own network namespace and work directory.
+- Measurement-oriented harness modes: keep them serial and bench-profile only.
+  CPU, RSS, and throughput numbers are only comparable when the harness runs one
+  measurement slice at a time from `target/bench/`.
+- Criterion benches: parallelize compilation and fixture preparation, not timed
+  measurement. `scripts/resource-limit cargo bench --no-run` is the safe fan-out
+  step; actual `cargo bench --bench ...` execution should stay serial unless the
+  runs are explicitly resource-isolated.
 
 ## Scoped Verification Loop
 

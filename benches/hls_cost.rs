@@ -8,12 +8,17 @@
 
 use bytes::BytesMut;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use mse_fmp4::io::WriteTo;
 use restream::media::engine::{AudioMeta, VideoMeta};
 use restream::media::hls::HlsStore;
 use restream::media::mpegts::TsMuxer;
 use restream::media::ring_buffer::MediaType;
+use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
+
+const TS_PACKET_SIZE: usize = 188;
+const TS_SDT_PID: u16 = 0x0011;
 
 struct StreamProfile {
     name: &'static str,
@@ -108,6 +113,56 @@ fn build_one_second(profile: &StreamProfile) -> Vec<(MediaType, u32, i64, bool, 
     }
 
     packets
+}
+
+fn build_h264_first_audio_only_segment(seconds: u32) -> Vec<u8> {
+    assert_eq!(
+        seconds, 6,
+        "update the checked-in HLS benchmark fixture if the requested duration changes"
+    );
+    std::fs::read(
+        restream::test_fixtures::checked_in_fixture("test/fixtures/hls-first-audio-only-6s.ts")
+            .expect("checked-in HLS benchmark fixture"),
+    )
+    .expect("read checked-in HLS benchmark fixture")
+}
+
+fn convert_ts_segment_to_fmp4_sizes(ts_segment: &[u8]) -> (usize, usize) {
+    let ts_reader =
+        mpeg2ts::ts::TsPacketReader::new(Cursor::new(strip_ts_pid(ts_segment, TS_SDT_PID)));
+    let (init_segment, media_segment) =
+        mse_fmp4::mpeg2_ts::to_fmp4(ts_reader).expect("benchmark TS should convert to fMP4");
+
+    let mut init_bytes = Vec::new();
+    init_segment
+        .write_to(&mut init_bytes)
+        .expect("benchmark init segment serialization");
+
+    let mut media_bytes = Vec::new();
+    media_segment
+        .write_to(&mut media_bytes)
+        .expect("benchmark media segment serialization");
+
+    (init_bytes.len(), media_bytes.len())
+}
+
+fn strip_ts_pid(ts_segment: &[u8], pid: u16) -> Vec<u8> {
+    let mut filtered = Vec::with_capacity(ts_segment.len());
+    let packets = ts_segment.chunks_exact(TS_PACKET_SIZE);
+    let remainder = packets.remainder();
+    for packet in packets {
+        if packet.len() != TS_PACKET_SIZE || packet[0] != 0x47 {
+            continue;
+        }
+        let packet_pid = (((packet[1] & 0x1F) as u16) << 8) | packet[2] as u16;
+        if packet_pid != pid {
+            filtered.extend_from_slice(packet);
+        }
+    }
+    if !remainder.is_empty() {
+        filtered.extend_from_slice(remainder);
+    }
+    filtered
 }
 
 fn bench_hls_mux_cost(c: &mut Criterion) {
@@ -293,9 +348,41 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_hls_fmp4_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hls_fmp4_conversion");
+    group.sample_size(30);
+
+    let ts_segment = build_h264_first_audio_only_segment(6);
+
+    group.bench_function("h264_video1_audio0_ts_to_fmp4", |b| {
+        b.iter(|| convert_ts_segment_to_fmp4_sizes(&ts_segment));
+    });
+
+    group.bench_function("h264_video1_audio0_ts_to_fmp4_store", |b| {
+        b.iter(|| {
+            let (init_len, media_len) = convert_ts_segment_to_fmp4_sizes(&ts_segment);
+            let store = HlsStore::new();
+            store.push_fmp4_segment(
+                6.0,
+                bytes::Bytes::from(vec![0u8; init_len]),
+                bytes::Bytes::from(vec![0u8; media_len]),
+            );
+            store.snapshot().expect("snapshot")
+        });
+    });
+
+    eprintln!(
+        "[hls_fmp4_conversion] 6s H264 + first-audio-only TS segment: {} KiB",
+        ts_segment.len() / 1024
+    );
+
+    group.finish();
+}
+
 fn benches(c: &mut Criterion) {
     bench_hls_mux_cost(c);
     bench_hls_memory_cost(c);
+    bench_hls_fmp4_conversion(c);
 }
 
 criterion_group!(hls_cost, benches);
