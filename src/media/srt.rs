@@ -55,7 +55,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::media::engine::{MediaEngine, PublisherQuality};
+use crate::media::engine::{EgressRegistration, MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
 use crate::types::{
@@ -2611,7 +2611,13 @@ mod tests {
     async fn start_srt_egress_handles_invalid_streamid_without_panic() {
         let ring_buffer = Arc::new(RingBuffer::new(16));
         let engine = Arc::new(crate::media::engine::MediaEngine::new());
-        let cancel_token = CancellationToken::new();
+        let registration = engine
+            .register_egress_attempt(
+                "out-id",
+                "pipe-id",
+                "srt://127.0.0.1:12345?streamid=publish:live/mykey",
+            )
+            .await;
         start_srt_egress(
             "out-id".to_string(),
             "pipe-id".to_string(),
@@ -2619,7 +2625,7 @@ mod tests {
             "srt://127.0.0.1:12345?streamid=publish:live/\x00mykey".to_string(),
             ring_buffer,
             engine,
-            cancel_token,
+            registration,
         )
         .await;
     }
@@ -3526,8 +3532,30 @@ pub async fn start_srt_egress(
     target_url: String,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
-    cancel_token: CancellationToken,
+    registration: EgressRegistration,
 ) {
+    let cancel_token = registration.cancel_token.clone();
+    macro_rules! egress_error {
+        ($phase:expr, $message:expr) => {{
+            engine
+                .record_egress_error_if_current(&output_id, &registration, $phase, $message)
+                .await;
+        }};
+    }
+    macro_rules! egress_phase {
+        ($phase:expr) => {{
+            engine
+                .update_egress_phase_if_current(&output_id, &registration, $phase)
+                .await;
+        }};
+    }
+    macro_rules! egress_target_addr {
+        ($addr:expr) => {{
+            engine
+                .update_egress_target_addr_if_current(&output_id, &registration, $addr)
+                .await;
+        }};
+    }
     let parsed = parse_srt_egress_url(&target_url);
     let host_port = &parsed.host_port;
     let streamid = parsed.streamid;
@@ -3537,20 +3565,16 @@ pub async fn start_srt_egress(
         pbkeylen: parsed.pbkeylen.unwrap_or(16),
     });
 
-    engine.update_egress_phase(&output_id, "resolving").await;
+    egress_phase!("resolving");
     let addr = match resolve_host(host_port).await {
         Some(a) => a,
         None => {
             error!("Failed to resolve target: {}", target_url);
-            engine
-                .record_egress_error(&output_id, "resolve", "failed to resolve target")
-                .await;
+            egress_error!("resolve", "failed to resolve target");
             return;
         }
     };
-    engine
-        .update_egress_target_addr(&output_id, addr.to_string())
-        .await;
+    egress_target_addr!(addr.to_string());
 
     // Resolve bond addresses
     let mut all_addrs = vec![addr];
@@ -3565,7 +3589,7 @@ pub async fn start_srt_egress(
     let client_sock: SRTSOCKET;
 
     if use_bonding {
-        engine.update_egress_phase(&output_id, "connecting").await;
+        egress_phase!("connecting");
         // Create a bonding group (backup mode: one active, failover to next)
         // SAFETY: srt_create_group creates a bonding group socket.
         // SRT_GTYPE_BACKUP configures active/passive failover mode.
@@ -3573,9 +3597,7 @@ pub async fn start_srt_egress(
         client_sock = unsafe { srt_create_group(SRT_GTYPE_BACKUP) };
         if client_sock < 0 {
             error!("Failed to create bonding group");
-            engine
-                .record_egress_error(&output_id, "connect", "failed to create bonding group")
-                .await;
+            egress_error!("connect", "failed to create bonding group");
             return;
         }
 
@@ -3584,9 +3606,7 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     error!("Stream ID contains null bytes");
-                    engine
-                        .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
-                        .await;
+                    egress_error!("connect", "stream ID contains null bytes");
                     // SAFETY: Valid group socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
@@ -3618,9 +3638,7 @@ pub async fn start_srt_egress(
                         unsafe {
                             srt_close(client_sock);
                         }
-                        engine
-                            .record_egress_error(&output_id, "connect", error)
-                            .await;
+                        egress_error!("connect", error);
                         return;
                     }
                 }
@@ -3675,9 +3693,7 @@ pub async fn start_srt_egress(
                 }
             };
             if let Some(message) = connect_error {
-                engine
-                    .record_egress_error(&output_id, "connect", message)
-                    .await;
+                egress_error!("connect", message);
                 return;
             }
             // config ownership transfers to SRT on successful connect
@@ -3722,9 +3738,7 @@ pub async fn start_srt_egress(
                 }
             };
             if let Some(message) = connect_error {
-                engine
-                    .record_egress_error(&output_id, "connect", message)
-                    .await;
+                egress_error!("connect", message);
                 return;
             }
         }
@@ -3737,7 +3751,7 @@ pub async fn start_srt_egress(
         srt_set_highbitrate_opts(client_sock);
         srt_log_effective_opts(client_sock, "egress-bonded");
     } else {
-        engine.update_egress_phase(&output_id, "connecting").await;
+        egress_phase!("connecting");
         // SAFETY: srt_create_socket creates a new SRT socket handle.
         // The returned handle is closed on all exit paths below
         // (connection failure, cancel, sender exit).
@@ -3745,17 +3759,13 @@ pub async fn start_srt_egress(
         client_sock = unsafe { srt_create_socket() };
         if client_sock < 0 {
             error!("Failed to create socket");
-            engine
-                .record_egress_error(&output_id, "connect", "failed to create socket")
-                .await;
+            egress_error!("connect", "failed to create socket");
             return;
         }
         srt_set_highbitrate_opts(client_sock);
         if let Some(crypto) = &url_crypto {
             if let Err(error) = apply_srt_crypto_socket(client_sock, crypto) {
-                engine
-                    .record_egress_error(&output_id, "connect", error)
-                    .await;
+                egress_error!("connect", error);
                 unsafe {
                     srt_close(client_sock);
                 }
@@ -3768,9 +3778,7 @@ pub async fn start_srt_egress(
                 Ok(c) => c,
                 Err(_) => {
                     error!("Invalid stream ID (contains null byte)");
-                    engine
-                        .record_egress_error(&output_id, "connect", "stream ID contains null bytes")
-                        .await;
+                    egress_error!("connect", "stream ID contains null bytes");
                     // SAFETY: Valid socket, clean up on invalid streamid.
                     unsafe {
                         srt_close(client_sock);
@@ -3824,9 +3832,7 @@ pub async fn start_srt_egress(
         };
         if conn_res < 0 {
             error!("Connection failed to {}", target_url);
-            engine
-                .record_egress_error(&output_id, "connect", "connection failed")
-                .await;
+            egress_error!("connect", "connection failed");
             // SAFETY: Valid socket, clean up on connection failure.
             unsafe {
                 srt_close(client_sock);
@@ -3841,12 +3847,20 @@ pub async fn start_srt_egress(
     let shared_muxer = engine
         .get_or_create_ts_muxer_stage(&pipeline_id, &encoding, ring_buffer.clone())
         .await;
-    engine.update_egress_phase(&output_id, "sending").await;
+    egress_phase!("sending");
 
     let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
-    engine
-        .register_egress_queue(&output_id, out_queue.clone())
-        .await;
+    if !engine
+        .register_egress_queue_if_current(&output_id, &registration, out_queue.clone())
+        .await
+    {
+        out_queue.close();
+        // SAFETY: Valid socket, clean up when a replacement attempt won the slot.
+        unsafe {
+            srt_close(client_sock);
+        }
+        return;
+    }
 
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT
     let out_queue_send = out_queue.clone();
@@ -3887,9 +3901,7 @@ pub async fn start_srt_egress(
                 "[srt-egress] Sender thread limit reached — rejecting egress {}",
                 output_id
             );
-            engine
-                .record_egress_error(&output_id, "capacity", "SRT sender thread limit reached")
-                .await;
+            egress_error!("capacity", "SRT sender thread limit reached");
             // SAFETY: Valid socket, clean up on capacity rejection.
             unsafe {
                 srt_close(client_sock);
@@ -4027,5 +4039,7 @@ pub async fn start_srt_egress(
     }
 
     out_queue.close();
-    engine.remove_egress_queue(&output_id).await;
+    engine
+        .remove_egress_queue_if_current(&output_id, &registration)
+        .await;
 }

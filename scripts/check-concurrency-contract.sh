@@ -16,6 +16,9 @@ scripts/resource-limit cargo test stale_job_update_cannot_clobber_replacement_at
 scripts/resource-limit cargo test multiple_stale_job_updates_cannot_clobber_newest_attempt --test db -- --nocapture
 scripts/resource-limit cargo test stale_ingest_unregister_cannot_clobber_replacement_attempt --lib -- --nocapture
 scripts/resource-limit cargo test stale_ingest_disconnect_cannot_poison_replacement_attempt --lib -- --nocapture
+scripts/resource-limit cargo test stale_egress_unregister_cannot_clobber_replacement_attempt --lib -- --nocapture
+scripts/resource-limit cargo test stale_egress_error_cannot_poison_replacement_attempt --lib -- --nocapture
+scripts/resource-limit cargo test stale_egress_queue_removal_cannot_drop_replacement_queue --lib -- --nocapture
 scripts/resource-limit cargo test prop_no_loss_no_gap_no_duplication --test ring_migration -- --nocapture
 scripts/resource-limit cargo test write_batch_round_trips_random_chunks --lib -- --nocapture
 scripts/resource-limit cargo test epoll_waiter_coordination --lib -- --nocapture

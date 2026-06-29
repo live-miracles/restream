@@ -254,6 +254,7 @@ pub struct IngestRegistration {
 
 /// Runtime state for one active egress target.
 pub struct ActiveEgress {
+    pub attempt_id: u64,
     pub output_id: String,
     pub pipeline_id: String,
     pub protocol: String,
@@ -313,6 +314,12 @@ pub struct EgressRetryState {
     pub attempts: u32,
     pub backoff_ms: u64,
     pub next_retry_at_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct EgressRegistration {
+    pub cancel_token: CancellationToken,
+    pub attempt_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +465,17 @@ impl MediaEngine {
     ) -> Option<R> {
         let egresses = self.egresses.active.read().await;
         egresses.get(output_id).map(f)
+    }
+
+    async fn with_current_egress<R>(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        f: impl FnOnce(&ActiveEgress) -> R,
+    ) -> Option<R> {
+        let egresses = self.egresses.active.read().await;
+        let egress = egresses.get(output_id)?;
+        (egress.attempt_id == registration.attempt_id).then(|| f(egress))
     }
 
     pub fn listener_stats_handle(&self) -> Arc<ListenerSocketStats> {
@@ -905,8 +923,45 @@ impl MediaEngine {
             .insert(output_id.to_string(), queue);
     }
 
+    pub async fn register_egress_queue_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        queue: Arc<MemoryQueue>,
+    ) -> bool {
+        if self
+            .with_current_egress(output_id, registration, |_| ())
+            .await
+            .is_none()
+        {
+            return false;
+        }
+        self.egresses
+            .queues
+            .write()
+            .await
+            .insert(output_id.to_string(), queue);
+        true
+    }
+
     pub async fn remove_egress_queue(&self, output_id: &str) {
         self.egresses.queues.write().await.remove(output_id);
+    }
+
+    pub async fn remove_egress_queue_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+    ) -> bool {
+        if self
+            .with_current_egress(output_id, registration, |_| ())
+            .await
+            .is_none()
+        {
+            return false;
+        }
+        self.egresses.queues.write().await.remove(output_id);
+        true
     }
 
     pub async fn register_pipe_metrics(&self, key: StageKey, metrics: Arc<PipeMetrics>) {
@@ -1627,17 +1682,25 @@ impl MediaEngine {
         true
     }
 
-    pub async fn register_egress(
+    pub async fn register_egress_attempt(
         &self,
         output_id: &str,
         pipeline_id: &str,
         url: &str,
-    ) -> CancellationToken {
+    ) -> EgressRegistration {
         self.egresses.recent.write().await.remove(output_id);
         self.egresses.retry.write().await.remove(output_id);
 
         let mut tokens = self.egresses.cancel_tokens.write().await;
+        let attempt_id = self
+            .egresses
+            .next_attempt_id
+            .fetch_add(1, Ordering::Relaxed);
         let token = CancellationToken::new();
+        let registration = EgressRegistration {
+            cancel_token: token.clone(),
+            attempt_id,
+        };
         tokens.insert(output_id.to_string(), token.clone());
 
         let mut egresses = self.egresses.active.write().await;
@@ -1645,6 +1708,7 @@ impl MediaEngine {
         egresses.insert(
             output_id.to_string(),
             ActiveEgress {
+                attempt_id,
                 output_id: output_id.to_string(),
                 pipeline_id: pipeline_id.to_string(),
                 protocol: Self::egress_protocol_from_url(url).to_string(),
@@ -1673,7 +1737,18 @@ impl MediaEngine {
                 pipeline_id: pipeline_id.to_string(),
                 output_id: output_id.to_string(),
             });
-        token
+        registration
+    }
+
+    pub async fn register_egress(
+        &self,
+        output_id: &str,
+        pipeline_id: &str,
+        url: &str,
+    ) -> CancellationToken {
+        self.register_egress_attempt(output_id, pipeline_id, url)
+            .await
+            .cancel_token
     }
 
     pub async fn unregister_egress(&self, output_id: &str) {
@@ -1756,11 +1831,109 @@ impl MediaEngine {
         }
     }
 
+    pub async fn unregister_egress_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+    ) -> bool {
+        let mut tokens = self.egresses.cancel_tokens.write().await;
+        let mut egresses = self.egresses.active.write().await;
+        let Some(active) = egresses.get(output_id) else {
+            return false;
+        };
+        if active.attempt_id != registration.attempt_id {
+            return false;
+        }
+
+        if let Some(token) = tokens.remove(output_id) {
+            token.cancel();
+        }
+
+        let pipeline_id = active.pipeline_id.clone();
+        let has_ingest = self
+            .ingests
+            .active
+            .try_read()
+            .map(|ingests| ingests.contains_key(active.pipeline_id.as_str()))
+            .unwrap_or(false);
+        let outcome = RecentEgressOutcome {
+            output_id: active.output_id.clone(),
+            pipeline_id: active.pipeline_id.clone(),
+            protocol: active.protocol.clone(),
+            target_url: active.target_url.clone(),
+            target_addr: active
+                .target_addr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            status: Self::recent_egress_status(active, has_ingest),
+            raw_status: active.status.clone(),
+            phase: active
+                .phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            started_at: active.started_at.clone(),
+            uptime_secs: active.start_instant.elapsed().as_secs_f64(),
+            bytes_sent: active.bytes_sent.load(Ordering::Relaxed),
+            last_progress_ms: active.last_progress_ms.load(Ordering::Relaxed),
+            last_error: active
+                .last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            last_error_ms: active.last_error_ms.load(Ordering::Relaxed),
+            failure_phase: active
+                .failure_phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            quality: active
+                .quality
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            metrics: active.metrics.snapshot(),
+            ended_at_ms: Self::now_epoch_ms(),
+        };
+        egresses.remove(output_id);
+        drop(egresses);
+
+        self.egresses
+            .recent
+            .write()
+            .await
+            .insert(output_id.to_string(), outcome);
+
+        if !pipeline_id.is_empty() {
+            self.runtime
+                .event_log
+                .emit(crate::events::EventKind::EgressStopped {
+                    pipeline_id,
+                    output_id: output_id.to_string(),
+                });
+        }
+        true
+    }
+
     pub async fn update_egress_phase(&self, output_id: &str, phase: &str) {
         let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = phase.to_string();
         }
+    }
+
+    pub async fn update_egress_phase_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        phase: &str,
+    ) -> bool {
+        self.with_current_egress(output_id, registration, |egress| {
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = phase.to_string();
+        })
+        .await
+        .is_some()
     }
 
     pub async fn update_egress_target_addr(&self, output_id: &str, addr: String) {
@@ -1770,11 +1943,37 @@ impl MediaEngine {
         }
     }
 
+    pub async fn update_egress_target_addr_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        addr: String,
+    ) -> bool {
+        self.with_current_egress(output_id, registration, |egress| {
+            *egress.target_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+        })
+        .await
+        .is_some()
+    }
+
     pub async fn update_egress_quality(&self, output_id: &str, quality: PublisherQuality) {
         let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             *egress.quality.lock().unwrap_or_else(|e| e.into_inner()) = quality;
         }
+    }
+
+    pub async fn update_egress_quality_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        quality: PublisherQuality,
+    ) -> bool {
+        self.with_current_egress(output_id, registration, |egress| {
+            *egress.quality.lock().unwrap_or_else(|e| e.into_inner()) = quality;
+        })
+        .await
+        .is_some()
     }
 
     pub async fn record_egress_progress(&self, output_id: &str, bytes: u64) {
@@ -1800,11 +1999,52 @@ impl MediaEngine {
         }
     }
 
+    pub async fn record_egress_progress_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        bytes: u64,
+    ) -> bool {
+        self.with_current_egress(output_id, registration, |egress| {
+            egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+            egress.metrics.record_out(bytes);
+            egress
+                .last_progress_ms
+                .store(Self::now_epoch_ms(), Ordering::Relaxed);
+            let active_phase = if egress.protocol == "hls" {
+                "uploading"
+            } else {
+                "sending"
+            };
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = active_phase.to_string();
+            *egress
+                .failure_phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            egress.last_error_ms.store(0, Ordering::Relaxed);
+        })
+        .await
+        .is_some()
+    }
+
     pub async fn egress_has_recorded_progress(&self, output_id: &str) -> bool {
         let egresses = self.egresses.active.read().await;
         egresses
             .get(output_id)
             .is_some_and(|egress| egress.last_progress_ms.load(Ordering::Relaxed) > 0)
+    }
+
+    pub async fn egress_has_recorded_progress_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+    ) -> bool {
+        self.with_current_egress(output_id, registration, |egress| {
+            egress.last_progress_ms.load(Ordering::Relaxed) > 0
+        })
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn recent_egress_outcome(&self, output_id: &str) -> Option<RecentEgressOutcome> {
@@ -1869,6 +2109,38 @@ impl MediaEngine {
                     error: message,
                 });
         }
+    }
+
+    pub async fn record_egress_error_if_current(
+        &self,
+        output_id: &str,
+        registration: &EgressRegistration,
+        phase: &str,
+        message: impl Into<String>,
+    ) -> bool {
+        let message = message.into();
+        self.with_current_egress(output_id, registration, |egress| {
+            let pipeline_id = egress.pipeline_id.clone();
+            *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = "failed".to_string();
+            *egress
+                .failure_phase
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(phase.to_string());
+            *egress.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
+            egress
+                .last_error_ms
+                .store(Self::now_epoch_ms(), Ordering::Relaxed);
+            self.runtime
+                .event_log
+                .emit(crate::events::EventKind::EgressFailed {
+                    pipeline_id,
+                    output_id: output_id.to_string(),
+                    phase: phase.to_string(),
+                    error: message.clone(),
+                });
+        })
+        .await
+        .is_some()
     }
 
     /// Update bytes received counter for an active ingest (lock-free atomic).
@@ -2317,6 +2589,7 @@ impl MediaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::avio::MemoryQueue;
     use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader};
     use bytes::Bytes;
     use proptest::prelude::*;
@@ -3168,6 +3441,133 @@ mod tests {
             .await;
         engine.unregister_egress("out-1").await;
         engine.unregister_egress("out-1").await;
+    }
+
+    #[tokio::test]
+    async fn stale_egress_unregister_cannot_clobber_replacement_attempt() {
+        let engine = MediaEngine::new();
+
+        let first = engine
+            .register_egress_attempt("out-race", "pipe-1", "rtmp://example.com/live/one")
+            .await;
+        engine.unregister_egress("out-race").await;
+
+        let replacement = engine
+            .register_egress_attempt("out-race", "pipe-1", "srt://example.com:10080")
+            .await;
+
+        assert!(
+            !engine
+                .unregister_egress_if_current("out-race", &first)
+                .await,
+            "stale cleanup from the old egress attempt must not remove the replacement"
+        );
+        assert!(
+            engine
+                .with_active_egress("out-race", |egress| egress.attempt_id)
+                .await
+                .is_some_and(|attempt_id| attempt_id == replacement.attempt_id),
+            "replacement egress must remain active after stale unregister"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_egress_error_cannot_poison_replacement_attempt() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-1", "stream-key", "rtmp")
+            .await
+            .unwrap();
+
+        let first = engine
+            .register_egress_attempt("out-race", "pipe-1", "rtmp://example.com/live/one")
+            .await;
+        engine.unregister_egress("out-race").await;
+
+        let replacement = engine
+            .register_egress_attempt("out-race", "pipe-1", "rtmp://example.com/live/two")
+            .await;
+
+        assert!(
+            !engine
+                .record_egress_error_if_current("out-race", &first, "send", "stale failure",)
+                .await,
+            "stale failure metadata must not attach to a replacement egress attempt"
+        );
+        engine
+            .record_egress_progress_if_current("out-race", &replacement, 2048)
+            .await;
+        assert!(
+            engine
+                .record_egress_error_if_current(
+                    "out-race",
+                    &replacement,
+                    "connect",
+                    "replacement failure",
+                )
+                .await,
+            "current attempt should still publish its own failure metadata"
+        );
+        assert!(
+            engine
+                .unregister_egress_if_current("out-race", &replacement)
+                .await,
+            "replacement attempt should unregister cleanly"
+        );
+
+        let pipelines = vec!["pipe-1".to_string()];
+        let snapshot = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-race"];
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["failurePhase"], "connect");
+        assert_eq!(output["lastError"], "replacement failure");
+        assert_eq!(output["totalSize"], 2048);
+    }
+
+    #[tokio::test]
+    async fn stale_egress_queue_removal_cannot_drop_replacement_queue() {
+        let engine = MediaEngine::new();
+        let first = engine
+            .register_egress_attempt("out-race", "pipe-1", "srt://example.com:10080")
+            .await;
+        let first_queue = Arc::new(MemoryQueue::new());
+        assert!(
+            engine
+                .register_egress_queue_if_current("out-race", &first, first_queue)
+                .await
+        );
+        engine.unregister_egress("out-race").await;
+
+        let replacement = engine
+            .register_egress_attempt("out-race", "pipe-1", "srt://example.com:10081")
+            .await;
+        let replacement_queue = Arc::new(MemoryQueue::new());
+        assert!(
+            engine
+                .register_egress_queue_if_current(
+                    "out-race",
+                    &replacement,
+                    replacement_queue.clone(),
+                )
+                .await
+        );
+        assert!(
+            !engine
+                .remove_egress_queue_if_current("out-race", &first)
+                .await,
+            "stale cleanup must not remove the replacement queue"
+        );
+        assert!(Arc::ptr_eq(
+            &engine
+                .egresses
+                .queues
+                .read()
+                .await
+                .get("out-race")
+                .expect("replacement queue should stay registered")
+                .clone(),
+            &replacement_queue
+        ));
     }
 
     #[tokio::test]

@@ -41,6 +41,7 @@ impl IngestRegistry {
 
 pub struct EgressRegistry {
     pub cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
+    pub next_attempt_id: AtomicU64,
     pub active: TokioRwLock<HashMap<String, ActiveEgress>>,
     pub queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
     pub recent: TokioRwLock<HashMap<String, RecentEgressOutcome>>,
@@ -51,6 +52,7 @@ impl EgressRegistry {
     pub fn new() -> Self {
         Self {
             cancel_tokens: TokioRwLock::new(HashMap::new()),
+            next_attempt_id: AtomicU64::new(1),
             active: TokioRwLock::new(HashMap::new()),
             queues: TokioRwLock::new(HashMap::new()),
             recent: TokioRwLock::new(HashMap::new()),

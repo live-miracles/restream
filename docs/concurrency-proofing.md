@@ -124,6 +124,9 @@ surface already covers it.
 - `src/media/engine.rs`
   - `stale_ingest_unregister_cannot_clobber_replacement_attempt`
   - `stale_ingest_disconnect_cannot_poison_replacement_attempt`
+  - `stale_egress_unregister_cannot_clobber_replacement_attempt`
+  - `stale_egress_error_cannot_poison_replacement_attempt`
+  - `stale_egress_queue_removal_cannot_drop_replacement_queue`
   - `output_status_surfaces_retry_backoff_after_failure`
   - `prop_egress_lifecycle_preserves_runtime_and_health_invariants`
 - `src/media/avio.rs`

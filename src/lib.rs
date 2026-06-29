@@ -723,9 +723,10 @@ pub async fn run_app() {
                     pre_h264_buf
                 };
 
-                // Register egress and get token
-                let cancel_token = engine
-                    .register_egress(&output.id, &output.pipeline_id, &output.url)
+                // Register egress and get an attempt-scoped handle so stale
+                // workers cannot later scribble over a replacement session.
+                let registration = engine
+                    .register_egress_attempt(&output.id, &output.pipeline_id, &output.url)
                     .await;
 
                 let job_id = next_output_job_id(&output.id);
@@ -755,6 +756,7 @@ pub async fn run_app() {
                 let last_failed_c = last_failed.clone();
                 let tuning_c = tuning;
                 let output_correlation_id_c = output_correlation_id.clone();
+                let registration_c = registration.clone();
 
                 tokio::spawn(async move {
                     // Unsupported URL: reject immediately before the panic-safe
@@ -777,8 +779,10 @@ pub async fn run_app() {
                             None,
                         )
                         .await;
-                        engine_c.unregister_egress(&output_id_c).await;
-                        let retry_backoff = {
+                        let was_current = engine_c
+                            .unregister_egress_if_current(&output_id_c, &registration_c)
+                            .await;
+                        let retry_backoff = if was_current {
                             let mut lf = last_failed_c.lock().await;
                             let retries = next_output_retry_count(
                                 lf.get(&output_id_c).map(|(_, retries)| *retries),
@@ -787,6 +791,8 @@ pub async fn run_app() {
                             lf.insert(output_id_c.clone(), (Instant::now(), retries));
                             (retries < tuning_c.output_max_retries)
                                 .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                        } else {
+                            None
                         };
                         if let Some((retries, backoff_ms)) = retry_backoff {
                             engine_c
@@ -816,6 +822,7 @@ pub async fn run_app() {
                     // Wrap the egress call in catch_unwind so a panic does not
                     // prevent the cleanup path below (unregister_egress, job-
                     // status update) from running.
+                    let mut hls_persistent_registered = false;
                     let panicked = std::panic::AssertUnwindSafe(async {
                         if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
                             crate::media::rtmp::start_rtmp_egress(
@@ -824,7 +831,7 @@ pub async fn run_app() {
                                 url_c.clone(),
                                 ring_buf,
                                 engine_c.clone(),
-                                cancel_token.clone(),
+                                registration_c.clone(),
                             )
                             .await;
                         } else if url_c.starts_with("srt://") {
@@ -835,7 +842,7 @@ pub async fn run_app() {
                                 url_c.clone(),
                                 ring_buf,
                                 engine_c.clone(),
-                                cancel_token.clone(),
+                                registration_c.clone(),
                             )
                             .await;
                         } else if url_c.starts_with("hls://")
@@ -874,6 +881,7 @@ pub async fn run_app() {
                                 });
                             }
                             engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
+                            hls_persistent_registered = true;
                             if url_c.starts_with("http://") || url_c.starts_with("https://") {
                                 crate::media::hls_upload::start_hls_put_upload(
                                     output_id_c.clone(),
@@ -881,14 +889,18 @@ pub async fn run_app() {
                                     url_c.clone(),
                                     store,
                                     engine_c.clone(),
-                                    cancel_token.clone(),
+                                    registration_c.clone(),
                                 )
                                 .await;
                             } else {
                                 engine_c
-                                    .update_egress_phase(&output_id_c, "segmenting")
+                                    .update_egress_phase_if_current(
+                                        &output_id_c,
+                                        &registration_c,
+                                        "segmenting",
+                                    )
                                     .await;
-                                cancel_token.cancelled().await;
+                                registration_c.cancel_token.cancelled().await;
                             }
                             // remove_hls_persistent_consumer is intentionally called
                             // in the always-runs cleanup section below (outside the
@@ -913,18 +925,14 @@ pub async fn run_app() {
                     }
 
                     // Cleanup always runs — even after a panic in the egress fn.
-                    let is_cancelled = cancel_token.is_cancelled();
-                    let had_progress = engine_c.egress_has_recorded_progress(&output_id_c).await;
-                    engine_c.unregister_egress(&output_id_c).await;
-                    // Remove the HLS persistent consumer refcount unconditionally
-                    // for HLS outputs. The add happened inside the catch_unwind
-                    // above; by moving the remove here we ensure it runs even
-                    // when the egress future panics after add but before its own
-                    // remove (which was guarded only by a cancellation wait).
-                    if url_c.starts_with("hls://")
-                        || url_c.starts_with("http://")
-                        || url_c.starts_with("https://")
-                    {
+                    let is_cancelled = registration_c.cancel_token.is_cancelled();
+                    let had_progress = engine_c
+                        .egress_has_recorded_progress_if_current(&output_id_c, &registration_c)
+                        .await;
+                    let was_current = engine_c
+                        .unregister_egress_if_current(&output_id_c, &registration_c)
+                        .await;
+                    if hls_persistent_registered {
                         engine_c
                             .remove_hls_persistent_consumer(&pipeline_id_c)
                             .await;
@@ -943,27 +951,32 @@ pub async fn run_app() {
                     )
                     .await;
 
-                    let mut lf = last_failed_c.lock().await;
-                    if is_cancelled {
-                        lf.remove(&output_id_c);
+                    let retry_backoff = if was_current {
+                        let mut lf = last_failed_c.lock().await;
+                        if is_cancelled {
+                            lf.remove(&output_id_c);
+                        } else {
+                            let retries = next_output_retry_count(
+                                lf.get(&output_id_c).map(|(_, retries)| *retries),
+                                had_progress,
+                            );
+                            lf.insert(output_id_c.clone(), (Instant::now(), retries));
+                        }
+                        let retry_backoff = if is_cancelled {
+                            None
+                        } else {
+                            lf.get(&output_id_c)
+                                .map(|(_, retries)| *retries)
+                                .and_then(|retries| {
+                                    (retries < tuning_c.output_max_retries)
+                                        .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                                })
+                        };
+                        drop(lf);
+                        retry_backoff
                     } else {
-                        let retries = next_output_retry_count(
-                            lf.get(&output_id_c).map(|(_, retries)| *retries),
-                            had_progress,
-                        );
-                        lf.insert(output_id_c.clone(), (Instant::now(), retries));
-                    }
-                    let retry_backoff = if is_cancelled {
                         None
-                    } else {
-                        lf.get(&output_id_c)
-                            .map(|(_, retries)| *retries)
-                            .and_then(|retries| {
-                                (retries < tuning_c.output_max_retries)
-                                    .then_some((retries, tuning_c.output_backoff_ms(retries)))
-                            })
                     };
-                    drop(lf);
                     if let Some((retries, backoff_ms)) = retry_backoff {
                         engine_c
                             .update_egress_retry_state(

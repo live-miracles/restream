@@ -10,9 +10,8 @@ use std::time::Duration;
 use tracing::error;
 
 use reqwest::{Client, Url};
-use tokio_util::sync::CancellationToken;
 
-use crate::media::engine::MediaEngine;
+use crate::media::engine::{EgressRegistration, MediaEngine};
 use crate::media::hls::HlsStore;
 
 const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
@@ -25,15 +24,22 @@ pub async fn start_hls_put_upload(
     target_url: String,
     store: Arc<HlsStore>,
     engine: Arc<MediaEngine>,
-    cancel_token: CancellationToken,
+    registration: EgressRegistration,
 ) {
-    engine.update_egress_phase(&output_id, "uploading").await;
+    engine
+        .update_egress_phase_if_current(&output_id, &registration, "uploading")
+        .await;
     let playlist_url = match Url::parse(&target_url) {
         Ok(url) => url,
         Err(err) => {
             error!(output_id = %output_id, err = %err, "invalid HLS upload URL");
             engine
-                .record_egress_error(&output_id, "parse_url", err.to_string())
+                .record_egress_error_if_current(
+                    &output_id,
+                    &registration,
+                    "parse_url",
+                    err.to_string(),
+                )
                 .await;
             return;
         }
@@ -44,7 +50,11 @@ pub async fn start_hls_put_upload(
             .map(|p| p.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         engine
-            .update_egress_target_addr(&output_id, format!("{host}:{port}"))
+            .update_egress_target_addr_if_current(
+                &output_id,
+                &registration,
+                format!("{host}:{port}"),
+            )
             .await;
     }
     let client = Client::new();
@@ -52,7 +62,7 @@ pub async fn start_hls_put_upload(
 
     loop {
         tokio::select! {
-            _ = cancel_token.cancelled() => return,
+            _ = registration.cancel_token.cancelled() => return,
             _ = tokio::time::sleep(UPLOAD_INTERVAL) => {}
         }
 
@@ -70,7 +80,9 @@ pub async fn start_hls_put_upload(
             match put_bytes(&client, segment_url, HLS_SEGMENT_CONTENT_TYPE, segment.data).await {
                 Ok(()) => {
                     uploaded_segments.insert(segment.index);
-                    engine.record_egress_progress(&output_id, segment_len).await;
+                    engine
+                        .record_egress_progress_if_current(&output_id, &registration, segment_len)
+                        .await;
                 }
                 Err(err) => {
                     error!(
@@ -78,7 +90,12 @@ pub async fn start_hls_put_upload(
                         output_id, pipeline_id, segment_name, err
                     );
                     engine
-                        .record_egress_error(&output_id, "upload_segment", err)
+                        .record_egress_error_if_current(
+                            &output_id,
+                            &registration,
+                            "upload_segment",
+                            err,
+                        )
                         .await;
                     break;
                 }
@@ -100,11 +117,11 @@ pub async fn start_hls_put_upload(
                 output_id, pipeline_id, err
             );
             engine
-                .record_egress_error(&output_id, "upload_playlist", err)
+                .record_egress_error_if_current(&output_id, &registration, "upload_playlist", err)
                 .await;
         } else {
             engine
-                .record_egress_progress(&output_id, playlist_len)
+                .record_egress_progress_if_current(&output_id, &registration, playlist_len)
                 .await;
         }
     }
@@ -259,10 +276,9 @@ mod tests {
 
         let store = Arc::new(HlsStore::new());
         store.push_segment(1.2, bytes::Bytes::from_static(b"segment-0"));
-        let cancel = CancellationToken::new();
         let engine = Arc::new(MediaEngine::new());
-        engine
-            .register_egress(
+        let registration = engine
+            .register_egress_attempt(
                 "out1",
                 "pipe1",
                 &format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
@@ -274,7 +290,7 @@ mod tests {
             format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
             store,
             engine,
-            cancel.clone(),
+            registration.clone(),
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -288,7 +304,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        cancel.cancel();
+        registration.cancel_token.cancel();
         let _ = uploader.await;
 
         let seen = seen.lock().unwrap();

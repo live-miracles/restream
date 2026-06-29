@@ -26,12 +26,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
-use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::media::codec;
 use crate::media::engine::{
-    AudioMeta, IngestRegistration, MediaEngine, PublisherQuality, StageMetrics, VideoMeta,
+    AudioMeta, EgressRegistration, IngestRegistration, MediaEngine, PublisherQuality, StageMetrics,
+    VideoMeta,
 };
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
@@ -1373,22 +1373,47 @@ pub async fn start_rtmp_egress(
     target_url: String,
     ring_buffer: Arc<RingBuffer>,
     engine: Arc<MediaEngine>,
-    cancel_token: CancellationToken,
+    registration: EgressRegistration,
 ) {
+    let cancel_token = registration.cancel_token.clone();
+    macro_rules! egress_error {
+        ($phase:expr, $message:expr) => {{
+            engine
+                .record_egress_error_if_current(&output_id, &registration, $phase, $message)
+                .await;
+        }};
+    }
+    macro_rules! egress_phase {
+        ($phase:expr) => {{
+            engine
+                .update_egress_phase_if_current(&output_id, &registration, $phase)
+                .await;
+        }};
+    }
+    macro_rules! egress_target_addr {
+        ($addr:expr) => {{
+            engine
+                .update_egress_target_addr_if_current(&output_id, &registration, $addr)
+                .await;
+        }};
+    }
+    macro_rules! egress_quality {
+        ($quality:expr) => {{
+            engine
+                .update_egress_quality_if_current(&output_id, &registration, $quality)
+                .await;
+        }};
+    }
     let parts = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
             error!("Invalid RTMP URL: {}", target_url);
-            engine
-                .record_egress_error(&output_id, "parse_url", "invalid RTMP URL")
-                .await;
+            egress_error!("parse_url", "invalid RTMP URL");
             return;
         }
     };
-    engine.update_egress_phase(&output_id, "connecting").await;
-    engine
-        .update_egress_target_addr(&output_id, format!("{}:{}", parts.host, parts.port))
-        .await;
+    egress_phase!("connecting");
+    egress_target_addr!(format!("{}:{}", parts.host, parts.port));
     info!(
         "[rtmp-egress] Connecting to {}:{} via {} (app: {}, key: {})",
         parts.host,
@@ -1405,15 +1430,13 @@ pub async fn start_rtmp_egress(
                 "[rtmp-egress] Connection failed to {}:{}: {:?}",
                 parts.host, parts.port, e
             );
-            engine
-                .record_egress_error(&output_id, "connect", e.to_string())
-                .await;
+            egress_error!("connect", e.to_string());
             return;
         }
     };
 
     // Perform handshake
-    engine.update_egress_phase(&output_id, "handshaking").await;
+    egress_phase!("handshaking");
     let mut handshake = Handshake::new(PeerType::Client);
     let c0_c1 = match handshake.generate_outbound_p0_and_p1() {
         Ok(bytes) => bytes,
@@ -1422,17 +1445,13 @@ pub async fn start_rtmp_egress(
                 "[rtmp-egress] Handshake outbound generation failed: {:?}",
                 e
             );
-            engine
-                .record_egress_error(&output_id, "handshake", format!("{:?}", e))
-                .await;
+            egress_error!("handshake", format!("{:?}", e));
             return;
         }
     };
 
     if socket.write_all(&c0_c1).await.is_err() {
-        engine
-            .record_egress_error(&output_id, "handshake", "failed to write handshake")
-            .await;
+        egress_error!("handshake", "failed to write handshake");
         return;
     }
 
@@ -1447,9 +1466,7 @@ pub async fn start_rtmp_egress(
                 let n = match res {
                     Ok(n) if n > 0 => n,
                     _ => {
-                        engine
-                            .record_egress_error(&output_id, "handshake", "remote closed during handshake")
-                            .await;
+                        egress_error!("handshake", "remote closed during handshake");
                         return;
                     }
                 };
@@ -1458,13 +1475,7 @@ pub async fn start_rtmp_egress(
                         if !response_bytes.is_empty()
                             && socket.write_all(&response_bytes).await.is_err()
                         {
-                            engine
-                                .record_egress_error(
-                                    &output_id,
-                                    "handshake",
-                                    "failed to write handshake response",
-                                )
-                                .await;
+                            egress_error!("handshake", "failed to write handshake response");
                             return;
                         }
                     }
@@ -1472,13 +1483,7 @@ pub async fn start_rtmp_egress(
                         if !response_bytes.is_empty()
                             && socket.write_all(&response_bytes).await.is_err()
                         {
-                            engine
-                                .record_egress_error(
-                                    &output_id,
-                                    "handshake",
-                                    "failed to write handshake completion",
-                                )
-                                .await;
+                            egress_error!("handshake", "failed to write handshake completion");
                             return;
                         }
                         remaining = remaining_bytes;
@@ -1486,9 +1491,7 @@ pub async fn start_rtmp_egress(
                     }
                     Err(e) => {
                         error!("Handshake process bytes failed: {:?}", e);
-                        engine
-                            .record_egress_error(&output_id, "handshake", format!("{:?}", e))
-                            .await;
+                        egress_error!("handshake", format!("{:?}", e));
                         return;
                     }
                 }
@@ -1506,9 +1509,7 @@ pub async fn start_rtmp_egress(
     let (mut session, initial_results) = match ClientSession::new(config) {
         Ok(s) => s,
         Err(e) => {
-            engine
-                .record_egress_error(&output_id, "session", format!("{:?}", e))
-                .await;
+            egress_error!("session", format!("{:?}", e));
             return;
         }
     };
@@ -1517,30 +1518,22 @@ pub async fn start_rtmp_egress(
         if let ClientSessionResult::OutboundResponse(pkt) = res
             && socket.write_all(&pkt.bytes).await.is_err()
         {
-            engine
-                .record_egress_error(&output_id, "session", "failed to write session init")
-                .await;
+            egress_error!("session", "failed to write session init");
             return;
         }
     }
 
     // Request connection
-    engine
-        .update_egress_phase(&output_id, "connecting_app")
-        .await;
+    egress_phase!("connecting_app");
     let conn_pkt = match session.request_connection(parts.app.clone()) {
         Ok(ClientSessionResult::OutboundResponse(p)) => p,
         _ => {
-            engine
-                .record_egress_error(&output_id, "connect_app", "failed to build connect request")
-                .await;
+            egress_error!("connect_app", "failed to build connect request");
             return;
         }
     };
     if socket.write_all(&conn_pkt.bytes).await.is_err() {
-        engine
-            .record_egress_error(&output_id, "connect_app", "failed to write connect request")
-            .await;
+        egress_error!("connect_app", "failed to write connect request");
         return;
     }
 
@@ -1548,13 +1541,7 @@ pub async fn start_rtmp_egress(
         let results = match session.handle_input(&remaining) {
             Ok(r) => r,
             Err(_) => {
-                engine
-                    .record_egress_error(
-                        &output_id,
-                        "connect_app",
-                        "failed to parse connect response",
-                    )
-                    .await;
+                egress_error!("connect_app", "failed to parse connect response");
                 return;
             }
         };
@@ -1562,13 +1549,7 @@ pub async fn start_rtmp_egress(
             .await
             .is_err()
         {
-            engine
-                .record_egress_error(
-                    &output_id,
-                    "connect_app",
-                    "failed to handle connect response",
-                )
-                .await;
+            egress_error!("connect_app", "failed to handle connect response");
             return;
         }
     }
@@ -1614,25 +1595,21 @@ pub async fn start_rtmp_egress(
             }
             _ = tcp_stats_interval.tick() => {
                 let quality = rtmp_sender_quality(&socket, &mut previous_tcp_bytes);
-                engine.update_egress_quality(&output_id, quality).await;
+                egress_quality!(quality);
             }
             // Read from server to handle acknowledgements, status codes, pings
             res = socket.read(&mut buffer) => {
                 let n = match res {
                     Ok(n) if n > 0 => n,
                     _ => {
-                        engine
-                            .record_egress_error(&output_id, "send", "remote closed connection")
-                            .await;
+                        egress_error!("send", "remote closed connection");
                         break;
                     }
                 };
                 let results = match session.handle_input(&buffer[..n]) {
                     Ok(r) => r,
                     Err(e) => {
-                        engine
-                            .record_egress_error(&output_id, "send", format!("{:?}", e))
-                            .await;
+                        egress_error!("send", format!("{:?}", e));
                         break;
                     }
                 };
@@ -1640,47 +1617,29 @@ pub async fn start_rtmp_egress(
                     match r {
                         ClientSessionResult::OutboundResponse(pkt) => {
                             if socket.write_all(&pkt.bytes).await.is_err() {
-                                engine
-                                    .record_egress_error(
-                                        &output_id,
-                                        "session",
-                                        "failed to write RTMP control response",
-                                    )
-                                    .await;
+                                egress_error!("session", "failed to write RTMP control response");
                                 return;
                             }
                         }
                         ClientSessionResult::RaisedEvent(event) => {
                             match event {
                                 ClientSessionEvent::ConnectionRequestAccepted => {
-                                    engine.update_egress_phase(&output_id, "publishing").await;
+                                    egress_phase!("publishing");
                                     let pub_pkt = match session.request_publishing(parts.stream_key.clone(), PublishRequestType::Live) {
                                         Ok(ClientSessionResult::OutboundResponse(p)) => p,
                                         _ => {
-                                            engine
-                                                .record_egress_error(
-                                                    &output_id,
-                                                    "publishing",
-                                                    "failed to build publish request",
-                                                )
-                                                .await;
+                                            egress_error!("publishing", "failed to build publish request");
                                             return;
                                         }
                                     };
                                     if socket.write_all(&pub_pkt.bytes).await.is_err() {
-                                        engine
-                                            .record_egress_error(
-                                                &output_id,
-                                                "publishing",
-                                                "failed to write publish request",
-                                            )
-                                            .await;
+                                        egress_error!("publishing", "failed to write publish request");
                                         return;
                                     }
                                 }
                                 ClientSessionEvent::PublishRequestAccepted => {
                                     info!("Stream publishing accepted on target");
-                                    engine.update_egress_phase(&output_id, "sending").await;
+                                    egress_phase!("sending");
                                     // Send cached sequence headers before media data.
                                     // For H.265 ingests, video_sh is None (only RTMP ingest
                                     // caches FLV seq headers), so this is a no-op for H.265.
@@ -1690,13 +1649,7 @@ pub async fn start_rtmp_egress(
                                             session.publish_video_data(vsh, RtmpTimestamp::new(0), true)
                                             && socket.write_all(&p.bytes).await.is_err()
                                     {
-                                        engine
-                                            .record_egress_error(
-                                                &output_id,
-                                                "send",
-                                                "failed to write video sequence header",
-                                            )
-                                            .await;
+                                        egress_error!("send", "failed to write video sequence header");
                                         return;
                                     }
                                     // Synthesize AAC sequence header from audio meta if not cached
@@ -1722,22 +1675,14 @@ pub async fn start_rtmp_egress(
                                             session.publish_audio_data(ash, RtmpTimestamp::new(0), false)
                                             && socket.write_all(&p.bytes).await.is_err()
                                     {
-                                        engine
-                                            .record_egress_error(
-                                                &output_id,
-                                                "send",
-                                                "failed to write audio sequence header",
-                                            )
-                                            .await;
+                                        egress_error!("send", "failed to write audio sequence header");
                                         return;
                                     }
                                     is_publishing = true;
                                 }
                                 ClientSessionEvent::ConnectionRequestRejected { description } => {
                                     error!("Connection rejected: {}", description);
-                                    engine
-                                        .record_egress_error(&output_id, "connect_app", description)
-                                        .await;
+                                    egress_error!("connect_app", description);
                                     return;
                                 }
                                 _ => {}
@@ -1809,13 +1754,10 @@ pub async fn start_rtmp_egress(
                                                 true,
                                             ) && socket.write_all(&p.bytes).await.is_err()
                                             {
-                                                engine
-                                                    .record_egress_error(
-                                                        &output_id,
-                                                        "send",
-                                                        "failed to write refreshed video sequence header",
-                                                    )
-                                                    .await;
+                                                egress_error!(
+                                                    "send",
+                                                    "failed to write refreshed video sequence header"
+                                                );
                                                 return;
                                             }
                                             last_sent_sps = new_sps;
@@ -1849,13 +1791,7 @@ pub async fn start_rtmp_egress(
                         match pkt {
                             Ok(ClientSessionResult::OutboundResponse(p)) => {
                                 if socket.write_all(&p.bytes).await.is_err() {
-                                    engine
-                                        .record_egress_error(
-                                            &output_id,
-                                            "send",
-                                            "failed to write media packet",
-                                        )
-                                        .await;
+                                    egress_error!("send", "failed to write media packet");
                                     return;
                                 }
                                 if let Some(ref counter) = egress_bytes_sent {
@@ -1868,9 +1804,7 @@ pub async fn start_rtmp_egress(
                             }
                             _ => {
                                 error!("Failed to build publish data packet or get OutboundResponse");
-                                engine
-                                    .record_egress_error(&output_id, "send", "failed to build RTMP publish packet")
-                                    .await;
+                                egress_error!("send", "failed to build RTMP publish packet");
                             }
                         }
                     }
