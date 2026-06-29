@@ -13,7 +13,8 @@ rtmp: true
 rtmpAddress: :11935
 rtmpEncryption: "no"
 
-hls: false
+hls: true
+hlsAddress: :11888
 webrtc: false
 srt: true
 srtAddress: :11080
