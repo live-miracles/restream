@@ -2,3 +2,4 @@
 
 pub mod audio_routing;
 pub mod stage;
+pub mod transcode_profile;
