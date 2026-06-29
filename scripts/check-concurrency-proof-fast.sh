@@ -14,6 +14,9 @@ scripts/resource-limit cargo test \
 scripts/resource-limit cargo test \
   output_status_and_health_preserve_recent_egress_failure_after_unregister \
   --test api -- --nocapture
+scripts/resource-limit cargo test \
+  active_output_status_ignores_stale_retry_state_after_restart \
+  --test api -- --nocapture
 
 scripts/resource-limit cargo test recent_egress --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture

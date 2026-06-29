@@ -10,6 +10,7 @@ done
 
 scripts/resource-limit cargo test health_endpoint_exposes_probe_and_egress_fault_fields --test api -- --nocapture
 scripts/resource-limit cargo test output_status_and_health_preserve_recent_egress_failure_after_unregister --test api -- --nocapture
+scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state_after_restart --test api -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture
 scripts/resource-limit cargo test output_status_surfaces_retry_backoff_after_failure --lib -- --nocapture
 scripts/resource-limit cargo build --bin restream --bin test_harness
