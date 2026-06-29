@@ -86,6 +86,10 @@ and `recovery` harness modes. `recovery` is the focused reconnect/grace/retry
 contract so we can target that behavior directly without depending on the
 broader teardown bucket.
 
+Both gates also carry explicit property/stress coverage for lifecycle
+permutations and thread-hop wakeups, rather than relying on the general
+workspace test job to catch those indirectly.
+
 ## Required Update Discipline
 
 When touching concurrency-sensitive code:
@@ -115,8 +119,15 @@ surface already covers it.
 - `tests/api.rs`
   - `health_endpoint_exposes_probe_and_egress_fault_fields`
   - `output_status_and_health_preserve_recent_egress_failure_after_unregister`
+- `tests/ring_migration.rs`
+  - `prop_no_loss_no_gap_no_duplication`
 - `src/media/engine.rs`
   - `output_status_surfaces_retry_backoff_after_failure`
+  - `prop_egress_lifecycle_preserves_runtime_and_health_invariants`
+- `src/media/avio.rs`
+  - `write_batch_round_trips_random_chunks`
+- `src/media/srt.rs`
+  - `epoll_waiter_coordination`
 - `src/bin/test_harness.rs`
   - `fault-resilience`
   - `recovery`

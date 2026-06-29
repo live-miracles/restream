@@ -27,9 +27,19 @@ scripts/resource-limit cargo test \
   multiple_stale_job_updates_cannot_clobber_newest_attempt \
   --test db -- --nocapture
 
+scripts/resource-limit cargo test \
+  prop_no_loss_no_gap_no_duplication \
+  --test ring_migration -- --nocapture
+scripts/resource-limit cargo test \
+  write_batch_round_trips_random_chunks \
+  --lib -- --nocapture
+scripts/resource-limit cargo test \
+  epoll_waiter_coordination \
+  --lib -- --nocapture
 scripts/resource-limit cargo test recent_egress --lib -- --nocapture
 scripts/resource-limit cargo test recent_ingest_disconnect_respects_grace_window --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture
 scripts/resource-limit cargo test repeated_late_retry_updates_cannot_poison_newest_output_attempt --lib -- --nocapture
 scripts/resource-limit cargo test output_status_surfaces_retry_backoff_after_failure --lib -- --nocapture
+scripts/resource-limit cargo test prop_egress_lifecycle_preserves_runtime_and_health_invariants --lib -- --nocapture
 scripts/resource-limit cargo test --bin test_harness -- --nocapture

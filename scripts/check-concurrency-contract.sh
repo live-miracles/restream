@@ -14,10 +14,14 @@ scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state
 scripts/resource-limit cargo test health_endpoint_clears_recent_disconnect_details_after_reconnect --test api -- --nocapture
 scripts/resource-limit cargo test stale_job_update_cannot_clobber_replacement_attempt --test db -- --nocapture
 scripts/resource-limit cargo test multiple_stale_job_updates_cannot_clobber_newest_attempt --test db -- --nocapture
+scripts/resource-limit cargo test prop_no_loss_no_gap_no_duplication --test ring_migration -- --nocapture
+scripts/resource-limit cargo test write_batch_round_trips_random_chunks --lib -- --nocapture
+scripts/resource-limit cargo test epoll_waiter_coordination --lib -- --nocapture
 scripts/resource-limit cargo test recent_ingest_disconnect_respects_grace_window --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture
 scripts/resource-limit cargo test repeated_late_retry_updates_cannot_poison_newest_output_attempt --lib -- --nocapture
 scripts/resource-limit cargo test output_status_surfaces_retry_backoff_after_failure --lib -- --nocapture
+scripts/resource-limit cargo test prop_egress_lifecycle_preserves_runtime_and_health_invariants --lib -- --nocapture
 scripts/resource-limit cargo build --bin restream --bin test_harness
 
 RESTREAM_BIN=target/debug/restream \
