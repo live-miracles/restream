@@ -8962,7 +8962,161 @@ async fn fault_resilience() -> Result<Value, String> {
         }));
     }
 
-    // ── 5. RTMP egress sink disappears ──────────────────────────────────
+    // ── 5. External transcoder tears down after ingest disappears ───────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-transcoder", "streamKey": "fault-transcoder"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let sink_bytes = Arc::new(AtomicU64::new(0));
+        let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind: {e}"))?;
+        let sink_cancel = CancellationToken::new();
+        let sink_bytes_inner = sink_bytes.clone();
+        let sink_cancel_inner = sink_cancel.clone();
+        let sink_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = sink_listener.accept() => {
+                        if let Ok((socket, _)) = result {
+                            let bytes = sink_bytes_inner.clone();
+                            tokio::spawn(async move {
+                                let mut buf = [0u8; 65536];
+                                loop {
+                                    match socket.readable().await {
+                                        Ok(()) => match socket.try_read(&mut buf) {
+                                            Ok(0) => break,
+                                            Ok(n) => { bytes.fetch_add(n as u64, Ordering::Relaxed); }
+                                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                                            Err(_) => break,
+                                        },
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    _ = sink_cancel_inner.cancelled() => break,
+                }
+            }
+        });
+
+        let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/fault-transcoder-sink");
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({"name": "rtmp-720p", "url": sink_url, "encoding": "720p"}),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-transcoder", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let restream_pid = child.id().ok_or("restream pid missing")?;
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        let mut ffmpeg_spawned = false;
+        let mut peak_ffmpeg_children = 0u64;
+        let mut peak_transcoder_buffers = 0u64;
+        let mut saw_output_bytes = false;
+        while Instant::now() < warm_deadline {
+            let ffmpeg = ffmpeg_children_stats(restream_pid)?;
+            let telemetry = api.get_json("/api/v1/engine/telemetry").await?;
+            let active_transcoder_buffers =
+                telemetry["activeTranscoderBuffers"].as_u64().unwrap_or(0);
+            peak_ffmpeg_children = peak_ffmpeg_children.max(ffmpeg.count);
+            peak_transcoder_buffers = peak_transcoder_buffers.max(active_transcoder_buffers);
+            saw_output_bytes |= sink_bytes.load(Ordering::Relaxed) > 0;
+            if (ffmpeg.count > 0 || active_transcoder_buffers > 0) && saw_output_bytes {
+                ffmpeg_spawned = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        stop_child(&mut pub_child).await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let cleanup_deadline = Instant::now() + Duration::from_secs(15);
+        let mut cleanup_ok = false;
+        let mut final_ffmpeg_count = u64::MAX;
+        let mut final_transcoder_buffers = u64::MAX;
+        while Instant::now() < cleanup_deadline {
+            let ffmpeg = ffmpeg_children_stats(restream_pid)?;
+            let telemetry = api.get_json("/api/v1/engine/telemetry").await?;
+            let active_transcoder_buffers = telemetry["activeTranscoderBuffers"]
+                .as_u64()
+                .unwrap_or(u64::MAX);
+            final_ffmpeg_count = ffmpeg.count;
+            final_transcoder_buffers = active_transcoder_buffers;
+            if ffmpeg.count == 0 && active_transcoder_buffers == 0 {
+                cleanup_ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await;
+        let output_cleaned_up = status.is_err()
+            || status
+                .as_ref()
+                .is_ok_and(|json| json.get("error").is_some());
+        let elapsed = started.elapsed();
+        let passed = ffmpeg_spawned && off_result.is_ok() && cleanup_ok && output_cleaned_up;
+        println!(
+            "[fault] External transcoder tears down: {} (spawned={}, peakFfmpegChildren={}, peakTranscoderBuffers={}, finalFfmpegChildren={}, activeTranscoderBuffers={}, outputCleanedUp={}, {:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            ffmpeg_spawned,
+            peak_ffmpeg_children,
+            peak_transcoder_buffers,
+            final_ffmpeg_count,
+            final_transcoder_buffers,
+            output_cleaned_up,
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "external-transcoder-stops-after-ingest-disconnect",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "inputOffError": off_result.err(),
+            "ffmpegSpawned": ffmpeg_spawned,
+            "peakFfmpegChildren": peak_ffmpeg_children,
+            "peakTranscoderBuffers": peak_transcoder_buffers,
+            "sawOutputBytes": saw_output_bytes,
+            "finalFfmpegChildren": final_ffmpeg_count,
+            "finalActiveTranscoderBuffers": final_transcoder_buffers,
+            "outputCleanedUp": output_cleaned_up,
+        }));
+
+        sink_cancel.cancel();
+        sink_task.abort();
+    }
+
+    // ── 6. RTMP egress sink disappears ──────────────────────────────────
     // Accept connections and drain data, then abort all reader tasks so
     // their TcpStreams are dropped, sending TCP RST to the egress writer.
     {
@@ -9117,7 +9271,7 @@ async fn fault_resilience() -> Result<Value, String> {
         stop_child(&mut pub_child).await;
     }
 
-    // ── 6. SRT egress sink disappears ───────────────────────────────────
+    // ── 7. SRT egress sink disappears ───────────────────────────────────
     // Use the SRT port on the same restream instance: egress pushes to a
     // second pipeline; we delete that pipeline to simulate sink loss.
     {

@@ -411,6 +411,7 @@ pub async fn run_app() {
 
         for output in &outputs {
             let is_active = engine.has_active_egress(&output.id).await;
+            let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
             let now_str = chrono::Utc::now().to_rfc3339();
 
             if output.desired_state == "running" && !is_active {
@@ -736,6 +737,16 @@ pub async fn run_app() {
                         lf.insert(output_id_c, (Instant::now(), retries));
                     }
                 });
+            } else if output.desired_state == "running" && is_active && !has_ingest {
+                info!(
+                    output_id = %output.id,
+                    output_name = %output.name,
+                    pipeline_id = %output.pipeline_id,
+                    event_class = "lifecycle",
+                    event_type = "lifecycle.stop",
+                    "output job stopped because ingest is no longer active",
+                );
+                engine.unregister_egress(&output.id).await;
             } else if output.desired_state == "stopped" && is_active {
                 info!(
                     output_id = %output.id,
@@ -755,7 +766,8 @@ pub async fn run_app() {
                 std::collections::HashSet::new();
             for output in &outputs {
                 let is_active = engine.has_active_egress(&output.id).await;
-                if is_active || output.desired_state == "running" {
+                let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
+                if has_ingest && (is_active || output.desired_state == "running") {
                     let is_rtmp =
                         output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
                     let ingest_is_hevc = engine
