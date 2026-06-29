@@ -275,7 +275,7 @@ async fn unauthenticated_static_assets_remain_available() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/output.css")
+                .uri("/base-path.js")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -1625,14 +1625,14 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
 
     let token = CancellationToken::new();
     {
-        let mut stores = engine.hls_consumers.write().await;
+        let mut stores = engine.hls.consumers.write().await;
         stores.insert("pipe1".to_string(), HlsConsumers::new(token.clone()));
     }
 
     engine.add_hls_persistent_consumer("pipe1").await;
     engine.add_hls_persistent_consumer("pipe1").await;
     {
-        let consumers = engine.hls_consumers.read().await;
+        let consumers = engine.hls.consumers.read().await;
         assert_eq!(
             consumers["pipe1"]
                 .persistent
@@ -1644,7 +1644,7 @@ async fn hls_persistent_consumer_refcount_is_zero_after_balanced_add_remove() {
     engine.remove_hls_persistent_consumer("pipe1").await;
     engine.remove_hls_persistent_consumer("pipe1").await;
     {
-        let consumers = engine.hls_consumers.read().await;
+        let consumers = engine.hls.consumers.read().await;
         assert_eq!(
             consumers["pipe1"]
                 .persistent
@@ -2292,6 +2292,7 @@ async fn v1_events_returns_envelope_and_events_array() {
 
     // Emit a synthetic event directly on the engine's event log
     engine
+        .runtime
         .event_log
         .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: "test-pipeline".to_string(),
@@ -2323,6 +2324,7 @@ async fn v1_events_filters_by_pipeline_id() {
     let cookie = login(&app).await;
 
     engine
+        .runtime
         .event_log
         .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: "pipe-a".to_string(),
@@ -2330,6 +2332,7 @@ async fn v1_events_filters_by_pipeline_id() {
             stream_key: "key01".to_string(),
         });
     engine
+        .runtime
         .event_log
         .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: "pipe-b".to_string(),
@@ -2643,6 +2646,7 @@ async fn agent_context_returns_redacted_state_bundle() {
     assert_eq!(output_resp.status(), StatusCode::CREATED);
 
     engine
+        .runtime
         .event_log
         .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: pid.clone(),
@@ -2721,6 +2725,7 @@ async fn agent_investigation_returns_evidence_envelope() {
     let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
 
     engine
+        .runtime
         .event_log
         .emit(restream::events::EventKind::IngestConnected {
             pipeline_id: pid.clone(),

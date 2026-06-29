@@ -254,35 +254,41 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 
 ## Code Coverage
 
-Line coverage from `cargo llvm-cov` (unit tests only, June 27, 2026):
+Line coverage from `cargo llvm-cov` (unit tests only, June 29, 2026):
+
+Compared with the June 27, 2026 snapshot, covered lines increased from
+`13,250` to `13,784` (`+534`), but total instrumented lines increased from
+`23,918` to `25,399` (`+1,481`), so overall unit-only line coverage moved from
+`55.4%` to `54.3%` (`-1.1` percentage points).
 
 ![Coverage by module](coverage-by-module.svg)
 
 | Module | Lines | Covered | Coverage |
 |---|---:|---:|---:|
 | `pipe_metrics` | 21 | 21 | 100.0% |
-| `events` | 278 | 268 | **96.4%** |
+| `engine_registries` | 49 | 49 | 100.0% |
+| `events` | 284 | 274 | **96.5%** |
 | `alerts` | 517 | 506 | 97.9% |
 | `security` | 220 | 210 | 95.5% |
-| `ring_buffer` | 875 | 833 | 95.2% |
+| `ring_buffer` | 1,096 | 1,040 | 94.9% |
 | `feeder` | 226 | 215 | 95.1% |
-| `file_ingest` | 566 | 515 | 91.0% |
+| `file_ingest` | 558 | 515 | 92.3% |
 | `codec` | 730 | 660 | 90.4% |
-| `mpegts` | 2,438 | 2,201 | 90.3% |
+| `mpegts` | 2,444 | 2,028 | 83.0% |
 | `hls_upload` | 232 | 207 | 89.2% |
-| `profiles` | 334 | 285 | 85.3% |
+| `profiles` | 333 | 285 | 85.6% |
 | `stage_metrics` | 44 | 37 | 84.1% |
-| `engine` | 2,920 | 2,383 | 81.6% |
+| `engine` | 3,551 | 2,743 | 77.3% |
 | `domain/stage` | 227 | 180 | 79.3% |
-| `avio` | 469 | 357 | 76.1% |
-| `hls` | 526 | 391 | **74.3%** |
-| `recording` | 310 | 193 | **62.3%** |
-| `external_transcoder` | 583 | 360 | **61.8%** |
-| `srt` | 2,189 | 1,127 | 51.5% |
-| `rtmp` | 1,682 | 644 | 38.3% |
-| `api` | 3,350 | 239 | 7.1%† |
-| `db` | 855 | 0 | 0.0%† |
-| **Total** | **23,918** | **13,250** | **55.4%** |
+| `avio` | 502 | 388 | 77.3% |
+| `hls` | 565 | 428 | **75.8%** |
+| `recording` | 309 | 193 | **62.5%** |
+| `external_transcoder` | 581 | 364 | **62.7%** |
+| `srt` | 2,471 | 1,183 | 47.9% |
+| `rtmp` | 1,660 | 644 | 38.8% |
+| `api` | 3,951 | 385 | 9.7%† |
+| `db` | 801 | 0 | 0.0%† |
+| **Total** | **25,399** | **13,784** | **54.3%** |
 
 † `api.rs` is tested via 66 integration tests in `tests/api.rs` which `llvm-cov --lib` does not instrument. `db.rs` is tested via `tests/db.rs`. Their unit-only coverage is not representative.
 
