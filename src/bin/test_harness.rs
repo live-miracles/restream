@@ -9588,6 +9588,210 @@ async fn fault_resilience() -> Result<Value, String> {
         sink_task.abort();
     }
 
+    // ── 3b. Transient SRT publisher drop does not tear down egress ─────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-srt-transient", "streamKey": "fault-srt-transient"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind {sink_port}: {e}"))?;
+        let sink_metrics = metrics.clone();
+        let sink_task = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let sink_metrics = sink_metrics.clone();
+                tokio::spawn(handle_generalized_sink_client(socket, sink_metrics));
+            }
+        });
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "srt-transient-sink",
+                    "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-srt-transient-sink"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-srt-transient&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        while metrics.video_count.load(Ordering::Relaxed) < 10 {
+            if Instant::now() >= warm_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let baseline_video = metrics.video_count.load(Ordering::Relaxed);
+        let baseline_connections = metrics.connections.load(Ordering::Relaxed);
+
+        stop_child(&mut pub_child).await;
+        let off_result = wait_for_api_input_off(&api, &pid, Duration::from_secs(10)).await;
+        let off_health = api.get_json("/api/v1/engine/health").await.ok();
+        let off_input = off_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+
+        let gap_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let gap_connections = metrics.connections.load(Ordering::Relaxed);
+        let gap_status_running = gap_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let gap_retrying = gap_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let gap_has_error = gap_status
+            .as_ref()
+            .and_then(|status| status["lastError"].as_str())
+            .map(|message| !message.is_empty())
+            .unwrap_or(false);
+        let gap_input_off = off_result.is_ok() && off_input["status"] == "off";
+        let gap_preserved = gap_input_off
+            && gap_status.is_some()
+            && gap_connections == baseline_connections
+            && gap_status_running
+            && !gap_retrying
+            && !gap_has_error;
+
+        // SRT publishers can linger for a short teardown window after an
+        // abrupt drop. Reconnect only after the prior session is fully off so
+        // the test proves grace-window recovery instead of duplicate-publisher
+        // rejection timing.
+        let mut resumed_child = spawn_publisher(
+            &fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-srt-transient&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        let media_ready = wait_for_api_input_media_ready(&api, &pid, Duration::from_secs(30)).await;
+
+        let resume_deadline = Instant::now() + Duration::from_secs(15);
+        let mut resumed = false;
+        while Instant::now() < resume_deadline {
+            if metrics.video_count.load(Ordering::Relaxed) > baseline_video + 10 {
+                resumed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let final_connections = metrics.connections.load(Ordering::Relaxed);
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_input = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let final_disconnect_cleared = final_input["status"] == "on"
+            && final_input["probeStatus"] == "ready"
+            && final_input["lastSessionProtocol"].is_null()
+            && final_input["lastDisconnectReason"].is_null()
+            && final_input["lastFailurePhase"].is_null()
+            && final_input["recentDisconnectError"] == false;
+        let passed = baseline_video >= 10
+            && baseline_connections == 1
+            && gap_preserved
+            && resumed
+            && final_connections == baseline_connections
+            && final_status_running
+            && !final_retrying
+            && media_ready.is_ok()
+            && final_disconnect_cleared;
+        println!(
+            "[fault] Transient SRT publisher drop preserves egress: {} (connections={} resumed={} gapInputOff={} gapStatusRunning={} gapRetrying={} finalRetrying={} mediaReady={} disconnectCleared={})",
+            if passed { "PASS" } else { "FAIL" },
+            final_connections,
+            resumed,
+            gap_input_off,
+            gap_status_running,
+            gap_retrying,
+            final_retrying,
+            media_ready.is_ok(),
+            final_disconnect_cleared,
+        );
+        results.push(json!({
+            "test": "transient-srt-drop-preserves-egress",
+            "passed": passed,
+            "baselineVideo": baseline_video,
+            "baselineConnections": baseline_connections,
+            "gapConnections": gap_connections,
+            "gapInputOff": gap_input_off,
+            "gapOffError": off_result.err(),
+            "gapOffInputSnapshot": off_input,
+            "gapStatusExists": gap_status.is_some(),
+            "gapStatusRunning": gap_status_running,
+            "gapRetrying": gap_retrying,
+            "gapHasError": gap_has_error,
+            "resumed": resumed,
+            "mediaReady": media_ready.is_ok(),
+            "mediaReadyError": media_ready.err(),
+            "finalConnections": final_connections,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalDisconnectCleared": final_disconnect_cleared,
+            "finalInputSnapshot": final_input,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut resumed_child).await;
+        sink_task.abort();
+    }
+
     // ── 4. File ingest stop ─────────────────────────────────────────────
     {
         let pipeline = api
