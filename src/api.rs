@@ -1420,15 +1420,11 @@ async fn pipelines_delete_handler(
     if let Ok(Some(pipeline)) = db::get_pipeline(&state.db, &id).await
         && let Ok(ingests) = db::list_ingests(&state.db).await
     {
-        let mut children = state.engine.file_ingests.children.write().await;
         for ingest in ingests
             .iter()
             .filter(|i| i.stream_key == pipeline.stream_key)
         {
-            if let Some(mut child) = children.remove(&ingest.id) {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-            }
+            let _ = state.engine.stop_file_ingest_child(&ingest.id).await;
         }
     }
 
@@ -2131,11 +2127,7 @@ fn spawn_file_ingest_child(
 }
 
 async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
-    let mut children = engine.file_ingests.children.write().await;
-    if let Some(mut child) = children.remove(ingest_id) {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-    }
+    let _ = engine.stop_file_ingest_child(ingest_id).await;
 }
 
 async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &str) {
@@ -2337,15 +2329,17 @@ async fn pump_file_ingest_stdout(
     timestamps: &mut crate::media::file_ingest::ContinuousTimestampState,
 ) -> Result<(), String> {
     let (bytes_received, ingest_metrics, cached_keyframe_times) = {
-        let ingests = state.engine.ingests.active.read().await;
-        let ingest = ingests
-            .get(&pipeline.id)
-            .ok_or_else(|| format!("Active ingest missing for pipeline {}", pipeline.id))?;
-        (
-            ingest.bytes_received.clone(),
-            ingest.metrics.clone(),
-            ingest.keyframe_times.clone(),
-        )
+        state
+            .engine
+            .with_active_ingest(&pipeline.id, |ingest| {
+                (
+                    ingest.bytes_received.clone(),
+                    ingest.metrics.clone(),
+                    ingest.keyframe_times.clone(),
+                )
+            })
+            .await
+            .ok_or_else(|| format!("Active ingest missing for pipeline {}", pipeline.id))?
     };
 
     let mut demuxer = crate::media::mpegts::TsDemuxer::new();
@@ -2468,11 +2462,9 @@ async fn run_file_ingest_task(
         let (stdout_res, stderr_res) = tokio::join!(stdout_fut, stderr_fut);
 
         let mut exit_status = None;
-        let mut children = state.engine.file_ingests.children.write().await;
-        if let Some(mut child) = children.remove(&ingest.id) {
+        if let Some(mut child) = state.engine.take_file_ingest_child(&ingest.id).await {
             exit_status = child.wait().await.ok();
         }
-        drop(children);
 
         if let Err(err) = stdout_res
             && !cancel.is_cancelled()
@@ -5002,41 +4994,25 @@ async fn agent_dependency_summary(
     health: &serde_json::Value,
 ) -> serde_json::Value {
     let hls_config = crate::media::hls::HlsConfig::from_env();
-    let hls_consumers = state.engine.hls.consumers.read().await;
-    let hls_stores = state.engine.hls.stores.read().await;
-    let recording_tokens = state.engine.recordings.cancel_tokens.read().await;
-    let active_file_ingests = state.engine.file_ingests.active.read().await;
-    let file_ingest_children = state.engine.file_ingests.children.read().await;
-
     let mut hls = Vec::new();
     let mut recordings = Vec::new();
     for pipeline in pipelines {
-        let store = hls_stores.get(&pipeline.id);
-        let consumer = hls_consumers.get(&pipeline.id);
-        let snapshot = store.and_then(|store| store.snapshot());
+        let snapshot = state.engine.hls_dependency_snapshot(&pipeline.id).await;
         hls.push(serde_json::json!({
             "pipelineId": pipeline.id,
-            "storeExists": store.is_some(),
-            "active": consumer.is_some_and(|consumer| !consumer.cancel_token.is_cancelled()),
-            "persistentConsumers": consumer
-                .map(|consumer| consumer.persistent.load(std::sync::atomic::Ordering::Relaxed))
-                .unwrap_or(0),
-            "lastAccessAgeMs": consumer.map(|consumer| {
-                let now = consumer.reference_instant.elapsed().as_millis() as u64;
-                let last = consumer.last_access_ms.load(std::sync::atomic::Ordering::Relaxed);
-                now.saturating_sub(last)
-            }),
-            "segments": snapshot.as_ref().map(|snapshot| snapshot.segments.len()).unwrap_or(0),
-            "playlistBytes": snapshot.as_ref().map(|snapshot| snapshot.playlist.len()).unwrap_or(0),
+            "storeExists": snapshot.store_exists,
+            "active": snapshot.active,
+            "persistentConsumers": snapshot.persistent_consumers,
+            "lastAccessAgeMs": snapshot.last_access_age_ms,
+            "segments": snapshot.segments,
+            "playlistBytes": snapshot.playlist_bytes,
         }));
 
         let desired_enabled = recording_enabled
             .get(&pipeline.id)
             .copied()
             .unwrap_or(false);
-        let active = recording_tokens
-            .get(&pipeline.id)
-            .is_some_and(|token| !token.is_cancelled());
+        let active = state.engine.is_recording_active(&pipeline.id).await;
         recordings.push(serde_json::json!({
             "pipelineId": pipeline.id,
             "desiredEnabled": desired_enabled,
@@ -5048,12 +5024,16 @@ async fn agent_dependency_summary(
     let mut file_ingest = Vec::new();
     for ingest in ingests {
         let media_path = FsPath::new(&state.media_dir).join(&ingest.filename);
+        let runtime = state
+            .engine
+            .file_ingest_dependency_snapshot(&ingest.id)
+            .await;
         file_ingest.push(serde_json::json!({
             "id": ingest.id,
             "filename": ingest.filename,
             "mediaExists": media_path.exists(),
-            "markedActive": active_file_ingests.contains(&ingest.id),
-            "childRegistered": file_ingest_children.contains_key(&ingest.id),
+            "markedActive": runtime.marked_active,
+            "childRegistered": runtime.child_registered,
             "backend": if crate::media::file_ingest::use_internal_file_ingest() { "internal" } else { "ffmpeg-subprocess" },
             "loop": ingest.loop_flag,
             "startTime": ingest.start_time,

@@ -998,20 +998,15 @@ async fn handle_session_results(
                             return Err("Pipeline already has an active publisher");
                         };
                         let ring = engine.get_or_create_pipeline(&pipeline.id).await;
-                        let (bytes_received, ingest_metrics) = {
-                            let ingests = engine.ingests.active.read().await;
-                            ingests
-                                .get(&pipeline.id)
-                                .map(|ingest| {
-                                    (ingest.bytes_received.clone(), ingest.metrics.clone())
-                                })
-                                .unzip()
-                        };
-                        let Some(bytes_received) = bytes_received else {
+                        let Some((bytes_received, ingest_metrics)) = engine
+                            .with_active_ingest(&pipeline.id, |ingest| {
+                                (ingest.bytes_received.clone(), ingest.metrics.clone())
+                            })
+                            .await
+                        else {
                             engine.unregister_ingest(&pipeline.id).await;
                             return Err("Active ingest disappeared during registration");
                         };
-                        let ingest_metrics = ingest_metrics.unwrap_or_default();
                         *active_ingest = Some(RtmpIngestHandle {
                             pipeline_id: pipeline.id.clone(),
                             ring,
@@ -1506,16 +1501,16 @@ pub async fn start_rtmp_egress(
     }
 
     let (egress_bytes_sent, egress_metrics, egress_last_progress_ms) = {
-        let egresses = engine.egresses.active.read().await;
-        if let Some(e) = egresses.get(&output_id) {
-            (
-                Some(e.bytes_sent.clone()),
-                Some(e.metrics.clone()),
-                Some(e.last_progress_ms.clone()),
-            )
-        } else {
-            (None, None, None)
-        }
+        engine
+            .with_active_egress(&output_id, |egress| {
+                (
+                    Some(egress.bytes_sent.clone()),
+                    Some(egress.metrics.clone()),
+                    Some(egress.last_progress_ms.clone()),
+                )
+            })
+            .await
+            .unwrap_or((None, None, None))
     };
 
     let mut is_publishing = false;
@@ -1596,15 +1591,20 @@ pub async fn start_rtmp_egress(
                                             && socket.write_all(&p.bytes).await.is_err() { return; }
                                     // Synthesize AAC sequence header from audio meta if not cached
                                     if audio_sh.is_none() {
-                                        let ingests = engine.ingests.active.read().await;
-                                        if let Some(ingest) = ingests.get(&pipeline_id) {
-                                            let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
-                                            if let Some(track) = tracks.first() {
-                                                audio_sh = Some(codec::build_aac_sequence_header(
-                                                    track.sample_rate,
-                                                    track.channels,
-                                                ));
-                                            }
+                                        if let Some(Some(track)) = engine
+                                            .with_active_ingest(&pipeline_id, |ingest| {
+                                                let tracks = ingest
+                                                    .audio_tracks
+                                                    .lock()
+                                                    .unwrap_or_else(|e| e.into_inner());
+                                                tracks.first().cloned()
+                                            })
+                                            .await
+                                        {
+                                            audio_sh = Some(codec::build_aac_sequence_header(
+                                                track.sample_rate,
+                                                track.channels,
+                                            ));
                                         }
                                     }
                                     if let Some(ash) = audio_sh

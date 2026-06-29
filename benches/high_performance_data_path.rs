@@ -79,10 +79,16 @@ fn bench_ingest_hot_handle(c: &mut Criterion) {
         .block_on(engine.try_register_ingest("hot-ingest-bench", "key", "rtmp"))
         .expect("register benchmark ingest");
     let cached_ring = runtime.block_on(engine.get_or_create_pipeline("hot-ingest-bench"));
-    let cached_counter = runtime.block_on(async {
-        engine.active_ingests.read().await["hot-ingest-bench"]
+    let direct_counter = runtime.block_on(async {
+        engine.ingests.active.read().await["hot-ingest-bench"]
             .bytes_received
             .clone()
+    });
+    let facade_counter = runtime.block_on(async {
+        engine
+            .with_active_ingest("hot-ingest-bench", |ingest| ingest.bytes_received.clone())
+            .await
+            .expect("ingest handle via facade")
     });
     let mut group = c.benchmark_group("data_path/ingest_hot_handle");
 
@@ -102,10 +108,46 @@ fn bench_ingest_hot_handle(c: &mut Criterion) {
 
     group.bench_function("cached_ring_and_counter", |b| {
         b.iter(|| {
-            cached_counter.fetch_add(1316, Ordering::Relaxed);
+            facade_counter.fetch_add(1316, Ordering::Relaxed);
             black_box(&cached_ring);
         });
     });
+
+    group.bench_function("direct_registry_counter_lookup", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let counter = {
+                        let ingests = engine.ingests.active.read().await;
+                        ingests["hot-ingest-bench"].bytes_received.clone()
+                    };
+                    counter.fetch_add(1316, Ordering::Relaxed);
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    group.bench_function("facade_counter_lookup", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let counter = engine
+                        .with_active_ingest("hot-ingest-bench", |ingest| {
+                            ingest.bytes_received.clone()
+                        })
+                        .await
+                        .expect("facade counter lookup");
+                    counter.fetch_add(1316, Ordering::Relaxed);
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    black_box(direct_counter);
 
     group.finish();
 }
@@ -123,13 +165,16 @@ fn bench_egress_progress_hot_handle(c: &mut Criterion) {
             .await;
     });
     let (cached_bytes, cached_metrics, cached_progress) = runtime.block_on(async {
-        let egresses = engine.active_egresses.read().await;
-        let egress = &egresses["hot-egress-bench"];
-        (
-            egress.bytes_sent.clone(),
-            egress.metrics.clone(),
-            egress.last_progress_ms.clone(),
-        )
+        engine
+            .with_active_egress("hot-egress-bench", |egress| {
+                (
+                    egress.bytes_sent.clone(),
+                    egress.metrics.clone(),
+                    egress.last_progress_ms.clone(),
+                )
+            })
+            .await
+            .expect("egress handle via facade")
     });
     let mut group = c.benchmark_group("data_path/egress_progress");
 
@@ -157,6 +202,53 @@ fn bench_egress_progress_hot_handle(c: &mut Criterion) {
                 cached_progress.store(black_box(1), Ordering::Relaxed);
                 last_progress_sample = Instant::now();
             }
+        });
+    });
+
+    group.bench_function("direct_registry_progress_lookup", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let (bytes_sent, metrics, progress) = {
+                        let egresses = engine.egresses.active.read().await;
+                        let egress = &egresses["hot-egress-bench"];
+                        (
+                            egress.bytes_sent.clone(),
+                            egress.metrics.clone(),
+                            egress.last_progress_ms.clone(),
+                        )
+                    };
+                    bytes_sent.fetch_add(black_box(1316), Ordering::Relaxed);
+                    metrics.record_out(black_box(1316));
+                    progress.store(black_box(1), Ordering::Relaxed);
+                }
+                started.elapsed()
+            })
+        });
+    });
+
+    group.bench_function("facade_progress_lookup", |b| {
+        b.iter_custom(|iterations| {
+            runtime.block_on(async {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let (bytes_sent, metrics, progress) = engine
+                        .with_active_egress("hot-egress-bench", |egress| {
+                            (
+                                egress.bytes_sent.clone(),
+                                egress.metrics.clone(),
+                                egress.last_progress_ms.clone(),
+                            )
+                        })
+                        .await
+                        .expect("facade progress lookup");
+                    bytes_sent.fetch_add(black_box(1316), Ordering::Relaxed);
+                    metrics.record_out(black_box(1316));
+                    progress.store(black_box(1), Ordering::Relaxed);
+                }
+                started.elapsed()
+            })
         });
     });
 
@@ -887,7 +979,7 @@ fn bench_keyframe_record(c: &mut Criterion) {
     let cached_kf_times = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
     // Populate it the same way the engine does.
     runtime.block_on(async {
-        let ingests = engine.active_ingests.read().await;
+        let ingests = engine.ingests.active.read().await;
         let times = ingests["kf-bench"]
             .keyframe_times
             .lock()

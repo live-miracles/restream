@@ -4,14 +4,14 @@
 //! to build the JSON returned by `/api/v1/engine/health`.
 
 use ffmpeg_next as ffmpeg;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
+use crate::domain::stage::{StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
 use crate::media::engine_registries::{
     EgressRegistry, FileIngestRegistry, HlsRegistry, IngestRegistry, RecordingRegistry,
@@ -27,7 +27,7 @@ use crate::planner::backend_policy::{BackendPolicy, StageBackend};
 pub use crate::media::pipe_metrics::PipeMetrics;
 pub use crate::media::stage_metrics::StageMetrics;
 
-const EGRESS_PROGRESS_STALE_MS: u64 = 10_000;
+pub(crate) const EGRESS_PROGRESS_STALE_MS: u64 = 10_000;
 
 /// Tracks HLS consumers for a pipeline. Persistent consumers (egress outputs)
 /// register/unregister explicitly. Transient consumers (browser preview) keep
@@ -309,6 +309,22 @@ pub struct SrtListenerDiagSnapshot {
     pub active_ingest_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct HlsDependencySnapshot {
+    pub store_exists: bool,
+    pub active: bool,
+    pub persistent_consumers: u64,
+    pub last_access_age_ms: Option<u64>,
+    pub segments: usize,
+    pub playlist_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileIngestDependencySnapshot {
+    pub marked_active: bool,
+    pub child_registered: bool,
+}
+
 /// Shared listener socket buffer occupancy, updated by the SRT monitor task.
 #[derive(Debug, Default)]
 pub struct ListenerSocketStats {
@@ -356,11 +372,11 @@ impl MediaEngine {
         }
     }
 
-    fn now_epoch_ms() -> u64 {
+    pub(crate) fn now_epoch_ms() -> u64 {
         chrono::Utc::now().timestamp_millis().max(0) as u64
     }
 
-    fn epoch_ms_to_rfc3339(ms: u64) -> Option<String> {
+    pub(crate) fn epoch_ms_to_rfc3339(ms: u64) -> Option<String> {
         if ms == 0 {
             return None;
         }
@@ -379,6 +395,89 @@ impl MediaEngine {
         self.runtime.event_log.recent(limit, pipeline_id)
     }
 
+    pub async fn with_active_ingest<R>(
+        &self,
+        pipeline_id: &str,
+        f: impl FnOnce(&ActiveIngest) -> R,
+    ) -> Option<R> {
+        let ingests = self.ingests.active.read().await;
+        ingests.get(pipeline_id).map(f)
+    }
+
+    pub async fn with_active_egress<R>(
+        &self,
+        output_id: &str,
+        f: impl FnOnce(&ActiveEgress) -> R,
+    ) -> Option<R> {
+        let egresses = self.egresses.active.read().await;
+        egresses.get(output_id).map(f)
+    }
+
+    pub fn listener_stats_handle(&self) -> Arc<ListenerSocketStats> {
+        self.runtime.listener_stats.clone()
+    }
+
+    pub fn sender_semaphore_handle(&self) -> Arc<tokio::sync::Semaphore> {
+        self.runtime.sender_semaphore.clone()
+    }
+
+    pub async fn stop_file_ingest_child(&self, ingest_id: &str) -> bool {
+        let mut children = self.file_ingests.children.write().await;
+        let Some(mut child) = children.remove(ingest_id) else {
+            return false;
+        };
+        drop(children);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        true
+    }
+
+    pub async fn take_file_ingest_child(&self, ingest_id: &str) -> Option<tokio::process::Child> {
+        self.file_ingests.children.write().await.remove(ingest_id)
+    }
+
+    pub async fn hls_dependency_snapshot(&self, pipeline_id: &str) -> HlsDependencySnapshot {
+        let consumers = self.hls.consumers.read().await;
+        let stores = self.hls.stores.read().await;
+
+        let consumer = consumers.get(pipeline_id);
+        let store = stores.get(pipeline_id);
+        let snapshot = store.and_then(|store| store.snapshot());
+
+        HlsDependencySnapshot {
+            store_exists: store.is_some(),
+            active: consumer.is_some_and(|consumer| !consumer.cancel_token.is_cancelled()),
+            persistent_consumers: consumer
+                .map(|consumer| consumer.persistent.load(Ordering::Relaxed))
+                .unwrap_or(0),
+            last_access_age_ms: consumer.map(|consumer| {
+                let now = consumer.reference_instant.elapsed().as_millis() as u64;
+                let last = consumer.last_access_ms.load(Ordering::Relaxed);
+                now.saturating_sub(last)
+            }),
+            segments: snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.segments.len())
+                .unwrap_or(0),
+            playlist_bytes: snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.playlist.len())
+                .unwrap_or(0),
+        }
+    }
+
+    pub async fn file_ingest_dependency_snapshot(
+        &self,
+        ingest_id: &str,
+    ) -> FileIngestDependencySnapshot {
+        let active = self.file_ingests.active.read().await;
+        let children = self.file_ingests.children.read().await;
+        FileIngestDependencySnapshot {
+            marked_active: active.contains(ingest_id),
+            child_registered: children.contains_key(ingest_id),
+        }
+    }
+
     pub fn bonding_available(&self) -> bool {
         self.runtime
             .listener_stats
@@ -386,7 +485,7 @@ impl MediaEngine {
             .load(Ordering::Relaxed)
     }
 
-    fn egress_protocol_from_url(url: &str) -> &'static str {
+    pub(crate) fn egress_protocol_from_url(url: &str) -> &'static str {
         if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
             "rtmp"
         } else if url.starts_with("srt://") {
@@ -401,7 +500,7 @@ impl MediaEngine {
         }
     }
 
-    fn graph_protocol_label(protocol: &str) -> String {
+    pub(crate) fn graph_protocol_label(protocol: &str) -> String {
         if protocol.is_empty() || protocol == "unknown" {
             "Unknown".to_string()
         } else {
@@ -409,7 +508,7 @@ impl MediaEngine {
         }
     }
 
-    fn graph_slug(value: &str) -> String {
+    pub(crate) fn graph_slug(value: &str) -> String {
         let slug: String = value
             .chars()
             .map(|ch| {
@@ -423,7 +522,7 @@ impl MediaEngine {
         slug.trim_matches('_').to_string()
     }
 
-    fn source_buffer_format(protocol: Option<&str>) -> &'static str {
+    pub(crate) fn source_buffer_format(protocol: Option<&str>) -> &'static str {
         match protocol {
             Some("rtmp") => "FLV media packets",
             Some("srt") => "Demuxed MPEG-TS media packets",
@@ -432,7 +531,7 @@ impl MediaEngine {
         }
     }
 
-    fn source_to_egress_label(protocol: &str) -> &'static str {
+    pub(crate) fn source_to_egress_label(protocol: &str) -> &'static str {
         match protocol {
             "rtmp" => "RTMP publish packets",
             "srt" => "MPEG-TS packetization",
@@ -441,7 +540,7 @@ impl MediaEngine {
         }
     }
 
-    fn egress_effective_status(egress: &ActiveEgress, has_ingest: bool) -> String {
+    pub(crate) fn egress_effective_status(egress: &ActiveEgress, has_ingest: bool) -> String {
         if !has_ingest {
             return "stopped".to_string();
         }
@@ -474,7 +573,7 @@ impl MediaEngine {
         "running".to_string()
     }
 
-    fn egress_runtime_json(
+    pub(crate) fn egress_runtime_json(
         egress: &ActiveEgress,
         include_target_url: bool,
         has_ingest: bool,
@@ -508,10 +607,7 @@ impl MediaEngine {
     }
 
     pub async fn output_status(&self, output_id: &str) -> Option<serde_json::Value> {
-        let egresses = self.egresses.active.read().await;
-        egresses
-            .get(output_id)
-            .map(|e| Self::egress_runtime_json(e, false, true))
+        crate::media::engine_views::output_status(self, output_id).await
     }
 
     /// Register an OS thread JoinHandle so it can be joined at shutdown.
@@ -1757,342 +1853,16 @@ impl MediaEngine {
         pipeline_ids: &[String],
         recording_enabled: &HashMap<String, bool>,
     ) -> serde_json::Value {
-        let ingests = self.ingests.active.read().await;
-        let egresses = self.egresses.active.read().await;
-        let rec_tokens = self.recordings.cancel_tokens.read().await;
-        let hls_consumers = self.hls.consumers.read().await;
-        let pipelines = self.ingests.pipelines.read().await;
-
-        let mut pipelines_json = serde_json::Map::new();
-
-        for pipeline_id in pipeline_ids {
-            let ingest_opt = ingests.get(pipeline_id.as_str());
-            let pipeline_rb = pipelines.get(pipeline_id.as_str());
-            let reader_snapshots = pipeline_rb
-                .map(|rb| rb.reader_snapshots())
-                .unwrap_or_default();
-            let readers_count = reader_snapshots.len();
-            let reader_metrics: Vec<serde_json::Value> = reader_snapshots
-                .iter()
-                .map(|reader| {
-                    serde_json::json!({
-                        "name": reader.name,
-                        "readIndex": reader.read_idx,
-                        "writeIndex": reader.write_idx,
-                        "lagSlots": reader.lag_slots,
-                        "overflowCount": reader.overflow_count,
-                        "overflows": reader.overflow_count,
-                        "packetAgeMs": reader.packet_age_ms,
-                        "burstCount": reader.burst_count,
-                        "avgBurstSize": (reader.avg_burst_size * 10.0).round() / 10.0,
-                        "medianBurstSize": reader.median_burst_size,
-                    })
-                })
-                .collect();
-
-            let mut total_bytes_sent = 0u64;
-            for (_, egress) in egresses.iter() {
-                if egress.pipeline_id == *pipeline_id {
-                    total_bytes_sent += egress.bytes_sent.load(Ordering::Relaxed);
-                }
-            }
-
-            let input_json = if let Some(ingest) = ingest_opt {
-                let elapsed_secs = ingest.start_time.elapsed().as_secs_f64();
-                let bytes_received = ingest.bytes_received.load(Ordering::Relaxed);
-                let bitrate_kbps = if elapsed_secs > 1.0 {
-                    Some((bytes_received as f64 * 8.0) / (elapsed_secs * 1000.0))
-                } else {
-                    None
-                };
-                let publish_started_at = {
-                    let ts = chrono::Utc::now() - chrono::Duration::seconds(elapsed_secs as i64);
-                    ts.to_rfc3339()
-                };
-
-                let publisher_json = serde_json::json!({
-                    "protocol": ingest.protocol,
-                    "remoteAddr": ingest.remote_addr,
-                    "quality": ingest.quality,
-                });
-                let audio_tracks = ingest
-                    .audio_tracks
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                serde_json::json!({
-                    "status": "on",
-                    "publishStartedAt": publish_started_at,
-                    "bytesReceived": bytes_received,
-                    "bytesSent": total_bytes_sent,
-                    "readers": readers_count,
-                    "readerMetrics": reader_metrics,
-                    "bitrateKbps": bitrate_kbps,
-                    "video": ingest.video,
-                    "audio": ingest.audio,
-                    "audioTracks": audio_tracks,
-                    "publisher": publisher_json,
-                    "unexpectedReaders": { "count": 0 }
-                })
-            } else {
-                serde_json::json!({
-                    "status": "off",
-                    "bytesReceived": 0,
-                    "bytesSent": total_bytes_sent,
-                    "readers": readers_count,
-                    "readerMetrics": reader_metrics,
-                    "publisher": null,
-                    "unexpectedReaders": { "count": 0 }
-                })
-            };
-
-            let mut outputs_json = serde_json::Map::new();
-            for (egress_key, egress) in egresses.iter() {
-                if egress.pipeline_id == *pipeline_id {
-                    let output_id = egress_key;
-                    let bytes_sent = egress.bytes_sent.load(Ordering::Relaxed);
-
-                    // Compute instantaneous bitrate from byte delta
-                    let bitrate_kbps = {
-                        let prev = egress.prev_bytes_sent.load(Ordering::Relaxed);
-                        let mut prev_time = egress
-                            .prev_sample_time
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        let elapsed = prev_time.elapsed().as_secs_f64();
-
-                        if elapsed > 0.5 && bytes_sent > prev {
-                            let delta = bytes_sent - prev;
-                            let rate = (delta as f64 * 8.0) / (elapsed * 1000.0);
-                            egress.prev_bytes_sent.store(bytes_sent, Ordering::Relaxed);
-                            *prev_time = Instant::now();
-                            *egress
-                                .bitrate_kbps
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()) = Some(rate);
-                            Some(rate)
-                        } else {
-                            *egress
-                                .bitrate_kbps
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                        }
-                    };
-
-                    let has_ingest = ingests.contains_key(pipeline_id.as_str());
-
-                    let mut output_json = Self::egress_runtime_json(egress, false, has_ingest);
-                    output_json["totalSize"] = serde_json::json!(bytes_sent);
-                    output_json["bitrateKbps"] = serde_json::json!(bitrate_kbps);
-                    output_json["startedAt"] = serde_json::Value::String(egress.started_at.clone());
-                    outputs_json.insert(output_id.to_string(), output_json);
-                }
-            }
-
-            let rec_enabled = recording_enabled.get(pipeline_id).copied().unwrap_or(false);
-            let rec_active = rec_tokens
-                .get(pipeline_id.as_str())
-                .is_some_and(|token| !token.is_cancelled());
-            let hls_active = hls_consumers
-                .get(pipeline_id.as_str())
-                .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
-
-            pipelines_json.insert(
-                pipeline_id.clone(),
-                serde_json::json!({
-                    "input": input_json,
-                    "outputs": serde_json::Value::Object(outputs_json),
-                    "recording": { "enabled": rec_enabled, "active": rec_active },
-                    "hlsPreview": { "active": hls_active }
-                }),
-            );
-        }
-
-        let rx_queue = self
-            .runtime
-            .listener_stats
-            .rx_queue_bytes
-            .load(Ordering::Relaxed);
-        let rx_max = self
-            .runtime
-            .listener_stats
-            .rx_queue_max_bytes
-            .load(Ordering::Relaxed);
-        let drops = self.runtime.listener_stats.drops.load(Ordering::Relaxed);
-        let bonding_available = self
-            .runtime
-            .listener_stats
-            .bonding_available
-            .load(Ordering::Relaxed);
-
-        serde_json::json!({
-            "generatedAt": chrono::Utc::now().to_rfc3339(),
-            "status": "ready",
-            "pipelines": serde_json::Value::Object(pipelines_json),
-            "srtListener": {
-                "bondingAvailable": bonding_available,
-                "udpRxQueueBytes": rx_queue,
-                "udpRxQueuePeakBytes": rx_max,
-                "udpDrops": drops,
-            },
-        })
+        crate::media::engine_views::health_snapshot(self, pipeline_ids, recording_enabled).await
     }
 
     /// Engine-wide telemetry: raw counters for all active ingests, stages, and
     /// egresses. Intended for engineer dashboards and debugging.
     pub async fn engine_telemetry(&self) -> serde_json::Value {
-        let generated_at = chrono::Utc::now().to_rfc3339();
-        let ingests = self.ingests.active.read().await;
-        let egresses = self.egresses.active.read().await;
-        let stage_metrics = self.stages.metrics.read().await;
-        let pipe_metrics = self.stages.pipe_metrics.read().await;
-        let buffers = self.stages.buffers.read().await;
-        let pipelines = self.ingests.pipelines.read().await;
-        let ts_muxers = self.stages.ts_muxers.read().await;
-        let input_queues = self.stages.input_queues.read().await;
-        let egress_queues = self.egresses.queues.read().await;
-
-        let ingest_arr: Vec<serde_json::Value> = ingests
-            .iter()
-            .map(|(pid, i)| {
-                serde_json::json!({
-                    "pipelineId": pid,
-                    "protocol": i.protocol,
-                    "uptimeSecs": i.start_time.elapsed().as_secs_f64(),
-                    "bytesReceived": i.bytes_received.load(Ordering::Relaxed),
-                    "metrics": i.metrics.snapshot(),
-                })
-            })
-            .collect();
-
-        let stage_arr: Vec<serde_json::Value> = stage_metrics
-            .iter()
-            .map(|(key, m)| {
-                let mut val = serde_json::json!({
-                    "stageKey": key.to_string(),
-                    "pipelineId": key.pipeline.as_str(),
-                    "kind": key.kind.to_string(),
-                    "metrics": m.snapshot(),
-                });
-                if let Some(pm) = pipe_metrics.get(key) {
-                    val["pipeMetrics"] = pm.snapshot();
-                }
-                val
-            })
-            .collect();
-
-        let egress_arr: Vec<serde_json::Value> = egresses
-            .values()
-            .map(|e| {
-                Self::egress_runtime_json(e, true, ingests.contains_key(e.pipeline_id.as_str()))
-            })
-            .collect();
-
-        let source_rings: Vec<serde_json::Value> = pipelines
-            .iter()
-            .map(|(pipeline_id, ring)| {
-                serde_json::json!({
-                    "pipelineId": pipeline_id,
-                    "payloadStats": Self::ring_payload_stats_json(ring),
-                })
-            })
-            .collect();
-        let transcoder_rings: Vec<serde_json::Value> = buffers
-            .iter()
-            .map(|(key, (ring, token))| {
-                serde_json::json!({
-                    "stageKey": key.to_string(),
-                    "pipelineId": key.pipeline.as_str(),
-                    "kind": key.kind.to_string(),
-                    "active": !token.is_cancelled(),
-                    "payloadStats": Self::ring_payload_stats_json(ring),
-                })
-            })
-            .collect();
-        let ts_muxer_rings: Vec<serde_json::Value> = ts_muxers
-            .iter()
-            .map(|(stage_key, stage)| {
-                serde_json::json!({
-                    "stageKey": stage_key,
-                    "active": !stage.cancel.is_cancelled(),
-                    "payloadStats": Self::ring_payload_stats_json(&stage.ring),
-                })
-            })
-            .collect();
-        let retained_payload_bytes = source_rings
-            .iter()
-            .chain(transcoder_rings.iter())
-            .chain(ts_muxer_rings.iter())
-            .filter_map(|entry| entry["payloadStats"]["payloadBytes"].as_u64())
-            .sum::<u64>();
-
-        let avio_input_queues: Vec<serde_json::Value> = input_queues
-            .iter()
-            .map(|(key, q)| {
-                let s = q.stats();
-                serde_json::json!({
-                    "stageKey": key.to_string(),
-                    "pipelineId": key.pipeline.as_str(),
-                    "lenBytes": s.len,
-                    "capacityBytes": s.capacity,
-                    "highWaterBytes": s.high_water_bytes,
-                    "blockedWrites": s.blocked_writes,
-                    "blockedWriteUs": s.blocked_write_us,
-                })
-            })
-            .collect();
-        let avio_egress_queues: Vec<serde_json::Value> = egress_queues
-            .iter()
-            .map(|(oid, q)| {
-                let s = q.stats();
-                serde_json::json!({
-                    "outputId": oid,
-                    "lenBytes": s.len,
-                    "capacityBytes": s.capacity,
-                    "highWaterBytes": s.high_water_bytes,
-                    "blockedWrites": s.blocked_writes,
-                    "blockedWriteUs": s.blocked_write_us,
-                })
-            })
-            .collect();
-        let avio_total_len_bytes: usize = avio_input_queues
-            .iter()
-            .chain(avio_egress_queues.iter())
-            .filter_map(|e| e["lenBytes"].as_u64())
-            .map(|v| v as usize)
-            .sum();
-        let avio_total_capacity_bytes: usize = avio_input_queues
-            .iter()
-            .chain(avio_egress_queues.iter())
-            .filter_map(|e| e["capacityBytes"].as_u64())
-            .map(|v| v as usize)
-            .sum();
-
-        serde_json::json!({
-            "generatedAt": generated_at,
-            "ingests": ingest_arr,
-            "stages": stage_arr,
-            "egresses": egress_arr,
-            "activeTranscoderBuffers": buffers.len(),
-            "memoryAccounting": {
-                "retainedPayloadBytes": retained_payload_bytes,
-                "sourceRings": source_rings,
-                "transcoderRings": transcoder_rings,
-                "tsMuxerRings": ts_muxer_rings,
-                "avioQueues": {
-                    "totalLenBytes": avio_total_len_bytes,
-                    "totalCapacityBytes": avio_total_capacity_bytes,
-                    "inputQueues": avio_input_queues,
-                    "egressQueues": avio_egress_queues,
-                },
-            },
-        })
+        crate::media::engine_views::engine_telemetry(self).await
     }
 
-    fn ring_payload_stats_json(ring: &RingBuffer) -> serde_json::Value {
+    pub(crate) fn ring_payload_stats_json(ring: &RingBuffer) -> serde_json::Value {
         let stats = ring.payload_stats();
         serde_json::json!({
             "slots": stats.slots,
@@ -2113,123 +1883,17 @@ impl MediaEngine {
     /// pipeline, and egress metrics. Returns None if the pipeline has no
     /// active components.
     pub async fn pipeline_telemetry(&self, pipeline_id: &str) -> serde_json::Value {
-        let generated_at = chrono::Utc::now().to_rfc3339();
-        let ingests = self.ingests.active.read().await;
-        let egresses = self.egresses.active.read().await;
-        let all_stage_metrics = self.stages.metrics.read().await;
-        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
-        let pipelines = self.ingests.pipelines.read().await;
-        let buffers = self.stages.buffers.read().await;
-
-        let ingest = ingests.get(pipeline_id).map(|i| {
-            serde_json::json!({
-                "protocol": i.protocol,
-                "streamKey": i.stream_key,
-                "uptimeSecs": i.start_time.elapsed().as_secs_f64(),
-                "bytesReceived": i.bytes_received.load(Ordering::Relaxed),
-                "video": i.video,
-                "audio": i.audio,
-                "metrics": i.metrics.snapshot(),
-            })
-        });
-
-        let ring_info = pipelines.get(pipeline_id).map(|rb| {
-            let (fill, cap) = rb.fill_and_capacity();
-            let readers: Vec<serde_json::Value> = rb
-                .reader_snapshots()
-                .into_iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "name": r.name,
-                        "lagSlots": r.lag_slots,
-                        "overflowCount": r.overflow_count,
-                        "packetAgeMs": r.packet_age_ms,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "fill": fill,
-                "capacity": cap,
-                "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
-                "estimatedPktRatePerSec": rb.estimated_pkt_rate.load(std::sync::atomic::Ordering::Relaxed),
-                "bufferDepthSecs": rb.buffer_depth_secs(),
-                "payloadStats": Self::ring_payload_stats_json(rb),
-                "readers": readers,
-            })
-        });
-
-        let stages: Vec<serde_json::Value> = all_stage_metrics
-            .iter()
-            .filter(|(k, _)| k.pipeline.as_str() == pipeline_id)
-            .map(|(k, m)| {
-                let mut val = serde_json::json!({
-                    "kind": k.kind.to_string(),
-                    "metrics": m.snapshot(),
-                });
-                if let Some(pm) = all_pipe_metrics.get(k) {
-                    val["pipeMetrics"] = pm.snapshot();
-                }
-                if let Some((ring, token)) = buffers.get(k) {
-                    val["active"] = serde_json::json!(!token.is_cancelled());
-                    val["payloadStats"] = Self::ring_payload_stats_json(ring);
-                }
-                val
-            })
-            .collect();
-
-        let pipeline_egresses: Vec<serde_json::Value> = egresses
-            .values()
-            .filter(|e| e.pipeline_id == pipeline_id)
-            .map(|e| Self::egress_runtime_json(e, true, ingests.contains_key(pipeline_id)))
-            .collect();
-
-        serde_json::json!({
-            "generatedAt": generated_at,
-            "pipelineId": pipeline_id,
-            "ingest": ingest,
-            "sourceRing": ring_info,
-            "stages": stages,
-            "egresses": pipeline_egresses,
-        })
+        crate::media::engine_views::pipeline_telemetry(self, pipeline_id).await
     }
 
     /// Single-stage telemetry by StageKey. Returns raw counters and pipe
     /// metrics (if present). Used by the engineer stage telemetry endpoint.
     pub async fn stage_telemetry(&self, key: &StageKey) -> Option<serde_json::Value> {
-        let all_stage_metrics = self.stages.metrics.read().await;
-        let metrics = all_stage_metrics.get(key)?;
-
-        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
-        let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
-
-        Some(serde_json::json!({
-            "generatedAt": chrono::Utc::now().to_rfc3339(),
-            "stageKey": key.to_string(),
-            "pipelineId": key.pipeline.as_str(),
-            "kind": key.kind.to_string(),
-            "metrics": metrics.snapshot(),
-            "pipeMetrics": pipe,
-        }))
+        crate::media::engine_views::stage_telemetry(self, key).await
     }
 
     pub async fn stage_telemetry_by_display(&self, display: &str) -> Option<serde_json::Value> {
-        let all_stage_metrics = self.stages.metrics.read().await;
-        let key = all_stage_metrics
-            .keys()
-            .find(|k| k.to_string() == display)?;
-        let metrics = all_stage_metrics.get(key)?;
-
-        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
-        let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
-
-        Some(serde_json::json!({
-            "generatedAt": chrono::Utc::now().to_rfc3339(),
-            "stageKey": key.to_string(),
-            "pipelineId": key.pipeline.as_str(),
-            "kind": key.kind.to_string(),
-            "metrics": metrics.snapshot(),
-            "pipeMetrics": pipe,
-        }))
+        crate::media::engine_views::stage_telemetry_by_display(self, display).await
     }
 
     /// Build a processing graph for a pipeline showing all stages and connections.
@@ -2239,317 +1903,7 @@ impl MediaEngine {
         pipeline_id: &str,
         outputs: &[crate::types::Output],
     ) -> serde_json::Value {
-        let ingests = self.ingests.active.read().await;
-        let egresses = self.egresses.active.read().await;
-        let pipelines = self.ingests.pipelines.read().await;
-        let transcoder_buffers = self.stages.buffers.read().await;
-        let rec_tokens = self.recordings.cancel_tokens.read().await;
-        let hls_stores = self.hls.stores.read().await;
-        let hls_consumers = self.hls.consumers.read().await;
-        let all_stage_metrics = self.stages.metrics.read().await;
-        let all_input_queues = self.stages.input_queues.read().await;
-        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
-        let ts_muxers = self.stages.ts_muxers.read().await;
-
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
-
-        // Node: ingest
-        let ingest = ingests.get(pipeline_id);
-        let ingest_node_id = format!("{}_ingest", pipeline_id);
-        let ingest_protocol = ingest.map(|i| i.protocol.as_str());
-        nodes.push(serde_json::json!({
-            "id": ingest_node_id,
-            "type": "ingest",
-            "label": if let Some(i) = ingest {
-                format!("{} ingest", i.protocol.to_uppercase())
-            } else {
-                "No ingest".to_string()
-            },
-            "active": ingest.is_some(),
-            "details": ingest.map(|i| {
-                let elapsed_secs = i.start_time.elapsed().as_secs_f64();
-                let bytes_received = i.bytes_received.load(Ordering::Relaxed);
-                let bitrate_kbps = if elapsed_secs > 1.0 {
-                    Some(((bytes_received as f64 * 8.0) / (elapsed_secs * 1000.0) * 10.0).round() / 10.0)
-                } else {
-                    None
-                };
-                serde_json::json!({
-                    "protocol": i.protocol,
-                    "remoteAddr": i.remote_addr,
-                    "video": i.video,
-                    "audio": i.audio,
-                    "bytesReceived": bytes_received,
-                    "bitrateKbps": bitrate_kbps,
-                })
-            }),
-            "metrics": ingest.map(|i| i.metrics.snapshot()),
-        }));
-
-        // Node: protocol demux/probe. This is the boundary where wire/container
-        // packets become MediaPacket entries with stream metadata for downstream
-        // buffers, transcoders, muxers, and senders.
-        let demux_node_id = format!("{}_ingest_demux", pipeline_id);
-        nodes.push(serde_json::json!({
-            "id": demux_node_id,
-            "type": "demux",
-            "label": ingest.map(|i| format!("{} demux/probe", Self::graph_protocol_label(&i.protocol))).unwrap_or_else(|| "Demux/probe idle".to_string()),
-            "active": ingest.is_some(),
-            "details": ingest.map(|i| serde_json::json!({
-                "protocol": i.protocol,
-                "video": i.video,
-                "audio": i.audio,
-                "audioTracks": i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect::<Vec<_>>(),
-            })),
-            "metrics": ingest.map(|i| i.metrics.snapshot()),
-        }));
-
-        // Node: source ring buffer
-        let rb_node_id = format!("{}_source_rb", pipeline_id);
-        let rb_info = pipelines.get(pipeline_id).map(|rb| {
-            let (fill, cap) = rb.fill_and_capacity();
-            let reader_stats: Vec<serde_json::Value> = rb
-                .reader_snapshots()
-                .into_iter()
-                .map(|reader| {
-                    serde_json::json!({
-                        "name": reader.name,
-                        "readIndex": reader.read_idx,
-                        "writeIndex": reader.write_idx,
-                        "lagSlots": reader.lag_slots,
-                        "overflowCount": reader.overflow_count,
-                        "overflows": reader.overflow_count,
-                        "packetAgeMs": reader.packet_age_ms,
-                        "burstCount": reader.burst_count,
-                        "avgBurstSize": (reader.avg_burst_size * 10.0).round() / 10.0,
-                        "medianBurstSize": reader.median_burst_size,
-                    })
-                })
-                .collect();
-            (fill, cap, Self::ring_payload_stats_json(rb), reader_stats)
-        });
-        nodes.push(serde_json::json!({
-            "id": rb_node_id,
-            "type": "ring_buffer",
-            "label": "Source Buffer",
-            "active": rb_info.is_some(),
-            "details": rb_info.map(|(fill, cap, payload_stats, readers)| serde_json::json!({
-                "fill": fill,
-                "capacity": cap,
-                "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
-                "payloadStats": payload_stats,
-                "format": Self::source_buffer_format(ingest_protocol),
-                "readers": readers,
-            })),
-        }));
-        edges.push(serde_json::json!({
-            "from": ingest_node_id,
-            "to": demux_node_id,
-            "label": ingest_protocol.map(Self::graph_protocol_label).unwrap_or_else(|| "input".to_string()),
-        }));
-        edges.push(serde_json::json!({
-            "from": demux_node_id,
-            "to": rb_node_id,
-            "label": "push(MediaPacket)",
-        }));
-
-        // Nodes: transcoder stages.
-        for (key, (stage_ring, token)) in transcoder_buffers.iter() {
-            if key.pipeline.as_str() == pipeline_id {
-                let kind = &key.kind;
-                let stage_key_str = kind.to_string();
-                let stage_id = kind.graph_node_id(pipeline_id);
-                let queue_stats = all_input_queues.get(key).map(|q| q.stats());
-                let pipe_stats = all_pipe_metrics.get(key).map(|p| p.snapshot());
-                nodes.push(serde_json::json!({
-                    "id": stage_id,
-                    "type": kind.graph_type(),
-                    "label": kind.graph_label(),
-                    "stageKey": stage_key_str,
-                    "active": !token.is_cancelled(),
-                    "metrics": all_stage_metrics.get(key).map(|m| m.snapshot()),
-                    "queueMetrics": queue_stats,
-                    "pipeMetrics": pipe_stats,
-                    "payloadStats": Self::ring_payload_stats_json(stage_ring),
-                }));
-
-                if let Some(upstream) = kind.upstream() {
-                    let (from, label) = if matches!(upstream, StageKind::Source) {
-                        let label = if matches!(kind, StageKind::CodecEdge { .. }) {
-                            "codec conversion"
-                        } else {
-                            "audio select"
-                        };
-                        (rb_node_id.clone(), label)
-                    } else if matches!(kind, StageKind::CodecEdge { .. }) {
-                        (upstream.graph_node_id(pipeline_id), "codec conversion")
-                    } else {
-                        (
-                            upstream.graph_node_id(pipeline_id),
-                            "video copy + audio select",
-                        )
-                    };
-                    edges.push(serde_json::json!({
-                        "from": from,
-                        "to": stage_id,
-                        "label": label,
-                    }));
-                } else if let StageKind::VideoPreset { preset } = &kind {
-                    edges.push(serde_json::json!({
-                        "from": rb_node_id,
-                        "to": stage_id,
-                        "label": format!("decode → {} encode", preset),
-                    }));
-                }
-            }
-        }
-
-        // Nodes: egress outputs
-        let pipeline_outputs: Vec<_> = outputs
-            .iter()
-            .filter(|o| o.pipeline_id == pipeline_id)
-            .collect();
-        let ingest_is_hevc = ingest
-            .and_then(|i| i.video.as_ref())
-            .map(|v| v.codec == "hevc" || v.codec == "h265")
-            .unwrap_or(false);
-        let mut added_packetizers = HashSet::new();
-
-        for output in &pipeline_outputs {
-            let egress = egresses.get(&output.id);
-            let output_node_id = format!("{}_output_{}", pipeline_id, output.id);
-
-            let protocol = Self::egress_protocol_from_url(&output.url);
-            let protocol_label = Self::graph_protocol_label(protocol);
-
-            nodes.push(serde_json::json!({
-                "id": output_node_id,
-                "type": "egress",
-                "label": format!("{} sender: {}", protocol_label, output.name.as_str()),
-                "active": egress.is_some_and(|e| Self::egress_effective_status(e, ingest.is_some()) == "running"),
-                "details": egress.map(|e| {
-                    let bytes = e.bytes_sent.load(Ordering::Relaxed);
-                    let mut details = Self::egress_runtime_json(e, true, ingest.is_some());
-                    details["totalSize"] = serde_json::json!(bytes);
-                    details["bitrateKbps"] =
-                        serde_json::json!(*e.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()));
-                    details["startedAt"] = serde_json::Value::String(e.started_at.clone());
-                    details
-                }),
-                "metrics": egress.map(|e| e.metrics.snapshot()),
-            }));
-
-            // Edge: from the appropriate stage to this egress
-            // Mirror the reconciler's stage-key logic
-            let stage_plan = EncodingStagePlan::from_encoding(pipeline_id, &output.encoding);
-            let terminal_kind = if protocol == "rtmp" && ingest_is_hevc {
-                StageKind::codec_edge("hevc_to_h264", stage_plan.terminal_kind().clone())
-            } else {
-                stage_plan.terminal_kind().clone()
-            };
-            let terminal_node_id = if matches!(terminal_kind, StageKind::Source) {
-                rb_node_id.clone()
-            } else {
-                terminal_kind.graph_node_id(pipeline_id)
-            };
-
-            if protocol == "srt" {
-                let mux_slug = Self::graph_slug(output.encoding.as_str());
-                let mux_node_id = format!(
-                    "{}_ts_mux_{}",
-                    pipeline_id,
-                    if mux_slug.is_empty() {
-                        "source"
-                    } else {
-                        mux_slug.as_str()
-                    }
-                );
-                let mux_key = format!("{}:{}", pipeline_id, output.encoding.as_str());
-                let mux_active = ts_muxers
-                    .get(&mux_key)
-                    .is_some_and(|stage| !stage.cancel.is_cancelled());
-                let mux_payload_stats = ts_muxers
-                    .get(&mux_key)
-                    .map(|stage| Self::ring_payload_stats_json(&stage.ring));
-                if added_packetizers.insert(mux_node_id.clone()) {
-                    nodes.push(serde_json::json!({
-                        "id": mux_node_id.clone(),
-                        "type": "packetizer",
-                        "label": format!("MPEG-TS mux: {}", output.encoding.as_str()),
-                        "active": mux_active,
-                        "details": serde_json::json!({
-                            "protocol": "srt",
-                            "encoding": output.encoding.as_str(),
-                            "stageKey": mux_key,
-                            "payloadStats": mux_payload_stats,
-                        }),
-                    }));
-                    edges.push(serde_json::json!({
-                        "from": terminal_node_id,
-                        "to": mux_node_id.clone(),
-                        "label": "media packets",
-                    }));
-                }
-                edges.push(serde_json::json!({
-                    "from": mux_node_id,
-                    "to": output_node_id,
-                    "label": "SRT send",
-                }));
-            } else {
-                edges.push(serde_json::json!({
-                    "from": terminal_node_id,
-                    "to": output_node_id,
-                    "label": Self::source_to_egress_label(protocol),
-                }));
-            }
-        }
-
-        // Node: recording (if registered)
-        if let Some(token) = rec_tokens.get(pipeline_id) {
-            let rec_id = format!("{}_recording", pipeline_id);
-            let rec_stage_key = StageKey::new(pipeline_id, StageKind::recording());
-            nodes.push(serde_json::json!({
-                "id": rec_id,
-                "type": "recording",
-                "label": "MKV Recording",
-                "active": !token.is_cancelled(),
-                "metrics": all_stage_metrics.get(&rec_stage_key).map(|m| m.snapshot()),
-            }));
-            edges.push(serde_json::json!({
-                "from": rb_node_id,
-                "to": rec_id,
-                "label": "MKV mux",
-            }));
-        }
-
-        // Node: HLS (if store exists)
-        if hls_stores.contains_key(pipeline_id) {
-            let hls_id = format!("{}_hls_preview", pipeline_id);
-            let hls_stage_key = StageKey::new(pipeline_id, StageKind::hls());
-            let hls_active = hls_consumers
-                .get(pipeline_id)
-                .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
-            nodes.push(serde_json::json!({
-                "id": hls_id,
-                "type": "hls",
-                "label": "HLS Preview",
-                "active": hls_active,
-                "metrics": all_stage_metrics.get(&hls_stage_key).map(|m| m.snapshot()),
-            }));
-            edges.push(serde_json::json!({
-                "from": rb_node_id,
-                "to": hls_id,
-                "label": "MPEG-TS segment",
-            }));
-        }
-
-        serde_json::json!({
-            "generatedAt": chrono::Utc::now().to_rfc3339(),
-            "pipelineId": pipeline_id,
-            "nodes": nodes,
-            "edges": edges,
-        })
+        crate::media::engine_views::processing_graph(self, pipeline_id, outputs).await
     }
 }
 
@@ -2559,6 +1913,7 @@ mod tests {
     use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader};
     use bytes::Bytes;
     use std::sync::Arc;
+    use tokio::process::Command;
 
     #[test]
     fn pipe_metrics_snapshot_correctness() {
@@ -2632,6 +1987,108 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
         assert!(!hc.is_idle(60000));
         assert!(hc.is_idle(10));
+    }
+
+    #[tokio::test]
+    async fn runtime_helpers_expose_registered_ingest_and_egress() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-runtime", "stream-key", "rtmp")
+            .await
+            .expect("register ingest");
+        engine.update_ingest_bytes("pipe-runtime", 2048).await;
+
+        let ingest = engine
+            .with_active_ingest("pipe-runtime", |ingest| {
+                (
+                    ingest.protocol.clone(),
+                    ingest.bytes_received.load(Ordering::Relaxed),
+                )
+            })
+            .await;
+        assert_eq!(ingest, Some(("rtmp".to_string(), 2048)));
+        assert_eq!(engine.with_active_ingest("missing", |_| true).await, None);
+
+        engine
+            .register_egress("out-runtime", "pipe-runtime", "rtmp://example.com/live/key")
+            .await;
+        engine.record_egress_progress("out-runtime", 1316).await;
+
+        let egress = engine
+            .with_active_egress("out-runtime", |egress| {
+                (
+                    egress.protocol.clone(),
+                    egress.bytes_sent.load(Ordering::Relaxed),
+                    egress
+                        .phase
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
+                )
+            })
+            .await;
+        assert_eq!(
+            egress,
+            Some(("rtmp".to_string(), 1316, "sending".to_string()))
+        );
+        assert_eq!(engine.with_active_egress("missing", |_| true).await, None);
+    }
+
+    #[tokio::test]
+    async fn hls_dependency_snapshot_reflects_store_and_consumer_state() {
+        let engine = MediaEngine::new();
+        let (store, already_running) = engine.ensure_hls_segmenter("pipe-hls-snapshot").await;
+        assert!(!already_running);
+
+        engine
+            .add_hls_persistent_consumer("pipe-hls-snapshot")
+            .await;
+        engine.touch_hls("pipe-hls-snapshot").await;
+        store.push_segment(2.0, Bytes::from_static(b"segment"));
+
+        let snapshot = engine.hls_dependency_snapshot("pipe-hls-snapshot").await;
+        assert!(snapshot.store_exists);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.persistent_consumers, 1);
+        assert!(snapshot.last_access_age_ms.is_some());
+        assert_eq!(snapshot.segments, 1);
+        assert!(snapshot.playlist_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn file_ingest_dependency_snapshot_reflects_active_and_child_state() {
+        let engine = MediaEngine::new();
+        engine
+            .mark_file_ingest_running("file-ingest-snapshot")
+            .await;
+
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep child");
+        engine
+            .file_ingests
+            .children
+            .write()
+            .await
+            .insert("file-ingest-snapshot".to_string(), child);
+
+        let snapshot = engine
+            .file_ingest_dependency_snapshot("file-ingest-snapshot")
+            .await;
+        assert!(snapshot.marked_active);
+        assert!(snapshot.child_registered);
+
+        assert!(engine.stop_file_ingest_child("file-ingest-snapshot").await);
+        engine
+            .clear_file_ingest_running("file-ingest-snapshot")
+            .await;
+
+        let snapshot = engine
+            .file_ingest_dependency_snapshot("file-ingest-snapshot")
+            .await;
+        assert!(!snapshot.marked_active);
+        assert!(!snapshot.child_registered);
     }
 
     #[tokio::test]

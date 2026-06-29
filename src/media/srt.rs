@@ -1374,7 +1374,7 @@ impl SrtServer {
         info!("Server listening on srt://{}", addr_str);
 
         // Monitor the shared listener socket's kernel UDP buffer occupancy
-        let listener_stats = self.engine.runtime.listener_stats.clone();
+        let listener_stats = self.engine.listener_stats_handle();
         tokio::spawn(async move {
             monitor_listener_socket(port, listener_stats).await;
         });
@@ -1584,14 +1584,13 @@ impl SrtServer {
             }
         }
 
-        let (bytes_received, ingest_metrics) = {
-            let ingests = self.engine.ingests.active.read().await;
-            let opt = ingests
-                .get(&pipeline.id)
-                .map(|ingest| (ingest.bytes_received.clone(), ingest.metrics.clone()));
-            opt.unzip()
-        };
-        let Some(bytes_received) = bytes_received else {
+        let Some((bytes_received, ingest_metrics)) = self
+            .engine
+            .with_active_ingest(&pipeline.id, |ingest| {
+                (ingest.bytes_received.clone(), ingest.metrics.clone())
+            })
+            .await
+        else {
             error!(
                 "[srt] Ingest vanished before receive loop for pipeline {}",
                 pipeline.id
@@ -1605,10 +1604,10 @@ impl SrtServer {
         // Cache a clone of the keyframe_times Arc so we can lock it directly
         // without an async registry lookup (active_ingests.read().await +
         // HashMap::get()) on every IDR frame in the ingest hot loop.
-        let cached_keyframe_times = {
-            let ingests = self.engine.ingests.active.read().await;
-            ingests.get(&pipeline.id).map(|i| i.keyframe_times.clone())
-        };
+        let cached_keyframe_times = self
+            .engine
+            .with_active_ingest(&pipeline.id, |ingest| ingest.keyframe_times.clone())
+            .await;
 
         // Pure-Rust MPEG-TS demuxer — no FFmpeg thread or MemoryQueue needed
         let mut demuxer = crate::media::mpegts::TsDemuxer::new();
@@ -1869,9 +1868,7 @@ impl SrtServer {
             }
 
             bytes_received.fetch_add(n as u64, Ordering::Relaxed);
-            if let Some(ref m) = ingest_metrics {
-                m.record_in(n as u64);
-            }
+            ingest_metrics.record_in(n as u64);
 
             if last_stats_sample.elapsed() >= std::time::Duration::from_secs(1) {
                 let mut stats: SrtTraceBStats = unsafe { std::mem::zeroed() };
@@ -3221,14 +3218,16 @@ pub fn start_shared_ts_muxer(
             if cancel.is_cancelled() {
                 return;
             }
-            let result = {
-                let ingests = engine.ingests.active.read().await;
-                ingests.get(&pipeline_id_str).and_then(|i| {
-                    let video = i.video.clone();
+            let result = engine
+                .with_active_ingest(&pipeline_id_str, |ingest| {
+                    let video = ingest.video.clone();
                     video.as_ref()?;
-                    let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
+                    let lock = ingest
+                        .audio_tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     let tracks = if lock.is_empty()
-                        && let Some(audio) = i.audio.clone()
+                        && let Some(audio) = ingest.audio.clone()
                     {
                         std::sync::Arc::new(vec![audio])
                     } else {
@@ -3236,18 +3235,13 @@ pub fn start_shared_ts_muxer(
                     };
                     Some((video, tracks))
                 })
-            };
+                .await
+                .flatten();
             if let Some(meta) = result {
                 break meta;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if !engine
-                .ingests
-                .active
-                .read()
-                .await
-                .contains_key(&pipeline_id_str)
-            {
+            if !engine.has_active_ingest(&pipeline_id_str).await {
                 error!(
                     "[srt-shared-muxer] Ingest gone while waiting for probe: {}",
                     pipeline_id_str
@@ -3769,26 +3763,26 @@ pub async fn start_srt_egress(
         egress_failure_phase,
         egress_quality,
     ) = {
-        let egresses = engine.egresses.active.read().await;
-        if let Some(e) = egresses.get(&output_id) {
-            (
-                Some(e.bytes_sent.clone()),
-                Some(e.metrics.clone()),
-                Some(e.last_progress_ms.clone()),
-                Some(e.phase.clone()),
-                Some(e.last_error.clone()),
-                Some(e.last_error_ms.clone()),
-                Some(e.failure_phase.clone()),
-                Some(e.quality.clone()),
-            )
-        } else {
-            (None, None, None, None, None, None, None, None)
-        }
+        engine
+            .with_active_egress(&output_id, |egress| {
+                (
+                    Some(egress.bytes_sent.clone()),
+                    Some(egress.metrics.clone()),
+                    Some(egress.last_progress_ms.clone()),
+                    Some(egress.phase.clone()),
+                    Some(egress.last_error.clone()),
+                    Some(egress.last_error_ms.clone()),
+                    Some(egress.failure_phase.clone()),
+                    Some(egress.quality.clone()),
+                )
+            })
+            .await
+            .unwrap_or((None, None, None, None, None, None, None, None))
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
     // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
-    let permit = match engine.runtime.sender_semaphore.clone().try_acquire_owned() {
+    let permit = match engine.sender_semaphore_handle().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             error!(
