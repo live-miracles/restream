@@ -1590,6 +1590,7 @@ struct BitrateSweepCase {
     avio_hwm_peak_kb: u64,
     overflow_count_final: u64,
     correctness_ok: bool,
+    correctness_failures: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -2133,10 +2134,14 @@ async fn run_bitrate_case(
 
     let samples = sample_bitrate_window(env, &mut stack, config, bitrate, &pipeline_id).await?;
     let mut correctness_ok = true;
+    let mut correctness_failures = Vec::new();
     for (kind, name, expected) in &probe_specs {
         let url = bitrate_probe_url(env, *kind, name);
-        if !check_bitrate_stream(&url, expected, Duration::from_secs(20)).await? {
+        if let Some(observed) =
+            check_bitrate_stream(name, &url, expected, Duration::from_secs(20)).await?
+        {
             correctness_ok = false;
+            correctness_failures.push(format!("{name}: expected {expected}, observed {observed}"));
         }
     }
 
@@ -2159,6 +2164,7 @@ async fn run_bitrate_case(
         restream_rss_final_kb,
         ffmpeg,
         correctness_ok,
+        correctness_failures,
         &samples,
     )
 }
@@ -2450,20 +2456,28 @@ async fn sample_bitrate_window(
 }
 
 async fn check_bitrate_stream(
+    label: &str,
     url: &str,
     expected: &str,
     timeout: Duration,
-) -> Result<bool, String> {
+) -> Result<Option<String>, String> {
     let deadline = Instant::now() + timeout;
+    let mut last_observed = None;
+    let mut last_error = None;
     while Instant::now() < deadline {
-        if let Ok(dimensions) = probe_dims_ramp(url).await
-            && dimensions == expected
-        {
-            return Ok(true);
+        match probe_dims_ramp(url).await {
+            Ok(dimensions) if dimensions == expected => return Ok(None),
+            Ok(dimensions) if !dimensions.is_empty() => last_observed = Some(dimensions),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    Ok(false)
+    let observed = last_observed
+        .or(last_error)
+        .unwrap_or_else(|| "none".to_string());
+    println!("[bitrate-sweep] probe mismatch {label}: expected {expected}, observed {observed}");
+    Ok(Some(observed))
 }
 
 fn summarize_bitrate_case(
@@ -2474,6 +2488,7 @@ fn summarize_bitrate_case(
     restream_rss_final_kb: u64,
     ffmpeg: FfmpegStats,
     correctness_ok: bool,
+    correctness_failures: Vec<String>,
     samples: &[BitrateSweepSample],
 ) -> Result<BitrateSweepCase, String> {
     if samples.is_empty() {
@@ -2607,6 +2622,7 @@ fn summarize_bitrate_case(
             .map(|sample| sample.overflow_count)
             .unwrap_or(0),
         correctness_ok,
+        correctness_failures,
     })
 }
 
@@ -2667,6 +2683,7 @@ fn bitrate_sweep_case_json(case: &BitrateSweepCase) -> Value {
         "avioHwmPeakKb": case.avio_hwm_peak_kb,
         "overflowCountFinal": case.overflow_count_final,
         "correctnessOk": case.correctness_ok,
+        "correctnessFailures": case.correctness_failures,
     })
 }
 
