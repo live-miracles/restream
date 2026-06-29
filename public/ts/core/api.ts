@@ -58,7 +58,32 @@ async function parseJsonResponse<T>(response: Response): Promise<T | null> {
   }
 }
 
+const inFlightRequests = new Map<string, Promise<any>>();
+
 async function apiRequest<T = unknown>(
+  url: string,
+  { method = "GET", body = null }: { method?: string; body?: unknown } = {},
+): Promise<T | null> {
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  if (normalizedMethod === "GET" && body === null) {
+    const key = url;
+    if (inFlightRequests.has(key)) {
+      return inFlightRequests.get(key) as Promise<T | null>;
+    }
+    const promise = (async () => {
+      try {
+        return await apiRequestReal<T>(url, { method, body });
+      } finally {
+        inFlightRequests.delete(key);
+      }
+    })();
+    inFlightRequests.set(key, promise);
+    return promise;
+  }
+  return apiRequestReal<T>(url, { method, body });
+}
+
+async function apiRequestReal<T = unknown>(
   url: string,
   { method = "GET", body = null }: { method?: string; body?: unknown } = {},
 ): Promise<T | null> {
