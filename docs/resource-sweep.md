@@ -3,7 +3,7 @@
 The preferred integration entry point is the native Rust harness mode:
 
 ```sh
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 ```
 
 The sweep measures `restream` CPU and memory across a fixed set of live
@@ -45,8 +45,8 @@ For transcode scenarios the CSV/JSON now split CPU into:
 Run it with the current optimized binary:
 
 ```sh
-scripts/resource-limit cargo build --profile bench --bin test_harness
-./target/release/test_harness resource-sweep
+./scripts/build-bench-harness.sh
+./target/bench/test_harness resource-sweep
 ```
 
 Useful env vars:
@@ -68,7 +68,7 @@ If you specifically want the current-code passthrough-vs-transcode-family
 baseline, use the dedicated harness mode instead:
 
 ```sh
-./target/release/test_harness branch-matrix
+./target/bench/test_harness branch-matrix
 ```
 
 Examples:
@@ -76,39 +76,39 @@ Examples:
 ```sh
 RESOURCE_SWEEP_SCENARIOS=egress-growth-transcode-mixed \
 RESOURCE_SWEEP_EGRESS_COUNTS=10 \
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 
 RESOURCE_SWEEP_SCENARIOS=egress-growth-hevc-bridge \
 RESOURCE_SWEEP_EGRESS_COUNTS=10 \
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 
 RESOURCE_SWEEP_SCENARIOS=egress-growth-transcode-dual-mixed,egress-growth-source-plus-transcode-dual-mixed \
 RESOURCE_SWEEP_EGRESS_COUNTS=10 \
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 
 HARNESS_SRT_PASSPHRASE=0123456789abcd \
 HARNESS_SRT_PBKEYLEN=16 \
 RESOURCE_SWEEP_SCENARIOS=ingest-only,egress-growth-source-mixed \
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 
-RESTREAM_BIN=target/release/restream \
+RESTREAM_BIN=target/bench/restream \
 SRT_CRYPTO_MATRIX_VARIANTS=plaintext,enc16,enc24,enc32 \
 BRANCH_MATRIX_SCENARIOS=egress-growth-source-mixed \
-./target/release/test_harness srt-crypto-matrix
+./target/bench/test_harness srt-crypto-matrix
 ```
 
 To leave the last scenario up for interactive inspection:
 
 ```sh
-RESOURCE_SWEEP_NO_CLEANUP=1 ./target/release/test_harness resource-sweep
+RESOURCE_SWEEP_NO_CLEANUP=1 ./target/bench/test_harness resource-sweep
 ```
 
 Lifecycle modes:
 
 ```sh
-RESOURCE_SWEEP_LIFECYCLE=isolated ./target/release/test_harness resource-sweep
-RESOURCE_SWEEP_LIFECYCLE=continuous ./target/release/test_harness resource-sweep
-RESOURCE_SWEEP_LIFECYCLE=cumulative ./target/release/test_harness resource-sweep
+RESOURCE_SWEEP_LIFECYCLE=isolated ./target/bench/test_harness resource-sweep
+RESOURCE_SWEEP_LIFECYCLE=continuous ./target/bench/test_harness resource-sweep
+RESOURCE_SWEEP_LIFECYCLE=cumulative ./target/bench/test_harness resource-sweep
 ```
 
 - `isolated`: restart `restream` and `mediamtx` between scenarios for cleaner attribution
@@ -170,7 +170,7 @@ WORK_DIR=test/artifacts/profile-external \
 RESOURCE_SWEEP_SCENARIOS=egress-growth-transcode-mixed \
 RESOURCE_SWEEP_EGRESS_COUNTS=10 \
 RESOURCE_SWEEP_SAMPLE_SECS=30 \
-./target/release/test_harness resource-sweep
+./target/bench/test_harness resource-sweep
 ```
 
 On Linux, attach `perf` to the live pid:

@@ -4,13 +4,21 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if [[ -z "${TMPDIR:-}" || ! -d "${TMPDIR:-}" || ! -w "${TMPDIR:-}" ]]; then
+  export TMPDIR=/tmp
+fi
+
 scripts/resource-limit cargo build --profile bench --bin restream --bin test_harness
 
-install -Dm755 target/release/restream target/bench/restream
-install -Dm755 target/release/test_harness target/bench/test_harness
+for binary in target/bench/restream target/bench/test_harness; do
+  if [[ ! -x "$binary" ]]; then
+    echo "expected bench-profile binary missing: $binary" >&2
+    exit 1
+  fi
+done
 
 cat <<'EOF'
-Staged bench-profile measurement binaries:
+Bench-profile measurement binaries are ready:
   target/bench/restream
   target/bench/test_harness
 

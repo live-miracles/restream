@@ -113,9 +113,12 @@ keep a scalar fallback; use runtime feature detection; minimize `unsafe` and doc
 
 - Successful test runs must stay quiet: no compiler warnings, panic text, FFmpeg probe chatter, or stale-binary drift in the passing log. If a test expects noisy stderr, suppress it in the helper instead of teaching CI to ignore it.
 - Standardize on `cargo fmt --all` and `cargo fmt --all --check` from the pinned toolchain. Do not run `rustfmt` directly; it can miss workspace and edition context.
+- If a test or bench needs media, resolve it through `src/test_fixtures.rs`; when adding a new committed asset, register it in `REQUIRED_CHECKED_IN_FIXTURES` so missing files fail loudly.
+- Do not add inline media generators to tests, benches, or harness modes when an existing checked-in fixture can cover the case; measurement and correctness runs should consume committed assets, not synthesize them at runtime.
 - Any concurrency/thread-hop change must either extend `scripts/check-concurrency-proof-fast.sh` or explain why the existing proof gate already covers it.
 - For changes in `src/media/engine.rs`, `srt.rs`, `ts_chunk_ring.rs`, `avio.rs`, `recording.rs`, `file_ingest.rs`, or `external_transcoder.rs` that affect lifecycle, cancellation, stage sharing, or thread-hop behavior, run `scripts/check-concurrency-contract.sh` before sign-off.
 - If teardown or recovery semantics change, update the live harness assertion and the operator-visible status contract in the same change.
+- When touching test media, benchmark fixtures, or harness measurement setup, run `scripts/check-fixture-discipline.sh`. When touching frontend/backend contract code, run `scripts/check-api-contract.sh`.
 - Run scoped tests first (filtered unit/Criterion for the touched path), then broaden only
   if the change crosses module boundaries or alters shared contracts.
 - Treat unrelated full-suite failures as separate findings — don't let them obscure scoped results.

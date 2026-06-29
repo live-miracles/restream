@@ -8,6 +8,12 @@ Run the repo gate:
 ./scripts/check-test-hygiene.sh
 ```
 
+For fixture-first media discipline:
+
+```sh
+./scripts/check-fixture-discipline.sh
+```
+
 For a plain full-suite run without the hygiene scan:
 
 ```sh
@@ -23,7 +29,9 @@ integration, harness, and doctest targets.
 
 Checked-in fixture contracts now cover the committed benchmark/test media under
 `test/fixtures/`, so the transcoder and fixture-dependent suites no longer rely
-on ad-hoc local artifacts.
+on ad-hoc local artifacts. Tests, benches, and harness publishers should resolve
+those assets through `src/test_fixtures.rs` so missing files fail loudly and new
+fixtures are added to one explicit contract.
 
 ## Parallelism Policy
 
@@ -399,9 +407,9 @@ preflight emits the candidate `ports` list and checks the actual ports a mode
 binds: legacy live modes check the configured Restream/MediaMTX ports, while
 Rust-only harness modes check the harness loopback ports (`11935` for RTMP,
 `11080` for SRT, and `HLS_PUT_PORT` for the dummy HLS PUT sink).
-If a live mode needs `target/release/restream` and the repo-managed static SRT
-archive is also missing, the binary check points agents at
-`scripts/resource-limit ./scripts/setup-static-build.sh` before the release
+If a measurement live mode needs `target/bench/restream` and the repo-managed
+static SRT archive is also missing, the binary check points agents at
+`scripts/resource-limit ./scripts/setup-static-build.sh` before the bench-profile
 build step.
 
 Typical quick agent loop:
@@ -544,8 +552,8 @@ The five mixed-scale slices are intentionally non-redundant: `h264-rtmp`,
 ### `resource-sweep` — CPU and memory attribution sweep
 
 ```sh
-scripts/resource-limit cargo build --profile bench --bin test_harness
-./target/release/test_harness resource-sweep
+./scripts/build-bench-harness.sh
+./target/bench/test_harness resource-sweep
 ```
 
 Measures current-code CPU and memory across baseline, ingest-only, ingest
@@ -575,8 +583,8 @@ Useful narrow-loop knobs:
 ### `bitrate-sweep` — bitrate sensitivity sweep
 
 ```sh
-scripts/resource-limit cargo build --profile bench --bin test_harness
-./target/release/test_harness bitrate-sweep
+./scripts/build-bench-harness.sh
+./target/bench/test_harness bitrate-sweep
 ```
 
 This Rust harness mode runs the five ingest shapes at configurable bitrate
@@ -607,8 +615,8 @@ Useful env vars:
 ### `branch-matrix` — passthrough vs transcode family baseline
 
 ```sh
-scripts/resource-limit cargo build --profile bench --bin test_harness
-./target/release/test_harness branch-matrix
+./scripts/build-bench-harness.sh
+./target/bench/test_harness branch-matrix
 ```
 
 This is a focused current-code baseline for one question: how much cost comes
@@ -643,9 +651,9 @@ Useful env vars:
 ### `srt-crypto-matrix` — plaintext vs AES-128/192/256 ingest
 
 ```sh
-scripts/resource-limit cargo build --profile bench --bin test_harness --bin restream
-RESTREAM_BIN=target/release/restream \
-./target/release/test_harness srt-crypto-matrix
+./scripts/build-bench-harness.sh
+RESTREAM_BIN=target/bench/restream \
+./target/bench/test_harness srt-crypto-matrix
 ```
 
 Runs the branch-matrix sweep four times against the same focused H.264 SRT
@@ -943,8 +951,8 @@ scripts/resource-limit ./test/run-integration.sh bframe-rtmp
 scripts/resource-limit ./test/run-integration.sh correctness-srt-rtmp
 scripts/resource-limit ./test/run-integration.sh correctness-hevc-rtmp
 scripts/resource-limit ./test/run-integration.sh correctness-hevc-srt
-./target/release/test_harness resource-sweep
-./target/release/test_harness bitrate-sweep
+./target/bench/test_harness resource-sweep
+./target/bench/test_harness bitrate-sweep
 test/run-media-validation.sh
 ```
 
