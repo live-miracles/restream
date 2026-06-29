@@ -10,7 +10,7 @@ use axum::{
     extract::{OriginalUri, Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, patch, post, put},
+    routing::{get, patch, post, put},
 };
 use reqwest::Url;
 use rust_embed::RustEmbed;
@@ -468,7 +468,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/engine/sbom", get(status_sbom_get_handler))
         .route("/api/v1/engine/health", get(v1_engine_health_handler))
         .route("/api/v1/media", get(media_list_handler))
-        .route("/api/v1/media/:filename", delete(media_delete_handler))
+        .route(
+            "/api/v1/media/:filename",
+            patch(media_rename_handler).delete(media_delete_handler),
+        )
         .route("/media/:filename", get(media_file_handler))
         // HLS routes are registered with CORS headers in the merged sub-router below.
         .route("/healthz", get(healthz_get_handler))
@@ -3205,6 +3208,38 @@ fn media_content_type(filename: &str) -> &'static str {
     }
 }
 
+fn media_extension(filename: &str) -> Option<String> {
+    filename
+        .rsplit('.')
+        .next()
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn media_filename_is_supported(filename: &str) -> bool {
+    matches!(
+        media_extension(filename).as_deref(),
+        Some("ts" | "mkv" | "mp4" | "mov")
+    )
+}
+
+fn is_plain_media_filename(filename: &str) -> bool {
+    let path = std::path::Path::new(filename);
+    path.components().count() == 1
+        && path
+            .file_name()
+            .is_some_and(|name| name == std::ffi::OsStr::new(filename))
+}
+
+fn validate_media_filename(filename: &str) -> Result<(), StatusCode> {
+    if filename.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !is_plain_media_filename(filename) || !media_filename_is_supported(filename) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+
 fn media_path_under_root(
     media_dir: &str,
     filename: &str,
@@ -3218,6 +3253,29 @@ fn media_path_under_root(
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(canonical_path)
+}
+
+fn media_destination_path_under_root(
+    media_dir: &str,
+    filename: &str,
+) -> Result<std::path::PathBuf, StatusCode> {
+    validate_media_filename(filename)?;
+    let _ = std::fs::create_dir_all(media_dir);
+    let media_root =
+        std::fs::canonicalize(media_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = std::path::Path::new(media_dir).join(filename);
+    if let Some(parent) = path.parent()
+        && !parent.starts_with(&media_root)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(path)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaRenamePayload {
+    new_name: String,
 }
 
 async fn media_file_handler(
@@ -3287,6 +3345,103 @@ async fn media_delete_handler(
         Ok(_) => Json(serde_json::json!({ "deleted": true })).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
+}
+
+async fn media_rename_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(filename): Path<String>,
+    Json(payload): Json<MediaRenamePayload>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let new_name = payload.new_name.trim();
+    if validate_media_filename(&filename).is_err() || validate_media_filename(new_name).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid media filename"})),
+        )
+            .into_response();
+    }
+    if filename == new_name {
+        return Json(serde_json::json!({ "renamed": true, "name": filename })).into_response();
+    }
+    if media_extension(&filename) != media_extension(new_name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Renaming cannot change the file extension"})),
+        )
+            .into_response();
+    }
+
+    let source_path = match media_path_under_root(&state.media_dir, &filename) {
+        Ok(path) => path,
+        Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response();
+        }
+        Err(StatusCode::NOT_FOUND) => {
+            return (StatusCode::NOT_FOUND, "File not found").into_response();
+        }
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
+    };
+    let destination_path = match media_destination_path_under_root(&state.media_dir, new_name) {
+        Ok(path) => path,
+        Err(StatusCode::INTERNAL_SERVER_ERROR) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Media directory error").into_response();
+        }
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid path").into_response(),
+    };
+    if destination_path.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "A media file with that name already exists"})),
+        )
+            .into_response();
+    }
+
+    if let Err(error) = tokio::fs::rename(&source_path, &destination_path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to rename media file: {error}")})),
+        )
+            .into_response();
+    }
+
+    let ingests = db::list_ingests_for_filename(&state.db, &filename)
+        .await
+        .unwrap_or_default();
+    for ingest in &ingests {
+        if let Err(error) = db::update_ingest(
+            &state.db,
+            &ingest.id,
+            new_name,
+            &ingest.stream_key,
+            ingest.loop_flag,
+            &ingest.start_time,
+        )
+        .await
+        {
+            let _ = tokio::fs::rename(&destination_path, &source_path).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to update ingest references: {error}")})),
+            )
+                .into_response();
+        }
+    }
+
+    Json(serde_json::json!({
+        "renamed": true,
+        "name": new_name,
+        "updatedIngests": ingests.len()
+    }))
+    .into_response()
 }
 
 async fn healthz_get_handler() -> impl IntoResponse {

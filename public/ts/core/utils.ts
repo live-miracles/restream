@@ -271,6 +271,60 @@ function confirmInApp({
   });
 }
 
+function promptInApp({
+  title,
+  message,
+  initialValue = "",
+  confirmLabel = "Save",
+  cancelLabel = "Cancel",
+  placeholder = "",
+}: {
+  title: string;
+  message: string;
+  initialValue?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  placeholder?: string;
+}): Promise<string | null> {
+  let dialog = document.getElementById(
+    "app-prompt-dialog",
+  ) as HTMLDialogElement | null;
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "app-prompt-dialog";
+    dialog.className = "modal";
+    document.body.appendChild(dialog);
+  }
+
+  dialog.innerHTML = `
+        <div class="modal-box max-w-md">
+            <h3 class="text-lg font-semibold">${escapeHtml(title)}</h3>
+            <p class="text-base-content/70 mt-2 text-sm leading-6">${escapeHtml(message)}</p>
+            <form method="dialog" class="mt-4 space-y-4">
+                <label class="block">
+                    <input id="app-prompt-input" class="input input-bordered w-full" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" />
+                </label>
+                <div class="modal-action mt-0">
+                    <button class="btn btn-sm" value="cancel">${escapeHtml(cancelLabel)}</button>
+                    <button class="btn btn-sm btn-accent" value="confirm">${escapeHtml(confirmLabel)}</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button value="cancel">close</button></form>`;
+
+  return new Promise((resolve) => {
+    const input = dialog?.querySelector<HTMLInputElement>("#app-prompt-input");
+    const onClose = (): void => {
+      dialog?.removeEventListener("close", onClose);
+      resolve(dialog?.returnValue === "confirm" ? (input?.value ?? "") : null);
+    };
+    dialog.addEventListener("close", onClose);
+    dialog.showModal();
+    input?.focus();
+    input?.select();
+  });
+}
+
 function showLoading(): void {
   document.getElementById("saving-badge")?.classList.add("flex");
   document.getElementById("saving-badge")?.classList.remove("hidden");
@@ -554,6 +608,7 @@ export {
   setServerConfig,
   showErrorAlert,
   confirmInApp,
+  promptInApp,
   showLoading,
   hideLoading,
   showCopiedNotification,

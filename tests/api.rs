@@ -60,7 +60,8 @@ async fn authenticated_app() -> (axum::Router, String) {
     (app, cookie)
 }
 
-async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path::PathBuf) {
+async fn authenticated_app_with_temp_media()
+-> (axum::Router, String, std::path::PathBuf, SqlitePool) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
 
@@ -82,7 +83,7 @@ async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path
     let media_dir = temp_dir.to_string_lossy().to_string();
 
     let state = Arc::new(api::AppState {
-        db: pool,
+        db: pool.clone(),
         security,
         ingest_policy_store,
         sessions,
@@ -100,7 +101,7 @@ async fn authenticated_app_with_temp_media() -> (axum::Router, String, std::path
 
     let app = api::create_router(state);
     let cookie = login(&app).await;
-    (app, cookie, temp_dir)
+    (app, cookie, temp_dir, pool)
 }
 
 async fn login(app: &axum::Router) -> String {
@@ -1979,7 +1980,7 @@ async fn media_delete_path_traversal_blocked() {
 
 #[tokio::test]
 async fn media_library_classifies_serves_and_deletes_files() {
-    let (app, cookie, temp_dir) = authenticated_app_with_temp_media().await;
+    let (app, cookie, temp_dir, pool) = authenticated_app_with_temp_media().await;
     let recording_path = temp_dir.join("sample-recording.mp4");
     let source_path = temp_dir.join("sample-source.ts");
     tokio::fs::write(&recording_path, b"mp4 recording data")
@@ -1988,6 +1989,16 @@ async fn media_library_classifies_serves_and_deletes_files() {
     tokio::fs::write(&source_path, b"ts source data")
         .await
         .unwrap();
+    db::create_ingest(
+        &pool,
+        "ingest-1",
+        "sample-source.ts",
+        "stream-key-1",
+        false,
+        "",
+    )
+    .await
+    .unwrap();
 
     let resp = app
         .clone()
@@ -2025,8 +2036,59 @@ async fn media_library_classifies_serves_and_deletes_files() {
     let resp = app
         .clone()
         .oneshot(auth_req(
-            "DELETE",
+            "PATCH",
             "/api/v1/media/sample-source.ts",
+            &cookie,
+            Some(r#"{"newName":"renamed-source.ts"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let renamed = body_json(resp).await;
+    assert_eq!(renamed["renamed"], true);
+    assert_eq!(renamed["name"], "renamed-source.ts");
+    assert_eq!(renamed["updatedIngests"], 1);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/media/sample-source.ts", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/media/renamed-source.ts", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(resp).await.as_ref(), b"ts source data");
+
+    let ingests = db::list_ingests_for_filename(&pool, "renamed-source.ts")
+        .await
+        .unwrap();
+    assert_eq!(ingests.len(), 1);
+    assert_eq!(ingests[0].id, "ingest-1");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/api/v1/media/renamed-source.ts",
+            &cookie,
+            Some(r#"{"newName":"renamed-source.mp4"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    assert!(db::delete_ingest(&pool, "ingest-1").await.unwrap());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "DELETE",
+            "/api/v1/media/renamed-source.ts",
             &cookie,
             None,
         ))
@@ -2037,7 +2099,7 @@ async fn media_library_classifies_serves_and_deletes_files() {
 
     let resp = app
         .clone()
-        .oneshot(auth_req("GET", "/media/sample-source.ts", &cookie, None))
+        .oneshot(auth_req("GET", "/media/renamed-source.ts", &cookie, None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);

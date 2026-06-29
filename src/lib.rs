@@ -12,7 +12,7 @@
 //!
 //! ┌─────────────── std::thread (OS threads, catch_unwind) ──────────────┐
 //! │  FFmpeg demuxer           RTMP/SRT ingest → RingBuffer push         │
-//! │  FFmpeg MKV muxer         MemoryQueue → .mkv recording file         │
+//! │  TS recording writer      MemoryQueue → .ts recording file          │
 //! │  FFmpeg transcoder        MemoryQueue → encode → MemoryQueue        │
 //! └─────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -175,6 +175,13 @@ fn next_output_retry_count(previous_retries: Option<u32>, had_progress: bool) ->
     } else {
         previous_retries.unwrap_or(0).saturating_add(1).max(1)
     }
+}
+
+fn next_output_job_id(output_id: &str) -> String {
+    format!(
+        "job_{output_id}_{}",
+        crate::logging::next_correlation_id("attempt")
+    )
 }
 
 fn persist_runtime_event(event: crate::events::Event) {
@@ -720,7 +727,7 @@ pub async fn run_app() {
                     .register_egress(&output.id, &output.pipeline_id, &output.url)
                     .await;
 
-                let job_id = format!("job_{}", output.id);
+                let job_id = next_output_job_id(&output.id);
                 let _ = db::create_job(
                     &pool,
                     &job_id,
@@ -1264,5 +1271,15 @@ mod tests {
     fn output_retry_count_resets_after_any_successful_progress() {
         assert_eq!(next_output_retry_count(None, true), 1);
         assert_eq!(next_output_retry_count(Some(4), true), 1);
+    }
+
+    #[test]
+    fn output_job_ids_are_unique_per_attempt() {
+        let first = next_output_job_id("out-1");
+        let second = next_output_job_id("out-1");
+
+        assert!(first.starts_with("job_out-1_"));
+        assert!(second.starts_with("job_out-1_"));
+        assert_ne!(first, second);
     }
 }

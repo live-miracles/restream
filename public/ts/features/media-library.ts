@@ -1,10 +1,16 @@
 import {
   deleteMediaFile,
   listMediaFiles,
+  renameMediaFile,
   type MediaFile,
 } from "../core/api.js";
 import { withBasePath } from "../core/base-path.js";
-import { confirmInApp, escapeHtml } from "../core/utils.js";
+import {
+  confirmInApp,
+  escapeHtml,
+  promptInApp,
+  showErrorAlert,
+} from "../core/utils.js";
 import { state } from "../core/state.js";
 
 type MediaKind = "recording" | "source";
@@ -97,6 +103,7 @@ function mediaFileRow(file: MediaFile): string {
         </div>
         ${playAction}
         <a href="${mediaUrl}" download="${safeName}" class="btn btn-xs btn-accent btn-outline shrink-0">Download</a>
+        <button class="btn btn-xs btn-outline shrink-0 js-rename-media" data-filename="${safeName}">Rename</button>
         <button class="btn btn-xs btn-error btn-outline shrink-0 js-delete-media" data-filename="${safeName}" ${deleteDisabled}>Delete</button>
     </div>`;
 }
@@ -188,6 +195,33 @@ function setHtmlIfChanged(id: string, html: string): boolean {
 }
 
 function attachMediaActions(container: HTMLElement): void {
+  container
+    .querySelectorAll<HTMLButtonElement>(".js-rename-media")
+    .forEach((btn) => {
+      if (btn.dataset.bound === "1") return;
+      btn.dataset.bound = "1";
+      btn.addEventListener("click", async () => {
+        const filename = btn.dataset.filename;
+        if (!filename) return;
+        const nextName = await promptInApp({
+          title: "Rename Media File",
+          message:
+            "Choose a new filename. The file extension must stay the same.",
+          initialValue: filename,
+          confirmLabel: "Rename",
+          placeholder: filename,
+        });
+        if (nextName === null) return;
+        const trimmed = nextName.trim();
+        if (!trimmed || trimmed === filename) return;
+        const res = await renameMediaFile(filename, trimmed);
+        if (res === null) {
+          showErrorAlert("Rename failed");
+          return;
+        }
+        await renderMediaLibraryMode({ force: true });
+      });
+    });
   container
     .querySelectorAll<HTMLButtonElement>(".js-delete-media")
     .forEach((btn) => {

@@ -4,20 +4,24 @@
 //!
 //! # Note on Container Format
 //! The output is raw MPEG-TS (`.ts`), not Matroska/MKV. MPEG-TS is directly seekable
-//! and playable by most media players and HLS-based workflows. A future upgrade to a
-//! real container (e.g., MP4 with FFmpeg `avformat`) would require an avformat mux
-//! context and is tracked as a roadmap item.
+//! and playable by most media players and HLS-based workflows. After a recording
+//! ends we optionally remux the completed `.ts` into `.mp4` via the configured
+//! FFmpeg subprocess when that binary exposes the MP4 muxer.
 
 use crate::media::engine::MediaEngine;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const MIN_DURATION_SECS: u64 = 5;
+const MP4_MUXER_NAME: &str = "mov,mp4,m4a,3gp,3g2,mj2";
 
 fn sanitize_name(name: &str) -> String {
     let mut sanitized = String::with_capacity(name.len());
@@ -47,6 +51,154 @@ fn build_filename(pipe_name: &str) -> String {
         safe_name.as_str()
     };
     format!("recording_{}_{}.ts", now.format("%Y%m%dT%H%M%S"), safe_name)
+}
+
+fn build_mp4_path(ts_path: &Path) -> PathBuf {
+    ts_path.with_extension("mp4")
+}
+
+fn build_mp4_temp_path(mp4_path: &Path) -> PathBuf {
+    mp4_path.with_extension("mp4.tmp")
+}
+
+fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-nostdin".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
+        "-i".to_string(),
+        input_path.display().to_string(),
+        "-map".to_string(),
+        "0:v?".to_string(),
+        "-map".to_string(),
+        "0:a?".to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        "-bsf:a".to_string(),
+        "aac_adtstoasc".to_string(),
+        output_path.display().to_string(),
+    ]
+}
+
+fn ffmpeg_muxers_include_mp4(listing: &str) -> bool {
+    listing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with('E') && trimmed.contains(MP4_MUXER_NAME)
+    })
+}
+
+fn ffmpeg_supports_mp4_muxer() -> bool {
+    static SUPPORTS_MP4_MUXER: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS_MP4_MUXER.get_or_init(|| {
+        let ffmpeg = crate::ffmpeg_extract::ffmpeg_bin_path();
+        match std::process::Command::new(ffmpeg)
+            .args(["-hide_banner", "-muxers"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                ffmpeg_muxers_include_mp4(&stdout)
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(
+                    ffmpeg = %ffmpeg.display(),
+                    status = %output.status,
+                    stderr = %stderr.trim(),
+                    "failed to inspect ffmpeg muxer support; recording remux disabled"
+                );
+                false
+            }
+            Err(error) => {
+                warn!(
+                    ffmpeg = %ffmpeg.display(),
+                    err = %error,
+                    "failed to spawn ffmpeg for muxer probe; recording remux disabled"
+                );
+                false
+            }
+        }
+    })
+}
+
+async fn remux_recording_to_mp4(ts_path: PathBuf) {
+    if !ffmpeg_supports_mp4_muxer() {
+        info!(
+            source = %ts_path.display(),
+            muxer = MP4_MUXER_NAME,
+            "recording remux skipped because ffmpeg lacks mp4 muxer support"
+        );
+        return;
+    }
+
+    let mp4_path = build_mp4_path(&ts_path);
+    let temp_path = build_mp4_temp_path(&mp4_path);
+    let ffmpeg_path = crate::ffmpeg_extract::ffmpeg_bin_path().to_path_buf();
+    let args = build_recording_remux_args(&ts_path, &temp_path);
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    info!(
+        source = %ts_path.display(),
+        output = %mp4_path.display(),
+        ffmpeg = %ffmpeg_path.display(),
+        "starting recording mp4 remux"
+    );
+
+    match Command::new(&ffmpeg_path).args(&args).output().await {
+        Ok(output) if output.status.success() => {
+            if let Err(error) = tokio::fs::rename(&temp_path, &mp4_path).await {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                error!(
+                    source = %ts_path.display(),
+                    output = %mp4_path.display(),
+                    err = %error,
+                    "recording remux completed but final rename failed"
+                );
+                return;
+            }
+
+            if let Err(error) = tokio::fs::remove_file(&ts_path).await {
+                warn!(
+                    source = %ts_path.display(),
+                    output = %mp4_path.display(),
+                    err = %error,
+                    "recording remux succeeded but source ts cleanup failed"
+                );
+            } else {
+                info!(
+                    source = %ts_path.display(),
+                    output = %mp4_path.display(),
+                    "recording remux completed"
+                );
+            }
+        }
+        Ok(output) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                source = %ts_path.display(),
+                output = %mp4_path.display(),
+                status = %output.status,
+                stderr = %stderr.trim(),
+                "recording remux failed; keeping original ts"
+            );
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            warn!(
+                source = %ts_path.display(),
+                output = %mp4_path.display(),
+                err = %error,
+                "failed to spawn ffmpeg for recording remux; keeping original ts"
+            );
+        }
+    }
 }
 
 fn build_recording_service_metadata(
@@ -217,6 +369,8 @@ pub async fn start_recording(
     if duration.as_secs() < MIN_DURATION_SECS {
         let _ = fs::remove_file(&file_path);
         info!(filename = %filename, "deleted short recording");
+    } else {
+        tokio::spawn(remux_recording_to_mp4(PathBuf::from(&file_path)));
     }
 
     engine.remove_stage_metrics(&rec_stage_key).await;
@@ -328,6 +482,47 @@ mod tests {
             name.contains("My_Pipe"),
             "expected sanitized name in: {name}"
         );
+    }
+
+    #[test]
+    fn build_mp4_path_replaces_ts_extension() {
+        let ts = Path::new("/tmp/recording_20260629_demo.ts");
+        assert_eq!(
+            build_mp4_path(ts),
+            PathBuf::from("/tmp/recording_20260629_demo.mp4")
+        );
+    }
+
+    #[test]
+    fn build_recording_remux_args_targets_faststart_mp4_copy() {
+        let input = Path::new("/tmp/input.ts");
+        let output = Path::new("/tmp/output.mp4.tmp");
+        let args = build_recording_remux_args(input, output);
+
+        assert!(args.windows(2).any(|pair| pair == ["-i", "/tmp/input.ts"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-movflags", "+faststart"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-bsf:a", "aac_adtstoasc"])
+        );
+        assert_eq!(args.last().map(String::as_str), Some("/tmp/output.mp4.tmp"));
+    }
+
+    #[test]
+    fn ffmpeg_muxers_include_mp4_detects_mov_muxer_aliases() {
+        let listing = "Formats:\n D.. = Demuxing supported\n .E. = Muxing supported\n ---\n  E mov,mp4,m4a,3gp,3g2,mj2 QuickTime / MOV\n  E mpegts MPEG-TS\n";
+        assert!(ffmpeg_muxers_include_mp4(listing));
+    }
+
+    #[test]
+    fn ffmpeg_muxers_include_mp4_rejects_missing_mov_muxer() {
+        let listing =
+            "Formats:\n .E. = Muxing supported\n ---\n  E matroska Matroska\n  E mpegts MPEG-TS\n";
+        assert!(!ffmpeg_muxers_include_mp4(listing));
     }
 
     #[test]
