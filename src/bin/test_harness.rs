@@ -9768,6 +9768,10 @@ async fn fault_resilience() -> Result<Value, String> {
         let mut passed = false;
         let mut phase = String::from("unknown");
         let mut has_error = false;
+        let mut saw_retrying = false;
+        let mut health_saw_retrying = false;
+        let mut retry_attempts: Option<u64> = None;
+        let mut retry_backoff_ms: Option<u64> = None;
         while Instant::now() < poll_deadline {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let status = api
@@ -9785,12 +9789,18 @@ async fn fault_resilience() -> Result<Value, String> {
                         .map(|e| !e.is_empty())
                         .unwrap_or(false);
                     phase = s["phase"].as_str().unwrap_or("unknown").to_string();
-                    if s.get("error").is_some() {
-                        phase = "cleaned-up".to_string();
-                        passed = true;
-                        break;
+                    if s["status"].as_str() == Some("retrying") {
+                        saw_retrying = true;
+                        retry_attempts = s["retryAttempts"].as_u64();
+                        retry_backoff_ms = s["retryBackoffMs"].as_u64();
                     }
-                    if has_error || matches!(phase.as_str(), "error" | "failed" | "connecting") {
+                    if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                        && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
+                            == Some("retrying")
+                    {
+                        health_saw_retrying = true;
+                    }
+                    if saw_retrying && has_error {
                         passed = true;
                         break;
                     }
@@ -9798,19 +9808,39 @@ async fn fault_resilience() -> Result<Value, String> {
             }
         }
         let elapsed = started.elapsed();
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
         println!(
-            "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, {:.1}s)",
-            if passed { "PASS" } else { "FAIL" },
+            "[fault] SRT egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, finalRetrying={}, {:.1}s)",
+            if passed && saw_retrying && health_saw_retrying && final_retrying {
+                "PASS"
+            } else {
+                "FAIL"
+            },
             phase,
             has_error,
+            saw_retrying,
+            health_saw_retrying,
+            final_retrying,
             elapsed.as_secs_f64()
         );
         results.push(json!({
             "test": "srt-egress-sink-disappear",
-            "passed": passed,
+            "passed": passed && saw_retrying && health_saw_retrying && final_retrying,
             "phase": phase,
             "hasError": has_error,
             "elapsedMs": elapsed.as_millis(),
+            "sawRetrying": saw_retrying,
+            "healthSawRetrying": health_saw_retrying,
+            "retryAttempts": retry_attempts,
+            "retryBackoffMs": retry_backoff_ms,
+            "finalRetrying": final_retrying,
         }));
 
         stop_child(&mut pub_child).await;
