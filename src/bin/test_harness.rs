@@ -4400,6 +4400,30 @@ async fn wait_for_api_hls_preview_state(
     }
 }
 
+async fn wait_for_pipeline_file_ingest_running_state(
+    api: &RampApi,
+    pipeline_id: &str,
+    expected_running: bool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ingest = api
+            .get_json(&format!("/api/v1/pipelines/{pipeline_id}/file-ingest"))
+            .await?;
+        let running = ingest["running"].as_bool().unwrap_or(false);
+        if running == expected_running {
+            return Ok(ingest);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "file ingest state for pipeline {pipeline_id} did not reach running={expected_running}; ingest={ingest}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn wait_for_hls_playlist_ready(
     api: &RampApi,
     pipeline_id: &str,
@@ -9546,6 +9570,103 @@ async fn fault_resilience() -> Result<Value, String> {
             "hlsPreviewInactiveError": inactive_result.err(),
             "finalPlaylistStatus": final_playlist_status.as_u16(),
             "finalPlaylistGone": final_playlist_gone,
+        }));
+    }
+
+    // ── 9. File ingest EOF clears runtime state and allows restart ──────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-file-eof", "streamKey": "fault-file-eof"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let fixture_name = fixture_h264
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let media_dest =
+            PathBuf::from(std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".into()))
+                .join(&fixture_name);
+        if !media_dest.exists() {
+            std::fs::copy(&fixture_h264, &media_dest).map_err(|e| e.to_string())?;
+        }
+
+        api.put_json(
+            &format!("/api/v1/pipelines/{pid}/file-ingest"),
+            json!({"filename": fixture_name, "loop": false}),
+        )
+        .await?;
+
+        let ingest_list = api.get_json("/api/v1/ingests").await?;
+        let ingest_id = ingest_list
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|i| i["streamKey"].as_str() == Some("fault-file-eof"))
+            })
+            .and_then(|i| i["id"].as_str())
+            .ok_or("file ingest not found in list")?
+            .to_string();
+
+        api.post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
+            .await?;
+        wait_for_api_input_live(&api, &pid, Duration::from_secs(30)).await?;
+        let running_result =
+            wait_for_pipeline_file_ingest_running_state(&api, &pid, true, Duration::from_secs(10))
+                .await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, Duration::from_secs(60)).await;
+        let stopped_result =
+            wait_for_pipeline_file_ingest_running_state(&api, &pid, false, Duration::from_secs(10))
+                .await;
+
+        let restart_result = if off_result.is_ok() && stopped_result.is_ok() {
+            let restart = api
+                .post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
+                .await;
+            match restart {
+                Ok(_) => {
+                    if let Err(error) =
+                        wait_for_api_input_live(&api, &pid, Duration::from_secs(30)).await
+                    {
+                        Err(error)
+                    } else {
+                        api.post_json(&format!("/api/v1/ingests/{ingest_id}/stop"), json!({}))
+                            .await
+                            .map(|_| ())
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            Err("skipped restart because EOF cleanup did not complete".to_string())
+        };
+        let elapsed = started.elapsed();
+
+        let passed = running_result.is_ok()
+            && off_result.is_ok()
+            && stopped_result.is_ok()
+            && restart_result.is_ok();
+        println!(
+            "[fault] File ingest EOF clears runtime state: {} ({:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "file-ingest-eof-clears-and-restarts",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "runningError": running_result.err(),
+            "inputOffError": off_result.err(),
+            "stoppedError": stopped_result.err(),
+            "restartError": restart_result.err(),
         }));
     }
 
