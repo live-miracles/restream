@@ -2,17 +2,12 @@
 //! applies time-based bans after exceeding the threshold. Protects RTMP/SRT
 //! stream key brute-force attempts.
 
-use crate::types::IngestSecurityConfig;
+use crate::domain::ingest_security::IngestSecurityConfig;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_INGEST_SECURITY_CONFIG: IngestSecurityConfig = IngestSecurityConfig {
-    failure_limit: 10,
-    failure_window_ms: 60 * 1000,
-    ban_ms: 10 * 60 * 1000,
-    tracked_ip_limit: 10000,
-};
+pub use crate::domain::ingest_security::DEFAULT_INGEST_SECURITY_CONFIG;
 
 struct FailureRecord {
     failures: Vec<Instant>,

@@ -1,6 +1,7 @@
 //! Shared domain types mapped to SQLite tables via `sqlx::FromRow`.
 //! All structs use `#[serde(rename_all = "camelCase")]` for the JSON API.
 
+pub use crate::domain::ingest_security::IngestSecurityConfig;
 pub use crate::domain::srt_ingest::{
     DEFAULT_SRT_PBKEYLEN, ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtGlobalIngestMode,
     SrtPipelineIngestConfig, SrtPipelineIngestMode,
@@ -17,15 +18,6 @@ pub struct Ingest {
     #[sqlx(rename = "loop")]
     pub loop_flag: bool,
     pub start_time: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IngestSecurityConfig {
-    pub failure_limit: i64,
-    pub failure_window_ms: i64,
-    pub ban_ms: i64,
-    pub tracked_ip_limit: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
