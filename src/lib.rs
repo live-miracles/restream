@@ -163,6 +163,14 @@ impl RuntimeTuning {
     }
 }
 
+fn next_output_retry_count(previous_retries: Option<u32>, had_progress: bool) -> u32 {
+    if had_progress {
+        1
+    } else {
+        previous_retries.unwrap_or(0).saturating_add(1).max(1)
+    }
+}
+
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -462,7 +470,6 @@ pub async fn run_app() {
                         continue; // Wait for backoff
                     }
                 }
-                lf.remove(&output.id);
                 drop(lf);
 
                 info!(
@@ -631,7 +638,10 @@ pub async fn run_app() {
                         engine_c.unregister_egress(&output_id_c).await;
                         {
                             let mut lf = last_failed_c.lock().await;
-                            let retries = lf.get(&output_id_c).map(|(_, r)| r + 1).unwrap_or(1);
+                            let retries = next_output_retry_count(
+                                lf.get(&output_id_c).map(|(_, retries)| *retries),
+                                false,
+                            );
                             lf.insert(output_id_c, (Instant::now(), retries));
                         }
                         return;
@@ -723,6 +733,7 @@ pub async fn run_app() {
 
                     // Cleanup always runs — even after a panic in the egress fn.
                     let is_cancelled = cancel_token.is_cancelled();
+                    let had_progress = engine_c.egress_has_recorded_progress(&output_id_c).await;
                     engine_c.unregister_egress(&output_id_c).await;
                     // Remove the HLS persistent consumer refcount unconditionally
                     // for HLS outputs. The add happened inside the catch_unwind
@@ -751,9 +762,14 @@ pub async fn run_app() {
                     )
                     .await;
 
-                    if !is_cancelled {
-                        let mut lf = last_failed_c.lock().await;
-                        let retries = lf.get(&output_id_c).map(|(_, r)| r + 1).unwrap_or(1);
+                    let mut lf = last_failed_c.lock().await;
+                    if is_cancelled {
+                        lf.remove(&output_id_c);
+                    } else {
+                        let retries = next_output_retry_count(
+                            lf.get(&output_id_c).map(|(_, retries)| *retries),
+                            had_progress,
+                        );
                         lf.insert(output_id_c, (Instant::now(), retries));
                     }
                 });
@@ -1027,5 +1043,18 @@ mod tests {
         };
 
         assert_eq!(tuning.session_prune_every_ticks(), 14_400);
+    }
+
+    #[test]
+    fn output_retry_count_accumulates_only_consecutive_start_failures() {
+        assert_eq!(next_output_retry_count(None, false), 1);
+        assert_eq!(next_output_retry_count(Some(1), false), 2);
+        assert_eq!(next_output_retry_count(Some(9), false), 10);
+    }
+
+    #[test]
+    fn output_retry_count_resets_after_any_successful_progress() {
+        assert_eq!(next_output_retry_count(None, true), 1);
+        assert_eq!(next_output_retry_count(Some(4), true), 1);
     }
 }

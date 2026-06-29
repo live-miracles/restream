@@ -1521,6 +1521,13 @@ impl MediaEngine {
         }
     }
 
+    pub async fn egress_has_recorded_progress(&self, output_id: &str) -> bool {
+        let egresses = self.egresses.active.read().await;
+        egresses
+            .get(output_id)
+            .is_some_and(|egress| egress.last_progress_ms.load(Ordering::Relaxed) > 0)
+    }
+
     pub async fn record_egress_error(
         &self,
         output_id: &str,
@@ -2708,6 +2715,20 @@ mod tests {
         assert!(output["lastError"].is_null());
         assert!(output["lastErrorAt"].is_null());
         assert_eq!(output["totalSize"], 4096);
+    }
+
+    #[tokio::test]
+    async fn egress_has_recorded_progress_only_after_progress_update() {
+        let engine = MediaEngine::new();
+        engine
+            .register_egress("out-1", "pipe-1", "rtmp://example.com/live/key")
+            .await;
+
+        assert!(!engine.egress_has_recorded_progress("out-1").await);
+
+        engine.record_egress_progress("out-1", 188).await;
+
+        assert!(engine.egress_has_recorded_progress("out-1").await);
     }
 
     #[tokio::test]
