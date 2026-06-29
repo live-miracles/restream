@@ -9531,21 +9531,34 @@ async fn fault_resilience() -> Result<Value, String> {
             .as_ref()
             .and_then(|status| status["retrying"].as_bool())
             .unwrap_or(false);
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_input = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let final_disconnect_cleared = final_input["status"] == "on"
+            && final_input["probeStatus"] == "ready"
+            && final_input["lastSessionProtocol"].is_null()
+            && final_input["lastDisconnectReason"].is_null()
+            && final_input["lastFailurePhase"].is_null()
+            && final_input["recentDisconnectError"] == false;
         let passed = baseline_video >= 10
             && baseline_connections == 1
             && gap_preserved
             && resumed
             && final_connections == baseline_connections
             && final_status_running
-            && !final_retrying;
+            && !final_retrying
+            && final_disconnect_cleared;
         println!(
-            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={} gapStatusRunning={} gapRetrying={} finalRetrying={})",
+            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={} gapStatusRunning={} gapRetrying={} finalRetrying={} disconnectCleared={})",
             if passed { "PASS" } else { "FAIL" },
             final_connections,
             resumed,
             gap_status_running,
             gap_retrying,
             final_retrying,
+            final_disconnect_cleared,
         );
         results.push(json!({
             "test": "transient-rtmp-drop-preserves-egress",
@@ -9561,6 +9574,8 @@ async fn fault_resilience() -> Result<Value, String> {
             "finalConnections": final_connections,
             "finalStatusRunning": final_status_running,
             "finalRetrying": final_retrying,
+            "finalDisconnectCleared": final_disconnect_cleared,
+            "finalInputSnapshot": final_input,
         }));
 
         let _ = api
