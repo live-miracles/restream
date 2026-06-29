@@ -3519,6 +3519,22 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn hls_segmenter_without_ingest_is_immediately_shutdown_candidate() {
+        let engine = Arc::new(MediaEngine::new());
+        let pipeline_id = "pipe-hls-no-ingest";
+
+        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
+        engine.touch_hls(pipeline_id).await;
+
+        assert!(
+            engine
+                .should_shutdown_hls_segmenter(pipeline_id, 60_000)
+                .await,
+            "HLS preview should stop promptly when ingest disappears, regardless of idle timeout"
+        );
+    }
+
     // ── Matrix routing with synthetic packets (Phase 0 re-tier) ─────
 
     #[tokio::test]

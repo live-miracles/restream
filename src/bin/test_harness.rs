@@ -1114,6 +1114,17 @@ impl RampApi {
         json_response(request).await
     }
 
+    async fn get_text_response(&self, path: &str) -> Result<(reqwest::StatusCode, String), String> {
+        let mut request = self.client.get(format!("{}{}", self.base_url, path));
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let body = response.text().await.map_err(|e| e.to_string())?;
+        Ok((status, body))
+    }
+
     async fn post_json(&self, path: &str, body: Value) -> Result<Value, String> {
         let mut request = self
             .client
@@ -4360,6 +4371,53 @@ async fn wait_for_api_recording_state(
         if Instant::now() >= deadline {
             return Err(format!(
                 "recording state for pipeline {pipeline_id} did not reach active={expected_active}; enabled={enabled} active={active}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn wait_for_api_hls_preview_state(
+    api: &RampApi,
+    pipeline_id: &str,
+    expected_active: bool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let health = api.get_json("/api/v1/engine/health").await?;
+        let preview = &health["pipelines"][pipeline_id]["hlsPreview"];
+        let active = preview["active"].as_bool().unwrap_or(false);
+        if active == expected_active {
+            return Ok(preview.clone());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "HLS preview state for pipeline {pipeline_id} did not reach active={expected_active}; preview={preview}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn wait_for_hls_playlist_ready(
+    api: &RampApi,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let (status, body) = api
+            .get_text_response(&format!("/hls/{pipeline_id}/master.m3u8"))
+            .await?;
+        if status.is_success() && body.contains("#EXTM3U") {
+            return Ok((status, body));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "HLS playlist for pipeline {pipeline_id} did not become ready within {}s; last_status={} body={body}",
+                timeout.as_secs(),
+                status
             ));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -9408,6 +9466,87 @@ async fn fault_resilience() -> Result<Value, String> {
         }));
 
         stop_child(&mut pub_child).await;
+    }
+
+    // ── 8. HLS preview tears down after ingest disappears ───────────────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-hls-preview", "streamKey": "fault-hls-preview"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-hls-preview", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+
+        let playlist_result =
+            wait_for_hls_playlist_ready(&api, &pid, Duration::from_secs(15)).await;
+        let (playlist_status, playlist_ok, playlist_error) = match playlist_result {
+            Ok((status, body)) => (status, body.contains("#EXTM3U"), None),
+            Err(error) => (reqwest::StatusCode::NOT_FOUND, false, Some(error)),
+        };
+        let active_result =
+            wait_for_api_hls_preview_state(&api, &pid, true, Duration::from_secs(10)).await;
+        let active_ok = active_result.is_ok();
+
+        stop_child(&mut pub_child).await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let inactive_result =
+            wait_for_api_hls_preview_state(&api, &pid, false, Duration::from_secs(15)).await;
+        let elapsed = started.elapsed();
+
+        let shutdown_deadline = Instant::now() + Duration::from_secs(15);
+        let mut final_playlist_status = reqwest::StatusCode::OK;
+        let mut final_playlist_gone = false;
+        while Instant::now() < shutdown_deadline {
+            let (status, _) = api
+                .get_text_response(&format!("/hls/{pid}/master.m3u8"))
+                .await?;
+            final_playlist_status = status;
+            if status == reqwest::StatusCode::NOT_FOUND {
+                final_playlist_gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        let passed = playlist_ok
+            && active_ok
+            && off_result.is_ok()
+            && inactive_result.is_ok()
+            && final_playlist_gone;
+        println!(
+            "[fault] HLS preview tears down with ingest: {} (playlistOk={}, finalStatus={}, {:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            playlist_ok,
+            final_playlist_status,
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "hls-preview-stops-after-ingest-disconnect",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "playlistStatus": playlist_status.as_u16(),
+            "playlistOk": playlist_ok,
+            "playlistError": playlist_error,
+            "hlsPreviewActiveError": active_result.err(),
+            "inputOffError": off_result.err(),
+            "hlsPreviewInactiveError": inactive_result.err(),
+            "finalPlaylistStatus": final_playlist_status.as_u16(),
+            "finalPlaylistGone": final_playlist_gone,
+        }));
     }
 
     stop_child(&mut child).await;
