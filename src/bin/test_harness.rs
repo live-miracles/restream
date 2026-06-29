@@ -9035,7 +9035,24 @@ async fn fault_resilience() -> Result<Value, String> {
             .await
             .ok();
         let gap_connections = metrics.connections.load(Ordering::Relaxed);
-        let gap_preserved = gap_status.is_some() && gap_connections == baseline_connections;
+        let gap_status_running = gap_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let gap_retrying = gap_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let gap_has_error = gap_status
+            .as_ref()
+            .and_then(|status| status["lastError"].as_str())
+            .map(|message| !message.is_empty())
+            .unwrap_or(false);
+        let gap_preserved = gap_status.is_some()
+            && gap_connections == baseline_connections
+            && gap_status_running
+            && !gap_retrying
+            && !gap_has_error;
 
         let mut resumed_child = spawn_publisher(
             &fixture_h264,
@@ -9056,16 +9073,33 @@ async fn fault_resilience() -> Result<Value, String> {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         let final_connections = metrics.connections.load(Ordering::Relaxed);
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
         let passed = baseline_video >= 10
             && baseline_connections == 1
             && gap_preserved
             && resumed
-            && final_connections == baseline_connections;
+            && final_connections == baseline_connections
+            && final_status_running
+            && !final_retrying;
         println!(
-            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={})",
+            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={} gapStatusRunning={} gapRetrying={} finalRetrying={})",
             if passed { "PASS" } else { "FAIL" },
             final_connections,
-            resumed
+            resumed,
+            gap_status_running,
+            gap_retrying,
+            final_retrying,
         );
         results.push(json!({
             "test": "transient-rtmp-drop-preserves-egress",
@@ -9074,8 +9108,13 @@ async fn fault_resilience() -> Result<Value, String> {
             "baselineConnections": baseline_connections,
             "gapConnections": gap_connections,
             "gapStatusExists": gap_status.is_some(),
+            "gapStatusRunning": gap_status_running,
+            "gapRetrying": gap_retrying,
+            "gapHasError": gap_has_error,
             "resumed": resumed,
             "finalConnections": final_connections,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
         }));
 
         let _ = api
@@ -9500,6 +9539,10 @@ async fn fault_resilience() -> Result<Value, String> {
         let mut passed = false;
         let mut phase = String::from("unknown");
         let mut has_error = false;
+        let mut saw_retrying = false;
+        let mut retry_attempts: Option<u64> = None;
+        let mut retry_backoff_ms: Option<u64> = None;
+        let mut health_saw_retrying = false;
         while Instant::now() < poll_deadline {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let status = api
@@ -9518,13 +9561,18 @@ async fn fault_resilience() -> Result<Value, String> {
                         .map(|e| !e.is_empty())
                         .unwrap_or(false);
                     phase = s["phase"].as_str().unwrap_or("unknown").to_string();
-                    if s.get("error").is_some() {
-                        // {"error": "output not active"} — cleaned up
-                        phase = "cleaned-up".to_string();
-                        passed = true;
-                        break;
+                    if s["status"].as_str() == Some("retrying") {
+                        saw_retrying = true;
+                        retry_attempts = s["retryAttempts"].as_u64();
+                        retry_backoff_ms = s["retryBackoffMs"].as_u64();
                     }
-                    if has_error || phase == "error" || phase == "failed" || phase == "connecting" {
+                    if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                        && health["pipelines"][&pid]["outputs"][&oid]["status"].as_str()
+                            == Some("retrying")
+                    {
+                        health_saw_retrying = true;
+                    }
+                    if saw_retrying && has_error {
                         passed = true;
                         break;
                     }
@@ -9570,6 +9618,9 @@ async fn fault_resilience() -> Result<Value, String> {
                 .await
             {
                 recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
+                if recovery_status == "retrying" {
+                    saw_retrying = true;
+                }
             }
             if recovery_metrics.video_count.load(Ordering::Relaxed) >= 10 {
                 recovered = true;
@@ -9584,23 +9635,43 @@ async fn fault_resilience() -> Result<Value, String> {
                 h.abort();
             }
         }
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
         println!(
-            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, recovered={}, recoveryStatus={}, {:.1}s)",
-            if passed && recovered { "PASS" } else { "FAIL" },
+            "[fault] RTMP egress sink disappear: {} (phase={}, hasError={}, sawRetrying={}, healthSawRetrying={}, recovered={}, recoveryStatus={}, finalRetrying={}, {:.1}s)",
+            if passed && recovered && saw_retrying && health_saw_retrying && !final_retrying {
+                "PASS"
+            } else {
+                "FAIL"
+            },
             phase,
             has_error,
+            saw_retrying,
+            health_saw_retrying,
             recovered,
             recovery_status,
+            final_retrying,
             elapsed.as_secs_f64()
         );
         results.push(json!({
             "test": "rtmp-egress-sink-disappear",
-            "passed": passed && recovered,
+            "passed": passed && recovered && saw_retrying && health_saw_retrying && !final_retrying,
             "phase": phase,
             "hasError": has_error,
             "elapsedMs": elapsed.as_millis(),
+            "sawRetrying": saw_retrying,
+            "healthSawRetrying": health_saw_retrying,
+            "retryAttempts": retry_attempts,
+            "retryBackoffMs": retry_backoff_ms,
             "recovered": recovered,
             "recoveryStatus": recovery_status,
+            "finalRetrying": final_retrying,
         }));
 
         stop_child(&mut pub_child).await;
