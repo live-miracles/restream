@@ -268,6 +268,47 @@ pub struct ActiveEgress {
     pub bitrate_kbps: std::sync::Mutex<Option<f64>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IngestDiagSnapshot {
+    pub protocol: String,
+    pub uptime_secs: f64,
+    pub bytes_received: u64,
+    pub remote_addr: Option<String>,
+    pub video: Option<VideoMeta>,
+    pub audio: Option<AudioMeta>,
+    pub quality: PublisherQuality,
+    pub keyframe_times: Vec<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EgressDiagSnapshot {
+    pub output_id: String,
+    pub pipeline_id: String,
+    pub protocol: String,
+    pub status: String,
+    pub phase: String,
+    pub target_addr: Option<String>,
+    pub bytes_sent: u64,
+    pub last_progress_ms: u64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RingBufferDiagSnapshot {
+    pub fill_slots: usize,
+    pub capacity_slots: usize,
+    pub readers: Vec<crate::media::ring_buffer::ReaderSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SrtListenerDiagSnapshot {
+    pub bonding_available: bool,
+    pub rx_queue_bytes: u64,
+    pub rx_queue_peak_bytes: u64,
+    pub drops: u64,
+    pub active_ingest_count: usize,
+}
+
 /// Shared listener socket buffer occupancy, updated by the SRT monitor task.
 #[derive(Debug, Default)]
 pub struct ListenerSocketStats {
@@ -500,6 +541,10 @@ impl MediaEngine {
         self.ingests.active.read().await.contains_key(pipeline_id)
     }
 
+    pub async fn active_ingest_count(&self) -> usize {
+        self.ingests.active.read().await.len()
+    }
+
     pub async fn active_ingest_protocol_for_probe(&self, pipeline_id: &str) -> Option<String> {
         self.ingests
             .active
@@ -522,12 +567,70 @@ impl MediaEngine {
             .map(|video| video.codec.clone())
     }
 
+    pub async fn active_ingest_diag_snapshot(
+        &self,
+        pipeline_id: &str,
+    ) -> Option<IngestDiagSnapshot> {
+        let ingests = self.ingests.active.read().await;
+        let ingest = ingests.get(pipeline_id)?;
+        let keyframe_times = ingest
+            .keyframe_times
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Some(IngestDiagSnapshot {
+            protocol: ingest.protocol.clone(),
+            uptime_secs: ingest.start_time.elapsed().as_secs_f64(),
+            bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
+            remote_addr: ingest.remote_addr.clone(),
+            video: ingest.video.clone(),
+            audio: ingest.audio.clone(),
+            quality: ingest.quality.clone(),
+            keyframe_times,
+        })
+    }
+
     pub async fn has_active_egress(&self, output_id: &str) -> bool {
         self.egresses
             .cancel_tokens
             .read()
             .await
             .contains_key(output_id)
+    }
+
+    pub async fn active_egress_count(&self) -> usize {
+        self.egresses.active.read().await.len()
+    }
+
+    pub async fn active_egress_diag_snapshots(&self, pipeline_id: &str) -> Vec<EgressDiagSnapshot> {
+        let egresses = self.egresses.active.read().await;
+        egresses
+            .iter()
+            .filter(|(_, egress)| egress.pipeline_id == pipeline_id)
+            .map(|(output_id, egress)| EgressDiagSnapshot {
+                output_id: output_id.clone(),
+                pipeline_id: egress.pipeline_id.clone(),
+                protocol: egress.protocol.clone(),
+                status: egress.status.clone(),
+                phase: egress
+                    .phase
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                target_addr: egress
+                    .target_addr
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+                bytes_sent: egress.bytes_sent.load(Ordering::Relaxed),
+                last_progress_ms: egress.last_progress_ms.load(Ordering::Relaxed),
+                last_error: egress
+                    .last_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            })
+            .collect()
     }
 
     pub async fn get_or_create_diag_semaphore(
@@ -1575,8 +1678,19 @@ impl MediaEngine {
         stores.get(pipeline_id).cloned()
     }
 
-    /// Build the full health snapshot JSON that the `/api/v1/engine/health`
-    /// endpoint returns.
+    pub async fn pipeline_ring_diag_snapshot(
+        &self,
+        pipeline_id: &str,
+    ) -> Option<RingBufferDiagSnapshot> {
+        let pipelines = self.ingests.pipelines.read().await;
+        let ring = pipelines.get(pipeline_id)?;
+        let (fill_slots, capacity_slots) = ring.fill_and_capacity();
+        Some(RingBufferDiagSnapshot {
+            fill_slots,
+            capacity_slots,
+            readers: ring.reader_snapshots(),
+        })
+    }
     pub async fn hls_pipeline_ids(&self) -> Vec<String> {
         self.hls.consumers.read().await.keys().cloned().collect()
     }
@@ -1615,6 +1729,24 @@ impl MediaEngine {
             for token in recordings.values() {
                 token.cancel();
             }
+        }
+    }
+
+    pub async fn srt_listener_diag_snapshot(&self) -> SrtListenerDiagSnapshot {
+        SrtListenerDiagSnapshot {
+            bonding_available: self.bonding_available(),
+            rx_queue_bytes: self
+                .runtime
+                .listener_stats
+                .rx_queue_bytes
+                .load(Ordering::Relaxed),
+            rx_queue_peak_bytes: self
+                .runtime
+                .listener_stats
+                .rx_queue_max_bytes
+                .load(Ordering::Relaxed),
+            drops: self.runtime.listener_stats.drops.load(Ordering::Relaxed),
+            active_ingest_count: self.active_ingest_count().await,
         }
     }
 

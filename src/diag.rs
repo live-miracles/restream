@@ -112,39 +112,29 @@ fn result_event(result: &DiagResult) -> String {
 
 async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &str) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.ingests.active.read().await;
-    let egresses = engine.egresses.active.read().await;
-    let pipelines = engine.ingests.pipelines.read().await;
-
-    let active_ingest = ingests.get(pipeline_id);
-    let pipeline_rb = pipelines.get(pipeline_id);
-    let active_output_count = egresses
-        .iter()
-        .filter(|(_, e)| e.pipeline_id == pipeline_id)
-        .count();
+    let active_ingest = engine.active_ingest_diag_snapshot(pipeline_id).await;
+    let pipeline_rb = engine.pipeline_ring_diag_snapshot(pipeline_id).await;
+    let active_output_count = engine.active_egress_diag_snapshots(pipeline_id).await.len();
+    let active_ingest_count = engine.active_ingest_count().await;
+    let active_egress_count = engine.active_egress_count().await;
 
     let mut issues = vec![];
     let mut lines = vec![];
 
     lines.push(format!("Pipeline ID: {}", pipeline_id));
-    lines.push(format!("Active ingests (all pipelines): {}", ingests.len()));
+    lines.push(format!(
+        "Active ingests (all pipelines): {}",
+        active_ingest_count
+    ));
     lines.push(format!(
         "Active egresses (all pipelines): {}",
-        egresses.len()
+        active_egress_count
     ));
 
     if let Some(ingest) = active_ingest {
         lines.push(format!("Ingest protocol: {}", ingest.protocol));
-        lines.push(format!(
-            "Ingest uptime: {:.1}s",
-            ingest.start_time.elapsed().as_secs_f64()
-        ));
-        lines.push(format!(
-            "Bytes received: {}",
-            ingest
-                .bytes_received
-                .load(std::sync::atomic::Ordering::Relaxed)
-        ));
+        lines.push(format!("Ingest uptime: {:.1}s", ingest.uptime_secs));
+        lines.push(format!("Bytes received: {}", ingest.bytes_received));
         if let Some(addr) = &ingest.remote_addr {
             lines.push(format!("Publisher remote: {}", addr));
         }
@@ -154,7 +144,8 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
     }
 
     if let Some(rb) = pipeline_rb {
-        let (fill, cap) = rb.fill_and_capacity();
+        let fill = rb.fill_slots;
+        let cap = rb.capacity_slots;
         let fill_pct = (fill * 100).checked_div(cap).unwrap_or(0);
         lines.push(format!(
             "Ring buffer: {}/{} slots filled ({}%)",
@@ -167,17 +158,15 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
             ));
         }
 
-        let reader_snapshots = rb.reader_snapshots();
-        let max_lag = reader_snapshots
+        let max_lag = rb
+            .readers
             .iter()
             .map(|reader| reader.lag_slots)
             .max()
             .unwrap_or(0);
-        let total_overflows: usize = reader_snapshots
-            .iter()
-            .map(|reader| reader.overflow_count)
-            .sum();
-        let max_packet_age_ms = reader_snapshots
+        let total_overflows: usize = rb.readers.iter().map(|reader| reader.overflow_count).sum();
+        let max_packet_age_ms = rb
+            .readers
             .iter()
             .filter_map(|reader| reader.packet_age_ms)
             .max();
@@ -311,12 +300,7 @@ async fn check_active_outputs(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let egresses = engine.egresses.active.read().await;
-
-    let my_egresses: Vec<_> = egresses
-        .iter()
-        .filter(|(_, e)| e.pipeline_id == pipeline_id)
-        .collect();
+    let my_egresses = engine.active_egress_diag_snapshots(pipeline_id).await;
 
     let mut issues = vec![];
     let mut lines = vec![];
@@ -324,23 +308,13 @@ async fn check_active_outputs(
     if my_egresses.is_empty() {
         lines.push("No active outputs for this pipeline.".to_string());
     } else {
-        for (key, egress) in &my_egresses {
-            let output_id = key.as_str();
-            let bytes_sent = egress.bytes_sent.load(std::sync::atomic::Ordering::Relaxed);
-            let phase = egress
-                .phase
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+        for egress in &my_egresses {
+            let output_id = egress.output_id.as_str();
             let target_addr = egress
                 .target_addr
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
                 .clone()
                 .unwrap_or_else(|| "unresolved".to_string());
-            let last_progress_ms = egress
-                .last_progress_ms
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let last_progress_ms = egress.last_progress_ms;
             let last_progress = if last_progress_ms > 0 {
                 let age = chrono::Utc::now()
                     .timestamp_millis()
@@ -350,98 +324,21 @@ async fn check_active_outputs(
             } else {
                 "never".to_string()
             };
-            let last_error = egress
-                .last_error
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+            let last_error = egress.last_error.clone();
             lines.push(format!("Output {}", output_id));
             lines.push(format!("  protocol: {}", egress.protocol));
-            lines.push(format!("  status: {} / {}", egress.status, phase));
-            lines.push(format!("  target: {}", egress.target_url));
+            lines.push(format!("  status: {} / {}", egress.status, egress.phase));
+            lines.push(format!("  target: {}", target_addr));
             lines.push(format!("  target_addr: {}", target_addr));
-            lines.push(format!("  bytes_sent: {}", bytes_sent));
+            lines.push(format!("  bytes_sent: {}", egress.bytes_sent));
             lines.push(format!("  last_progress: {}", last_progress));
-            lines.push(format!("  started_at: {}", egress.started_at));
             if let Some(error) = last_error {
-                let failure_phase = egress
-                    .failure_phase
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string());
-                lines.push(format!("  last_error_phase: {}", failure_phase));
                 lines.push(format!("  last_error: {}", error));
             }
-            let quality = egress
-                .quality
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            match egress.protocol.as_str() {
-                "rtmp" => {
-                    if let Some(reason) = quality.tcp_stats_unavailable_reason {
-                        lines.push(format!("  tcp_quality=unavailable reason={}", reason));
-                    } else if quality.tcp_rtt_ms.is_some()
-                        || quality.tcp_send_rate_mbps.is_some()
-                        || quality.tcp_notsent_bytes.is_some()
-                    {
-                        lines.push("  tcp_quality:".to_string());
-                        lines.push(format!(
-                            "    congestion_control: {}",
-                            quality
-                                .tcp_congestion_algorithm
-                                .as_deref()
-                                .unwrap_or("unknown")
-                        ));
-                        lines.push(format!("    rtt_ms: {:?}", quality.tcp_rtt_ms));
-                        lines.push(format!("    send_mbps: {:?}", quality.tcp_send_rate_mbps));
-                        lines.push(format!(
-                            "    notsent_bytes: {:?}",
-                            quality.tcp_notsent_bytes
-                        ));
-                        lines.push(format!("    unacked: {:?}", quality.tcp_unacked));
-                        lines.push(format!(
-                            "    retrans_total: {:?}",
-                            quality.tcp_total_retrans
-                        ));
-                        lines.push(format!("    snd_cwnd: {:?}", quality.tcp_snd_cwnd));
-                    }
-                }
-                "srt"
-                    if quality.ms_rtt.is_some()
-                        || quality.mbps_send_rate.is_some()
-                        || quality.srt_bonded.is_some() =>
-                {
-                    lines.push("  srt_quality:".to_string());
-                    lines.push(format!("    rtt_ms: {:?}", quality.ms_rtt));
-                    lines.push(format!("    send_mbps: {:?}", quality.mbps_send_rate));
-                    lines.push(format!("    sent_loss: {:?}", quality.packets_sent_loss));
-                    lines.push(format!("    sent_drop: {:?}", quality.packets_sent_drop));
-                    lines.push(format!(
-                        "    sent_retrans: {:?}",
-                        quality.packets_sent_retrans
-                    ));
-                    lines.push(format!("    bonded: {:?}", quality.srt_bonded));
-                    lines.push(format!(
-                        "    members: {:?}/{:?}",
-                        quality.srt_group_connected_members, quality.srt_group_member_count
-                    ));
-                    lines.push(format!(
-                        "    active: {:?}",
-                        quality.srt_group_active_members
-                    ));
-                    lines.push(format!(
-                        "    broken: {:?}",
-                        quality.srt_group_broken_members
-                    ));
-                }
-                _ => {}
-            }
-            if egress.status == "failed" || phase == "failed" {
+            if egress.status == "failed" || egress.phase == "failed" {
                 issues.push(format!(
-                    "Output {} has failed in phase {}. Check target URL: {}",
-                    output_id, phase, egress.target_url
+                    "Output {} has failed in phase {}.",
+                    output_id, egress.phase
                 ));
             }
         }
@@ -451,7 +348,7 @@ async fn check_active_outputs(
         idx,
         "Active Outputs",
         "Egress target status and throughput",
-        "engine.egresses.active snapshot",
+        "engine.active_egress_diag_snapshots()",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )
@@ -464,8 +361,7 @@ async fn check_ingest_stream_info(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.ingests.active.read().await;
-    let ingest_opt = ingests.get(pipeline_id);
+    let ingest_opt = engine.active_ingest_diag_snapshot(pipeline_id).await;
 
     let mut issues = vec![];
     let mut lines = vec![];
@@ -518,8 +414,7 @@ async fn check_publisher_transport(
     probe_protocol: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.ingests.active.read().await;
-    let ingest_opt = ingests.get(pipeline_id);
+    let ingest_opt = engine.active_ingest_diag_snapshot(pipeline_id).await;
 
     let mut issues = vec![];
     let mut lines = vec![];
@@ -766,21 +661,21 @@ async fn check_ring_buffer_health(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let pipelines = engine.ingests.pipelines.read().await;
-    let rb_opt = pipelines.get(pipeline_id);
+    let rb_opt = engine.pipeline_ring_diag_snapshot(pipeline_id).await;
 
     let mut issues = vec![];
     let mut lines = vec![];
 
     if let Some(rb) = rb_opt {
-        let (fill, cap) = rb.fill_and_capacity();
+        let fill = rb.fill_slots;
+        let cap = rb.capacity_slots;
         let fill_pct = (fill * 100).checked_div(cap).unwrap_or(0);
         lines.push(format!("Capacity: {} slots", cap));
         lines.push(format!("Filled: {} slots ({}%)", fill, fill_pct));
         lines.push("Compact packet slots: yes".to_string());
         lines.push("Frame size: variable (media packets)".to_string());
 
-        let readers_info = rb.reader_snapshots();
+        let readers_info = rb.readers;
 
         if !readers_info.is_empty() {
             lines.push("Active readers:".to_string());
@@ -848,17 +743,13 @@ async fn check_ring_buffer_health(
 
 async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &str) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.ingests.active.read().await;
-    let ingest_opt = ingests.get(pipeline_id);
+    let ingest_opt = engine.active_ingest_diag_snapshot(pipeline_id).await;
 
     let mut issues = vec![];
     let mut lines = vec![];
 
     if let Some(ingest) = ingest_opt {
-        let times = ingest
-            .keyframe_times
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let times = ingest.keyframe_times;
         if times.len() < 2 {
             lines.push(format!("Keyframes observed: {}", times.len()));
             lines.push("Not enough keyframes to analyze GOP intervals yet.".to_string());
@@ -913,20 +804,13 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
 
 async fn check_srt_listener_socket(idx: u32, engine: &Arc<MediaEngine>) -> DiagResult {
     let start = Instant::now();
-    let stats = &engine.runtime.listener_stats;
-    let rx_queue = stats
-        .rx_queue_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let rx_peak = stats
-        .rx_queue_max_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let drops = stats.drops.load(std::sync::atomic::Ordering::Relaxed);
-    let bonding_available = stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
-
+    let stats = engine.srt_listener_diag_snapshot().await;
+    let rx_queue = stats.rx_queue_bytes;
+    let rx_peak = stats.rx_queue_peak_bytes;
+    let drops = stats.drops;
+    let bonding_available = stats.bonding_available;
     let configured = crate::media::srt::DESIRED_UDP_BUF as u64;
-    let active_count = engine.ingests.active.read().await.len();
+    let active_count = stats.active_ingest_count;
 
     let mut lines = vec![];
     let mut issues = vec![];
