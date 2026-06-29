@@ -33,11 +33,13 @@ mod loom_tests {
         }
 
         fn push(&self) {
+            let _guard = self.mu.lock().unwrap();
             self.write_idx.fetch_add(1, Ordering::Release);
             self.cvar.notify_all();
         }
 
         fn seal(&self) {
+            let _guard = self.mu.lock().unwrap();
             self.sealed.store(true, Ordering::Release);
             self.cvar.notify_all();
         }
@@ -81,11 +83,12 @@ mod loom_tests {
             });
 
             // Writer thread: optionally writes one packet before sealing.
-            thread::spawn(move || {
+            let t_writer = thread::spawn(move || {
                 ring.seal();
             });
 
             t_reader.join().unwrap();
+            t_writer.join().unwrap();
             assert!(reader_done.load(Ordering::Acquire));
         });
     }
@@ -115,6 +118,7 @@ mod loom_tests {
             ring.seal();
 
             t_reader.join().unwrap();
+            assert_eq!(seen.load(Ordering::Acquire), 1);
             // The packet pushed before seal must have been seen (either via data
             // delivery or we confirm write_idx advanced).
             let w = ring.write_idx.load(Ordering::Acquire);

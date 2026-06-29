@@ -1,7 +1,7 @@
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use restream::domain::stage::{StageKey, StageKind};
-use restream::media::engine::MediaEngine;
+use restream::media::engine::{AudioMeta, MediaEngine, VideoMeta};
 use restream::media::security::IngestSecurityService;
 use restream::types::AppLogEntry;
 use restream::{api, db};
@@ -1579,6 +1579,118 @@ async fn delete_output_cancels_egress() {
 
     // Egress cancellation token should be cancelled
     assert!(token.is_cancelled(), "deleting output should cancel egress");
+}
+
+#[tokio::test]
+async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13081"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13081", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let pending = body_json(resp).await;
+    let pending_input = &pending["pipelines"][&pid]["input"];
+    assert_eq!(pending_input["probeReady"], false);
+    assert_eq!(pending_input["probeStatus"], "pending");
+    assert!(pending_input["probePendingMs"].as_u64().is_some());
+
+    let audio = AudioMeta {
+        track_index: 0,
+        codec: "aac".to_string(),
+        sample_rate: 48_000,
+        channels: 2,
+        channel_layout: None,
+        pid: None,
+        language: None,
+        title: None,
+        profile: None,
+    };
+    engine
+        .update_ingest_meta(
+            &pid,
+            Some(VideoMeta {
+                codec: "h264".to_string(),
+                width: 1920,
+                height: 1080,
+                fps: 30.0,
+                bw: None,
+                pid: None,
+                language: None,
+                title: None,
+                profile: None,
+                level: None,
+                pixel_format: None,
+            }),
+            Some(audio.clone()),
+            None,
+        )
+        .await;
+    engine.update_ingest_audio_tracks(&pid, vec![audio]).await;
+    engine.record_egress_progress(&oid, 1316).await;
+    engine
+        .record_egress_error(&oid, "send", "connection reset by peer")
+        .await;
+
+    let resp = app
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ready = body_json(resp).await;
+    let ready_input = &ready["pipelines"][&pid]["input"];
+    assert_eq!(ready_input["probeReady"], true);
+    assert_eq!(ready_input["probeStatus"], "ready");
+    assert!(ready_input["probePendingMs"].is_null());
+
+    let output = &ready["pipelines"][&pid]["outputs"][&oid];
+    assert_eq!(output["status"], "failed");
+    assert_eq!(output["rawStatus"], "running");
+    assert_eq!(output["phase"], "failed");
+    assert_eq!(output["failurePhase"], "send");
+    assert_eq!(output["lastError"], "connection reset by peer");
+    assert!(output["lastErrorAt"].is_string());
+    assert!(output["lastProgressAt"].is_string());
+    assert!(output["lastProgressAgeMs"].as_u64().is_some());
 }
 
 // --- Regression: Round 6 #2 — Security headers ---

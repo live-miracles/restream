@@ -92,12 +92,16 @@ function installBrowserStubs() {
   });
 }
 
-async function loadApiModule() {
+async function loadCompiledModule(relativePath) {
   installBrowserStubs();
   const jsDir = process.env.API_CONTRACT_JS_DIR;
   assert.ok(jsDir, "API_CONTRACT_JS_DIR must be set");
-  const moduleUrl = pathToFileURL(path.join(jsDir, "core/api.js")).href;
+  const moduleUrl = pathToFileURL(path.join(jsDir, relativePath)).href;
   return import(`${moduleUrl}?t=${Date.now()}`);
+}
+
+async function loadApiModule() {
+  return loadCompiledModule("core/api.js");
 }
 
 test("frontend API helpers call the canonical v1 routes and methods", async () => {
@@ -178,4 +182,82 @@ test("frontend API helpers preserve response fields and build diagnostics URLs c
     api.buildPipelineDiagnosticsUrl("pipe 1", params),
     "/api/v1/pipelines/pipe%201/diagnostics?probe=srt&since=now",
   );
+});
+
+test("pipeline parsing preserves probe and runtime fault status fields", async () => {
+  const { parsePipelinesInfo } = await loadCompiledModule("core/pipeline.js");
+
+  const pipelines = parsePipelinesInfo(
+    {
+      pipelines: [
+        {
+          id: "pipe-1",
+          name: "Pipeline 1",
+          streamKey: "stream-key",
+          inputSource: null,
+          srtIngestPolicy: null,
+          ingestUrls: { rtmp: null, srt: null },
+        },
+      ],
+      outputs: [
+        {
+          id: "out-1",
+          pipelineId: "pipe-1",
+          name: "Output 1",
+          desiredState: "started",
+          encoding: "source",
+          url: "rtmp://dest/live/key",
+          monitoringUrl: "http://localhost:11888/live/out-1/index.m3u8",
+        },
+      ],
+      jobs: [],
+    },
+    {
+      pipelines: {
+        "pipe-1": {
+          input: {
+            status: "on",
+            probeReady: false,
+            probeStatus: "pending",
+            probePendingMs: 2400,
+            bytesReceived: 1024,
+            bytesSent: 0,
+            readers: 1,
+            bitrateKbps: 3200.4,
+            publisher: { protocol: "srt" },
+            unexpectedReaders: { count: 0 },
+            audioTracks: [],
+            video: null,
+          },
+          outputs: {
+            "out-1": {
+              status: "failed",
+              rawStatus: "running",
+              phase: "failed",
+              failurePhase: "send",
+              lastError: "connection reset by peer",
+              lastErrorAt: "2026-06-29T00:00:05Z",
+              lastProgressAt: "2026-06-29T00:00:04Z",
+              lastProgressAgeMs: 1200,
+              totalSize: 4096,
+              bitrateKbps: 512.8,
+            },
+          },
+        },
+      },
+    },
+  );
+
+  assert.equal(pipelines.length, 1);
+  assert.equal(pipelines[0].input.probeReady, false);
+  assert.equal(pipelines[0].input.probeStatus, "pending");
+  assert.equal(pipelines[0].input.probePendingMs, 2400);
+  assert.equal(pipelines[0].outs[0].status, "failed");
+  assert.equal(pipelines[0].outs[0].rawStatus, "running");
+  assert.equal(pipelines[0].outs[0].phase, "failed");
+  assert.equal(pipelines[0].outs[0].failurePhase, "send");
+  assert.equal(pipelines[0].outs[0].lastError, "connection reset by peer");
+  assert.equal(pipelines[0].outs[0].lastErrorAt, "2026-06-29T00:00:05Z");
+  assert.equal(pipelines[0].outs[0].lastProgressAt, "2026-06-29T00:00:04Z");
+  assert.equal(pipelines[0].outs[0].lastProgressAgeMs, 1200);
 });
