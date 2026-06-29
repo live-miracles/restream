@@ -563,7 +563,7 @@ pub async fn run_app() {
             let now_str = chrono::Utc::now().to_rfc3339();
 
             if output.desired_state == "running" && !is_active {
-                if !has_ingest {
+                if !effective_has_ingest {
                     engine.clear_egress_retry_state(&output.id).await;
                     continue;
                 }

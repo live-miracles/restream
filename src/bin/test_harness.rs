@@ -9792,6 +9792,307 @@ async fn fault_resilience() -> Result<Value, String> {
         sink_task.abort();
     }
 
+    // ── 3c. Egress retry survives transient ingest gap within grace ────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-rtmp-retry-gap", "streamKey": "fault-rtmp-retry-gap"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind {sink_port}: {e}"))?;
+        let sink_cancel = CancellationToken::new();
+        let sink_reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink_reader_handles_inner = sink_reader_handles.clone();
+        let sink_metrics_inner = sink_metrics.clone();
+        let sink_cancel_inner = sink_cancel.clone();
+        let sink_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = sink_listener.accept() => {
+                        if let Ok((socket, _)) = result {
+                            let metrics = sink_metrics_inner.clone();
+                            let handle = tokio::spawn(async move {
+                                let _ = handle_generalized_sink_client(socket, metrics).await;
+                            });
+                            sink_reader_handles_inner.lock().unwrap().push(handle);
+                        }
+                    }
+                    _ = sink_cancel_inner.cancelled() => break,
+                }
+            }
+        });
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "rtmp-retry-gap-sink",
+                    "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-rtmp-retry-gap-sink"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-retry-gap", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        while sink_metrics.video_count.load(Ordering::Relaxed) < 10 {
+            if Instant::now() >= warm_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let baseline_video = sink_metrics.video_count.load(Ordering::Relaxed);
+
+        sink_cancel.cancel();
+        sink_task.abort();
+        {
+            let handles = sink_reader_handles.lock().unwrap();
+            for handle in handles.iter() {
+                handle.abort();
+            }
+        }
+
+        let retrying_deadline = Instant::now() + Duration::from_secs(10);
+        let mut retry_phase = String::from("unknown");
+        let mut retry_has_error = false;
+        let mut retry_status_visible = false;
+        let mut retry_health_visible = false;
+        let mut retry_attempts: Option<u64> = None;
+        let mut retry_backoff_ms: Option<u64> = None;
+        while Instant::now() < retrying_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let status = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+                .ok();
+            if let Some(status) = status.as_ref() {
+                retry_has_error = status["lastError"]
+                    .as_str()
+                    .map(|message| !message.is_empty())
+                    .unwrap_or(false);
+                retry_phase = status["phase"].as_str().unwrap_or("unknown").to_string();
+                retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                if retry_status_visible {
+                    retry_attempts = status["retryAttempts"].as_u64();
+                    retry_backoff_ms = status["retryBackoffMs"].as_u64();
+                }
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output_health = &health["pipelines"][&pid]["outputs"][&oid];
+                retry_health_visible = output_health["status"].as_str() == Some("retrying")
+                    && output_health["retrying"].as_bool() == Some(true);
+            }
+            if retry_status_visible && retry_health_visible && retry_has_error {
+                break;
+            }
+        }
+
+        stop_child(&mut pub_child).await;
+        let input_off = wait_for_api_input_off(&api, &pid, Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+        let gap_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let gap_health = api.get_json("/api/v1/engine/health").await.ok();
+        let gap_output_retrying = gap_status
+            .as_ref()
+            .map(|status| {
+                status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true)
+            })
+            .unwrap_or(false);
+        let gap_health_retrying = gap_health
+            .as_ref()
+            .map(|health| {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true)
+            })
+            .unwrap_or(false);
+        let gap_input = gap_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let gap_disconnect_visible = gap_input["status"] == "off"
+            && gap_input["lastSessionProtocol"] == "rtmp"
+            && gap_input["lastDisconnectReason"] == "publisher disconnected"
+            && gap_input["lastFailurePhase"] == "disconnect"
+            && gap_input["recentDisconnectError"] == false;
+
+        let recovery_metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let recovery_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink rebind {sink_port}: {e}"))?;
+        let recovery_cancel = CancellationToken::new();
+        let recovery_reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let recovery_reader_handles_inner = recovery_reader_handles.clone();
+        let recovery_metrics_inner = recovery_metrics.clone();
+        let recovery_cancel_inner = recovery_cancel.clone();
+        let recovery_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    result = recovery_listener.accept() => {
+                        if let Ok((socket, _)) = result {
+                            let metrics = recovery_metrics_inner.clone();
+                            let handle = tokio::spawn(async move {
+                                let _ = handle_generalized_sink_client(socket, metrics).await;
+                            });
+                            recovery_reader_handles_inner.lock().unwrap().push(handle);
+                        }
+                    }
+                    _ = recovery_cancel_inner.cancelled() => break,
+                }
+            }
+        });
+
+        let mut resumed_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-retry-gap", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        let media_ready = wait_for_api_input_media_ready(&api, &pid, Duration::from_secs(30)).await;
+
+        let recovery_deadline = Instant::now() + Duration::from_secs(25);
+        let mut recovered = false;
+        let mut recovery_status = String::from("unknown");
+        while Instant::now() < recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
+            }
+            if recovery_metrics.video_count.load(Ordering::Relaxed) >= 10 {
+                recovered = true;
+                break;
+            }
+        }
+
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_input = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let final_disconnect_cleared = final_input["status"] == "on"
+            && final_input["probeStatus"] == "ready"
+            && final_input["lastSessionProtocol"].is_null()
+            && final_input["lastDisconnectReason"].is_null()
+            && final_input["lastFailurePhase"].is_null()
+            && final_input["recentDisconnectError"] == false;
+        let passed = baseline_video >= 10
+            && retry_status_visible
+            && retry_health_visible
+            && retry_has_error
+            && input_off.is_ok()
+            && gap_output_retrying
+            && gap_health_retrying
+            && gap_disconnect_visible
+            && media_ready.is_ok()
+            && recovered
+            && final_status_running
+            && !final_retrying
+            && final_disconnect_cleared;
+        println!(
+            "[fault] Egress retry survives transient ingest gap: {} (retrying={} healthRetrying={} gapRetrying={} gapHealthRetrying={} recovered={} recoveryStatus={} finalRetrying={} disconnectCleared={})",
+            if passed { "PASS" } else { "FAIL" },
+            retry_status_visible,
+            retry_health_visible,
+            gap_output_retrying,
+            gap_health_retrying,
+            recovered,
+            recovery_status,
+            final_retrying,
+            final_disconnect_cleared,
+        );
+        results.push(json!({
+            "test": "egress-retry-survives-transient-ingest-gap",
+            "passed": passed,
+            "baselineVideo": baseline_video,
+            "retryPhase": retry_phase,
+            "retryHasError": retry_has_error,
+            "retryStatusVisible": retry_status_visible,
+            "retryHealthVisible": retry_health_visible,
+            "retryAttempts": retry_attempts,
+            "retryBackoffMs": retry_backoff_ms,
+            "inputOffError": input_off.err(),
+            "gapOutputRetrying": gap_output_retrying,
+            "gapHealthRetrying": gap_health_retrying,
+            "gapDisconnectVisible": gap_disconnect_visible,
+            "gapInputSnapshot": gap_input,
+            "mediaReady": media_ready.is_ok(),
+            "mediaReadyError": media_ready.err(),
+            "recovered": recovered,
+            "recoveryStatus": recovery_status,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalDisconnectCleared": final_disconnect_cleared,
+            "finalInputSnapshot": final_input,
+        }));
+
+        recovery_cancel.cancel();
+        recovery_task.abort();
+        {
+            let handles = recovery_reader_handles.lock().unwrap();
+            for handle in handles.iter() {
+                handle.abort();
+            }
+        }
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut resumed_child).await;
+    }
+
     // ── 4. File ingest stop ─────────────────────────────────────────────
     {
         let pipeline = api
