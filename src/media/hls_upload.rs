@@ -17,6 +17,7 @@ use crate::media::hls::HlsStore;
 const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const HLS_SEGMENT_CONTENT_TYPE: &str = "video/mp2t";
 const UPLOAD_INTERVAL: Duration = Duration::from_millis(500);
+const HLS_UPLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn start_hls_put_upload(
     output_id: String,
@@ -77,7 +78,15 @@ pub async fn start_hls_put_upload(
             let segment_name = format!("seg{}.ts", segment.index);
             let segment_url = derive_hls_upload_url(&playlist_url, &segment_name);
             let segment_len = segment.data.len() as u64;
-            match put_bytes(&client, segment_url, HLS_SEGMENT_CONTENT_TYPE, segment.data).await {
+            match put_bytes_with_timeout(
+                &client,
+                segment_url,
+                HLS_SEGMENT_CONTENT_TYPE,
+                segment.data,
+                HLS_UPLOAD_REQUEST_TIMEOUT,
+            )
+            .await
+            {
                 Ok(()) => {
                     uploaded_segments.insert(segment.index);
                     engine
@@ -97,7 +106,7 @@ pub async fn start_hls_put_upload(
                             err,
                         )
                         .await;
-                    break;
+                    return;
                 }
             }
         }
@@ -119,6 +128,7 @@ pub async fn start_hls_put_upload(
             engine
                 .record_egress_error_if_current(&output_id, &registration, "upload_playlist", err)
                 .await;
+            return;
         } else {
             engine
                 .record_egress_progress_if_current(&output_id, &registration, playlist_len)
@@ -136,13 +146,33 @@ async fn put_bytes<B>(
 where
     B: Into<reqwest::Body>,
 {
+    put_bytes_with_timeout(client, url, content_type, body, HLS_UPLOAD_REQUEST_TIMEOUT).await
+}
+
+async fn put_bytes_with_timeout<B>(
+    client: &Client,
+    url: Url,
+    content_type: &'static str,
+    body: B,
+    timeout: Duration,
+) -> Result<(), String>
+where
+    B: Into<reqwest::Body>,
+{
     let status = client
         .put(url.clone())
+        .timeout(timeout)
         .header(reqwest::header::CONTENT_TYPE, content_type)
         .body(body)
         .send()
         .await
-        .map_err(|err| err.to_string())?
+        .map_err(|err| {
+            if err.is_timeout() {
+                format!("PUT {url} timed out after {} ms", timeout.as_millis())
+            } else {
+                err.to_string()
+            }
+        })?
         .status();
     if status.is_success() {
         Ok(())
@@ -324,5 +354,72 @@ mod tests {
             }),
             "playlist PUT not observed: {seen:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn put_bytes_times_out_against_hung_sink() {
+        let app = Router::new().route(
+            "/*path",
+            put(|| async {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                StatusCode::NO_CONTENT
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = Client::new();
+        let result = put_bytes_with_timeout(
+            &client,
+            Url::parse(&format!("http://{addr}/upload?file=out.m3u8")).unwrap(),
+            HLS_PLAYLIST_CONTENT_TYPE,
+            Bytes::from_static(b"#EXTM3U"),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        let err = result.expect_err("hung sink should time out");
+        assert!(
+            err.to_ascii_lowercase().contains("timed out"),
+            "expected timeout error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uploader_exits_after_upload_error() {
+        let app = Router::new().route("/*path", put(|| async { StatusCode::BAD_GATEWAY }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let store = Arc::new(HlsStore::new());
+        store.push_segment(1.2, bytes::Bytes::from_static(b"segment-0"));
+        let engine = Arc::new(MediaEngine::new());
+        let registration = engine
+            .register_egress_attempt(
+                "out1",
+                "pipe1",
+                &format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
+            )
+            .await;
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            start_hls_put_upload(
+                "out1".to_string(),
+                "pipe1".to_string(),
+                format!("http://{addr}/upload?cid=abc&file=out.m3u8"),
+                store,
+                engine,
+                registration,
+            ),
+        )
+        .await
+        .expect("uploader should exit promptly after an upload error");
     }
 }

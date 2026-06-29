@@ -172,6 +172,10 @@ totals and per-second rates, received NAKs, and bonded group member counts.
 HLS PUT egress reports upload progress for segment and playlist PUTs. These
 signals are local sender evidence; they do not prove that a third-party platform
 accepted or played the stream unless a readback/verification probe is also run.
+HLS PUT requests are also bounded by an internal timeout; when an upload target
+hangs, the output surfaces a structured `upload_segment` or `upload_playlist`
+failure and transitions through the normal retrying/backoff contract instead of
+remaining wedged in an active-but-stuck sender loop.
 
 ### Egress Telemetry Parity Status
 

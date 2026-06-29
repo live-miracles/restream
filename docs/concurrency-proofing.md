@@ -37,6 +37,8 @@ Use the narrowest proof that can actually catch the bug:
    - Use when the behavior crosses real sockets, child processes, FFmpeg, or
      OS-thread boundaries.
    - Current live contract slices: `fault-resilience` and `recovery`.
+     `recovery` also covers hung HLS PUT destinations timing out, surfacing
+     retry/error state, and recovering after the sink restarts.
 
 5. Benchmarks
    - Use only for hot-path or end-to-end performance-sensitive changes.

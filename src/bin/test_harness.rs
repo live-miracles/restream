@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::extract::{OriginalUri, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, put};
 use bytes::Bytes;
@@ -7430,6 +7430,12 @@ struct HlsPutSinkState {
     write_lock: Mutex<()>,
 }
 
+#[derive(Clone)]
+struct HlsPutHangSinkState {
+    cancel: CancellationToken,
+    delay: Duration,
+}
+
 async fn start_hls_put_sink(
     port: u16,
     root: PathBuf,
@@ -7443,6 +7449,7 @@ async fn start_hls_put_sink(
     let app = Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .route("/*path", put(hls_put_sink_put))
+        .layer(DefaultBodyLimit::disable())
         .with_state(state);
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
@@ -7455,6 +7462,48 @@ async fn start_hls_put_sink(
             .await
         {
             eprintln!("[hls-put-sink] server failed: {err}");
+        }
+    });
+    Ok((cancel, handle))
+}
+
+async fn start_hls_put_hang_sink(
+    port: u16,
+    delay: Duration,
+) -> Result<(CancellationToken, tokio::task::JoinHandle<()>), String> {
+    let cancel = CancellationToken::new();
+    let state = HlsPutHangSinkState {
+        cancel: cancel.clone(),
+        delay,
+    };
+    let app = Router::new()
+        .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
+        .route(
+            "/*path",
+            put(
+                |State(state): State<HlsPutHangSinkState>,
+                 OriginalUri(_uri): OriginalUri,
+                 _headers: HeaderMap,
+                 _body: Bytes| async move {
+                    tokio::select! {
+                        _ = state.cancel.cancelled() => StatusCode::SERVICE_UNAVAILABLE,
+                        _ = tokio::time::sleep(state.delay) => StatusCode::NO_CONTENT,
+                    }
+                },
+            ),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
+    let server_cancel = cancel.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app)
+            .with_graceful_shutdown(server_cancel.cancelled_owned())
+            .await
+        {
+            eprintln!("[hls-put-hang-sink] server failed: {err}");
         }
     });
     Ok((cancel, handle))
@@ -9300,6 +9349,7 @@ async fn recovery_live_cases(
     ports: &TestPorts,
     fixture_h264: &Path,
     sink_port: u16,
+    hls_put_port: u16,
     timeout: Duration,
 ) -> Result<Vec<Value>, String> {
     let mut results = Vec::new();
@@ -10018,6 +10068,203 @@ async fn recovery_live_cases(
         stop_child(&mut resumed_child).await;
     }
 
+    // ── 4. Hung HLS PUT sink times out, retries, and recovers after restart ──
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-hls-put-timeout", "streamKey": "fault-hls-put-timeout"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+        let sink_dir = artifact_path("recovery-hls-put-timeout");
+        let _ = std::fs::remove_dir_all(&sink_dir);
+        std::fs::create_dir_all(&sink_dir).map_err(|e| e.to_string())?;
+
+        let (hang_cancel, hang_handle) =
+            start_hls_put_hang_sink(hls_put_port, Duration::from_secs(30)).await?;
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "hls-put-timeout",
+                    "url": format!("http://127.0.0.1:{hls_put_port}/upload?cid=fault-hls-put-timeout&copy=0&file=out.m3u8"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-hls-put-timeout", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let retry_deadline = Instant::now() + Duration::from_secs(20);
+        let mut retry_status_visible = false;
+        let mut retry_health_visible = false;
+        let mut retry_has_error = false;
+        let mut retry_phase = String::from("unknown");
+        let mut retry_failure_phase = String::from("unknown");
+        let mut retry_error = String::new();
+        while Instant::now() < retry_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                retry_phase = status["phase"].as_str().unwrap_or("unknown").to_string();
+                retry_failure_phase = status["failurePhase"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+                retry_error = status["lastError"].as_str().unwrap_or("").to_string();
+                retry_has_error = !retry_error.is_empty();
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                retry_health_visible = output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true);
+            }
+            if retry_status_visible && retry_health_visible && retry_has_error {
+                break;
+            }
+        }
+
+        hang_cancel.cancel();
+        let _ = hang_handle.await;
+
+        let (sink_cancel, sink_handle) = start_hls_put_sink(hls_put_port, sink_dir.clone()).await?;
+        let artifacts = wait_for_hls_put_artifacts(&sink_dir, Duration::from_secs(30)).await;
+        let requests = read_hls_put_requests(&sink_dir).ok();
+        let content_types_ok = requests.as_ref().is_some_and(|requests| {
+            request_seen(requests, |r| {
+                r["file"] == "out.m3u8" && r["contentType"] == "application/vnd.apple.mpegurl"
+            }) && request_seen(requests, |r| {
+                r["file"]
+                    .as_str()
+                    .is_some_and(|f| is_segment_file(f, "seg"))
+                    && r["contentType"] == "video/mp2t"
+            })
+        });
+
+        let recovery_deadline = Instant::now() + Duration::from_secs(20);
+        let mut recovered = false;
+        let mut recovery_status = String::from("unknown");
+        let mut final_bytes_out = 0u64;
+        while Instant::now() < recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                recovery_status = status["status"].as_str().unwrap_or("unknown").to_string();
+                final_bytes_out = status["bytesOut"].as_u64().unwrap_or(0);
+                if recovery_status == "running"
+                    && !status["retrying"].as_bool().unwrap_or(false)
+                    && final_bytes_out > 0
+                {
+                    recovered = true;
+                    break;
+                }
+            }
+        }
+
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_error_cleared = final_status
+            .as_ref()
+            .is_some_and(|status| status["lastError"].is_null());
+        let timeout_error_visible = {
+            let lower = retry_error.to_ascii_lowercase();
+            lower.contains("timed out") || lower.contains("deadline")
+        };
+        let failure_phase_ok =
+            retry_failure_phase == "upload_segment" || retry_failure_phase == "upload_playlist";
+        let passed = retry_status_visible
+            && retry_health_visible
+            && retry_has_error
+            && timeout_error_visible
+            && retry_phase == "failed"
+            && failure_phase_ok
+            && artifacts.is_ok()
+            && content_types_ok
+            && recovered
+            && final_status_running
+            && !final_retrying
+            && final_error_cleared
+            && final_bytes_out > 0;
+        println!(
+            "[fault] Hung HLS PUT sink recovers after timeout: {} (retrying={} healthRetrying={} timeoutVisible={} failurePhase={} recovered={} recoveryStatus={} finalRetrying={} bytesOut={})",
+            if passed { "PASS" } else { "FAIL" },
+            retry_status_visible,
+            retry_health_visible,
+            timeout_error_visible,
+            retry_failure_phase,
+            recovered,
+            recovery_status,
+            final_retrying,
+            final_bytes_out,
+        );
+        results.push(json!({
+            "test": "hls-put-timeout-recovers-after-restart",
+            "passed": passed,
+            "retryStatusVisible": retry_status_visible,
+            "retryHealthVisible": retry_health_visible,
+            "retryHasError": retry_has_error,
+            "retryPhase": retry_phase,
+            "retryFailurePhase": retry_failure_phase,
+            "retryError": retry_error,
+            "timeoutErrorVisible": timeout_error_visible,
+            "artifactsFound": artifacts.is_ok(),
+            "contentTypesCorrect": content_types_ok,
+            "recovered": recovered,
+            "recoveryStatus": recovery_status,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalErrorCleared": final_error_cleared,
+            "finalBytesOut": final_bytes_out,
+            "finalStatus": final_status,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut pub_child).await;
+        sink_cancel.cancel();
+        let _ = sink_handle.await;
+    }
+
     Ok(results)
 }
 
@@ -10029,6 +10276,7 @@ async fn recovery() -> Result<Value, String> {
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let hls_put_port: u16 = env_u16("HLS_PUT_PORT", 8990);
     let ports = TestPorts::from_env();
     let timeout = Duration::from_secs(15);
 
@@ -10037,7 +10285,15 @@ async fn recovery() -> Result<Value, String> {
     api.login().await?;
 
     let fixture_h264 = checked_h264_fixture()?;
-    let results = recovery_live_cases(&mut api, &ports, &fixture_h264, sink_port, timeout).await?;
+    let results = recovery_live_cases(
+        &mut api,
+        &ports,
+        &fixture_h264,
+        sink_port,
+        hls_put_port,
+        timeout,
+    )
+    .await?;
 
     stop_child(&mut child).await;
 
@@ -10067,6 +10323,7 @@ async fn fault_resilience() -> Result<Value, String> {
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let hls_put_port: u16 = env_u16("HLS_PUT_PORT", 8990);
     let ports = TestPorts::from_env();
     let timeout = Duration::from_secs(15);
 
@@ -10175,7 +10432,17 @@ async fn fault_resilience() -> Result<Value, String> {
         }));
     }
 
-    results.extend(recovery_live_cases(&mut api, &ports, &fixture_h264, sink_port, timeout).await?);
+    results.extend(
+        recovery_live_cases(
+            &mut api,
+            &ports,
+            &fixture_h264,
+            sink_port,
+            hls_put_port,
+            timeout,
+        )
+        .await?,
+    );
 
     // ── 4. File ingest stop ─────────────────────────────────────────────
     {
