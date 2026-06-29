@@ -1420,7 +1420,7 @@ async fn pipelines_delete_handler(
     if let Ok(Some(pipeline)) = db::get_pipeline(&state.db, &id).await
         && let Ok(ingests) = db::list_ingests(&state.db).await
     {
-        let mut children = state.engine.file_ingest_children.write().await;
+        let mut children = state.engine.file_ingests.children.write().await;
         for ingest in ingests
             .iter()
             .filter(|i| i.stream_key == pipeline.stream_key)
@@ -2131,7 +2131,7 @@ fn spawn_file_ingest_child(
 }
 
 async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
-    let mut children = engine.file_ingest_children.write().await;
+    let mut children = engine.file_ingests.children.write().await;
     if let Some(mut child) = children.remove(ingest_id) {
         let _ = child.kill().await;
         let _ = child.wait().await;
@@ -2337,7 +2337,7 @@ async fn pump_file_ingest_stdout(
     timestamps: &mut crate::media::file_ingest::ContinuousTimestampState,
 ) -> Result<(), String> {
     let (bytes_received, ingest_metrics, cached_keyframe_times) = {
-        let ingests = state.engine.active_ingests.read().await;
+        let ingests = state.engine.ingests.active.read().await;
         let ingest = ingests
             .get(&pipeline.id)
             .ok_or_else(|| format!("Active ingest missing for pipeline {}", pipeline.id))?;
@@ -2449,7 +2449,8 @@ async fn run_file_ingest_task(
     loop {
         state
             .engine
-            .file_ingest_children
+            .file_ingests
+            .children
             .write()
             .await
             .insert(ingest.id.clone(), spawned.child);
@@ -2467,7 +2468,7 @@ async fn run_file_ingest_task(
         let (stdout_res, stderr_res) = tokio::join!(stdout_fut, stderr_fut);
 
         let mut exit_status = None;
-        let mut children = state.engine.file_ingest_children.write().await;
+        let mut children = state.engine.file_ingests.children.write().await;
         if let Some(mut child) = children.remove(&ingest.id) {
             exit_status = child.wait().await.ok();
         }
@@ -2798,7 +2799,8 @@ async fn status_get_handler(
     let sys = System::new_all();
     let bonding_available = state
         .engine
-        .srt_listener_stats
+        .runtime
+        .listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
     let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
@@ -2982,7 +2984,8 @@ async fn status_sbom_get_handler(
 
     let bonding_available = state
         .engine
-        .srt_listener_stats
+        .runtime
+        .listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
     let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
@@ -3623,7 +3626,11 @@ async fn v1_events_handler(
 
     let limit = query.limit.min(events::MAX_EVENTS);
     let pipeline_filter = query.pipeline_id.as_deref();
-    let event_list = state.engine.event_log.recent(limit, pipeline_filter);
+    let event_list = state
+        .engine
+        .runtime
+        .event_log
+        .recent(limit, pipeline_filter);
 
     Json(serde_json::json!({
         "generatedAt": chrono::Utc::now().to_rfc3339(),
@@ -3844,7 +3851,7 @@ async fn agent_investigation_handler(
     } else {
         state.engine.engine_telemetry().await
     };
-    let events = state.engine.event_log.recent(
+    let events = state.engine.runtime.event_log.recent(
         request.event_limit.min(events::MAX_EVENTS),
         request.pipeline_id.as_deref(),
     );
@@ -4161,7 +4168,11 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .health_snapshot(&pipeline_ids, &recording_enabled)
         .await;
     let alerts = alerts::derive_alerts(&health);
-    let events = state.engine.event_log.recent(events::MAX_EVENTS, None);
+    let events = state
+        .engine
+        .runtime
+        .event_log
+        .recent(events::MAX_EVENTS, None);
     let engine_telemetry = state.engine.engine_telemetry().await;
     let mut pipeline_telemetry = Vec::new();
     let mut graphs = Vec::new();
@@ -4190,7 +4201,8 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
 
     let bonding_available = state
         .engine
-        .srt_listener_stats
+        .runtime
+        .listener_stats
         .bonding_available
         .load(std::sync::atomic::Ordering::Relaxed);
     let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
@@ -5013,11 +5025,11 @@ async fn agent_dependency_summary(
     health: &serde_json::Value,
 ) -> serde_json::Value {
     let hls_config = crate::media::hls::HlsConfig::from_env();
-    let hls_consumers = state.engine.hls_consumers.read().await;
-    let hls_stores = state.engine.hls_stores.read().await;
-    let recording_tokens = state.engine.recording_cancel_tokens.read().await;
-    let active_file_ingests = state.engine.active_file_ingests.read().await;
-    let file_ingest_children = state.engine.file_ingest_children.read().await;
+    let hls_consumers = state.engine.hls.consumers.read().await;
+    let hls_stores = state.engine.hls.stores.read().await;
+    let recording_tokens = state.engine.recordings.cancel_tokens.read().await;
+    let active_file_ingests = state.engine.file_ingests.active.read().await;
+    let file_ingest_children = state.engine.file_ingests.children.read().await;
 
     let mut hls = Vec::new();
     let mut recordings = Vec::new();
@@ -5398,7 +5410,8 @@ async fn pipeline_diagnostics_sse_handler(
 
     let probe_protocol = match state
         .engine
-        .active_ingests
+        .ingests
+        .active
         .read()
         .await
         .get(&pipeline_id)
@@ -5428,7 +5441,7 @@ async fn pipeline_diagnostics_sse_handler(
 
     // Acquire per-pipeline semaphore to prevent concurrent diagnostics on the same pipeline
     let sem = {
-        let mut map = engine.diag_semaphores.write().await;
+        let mut map = engine.runtime.diag_semaphores.write().await;
         map.entry(pipeline_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone()
@@ -5496,7 +5509,8 @@ async fn recording_start_handler(
 
     let has_ingest = state
         .engine
-        .active_ingests
+        .ingests
+        .active
         .read()
         .await
         .contains_key(&pipeline_id);
@@ -5566,7 +5580,8 @@ async fn get_or_start_hls_store(
 ) -> Result<Arc<HlsStore>, Response> {
     let has_ingest = state
         .engine
-        .active_ingests
+        .ingests
+        .active
         .read()
         .await
         .contains_key(pipeline_id);

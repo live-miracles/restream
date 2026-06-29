@@ -99,6 +99,7 @@ pub async fn start_recording(
         .get_or_create_stage_metrics(rec_stage_key.clone())
         .await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStarted {
             pipeline_id: pipeline_id.clone(),
@@ -158,7 +159,7 @@ pub async fn start_recording(
                     for pkt in &packets {
                         // Lazily create the feeder from engine metadata.
                         if feeder.is_none() {
-                            let ingests = engine.active_ingests.read().await;
+                            let ingests = engine.ingests.active.read().await;
                             if let Some(ingest) = ingests.get(&pipeline_id) {
                                 let video = ingest.video.as_ref();
                                 let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -220,6 +221,7 @@ pub async fn start_recording(
 
     engine.remove_stage_metrics(&rec_stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),

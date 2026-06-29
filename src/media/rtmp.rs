@@ -999,7 +999,7 @@ async fn handle_session_results(
                         };
                         let ring = engine.get_or_create_pipeline(&pipeline.id).await;
                         let (bytes_received, ingest_metrics) = {
-                            let ingests = engine.active_ingests.read().await;
+                            let ingests = engine.ingests.active.read().await;
                             ingests
                                 .get(&pipeline.id)
                                 .map(|ingest| {
@@ -1195,7 +1195,8 @@ async fn handle_session_results(
 
                         // Check if there's an active ingest
                         if !engine
-                            .active_ingests
+                            .ingests
+                            .active
                             .read()
                             .await
                             .contains_key(&pipeline.id)
@@ -1505,7 +1506,7 @@ pub async fn start_rtmp_egress(
     }
 
     let (egress_bytes_sent, egress_metrics, egress_last_progress_ms) = {
-        let egresses = engine.active_egresses.read().await;
+        let egresses = engine.egresses.active.read().await;
         if let Some(e) = egresses.get(&output_id) {
             (
                 Some(e.bytes_sent.clone()),
@@ -1595,7 +1596,7 @@ pub async fn start_rtmp_egress(
                                             && socket.write_all(&p.bytes).await.is_err() { return; }
                                     // Synthesize AAC sequence header from audio meta if not cached
                                     if audio_sh.is_none() {
-                                        let ingests = engine.active_ingests.read().await;
+                                        let ingests = engine.ingests.active.read().await;
                                         if let Some(ingest) = ingests.get(&pipeline_id) {
                                             let tracks = ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
                                             if let Some(track) = tracks.first() {
@@ -1811,7 +1812,7 @@ mod tests {
 
         // No video meta yet → not H.265
         {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             let is_h265 = ingests
                 .get("p1")
                 .and_then(|i| i.video.as_ref())
@@ -1842,7 +1843,7 @@ mod tests {
             )
             .await;
         {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             let is_h265 = ingests
                 .get("p1")
                 .and_then(|i| i.video.as_ref())
@@ -1873,7 +1874,7 @@ mod tests {
             )
             .await;
         {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             let is_h265 = ingests
                 .get("p1")
                 .and_then(|i| i.video.as_ref())
@@ -1927,7 +1928,7 @@ mod tests {
         let is_h265 = 'probe: {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             loop {
-                let ingests = engine_clone.active_ingests.read().await;
+                let ingests = engine_clone.ingests.active.read().await;
                 let meta = ingests.get(&pipeline_id).and_then(|i| i.video.as_ref());
                 match meta {
                     Some(v) if v.codec == "hevc" => break 'probe true,

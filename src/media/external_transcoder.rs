@@ -278,6 +278,7 @@ pub async fn start_external_transcoder_stage(
                 pipeline_id, encoding, e
             );
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -300,6 +301,7 @@ pub async fn start_external_transcoder_stage(
             let _ = child.wait().await;
             cancel.cancel();
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -319,6 +321,7 @@ pub async fn start_external_transcoder_stage(
             let _ = child.wait().await;
             cancel.cancel();
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -338,6 +341,7 @@ pub async fn start_external_transcoder_stage(
             let _ = child.wait().await;
             cancel.cancel();
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -418,6 +422,7 @@ pub async fn start_external_transcoder_stage(
             engine.remove_stage_metrics(&stage_key).await;
             engine.remove_pipe_metrics(&stage_key).await;
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -426,7 +431,7 @@ pub async fn start_external_transcoder_stage(
             return;
         }
         let result = {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone()?;
                 let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
@@ -565,6 +570,7 @@ pub async fn start_external_transcoder_stage(
     engine.remove_stage_metrics(&stage_key).await;
     engine.remove_pipe_metrics(&stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),

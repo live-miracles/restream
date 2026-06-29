@@ -263,6 +263,7 @@ pub async fn start_hls_segmenter(
         .get_or_create_stage_metrics(hls_stage_key.clone())
         .await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStarted {
             pipeline_id: pipeline_id.clone(),
@@ -318,14 +319,14 @@ pub async fn start_hls_segmenter(
                             let (video, audio_tracks) = loop {
                                 if cancel_token.is_cancelled() {
                                     engine.remove_stage_metrics(&hls_stage_key).await;
-                                    engine.event_log.emit(crate::events::EventKind::StageStopped {
+                                    engine.runtime.event_log.emit(crate::events::EventKind::StageStopped {
                                         pipeline_id: pipeline_id.clone(),
                                         encoding: "hls".to_string(),
                                     });
                                     return;
                                 }
                                 if let Some(tracks) = ring_buffer.audio_tracks() {
-                                    let ingests = engine.active_ingests.read().await;
+                                    let ingests = engine.ingests.active.read().await;
                                     if let Some(i) = ingests.get(&pipeline_id)
                                         && let Some(video) = i.video.clone()
                                     {
@@ -333,7 +334,7 @@ pub async fn start_hls_segmenter(
                                     }
                                 }
                                 let result = {
-                                    let ingests = engine.active_ingests.read().await;
+                                    let ingests = engine.ingests.active.read().await;
                                     ingests.get(&pipeline_id).and_then(|i| {
                                         let video = i.video.clone();
                                         video.as_ref()?;
@@ -384,6 +385,7 @@ pub async fn start_hls_segmenter(
 
     engine.remove_stage_metrics(&hls_stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),

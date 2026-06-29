@@ -112,9 +112,9 @@ fn result_event(result: &DiagResult) -> String {
 
 async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &str) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.active_ingests.read().await;
-    let egresses = engine.active_egresses.read().await;
-    let pipelines = engine.pipelines.read().await;
+    let ingests = engine.ingests.active.read().await;
+    let egresses = engine.egresses.active.read().await;
+    let pipelines = engine.ingests.pipelines.read().await;
 
     let active_ingest = ingests.get(pipeline_id);
     let pipeline_rb = pipelines.get(pipeline_id);
@@ -311,7 +311,7 @@ async fn check_active_outputs(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let egresses = engine.active_egresses.read().await;
+    let egresses = engine.egresses.active.read().await;
 
     let my_egresses: Vec<_> = egresses
         .iter()
@@ -451,7 +451,7 @@ async fn check_active_outputs(
         idx,
         "Active Outputs",
         "Egress target status and throughput",
-        "engine.active_egresses snapshot",
+        "engine.egresses.active snapshot",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )
@@ -464,7 +464,7 @@ async fn check_ingest_stream_info(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.active_ingests.read().await;
+    let ingests = engine.ingests.active.read().await;
     let ingest_opt = ingests.get(pipeline_id);
 
     let mut issues = vec![];
@@ -504,7 +504,7 @@ async fn check_ingest_stream_info(
         idx,
         "Stream Info",
         "Video and audio codec parameters",
-        "engine.active_ingests.video/audio",
+        "engine.ingests.active.video/audio",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )
@@ -518,7 +518,7 @@ async fn check_publisher_transport(
     probe_protocol: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.active_ingests.read().await;
+    let ingests = engine.ingests.active.read().await;
     let ingest_opt = ingests.get(pipeline_id);
 
     let mut issues = vec![];
@@ -766,7 +766,7 @@ async fn check_ring_buffer_health(
     pipeline_id: &str,
 ) -> DiagResult {
     let start = Instant::now();
-    let pipelines = engine.pipelines.read().await;
+    let pipelines = engine.ingests.pipelines.read().await;
     let rb_opt = pipelines.get(pipeline_id);
 
     let mut issues = vec![];
@@ -848,7 +848,7 @@ async fn check_ring_buffer_health(
 
 async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &str) -> DiagResult {
     let start = Instant::now();
-    let ingests = engine.active_ingests.read().await;
+    let ingests = engine.ingests.active.read().await;
     let ingest_opt = ingests.get(pipeline_id);
 
     let mut issues = vec![];
@@ -913,7 +913,7 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
 
 async fn check_srt_listener_socket(idx: u32, engine: &Arc<MediaEngine>) -> DiagResult {
     let start = Instant::now();
-    let stats = &engine.srt_listener_stats;
+    let stats = &engine.runtime.listener_stats;
     let rx_queue = stats
         .rx_queue_bytes
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -926,7 +926,7 @@ async fn check_srt_listener_socket(idx: u32, engine: &Arc<MediaEngine>) -> DiagR
         .load(std::sync::atomic::Ordering::Relaxed);
 
     let configured = crate::media::srt::DESIRED_UDP_BUF as u64;
-    let active_count = engine.active_ingests.read().await.len();
+    let active_count = engine.ingests.active.read().await.len();
 
     let mut lines = vec![];
     let mut issues = vec![];

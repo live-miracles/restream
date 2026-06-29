@@ -7,6 +7,7 @@
 pub mod avio;
 pub mod codec;
 pub mod engine;
+pub mod engine_registries;
 pub mod external_transcoder;
 pub mod feeder;
 pub mod file_ingest;

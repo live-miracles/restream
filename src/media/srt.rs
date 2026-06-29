@@ -1307,14 +1307,16 @@ impl SrtServer {
         match enable_srt_group_connect(server_sock) {
             Ok(()) => {
                 self.engine
-                    .srt_listener_stats
+                    .runtime
+                    .listener_stats
                     .bonding_available
                     .store(true, Ordering::Relaxed);
                 info!("Bonded ingest enabled on the shared listener (SRTO_GROUPCONNECT)",)
             }
             Err(error) => {
                 self.engine
-                    .srt_listener_stats
+                    .runtime
+                    .listener_stats
                     .bonding_available
                     .store(false, Ordering::Relaxed);
                 error!(
@@ -1372,7 +1374,7 @@ impl SrtServer {
         info!("Server listening on srt://{}", addr_str);
 
         // Monitor the shared listener socket's kernel UDP buffer occupancy
-        let listener_stats = self.engine.srt_listener_stats.clone();
+        let listener_stats = self.engine.runtime.listener_stats.clone();
         tokio::spawn(async move {
             monitor_listener_socket(port, listener_stats).await;
         });
@@ -1583,7 +1585,7 @@ impl SrtServer {
         }
 
         let (bytes_received, ingest_metrics) = {
-            let ingests = self.engine.active_ingests.read().await;
+            let ingests = self.engine.ingests.active.read().await;
             let opt = ingests
                 .get(&pipeline.id)
                 .map(|ingest| (ingest.bytes_received.clone(), ingest.metrics.clone()));
@@ -1604,7 +1606,7 @@ impl SrtServer {
         // without an async registry lookup (active_ingests.read().await +
         // HashMap::get()) on every IDR frame in the ingest hot loop.
         let cached_keyframe_times = {
-            let ingests = self.engine.active_ingests.read().await;
+            let ingests = self.engine.ingests.active.read().await;
             ingests.get(&pipeline.id).map(|i| i.keyframe_times.clone())
         };
 
@@ -1921,7 +1923,8 @@ impl SrtServer {
         // Verify active ingest exists
         if !self
             .engine
-            .active_ingests
+            .ingests
+            .active
             .read()
             .await
             .contains_key(pipeline_id)
@@ -1948,7 +1951,13 @@ impl SrtServer {
         // try_acquire_owned returns Err if the semaphore is exhausted; in that
         // case we reject the play connection gracefully rather than spawning a
         // thread that would push memory/VAS over the limit.
-        let permit = match self.engine.srt_sender_semaphore.clone().try_acquire_owned() {
+        let permit = match self
+            .engine
+            .runtime
+            .sender_semaphore
+            .clone()
+            .try_acquire_owned()
+        {
             Ok(p) => p,
             Err(_) => {
                 warn!(
@@ -2028,7 +2037,8 @@ impl SrtServer {
             // Check if ingest is still alive before waiting again
             if !self
                 .engine
-                .active_ingests
+                .ingests
+                .active
                 .read()
                 .await
                 .contains_key(pipeline_id)
@@ -3212,7 +3222,7 @@ pub fn start_shared_ts_muxer(
                 return;
             }
             let result = {
-                let ingests = engine.active_ingests.read().await;
+                let ingests = engine.ingests.active.read().await;
                 ingests.get(&pipeline_id_str).and_then(|i| {
                     let video = i.video.clone();
                     video.as_ref()?;
@@ -3232,7 +3242,8 @@ pub fn start_shared_ts_muxer(
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             if !engine
-                .active_ingests
+                .ingests
+                .active
                 .read()
                 .await
                 .contains_key(&pipeline_id_str)
@@ -3393,7 +3404,8 @@ pub fn start_shared_ts_muxer(
                 }
             }
             if !engine
-                .active_ingests
+                .ingests
+                .active
                 .read()
                 .await
                 .contains_key(&pipeline_id_str)
@@ -3757,7 +3769,7 @@ pub async fn start_srt_egress(
         egress_failure_phase,
         egress_quality,
     ) = {
-        let egresses = engine.active_egresses.read().await;
+        let egresses = engine.egresses.active.read().await;
         if let Some(e) = egresses.get(&output_id) {
             (
                 Some(e.bytes_sent.clone()),
@@ -3776,7 +3788,7 @@ pub async fn start_srt_egress(
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
     // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
-    let permit = match engine.srt_sender_semaphore.clone().try_acquire_owned() {
+    let permit = match engine.runtime.sender_semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             error!(

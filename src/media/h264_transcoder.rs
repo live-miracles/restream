@@ -54,6 +54,7 @@ pub async fn start_h264_transcoder(
     let (video_meta, audio_tracks) = loop {
         if cancel_token.is_cancelled() {
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -62,7 +63,7 @@ pub async fn start_h264_transcoder(
             return;
         }
         let result = {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone()?;
                 if video.codec != "hevc" && video.codec != "h265" {
@@ -156,6 +157,7 @@ pub async fn start_h264_transcoder(
     engine.remove_input_queue(&stage_key).await;
     engine.remove_stage_metrics(&stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),

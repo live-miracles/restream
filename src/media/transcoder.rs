@@ -162,6 +162,7 @@ pub async fn start_audio_router(
 
     engine.remove_stage_metrics(&stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id,
@@ -255,6 +256,7 @@ pub async fn start_transcoder(
     let (video_meta, audio_tracks) = loop {
         if cancel_token.is_cancelled() {
             engine
+                .runtime
                 .event_log
                 .emit(crate::events::EventKind::StageStopped {
                     pipeline_id: pipeline_id.clone(),
@@ -263,7 +265,7 @@ pub async fn start_transcoder(
             return;
         }
         let result = {
-            let ingests = engine.active_ingests.read().await;
+            let ingests = engine.ingests.active.read().await;
             ingests.get(&pipeline_id).and_then(|i| {
                 let video = i.video.clone();
                 video.as_ref()?;
@@ -388,6 +390,7 @@ pub async fn start_transcoder(
     engine.remove_input_queue(&stage_key).await;
     engine.remove_stage_metrics(&stage_key).await;
     engine
+        .runtime
         .event_log
         .emit(crate::events::EventKind::StageStopped {
             pipeline_id: pipeline_id.clone(),

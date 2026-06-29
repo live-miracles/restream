@@ -8,12 +8,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
 use crate::media::avio::MemoryQueue;
+use crate::media::engine_registries::{
+    EgressRegistry, FileIngestRegistry, HlsRegistry, IngestRegistry, RecordingRegistry,
+    RuntimeInfra, StageRegistry,
+};
 use crate::media::hls::HlsStore;
 use crate::media::ring_buffer::{
     RingBuffer, default_ring_capacity, default_transcoder_ring_capacity,
@@ -275,56 +278,13 @@ pub struct ListenerSocketStats {
 }
 
 pub struct MediaEngine {
-    // Map of pipeline_id -> RingBuffer
-    pub pipelines: TokioRwLock<HashMap<String, Arc<RingBuffer>>>,
-    // Map of pipeline_id -> Ingest cancellation token (for loop files or RTMP/SRT)
-    pub ingest_cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
-    // Map of output_id -> Egress cancellation token
-    pub egress_cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
-    // Active ingest stats
-    pub active_ingests: TokioRwLock<HashMap<String, ActiveIngest>>,
-    // Active egress stats
-    pub active_egresses: TokioRwLock<HashMap<String, ActiveEgress>>,
-    // Map of pipeline_id -> recording cancellation token (active recordings)
-    pub recording_cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
-    // Map of pipeline_id -> in-memory HLS segment store
-    pub hls_stores: TokioRwLock<HashMap<String, Arc<HlsStore>>>,
-    // Map of ingest_id -> file ingest child process
-    pub file_ingest_children: TokioRwLock<HashMap<String, tokio::process::Child>>,
-    // Configured file ingest IDs considered active, regardless of backend.
-    pub active_file_ingests: TokioRwLock<HashSet<String>>,
-    // Transcoded RingBuffer + cancel token keyed by typed pipeline/stage identity.
-    pub transcoder_buffers: TokioRwLock<HashMap<StageKey, (Arc<RingBuffer>, CancellationToken)>>,
-    // SRT listener socket kernel buffer stats
-    pub srt_listener_stats: Arc<ListenerSocketStats>,
-    // Map of pipeline_id -> HLS consumer tracking (refcount + idle timer)
-    pub hls_consumers: TokioRwLock<HashMap<String, HlsConsumers>>,
-    // Per-stage processing metrics keyed by typed pipeline/stage identity.
-    pub stage_metrics: TokioRwLock<HashMap<StageKey, Arc<StageMetrics>>>,
-    // OS thread handles registered by spawn sites (transcoder, h264_transcoder, SRT threads).
-    // Drained and joined at shutdown to prevent blocking threads from outliving the runtime.
-    pub os_threads: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
-    // Semaphore limiting concurrent SRT sender OS threads (play + egress).
-    // Each sender acquires a permit before spawning and releases it (via OwnedSemaphorePermit
-    // moved into the thread) when the thread exits. Caps virtual address space usage
-    // at ~512 × 8 MB stack ≈ 4 GB instead of unbounded growth at 1 thread / connection.
-    pub srt_sender_semaphore: Arc<tokio::sync::Semaphore>,
-    // Shared TS muxer stages
-    pub ts_muxer_stages: TokioRwLock<HashMap<String, Arc<TsChunkRing>>>,
-    // Per-pipeline semaphore preventing concurrent diagnostic runs on the same pipeline
-    pub diag_semaphores: TokioRwLock<HashMap<String, Arc<tokio::sync::Semaphore>>>,
-    // Input MemoryQueues for stages that bridge tokio→OS-thread.
-    // Keyed by the same typed stage identity as transcoder_buffers.
-    // Used by processing_graph() to surface queue depth/HWM in the engineer view.
-    pub input_queues: TokioRwLock<HashMap<StageKey, Arc<MemoryQueue>>>,
-    // Out-queues bridging the async TS-chunk reader → blocking SRT sender thread,
-    // one per active SRT push-egress connection. Keyed by output_id.
-    pub egress_queues: TokioRwLock<HashMap<String, Arc<MemoryQueue>>>,
-    // Pipe back-pressure metrics for external-subprocess stages.
-    // Keyed by the same typed stage identity as transcoder_buffers.
-    pub pipe_metrics: TokioRwLock<HashMap<StageKey, Arc<PipeMetrics>>>,
-    // Bounded in-memory lifecycle event log.
-    pub event_log: Arc<crate::events::EventLog>,
+    pub ingests: IngestRegistry,
+    pub egresses: EgressRegistry,
+    pub recordings: RecordingRegistry,
+    pub hls: HlsRegistry,
+    pub file_ingests: FileIngestRegistry,
+    pub stages: StageRegistry,
+    pub runtime: RuntimeInfra,
 }
 
 impl Default for MediaEngine {
@@ -345,27 +305,13 @@ impl MediaEngine {
         ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Warning);
 
         Self {
-            pipelines: TokioRwLock::new(HashMap::new()),
-            ingest_cancel_tokens: TokioRwLock::new(HashMap::new()),
-            egress_cancel_tokens: TokioRwLock::new(HashMap::new()),
-            active_ingests: TokioRwLock::new(HashMap::new()),
-            active_egresses: TokioRwLock::new(HashMap::new()),
-            recording_cancel_tokens: TokioRwLock::new(HashMap::new()),
-            hls_stores: TokioRwLock::new(HashMap::new()),
-            file_ingest_children: TokioRwLock::new(HashMap::new()),
-            active_file_ingests: TokioRwLock::new(HashSet::new()),
-            transcoder_buffers: TokioRwLock::new(HashMap::new()),
-            srt_listener_stats: Arc::new(ListenerSocketStats::default()),
-            hls_consumers: TokioRwLock::new(HashMap::new()),
-            stage_metrics: TokioRwLock::new(HashMap::new()),
-            os_threads: std::sync::Mutex::new(Vec::new()),
-            srt_sender_semaphore: Arc::new(tokio::sync::Semaphore::new(512)),
-            ts_muxer_stages: TokioRwLock::new(HashMap::new()),
-            diag_semaphores: TokioRwLock::new(HashMap::new()),
-            input_queues: TokioRwLock::new(HashMap::new()),
-            egress_queues: TokioRwLock::new(HashMap::new()),
-            pipe_metrics: TokioRwLock::new(HashMap::new()),
-            event_log: Arc::new(crate::events::EventLog::new()),
+            ingests: IngestRegistry::new(),
+            egresses: EgressRegistry::new(),
+            recordings: RecordingRegistry::new(),
+            hls: HlsRegistry::new(),
+            file_ingests: FileIngestRegistry::new(),
+            stages: StageRegistry::new(),
+            runtime: RuntimeInfra::new(),
         }
     }
 
@@ -502,7 +448,7 @@ impl MediaEngine {
     }
 
     pub async fn output_status(&self, output_id: &str) -> Option<serde_json::Value> {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         egresses
             .get(output_id)
             .map(|e| Self::egress_runtime_json(e, false, true))
@@ -512,14 +458,19 @@ impl MediaEngine {
     /// Already-finished handles are pruned opportunistically to prevent unbounded accumulation
     /// in long-running servers with many short-lived per-connection threads.
     pub fn register_os_thread(&self, handle: std::thread::JoinHandle<()>) {
-        let mut guards = self.os_threads.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guards = self
+            .runtime
+            .os_threads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guards.retain(|h| !h.is_finished());
         guards.push(handle);
     }
 
     /// Drain all registered OS thread handles for joining at shutdown.
     pub fn drain_os_thread_handles(&self) -> Vec<std::thread::JoinHandle<()>> {
-        self.os_threads
+        self.runtime
+            .os_threads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .drain(..)
@@ -527,7 +478,7 @@ impl MediaEngine {
     }
 
     pub async fn get_or_create_stage_metrics(&self, key: StageKey) -> Arc<StageMetrics> {
-        let mut metrics = self.stage_metrics.write().await;
+        let mut metrics = self.stages.metrics.write().await;
         metrics
             .entry(key)
             .or_insert_with(|| Arc::new(StageMetrics::new()))
@@ -535,42 +486,44 @@ impl MediaEngine {
     }
 
     pub async fn remove_stage_metrics(&self, key: &StageKey) {
-        self.stage_metrics.write().await.remove(key);
+        self.stages.metrics.write().await.remove(key);
     }
 
     pub async fn register_input_queue(&self, key: StageKey, queue: Arc<MemoryQueue>) {
-        self.input_queues.write().await.insert(key, queue);
+        self.stages.input_queues.write().await.insert(key, queue);
     }
 
     pub async fn remove_input_queue(&self, key: &StageKey) {
-        self.input_queues.write().await.remove(key);
+        self.stages.input_queues.write().await.remove(key);
     }
 
     pub async fn register_egress_queue(&self, output_id: &str, queue: Arc<MemoryQueue>) {
-        self.egress_queues
+        self.egresses
+            .queues
             .write()
             .await
             .insert(output_id.to_string(), queue);
     }
 
     pub async fn remove_egress_queue(&self, output_id: &str) {
-        self.egress_queues.write().await.remove(output_id);
+        self.egresses.queues.write().await.remove(output_id);
     }
 
     pub async fn register_pipe_metrics(&self, key: StageKey, metrics: Arc<PipeMetrics>) {
-        self.pipe_metrics.write().await.insert(key, metrics);
+        self.stages.pipe_metrics.write().await.insert(key, metrics);
     }
 
     pub async fn remove_pipe_metrics(&self, key: &StageKey) {
-        self.pipe_metrics.write().await.remove(key);
+        self.stages.pipe_metrics.write().await.remove(key);
     }
 
     pub async fn is_file_ingest_running(&self, id: &str) -> bool {
-        let mut children = self.file_ingest_children.write().await;
+        let mut children = self.file_ingests.children.write().await;
         if let Some(child) = children.get_mut(id) {
             match child.try_wait() {
                 Ok(None) => {
-                    self.active_file_ingests
+                    self.file_ingests
+                        .active
                         .write()
                         .await
                         .insert(id.to_string());
@@ -578,17 +531,17 @@ impl MediaEngine {
                 }
                 _ => {
                     children.remove(id);
-                    self.active_file_ingests.write().await.remove(id);
+                    self.file_ingests.active.write().await.remove(id);
                     false
                 }
             }
         } else {
-            self.active_file_ingests.read().await.contains(id)
+            self.file_ingests.active.read().await.contains(id)
         }
     }
 
     pub async fn reap_file_ingests(&self) {
-        let mut children = self.file_ingest_children.write().await;
+        let mut children = self.file_ingests.children.write().await;
         let mut stopped = Vec::new();
         children.retain(|id, child| match child.try_wait() {
             Ok(None) => true,
@@ -601,7 +554,7 @@ impl MediaEngine {
         drop(children);
 
         if !stopped.is_empty() {
-            let mut active = self.active_file_ingests.write().await;
+            let mut active = self.file_ingests.active.write().await;
             for id in stopped {
                 active.remove(&id);
             }
@@ -609,18 +562,19 @@ impl MediaEngine {
     }
 
     pub async fn mark_file_ingest_running(&self, id: &str) {
-        self.active_file_ingests
+        self.file_ingests
+            .active
             .write()
             .await
             .insert(id.to_string());
     }
 
     pub async fn clear_file_ingest_running(&self, id: &str) {
-        self.active_file_ingests.write().await.remove(id);
+        self.file_ingests.active.write().await.remove(id);
     }
 
     pub async fn get_or_create_pipeline(&self, pipeline_id: &str) -> Arc<RingBuffer> {
-        let mut pipelines = self.pipelines.write().await;
+        let mut pipelines = self.ingests.pipelines.write().await;
         if let Some(rb) = pipelines.get(pipeline_id) {
             return rb.clone();
         }
@@ -656,7 +610,7 @@ impl MediaEngine {
             .max(default_ring_capacity())
             .min(MAX_RING_CAPACITY);
 
-        let mut pipelines = self.pipelines.write().await;
+        let mut pipelines = self.ingests.pipelines.write().await;
         let Some(old_rb) = pipelines.get(pipeline_id).cloned() else {
             return None;
         };
@@ -727,7 +681,7 @@ impl MediaEngine {
         // two concurrent callers could both see the key absent, then both create
         // a ring buffer and spawn a transcoder task — the second insert would
         // overwrite the first, leaving an orphaned transcoder eating CPU/memory.
-        let mut buffers = self.transcoder_buffers.write().await;
+        let mut buffers = self.stages.buffers.write().await;
         if let Some((rb, token)) = buffers.get(&key)
             && !token.is_cancelled()
         {
@@ -764,7 +718,7 @@ impl MediaEngine {
         let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
             std::sync::Arc::new(tracks.to_vec())
         } else {
-            let ingests = self.active_ingests.read().await;
+            let ingests = self.ingests.active.read().await;
             ingests
                 .get(pipeline_id)
                 .map(|i| {
@@ -791,10 +745,12 @@ impl MediaEngine {
 
         let encoding_str = stage_kind.to_string();
         info!(pipeline_id = %pipeline_id, encoding = %encoding_str, "spawning transcoder stage");
-        self.event_log.emit(crate::events::EventKind::StageStarted {
-            pipeline_id: pipeline_id.to_string(),
-            encoding: encoding_str.clone(),
-        });
+        self.runtime
+            .event_log
+            .emit(crate::events::EventKind::StageStarted {
+                pipeline_id: pipeline_id.to_string(),
+                encoding: encoding_str.clone(),
+            });
 
         let pid = pipeline_id.to_string();
         let enc = encoding_str.clone();
@@ -886,7 +842,7 @@ impl MediaEngine {
         let key = StageKey::new(pipeline_id, StageKind::codec_edge("hevc_to_h264", upstream));
 
         // Single write-lock to avoid the TOCTOU race (see get_or_create_transcoder).
-        let mut buffers = self.transcoder_buffers.write().await;
+        let mut buffers = self.stages.buffers.write().await;
         if let Some((rb, token)) = buffers.get(&key)
             && !token.is_cancelled()
         {
@@ -902,7 +858,7 @@ impl MediaEngine {
         let input_tracks = if let Some(tracks) = source_buffer.audio_tracks() {
             std::sync::Arc::new(tracks.to_vec())
         } else {
-            let ingests = self.active_ingests.read().await;
+            let ingests = self.ingests.active.read().await;
             ingests
                 .get(pipeline_id)
                 .map(|i| {
@@ -923,10 +879,12 @@ impl MediaEngine {
         drop(buffers); // release write lock before spawning
 
         info!(pipeline_id = %pipeline_id, "spawning shared H.265→H.264 transcoder");
-        self.event_log.emit(crate::events::EventKind::StageStarted {
-            pipeline_id: pipeline_id.to_string(),
-            encoding: key.kind.to_string(),
-        });
+        self.runtime
+            .event_log
+            .emit(crate::events::EventKind::StageStarted {
+                pipeline_id: pipeline_id.to_string(),
+                encoding: key.kind.to_string(),
+            });
 
         let pid = pipeline_id.to_string();
         let ob = output_buf.clone();
@@ -948,7 +906,7 @@ impl MediaEngine {
 
     /// Return the active processing stages for a pipeline as (kind, is_alive) pairs.
     pub async fn active_transcoder_stages(&self, pipeline_id: &str) -> Vec<(StageKind, bool)> {
-        let buffers = self.transcoder_buffers.read().await;
+        let buffers = self.stages.buffers.read().await;
         buffers
             .iter()
             .filter(|(key, _)| key.pipeline.as_str() == pipeline_id)
@@ -957,7 +915,7 @@ impl MediaEngine {
     }
 
     pub async fn remove_pipeline(&self, pipeline_id: &str) {
-        let mut pipelines = self.pipelines.write().await;
+        let mut pipelines = self.ingests.pipelines.write().await;
         pipelines.remove(pipeline_id);
     }
 
@@ -968,7 +926,7 @@ impl MediaEngine {
     /// deletion so the `Arc<RingBuffer>` for every stage is freed immediately
     /// instead of surviving until the next reconciler creates a replacement stage.
     pub async fn cleanup_pipeline_stages(&self, pipeline_id: &str) {
-        let mut buffers = self.transcoder_buffers.write().await;
+        let mut buffers = self.stages.buffers.write().await;
         // Cancel all still-running stages then remove every entry for this pipeline.
         buffers.retain(|key, (_rb, token)| {
             if key.pipeline.as_str() == pipeline_id {
@@ -984,7 +942,7 @@ impl MediaEngine {
         &self,
         active_keys: &std::collections::HashSet<StageKey>,
     ) {
-        let mut buffers = self.transcoder_buffers.write().await;
+        let mut buffers = self.stages.buffers.write().await;
         buffers.retain(|key, (_rb, token)| {
             if !active_keys.contains(key) {
                 debug!("Sweeping unused transcoder stage: {}", key);
@@ -1004,7 +962,7 @@ impl MediaEngine {
     ) -> Arc<TsChunkRing> {
         let key = format!("{}:{}", pipeline_id, stage_key);
 
-        let mut stages = self.ts_muxer_stages.write().await;
+        let mut stages = self.stages.ts_muxers.write().await;
         if let Some(stage) = stages.get(&key)
             && !stage.cancel.is_cancelled()
         {
@@ -1024,7 +982,7 @@ impl MediaEngine {
     }
 
     pub async fn sweep_unused_stages(&self) {
-        let mut stages = self.ts_muxer_stages.write().await;
+        let mut stages = self.stages.ts_muxers.write().await;
         stages.retain(|key, stage| {
             let has_readers = if let Ok(mut r) = stage.ring.readers.lock() {
                 r.retain(|w| w.upgrade().is_some());
@@ -1056,7 +1014,7 @@ impl MediaEngine {
         stream_key: &str,
         protocol: &str,
     ) -> Option<CancellationToken> {
-        let mut tokens = self.ingest_cancel_tokens.write().await;
+        let mut tokens = self.ingests.cancel_tokens.write().await;
         if let Some(existing) = tokens.get(pipeline_id)
             && !existing.is_cancelled()
         {
@@ -1066,7 +1024,7 @@ impl MediaEngine {
         let token = CancellationToken::new();
         tokens.insert(pipeline_id.to_string(), token.clone());
 
-        let mut ingests = self.active_ingests.write().await;
+        let mut ingests = self.ingests.active.write().await;
         ingests.insert(
             pipeline_id.to_string(),
             ActiveIngest {
@@ -1086,7 +1044,8 @@ impl MediaEngine {
             },
         );
 
-        self.event_log
+        self.runtime
+            .event_log
             .emit(crate::events::EventKind::IngestConnected {
                 pipeline_id: pipeline_id.to_string(),
                 protocol: protocol.to_string(),
@@ -1096,12 +1055,12 @@ impl MediaEngine {
     }
 
     pub async fn unregister_ingest(&self, pipeline_id: &str) {
-        let mut tokens = self.ingest_cancel_tokens.write().await;
+        let mut tokens = self.ingests.cancel_tokens.write().await;
         if let Some(token) = tokens.remove(pipeline_id) {
             token.cancel();
         }
 
-        let mut ingests = self.active_ingests.write().await;
+        let mut ingests = self.ingests.active.write().await;
         let protocol = ingests
             .get(pipeline_id)
             .map(|i| i.protocol.clone())
@@ -1110,7 +1069,8 @@ impl MediaEngine {
         drop(ingests);
 
         if !protocol.is_empty() {
-            self.event_log
+            self.runtime
+                .event_log
                 .emit(crate::events::EventKind::IngestDisconnected {
                     pipeline_id: pipeline_id.to_string(),
                     protocol,
@@ -1124,11 +1084,11 @@ impl MediaEngine {
         pipeline_id: &str,
         url: &str,
     ) -> CancellationToken {
-        let mut tokens = self.egress_cancel_tokens.write().await;
+        let mut tokens = self.egresses.cancel_tokens.write().await;
         let token = CancellationToken::new();
         tokens.insert(output_id.to_string(), token.clone());
 
-        let mut egresses = self.active_egresses.write().await;
+        let mut egresses = self.egresses.active.write().await;
         let now = Instant::now();
         egresses.insert(
             output_id.to_string(),
@@ -1155,7 +1115,8 @@ impl MediaEngine {
             },
         );
 
-        self.event_log
+        self.runtime
+            .event_log
             .emit(crate::events::EventKind::EgressStarted {
                 pipeline_id: pipeline_id.to_string(),
                 output_id: output_id.to_string(),
@@ -1164,12 +1125,12 @@ impl MediaEngine {
     }
 
     pub async fn unregister_egress(&self, output_id: &str) {
-        let mut tokens = self.egress_cancel_tokens.write().await;
+        let mut tokens = self.egresses.cancel_tokens.write().await;
         if let Some(token) = tokens.remove(output_id) {
             token.cancel();
         }
 
-        let mut egresses = self.active_egresses.write().await;
+        let mut egresses = self.egresses.active.write().await;
         let pipeline_id = egresses
             .get(output_id)
             .map(|e| e.pipeline_id.clone())
@@ -1178,7 +1139,8 @@ impl MediaEngine {
         drop(egresses);
 
         if !pipeline_id.is_empty() {
-            self.event_log
+            self.runtime
+                .event_log
                 .emit(crate::events::EventKind::EgressStopped {
                     pipeline_id,
                     output_id: output_id.to_string(),
@@ -1187,28 +1149,28 @@ impl MediaEngine {
     }
 
     pub async fn update_egress_phase(&self, output_id: &str, phase: &str) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             *egress.phase.lock().unwrap_or_else(|e| e.into_inner()) = phase.to_string();
         }
     }
 
     pub async fn update_egress_target_addr(&self, output_id: &str, addr: String) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             *egress.target_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
         }
     }
 
     pub async fn update_egress_quality(&self, output_id: &str, quality: PublisherQuality) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             *egress.quality.lock().unwrap_or_else(|e| e.into_inner()) = quality;
         }
     }
 
     pub async fn record_egress_progress(&self, output_id: &str, bytes: u64) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
             egress.metrics.record_out(bytes);
@@ -1236,7 +1198,7 @@ impl MediaEngine {
         phase: &str,
         message: impl Into<String>,
     ) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             let message = message.into();
             let pipeline_id = egress.pipeline_id.clone();
@@ -1249,25 +1211,27 @@ impl MediaEngine {
             egress
                 .last_error_ms
                 .store(Self::now_epoch_ms(), Ordering::Relaxed);
-            self.event_log.emit(crate::events::EventKind::EgressFailed {
-                pipeline_id,
-                output_id: output_id.to_string(),
-                phase: phase.to_string(),
-                error: message,
-            });
+            self.runtime
+                .event_log
+                .emit(crate::events::EventKind::EgressFailed {
+                    pipeline_id,
+                    output_id: output_id.to_string(),
+                    phase: phase.to_string(),
+                    error: message,
+                });
         }
     }
 
     /// Update bytes received counter for an active ingest (lock-free atomic).
     pub async fn update_ingest_bytes(&self, pipeline_id: &str, bytes: u64) {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             ingest.bytes_received.fetch_add(bytes, Ordering::Relaxed);
         }
     }
 
     pub async fn record_keyframe(&self, pipeline_id: &str, pts: i64) {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             let mut times = ingest
                 .keyframe_times
@@ -1282,7 +1246,7 @@ impl MediaEngine {
 
     /// Update egress bytes sent counter (lock-free atomic).
     pub async fn update_egress_bytes(&self, output_id: &str, bytes: u64) {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         if let Some(egress) = egresses.get(output_id) {
             egress.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
             egress
@@ -1292,7 +1256,7 @@ impl MediaEngine {
     }
 
     pub async fn egress_bytes(&self, output_id: &str) -> u64 {
-        let egresses = self.active_egresses.read().await;
+        let egresses = self.egresses.active.read().await;
         egresses
             .get(output_id)
             .map(|e| e.bytes_sent.load(Ordering::Relaxed))
@@ -1307,7 +1271,7 @@ impl MediaEngine {
         audio: Option<AudioMeta>,
         remote_addr: Option<String>,
     ) {
-        let mut ingests = self.active_ingests.write().await;
+        let mut ingests = self.ingests.active.write().await;
         if let Some(ingest) = ingests.get_mut(pipeline_id) {
             if video.is_some() {
                 ingest.video = video;
@@ -1327,7 +1291,7 @@ impl MediaEngine {
         is_video: bool,
         data: bytes::Bytes,
     ) {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             if is_video {
                 *ingest
@@ -1347,7 +1311,7 @@ impl MediaEngine {
         &self,
         pipeline_id: &str,
     ) -> (Option<bytes::Bytes>, Option<bytes::Bytes>) {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             let video = ingest
                 .video_sequence_header
@@ -1367,7 +1331,7 @@ impl MediaEngine {
 
     /// Update audio track metadata for an active ingest (multi-track support).
     pub async fn update_ingest_audio_tracks(&self, pipeline_id: &str, tracks: Vec<AudioMeta>) {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         if let Some(ingest) = ingests.get(pipeline_id) {
             *ingest
                 .audio_tracks
@@ -1378,7 +1342,7 @@ impl MediaEngine {
 
     /// Build a probe snapshot for a pipeline's active ingest.
     pub async fn probe_snapshot(&self, pipeline_id: &str) -> Option<serde_json::Value> {
-        let ingests = self.active_ingests.read().await;
+        let ingests = self.ingests.active.read().await;
         let ingest = ingests.get(pipeline_id)?;
 
         let elapsed = ingest.start_time.elapsed().as_secs_f64();
@@ -1445,7 +1409,7 @@ impl MediaEngine {
 
     /// Update publisher transport quality metrics.
     pub async fn update_publisher_quality(&self, pipeline_id: &str, quality: PublisherQuality) {
-        let mut ingests = self.active_ingests.write().await;
+        let mut ingests = self.ingests.active.write().await;
         if let Some(ingest) = ingests.get_mut(pipeline_id) {
             ingest.quality = quality;
         }
@@ -1453,7 +1417,7 @@ impl MediaEngine {
 
     /// Register an active recording for a pipeline. Returns a cancellation token.
     pub async fn register_recording(&self, pipeline_id: &str) -> CancellationToken {
-        let mut tokens = self.recording_cancel_tokens.write().await;
+        let mut tokens = self.recordings.cancel_tokens.write().await;
         let token = CancellationToken::new();
         tokens.insert(pipeline_id.to_string(), token.clone());
         token
@@ -1461,7 +1425,7 @@ impl MediaEngine {
 
     /// Unregister (and cancel) an active recording for a pipeline.
     pub async fn unregister_recording(&self, pipeline_id: &str) {
-        let mut tokens = self.recording_cancel_tokens.write().await;
+        let mut tokens = self.recordings.cancel_tokens.write().await;
         if let Some(token) = tokens.remove(pipeline_id) {
             token.cancel();
         }
@@ -1469,7 +1433,7 @@ impl MediaEngine {
 
     /// Check if a recording is actively running for a pipeline.
     pub async fn is_recording_active(&self, pipeline_id: &str) -> bool {
-        let tokens = self.recording_cancel_tokens.read().await;
+        let tokens = self.recordings.cancel_tokens.read().await;
         tokens
             .get(pipeline_id)
             .is_some_and(|token| !token.is_cancelled())
@@ -1478,7 +1442,7 @@ impl MediaEngine {
     /// Ensure an HLS segmenter is running for this pipeline. Returns the store
     /// and whether the segmenter was already running (true) or just started (false).
     pub async fn ensure_hls_segmenter(&self, pipeline_id: &str) -> (Arc<HlsStore>, bool) {
-        let mut consumers = self.hls_consumers.write().await;
+        let mut consumers = self.hls.consumers.write().await;
         let already_running = consumers.contains_key(pipeline_id);
         if !already_running {
             let token = CancellationToken::new();
@@ -1492,7 +1456,7 @@ impl MediaEngine {
 
     /// Touch the HLS consumer heartbeat (called on playlist/segment fetch).
     pub async fn touch_hls(&self, pipeline_id: &str) {
-        let consumers = self.hls_consumers.read().await;
+        let consumers = self.hls.consumers.read().await;
         if let Some(c) = consumers.get(pipeline_id) {
             c.touch();
         }
@@ -1500,7 +1464,7 @@ impl MediaEngine {
 
     /// Register a persistent HLS consumer (e.g. HLS egress output).
     pub async fn add_hls_persistent_consumer(&self, pipeline_id: &str) {
-        let consumers = self.hls_consumers.read().await;
+        let consumers = self.hls.consumers.read().await;
         if let Some(c) = consumers.get(pipeline_id) {
             c.add_persistent();
         }
@@ -1508,7 +1472,7 @@ impl MediaEngine {
 
     /// Unregister a persistent HLS consumer.
     pub async fn remove_hls_persistent_consumer(&self, pipeline_id: &str) {
-        let consumers = self.hls_consumers.read().await;
+        let consumers = self.hls.consumers.read().await;
         if let Some(c) = consumers.get(pipeline_id) {
             c.remove_persistent();
         }
@@ -1516,22 +1480,22 @@ impl MediaEngine {
 
     /// Shut down an idle HLS segmenter and clean up its store.
     pub async fn shutdown_hls_segmenter(&self, pipeline_id: &str) {
-        let mut consumers = self.hls_consumers.write().await;
+        let mut consumers = self.hls.consumers.write().await;
         if let Some(c) = consumers.remove(pipeline_id) {
             c.cancel_token.cancel();
         }
         drop(consumers);
-        self.hls_stores.write().await.remove(pipeline_id);
+        self.hls.stores.write().await.remove(pipeline_id);
     }
 
     /// Get the cancel token for a running HLS segmenter (used to spawn the task).
     pub async fn get_hls_cancel_token(&self, pipeline_id: &str) -> Option<CancellationToken> {
-        let consumers = self.hls_consumers.read().await;
+        let consumers = self.hls.consumers.read().await;
         consumers.get(pipeline_id).map(|c| c.cancel_token.clone())
     }
 
     pub async fn get_or_create_hls_store(&self, pipeline_id: &str) -> Arc<HlsStore> {
-        let mut stores = self.hls_stores.write().await;
+        let mut stores = self.hls.stores.write().await;
         stores
             .entry(pipeline_id.to_string())
             .or_insert_with(|| Arc::new(HlsStore::new()))
@@ -1539,12 +1503,12 @@ impl MediaEngine {
     }
 
     pub async fn remove_hls_store(&self, pipeline_id: &str) {
-        let mut stores = self.hls_stores.write().await;
+        let mut stores = self.hls.stores.write().await;
         stores.remove(pipeline_id);
     }
 
     pub async fn get_hls_store(&self, pipeline_id: &str) -> Option<Arc<HlsStore>> {
-        let stores = self.hls_stores.read().await;
+        let stores = self.hls.stores.read().await;
         stores.get(pipeline_id).cloned()
     }
 
@@ -1555,11 +1519,11 @@ impl MediaEngine {
         pipeline_ids: &[String],
         recording_enabled: &HashMap<String, bool>,
     ) -> serde_json::Value {
-        let ingests = self.active_ingests.read().await;
-        let egresses = self.active_egresses.read().await;
-        let rec_tokens = self.recording_cancel_tokens.read().await;
-        let hls_consumers = self.hls_consumers.read().await;
-        let pipelines = self.pipelines.read().await;
+        let ingests = self.ingests.active.read().await;
+        let egresses = self.egresses.active.read().await;
+        let rec_tokens = self.recordings.cancel_tokens.read().await;
+        let hls_consumers = self.hls.consumers.read().await;
+        let pipelines = self.ingests.pipelines.read().await;
 
         let mut pipelines_json = serde_json::Map::new();
 
@@ -1710,16 +1674,19 @@ impl MediaEngine {
         }
 
         let rx_queue = self
-            .srt_listener_stats
+            .runtime
+            .listener_stats
             .rx_queue_bytes
             .load(Ordering::Relaxed);
         let rx_max = self
-            .srt_listener_stats
+            .runtime
+            .listener_stats
             .rx_queue_max_bytes
             .load(Ordering::Relaxed);
-        let drops = self.srt_listener_stats.drops.load(Ordering::Relaxed);
+        let drops = self.runtime.listener_stats.drops.load(Ordering::Relaxed);
         let bonding_available = self
-            .srt_listener_stats
+            .runtime
+            .listener_stats
             .bonding_available
             .load(Ordering::Relaxed);
 
@@ -1740,15 +1707,15 @@ impl MediaEngine {
     /// egresses. Intended for engineer dashboards and debugging.
     pub async fn engine_telemetry(&self) -> serde_json::Value {
         let generated_at = chrono::Utc::now().to_rfc3339();
-        let ingests = self.active_ingests.read().await;
-        let egresses = self.active_egresses.read().await;
-        let stage_metrics = self.stage_metrics.read().await;
-        let pipe_metrics = self.pipe_metrics.read().await;
-        let buffers = self.transcoder_buffers.read().await;
-        let pipelines = self.pipelines.read().await;
-        let ts_muxers = self.ts_muxer_stages.read().await;
-        let input_queues = self.input_queues.read().await;
-        let egress_queues = self.egress_queues.read().await;
+        let ingests = self.ingests.active.read().await;
+        let egresses = self.egresses.active.read().await;
+        let stage_metrics = self.stages.metrics.read().await;
+        let pipe_metrics = self.stages.pipe_metrics.read().await;
+        let buffers = self.stages.buffers.read().await;
+        let pipelines = self.ingests.pipelines.read().await;
+        let ts_muxers = self.stages.ts_muxers.read().await;
+        let input_queues = self.stages.input_queues.read().await;
+        let egress_queues = self.egresses.queues.read().await;
 
         let ingest_arr: Vec<serde_json::Value> = ingests
             .iter()
@@ -1909,12 +1876,12 @@ impl MediaEngine {
     /// active components.
     pub async fn pipeline_telemetry(&self, pipeline_id: &str) -> serde_json::Value {
         let generated_at = chrono::Utc::now().to_rfc3339();
-        let ingests = self.active_ingests.read().await;
-        let egresses = self.active_egresses.read().await;
-        let all_stage_metrics = self.stage_metrics.read().await;
-        let all_pipe_metrics = self.pipe_metrics.read().await;
-        let pipelines = self.pipelines.read().await;
-        let buffers = self.transcoder_buffers.read().await;
+        let ingests = self.ingests.active.read().await;
+        let egresses = self.egresses.active.read().await;
+        let all_stage_metrics = self.stages.metrics.read().await;
+        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
+        let pipelines = self.ingests.pipelines.read().await;
+        let buffers = self.stages.buffers.read().await;
 
         let ingest = ingests.get(pipeline_id).map(|i| {
             serde_json::json!({
@@ -1991,10 +1958,10 @@ impl MediaEngine {
     /// Single-stage telemetry by StageKey. Returns raw counters and pipe
     /// metrics (if present). Used by the engineer stage telemetry endpoint.
     pub async fn stage_telemetry(&self, key: &StageKey) -> Option<serde_json::Value> {
-        let all_stage_metrics = self.stage_metrics.read().await;
+        let all_stage_metrics = self.stages.metrics.read().await;
         let metrics = all_stage_metrics.get(key)?;
 
-        let all_pipe_metrics = self.pipe_metrics.read().await;
+        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
         let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
 
         Some(serde_json::json!({
@@ -2008,13 +1975,13 @@ impl MediaEngine {
     }
 
     pub async fn stage_telemetry_by_display(&self, display: &str) -> Option<serde_json::Value> {
-        let all_stage_metrics = self.stage_metrics.read().await;
+        let all_stage_metrics = self.stages.metrics.read().await;
         let key = all_stage_metrics
             .keys()
             .find(|k| k.to_string() == display)?;
         let metrics = all_stage_metrics.get(key)?;
 
-        let all_pipe_metrics = self.pipe_metrics.read().await;
+        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
         let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
 
         Some(serde_json::json!({
@@ -2034,17 +2001,17 @@ impl MediaEngine {
         pipeline_id: &str,
         outputs: &[crate::types::Output],
     ) -> serde_json::Value {
-        let ingests = self.active_ingests.read().await;
-        let egresses = self.active_egresses.read().await;
-        let pipelines = self.pipelines.read().await;
-        let transcoder_buffers = self.transcoder_buffers.read().await;
-        let rec_tokens = self.recording_cancel_tokens.read().await;
-        let hls_stores = self.hls_stores.read().await;
-        let hls_consumers = self.hls_consumers.read().await;
-        let all_stage_metrics = self.stage_metrics.read().await;
-        let all_input_queues = self.input_queues.read().await;
-        let all_pipe_metrics = self.pipe_metrics.read().await;
-        let ts_muxers = self.ts_muxer_stages.read().await;
+        let ingests = self.ingests.active.read().await;
+        let egresses = self.egresses.active.read().await;
+        let pipelines = self.ingests.pipelines.read().await;
+        let transcoder_buffers = self.stages.buffers.read().await;
+        let rec_tokens = self.recordings.cancel_tokens.read().await;
+        let hls_stores = self.hls.stores.read().await;
+        let hls_consumers = self.hls.consumers.read().await;
+        let all_stage_metrics = self.stages.metrics.read().await;
+        let all_input_queues = self.stages.input_queues.read().await;
+        let all_pipe_metrics = self.stages.pipe_metrics.read().await;
+        let ts_muxers = self.stages.ts_muxers.read().await;
 
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -2477,7 +2444,7 @@ mod tests {
         );
 
         assert_ne!(first, second, "exactly one publisher must win reservation");
-        assert_eq!(engine.active_ingests.read().await.len(), 1);
+        assert_eq!(engine.ingests.active.read().await.len(), 1);
     }
 
     #[tokio::test]
@@ -2533,7 +2500,7 @@ mod tests {
             .register_egress("output-1", "pipeline-1", "rtmp://example/live/test")
             .await;
         {
-            let mut egresses = engine.active_egresses.write().await;
+            let mut egresses = engine.egresses.active.write().await;
             let egress = egresses.get_mut("output-1").unwrap();
             egress.start_instant = Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2564,7 +2531,7 @@ mod tests {
             .await;
         engine.update_egress_phase("output-1", "segmenting").await;
         {
-            let mut egresses = engine.active_egresses.write().await;
+            let mut egresses = engine.egresses.active.write().await;
             let egress = egresses.get_mut("output-1").unwrap();
             egress.start_instant = Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2715,7 +2682,8 @@ mod tests {
     async fn health_snapshot_exposes_bonding_and_member_telemetry() {
         let engine = MediaEngine::new();
         engine
-            .srt_listener_stats
+            .runtime
+            .listener_stats
             .bonding_available
             .store(true, Ordering::Relaxed);
         engine
@@ -2881,7 +2849,7 @@ mod tests {
             .await;
         engine.unregister_egress("out-1").await;
 
-        let events = engine.event_log.recent(10, Some("pipe-1"));
+        let events = engine.runtime.event_log.recent(10, Some("pipe-1"));
         assert!(events.iter().any(|event| matches!(
             &event.kind,
             crate::events::EventKind::EgressFailed {
@@ -3291,7 +3259,7 @@ mod tests {
             .get_or_create_transcoder("pipe-typed", StageKind::video_preset("720p"), source, None)
             .await;
 
-        let buffers = engine.transcoder_buffers.read().await;
+        let buffers = engine.stages.buffers.read().await;
         let key = buffers
             .keys()
             .find(|key| key.pipeline.as_str() == "pipe-typed")
@@ -3453,14 +3421,14 @@ mod tests {
         let engine = MediaEngine::new();
         let token = CancellationToken::new();
         {
-            let mut consumers = engine.hls_consumers.write().await;
+            let mut consumers = engine.hls.consumers.write().await;
             consumers.insert("pipe-hls-rc".to_string(), HlsConsumers::new(token.clone()));
         }
 
         // One persistent consumer added — segmenter must not be idle.
         engine.add_hls_persistent_consumer("pipe-hls-rc").await;
         {
-            let consumers = engine.hls_consumers.read().await;
+            let consumers = engine.hls.consumers.read().await;
             assert!(
                 !consumers["pipe-hls-rc"].is_idle(0),
                 "segmenter must not be idle while a persistent consumer holds a ref"
@@ -3471,7 +3439,7 @@ mod tests {
         // use a long timeout so only persistent count matters here).
         engine.remove_hls_persistent_consumer("pipe-hls-rc").await;
         {
-            let consumers = engine.hls_consumers.read().await;
+            let consumers = engine.hls.consumers.read().await;
             assert_eq!(
                 consumers["pipe-hls-rc"]
                     .persistent
@@ -3684,7 +3652,7 @@ mod tests {
         let pipeline = "diag-concurrency";
 
         let sem = {
-            let mut map = engine.diag_semaphores.write().await;
+            let mut map = engine.runtime.diag_semaphores.write().await;
             map.entry(pipeline.to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
                 .clone()
@@ -3697,7 +3665,7 @@ mod tests {
         assert!(permit2.is_err(), "second concurrent acquire must fail");
 
         let sem_other = {
-            let mut map = engine.diag_semaphores.write().await;
+            let mut map = engine.runtime.diag_semaphores.write().await;
             map.entry("other-pipeline".to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
                 .clone()
@@ -3727,21 +3695,22 @@ mod tests {
             crate::media::ring_buffer::Reader::new("sweep-test".to_string(), stage.ring.clone());
 
         engine
-            .ts_muxer_stages
+            .stages
+            .ts_muxers
             .write()
             .await
             .insert(key.clone(), stage);
 
         engine.sweep_unused_stages().await;
         assert!(
-            engine.ts_muxer_stages.read().await.contains_key(&key),
+            engine.stages.ts_muxers.read().await.contains_key(&key),
             "stage with active reader must be retained"
         );
 
         drop(_reader);
         engine.sweep_unused_stages().await;
         assert!(
-            !engine.ts_muxer_stages.read().await.contains_key(&key),
+            !engine.stages.ts_muxers.read().await.contains_key(&key),
             "stage without readers must be removed"
         );
     }

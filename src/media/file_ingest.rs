@@ -246,7 +246,7 @@ fn load_ingest_runtime(
     pipeline_id: &str,
 ) -> Result<IngestRuntime, String> {
     runtime_handle.block_on(async {
-        let ingests = engine.active_ingests.read().await;
+        let ingests = engine.ingests.active.read().await;
         let ingest = ingests
             .get(pipeline_id)
             .ok_or_else(|| format!("Active ingest missing for pipeline {pipeline_id}"))?;
@@ -686,7 +686,7 @@ mod tests {
         sleep(Duration::from_secs(2)).await;
 
         assert!(
-            engine.active_ingests.read().await.contains_key(pipeline_id),
+            engine.ingests.active.read().await.contains_key(pipeline_id),
             "internal ingest should still be registered while streaming"
         );
         assert!(

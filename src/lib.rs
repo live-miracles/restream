@@ -253,7 +253,7 @@ pub async fn run_app() {
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    engine.event_log.set_sink(event_tx);
+    engine.runtime.event_log.set_sink(event_tx);
     {
         // Drain the event channel so the EventLog broadcast stays live.
         // Persistence is handled by the tracing DbLayer — lifecycle events emitted
@@ -411,7 +411,8 @@ pub async fn run_app() {
 
         for output in &outputs {
             let is_active = engine
-                .egress_cancel_tokens
+                .egresses
+                .cancel_tokens
                 .read()
                 .await
                 .contains_key(&output.id);
@@ -484,7 +485,7 @@ pub async fn run_app() {
                 let is_rtmp =
                     output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
                 let ingest_is_hevc = {
-                    let ingests = engine.active_ingests.read().await;
+                    let ingests = engine.ingests.active.read().await;
                     ingests
                         .get(&output.pipeline_id)
                         .and_then(|i| i.video.as_ref())
@@ -761,8 +762,8 @@ pub async fn run_app() {
         {
             let mut needed_stages: std::collections::HashSet<StageKey> =
                 std::collections::HashSet::new();
-            let ingests = engine.active_ingests.read().await;
-            let egress_tokens = engine.egress_cancel_tokens.read().await;
+            let ingests = engine.ingests.active.read().await;
+            let egress_tokens = engine.egresses.cancel_tokens.read().await;
             for output in &outputs {
                 let is_active = egress_tokens.contains_key(&output.id);
                 if is_active || output.desired_state == "running" {
@@ -805,7 +806,8 @@ pub async fn run_app() {
         };
         for pipeline in pipelines {
             let has_ingest = engine
-                .active_ingests
+                .ingests
+                .active
                 .read()
                 .await
                 .contains_key(&pipeline.id);
@@ -849,11 +851,11 @@ pub async fn run_app() {
 
         // Sweep idle HLS segmenters after the configured idle timeout
         // or if ingest disconnected.
-        let hls_ids: Vec<String> = engine.hls_consumers.read().await.keys().cloned().collect();
+        let hls_ids: Vec<String> = engine.hls.consumers.read().await.keys().cloned().collect();
         for pid in hls_ids {
-            let has_ingest = engine.active_ingests.read().await.contains_key(&pid);
+            let has_ingest = engine.ingests.active.read().await.contains_key(&pid);
             let idle = {
-                let consumers = engine.hls_consumers.read().await;
+                let consumers = engine.hls.consumers.read().await;
                 match consumers.get(&pid) {
                     Some(c) => !has_ingest || c.is_idle(tuning.hls_idle_timeout_ms),
                     None => false,
@@ -875,25 +877,25 @@ pub async fn run_app() {
     // runtime forcibly dropped them.
     info!("shutdown: cancelling all active tasks");
     {
-        let egress = engine.egress_cancel_tokens.read().await;
+        let egress = engine.egresses.cancel_tokens.read().await;
         for token in egress.values() {
             token.cancel();
         }
     }
     {
-        let ingests = engine.ingest_cancel_tokens.read().await;
+        let ingests = engine.ingests.cancel_tokens.read().await;
         for token in ingests.values() {
             token.cancel();
         }
     }
     {
-        let recs = engine.recording_cancel_tokens.read().await;
+        let recs = engine.recordings.cancel_tokens.read().await;
         for token in recs.values() {
             token.cancel();
         }
     }
     // Shut down all HLS segmenters (stops their internal tasks/timers).
-    let hls_ids: Vec<String> = engine.hls_consumers.read().await.keys().cloned().collect();
+    let hls_ids: Vec<String> = engine.hls.consumers.read().await.keys().cloned().collect();
     for pid in hls_ids {
         engine.shutdown_hls_segmenter(&pid).await;
     }
