@@ -1,5 +1,5 @@
 use crate::media::avio::{CustomOutput, MemoryQueue};
-use crate::media::engine::{MediaEngine, StageMetrics};
+use crate::media::engine::{IngestRegistration, MediaEngine, StageMetrics};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::ring_buffer::{MediaPacket, MediaType, RingBuffer};
 use ffmpeg_next::{codec, encoder, format, media};
@@ -140,8 +140,9 @@ pub fn spawn_internal_file_ingest(
     start_time: String,
     loop_enabled: bool,
     ring_buffer: Arc<RingBuffer>,
-    cancel: CancellationToken,
+    registration: IngestRegistration,
 ) -> Result<(), String> {
+    let cancel = registration.cancel_token.clone();
     let seek_ms = parse_start_time_ms(&start_time)?;
     let engine_for_thread = engine.clone();
     let runtime_for_thread = runtime_handle.clone();
@@ -192,8 +193,9 @@ pub fn spawn_internal_file_ingest(
 
         runtime_for_thread.block_on(async {
             engine_for_thread
-                .record_ingest_disconnect(
+                .record_ingest_disconnect_if_current(
                     &pipeline_id_for_thread,
+                    &registration,
                     disconnect_phase.as_deref(),
                     disconnect_reason,
                     disconnect_had_error,
@@ -203,7 +205,7 @@ pub fn spawn_internal_file_ingest(
                 .clear_file_ingest_running(&ingest_id_for_thread)
                 .await;
             engine_for_thread
-                .unregister_ingest(&pipeline_id_for_thread)
+                .unregister_ingest_if_current(&pipeline_id_for_thread, &registration)
                 .await;
         });
     });
@@ -684,8 +686,8 @@ mod tests {
         let ingest_id = "ing-file-ingest-test";
         let stream_key = "file-ingest-test-key";
         let ring_buffer = engine.get_or_create_pipeline(pipeline_id).await;
-        let cancel = engine
-            .try_register_ingest(pipeline_id, stream_key, "file")
+        let registration = engine
+            .try_register_ingest_attempt(pipeline_id, stream_key, "file")
             .await
             .expect("register ingest");
 
@@ -700,7 +702,7 @@ mod tests {
             String::new(),
             false,
             ring_buffer.clone(),
-            cancel.clone(),
+            registration.clone(),
         )
         .expect("spawn internal ingest");
 
@@ -715,7 +717,7 @@ mod tests {
             "internal ingest should have produced media packets after startup"
         );
 
-        cancel.cancel();
+        registration.cancel_token.cancel();
         sleep(Duration::from_millis(250)).await;
     }
 }

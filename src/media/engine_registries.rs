@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +22,7 @@ pub type TranscoderBuffer = (Arc<RingBuffer>, CancellationToken);
 pub struct IngestRegistry {
     pub pipelines: TokioRwLock<HashMap<String, Arc<RingBuffer>>>,
     pub cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
+    pub next_attempt_id: AtomicU64,
     pub active: TokioRwLock<HashMap<String, ActiveIngest>>,
     pub recent: TokioRwLock<HashMap<String, RecentIngestOutcome>>,
 }
@@ -30,6 +32,7 @@ impl IngestRegistry {
         Self {
             pipelines: TokioRwLock::new(HashMap::new()),
             cancel_tokens: TokioRwLock::new(HashMap::new()),
+            next_attempt_id: AtomicU64::new(1),
             active: TokioRwLock::new(HashMap::new()),
             recent: TokioRwLock::new(HashMap::new()),
         }

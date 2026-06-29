@@ -1221,8 +1221,8 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
     .expect("create pipeline");
 
     let ring_buffer = engine.get_or_create_pipeline(pipeline_id).await;
-    let cancel = engine
-        .try_register_ingest(pipeline_id, stream_key, "file")
+    let registration = engine
+        .try_register_ingest_attempt(pipeline_id, stream_key, "file")
         .await
         .expect("register ingest");
 
@@ -1237,7 +1237,7 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         String::new(),
         false,
         ring_buffer,
-        cancel.clone(),
+        registration.clone(),
     )
     .expect("spawn internal ingest");
 
@@ -1292,7 +1292,7 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         "segment payload should not be empty"
     );
 
-    cancel.cancel();
+    registration.cancel_token.cancel();
     sleep(Duration::from_millis(250)).await;
 }
 

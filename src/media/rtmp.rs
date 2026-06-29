@@ -30,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::media::codec;
-use crate::media::engine::{AudioMeta, MediaEngine, PublisherQuality, StageMetrics, VideoMeta};
+use crate::media::engine::{
+    AudioMeta, IngestRegistration, MediaEngine, PublisherQuality, StageMetrics, VideoMeta,
+};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use crate::media::security::IngestSecurityService;
 use crate::media::tcp_stats::{collect_rtmp_receiver_stats, collect_rtmp_sender_stats};
@@ -38,6 +40,7 @@ use bytes::Bytes;
 
 struct RtmpIngestHandle {
     pipeline_id: String,
+    registration: IngestRegistration,
     ring: Arc<RingBuffer>,
     bytes_received: Arc<AtomicU64>,
     ingest_metrics: Arc<StageMetrics>,
@@ -803,14 +806,17 @@ async fn handle_rtmp_client(
         {
             if let Some(active) = &active_ingest {
                 engine
-                    .record_ingest_disconnect(
+                    .record_ingest_disconnect_if_current(
                         &active.pipeline_id,
+                        &active.registration,
                         Some("session"),
                         Some(error.to_string()),
                         true,
                     )
                     .await;
-                engine.unregister_ingest(&active.pipeline_id).await;
+                engine
+                    .unregister_ingest_if_current(&active.pipeline_id, &active.registration)
+                    .await;
             }
             return Err(error);
         }
@@ -912,14 +918,17 @@ async fn handle_rtmp_client(
             false,
         ));
         engine
-            .record_ingest_disconnect(
+            .record_ingest_disconnect_if_current(
                 &active.pipeline_id,
+                &active.registration,
                 Some(phase.as_str()),
                 Some(reason),
                 had_error,
             )
             .await;
-        engine.unregister_ingest(&active.pipeline_id).await;
+        engine
+            .unregister_ingest_if_current(&active.pipeline_id, &active.registration)
+            .await;
     }
 
     Ok(())
@@ -1011,8 +1020,8 @@ async fn handle_session_results(
                         // A bonded SRT group is one logical publisher, but a second
                         // independent RTMP/SRT publisher must not create another
                         // writer for the same RingBuffer.
-                        let Some(_token) = engine
-                            .try_register_ingest(&pipeline.id, &stream_key, "rtmp")
+                        let Some(registration) = engine
+                            .try_register_ingest_attempt(&pipeline.id, &stream_key, "rtmp")
                             .await
                         else {
                             let _ = session.reject_request(
@@ -1029,11 +1038,14 @@ async fn handle_session_results(
                             })
                             .await
                         else {
-                            engine.unregister_ingest(&pipeline.id).await;
+                            engine
+                                .unregister_ingest_if_current(&pipeline.id, &registration)
+                                .await;
                             return Err("Active ingest disappeared during registration");
                         };
                         *active_ingest = Some(RtmpIngestHandle {
                             pipeline_id: pipeline.id.clone(),
+                            registration,
                             ring,
                             bytes_received,
                             ingest_metrics,

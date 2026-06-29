@@ -1551,9 +1551,9 @@ impl SrtServer {
         }
 
         let mut ring_buffer = self.engine.get_or_create_pipeline(&pipeline.id).await;
-        let Some(token) = self
+        let Some(registration) = self
             .engine
-            .try_register_ingest(&pipeline.id, stream_key, "srt")
+            .try_register_ingest_attempt(&pipeline.id, stream_key, "srt")
             .await
         else {
             error!(
@@ -1595,7 +1595,9 @@ impl SrtServer {
                 "[srt] Ingest vanished before receive loop for pipeline {}",
                 pipeline.id
             );
-            self.engine.unregister_ingest(&pipeline.id).await;
+            self.engine
+                .unregister_ingest_if_current(&pipeline.id, &registration)
+                .await;
             // SAFETY: Valid socket, clean up on early return.
             unsafe { srt_close(client_sock) };
             return;
@@ -1639,7 +1641,9 @@ impl SrtServer {
         let eid = unsafe { srt_epoll_create() };
         if eid < 0 {
             error!("Failed to create epoll instance");
-            self.engine.unregister_ingest(&pipeline.id).await;
+            self.engine
+                .unregister_ingest_if_current(&pipeline.id, &registration)
+                .await;
             // SAFETY: Valid socket, clean up on epoll failure.
             unsafe { srt_close(client_sock) };
             return;
@@ -1650,7 +1654,9 @@ impl SrtServer {
         // pointer references a live stack variable.
         if unsafe { srt_epoll_add_usock(eid, client_sock, &epoll_events) } < 0 {
             error!("Failed to add socket to epoll");
-            self.engine.unregister_ingest(&pipeline.id).await;
+            self.engine
+                .unregister_ingest_if_current(&pipeline.id, &registration)
+                .await;
             // SAFETY: eid and client_sock are valid handles. Clean up in
             // reverse creation order: release epoll, then close socket.
             unsafe {
@@ -1767,7 +1773,7 @@ impl SrtServer {
         };
 
         loop {
-            if token.is_cancelled() {
+            if registration.cancel_token.is_cancelled() {
                 break;
             }
 
@@ -1801,7 +1807,7 @@ impl SrtServer {
                         if !data_ready.swap(false, Ordering::Acquire) {
                             tokio::select! {
                                 _ = notify.notified() => {}
-                                _ = token.cancelled() => break,
+                                _ = registration.cancel_token.cancelled() => break,
                             }
                         }
                     }
@@ -1909,14 +1915,17 @@ impl SrtServer {
 
         info!("Ingest stream finished for pipeline: {}", pipeline.id);
         self.engine
-            .record_ingest_disconnect(
+            .record_ingest_disconnect_if_current(
                 &pipeline.id,
+                &registration,
                 disconnect_phase.as_deref(),
                 disconnect_reason,
                 disconnect_had_error,
             )
             .await;
-        self.engine.unregister_ingest(&pipeline.id).await;
+        self.engine
+            .unregister_ingest_if_current(&pipeline.id, &registration)
+            .await;
 
         // Signal the epoll_waiter task to stop and wait for it to release eid.
         // The _epoll_stop_guard would do this on drop, but signaling explicitly

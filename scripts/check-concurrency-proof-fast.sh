@@ -28,6 +28,12 @@ scripts/resource-limit cargo test \
   --test db -- --nocapture
 
 scripts/resource-limit cargo test \
+  stale_ingest_unregister_cannot_clobber_replacement_attempt \
+  --lib -- --nocapture
+scripts/resource-limit cargo test \
+  stale_ingest_disconnect_cannot_poison_replacement_attempt \
+  --lib -- --nocapture
+scripts/resource-limit cargo test \
   prop_no_loss_no_gap_no_duplication \
   --test ring_migration -- --nocapture
 scripts/resource-limit cargo test \

@@ -122,6 +122,8 @@ surface already covers it.
 - `tests/ring_migration.rs`
   - `prop_no_loss_no_gap_no_duplication`
 - `src/media/engine.rs`
+  - `stale_ingest_unregister_cannot_clobber_replacement_attempt`
+  - `stale_ingest_disconnect_cannot_poison_replacement_attempt`
   - `output_status_surfaces_retry_backoff_after_failure`
   - `prop_egress_lifecycle_preserves_runtime_and_health_invariants`
 - `src/media/avio.rs`

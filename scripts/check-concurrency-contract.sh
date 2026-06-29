@@ -14,6 +14,8 @@ scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state
 scripts/resource-limit cargo test health_endpoint_clears_recent_disconnect_details_after_reconnect --test api -- --nocapture
 scripts/resource-limit cargo test stale_job_update_cannot_clobber_replacement_attempt --test db -- --nocapture
 scripts/resource-limit cargo test multiple_stale_job_updates_cannot_clobber_newest_attempt --test db -- --nocapture
+scripts/resource-limit cargo test stale_ingest_unregister_cannot_clobber_replacement_attempt --lib -- --nocapture
+scripts/resource-limit cargo test stale_ingest_disconnect_cannot_poison_replacement_attempt --lib -- --nocapture
 scripts/resource-limit cargo test prop_no_loss_no_gap_no_duplication --test ring_migration -- --nocapture
 scripts/resource-limit cargo test write_batch_round_trips_random_chunks --lib -- --nocapture
 scripts/resource-limit cargo test epoll_waiter_coordination --lib -- --nocapture

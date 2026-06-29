@@ -2575,9 +2575,10 @@ async fn run_file_ingest_task(
     pipeline: Pipeline,
     file_path: PathBuf,
     ring_buffer: Arc<crate::media::ring_buffer::RingBuffer>,
-    cancel: CancellationToken,
+    registration: crate::media::engine::IngestRegistration,
     mut spawned: SpawnedFileIngestChild,
 ) {
+    let cancel = registration.cancel_token.clone();
     let mut timestamps = crate::media::file_ingest::ContinuousTimestampState::default();
     loop {
         state
@@ -2611,7 +2612,13 @@ async fn run_file_ingest_task(
             error!(ingest_id = %ingest.id, err = %err, "file-ingest stdout reader failed");
             state
                 .engine
-                .record_ingest_disconnect(&pipeline.id, Some("stdout"), Some(err.to_string()), true)
+                .record_ingest_disconnect_if_current(
+                    &pipeline.id,
+                    &registration,
+                    Some("stdout"),
+                    Some(err.to_string()),
+                    true,
+                )
                 .await;
         }
         if let Err(err) = stderr_res
@@ -2620,7 +2627,13 @@ async fn run_file_ingest_task(
             error!(ingest_id = %ingest.id, err = %err, "file-ingest stderr reader failed");
             state
                 .engine
-                .record_ingest_disconnect(&pipeline.id, Some("stderr"), Some(err.to_string()), true)
+                .record_ingest_disconnect_if_current(
+                    &pipeline.id,
+                    &registration,
+                    Some("stderr"),
+                    Some(err.to_string()),
+                    true,
+                )
                 .await;
         }
 
@@ -2631,8 +2644,9 @@ async fn run_file_ingest_task(
             warn!(ingest_id = %ingest.id, status = %status, "ffmpeg exited unsuccessfully");
             state
                 .engine
-                .record_ingest_disconnect(
+                .record_ingest_disconnect_if_current(
                     &pipeline.id,
+                    &registration,
                     Some("exit"),
                     Some(format!("ffmpeg exited with status {status}")),
                     true,
@@ -2641,8 +2655,9 @@ async fn run_file_ingest_task(
         } else if exit_status.is_some() && !cancel.is_cancelled() && !ingest.loop_flag {
             state
                 .engine
-                .record_ingest_disconnect(
+                .record_ingest_disconnect_if_current(
                     &pipeline.id,
+                    &registration,
                     Some("eof"),
                     Some("file ingest reached end of input".to_string()),
                     false,
@@ -2664,7 +2679,10 @@ async fn run_file_ingest_task(
     }
 
     state.engine.clear_file_ingest_running(&ingest.id).await;
-    state.engine.unregister_ingest(&pipeline.id).await;
+    state
+        .engine
+        .unregister_ingest_if_current(&pipeline.id, &registration)
+        .await;
 }
 
 async fn ingests_post_handler(
@@ -2843,9 +2861,9 @@ async fn ingests_start_handler(
     };
 
     let ring_buffer = state.engine.get_or_create_pipeline(&pipeline.id).await;
-    let Some(cancel) = state
+    let Some(registration) = state
         .engine
-        .try_register_ingest(&pipeline.id, &ingest.stream_key, "file")
+        .try_register_ingest_attempt(&pipeline.id, &ingest.stream_key, "file")
         .await
     else {
         return (
@@ -2867,7 +2885,7 @@ async fn ingests_start_handler(
             ingest.start_time.clone(),
             ingest.loop_flag,
             ring_buffer,
-            cancel,
+            registration,
         ) {
             state.engine.clear_file_ingest_running(&ingest.id).await;
             state.engine.unregister_ingest(&pipeline.id).await;
@@ -2897,7 +2915,7 @@ async fn ingests_start_handler(
             pipeline,
             file_path,
             ring_buffer,
-            cancel,
+            registration,
             spawned,
         ));
     }

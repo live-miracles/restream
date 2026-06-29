@@ -229,6 +229,7 @@ pub struct Publisher {
 
 /// Runtime state for one active ingest connection.
 pub struct ActiveIngest {
+    pub attempt_id: u64,
     pub stream_key: String,
     pub start_time: Instant,
     pub protocol: String, // "rtmp" | "srt" | "file"
@@ -243,6 +244,12 @@ pub struct ActiveIngest {
     /// Cached FLV sequence headers for RTMP play subscribers (video config + audio config)
     pub video_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
     pub audio_sequence_header: std::sync::Mutex<Option<bytes::Bytes>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IngestRegistration {
+    pub cancel_token: CancellationToken,
+    pub attempt_id: u64,
 }
 
 /// Runtime state for one active egress target.
@@ -1401,12 +1408,12 @@ impl MediaEngine {
     /// still one producer because libsrt presents the accepted bond as one group
     /// socket. A second independent RTMP/SRT connection must be rejected instead
     /// of overwriting the token and creating concurrent RingBuffer writers.
-    pub async fn try_register_ingest(
+    pub async fn try_register_ingest_attempt(
         &self,
         pipeline_id: &str,
         stream_key: &str,
         protocol: &str,
-    ) -> Option<CancellationToken> {
+    ) -> Option<IngestRegistration> {
         let mut tokens = self.ingests.cancel_tokens.write().await;
         if let Some(existing) = tokens.get(pipeline_id)
             && !existing.is_cancelled()
@@ -1414,7 +1421,12 @@ impl MediaEngine {
             return None;
         }
 
+        let attempt_id = self.ingests.next_attempt_id.fetch_add(1, Ordering::Relaxed);
         let token = CancellationToken::new();
+        let registration = IngestRegistration {
+            cancel_token: token.clone(),
+            attempt_id,
+        };
         tokens.insert(pipeline_id.to_string(), token.clone());
         self.ingests.recent.write().await.remove(pipeline_id);
 
@@ -1422,6 +1434,7 @@ impl MediaEngine {
         ingests.insert(
             pipeline_id.to_string(),
             ActiveIngest {
+                attempt_id,
                 stream_key: stream_key.to_string(),
                 start_time: Instant::now(),
                 protocol: protocol.to_string(),
@@ -1445,7 +1458,18 @@ impl MediaEngine {
                 protocol: protocol.to_string(),
                 stream_key: stream_key.to_string(),
             });
-        Some(token)
+        Some(registration)
+    }
+
+    pub async fn try_register_ingest(
+        &self,
+        pipeline_id: &str,
+        stream_key: &str,
+        protocol: &str,
+    ) -> Option<CancellationToken> {
+        self.try_register_ingest_attempt(pipeline_id, stream_key, protocol)
+            .await
+            .map(|registration| registration.cancel_token)
     }
 
     pub async fn record_ingest_disconnect(
@@ -1476,6 +1500,41 @@ impl MediaEngine {
             .write()
             .await
             .insert(pipeline_id.to_string(), snapshot);
+    }
+
+    pub async fn record_ingest_disconnect_if_current(
+        &self,
+        pipeline_id: &str,
+        registration: &IngestRegistration,
+        phase: Option<&str>,
+        reason: Option<String>,
+        had_error: bool,
+    ) -> bool {
+        let ingests = self.ingests.active.read().await;
+        let Some(ingest) = ingests.get(pipeline_id) else {
+            return false;
+        };
+        if ingest.attempt_id != registration.attempt_id {
+            return false;
+        }
+
+        let snapshot = RecentIngestOutcome {
+            protocol: ingest.protocol.clone(),
+            disconnected_at_ms: Self::now_epoch_ms(),
+            reason,
+            failure_phase: phase.map(ToOwned::to_owned),
+            had_error,
+            remote_addr: ingest.remote_addr.clone(),
+            bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
+        };
+        drop(ingests);
+
+        self.ingests
+            .recent
+            .write()
+            .await
+            .insert(pipeline_id.to_string(), snapshot);
+        true
     }
 
     pub async fn unregister_ingest(&self, pipeline_id: &str) {
@@ -1515,6 +1574,57 @@ impl MediaEngine {
                     protocol,
                 });
         }
+    }
+
+    pub async fn unregister_ingest_if_current(
+        &self,
+        pipeline_id: &str,
+        registration: &IngestRegistration,
+    ) -> bool {
+        let mut tokens = self.ingests.cancel_tokens.write().await;
+        let mut ingests = self.ingests.active.write().await;
+        let Some(active) = ingests.get(pipeline_id) else {
+            return false;
+        };
+        if active.attempt_id != registration.attempt_id {
+            return false;
+        }
+
+        if let Some(token) = tokens.remove(pipeline_id) {
+            token.cancel();
+        }
+
+        let removed = ingests.remove(pipeline_id);
+        drop(ingests);
+
+        let protocol = removed
+            .as_ref()
+            .map(|ingest| ingest.protocol.clone())
+            .unwrap_or_default();
+        if let Some(ingest) = removed {
+            let mut recent = self.ingests.recent.write().await;
+            recent
+                .entry(pipeline_id.to_string())
+                .or_insert_with(|| RecentIngestOutcome {
+                    protocol: ingest.protocol,
+                    disconnected_at_ms: Self::now_epoch_ms(),
+                    reason: None,
+                    failure_phase: None,
+                    had_error: false,
+                    remote_addr: ingest.remote_addr,
+                    bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
+                });
+        }
+
+        if !protocol.is_empty() {
+            self.runtime
+                .event_log
+                .emit(crate::events::EventKind::IngestDisconnected {
+                    pipeline_id: pipeline_id.to_string(),
+                    protocol,
+                });
+        }
+        true
     }
 
     pub async fn register_egress(
@@ -2599,6 +2709,92 @@ mod tests {
 
         assert_ne!(first, second, "exactly one publisher must win reservation");
         assert_eq!(engine.ingests.active.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_ingest_unregister_cannot_clobber_replacement_attempt() {
+        let engine = MediaEngine::new();
+
+        let first = engine
+            .try_register_ingest_attempt("pipeline-race", "stream-key", "rtmp")
+            .await
+            .expect("first ingest should register");
+        engine.unregister_ingest("pipeline-race").await;
+
+        let replacement = engine
+            .try_register_ingest_attempt("pipeline-race", "stream-key", "srt")
+            .await
+            .expect("replacement ingest should register");
+
+        assert!(
+            !engine
+                .unregister_ingest_if_current("pipeline-race", &first)
+                .await,
+            "stale cleanup from the old attempt must not remove the replacement ingest"
+        );
+        assert!(
+            engine
+                .with_active_ingest("pipeline-race", |ingest| ingest.attempt_id)
+                .await
+                .is_some_and(|attempt_id| attempt_id == replacement.attempt_id),
+            "replacement ingest must remain active after stale unregister"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_ingest_disconnect_cannot_poison_replacement_attempt() {
+        let engine = MediaEngine::new();
+
+        let first = engine
+            .try_register_ingest_attempt("pipeline-race", "stream-key", "rtmp")
+            .await
+            .expect("first ingest should register");
+        engine.unregister_ingest("pipeline-race").await;
+
+        let replacement = engine
+            .try_register_ingest_attempt("pipeline-race", "stream-key-2", "srt")
+            .await
+            .expect("replacement ingest should register");
+
+        assert!(
+            !engine
+                .record_ingest_disconnect_if_current(
+                    "pipeline-race",
+                    &first,
+                    Some("receive"),
+                    Some("stale disconnect".to_string()),
+                    true,
+                )
+                .await,
+            "stale disconnect metadata must not attach to a replacement ingest attempt"
+        );
+        assert!(
+            engine
+                .record_ingest_disconnect_if_current(
+                    "pipeline-race",
+                    &replacement,
+                    Some("disconnect"),
+                    Some("replacement disconnect".to_string()),
+                    false,
+                )
+                .await,
+            "current attempt should still be able to publish disconnect metadata"
+        );
+        assert!(
+            engine
+                .unregister_ingest_if_current("pipeline-race", &replacement)
+                .await,
+            "replacement attempt should be able to unregister cleanly"
+        );
+
+        let pipelines = vec!["pipeline-race".to_string()];
+        let snapshot = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let input = &snapshot["pipelines"]["pipeline-race"]["input"];
+        assert_eq!(input["status"], "off");
+        assert_eq!(input["lastSessionProtocol"], "srt");
+        assert_eq!(input["lastDisconnectReason"], "replacement disconnect");
+        assert_eq!(input["lastFailurePhase"], "disconnect");
+        assert_eq!(input["recentDisconnectError"], false);
     }
 
     #[tokio::test]
