@@ -4339,6 +4339,33 @@ async fn wait_for_api_input_off(
     }
 }
 
+async fn wait_for_api_recording_state(
+    api: &RampApi,
+    pipeline_id: &str,
+    expected_active: bool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let health = api.get_json("/api/v1/engine/health").await?;
+        let recording = &health["pipelines"][pipeline_id]["recording"];
+        let enabled = recording["enabled"].as_bool().unwrap_or(false);
+        let active = recording["active"].as_bool().unwrap_or(false);
+        if active == expected_active {
+            return Ok(json!({
+                "enabled": enabled,
+                "active": active,
+            }));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "recording state for pipeline {pipeline_id} did not reach active={expected_active}; enabled={enabled} active={active}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 struct RampSnapshot {
     cpu_pct: String,
     rss_kb: u64,
@@ -8841,7 +8868,101 @@ async fn fault_resilience() -> Result<Value, String> {
         }));
     }
 
-    // ── 4. RTMP egress sink disappears ──────────────────────────────────
+    // ── 4. Recording stops and surfaces inactive after ingest disappears ──
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-recording", "streamKey": "fault-recording"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-recording", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/recording/start"),
+            json!({}),
+        )
+        .await?;
+
+        let active_result =
+            wait_for_api_recording_state(&api, &pid, true, Duration::from_secs(10)).await;
+        let active_ok = active_result.is_ok();
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        stop_child(&mut pub_child).await;
+        let started = Instant::now();
+        let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
+        let inactive_result =
+            wait_for_api_recording_state(&api, &pid, false, Duration::from_secs(10)).await;
+        let elapsed = started.elapsed();
+
+        let mut recording_file_found = false;
+        if let Ok(entries) = std::fs::read_dir("media") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "ts") {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("");
+                    if file_name.contains("fault-recording") {
+                        recording_file_found = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let recording_enabled = inactive_result
+            .as_ref()
+            .ok()
+            .and_then(|state| state["enabled"].as_bool())
+            .unwrap_or(false);
+        let recording_active = inactive_result
+            .as_ref()
+            .ok()
+            .and_then(|state| state["active"].as_bool())
+            .unwrap_or(true);
+        let passed = active_ok
+            && off_result.is_ok()
+            && inactive_result.is_ok()
+            && recording_enabled
+            && !recording_active
+            && recording_file_found;
+        println!(
+            "[fault] Recording follows ingest teardown: {} (enabled={}, active={}, fileFound={}, {:.1}s)",
+            if passed { "PASS" } else { "FAIL" },
+            recording_enabled,
+            recording_active,
+            recording_file_found,
+            elapsed.as_secs_f64()
+        );
+        results.push(json!({
+            "test": "recording-stops-after-ingest-disconnect",
+            "passed": passed,
+            "elapsedMs": elapsed.as_millis(),
+            "inputOffError": off_result.err(),
+            "recordingActiveError": active_result.err(),
+            "recordingInactiveError": inactive_result.err(),
+            "recordingEnabled": recording_enabled,
+            "recordingActive": recording_active,
+            "recordingFileFound": recording_file_found,
+        }));
+    }
+
+    // ── 5. RTMP egress sink disappears ──────────────────────────────────
     // Accept connections and drain data, then abort all reader tasks so
     // their TcpStreams are dropped, sending TCP RST to the egress writer.
     {
@@ -8996,7 +9117,7 @@ async fn fault_resilience() -> Result<Value, String> {
         stop_child(&mut pub_child).await;
     }
 
-    // ── 5. SRT egress sink disappears ───────────────────────────────────
+    // ── 6. SRT egress sink disappears ───────────────────────────────────
     // Use the SRT port on the same restream instance: egress pushes to a
     // second pipeline; we delete that pipeline to simulate sink loss.
     {
