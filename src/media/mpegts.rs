@@ -2098,14 +2098,10 @@ mod tests {
 
     #[test]
     fn demux_fixture_file() {
-        let ts_data = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test/artifacts/latest/correctness-h264.ts"
-        ));
-        let ts_data = match ts_data {
-            Ok(d) => d,
-            Err(_) => return, // Skip if fixture not available
-        };
+        let fixture =
+            crate::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+        let ts_data = std::fs::read(&fixture)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture.display()));
 
         let mut demuxer = TsDemuxer::new();
         demuxer.feed(&ts_data);
@@ -2235,14 +2231,10 @@ mod tests {
 
     #[test]
     fn demux_chunked_feed() {
-        let ts_data = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test/artifacts/latest/correctness-h264.ts"
-        ));
-        let ts_data = match ts_data {
-            Ok(d) => d,
-            Err(_) => return,
-        };
+        let fixture =
+            crate::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+        let ts_data = std::fs::read(&fixture)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture.display()));
 
         // Feed in 1316-byte chunks (SRT packet size)
         let mut demuxer = TsDemuxer::new();
@@ -2269,14 +2261,10 @@ mod tests {
 
     #[test]
     fn demux_h265_fixture_file() {
-        let ts_data = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test/artifacts/latest/correctness-h265.ts"
-        ));
-        let ts_data = match ts_data {
-            Ok(d) => d,
-            Err(_) => return,
-        };
+        let fixture =
+            crate::test_fixtures::canonical_h265_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+        let ts_data = std::fs::read(&fixture)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture.display()));
 
         let mut demuxer = TsDemuxer::new();
         for chunk in ts_data.chunks(1316) {

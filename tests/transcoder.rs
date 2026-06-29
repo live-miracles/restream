@@ -1,6 +1,6 @@
 //! Correctness tests for `run_ffmpeg_transcoder_stage`.
 //!
-//! Generates a small MPEG-TS fixture via ffmpeg CLI and verifies that the
+//! Uses the checked-in canonical MPEG-TS fixture and verifies that the
 //! transcoder demuxes it and pushes MediaPackets to the output RingBuffer.
 
 use restream::media::avio::MemoryQueue;
@@ -20,8 +20,9 @@ static FFMPEG_TEST_LOGGING: std::sync::Once = std::sync::Once::new();
 
 fn load_fixture() -> Vec<u8> {
     configure_ffmpeg_test_logging();
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/artifacts/test-h264.ts");
-    std::fs::read(path).unwrap_or_else(|e| panic!("fixture missing at {path}: {e}"))
+    let path =
+        restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing at {}: {e}", path.display()))
 }
 
 fn configure_ffmpeg_test_logging() {

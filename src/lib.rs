@@ -41,6 +41,7 @@ pub mod logging;
 pub mod media;
 pub mod planner;
 pub mod runtime_info;
+pub mod test_fixtures;
 pub mod types;
 
 use crate::domain::stage::{EncodingStagePlan, StageKey};

@@ -124,6 +124,9 @@ fn bench_hls_mux_cost(c: &mut Criterion) {
             height: profile.height,
             fps: profile.fps as f64,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -134,6 +137,9 @@ fn bench_hls_mux_cost(c: &mut Criterion) {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         };
 
@@ -215,6 +221,9 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
             height: profile.height,
             fps: profile.fps as f64,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -225,6 +234,9 @@ fn bench_hls_memory_cost(c: &mut Criterion) {
             channels: 2,
             channel_layout: None,
             track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
         };
 

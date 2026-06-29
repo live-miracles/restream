@@ -29,14 +29,10 @@ async fn run_source_passthrough(fixture: &[u8]) -> usize {
 
 fn benchmark_transcoder_runtime_stage(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let fixture_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test/artifacts/latest/correctness-h264.ts"
-    );
-    let Ok(fixture) = std::fs::read(fixture_path) else {
-        eprintln!("skipping transcoder runtime benchmark: fixture not found at {fixture_path}");
-        return;
-    };
+    let fixture_path =
+        restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+    let fixture = std::fs::read(&fixture_path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture_path.display()));
 
     let output_bytes = runtime.block_on(run_source_passthrough(&fixture));
     assert!(output_bytes > 0, "production stage produced no output");

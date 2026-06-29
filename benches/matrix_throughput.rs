@@ -325,10 +325,12 @@ fn load_fixture_packets(
     fixture_name: &str,
     ingest: &str,
 ) -> (VideoMeta, Vec<AudioMeta>, Vec<MediaPacket>) {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let path = std::path::Path::new(manifest_dir)
-        .join("test/artifacts/latest")
-        .join(fixture_name);
+    let path = match fixture_name {
+        "correctness-h264.ts" => restream::test_fixtures::canonical_h264_ts_fixture(),
+        "correctness-h265.ts" => restream::test_fixtures::canonical_h265_ts_fixture(),
+        other => Err(format!("unknown matrix fixture {other}")),
+    }
+    .unwrap_or_else(|e| panic!("{e}"));
     let file_bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture at {}: {}", path.display(), e));
 

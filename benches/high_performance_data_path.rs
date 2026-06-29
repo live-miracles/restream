@@ -472,14 +472,10 @@ fn bench_segment_finalize(c: &mut Criterion) {
 }
 
 fn bench_mpegts_demux_drain(c: &mut Criterion) {
-    let fixture_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test/artifacts/latest/correctness-h264.ts"
-    );
-    let Ok(fixture) = std::fs::read(fixture_path) else {
-        eprintln!("skipping MPEG-TS drain benchmark: fixture not found at {fixture_path}");
-        return;
-    };
+    let fixture_path =
+        restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+    let fixture = std::fs::read(&fixture_path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture_path.display()));
 
     let mut group = c.benchmark_group("data_path/mpegts_demux_drain");
     group.sample_size(10);
@@ -528,14 +524,10 @@ fn bench_mpegts_demux_drain(c: &mut Criterion) {
 }
 
 fn bench_mpegts_resync(c: &mut Criterion) {
-    let fixture_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test/artifacts/latest/correctness-h264.ts"
-    );
-    let Ok(fixture) = std::fs::read(fixture_path) else {
-        eprintln!("skipping MPEG-TS resync benchmark: fixture not found at {fixture_path}");
-        return;
-    };
+    let fixture_path =
+        restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+    let fixture = std::fs::read(&fixture_path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture_path.display()));
 
     let prefix_len = 64 * 1024;
     let mut input = vec![0u8; prefix_len];
@@ -563,24 +555,17 @@ fn bench_mpegts_resync(c: &mut Criterion) {
 }
 
 fn bench_mpegts_mux(c: &mut Criterion) {
-    let fixture_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test/artifacts/latest/correctness-h264.ts"
-    );
-    let Ok(fixture) = std::fs::read(fixture_path) else {
-        eprintln!("skipping MPEG-TS mux benchmark: fixture not found at {fixture_path}");
-        return;
-    };
+    let fixture_path =
+        restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+    let fixture = std::fs::read(&fixture_path)
+        .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture_path.display()));
 
     let mut demuxer = TsDemuxer::new();
     demuxer.feed(&fixture);
     demuxer.flush();
     let packets = demuxer.drain();
     let probe = demuxer.take_probe();
-    if packets.is_empty() {
-        eprintln!("skipping MPEG-TS mux benchmark: no packets decoded from fixture");
-        return;
-    }
+    assert!(!packets.is_empty(), "no packets decoded from fixture");
 
     let video = probe.as_ref().and_then(|p| {
         p.video.as_ref().map(|v| VideoMeta {
@@ -589,6 +574,9 @@ fn bench_mpegts_mux(c: &mut Criterion) {
             height: v.height,
             fps: v.fps,
             bw: None,
+            pid: None,
+            language: None,
+            title: None,
             profile: None,
             level: None,
             pixel_format: None,
@@ -605,6 +593,9 @@ fn bench_mpegts_mux(c: &mut Criterion) {
                     channels: a.channels,
                     channel_layout: None,
                     track_index: a.track_index,
+                    pid: None,
+                    language: None,
+                    title: None,
                     profile: None,
                 })
                 .collect()
@@ -672,6 +663,9 @@ fn bench_burst_mux_write(c: &mut Criterion) {
         height: 1080,
         fps: 30.0,
         bw: None,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
         level: None,
         pixel_format: None,
@@ -682,6 +676,9 @@ fn bench_burst_mux_write(c: &mut Criterion) {
         channels: 2,
         channel_layout: None,
         track_index: 0,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
     };
     let audio_tracks = vec![audio_meta];

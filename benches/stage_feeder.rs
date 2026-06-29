@@ -17,6 +17,9 @@ fn video_meta() -> VideoMeta {
         height: 1080,
         fps: 30.0,
         bw: None,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
         level: None,
         pixel_format: None,
@@ -30,6 +33,9 @@ fn audio_tracks() -> Arc<Vec<AudioMeta>> {
         channels: 2,
         channel_layout: None,
         track_index: 0,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
     }])
 }

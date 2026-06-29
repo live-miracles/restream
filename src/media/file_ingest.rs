@@ -555,7 +555,6 @@ mod tests {
     use crate::media::engine::MediaEngine;
     use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat};
     use bytes::Bytes;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::time::{Duration, sleep};
 
@@ -675,7 +674,8 @@ mod tests {
             tokio::runtime::Handle::current(),
             ingest_id.to_string(),
             pipeline_id.to_string(),
-            PathBuf::from("media/sadhguru-live.mp4"),
+            crate::test_fixtures::canonical_h264_ts_fixture()
+                .expect("checked-in transport fixture"),
             String::new(),
             false,
             ring_buffer.clone(),

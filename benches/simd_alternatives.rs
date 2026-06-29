@@ -231,6 +231,9 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
         height: 1080,
         fps: 30.0,
         bw: None,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
         level: None,
         pixel_format: None,
@@ -241,6 +244,9 @@ fn bench_ts_mux_inhouse(c: &mut Criterion) {
         channels: 2,
         channel_layout: None,
         track_index: 0,
+        pid: None,
+        language: None,
+        title: None,
         profile: None,
     };
 
