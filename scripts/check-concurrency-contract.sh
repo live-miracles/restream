@@ -23,3 +23,7 @@ scripts/resource-limit cargo build --bin restream --bin test_harness
 RESTREAM_BIN=target/debug/restream \
   WORK_DIR=test/artifacts/concurrency-contract \
   target/debug/test_harness fault-resilience
+
+RESTREAM_BIN=target/debug/restream \
+  WORK_DIR=test/artifacts/concurrency-recovery \
+  target/debug/test_harness recovery

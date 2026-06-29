@@ -36,7 +36,7 @@ Use the narrowest proof that can actually catch the bug:
 4. Live harness chaos tests
    - Use when the behavior crosses real sockets, child processes, FFmpeg, or
      OS-thread boundaries.
-   - Current live contract slice: `fault-resilience`.
+   - Current live contract slices: `fault-resilience` and `recovery`.
 
 5. Benchmarks
    - Use only for hot-path or end-to-end performance-sensitive changes.
@@ -82,7 +82,9 @@ bash ./scripts/check-concurrency-contract.sh
 
 The fast gate runs the loom targets, focused API tests, and harness unit tests.
 The full gate also builds the binaries and runs the live `fault-resilience`
-harness mode.
+and `recovery` harness modes. `recovery` is the focused reconnect/grace/retry
+contract so we can target that behavior directly without depending on the
+broader teardown bucket.
 
 ## Required Update Discipline
 
@@ -117,6 +119,7 @@ surface already covers it.
   - `output_status_surfaces_retry_backoff_after_failure`
 - `src/bin/test_harness.rs`
   - `fault-resilience`
+  - `recovery`
 
 ## Next Gaps
 
