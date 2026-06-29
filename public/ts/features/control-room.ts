@@ -351,11 +351,13 @@ function buildOutputCard(
   const statusLabel =
     normalizedStatus === "running" || normalizedStatus === "on"
       ? "Live"
-      : normalizedStatus === "warning"
-        ? "Unstable"
-        : normalizedStatus === "failed"
-          ? "Down"
-          : "Stopped";
+      : normalizedStatus === "retrying"
+        ? "Recovering"
+        : normalizedStatus === "warning"
+          ? "Unstable"
+          : normalizedStatus === "failed"
+            ? "Down"
+            : "Stopped";
   return {
     id: `output:${output.outputId}`,
     title: output.outputName,
@@ -397,6 +399,7 @@ function getCardStatusToneClasses(
     case "live":
       return "border-emerald-500/30 bg-emerald-500/[0.05]";
     case "unstable":
+    case "recovering":
       return "border-amber-500/30 bg-amber-500/[0.06]";
     case "down":
       return "border-rose-500/30 bg-rose-500/[0.05]";
@@ -413,6 +416,7 @@ function getStatusLabelClasses(statusLabel: string | null | undefined): string {
     case "live":
       return "text-emerald-700 dark:text-emerald-300";
     case "unstable":
+    case "recovering":
       return "text-amber-700 dark:text-amber-300";
     case "down":
       return "text-rose-700 dark:text-rose-300";

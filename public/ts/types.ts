@@ -186,6 +186,11 @@ export interface OutputHealth {
   lastError?: string | null;
   lastErrorAt?: string | null;
   failurePhase?: string | null;
+  retrying?: boolean;
+  retryAttempts?: number | null;
+  retryBackoffMs?: number | null;
+  nextRetryAt?: string | null;
+  retryRemainingMs?: number | null;
 }
 
 export interface HlsPreviewHealth {
@@ -305,6 +310,11 @@ export interface OutputView {
   lastErrorAt: string | null;
   lastProgressAt: string | null;
   lastProgressAgeMs: number | null;
+  retrying: boolean;
+  retryAttempts: number | null;
+  retryBackoffMs: number | null;
+  nextRetryAt: string | null;
+  retryRemainingMs: number | null;
   time: number | null;
   job: Job | null;
   totalSize: number | null;

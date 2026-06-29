@@ -108,6 +108,47 @@ function formatShortDurationMs(value: number | null | undefined): string {
   return msToHHMMSS(totalSeconds * 1000) || "--";
 }
 
+function formatRetryIssueText(output: OutputView): string {
+  const remaining =
+    Number.isFinite(output.retryRemainingMs as number) &&
+    (output.retryRemainingMs as number) >= 0
+      ? formatShortDurationMs(output.retryRemainingMs)
+      : null;
+  if (remaining && remaining !== "--") return remaining;
+  if (
+    Number.isFinite(output.retryAttempts as number) &&
+    (output.retryAttempts as number) > 0
+  ) {
+    return `#${Number(output.retryAttempts)}`;
+  }
+  return "queued";
+}
+
+function buildRetryIssueTitle(output: OutputView): string {
+  const parts: string[] = [
+    "Output hit a recoverable error and is waiting to retry.",
+  ];
+  if (
+    Number.isFinite(output.retryAttempts as number) &&
+    (output.retryAttempts as number) > 0
+  ) {
+    parts.push(`Attempt ${Number(output.retryAttempts)}.`);
+  }
+  if (
+    Number.isFinite(output.retryBackoffMs as number) &&
+    (output.retryBackoffMs as number) > 0
+  ) {
+    parts.push(`Backoff ${formatShortDurationMs(output.retryBackoffMs)}.`);
+  }
+  if (output.nextRetryAt) {
+    parts.push(`Next retry ${output.nextRetryAt}.`);
+  }
+  if (output.lastError) {
+    parts.push(`Last error: ${output.lastError}`);
+  }
+  return parts.join(" ");
+}
+
 function formatAudioTrackIdentity(track: AudioTrack, label: string): string {
   const parts: string[] = [];
   if (Number.isFinite(track.pid as number)) {
@@ -718,15 +759,17 @@ export function renderOutsColumn(selectedPipe: string | null): void {
       const statusColor =
         o.status === "on" || o.status === "running"
           ? "status-primary"
-          : o.status === "stalled"
+          : o.retrying || o.status === "retrying"
             ? "status-warning"
-            : o.status === "failed" || o.lastError
-              ? "status-error"
-              : o.status === "warning"
-                ? "status-warning"
-                : o.status === "error"
-                  ? "status-error"
-                  : "status-neutral";
+            : o.status === "stalled"
+              ? "status-warning"
+              : o.status === "failed" || o.lastError
+                ? "status-error"
+                : o.status === "warning"
+                  ? "status-warning"
+                  : o.status === "error"
+                    ? "status-error"
+                    : "status-neutral";
 
       const isStopped = o.desiredState === "stopped";
       const isActive =
@@ -737,6 +780,13 @@ export function renderOutsColumn(selectedPipe: string | null): void {
       );
       const metrics: string[] = [];
       const outputIssue = (() => {
+        if (o.retrying || o.status === "retrying") {
+          return {
+            label: "retry",
+            text: escapeHtml(formatRetryIssueText(o)),
+            title: escapeHtml(buildRetryIssueTitle(o)),
+          };
+        }
         if (o.lastError) {
           return {
             label: "error",

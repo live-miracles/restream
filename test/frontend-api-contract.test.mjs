@@ -243,7 +243,7 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
           },
           outputs: {
             "out-1": {
-              status: "failed",
+              status: "retrying",
               rawStatus: "running",
               phase: "failed",
               failurePhase: "send",
@@ -253,6 +253,11 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
               lastProgressAgeMs: 1200,
               totalSize: 4096,
               bitrateKbps: 512.8,
+              retrying: true,
+              retryAttempts: 2,
+              retryBackoffMs: 20000,
+              nextRetryAt: "2026-06-29T00:00:25Z",
+              retryRemainingMs: 15000,
             },
           },
         },
@@ -265,7 +270,7 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
   assert.equal(pipelines[0].input.probeStatus, "pending");
   assert.equal(pipelines[0].input.probePendingMs, 2400);
   assert.equal(pipelines[0].input.lastDisconnectReason, null);
-  assert.equal(pipelines[0].outs[0].status, "failed");
+  assert.equal(pipelines[0].outs[0].status, "retrying");
   assert.equal(pipelines[0].outs[0].rawStatus, "running");
   assert.equal(pipelines[0].outs[0].phase, "failed");
   assert.equal(pipelines[0].outs[0].failurePhase, "send");
@@ -273,4 +278,24 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
   assert.equal(pipelines[0].outs[0].lastErrorAt, "2026-06-29T00:00:05Z");
   assert.equal(pipelines[0].outs[0].lastProgressAt, "2026-06-29T00:00:04Z");
   assert.equal(pipelines[0].outs[0].lastProgressAgeMs, 1200);
+  assert.equal(pipelines[0].outs[0].retrying, true);
+  assert.equal(pipelines[0].outs[0].retryAttempts, 2);
+  assert.equal(pipelines[0].outs[0].retryBackoffMs, 20000);
+  assert.equal(pipelines[0].outs[0].nextRetryAt, "2026-06-29T00:00:25Z");
+  assert.equal(pipelines[0].outs[0].retryRemainingMs, 15000);
+});
+
+test("retrying outputs are not treated as unexpectedly down", async () => {
+  const { isOutputRetrying, isOutputRunning, isOutputUnexpectedlyDown } =
+    await loadCompiledModule("core/output-status.js");
+
+  const retryingOutput = {
+    desiredState: "started",
+    status: "retrying",
+    retrying: true,
+  };
+
+  assert.equal(isOutputRetrying(retryingOutput), true);
+  assert.equal(isOutputRunning(retryingOutput), false);
+  assert.equal(isOutputUnexpectedlyDown(retryingOutput), false);
 });

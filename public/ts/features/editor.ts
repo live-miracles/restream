@@ -44,6 +44,7 @@ import {
   getAudioPlatformLabel,
 } from "../core/audio-caps.js";
 import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
+import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
 import { refreshDashboard } from "./dashboard.js";
 import type {
@@ -958,10 +959,7 @@ async function openPipeModal(
 }
 
 function isPipelineKeyChangeLocked(pipe: PipelineView): boolean {
-  return !!pipe?.outs?.some(
-    (o) =>
-      o.status === "on" || o.status === "running" || o.status === "warning",
-  );
+  return !!pipe?.outs?.some((o) => isOutputManagedActive(o));
 }
 
 function setPipeSrtIngestModeUi(
@@ -1267,11 +1265,7 @@ async function openOutModal(
   );
 
   const isRunning =
-    mode === "edit" &&
-    !!output &&
-    (output.status === "on" ||
-      output.status === "running" ||
-      output.status === "warning");
+    mode === "edit" && !!output && isOutputManagedActive(output);
 
   const monitoringUrlInput = document.getElementById(
     "out-monitoring-url-input",

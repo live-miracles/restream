@@ -15,11 +15,11 @@ import { loadStatus } from "./status.js";
 import {
   isOutputIntentStopped,
   isOutputRunning,
+  isOutputRetrying,
   isOutputUnexpectedlyDown,
-  selectPipeline,
-} from "./render.js";
+} from "../core/output-status.js";
+import { selectPipeline } from "./render.js";
 import type { AppLogRow, OutputView, PipelineView } from "../types.js";
-
 type DashboardMode =
   | "overview"
   | "pipeline"
@@ -393,6 +393,14 @@ function pipelineHealthLabel(pipe: PipelineView): {
       detail: "input live",
     };
   }
+  if (pipe.outs.some(isOutputRetrying)) {
+    return {
+      label: "Output retrying",
+      cls: badgeClassForTone("warning"),
+      tone: "warning",
+      detail: "recovering",
+    };
+  }
   if (pipe.outs.some((out) => out.status === "warning")) {
     return {
       label: "Output warning",
@@ -415,6 +423,7 @@ function outputStateLabel(out: OutputView): { label: string; cls: string } {
   if (out.status === "failed") return { label: "Failed", cls: "badge-error" };
   if (out.status === "stalled")
     return { label: "Stalled", cls: "badge-warning" };
+  if (isOutputRetrying(out)) return { label: "Retrying", cls: "badge-warning" };
   if (isOutputRunning(out)) return { label: "Running", cls: "badge-success" };
   if (out.status === "warning")
     return { label: "Warning", cls: "badge-warning" };
@@ -434,6 +443,7 @@ function summaryCounts() {
         (pipe.input.status === "on" && !pipe.input.probeReady),
     ).length,
     runningOutputs: outputs.filter(isOutputRunning).length,
+    retryingOutputs: outputs.filter(isOutputRetrying).length,
     stoppedOutputs: outputs.filter(isOutputIntentStopped).length,
     downOutputs: outputs.filter(isOutputUnexpectedlyDown).length,
     recording: state.pipelines.filter((pipe) => pipe.recording.active).length,
@@ -486,6 +496,7 @@ function inputOverviewPill(pipe: PipelineView): string {
 function outputsOverviewPill(pipe: PipelineView): string {
   const total = pipe.outs.length;
   const running = pipe.outs.filter(isOutputRunning).length;
+  const retrying = pipe.outs.filter(isOutputRetrying).length;
   const stopped = pipe.outs.filter(isOutputIntentStopped).length;
   const down = pipe.outs.filter(isOutputUnexpectedlyDown).length;
   if (!total) return statusPill("No outputs", "neutral", "not configured");
@@ -498,6 +509,13 @@ function outputsOverviewPill(pipe: PipelineView): string {
   }
   if (down > 0)
     return statusPill(`${down} down`, "error", `${running}/${total} running`);
+  if (retrying > 0) {
+    return statusPill(
+      `${retrying} retrying`,
+      "warning",
+      `${running}/${total} running`,
+    );
+  }
   if (stopped === total)
     return statusPill("Stopped", "neutral", `${total} configured`);
   if (running === total)
@@ -581,7 +599,7 @@ function renderOverview(): void {
             ${overviewMetric("Inputs Live", `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : "All quiet", "inputs")}
             ${overviewMetric("Throughput In", formatBitrate(counts.inputKbps), "Across active publishers", "inputKbps")}
             ${overviewMetric("Engine Memory", formatBytes(engineMemory), engineMemoryDetail, "engineMemory")}
-            ${overviewMetric("Outputs Running", `${counts.runningOutputs}`, `${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, "outputs")}
+            ${overviewMetric("Outputs Running", `${counts.runningOutputs}`, `${counts.retryingOutputs} retrying / ${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, "outputs")}
             ${overviewMetric("Throughput Out", formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? "" : "s"}`, "outputKbps")}
         </div>
         <section class="border-base-content/10 bg-base-200/80 rounded-lg border">
@@ -828,6 +846,8 @@ function renderInspectDiagnostics(pipe: PipelineView | null): void {
   if (!pipe.input.publisher?.protocol)
     blockers.push("Publisher protocol is not known yet.");
   const downOutputs = pipe.outs.filter(isOutputUnexpectedlyDown);
+  const retryingOutputs = pipe.outs.filter(isOutputRetrying);
+  const faultCandidates = [...downOutputs, ...retryingOutputs];
 
   container.innerHTML = `<div class="grid gap-3 md:grid-cols-3">
         <div class="bg-base-100 rounded-lg p-3">
@@ -836,11 +856,11 @@ function renderInspectDiagnostics(pipe: PipelineView | null): void {
         </div>
         <div class="bg-base-100 rounded-lg p-3">
             <div class="text-base-content/60 text-xs font-semibold uppercase">Fault Candidates</div>
-            <div class="mt-2 text-sm">${downOutputs.length ? downOutputs.map((out) => escapeHtml(out.name)).join("<br>") : "No unexpected output failures."}</div>
+            <div class="mt-2 text-sm">${faultCandidates.length ? faultCandidates.map((out) => escapeHtml(out.name)).join("<br>") : "No unexpected output failures."}</div>
         </div>
         <div class="bg-base-100 rounded-lg p-3">
             <div class="text-base-content/60 text-xs font-semibold uppercase">Suggested Next Step</div>
-            <div class="mt-2 text-sm">${pipe.input.status === "on" ? "Run diagnostics, then inspect graph edges with zero packet output." : "Start or reconnect the publisher before probing."}</div>
+            <div class="mt-2 text-sm">${pipe.input.status === "on" ? (retryingOutputs.length ? "Inspect recent errors and retry backoff before forcing a restart." : "Run diagnostics, then inspect graph edges with zero packet output.") : "Start or reconnect the publisher before probing."}</div>
         </div>
     </div>`;
 }
@@ -976,7 +996,7 @@ function applyMode(mode: DashboardMode): void {
     const counts = summaryCounts();
     summary.textContent =
       mode === "overview"
-        ? `${counts.liveInputs} live inputs / ${counts.runningOutputs} running outputs`
+        ? `${counts.liveInputs} live inputs / ${counts.runningOutputs} running outputs${counts.retryingOutputs ? ` / ${counts.retryingOutputs} retrying` : ""}`
         : mode === "pipeline"
           ? "Pipeline workflow"
           : mode === "inspect"

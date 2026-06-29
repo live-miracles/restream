@@ -202,6 +202,8 @@ function parsePipelinesInfo(
     const outHealth =
       healthByPipeline[out.pipelineId]?.outputs?.[out.id] || null;
     const status = outHealth?.status || "off";
+    const retrying =
+      status === "retrying" || Boolean(outHealth?.retrying || false);
 
     if (!pipe) {
       console.error("Not found pipeline for output: ", out);
@@ -292,6 +294,20 @@ function parsePipelinesInfo(
       lastProgressAgeMs:
         typeof outHealth?.lastProgressAgeMs === "number"
           ? outHealth.lastProgressAgeMs
+          : null,
+      retrying,
+      retryAttempts:
+        typeof outHealth?.retryAttempts === "number"
+          ? outHealth.retryAttempts
+          : null,
+      retryBackoffMs:
+        typeof outHealth?.retryBackoffMs === "number"
+          ? outHealth.retryBackoffMs
+          : null,
+      nextRetryAt: outHealth?.nextRetryAt || null,
+      retryRemainingMs:
+        typeof outHealth?.retryRemainingMs === "number"
+          ? outHealth.retryRemainingMs
           : null,
       time: outTime,
       job: latestJob || null,
