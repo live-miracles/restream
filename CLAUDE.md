@@ -38,7 +38,7 @@ incremental, keeps debug symbols). Never use `--release` from agents.
 scripts/resource-limit cargo build --profile bench
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
-cargo fmt
+cargo fmt --all
 
 # Frontend
 npx tsc -p tsconfig.json
@@ -110,6 +110,8 @@ keep a scalar fallback; use runtime feature detection; minimize `unsafe` and doc
 
 ## Testing Expectations
 
+- Successful test runs must stay quiet: no compiler warnings, panic text, FFmpeg probe chatter, or stale-binary drift in the passing log. If a test expects noisy stderr, suppress it in the helper instead of teaching CI to ignore it.
+- Standardize on `cargo fmt --all` and `cargo fmt --all --check` from the pinned toolchain. Do not run `rustfmt` directly; it can miss workspace and edition context.
 - Run scoped tests first (filtered unit/Criterion for the touched path), then broaden only
   if the change crosses module boundaries or alters shared contracts.
 - Treat unrelated full-suite failures as separate findings — don't let them obscure scoped results.

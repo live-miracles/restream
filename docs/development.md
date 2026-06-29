@@ -94,7 +94,7 @@ The usual backend loop is:
 scripts/resource-limit ./scripts/build-native.sh
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
-cargo fmt
+cargo fmt --all
 ```
 
 `build-native.sh` verifies that the debug build is using the expected native

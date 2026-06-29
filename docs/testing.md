@@ -2,11 +2,21 @@
 
 ## Rust Test Suite
 
-Run the full suite:
+Run the repo gate:
+
+```sh
+./scripts/check-test-hygiene.sh
+```
+
+For a plain full-suite run without the hygiene scan:
 
 ```sh
 scripts/resource-limit cargo test
 ```
+
+Keep successful logs quiet. New tests should not land with compiler warnings,
+panic text, FFmpeg probe chatter, or similar “expected noise” in passing runs;
+fix or suppress that output at the helper level instead.
 
 As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
 integration, harness, and doctest targets.
@@ -83,7 +93,7 @@ opaque blocker.
 
 | Stage | Purpose | Typical commands |
 |---|---|---|
-| 0. Preflight/static | Prove the environment and cheap invariants before spending runtime. | `scripts/resource-limit cargo fmt --check`, integration `--preflight` |
+| 0. Preflight/static | Prove the environment and cheap invariants before spending runtime. | `cargo fmt --all --check`, integration `--preflight` |
 | 1. Changed behavior | Fastest proof for the exact code path touched by a change. | `cargo test --lib <filter>`, `cargo test --test api <filter>` |
 | 2. Contract slice | Neighboring API, graph, stage, protocol, or lifecycle contracts that consume the changed behavior. | Filtered package/integration tests by module, endpoint, protocol, or stage kind |
 | 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> -- <criterion-filter>` |

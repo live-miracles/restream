@@ -132,8 +132,8 @@ jobs:
             target
           key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: test-${{ runner.os }}-
-      - name: Rust tests
-        run: scripts/resource-limit cargo test --workspace
+      - name: Rust test hygiene gate
+        run: ./scripts/check-test-hygiene.sh
 
   sbom-sync:
     name: SBOM sync check

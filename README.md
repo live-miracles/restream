@@ -49,7 +49,7 @@ Most backend work stays in this loop:
 scripts/resource-limit ./scripts/build-native.sh
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
-cargo fmt
+cargo fmt --all
 ```
 
 If you edit frontend assets:
