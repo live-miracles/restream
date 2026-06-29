@@ -301,7 +301,6 @@ pub async fn start_hls_segmenter(
                                 if elapsed >= config.min_segment_secs && !accumulator.is_empty() {
                                     let ts_segment = accumulator.split().freeze();
                                     store.push_segment(elapsed, ts_segment);
-                                    feeder = None;
                                     accumulator.reserve(config.segment_capacity);
                                     segment_start = Instant::now();
                                 }
