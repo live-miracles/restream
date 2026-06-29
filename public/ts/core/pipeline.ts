@@ -97,7 +97,21 @@ function parsePipelinesInfo(
 
     if (inputVideo) inputVideo.bw = inputKbps;
 
-    const inputStatus = healthByPipeline[p.id]?.input?.status || "off";
+    const rawInputStatus = healthByPipeline[p.id]?.input?.status || "off";
+    const disconnectGraceActive = Boolean(
+      healthByPipeline[p.id]?.input?.disconnectGraceActive,
+    );
+    const rawDisconnectGraceRemainingMs =
+      healthByPipeline[p.id]?.input?.disconnectGraceRemainingMs;
+    const disconnectGraceRemainingMs = Number.isFinite(
+      rawDisconnectGraceRemainingMs as number,
+    )
+      ? Number(rawDisconnectGraceRemainingMs)
+      : null;
+    const inputStatus =
+      rawInputStatus === "off" && disconnectGraceActive
+        ? "warning"
+        : rawInputStatus;
     const probeReady = Boolean(healthByPipeline[p.id]?.input?.probeReady);
     const probeStatus = healthByPipeline[p.id]?.input?.probeStatus || "off";
     const rawProbePendingMs = healthByPipeline[p.id]?.input?.probePendingMs;
@@ -166,6 +180,8 @@ function parsePipelinesInfo(
         recentDisconnectError: Boolean(
           healthByPipeline[p.id]?.input?.recentDisconnectError,
         ),
+        disconnectGraceActive,
+        disconnectGraceRemainingMs,
         lastRemoteAddr: healthByPipeline[p.id]?.input?.lastRemoteAddr || null,
         lastSessionBytesReceived:
           typeof healthByPipeline[p.id]?.input?.lastSessionBytesReceived ===
@@ -234,6 +250,8 @@ function parsePipelinesInfo(
           lastDisconnectReason: null,
           lastFailurePhase: null,
           recentDisconnectError: false,
+          disconnectGraceActive: false,
+          disconnectGraceRemainingMs: null,
           lastRemoteAddr: null,
           lastSessionBytesReceived: null,
         },

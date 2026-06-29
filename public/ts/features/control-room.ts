@@ -324,9 +324,13 @@ function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
     title: "Local HLS",
     mediaUrl: inputLive ? localPreviewUrl : null,
     emptyMessage:
-      pipe.input.status === "on" || pipe.input.status === "warning"
+      pipe.input.status === "on"
         ? "Waiting for the first HLS segments."
-        : "Pipeline input is offline.",
+        : pipe.input.status === "warning" && pipe.input.disconnectGraceActive
+          ? "Publisher recently dropped. Waiting for reconnect before grace expires."
+          : pipe.input.status === "warning"
+            ? "Waiting for the first HLS segments."
+            : "Pipeline input is offline.",
     openUrl: localPreviewUrl,
     copyUrl: localPreviewUrl,
     editable: false,
@@ -337,7 +341,9 @@ function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
       pipe.input.status === "on"
         ? "Live"
         : pipe.input.status === "warning"
-          ? "Unstable"
+          ? pipe.input.disconnectGraceActive
+            ? "Recovering"
+            : "Unstable"
           : "Offline",
   };
 }
