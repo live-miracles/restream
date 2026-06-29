@@ -104,6 +104,13 @@ function parsePipelinesInfo(
     const probePendingMs = Number.isFinite(rawProbePendingMs as number)
       ? Number(rawProbePendingMs)
       : null;
+    const rawLastDisconnectAgeMs =
+      healthByPipeline[p.id]?.input?.lastDisconnectAgeMs;
+    const lastDisconnectAgeMs = Number.isFinite(
+      rawLastDisconnectAgeMs as number,
+    )
+      ? Number(rawLastDisconnectAgeMs)
+      : null;
     const publishStartedAt =
       healthByPipeline[p.id]?.input?.publishStartedAt || null;
     const publishStartedTs = publishStartedAt
@@ -147,6 +154,24 @@ function parsePipelinesInfo(
         bitrateKbps: inputKbps,
         publisher: inputPublisher ?? null,
         unexpectedReadersCount,
+        lastSessionProtocol:
+          healthByPipeline[p.id]?.input?.lastSessionProtocol || null,
+        lastDisconnectAt:
+          healthByPipeline[p.id]?.input?.lastDisconnectAt || null,
+        lastDisconnectAgeMs,
+        lastDisconnectReason:
+          healthByPipeline[p.id]?.input?.lastDisconnectReason || null,
+        lastFailurePhase:
+          healthByPipeline[p.id]?.input?.lastFailurePhase || null,
+        recentDisconnectError: Boolean(
+          healthByPipeline[p.id]?.input?.recentDisconnectError,
+        ),
+        lastRemoteAddr: healthByPipeline[p.id]?.input?.lastRemoteAddr || null,
+        lastSessionBytesReceived:
+          typeof healthByPipeline[p.id]?.input?.lastSessionBytesReceived ===
+          "number"
+            ? healthByPipeline[p.id].input.lastSessionBytesReceived
+            : null,
       },
       outs: [],
       stats: {
@@ -201,6 +226,14 @@ function parsePipelinesInfo(
           readers: 0,
           publisher: null,
           unexpectedReadersCount: 0,
+          lastSessionProtocol: null,
+          lastDisconnectAt: null,
+          lastDisconnectAgeMs: null,
+          lastDisconnectReason: null,
+          lastFailurePhase: null,
+          recentDisconnectError: false,
+          lastRemoteAddr: null,
+          lastSessionBytesReceived: null,
         },
         ingestUrls: { rtmp: null, srt: null },
         outs: [],

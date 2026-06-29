@@ -76,6 +76,7 @@ pub struct ServerPorts {
 pub struct RuntimeTuning {
     pub nofile_limit: u64,
     pub reconciler_interval_ms: u64,
+    pub ingest_disconnect_grace_ms: u64,
     pub output_max_retries: u32,
     pub output_retry_base_ms: u64,
     pub output_retry_max_ms: u64,
@@ -106,6 +107,7 @@ impl Default for RuntimeTuning {
         Self {
             nofile_limit: 65_536,
             reconciler_interval_ms: 1_000,
+            ingest_disconnect_grace_ms: 5_000,
             output_max_retries: 10,
             output_retry_base_ms: 5_000,
             output_retry_max_ms: 300_000,
@@ -124,6 +126,10 @@ impl RuntimeTuning {
                 defaults.reconciler_interval_ms,
             )
             .max(100),
+            ingest_disconnect_grace_ms: env_u64(
+                "RESTREAM_INGEST_DISCONNECT_GRACE_MS",
+                defaults.ingest_disconnect_grace_ms,
+            ),
             output_max_retries: env_u32("RESTREAM_OUTPUT_MAX_RETRIES", defaults.output_max_retries),
             output_retry_base_ms: env_u64(
                 "RESTREAM_OUTPUT_RETRY_BASE_MS",
@@ -412,9 +418,23 @@ pub async fn run_app() {
         for output in &outputs {
             let is_active = engine.has_active_egress(&output.id).await;
             let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
+            let within_disconnect_grace = engine
+                .has_recent_ingest_disconnect(
+                    &output.pipeline_id,
+                    tuning.ingest_disconnect_grace_ms,
+                )
+                .await;
+            // This grace is only for brief upstream ingest flaps. It keeps
+            // healthy egress sessions and shared stages alive while a publisher
+            // reconnects, but it is not used for dead push destinations:
+            // RTMP/SRT/HLS PUT destination loss still relies on retry/backoff.
+            let effective_has_ingest = has_ingest || within_disconnect_grace;
             let now_str = chrono::Utc::now().to_rfc3339();
 
             if output.desired_state == "running" && !is_active {
+                if !has_ingest {
+                    continue;
+                }
                 // Check backoff / max-retries for recently-failed outputs
                 let mut lf = last_failed.lock().await;
                 if let Some(&(failed_at, retries)) = lf.get(&output.id) {
@@ -737,7 +757,7 @@ pub async fn run_app() {
                         lf.insert(output_id_c, (Instant::now(), retries));
                     }
                 });
-            } else if output.desired_state == "running" && is_active && !has_ingest {
+            } else if output.desired_state == "running" && is_active && !effective_has_ingest {
                 info!(
                     output_id = %output.id,
                     output_name = %output.name,
@@ -767,7 +787,14 @@ pub async fn run_app() {
             for output in &outputs {
                 let is_active = engine.has_active_egress(&output.id).await;
                 let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
-                if has_ingest && (is_active || output.desired_state == "running") {
+                let within_disconnect_grace = engine
+                    .has_recent_ingest_disconnect(
+                        &output.pipeline_id,
+                        tuning.ingest_disconnect_grace_ms,
+                    )
+                    .await;
+                let effective_has_ingest = has_ingest || within_disconnect_grace;
+                if effective_has_ingest && (is_active || output.desired_state == "running") {
                     let is_rtmp =
                         output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
                     let ingest_is_hevc = engine
@@ -806,6 +833,10 @@ pub async fn run_app() {
         };
         for pipeline in pipelines {
             let has_ingest = engine.has_active_ingest(&pipeline.id).await;
+            let effective_has_ingest = has_ingest
+                || engine
+                    .has_recent_ingest_disconnect(&pipeline.id, tuning.ingest_disconnect_grace_ms)
+                    .await;
 
             // Reconcile recordings
             let rec_key = format!("recording_enabled:{}", pipeline.id);
@@ -817,7 +848,7 @@ pub async fn run_app() {
                 .unwrap_or(false);
             let rec_active = engine.is_recording_active(&pipeline.id).await;
 
-            if rec_enabled && has_ingest && !rec_active {
+            if rec_enabled && effective_has_ingest && !rec_active {
                 let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
                 let cancel_token = engine.register_recording(&pipeline.id).await;
                 let engine_c = engine.clone();
@@ -839,7 +870,7 @@ pub async fn run_app() {
                     .await;
                     engine_c.unregister_recording(&pid).await;
                 });
-            } else if rec_active && (!rec_enabled || !has_ingest) {
+            } else if rec_active && (!rec_enabled || !effective_has_ingest) {
                 engine.unregister_recording(&pipeline.id).await;
             }
         }
@@ -848,6 +879,12 @@ pub async fn run_app() {
         // or if ingest disconnected.
         let hls_ids = engine.hls_pipeline_ids().await;
         for pid in hls_ids {
+            if engine
+                .has_recent_ingest_disconnect(&pid, tuning.ingest_disconnect_grace_ms)
+                .await
+            {
+                continue;
+            }
             if engine
                 .should_shutdown_hls_segmenter(&pid, tuning.hls_idle_timeout_ms)
                 .await
@@ -974,6 +1011,7 @@ mod tests {
 
         assert_eq!(tuning.nofile_limit, 65_536);
         assert_eq!(tuning.reconciler_interval_ms, 1_000);
+        assert_eq!(tuning.ingest_disconnect_grace_ms, 5_000);
         assert_eq!(tuning.session_prune_every_ticks(), 3_600);
         assert_eq!(tuning.output_max_retries, 10);
         assert_eq!(tuning.output_backoff_ms(1), 10_000);

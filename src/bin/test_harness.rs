@@ -8826,7 +8826,17 @@ async fn fault_resilience() -> Result<Value, String> {
         let started = Instant::now();
         let off_result = wait_for_api_input_off(&api, &pid, timeout).await;
         let elapsed = started.elapsed();
-        let passed = off_result.is_ok();
+        let off_health = api.get_json("/api/v1/engine/health").await.ok();
+        let off_input = off_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let disconnect_fields_ok = off_input["lastSessionProtocol"] == "rtmp"
+            && off_input["lastDisconnectAt"].is_string()
+            && off_input["lastDisconnectReason"] == "publisher disconnected"
+            && off_input["lastFailurePhase"] == "disconnect"
+            && off_input["recentDisconnectError"] == false;
+        let passed = off_result.is_ok() && disconnect_fields_ok;
         println!(
             "[fault] RTMP publisher disconnect: {} ({:.1}s)",
             if passed { "PASS" } else { "FAIL" },
@@ -8837,6 +8847,8 @@ async fn fault_resilience() -> Result<Value, String> {
             "passed": passed,
             "elapsedMs": elapsed.as_millis(),
             "error": off_result.err(),
+            "disconnectFieldsOk": disconnect_fields_ok,
+            "inputSnapshot": off_input,
         }));
     }
 
@@ -8884,7 +8896,132 @@ async fn fault_resilience() -> Result<Value, String> {
         }));
     }
 
-    // ── 3. File ingest stop ─────────────────────────────────────────────
+    // ── 3. Transient RTMP publisher drop does not tear down egress ─────
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-rtmp-transient", "streamKey": "fault-rtmp-transient"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind {sink_port}: {e}"))?;
+        let sink_metrics = metrics.clone();
+        let sink_task = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let sink_metrics = sink_metrics.clone();
+                tokio::spawn(handle_generalized_sink_client(socket, sink_metrics));
+            }
+        });
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "rtmp-transient-sink",
+                    "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-rtmp-transient-sink"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-transient", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        while metrics.video_count.load(Ordering::Relaxed) < 10 {
+            if Instant::now() >= warm_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let baseline_video = metrics.video_count.load(Ordering::Relaxed);
+        let baseline_connections = metrics.connections.load(Ordering::Relaxed);
+
+        stop_child(&mut pub_child).await;
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+
+        let gap_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let gap_connections = metrics.connections.load(Ordering::Relaxed);
+        let gap_preserved = gap_status.is_some() && gap_connections == baseline_connections;
+
+        let mut resumed_child = spawn_publisher(
+            &fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-transient", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(&api, &pid, Duration::from_secs(30)).await?;
+
+        let resume_deadline = Instant::now() + Duration::from_secs(15);
+        let mut resumed = false;
+        while Instant::now() < resume_deadline {
+            if metrics.video_count.load(Ordering::Relaxed) > baseline_video + 10 {
+                resumed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let final_connections = metrics.connections.load(Ordering::Relaxed);
+        let passed = baseline_video >= 10
+            && baseline_connections == 1
+            && gap_preserved
+            && resumed
+            && final_connections == baseline_connections;
+        println!(
+            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={})",
+            if passed { "PASS" } else { "FAIL" },
+            final_connections,
+            resumed
+        );
+        results.push(json!({
+            "test": "transient-rtmp-drop-preserves-egress",
+            "passed": passed,
+            "baselineVideo": baseline_video,
+            "baselineConnections": baseline_connections,
+            "gapConnections": gap_connections,
+            "gapStatusExists": gap_status.is_some(),
+            "resumed": resumed,
+            "finalConnections": final_connections,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut resumed_child).await;
+        sink_task.abort();
+    }
+
+    // ── 4. File ingest stop ─────────────────────────────────────────────
     {
         let pipeline = api
             .post_json(

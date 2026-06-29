@@ -1676,6 +1676,7 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     store.push_segment(2.0, bytes::Bytes::from_static(b"segment"));
 
     let resp = app
+        .clone()
         .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
         .await
         .unwrap();
@@ -1702,6 +1703,36 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     assert!(hls_preview["lastAccessAgeMs"].as_u64().is_some());
     assert_eq!(hls_preview["segments"], 1);
     assert!(hls_preview["playlistBytes"].as_u64().unwrap_or(0) > 0);
+
+    engine
+        .record_ingest_disconnect(
+            &pid,
+            Some("disconnect"),
+            Some("publisher disconnected".to_string()),
+            false,
+        )
+        .await;
+    engine.unregister_ingest(&pid).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let disconnected = body_json(resp).await;
+    let disconnected_input = &disconnected["pipelines"][&pid]["input"];
+    assert_eq!(disconnected_input["status"], "off");
+    assert_eq!(disconnected_input["probeStatus"], "off");
+    assert_eq!(disconnected_input["lastSessionProtocol"], "rtmp");
+    assert_eq!(
+        disconnected_input["lastDisconnectReason"],
+        "publisher disconnected"
+    );
+    assert_eq!(disconnected_input["lastFailurePhase"], "disconnect");
+    assert_eq!(disconnected_input["recentDisconnectError"], false);
+    assert!(disconnected_input["lastDisconnectAt"].is_string());
+    assert!(disconnected_input["lastDisconnectAgeMs"].as_u64().is_some());
 }
 
 // --- Regression: Round 6 #2 — Security headers ---

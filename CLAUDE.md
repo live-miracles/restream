@@ -11,6 +11,7 @@ Instructions for AI coding agents in this repository.
   overlapping work, use hunk-based file edits and hunk-based git operations; do not overwrite,
   reformat, stage, or revert whole files unless that exact whole-file operation was requested.
 - Add or update tests for behavior changes. Benchmark before and after hot-path changes.
+- Concurrency, lifecycle, and thread-hop changes must ship with proof: deterministic unit tests, loom/proptest where feasible, a live harness fault case for recovery behavior, and either a benchmark or an explicit note that the change is off the hot path.
 - Update docs when changing commands, configuration, architecture, protocols, or user-visible behavior.
 - Prefer targeted fixes over rewrites. Add abstractions only when they remove real complexity.
 

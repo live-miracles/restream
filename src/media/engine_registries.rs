@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::stage::StageKey;
 use crate::events::EventLog;
 use crate::media::avio::MemoryQueue;
-use crate::media::engine::{ActiveEgress, ActiveIngest, HlsConsumers, ListenerSocketStats};
+use crate::media::engine::{
+    ActiveEgress, ActiveIngest, HlsConsumers, ListenerSocketStats, RecentIngestOutcome,
+};
 use crate::media::hls::HlsStore;
 use crate::media::pipe_metrics::PipeMetrics;
 use crate::media::ring_buffer::RingBuffer;
@@ -19,6 +21,7 @@ pub struct IngestRegistry {
     pub pipelines: TokioRwLock<HashMap<String, Arc<RingBuffer>>>,
     pub cancel_tokens: TokioRwLock<HashMap<String, CancellationToken>>,
     pub active: TokioRwLock<HashMap<String, ActiveIngest>>,
+    pub recent: TokioRwLock<HashMap<String, RecentIngestOutcome>>,
 }
 
 impl IngestRegistry {
@@ -27,6 +30,7 @@ impl IngestRegistry {
             pipelines: TokioRwLock::new(HashMap::new()),
             cancel_tokens: TokioRwLock::new(HashMap::new()),
             active: TokioRwLock::new(HashMap::new()),
+            recent: TokioRwLock::new(HashMap::new()),
         }
     }
 }

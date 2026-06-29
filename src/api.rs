@@ -2589,11 +2589,19 @@ async fn run_file_ingest_task(
             && !cancel.is_cancelled()
         {
             error!(ingest_id = %ingest.id, err = %err, "file-ingest stdout reader failed");
+            state
+                .engine
+                .record_ingest_disconnect(&pipeline.id, Some("stdout"), Some(err.to_string()), true)
+                .await;
         }
         if let Err(err) = stderr_res
             && !cancel.is_cancelled()
         {
             error!(ingest_id = %ingest.id, err = %err, "file-ingest stderr reader failed");
+            state
+                .engine
+                .record_ingest_disconnect(&pipeline.id, Some("stderr"), Some(err.to_string()), true)
+                .await;
         }
 
         if let Some(status) = exit_status
@@ -2601,6 +2609,25 @@ async fn run_file_ingest_task(
             && !cancel.is_cancelled()
         {
             warn!(ingest_id = %ingest.id, status = %status, "ffmpeg exited unsuccessfully");
+            state
+                .engine
+                .record_ingest_disconnect(
+                    &pipeline.id,
+                    Some("exit"),
+                    Some(format!("ffmpeg exited with status {status}")),
+                    true,
+                )
+                .await;
+        } else if exit_status.is_some() && !cancel.is_cancelled() && !ingest.loop_flag {
+            state
+                .engine
+                .record_ingest_disconnect(
+                    &pipeline.id,
+                    Some("eof"),
+                    Some("file ingest reached end of input".to_string()),
+                    false,
+                )
+                .await;
         }
 
         if cancel.is_cancelled() || !ingest.loop_flag {

@@ -1613,6 +1613,9 @@ impl SrtServer {
         let mut demuxer = crate::media::mpegts::TsDemuxer::new();
         let mut packets = Vec::with_capacity(16);
         let mut probe_sent = false;
+        let mut disconnect_phase: Option<String> = None;
+        let mut disconnect_reason: Option<String> = None;
+        let mut disconnect_had_error = false;
 
         // Set non-blocking mode so srt_recv returns immediately with EAGAIN
         // instead of blocking the tokio runtime thread
@@ -1788,6 +1791,8 @@ impl SrtServer {
             if n > 0 {
                 // Data received — process below
             } else if n == 0 {
+                disconnect_phase = Some("disconnect".to_string());
+                disconnect_reason = Some("publisher disconnected".to_string());
                 break; // connection closed
             } else {
                 let (error_code, error_message) = last_srt_error();
@@ -1805,6 +1810,9 @@ impl SrtServer {
                             "[srt] Receive ended for pipeline {}: code={} {}",
                             pipeline.id, error_code, error_message
                         );
+                        disconnect_phase = Some("receive".to_string());
+                        disconnect_reason = Some(format!("code={error_code} {error_message}"));
+                        disconnect_had_error = true;
                         break;
                     }
                 }
@@ -1900,6 +1908,14 @@ impl SrtServer {
         }
 
         info!("Ingest stream finished for pipeline: {}", pipeline.id);
+        self.engine
+            .record_ingest_disconnect(
+                &pipeline.id,
+                disconnect_phase.as_deref(),
+                disconnect_reason,
+                disconnect_had_error,
+            )
+            .await;
         self.engine.unregister_ingest(&pipeline.id).await;
 
         // Signal the epoll_waiter task to stop and wait for it to release eid.

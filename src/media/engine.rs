@@ -269,6 +269,17 @@ pub struct ActiveEgress {
 }
 
 #[derive(Debug, Clone)]
+pub struct RecentIngestOutcome {
+    pub protocol: String,
+    pub disconnected_at_ms: u64,
+    pub reason: Option<String>,
+    pub failure_phase: Option<String>,
+    pub had_error: bool,
+    pub remote_addr: Option<String>,
+    pub bytes_received: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct IngestDiagSnapshot {
     pub protocol: String,
     pub uptime_secs: f64,
@@ -635,6 +646,16 @@ impl MediaEngine {
 
     pub async fn has_active_ingest(&self, pipeline_id: &str) -> bool {
         self.ingests.active.read().await.contains_key(pipeline_id)
+    }
+
+    pub async fn has_recent_ingest_disconnect(&self, pipeline_id: &str, grace_ms: u64) -> bool {
+        if grace_ms == 0 {
+            return false;
+        }
+        let recent = self.ingests.recent.read().await;
+        recent.get(pipeline_id).is_some_and(|outcome| {
+            Self::now_epoch_ms().saturating_sub(outcome.disconnected_at_ms) < grace_ms
+        })
     }
 
     pub async fn active_ingest_count(&self) -> usize {
@@ -1285,6 +1306,7 @@ impl MediaEngine {
 
         let token = CancellationToken::new();
         tokens.insert(pipeline_id.to_string(), token.clone());
+        self.ingests.recent.write().await.remove(pipeline_id);
 
         let mut ingests = self.ingests.active.write().await;
         ingests.insert(
@@ -1316,6 +1338,36 @@ impl MediaEngine {
         Some(token)
     }
 
+    pub async fn record_ingest_disconnect(
+        &self,
+        pipeline_id: &str,
+        phase: Option<&str>,
+        reason: Option<String>,
+        had_error: bool,
+    ) {
+        let ingests = self.ingests.active.read().await;
+        let Some(ingest) = ingests.get(pipeline_id) else {
+            return;
+        };
+
+        let snapshot = RecentIngestOutcome {
+            protocol: ingest.protocol.clone(),
+            disconnected_at_ms: Self::now_epoch_ms(),
+            reason,
+            failure_phase: phase.map(ToOwned::to_owned),
+            had_error,
+            remote_addr: ingest.remote_addr.clone(),
+            bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
+        };
+        drop(ingests);
+
+        self.ingests
+            .recent
+            .write()
+            .await
+            .insert(pipeline_id.to_string(), snapshot);
+    }
+
     pub async fn unregister_ingest(&self, pipeline_id: &str) {
         let mut tokens = self.ingests.cancel_tokens.write().await;
         if let Some(token) = tokens.remove(pipeline_id) {
@@ -1323,12 +1375,27 @@ impl MediaEngine {
         }
 
         let mut ingests = self.ingests.active.write().await;
-        let protocol = ingests
-            .get(pipeline_id)
-            .map(|i| i.protocol.clone())
-            .unwrap_or_default();
-        ingests.remove(pipeline_id);
+        let removed = ingests.remove(pipeline_id);
         drop(ingests);
+
+        let protocol = removed
+            .as_ref()
+            .map(|ingest| ingest.protocol.clone())
+            .unwrap_or_default();
+        if let Some(ingest) = removed {
+            let mut recent = self.ingests.recent.write().await;
+            recent
+                .entry(pipeline_id.to_string())
+                .or_insert_with(|| RecentIngestOutcome {
+                    protocol: ingest.protocol,
+                    disconnected_at_ms: Self::now_epoch_ms(),
+                    reason: None,
+                    failure_phase: None,
+                    had_error: false,
+                    remote_addr: ingest.remote_addr,
+                    bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
+                });
+        }
 
         if !protocol.is_empty() {
             self.runtime
@@ -1675,6 +1742,10 @@ impl MediaEngine {
         if let Some(ingest) = ingests.get_mut(pipeline_id) {
             ingest.quality = quality;
         }
+    }
+
+    pub async fn recent_ingest_outcome(&self, pipeline_id: &str) -> Option<RecentIngestOutcome> {
+        self.ingests.recent.read().await.get(pipeline_id).cloned()
     }
 
     /// Register an active recording for a pipeline. Returns a cancellation token.
@@ -3657,6 +3728,79 @@ mod tests {
         engine.unregister_ingest("p1").await;
         let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_preserves_recent_ingest_disconnect_details_after_unregister() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta("p1", None, None, Some("127.0.0.1:9000".to_string()))
+            .await;
+        engine.update_ingest_bytes("p1", 4096).await;
+        engine
+            .record_ingest_disconnect(
+                "p1",
+                Some("session"),
+                Some("publisher disconnected".to_string()),
+                false,
+            )
+            .await;
+        engine.unregister_ingest("p1").await;
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let input = &snap["pipelines"]["p1"]["input"];
+        assert_eq!(input["status"], "off");
+        assert_eq!(input["probeStatus"], "off");
+        assert_eq!(input["lastSessionProtocol"], "rtmp");
+        assert_eq!(input["lastDisconnectReason"], "publisher disconnected");
+        assert_eq!(input["lastFailurePhase"], "session");
+        assert_eq!(input["recentDisconnectError"], false);
+        assert_eq!(input["lastRemoteAddr"], "127.0.0.1:9000");
+        assert_eq!(input["lastSessionBytesReceived"], 4096);
+        assert!(input["lastDisconnectAt"].is_string());
+        assert!(input["lastDisconnectAgeMs"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn re_register_ingest_clears_recent_disconnect_details() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .record_ingest_disconnect(
+                "p1",
+                Some("receive"),
+                Some("connection reset by peer".to_string()),
+                true,
+            )
+            .await;
+        engine.unregister_ingest("p1").await;
+
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["probeStatus"], "failed");
+        assert_eq!(
+            snap["pipelines"]["p1"]["input"]["lastDisconnectReason"],
+            "connection reset by peer"
+        );
+
+        engine
+            .try_register_ingest("p1", "key", "srt")
+            .await
+            .unwrap();
+        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
+        assert!(snap["pipelines"]["p1"]["input"]["lastSessionProtocol"].is_null());
+        assert!(snap["pipelines"]["p1"]["input"]["lastDisconnectReason"].is_null());
     }
 
     #[tokio::test]

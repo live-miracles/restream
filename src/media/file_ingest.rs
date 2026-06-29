@@ -160,6 +160,9 @@ pub fn spawn_internal_file_ingest(
                 cancel.clone(),
             )
         }));
+        let mut disconnect_phase: Option<String> = None;
+        let mut disconnect_reason: Option<String> = None;
+        let mut disconnect_had_error = false;
 
         match result {
             Ok(Err(err)) if !cancel.is_cancelled() => {
@@ -167,17 +170,35 @@ pub fn spawn_internal_file_ingest(
                     "[file-ingest] internal ingest failed ({}): {}",
                     ingest_id_for_thread, err
                 );
+                disconnect_phase = Some("decode".to_string());
+                disconnect_reason = Some(err);
+                disconnect_had_error = true;
             }
             Err(_) if !cancel.is_cancelled() => {
                 error!(
                     "[file-ingest] internal ingest panicked ({})",
                     ingest_id_for_thread
                 );
+                disconnect_phase = Some("panic".to_string());
+                disconnect_reason = Some("internal file ingest panicked".to_string());
+                disconnect_had_error = true;
+            }
+            Ok(Ok(())) if !cancel.is_cancelled() && !loop_enabled => {
+                disconnect_phase = Some("eof".to_string());
+                disconnect_reason = Some("file ingest reached end of input".to_string());
             }
             _ => {}
         }
 
         runtime_for_thread.block_on(async {
+            engine_for_thread
+                .record_ingest_disconnect(
+                    &pipeline_id_for_thread,
+                    disconnect_phase.as_deref(),
+                    disconnect_reason,
+                    disconnect_had_error,
+                )
+                .await;
             engine_for_thread
                 .clear_file_ingest_running(&ingest_id_for_thread)
                 .await;

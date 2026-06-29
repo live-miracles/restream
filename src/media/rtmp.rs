@@ -802,6 +802,14 @@ async fn handle_rtmp_client(
         .await
         {
             if let Some(active) = &active_ingest {
+                engine
+                    .record_ingest_disconnect(
+                        &active.pipeline_id,
+                        Some("session"),
+                        Some(error.to_string()),
+                        true,
+                    )
+                    .await;
                 engine.unregister_ingest(&active.pipeline_id).await;
             }
             return Err(error);
@@ -812,12 +820,16 @@ async fn handle_rtmp_client(
     let mut tcp_stats_interval = tokio::time::interval(std::time::Duration::from_secs(2));
     tcp_stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut previous_tcp_bytes: Option<(u64, Instant)> = None;
-    loop {
+    let disconnect_outcome = loop {
         tokio::select! {
             read_result = socket.read(&mut buffer) => {
                 let n = read_result.map_err(|_| "Read error in main loop")?;
                 if n == 0 {
-                    break;
+                    break Some((
+                        "disconnect".to_string(),
+                        "publisher disconnected".to_string(),
+                        false,
+                    ));
                 }
 
                 let results = session
@@ -838,7 +850,7 @@ async fn handle_rtmp_client(
                 .await
                 {
                     warn!("session result error: {}", e);
-                    break;
+                    break Some(("session".to_string(), e.to_string(), true));
                 }
             }
             _ = tcp_stats_interval.tick(), if active_ingest.is_some() => {
@@ -886,7 +898,7 @@ async fn handle_rtmp_client(
                 engine.update_publisher_quality(pipeline_id, quality).await;
             }
         }
-    }
+    };
 
     // Clean up active ingest on disconnect
     if let Some(active) = &active_ingest {
@@ -894,6 +906,19 @@ async fn handle_rtmp_client(
             "[rtmp] Publisher disconnected for pipeline: {}",
             active.pipeline_id
         );
+        let (phase, reason, had_error) = disconnect_outcome.unwrap_or((
+            "disconnect".to_string(),
+            "publisher disconnected".to_string(),
+            false,
+        ));
+        engine
+            .record_ingest_disconnect(
+                &active.pipeline_id,
+                Some(phase.as_str()),
+                Some(reason),
+                had_error,
+            )
+            .await;
         engine.unregister_ingest(&active.pipeline_id).await;
     }
 

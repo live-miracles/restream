@@ -165,6 +165,14 @@ export interface InputHealth {
   audioTracks?: AudioTrack[];
   publisher?: Publisher;
   unexpectedReaders?: { count: number };
+  lastSessionProtocol?: string | null;
+  lastDisconnectAt?: string | null;
+  lastDisconnectAgeMs?: number | null;
+  lastDisconnectReason?: string | null;
+  lastFailurePhase?: string | null;
+  recentDisconnectError?: boolean;
+  lastRemoteAddr?: string | null;
+  lastSessionBytesReceived?: number | null;
 }
 
 export interface OutputHealth {
@@ -271,6 +279,14 @@ export interface InputView {
   bitrateKbps: number | null;
   publisher: Publisher | null;
   unexpectedReadersCount: number;
+  lastSessionProtocol: string | null;
+  lastDisconnectAt: string | null;
+  lastDisconnectAgeMs: number | null;
+  lastDisconnectReason: string | null;
+  lastFailurePhase: string | null;
+  recentDisconnectError: boolean;
+  lastRemoteAddr: string | null;
+  lastSessionBytesReceived: number | null;
 }
 
 export interface OutputView {

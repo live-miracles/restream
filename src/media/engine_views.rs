@@ -24,6 +24,7 @@ pub(crate) async fn health_snapshot(
     let rec_tokens = engine.recordings.cancel_tokens.read().await;
     let hls_consumers = engine.hls.consumers.read().await;
     let hls_stores = engine.hls.stores.read().await;
+    let recent_ingests = engine.ingests.recent.read().await;
     let pipelines = engine.ingests.pipelines.read().await;
 
     let mut pipelines_json = serde_json::Map::new();
@@ -104,20 +105,40 @@ pub(crate) async fn health_snapshot(
                 "audio": ingest.audio,
                 "audioTracks": audio_tracks,
                 "publisher": publisher_json,
-                "unexpectedReaders": { "count": 0 }
+                "unexpectedReaders": { "count": 0 },
+                "lastSessionProtocol": null,
+                "lastDisconnectAt": null,
+                "lastDisconnectAgeMs": null,
+                "lastDisconnectReason": null,
+                "lastFailurePhase": null,
+                "recentDisconnectError": false,
+                "lastRemoteAddr": null,
+                "lastSessionBytesReceived": null
             })
         } else {
+            let recent = recent_ingests.get(pipeline_id.as_str());
+            let last_disconnect_age_ms = recent.map(|recent| {
+                MediaEngine::now_epoch_ms().saturating_sub(recent.disconnected_at_ms)
+            });
             serde_json::json!({
                 "status": "off",
                 "probeReady": false,
-                "probeStatus": "off",
+                "probeStatus": if recent.is_some_and(|recent| recent.had_error) { "failed" } else { "off" },
                 "probePendingMs": null,
                 "bytesReceived": 0,
                 "bytesSent": total_bytes_sent,
                 "readers": readers_count,
                 "readerMetrics": reader_metrics,
                 "publisher": null,
-                "unexpectedReaders": { "count": 0 }
+                "unexpectedReaders": { "count": 0 },
+                "lastSessionProtocol": recent.map(|recent| recent.protocol.clone()),
+                "lastDisconnectAt": recent.and_then(|recent| MediaEngine::epoch_ms_to_rfc3339(recent.disconnected_at_ms)),
+                "lastDisconnectAgeMs": last_disconnect_age_ms,
+                "lastDisconnectReason": recent.and_then(|recent| recent.reason.clone()),
+                "lastFailurePhase": recent.and_then(|recent| recent.failure_phase.clone()),
+                "recentDisconnectError": recent.is_some_and(|recent| recent.had_error),
+                "lastRemoteAddr": recent.and_then(|recent| recent.remote_addr.clone()),
+                "lastSessionBytesReceived": recent.map(|recent| recent.bytes_received)
             })
         };
 

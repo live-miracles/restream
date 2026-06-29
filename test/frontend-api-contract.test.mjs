@@ -228,6 +228,14 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
             unexpectedReaders: { count: 0 },
             audioTracks: [],
             video: null,
+            lastSessionProtocol: null,
+            lastDisconnectAt: null,
+            lastDisconnectAgeMs: null,
+            lastDisconnectReason: null,
+            lastFailurePhase: null,
+            recentDisconnectError: false,
+            lastRemoteAddr: null,
+            lastSessionBytesReceived: null,
           },
           outputs: {
             "out-1": {
@@ -252,6 +260,7 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
   assert.equal(pipelines[0].input.probeReady, false);
   assert.equal(pipelines[0].input.probeStatus, "pending");
   assert.equal(pipelines[0].input.probePendingMs, 2400);
+  assert.equal(pipelines[0].input.lastDisconnectReason, null);
   assert.equal(pipelines[0].outs[0].status, "failed");
   assert.equal(pipelines[0].outs[0].rawStatus, "running");
   assert.equal(pipelines[0].outs[0].phase, "failed");

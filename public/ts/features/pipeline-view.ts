@@ -629,6 +629,26 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-quality-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
     : "";
   const hlsPreview = pipe.hlsPreview;
+  const lastDisconnectTitle = [
+    pipe.input.lastSessionProtocol
+      ? `protocol=${pipe.input.lastSessionProtocol}`
+      : "",
+    pipe.input.lastFailurePhase ? `phase=${pipe.input.lastFailurePhase}` : "",
+    pipe.input.lastDisconnectReason || "",
+    pipe.input.lastRemoteAddr ? `remote=${pipe.input.lastRemoteAddr}` : "",
+    Number.isFinite(pipe.input.lastSessionBytesReceived as number)
+      ? `bytes=${pipe.input.lastSessionBytesReceived}`
+      : "",
+    pipe.input.lastDisconnectAgeMs !== null
+      ? `age=${formatShortDurationMs(pipe.input.lastDisconnectAgeMs)} ago`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const disconnectBadge =
+    pipe.input.status === "off" && pipe.input.lastDisconnectAt
+      ? `<span class="badge ${pipe.input.recentDisconnectError ? "badge-warning" : "badge-outline"} text-sm px-3" title="${escapeHtml(lastDisconnectTitle || "Recent ingest disconnect")}">${pipe.input.recentDisconnectError ? "Last failure" : "Last disconnect"}</span>`
+      : "";
   const hlsPreviewTitle = [
     hlsPreview.active
       ? "Browser preview segmenter is active."
@@ -659,6 +679,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
       ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
       : "",
     healthBadge,
+    disconnectBadge,
     hlsPreviewBadge,
     unexpectedCount > 0
       ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? "" : "s"}</span>`
