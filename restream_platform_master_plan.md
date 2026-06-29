@@ -1310,10 +1310,9 @@ Current audit snapshot, 2026-06-29:
   API tests, and Rust test-harness flows all use the versioned `/api/v1`
   surface, and the superseded non-v1 operational routes have been removed.
 - Runtime decomposition is now split into dedicated registries: typed stage
-  identity, feeder reuse, typed-key plumbing, and the `MediaEngine` registry
-  split are all landed. The remaining cleanup is narrower façade hardening
-  around diagnostics/telemetry rendering and transport modules that still read
-  nested runtime state directly.
+  identity, feeder reuse, typed-key plumbing, the `MediaEngine` registry split,
+  transport/API façade helpers, and extracted view/snapshot rendering are all
+  landed.
 - Phase 8 remains open. Package-stage sharing, deeper backend-fusion decisions,
   and capacity/autoscaling/remediation follow-through are not yet complete.
 
@@ -1351,9 +1350,9 @@ Implementation note, 2026-06-29:
   routes common control-plane reads/writes such as event-log access, active
   ingest checks, HLS shutdown sweeps, shutdown cancellation, and diagnostic
   semaphore lookup through dedicated methods.
-- The broader architectural follow-up is no longer "split the engine"; it is
-  optional encapsulation polish and deeper separation of graph/diagnostic
-  rendering from runtime ownership.
+- Graph, health, telemetry, and processing-graph rendering now live in
+  `src/media/engine_views.rs`, leaving `engine.rs` focused on runtime ownership
+  and façade methods instead of response assembly.
 
 Phase 1 structural items (typed IDs and stage kinds, StageFeeder coverage for
 recording, HLS, internal/external transcoder feeders, H.265→H.264 bridge feeder,
@@ -1457,10 +1456,10 @@ Phase 3 implementation checkpoint, 2026-06-26:
   updates, prunes resolved alerts.
 - Docs updated: `docs/api-reference.md` and `docs/observability.md` document
   all v1 operator and engineer endpoints.
-- Remaining structural follow-up is now limited to façade hardening and
-  responsibility trimming around diagnostics/telemetry rendering and transport
-  modules; the registry split itself is no longer future work and does not gate
-  Phase 3 completion.
+- The remaining structural follow-up is no longer about the engine split
+  itself; that work is complete and merged. Future cleanup is optional
+  incremental polish unless Phase 8 work uncovers a new reason to factor
+  ownership further.
 
 Phase 3 audit update, 2026-06-28:
 - The v1 surface now covers the shipped control plane end to end: engine

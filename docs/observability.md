@@ -55,7 +55,7 @@ recording settings in SQLite.
 
 | Condition | `input.status` |
 |---|---|
-| `MediaEngine::active_ingests` contains the pipeline ID | `on` |
+| `MediaEngine` reports an active ingest for the pipeline | `on` |
 | No active ingest is registered | `off` |
 
 The Rust implementation does not emit `warning` or `error` for input state.
@@ -113,8 +113,8 @@ The member-count fields are omitted for ordinary single-link publishers.
 
 Active native egresses appear in `pipelines[id].outputs`:
 
-- `register_egress()` stores `active_egresses[outputId]` with an explicit
-  `pipeline_id`;
+- `register_egress()` stores active egress state in the engine's grouped egress
+  registry with an explicit `pipeline_id`;
 - `health_snapshot()` includes entries whose `ActiveEgress.pipeline_id`
   matches the pipeline being rendered.
 

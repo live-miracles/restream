@@ -8,22 +8,15 @@ Run the full suite:
 scripts/resource-limit cargo test
 ```
 
-As of June 27, 2026 this runs 541 passing non-doctest tests:
+As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
+integration, harness, and doctest targets. The broad suite currently has one
+known flaky wall-clock timing test (`media::timing::tests::delta_us_measures_real_elapsed`);
+that failure is ambient and reproduces on main independently of engine
+decomposition work.
 
-| Suite | Tests | Source |
-|---|---:|---|
-| Library/unit | 429 | `src/` modules (ring buffer, SRT, RTMP, MPEG-TS, codec, HLS, engine, etc.) |
-| API integration | 66 | `tests/api.rs` |
-| AV sync integration | 14 | `tests/av_sync.rs` |
-| Codec integration | 17 | `tests/codec.rs` |
-| Database integration | 15 | `tests/db.rs` |
-| Transcoder integration | 7 | `tests/transcoder.rs` (fixture-dependent, see note) |
-| **Total** | **541** | |
-
-The 7 transcoder tests require `test/artifacts/test-h264.ts` which is not
-committed; they fail with a missing-fixture error. All other suites pass.
-
-The doctest suite also runs; the single codec example is intentionally ignored.
+Checked-in fixture contracts now cover the committed benchmark/test media under
+`test/fixtures/`, so the transcoder and fixture-dependent suites no longer rely
+on ad-hoc local artifacts.
 
 ## Scoped Verification Loop
 
@@ -42,9 +35,9 @@ scripts/resource-limit cargo test --test transcoder <test-name-filter>
 Good scoped benchmark patterns:
 
 ```sh
-scripts/resource-limit cargo bench --bench <bench-name> --profile bench-dev -- <criterion-filter>
-scripts/resource-limit cargo bench --bench high_performance_data_path --profile bench-dev -- egress_progress
-scripts/resource-limit cargo bench --bench srt_ingest_latency --profile bench-dev -- 'srt_(ingest|egress)'
+scripts/resource-limit cargo bench --bench <bench-name> -- <criterion-filter>
+scripts/resource-limit cargo bench --bench high_performance_data_path -- data_path/egress_progress
+scripts/resource-limit cargo bench --bench srt_ingest_latency -- 'srt_(ingest|egress)'
 ```
 
 The SRT bench is a socket-pair microbenchmark, not a live pipeline test. It is
@@ -76,7 +69,7 @@ opaque blocker.
 | 0. Preflight/static | Prove the environment and cheap invariants before spending runtime. | `scripts/resource-limit cargo fmt --check`, integration `--preflight` |
 | 1. Changed behavior | Fastest proof for the exact code path touched by a change. | `cargo test --lib <filter>`, `cargo test --test api <filter>` |
 | 2. Contract slice | Neighboring API, graph, stage, protocol, or lifecycle contracts that consume the changed behavior. | Filtered package/integration tests by module, endpoint, protocol, or stage kind |
-| 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> --profile bench-dev -- <criterion-filter>` |
+| 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> -- <criterion-filter>` |
 | 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `run-integration.sh --fast --only smoke,ffprobe,hls,lifecycle mixed-scale` |
 | 5. Scale/degradation slice | A bounded load, ramp, restart, queue-pressure, or bonding slice for resource shape. | `N_OUTPUTS=<small>` ramp, `N_PER_GROUP=<small>` mixed-scale, `bonding` |
 | 6. Full confidence gate | Release or milestone pass assembled from the relevant stages above. | Full `cargo test`, selected full benches, full integration modes |
