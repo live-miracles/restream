@@ -9,16 +9,25 @@ use restream::media::external_transcoder::build_stage_ffmpeg_args;
 use restream::media::mpegts::{TsDemuxer, TsMuxer};
 use restream::media::ring_buffer::{MediaType, PayloadFormat, Reader, RingBuffer};
 use restream::media::transcoder::{run_ffmpeg_transcode_with_scale, run_ffmpeg_transcoder_stage};
-use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 static FFMPEG_EXTRACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEMP_ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
+static FFMPEG_TEST_LOGGING: std::sync::Once = std::sync::Once::new();
 
 fn load_fixture() -> Vec<u8> {
+    configure_ffmpeg_test_logging();
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/artifacts/test-h264.ts");
     std::fs::read(path).unwrap_or_else(|e| panic!("fixture missing at {path}: {e}"))
+}
+
+fn configure_ffmpeg_test_logging() {
+    FFMPEG_TEST_LOGGING.call_once(|| {
+        ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Warning);
+    });
 }
 
 fn run_stage(
@@ -58,35 +67,60 @@ fn run_external_stage_args(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         restream::ffmpeg_extract::ensure_ffmpeg_extracted()
     };
-    let args = build_stage_ffmpeg_args(preset, "h264");
-    let mut child = Command::new(ffmpeg)
+    let temp_dir = temp_artifact_dir();
+    let input_path = temp_dir.join("input.ts");
+    let output_path = temp_dir.join("output.ts");
+    std::fs::write(&input_path, fixture).expect("write input fixture");
+
+    let mut args = build_stage_ffmpeg_args(preset, "h264");
+    replace_arg_value(&mut args, "-i", input_path.to_string_lossy().as_ref());
+    if let Some(last) = args.last_mut() {
+        *last = output_path.to_string_lossy().to_string();
+    } else {
+        panic!("ffmpeg args missing output path");
+    }
+
+    let output = Command::new(ffmpeg)
         .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
+        .output()
         .expect("spawn ffmpeg");
-
-    child
-        .stdin
-        .as_mut()
-        .expect("ffmpeg stdin")
-        .write_all(fixture)
-        .expect("write fixture to ffmpeg");
-    drop(child.stdin.take());
-
-    let output = child.wait_with_output().expect("wait ffmpeg");
     assert!(
         output.status.success(),
         "ffmpeg stage failed for {preset}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = std::fs::read(&output_path).expect("read ffmpeg output");
+    let _ = std::fs::remove_dir_all(&temp_dir);
 
     let mut demuxer = TsDemuxer::new();
-    demuxer.feed(&output.stdout);
+    demuxer.feed(&stdout);
     let mut packets = Vec::new();
     demuxer.drain_into(&mut packets);
     packets
+}
+
+fn replace_arg_value(args: &mut [String], flag: &str, value: &str) {
+    let position = args
+        .iter()
+        .position(|arg| arg == flag)
+        .unwrap_or_else(|| panic!("missing ffmpeg arg flag {flag}"));
+    let target = args
+        .get_mut(position + 1)
+        .unwrap_or_else(|| panic!("missing ffmpeg arg value for {flag}"));
+    *target = value.to_string();
+}
+
+fn temp_artifact_dir() -> std::path::PathBuf {
+    let suffix = TEMP_ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "restream-transcoder-test-{}-{suffix}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp artifact dir");
+    dir
 }
 
 fn synthetic_video_only_ts(fixture: &[u8]) -> Vec<u8> {

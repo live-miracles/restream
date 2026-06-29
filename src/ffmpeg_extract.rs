@@ -19,21 +19,8 @@ use tracing::{info, warn};
 
 static FFMPEG_BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Resolve the FFmpeg binary path, extracting the embedded one only if needed.
-///
-/// If `FFMPEG_BIN_PATH` is set in the environment the provided path is used
-/// as-is. Otherwise the embedded `public/bin/ffmpeg` is extracted to a per-PID
-/// temp directory, made executable, and cached.
-///
-/// Subsequent calls return the cached path immediately.
-///
-/// Must be called before any consumer calls [`ffmpeg_bin_path`].
-pub fn ensure_ffmpeg_extracted() -> &'static Path {
-    if let Some(cached) = FFMPEG_BIN_PATH.get() {
-        return cached;
-    }
-
-    let path = if let Ok(user_path) = std::env::var("FFMPEG_BIN_PATH") {
+fn resolve_ffmpeg_bin_path() -> PathBuf {
+    if let Ok(user_path) = std::env::var("FFMPEG_BIN_PATH") {
         let path = PathBuf::from(&user_path);
         if path.exists() && path.is_file() {
             info!(
@@ -47,12 +34,22 @@ pub fn ensure_ffmpeg_extracted() -> &'static Path {
         }
     } else {
         extract_embedded()
-    };
+    }
+}
 
+/// Resolve the FFmpeg binary path, extracting the embedded one only if needed.
+///
+/// If `FFMPEG_BIN_PATH` is set in the environment the provided path is used
+/// as-is. Otherwise the embedded `public/bin/ffmpeg` is extracted to a per-PID
+/// temp directory, made executable, and cached.
+///
+/// Subsequent calls return the cached path immediately.
+///
+/// Must be called before any consumer calls [`ffmpeg_bin_path`].
+pub fn ensure_ffmpeg_extracted() -> &'static Path {
     FFMPEG_BIN_PATH
-        .set(path)
-        .expect("race initializing FFMPEG_BIN_PATH");
-    FFMPEG_BIN_PATH.get().unwrap()
+        .get_or_init(resolve_ffmpeg_bin_path)
+        .as_path()
 }
 
 /// Extract the embedded FFmpeg binary to a per-PID temp directory.
@@ -90,12 +87,8 @@ fn extract_embedded() -> PathBuf {
 
 /// Return the resolved FFmpeg binary path.
 ///
-/// # Panics
-/// Panics if [`ensure_ffmpeg_extracted`] has not been called first.
 pub fn ffmpeg_bin_path() -> &'static Path {
-    FFMPEG_BIN_PATH
-        .get()
-        .expect("ensure_ffmpeg_extracted() must be called before ffmpeg_bin_path()")
+    ensure_ffmpeg_extracted()
 }
 
 /// Remove the temp FFmpeg directory on shutdown.

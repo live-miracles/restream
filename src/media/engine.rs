@@ -342,6 +342,7 @@ impl MediaEngine {
             error!(err = %e, "fatal: FFmpeg initialization failed; check library paths");
             std::process::exit(1);
         }
+        ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Warning);
 
         Self {
             pipelines: TokioRwLock::new(HashMap::new()),

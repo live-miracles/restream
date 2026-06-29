@@ -879,6 +879,31 @@ impl DtsEnforcer {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use std::sync::Mutex;
+
+    static EXPECTED_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedSilentPanicHook(
+        Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>,
+    );
+
+    impl ScopedSilentPanicHook {
+        fn new() -> Self {
+            Self(Some(std::panic::take_hook()))
+        }
+
+        fn silence(&mut self) {
+            std::panic::set_hook(Box::new(|_| {}));
+        }
+    }
+
+    impl Drop for ScopedSilentPanicHook {
+        fn drop(&mut self) {
+            if let Some(hook) = self.0.take() {
+                std::panic::set_hook(hook);
+            }
+        }
+    }
 
     fn video_packet(pts: i64, dts: i64, keyframe: bool) -> MediaPacket {
         MediaPacket {
@@ -1206,6 +1231,11 @@ mod tests {
 
         // Deliberately poison the mutex from another thread.
         let rb2 = rb.clone();
+        let _panic_hook_lock = EXPECTED_PANIC_HOOK_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut panic_hook = ScopedSilentPanicHook::new();
+        panic_hook.silence();
         let poison_thread = std::thread::spawn(move || {
             let _guard = rb2.readers.lock().unwrap();
             panic!("intentional poison");

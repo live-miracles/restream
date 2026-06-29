@@ -27,6 +27,7 @@
 /// reader lag at seal time to exercise the full reachable state space.
 use bytes::Bytes;
 use proptest::prelude::*;
+use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 use restream::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -338,6 +339,10 @@ async fn p4_seal_before_reader_reaches_wait() {
 // ─── proptest  property-based exhaustion ────────────────────────────────────
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_failure_persistence(
+        FileFailurePersistence::WithSource("proptest-regressions")
+    ))]
+
     /// P1 + P2 with random batch sizes and lag at seal time.
     ///
     /// Drives the async `wait_for_data` via `block_on` and collects the

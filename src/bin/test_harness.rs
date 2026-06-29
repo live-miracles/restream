@@ -45,6 +45,20 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
 ];
 
 const SINK_PORT: u16 = 12935;
+fn default_restream_bin() -> PathBuf {
+    if let Some(path) = std::env::var_os("RESTREAM_BIN").map(PathBuf::from) {
+        return path;
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(bin_dir) = exe.parent()
+    {
+        let sibling = bin_dir.join("restream");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    PathBuf::from("target/release/restream")
+}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -835,9 +849,7 @@ impl RampEnv {
             mediamtx_config: std::env::var_os("RAMP_MEDIAMTX_CONFIG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| work_dir.join("mediamtx.yml")),
-            restream_bin: std::env::var_os("RESTREAM_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data.db")),
@@ -1024,9 +1036,7 @@ impl ResourceSweepEnv {
             restream_log: work_dir.join("restream.log"),
             mediamtx_log: work_dir.join("mediamtx.log"),
             mediamtx_config: work_dir.join("mediamtx.yml"),
-            restream_bin: std::env::var_os("RESTREAM_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data.db")),
@@ -1296,9 +1306,7 @@ impl BitrateSweepEnv {
             restream_log: work_dir.join("restream.log"),
             mediamtx_log: work_dir.join("mediamtx.log"),
             mediamtx_config: work_dir.join("mediamtx.yml"),
-            restream_bin: std::env::var_os("RESTREAM_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data.db")),
@@ -3627,9 +3635,7 @@ async fn api_smoke() -> Result<Value, String> {
         .unwrap_or_else(|| PathBuf::from("test/artifacts/api-smoke"));
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("api-smoke.sqlite");
     let log_path = work_dir.join("restream.log");
     let ports = TestPorts::from_env();
@@ -4395,9 +4401,7 @@ impl MixedEnv {
             mediamtx_config: std::env::var_os("MIXED_MEDIAMTX_CONFIG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| work_dir.join(format!("{log_stem}-mediamtx.yml"))),
-            restream_bin: std::env::var_os("RESTREAM_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("target/release/restream")),
+            restream_bin: default_restream_bin(),
             restream_db_path: std::env::var_os("RESTREAM_DB_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data.db")),
@@ -5355,18 +5359,15 @@ async fn run_mixed_h265_srt_config(
 
     if env.check_selected("tc-spawns") && resume.allows("MS-tc-spawns") {
         let started = Instant::now();
-        let tc_spawns = wait_for_log_matches(
-            &env.restream_log,
-            "[h264-tc] Spawning",
-            1,
-            Duration::from_secs(30),
-        )
-        .await;
+        let graph = api
+            .get_json(&format!("/api/v1/pipelines/{pipeline_id}/graph"))
+            .await?;
+        let tc_stages = graph_active_node_count(&graph, "codec_edge");
         let ffmpeg = ffmpeg_pipe1_stats().await;
         let tc_max = ffmpeg.count + 1;
-        if tc_spawns < 1 || tc_spawns as u64 > tc_max {
+        if tc_stages < 1 || tc_stages as u64 > tc_max {
             let message = format!(
-                "{cfg}: expected 1..{tc_max} h264-tc spawns (got {tc_spawns}; N={n} outputs - sharing broken if >{tc_max})"
+                "{cfg}: expected 1..{tc_max} active HEVC->H.264 codec-edge stages (got {tc_stages}; N={n} outputs - sharing broken if >{tc_max})"
             );
             emit_mixed_result(
                 env,
@@ -5376,9 +5377,9 @@ async fn run_mixed_h265_srt_config(
                 started.elapsed(),
                 Some(json!({
                     "message": message,
-                    "tc_spawns": tc_spawns,
+                    "tc_stages": tc_stages,
                     "bound": tc_max,
-                    "restream_log_tail": file_tail_lines(&env.restream_log, 30),
+                    "graph": graph,
                 })),
             )?;
             stop_child(&mut publisher).await;
@@ -5392,14 +5393,14 @@ async fn run_mixed_h265_srt_config(
             "pass",
             started.elapsed(),
             Some(json!({
-                "tc_spawns": tc_spawns,
+                "tc_stages": tc_stages,
                 "bound": tc_max,
             })),
         )?;
         log_mixed_ok(
             env,
             &format!(
-                "{cfg}: TC_SPAWNS={tc_spawns} <= {tc_max} (stage sharing confirmed for {total} outputs)"
+                "{cfg}: TC_STAGES={tc_stages} <= {tc_max} (stage sharing confirmed for {total} outputs)"
             ),
         )?;
     }
@@ -5448,7 +5449,6 @@ async fn run_mixed_h265_srt_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
-        "tcSpawns": count_log_matches(&env.restream_log, "[h264-tc] Spawning"),
     });
     if let Some(probe) = sink_probe_result {
         result["sinkProbe"] = probe.summary;
@@ -6410,7 +6410,7 @@ async fn verify_mixed_stream(
     let started = Instant::now();
     let mut last = String::new();
     let mut last_error = String::new();
-    for attempt in 1..=30 {
+    for _attempt in 1..=30 {
         match probe_dims_ramp_with_cookie(spec.url, spec.cookie).await {
             Ok(dimensions) if dimensions == spec.expected => {
                 emit_mixed_result(
@@ -6433,14 +6433,9 @@ async fn verify_mixed_stream(
                 if !dimensions.is_empty() {
                     last = dimensions;
                 }
-                eprintln!(
-                    "    attempt {attempt}: got '{last}', want '{}'",
-                    spec.expected
-                );
             }
             Err(error) => {
                 last_error = error.clone();
-                eprintln!("    attempt {attempt}: {error}");
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -6474,22 +6469,13 @@ async fn verify_mixed_stream(
 }
 
 async fn warm_mixed_stream(label: &str, url: &str, expected: &str, cookie: Option<&str>) {
-    for attempt in 1..=15 {
+    for _attempt in 1..=15 {
         match probe_dims_ramp_with_cookie(url, cookie).await {
             Ok(dimensions) if dimensions == expected => {
                 println!("  warmup: {label} -> {dimensions}");
                 return;
             }
-            Ok(dimensions) => {
-                if !dimensions.is_empty() {
-                    eprintln!(
-                        "    warmup attempt {attempt}: got '{dimensions}', want '{expected}'"
-                    );
-                }
-            }
-            Err(error) => {
-                eprintln!("    warmup attempt {attempt}: {error}");
-            }
+            Ok(_) | Err(_) => {}
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
@@ -6516,7 +6502,7 @@ async fn verify_mixed_audio_route(
     let mut last_dimensions = String::new();
     let mut last_audio_tracks = None;
     let mut last_error = String::new();
-    for attempt in 1..=15 {
+    for _attempt in 1..=15 {
         match ffprobe(url).await {
             Ok(probe) => {
                 let dimensions = video_dimensions(&probe).unwrap_or_default();
@@ -6547,21 +6533,9 @@ async fn verify_mixed_audio_route(
                     last_dimensions = dimensions;
                 }
                 last_audio_tracks = Some(audio_tracks);
-                eprintln!(
-                    "    audio attempt {attempt}: got dims='{}' audio_tracks={}, want dims='{}' audio_tracks={}",
-                    if last_dimensions.is_empty() {
-                        "<none>"
-                    } else {
-                        &last_dimensions
-                    },
-                    audio_tracks,
-                    expected_dimensions,
-                    expected_audio_tracks
-                );
             }
             Err(error) => {
                 last_error = error.clone();
-                eprintln!("    audio attempt {attempt}: {error}");
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -6669,30 +6643,44 @@ fn log_mixed_ok(env: &MixedEnv, message: &str) -> Result<(), String> {
     append_line(&env.summary_log, &format!("ok: {message}\n"))
 }
 
-fn count_log_matches(path: &Path, needle: &str) -> usize {
-    std::fs::read_to_string(path)
-        .map(|content| content.matches(needle).count())
-        .unwrap_or(0)
-}
-
-async fn wait_for_log_matches(
-    path: &Path,
-    needle: &str,
-    minimum: usize,
-    timeout: Duration,
-) -> usize {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let count = count_log_matches(path, needle);
-        if count >= minimum || Instant::now() >= deadline {
-            return count;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+fn effective_log_paths(path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = path.parent() else {
+        return vec![path.to_path_buf()];
+    };
+    let logs_dir = parent.join("logs");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("restream.log"))
+        })
+        .collect();
+    entries.sort();
+    if entries.is_empty() {
+        vec![path.to_path_buf()]
+    } else {
+        entries
     }
 }
 
+fn count_log_matches(path: &Path, needle: &str) -> usize {
+    effective_log_paths(path)
+        .into_iter()
+        .filter_map(|candidate| std::fs::read_to_string(candidate).ok())
+        .map(|content| content.matches(needle).count())
+        .sum()
+}
+
 fn file_tail_lines(path: &Path, lines: usize) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Some(target) = effective_log_paths(path).into_iter().last() else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(target) else {
         return Vec::new();
     };
     let mut tail = content.lines().rev().take(lines).collect::<Vec<_>>();
@@ -6704,9 +6692,7 @@ async fn correctness() -> Result<Value, String> {
     let work_dir = artifact_path("correctness");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let ports = TestPorts::from_env();
@@ -6825,9 +6811,7 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("correctness-srt-rtmp");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
@@ -6988,9 +6972,7 @@ async fn srt_policy_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("correctness-srt-policy");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let ports = TestPorts::from_env();
@@ -7451,6 +7433,15 @@ fn graph_ring_readers(graph: &Value) -> Vec<Value> {
         .collect()
 }
 
+fn graph_active_node_count(graph: &Value, node_type: &str) -> usize {
+    graph["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["type"] == node_type && node["active"].as_bool().unwrap_or(false))
+        .count()
+}
+
 /// Test: RTMP B-frame ingest -> RTMP egress timestamp round-trip.
 ///
 /// Publishes B-frame H.264/AAC over RTMP, sends egress to the generalized
@@ -7460,9 +7451,7 @@ async fn bframe_rtmp_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("bframe-rtmp");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
@@ -7594,9 +7583,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let work_dir = artifact_path(&format!("correctness-{protocol}"));
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let ports = TestPorts::from_env();
@@ -7685,9 +7672,7 @@ async fn egress_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("egress");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
@@ -7917,9 +7902,7 @@ async fn hevc_rtmp_egress_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("correctness-hevc-rtmp");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
@@ -8042,9 +8025,7 @@ async fn hevc_srt_passthrough_correctness() -> Result<Value, String> {
     let work_dir = artifact_path("correctness-hevc-srt");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let ports = TestPorts::from_env();
@@ -8237,6 +8218,8 @@ async fn generate_fixture_h265(path: &Path) -> Result<(), String> {
         "libx265",
         "-preset",
         "fast",
+        "-x265-params",
+        "log-level=none",
         "-g",
         "60",
         "-bf",
@@ -8702,9 +8685,7 @@ async fn fault_resilience() -> Result<Value, String> {
     let work_dir = artifact_path("fault-resilience");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
-    let restream_bin = std::env::var_os("RESTREAM_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/release/restream"));
+    let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
@@ -9405,8 +9386,7 @@ fn suite_append_result(
 // artifact directory has enough free space.  Outputs one JSON object per check.
 
 async fn preflight_check() -> Result<Value, String> {
-    let restream_bin =
-        std::env::var("RESTREAM_BIN").unwrap_or_else(|_| "./target/release/restream".to_string());
+    let restream_bin = default_restream_bin();
 
     let binary_check = if std::fs::metadata(&restream_bin)
         .map(|m| {
@@ -9415,13 +9395,13 @@ async fn preflight_check() -> Result<Value, String> {
         })
         .unwrap_or(false)
     {
-        json!({ "check": "binary", "path": restream_bin, "status": "ok" })
+        json!({ "check": "binary", "path": restream_bin.display().to_string(), "status": "ok" })
     } else {
         json!({
             "check": "binary",
-            "path": restream_bin,
+            "path": restream_bin.display().to_string(),
             "status": "fail",
-            "hint": "run: scripts/resource-limit cargo build --release"
+            "hint": "build restream in target/debug or target/release, or set RESTREAM_BIN"
         })
     };
 

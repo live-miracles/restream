@@ -97,8 +97,9 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
     let mut args = vec![
         "-nostdin".to_string(),
         "-hide_banner".to_string(),
+        "-nostats".to_string(),
         "-loglevel".to_string(),
-        "info".to_string(),
+        "warning".to_string(),
         "-f".to_string(),
         "mpegts".to_string(),
         "-i".to_string(),
@@ -146,6 +147,9 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
                 .map(|profile| profile.preset.clone())
                 .unwrap_or_else(|| "veryfast".to_string()),
         ]);
+        if encoder == "libx265" {
+            args.extend(["-x265-params".to_string(), "log-level=none".to_string()]);
+        }
         if let Some(profile) = &profile {
             if !profile.tune.is_empty() {
                 args.extend(["-tune".to_string(), profile.tune.clone()]);
@@ -479,27 +483,23 @@ pub async fn start_external_transcoder_stage(
             let mut pkts = Vec::with_capacity(32);
             loop {
                 let t0 = out_timing_clock.now();
-                tokio::select! {
-                    _ = cancel_out.cancelled() => break,
-                    result = stdout.read(&mut buf) => {
-                        let idle_us = out_timing_clock.delta_us(t0);
-                        match result {
-                            Ok(0) | Err(_) => {
-                                debug!("stdout closed ({})", label_out);
-                                break;
-                            }
-                            Ok(n) => {
-                                if idle_us > PIPE_STALL_THRESHOLD_US {
-                                    out_pipe_metrics.record_idle(idle_us);
-                                }
-                                demuxer.feed(&buf[..n]);
-                                demuxer.drain_into(&mut pkts);
-                                for pkt in &pkts {
-                                    out_stage_metrics.record_out(pkt.payload.len() as u64);
-                                }
-                                out_ring.push_batch(pkts.drain(..));
-                            }
+                let result = stdout.read(&mut buf).await;
+                let idle_us = out_timing_clock.delta_us(t0);
+                match result {
+                    Ok(0) | Err(_) => {
+                        debug!("stdout closed ({})", label_out);
+                        break;
+                    }
+                    Ok(n) => {
+                        if idle_us > PIPE_STALL_THRESHOLD_US {
+                            out_pipe_metrics.record_idle(idle_us);
                         }
+                        demuxer.feed(&buf[..n]);
+                        demuxer.drain_into(&mut pkts);
+                        for pkt in &pkts {
+                            out_stage_metrics.record_out(pkt.payload.len() as u64);
+                        }
+                        out_ring.push_batch(pkts.drain(..));
                     }
                 }
             }

@@ -326,8 +326,12 @@ impl CustomInput {
 
             (*raw_ctx).pb = avio_ctx;
             (*raw_ctx).flags |= ffmpeg::ffi::AVFMT_FLAG_CUSTOM_IO;
-            (*raw_ctx).probesize = 32768;
-            (*raw_ctx).max_analyze_duration = 500_000; // 0.5s in microseconds
+            // MPEG-TS over in-memory pipes still needs enough lead-in to see
+            // the first AAC headers. The smaller probe budget produced
+            // "could not find codec parameters" warnings in clean test
+            // fixtures and occasionally left audio metadata incomplete.
+            (*raw_ctx).probesize = 1 << 20; // 1 MiB
+            (*raw_ctx).max_analyze_duration = 2_000_000; // 2s in microseconds
 
             let mut raw_ctx_mut = raw_ctx;
             let open_res = ffmpeg::ffi::avformat_open_input(
@@ -518,6 +522,31 @@ unsafe extern "C" fn write_packet_cb(opaque: *mut c_void, buf: *mut u8, buf_size
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Mutex;
+
+    static EXPECTED_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedSilentPanicHook(
+        Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>,
+    );
+
+    impl ScopedSilentPanicHook {
+        fn new() -> Self {
+            Self(Some(std::panic::take_hook()))
+        }
+
+        fn silence(&mut self) {
+            std::panic::set_hook(Box::new(|_| {}));
+        }
+    }
+
+    impl Drop for ScopedSilentPanicHook {
+        fn drop(&mut self) {
+            if let Some(hook) = self.0.take() {
+                std::panic::set_hook(hook);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn write_batch_preserves_chunk_order() {
@@ -562,6 +591,11 @@ mod tests {
         // We use Arc<MemoryQueue> so the poisoning thread can share the object.
         let queue = Arc::new(MemoryQueue::new());
         {
+            let _panic_hook_lock = EXPECTED_PANIC_HOOK_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut panic_hook = ScopedSilentPanicHook::new();
+            panic_hook.silence();
             let q = queue.clone();
             // unwrap() inside a thread that panics → the Mutex becomes poisoned
             let _ = std::thread::spawn(move || {
