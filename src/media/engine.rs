@@ -326,6 +326,25 @@ impl MediaEngine {
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64).map(|dt| dt.to_rfc3339())
     }
 
+    pub fn set_event_sink(&self, sink: tokio::sync::mpsc::UnboundedSender<crate::events::Event>) {
+        self.runtime.event_log.set_sink(sink);
+    }
+
+    pub fn recent_events(
+        &self,
+        limit: usize,
+        pipeline_id: Option<&str>,
+    ) -> Vec<crate::events::Event> {
+        self.runtime.event_log.recent(limit, pipeline_id)
+    }
+
+    pub fn bonding_available(&self) -> bool {
+        self.runtime
+            .listener_stats
+            .bonding_available
+            .load(Ordering::Relaxed)
+    }
+
     fn egress_protocol_from_url(url: &str) -> &'static str {
         if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
             "rtmp"
@@ -475,6 +494,50 @@ impl MediaEngine {
             .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect()
+    }
+
+    pub async fn has_active_ingest(&self, pipeline_id: &str) -> bool {
+        self.ingests.active.read().await.contains_key(pipeline_id)
+    }
+
+    pub async fn active_ingest_protocol_for_probe(&self, pipeline_id: &str) -> Option<String> {
+        self.ingests
+            .active
+            .read()
+            .await
+            .get(pipeline_id)
+            .map(|ingest| match ingest.protocol.as_str() {
+                "file" => "rtmp".to_string(),
+                protocol => protocol.to_string(),
+            })
+    }
+
+    pub async fn ingest_video_codec(&self, pipeline_id: &str) -> Option<String> {
+        self.ingests
+            .active
+            .read()
+            .await
+            .get(pipeline_id)
+            .and_then(|ingest| ingest.video.as_ref())
+            .map(|video| video.codec.clone())
+    }
+
+    pub async fn has_active_egress(&self, output_id: &str) -> bool {
+        self.egresses
+            .cancel_tokens
+            .read()
+            .await
+            .contains_key(output_id)
+    }
+
+    pub async fn get_or_create_diag_semaphore(
+        &self,
+        pipeline_id: &str,
+    ) -> Arc<tokio::sync::Semaphore> {
+        let mut map = self.runtime.diag_semaphores.write().await;
+        map.entry(pipeline_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
     }
 
     pub async fn get_or_create_stage_metrics(&self, key: StageKey) -> Arc<StageMetrics> {
@@ -1510,6 +1573,49 @@ impl MediaEngine {
     pub async fn get_hls_store(&self, pipeline_id: &str) -> Option<Arc<HlsStore>> {
         let stores = self.hls.stores.read().await;
         stores.get(pipeline_id).cloned()
+    }
+
+    /// Build the full health snapshot JSON that the `/api/v1/engine/health`
+    /// endpoint returns.
+    pub async fn hls_pipeline_ids(&self) -> Vec<String> {
+        self.hls.consumers.read().await.keys().cloned().collect()
+    }
+
+    pub async fn should_shutdown_hls_segmenter(&self, pipeline_id: &str, timeout_ms: u64) -> bool {
+        let has_ingest = self.has_active_ingest(pipeline_id).await;
+        let consumers = self.hls.consumers.read().await;
+        match consumers.get(pipeline_id) {
+            Some(consumer) => !has_ingest || consumer.is_idle(timeout_ms),
+            None => false,
+        }
+    }
+
+    pub async fn shutdown_all_hls_segmenters(&self) {
+        let pipeline_ids = self.hls_pipeline_ids().await;
+        for pipeline_id in pipeline_ids {
+            self.shutdown_hls_segmenter(&pipeline_id).await;
+        }
+    }
+
+    pub async fn cancel_all_active_tasks(&self) {
+        {
+            let egress = self.egresses.cancel_tokens.read().await;
+            for token in egress.values() {
+                token.cancel();
+            }
+        }
+        {
+            let ingests = self.ingests.cancel_tokens.read().await;
+            for token in ingests.values() {
+                token.cancel();
+            }
+        }
+        {
+            let recordings = self.recordings.cancel_tokens.read().await;
+            for token in recordings.values() {
+                token.cancel();
+            }
+        }
     }
 
     /// Build the full health snapshot JSON that the `/api/v1/engine/health`

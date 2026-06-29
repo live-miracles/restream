@@ -235,6 +235,18 @@ This should power:
 - `TelemetryRegistry`
 - `DiagnosticsRegistry`
 
+Success criteria for this decomposition:
+- the flat per-domain ownership fields are removed from `MediaEngine` and
+  replaced by grouped registries for ingest, egress, stages, HLS, recording,
+  file-ingest, and runtime coordination;
+- the old field names no longer remain as the canonical runtime surface, so new
+  work cannot silently grow the pre-split god-object again;
+- common control-plane operations (event access, shutdown coordination,
+  diagnostics semaphore lookup, ingest/HLS presence checks) route through
+  `MediaEngine` helpers instead of duplicating nested lock access in handlers;
+- the refactor stays behavior-preserving at the build boundary: formatting and
+  `cargo check` stay green with the repo's shared FFmpeg build prefix.
+
 ### D. Introduce planner/runtime separation
 
 Move stage construction policy out of the reconciler loop and into a dedicated planner.
@@ -1291,15 +1303,17 @@ Every benchmark should report:
 - define canonical terminology
 - freeze legacy vocabulary from new work
 
-Current audit snapshot, 2026-06-28:
+Current audit snapshot, 2026-06-29:
 - Phases 0 through 7 are materially implemented, but the full plan is not yet
   complete end-to-end.
 - Phase 3 is now materially complete for the shipped control plane: frontend,
   API tests, and Rust test-harness flows all use the versioned `/api/v1`
   surface, and the superseded non-v1 operational routes have been removed.
-- Runtime decomposition remains partial: typed stage identity, feeder reuse, and
-  typed-key plumbing are complete, but the larger `MediaEngine` split into
-  dedicated registries is still future work.
+- Runtime decomposition is now split into dedicated registries: typed stage
+  identity, feeder reuse, typed-key plumbing, and the `MediaEngine` registry
+  split are all landed. The remaining cleanup is narrower façade hardening
+  around diagnostics/telemetry rendering and transport modules that still read
+  nested runtime state directly.
 - Phase 8 remains open. Package-stage sharing, deeper backend-fusion decisions,
   and capacity/autoscaling/remediation follow-through are not yet complete.
 
@@ -1326,8 +1340,20 @@ Implementation note, 2026-06-25:
 
 Implementation note, 2026-06-25 (continued):
 - stage registries now use typed `StageKey` values end-to-end. The intermediate
-  legacy string-key helpers were removed during Phase 3; extracting finer-grained
-  registry structs remains a future cleanup.
+  legacy string-key helpers were removed during Phase 3.
+
+Implementation note, 2026-06-29:
+- `MediaEngine` now delegates ownership to grouped runtime registries in
+  `src/media/engine_registries.rs` (`IngestRegistry`, `EgressRegistry`,
+  `StageRegistry`, `HlsRegistry`, `RecordingRegistry`,
+  `FileIngestRegistry`, `RuntimeInfra`).
+- The old flat ownership fields were removed from `MediaEngine`; the façade now
+  routes common control-plane reads/writes such as event-log access, active
+  ingest checks, HLS shutdown sweeps, shutdown cancellation, and diagnostic
+  semaphore lookup through dedicated methods.
+- The broader architectural follow-up is no longer "split the engine"; it is
+  optional encapsulation polish and deeper separation of graph/diagnostic
+  rendering from runtime ownership.
 
 Phase 1 structural items (typed IDs and stage kinds, StageFeeder coverage for
 recording, HLS, internal/external transcoder feeders, H.265→H.264 bridge feeder,
@@ -1431,9 +1457,10 @@ Phase 3 implementation checkpoint, 2026-06-26:
   updates, prunes resolved alerts.
 - Docs updated: `docs/api-reference.md` and `docs/observability.md` document
   all v1 operator and engineer endpoints.
-- Remaining structural follow-up: splitting `MediaEngine` into finer-grained
-  registry structs (`StageRegistry`, `IngestRegistry`) is a future cleanup,
-  not gating Phase 3 completion.
+- Remaining structural follow-up is now limited to façade hardening and
+  responsibility trimming around diagnostics/telemetry rendering and transport
+  modules; the registry split itself is no longer future work and does not gate
+  Phase 3 completion.
 
 Phase 3 audit update, 2026-06-28:
 - The v1 surface now covers the shipped control plane end to end: engine

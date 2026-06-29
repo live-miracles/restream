@@ -253,7 +253,7 @@ pub async fn run_app() {
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    engine.runtime.event_log.set_sink(event_tx);
+    engine.set_event_sink(event_tx);
     {
         // Drain the event channel so the EventLog broadcast stays live.
         // Persistence is handled by the tracing DbLayer — lifecycle events emitted
@@ -410,12 +410,7 @@ pub async fn run_app() {
         };
 
         for output in &outputs {
-            let is_active = engine
-                .egresses
-                .cancel_tokens
-                .read()
-                .await
-                .contains_key(&output.id);
+            let is_active = engine.has_active_egress(&output.id).await;
             let now_str = chrono::Utc::now().to_rfc3339();
 
             if output.desired_state == "running" && !is_active {
@@ -484,14 +479,10 @@ pub async fn run_app() {
 
                 let is_rtmp =
                     output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
-                let ingest_is_hevc = {
-                    let ingests = engine.ingests.active.read().await;
-                    ingests
-                        .get(&output.pipeline_id)
-                        .and_then(|i| i.video.as_ref())
-                        .map(|v| v.codec == "hevc" || v.codec == "h265")
-                        .unwrap_or(false)
-                };
+                let ingest_is_hevc = engine
+                    .ingest_video_codec(&output.pipeline_id)
+                    .await
+                    .is_some_and(|codec| codec == "hevc" || codec == "h265");
                 // Stage graph (new design — H.265→H.264 conversion at the output
                 // edge, not up-front):
                 //
@@ -762,18 +753,15 @@ pub async fn run_app() {
         {
             let mut needed_stages: std::collections::HashSet<StageKey> =
                 std::collections::HashSet::new();
-            let ingests = engine.ingests.active.read().await;
-            let egress_tokens = engine.egresses.cancel_tokens.read().await;
             for output in &outputs {
-                let is_active = egress_tokens.contains_key(&output.id);
+                let is_active = engine.has_active_egress(&output.id).await;
                 if is_active || output.desired_state == "running" {
                     let is_rtmp =
                         output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
-                    let ingest_is_hevc = ingests
-                        .get(&output.pipeline_id)
-                        .and_then(|i| i.video.as_ref())
-                        .map(|v| v.codec == "hevc" || v.codec == "h265")
-                        .unwrap_or(false);
+                    let ingest_is_hevc = engine
+                        .ingest_video_codec(&output.pipeline_id)
+                        .await
+                        .is_some_and(|codec| codec == "hevc" || codec == "h265");
 
                     let stage_plan = EncodingStagePlan::from_encoding(
                         output.pipeline_id.as_str(),
@@ -805,12 +793,7 @@ pub async fn run_app() {
             }
         };
         for pipeline in pipelines {
-            let has_ingest = engine
-                .ingests
-                .active
-                .read()
-                .await
-                .contains_key(&pipeline.id);
+            let has_ingest = engine.has_active_ingest(&pipeline.id).await;
 
             // Reconcile recordings
             let rec_key = format!("recording_enabled:{}", pipeline.id);
@@ -851,17 +834,12 @@ pub async fn run_app() {
 
         // Sweep idle HLS segmenters after the configured idle timeout
         // or if ingest disconnected.
-        let hls_ids: Vec<String> = engine.hls.consumers.read().await.keys().cloned().collect();
+        let hls_ids = engine.hls_pipeline_ids().await;
         for pid in hls_ids {
-            let has_ingest = engine.ingests.active.read().await.contains_key(&pid);
-            let idle = {
-                let consumers = engine.hls.consumers.read().await;
-                match consumers.get(&pid) {
-                    Some(c) => !has_ingest || c.is_idle(tuning.hls_idle_timeout_ms),
-                    None => false,
-                }
-            };
-            if idle {
+            if engine
+                .should_shutdown_hls_segmenter(&pid, tuning.hls_idle_timeout_ms)
+                .await
+            {
                 engine.shutdown_hls_segmenter(&pid).await;
             }
         }
@@ -876,29 +854,8 @@ pub async fn run_app() {
     // OS threads, recording FFmpeg threads, and HLS segmenters alive until the
     // runtime forcibly dropped them.
     info!("shutdown: cancelling all active tasks");
-    {
-        let egress = engine.egresses.cancel_tokens.read().await;
-        for token in egress.values() {
-            token.cancel();
-        }
-    }
-    {
-        let ingests = engine.ingests.cancel_tokens.read().await;
-        for token in ingests.values() {
-            token.cancel();
-        }
-    }
-    {
-        let recs = engine.recordings.cancel_tokens.read().await;
-        for token in recs.values() {
-            token.cancel();
-        }
-    }
-    // Shut down all HLS segmenters (stops their internal tasks/timers).
-    let hls_ids: Vec<String> = engine.hls.consumers.read().await.keys().cloned().collect();
-    for pid in hls_ids {
-        engine.shutdown_hls_segmenter(&pid).await;
-    }
+    engine.cancel_all_active_tasks().await;
+    engine.shutdown_all_hls_segmenters().await;
 
     // Give all tasks a moment to run their cleanup paths before we close the DB.
     tokio::time::sleep(Duration::from_millis(500)).await;

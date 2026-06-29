@@ -2797,12 +2797,7 @@ async fn status_get_handler(
     }
 
     let sys = System::new_all();
-    let bonding_available = state
-        .engine
-        .runtime
-        .listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let bonding_available = state.engine.bonding_available();
     let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
     status["os"] = system_status(&sys);
 
@@ -2982,12 +2977,7 @@ async fn status_sbom_get_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let bonding_available = state
-        .engine
-        .runtime
-        .listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let bonding_available = state.engine.bonding_available();
     let (_, sbom) = crate::runtime_info::status_and_sbom(bonding_available);
     (
         [
@@ -3626,11 +3616,7 @@ async fn v1_events_handler(
 
     let limit = query.limit.min(events::MAX_EVENTS);
     let pipeline_filter = query.pipeline_id.as_deref();
-    let event_list = state
-        .engine
-        .runtime
-        .event_log
-        .recent(limit, pipeline_filter);
+    let event_list = state.engine.recent_events(limit, pipeline_filter);
 
     Json(serde_json::json!({
         "generatedAt": chrono::Utc::now().to_rfc3339(),
@@ -3851,7 +3837,7 @@ async fn agent_investigation_handler(
     } else {
         state.engine.engine_telemetry().await
     };
-    let events = state.engine.runtime.event_log.recent(
+    let events = state.engine.recent_events(
         request.event_limit.min(events::MAX_EVENTS),
         request.pipeline_id.as_deref(),
     );
@@ -4168,11 +4154,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .health_snapshot(&pipeline_ids, &recording_enabled)
         .await;
     let alerts = alerts::derive_alerts(&health);
-    let events = state
-        .engine
-        .runtime
-        .event_log
-        .recent(events::MAX_EVENTS, None);
+    let events = state.engine.recent_events(events::MAX_EVENTS, None);
     let engine_telemetry = state.engine.engine_telemetry().await;
     let mut pipeline_telemetry = Vec::new();
     let mut graphs = Vec::new();
@@ -4199,12 +4181,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     )
     .await;
 
-    let bonding_available = state
-        .engine
-        .runtime
-        .listener_stats
-        .bonding_available
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let bonding_available = state.engine.bonding_available();
     let (mut status, _) = crate::runtime_info::status_and_sbom(bonding_available);
     let sys = System::new_all();
     status["os"] = system_status(&sys);
@@ -5410,15 +5387,9 @@ async fn pipeline_diagnostics_sse_handler(
 
     let probe_protocol = match state
         .engine
-        .ingests
-        .active
-        .read()
+        .active_ingest_protocol_for_probe(&pipeline_id)
         .await
-        .get(&pipeline_id)
-        .map(|ingest| match ingest.protocol.as_str() {
-            "file" => "rtmp".to_string(),
-            protocol => protocol.to_string(),
-        }) {
+    {
         Some(protocol) => protocol,
         None => {
             return (StatusCode::NOT_FOUND, "No active ingest for this pipeline").into_response();
@@ -5440,12 +5411,7 @@ async fn pipeline_diagnostics_sse_handler(
     let engine = state.engine.clone();
 
     // Acquire per-pipeline semaphore to prevent concurrent diagnostics on the same pipeline
-    let sem = {
-        let mut map = engine.runtime.diag_semaphores.write().await;
-        map.entry(pipeline_id.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
-            .clone()
-    };
+    let sem = engine.get_or_create_diag_semaphore(&pipeline_id).await;
     let permit = match sem.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
