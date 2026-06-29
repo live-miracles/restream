@@ -3992,6 +3992,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recent_ingest_disconnect_respects_grace_window() {
+        let engine = MediaEngine::new();
+        let now_ms = MediaEngine::now_epoch_ms();
+
+        engine.ingests.recent.write().await.insert(
+            "inside".to_string(),
+            RecentIngestOutcome {
+                protocol: "rtmp".to_string(),
+                disconnected_at_ms: now_ms,
+                reason: Some("publisher disconnected".to_string()),
+                failure_phase: Some("disconnect".to_string()),
+                had_error: false,
+                remote_addr: Some("127.0.0.1:1935".to_string()),
+                bytes_received: 1024,
+            },
+        );
+        engine.ingests.recent.write().await.insert(
+            "outside".to_string(),
+            RecentIngestOutcome {
+                protocol: "srt".to_string(),
+                disconnected_at_ms: now_ms.saturating_sub(1_000),
+                reason: Some("receiver stopped".to_string()),
+                failure_phase: Some("receive".to_string()),
+                had_error: true,
+                remote_addr: Some("127.0.0.1:9000".to_string()),
+                bytes_received: 2048,
+            },
+        );
+
+        assert!(
+            engine.has_recent_ingest_disconnect("inside", 250).await,
+            "disconnects strictly inside the grace window should be treated as recent"
+        );
+        assert!(
+            !engine.has_recent_ingest_disconnect("outside", 250).await,
+            "disconnects older than the grace window should not count as recent"
+        );
+        assert!(
+            !engine.has_recent_ingest_disconnect("inside", 0).await,
+            "zero grace disables the recent-disconnect shortcut entirely"
+        );
+        assert!(
+            !engine.has_recent_ingest_disconnect("missing", 250).await,
+            "pipelines without a recent disconnect record must not be treated as recent"
+        );
+    }
+
+    #[tokio::test]
     async fn re_register_ingest_clears_recent_disconnect_details() {
         let engine = MediaEngine::new();
         let pipelines = vec!["p1".to_string()];

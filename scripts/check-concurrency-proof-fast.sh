@@ -22,6 +22,7 @@ scripts/resource-limit cargo test \
   --test db -- --nocapture
 
 scripts/resource-limit cargo test recent_egress --lib -- --nocapture
+scripts/resource-limit cargo test recent_ingest_disconnect_respects_grace_window --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture
 scripts/resource-limit cargo test output_status_surfaces_retry_backoff_after_failure --lib -- --nocapture
 scripts/resource-limit cargo test --bin test_harness -- --nocapture
