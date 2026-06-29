@@ -643,14 +643,13 @@ test.describe.serial('HLS Player — live playback', () => {
 
         const usesHlsJs = await page.evaluate(() => !!window.Hls);
         if (usesHlsJs) {
-            const videoSrc = await video.getAttribute('src');
-            expect(videoSrc).toBeTruthy();
-            expect(videoSrc).toContain('blob:');
+            // Wait for Hls.js to attach media and set src to a blob URL (since manifest load is async)
+            await expect(video).toHaveAttribute('src', /blob:/, { timeout: 15000 });
             const vidPreviewSrc = await video.getAttribute('data-preview-src');
             expect(vidPreviewSrc).toContain(`/hls/${livePipelineId}/master.m3u8`);
         } else {
-            const videoSrc = await video.getAttribute('src');
-            expect(videoSrc).toContain(`/hls/${livePipelineId}/master.m3u8`);
+            // Wait for native player to set src to the HLS URL
+            await expect(video).toHaveAttribute('src', new RegExp(`/hls/${livePipelineId}/master.m3u8`), { timeout: 15000 });
         }
     });
 
@@ -693,8 +692,11 @@ test.describe.serial('HLS Player — live playback', () => {
                 const resp = await page.request.get(`/hls/${livePipelineId}/index.m3u8`);
                 if (resp.ok()) {
                     const body = await resp.text();
-                    const match = body.match(/^#EXT-X-MEDIA-SEQUENCE:(\d+)$/m);
-                    if (match) return parseInt(match[1], 10);
+                    const matches = [...body.matchAll(/seg(\d+)\.ts/g)];
+                    if (matches.length > 0) {
+                        const indexes = matches.map(m => parseInt(m[1], 10));
+                        return Math.max(...indexes);
+                    }
                 }
                 await page.waitForTimeout(1000);
             }
@@ -712,5 +714,107 @@ test.describe.serial('HLS Player — live playback', () => {
             if (seq2 > seq1) break;
         }
         expect(seq2).toBeGreaterThan(seq1);
+    });
+
+    test('egress output lifecycle start and stop', async ({ page }) => {
+        const ctx = await request.newContext({ baseURL: TEST_BASE_URL });
+        await ctx.post('/api/v1/auth/login', { data: { password: 'admin' } });
+        
+        const outputResp = await ctx.post(`/api/v1/pipelines/${livePipelineId}/outputs`, {
+            data: {
+                name: 'E2E-Egress-Test',
+                url: 'rtmp://127.0.0.1:11935/live/e2e_egress_out',
+                encoding: 'source'
+            }
+        });
+        expect(outputResp.ok()).toBe(true);
+        const outputJson = await outputResp.json();
+        const outputId = outputJson.output.id;
+        await ctx.dispose();
+
+        await page.goto('/');
+        await page.getByRole('button', { name: 'Pipeline', exact: true }).click();
+        const pipelineItem = page.locator('#pipelines li', { hasText: livePipelineName });
+        await pipelineItem.click();
+
+        const outputRow = page.locator('#outputs-list > div', { hasText: 'E2E-Egress-Test' }).first();
+        const startBtn = outputRow.locator('button[data-action="toggle-output"]', { hasText: 'Start' });
+        await expect(startBtn).toBeVisible({ timeout: 10000 });
+        await startBtn.click();
+
+        const stopBtn = outputRow.locator('button[data-action="toggle-output"]', { hasText: 'Stop' });
+        await expect(stopBtn).toBeVisible({ timeout: 15000 });
+
+        const delCtx = await request.newContext({ baseURL: TEST_BASE_URL });
+        await delCtx.post('/api/v1/auth/login', { data: { password: 'admin' } });
+        await delCtx.delete(`/api/v1/pipelines/${livePipelineId}/outputs/${outputId}`);
+        await delCtx.dispose();
+    });
+
+    test('settings persistence validation', async ({ page }) => {
+        await page.getByRole('button', { name: 'Pipeline', exact: true }).click();
+        const pipelineItem = page.locator('#pipelines li', { hasText: livePipelineName });
+        await expect(pipelineItem).toBeVisible({ timeout: 10000 });
+
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        const serverNameInput = page.locator('#settings-server-name');
+        await expect(serverNameInput).toBeVisible();
+
+        const originalName = await serverNameInput.inputValue();
+        expect(originalName).not.toBe('');
+
+        const newName = `TestRestream_${Date.now()}`;
+        await serverNameInput.fill(newName);
+        await page.locator('button[onclick="saveServerName()"]').click();
+
+        await expect(page.locator('#server-name-saved')).toBeVisible();
+
+        await page.goto('/');
+        await expect(page.locator('button', { hasText: `Restream: ${newName}` })).toBeVisible({ timeout: 10000 });
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await expect(serverNameInput).toHaveValue(newName);
+
+        await serverNameInput.fill(originalName);
+        await page.locator('button[onclick="saveServerName()"]').click();
+        await expect(page.locator('#server-name-saved')).toBeVisible();
+    });
+
+    test('diagnostics modal auditing', async ({ page }) => {
+        await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+        
+        const select = page.locator('#inspect-pipeline-select');
+        await expect(select).toBeVisible();
+        await select.selectOption({ value: livePipelineId });
+
+        const runDiagBtn = page.locator('#inspect-open-diagnostics-btn');
+        await expect(runDiagBtn).toBeVisible();
+        await expect(runDiagBtn).toBeEnabled();
+        await runDiagBtn.click();
+
+        const modal = page.locator('#diagnostics-modal');
+        await expect(modal).toBeVisible();
+        await expect(modal.locator('#diagnostics-title')).toContainText('Diagnostics');
+
+        await expect(modal.locator('text=GOP Analysis')).toBeVisible({ timeout: 10000 });
+        await expect(modal.locator('text=System Resources')).toBeVisible();
+
+        const closeBtn = modal.locator('button', { hasText: 'Close' }).first();
+        await expect(closeBtn).toBeVisible();
+        await closeBtn.click();
+
+        await expect(modal).not.toBeVisible();
+    });
+
+    test('Control Room HLS preview player verification', async ({ page }) => {
+        await page.getByRole('button', { name: 'Control Room', exact: true }).click();
+
+        const select = page.locator('#control-room-pipeline-select');
+        await expect(select).toBeVisible();
+        await select.selectOption({ value: livePipelineId });
+
+        await expect(page.locator('text=Local HLS')).toBeVisible();
+
+        const managedVideo = page.locator('video[data-role="managed-hls-video"]');
+        await expect(managedVideo).toBeAttached({ timeout: 10000 });
     });
 });
