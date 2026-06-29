@@ -393,6 +393,7 @@ pub async fn run_app() {
         ingest_policy_store: srt_ingest_policy_store.clone(),
         sessions,
         engine: engine.clone(),
+        ingest_disconnect_grace_ms: tuning.ingest_disconnect_grace_ms,
         ports: crate::api::PortConfig {
             rtmp: ports.rtmp,
             srt: ports.srt,

@@ -2134,7 +2134,23 @@ impl MediaEngine {
         pipeline_ids: &[String],
         recording_enabled: &HashMap<String, bool>,
     ) -> serde_json::Value {
-        crate::media::engine_views::health_snapshot(self, pipeline_ids, recording_enabled).await
+        self.health_snapshot_with_disconnect_grace(pipeline_ids, recording_enabled, 0)
+            .await
+    }
+
+    pub async fn health_snapshot_with_disconnect_grace(
+        &self,
+        pipeline_ids: &[String],
+        recording_enabled: &HashMap<String, bool>,
+        disconnect_grace_ms: u64,
+    ) -> serde_json::Value {
+        crate::media::engine_views::health_snapshot(
+            self,
+            pipeline_ids,
+            recording_enabled,
+            disconnect_grace_ms,
+        )
+        .await
     }
 
     /// Engine-wide telemetry: raw counters for all active ingests, stages, and
@@ -3985,10 +4001,51 @@ mod tests {
         assert_eq!(input["lastDisconnectReason"], "publisher disconnected");
         assert_eq!(input["lastFailurePhase"], "session");
         assert_eq!(input["recentDisconnectError"], false);
+        assert_eq!(input["disconnectGraceActive"], false);
+        assert!(input["disconnectGraceRemainingMs"].is_null());
         assert_eq!(input["lastRemoteAddr"], "127.0.0.1:9000");
         assert_eq!(input["lastSessionBytesReceived"], 4096);
         assert!(input["lastDisconnectAt"].is_string());
         assert!(input["lastDisconnectAgeMs"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_exposes_disconnect_grace_window_fields() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .record_ingest_disconnect(
+                "p1",
+                Some("disconnect"),
+                Some("publisher disconnected".to_string()),
+                false,
+            )
+            .await;
+        engine.unregister_ingest("p1").await;
+
+        let snap = engine
+            .health_snapshot_with_disconnect_grace(&pipelines, &HashMap::new(), 5_000)
+            .await;
+        let input = &snap["pipelines"]["p1"]["input"];
+        assert_eq!(input["status"], "off");
+        assert_eq!(input["disconnectGraceActive"], true);
+        assert!(
+            input["disconnectGraceRemainingMs"]
+                .as_u64()
+                .is_some_and(|remaining| remaining > 0 && remaining <= 5_000)
+        );
+
+        let no_grace = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        assert_eq!(
+            no_grace["pipelines"]["p1"]["input"]["disconnectGraceActive"],
+            false
+        );
+        assert!(no_grace["pipelines"]["p1"]["input"]["disconnectGraceRemainingMs"].is_null());
     }
 
     #[tokio::test]
@@ -4068,6 +4125,8 @@ mod tests {
         assert!(input["lastDisconnectAt"].is_string());
         assert!(input["lastDisconnectAgeMs"].as_u64().is_some());
         assert_eq!(input["recentDisconnectError"], false);
+        assert_eq!(input["disconnectGraceActive"], false);
+        assert!(input["disconnectGraceRemainingMs"].is_null());
         assert_eq!(input["lastRemoteAddr"], "127.0.0.1:7000");
         assert_eq!(input["lastSessionBytesReceived"], 8192);
         assert!(input["lastDisconnectReason"].is_null());
@@ -4108,6 +4167,11 @@ mod tests {
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
         assert!(snap["pipelines"]["p1"]["input"]["lastSessionProtocol"].is_null());
         assert!(snap["pipelines"]["p1"]["input"]["lastDisconnectReason"].is_null());
+        assert_eq!(
+            snap["pipelines"]["p1"]["input"]["disconnectGraceActive"],
+            false
+        );
+        assert!(snap["pipelines"]["p1"]["input"]["disconnectGraceRemainingMs"].is_null());
     }
 
     #[tokio::test]

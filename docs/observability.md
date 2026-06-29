@@ -143,6 +143,17 @@ When a desired-running output is still inside destination retry backoff, the
 same preserved snapshot also shows when the next retry is due instead of
 looking like a static terminal failure.
 
+Input lifecycle snapshots also expose transient upstream grace explicitly:
+
+| Field | Source |
+|---|---|
+| `disconnectGraceActive` | `true` only while the most recent ingest disconnect is still inside `RESTREAM_INGEST_DISCONNECT_GRACE_MS` |
+| `disconnectGraceRemainingMs` | Remaining milliseconds before that grace window expires; `null` when no grace is active |
+
+These fields let the dashboard distinguish "publisher briefly dropped, keep
+watching" from a genuinely idle pipeline, instead of inferring grace only from
+the combination of `status=off` plus recent disconnect metadata.
+
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.
 

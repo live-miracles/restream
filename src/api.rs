@@ -124,6 +124,7 @@ pub struct AppState {
     pub ingest_policy_store: Arc<SrtIngestPolicyStore>,
     pub sessions: Arc<TokioRwLock<HashSet<String>>>,
     pub engine: Arc<MediaEngine>,
+    pub ingest_disconnect_grace_ms: u64,
     pub ports: PortConfig,
     /// Directory for recordings and file-ingest sources.
     /// Defaults to `"media"`. Override via `RESTREAM_MEDIA_DIR`.
@@ -2979,7 +2980,11 @@ async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
     }
     state
         .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
+        .health_snapshot_with_disconnect_grace(
+            &pipeline_ids,
+            &recording_enabled,
+            state.ingest_disconnect_grace_ms,
+        )
         .await
 }
 

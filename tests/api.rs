@@ -40,6 +40,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
         ingest_policy_store,
         sessions,
         engine: engine.clone(),
+        ingest_disconnect_grace_ms: restream::RuntimeTuning::default().ingest_disconnect_grace_ms,
         ports: api::PortConfig {
             rtmp: 1935,
             srt: 10080,
@@ -88,6 +89,7 @@ async fn authenticated_app_with_temp_media()
         ingest_policy_store,
         sessions,
         engine,
+        ingest_disconnect_grace_ms: restream::RuntimeTuning::default().ingest_disconnect_grace_ms,
         ports: api::PortConfig {
             rtmp: 1935,
             srt: 10080,
@@ -1555,6 +1557,8 @@ async fn health_shows_registered_egress() {
             ingest_policy_store,
             sessions,
             engine: engine.clone(),
+            ingest_disconnect_grace_ms: restream::RuntimeTuning::default()
+                .ingest_disconnect_grace_ms,
             ports: api::PortConfig {
                 rtmp: 1935,
                 srt: 10080,
@@ -1998,6 +2002,12 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     );
     assert_eq!(disconnected_input["lastFailurePhase"], "disconnect");
     assert_eq!(disconnected_input["recentDisconnectError"], false);
+    assert_eq!(disconnected_input["disconnectGraceActive"], true);
+    assert!(
+        disconnected_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000)
+    );
     assert!(disconnected_input["lastDisconnectAt"].is_string());
     assert!(disconnected_input["lastDisconnectAgeMs"].as_u64().is_some());
 }
@@ -2050,6 +2060,12 @@ async fn health_endpoint_clears_recent_disconnect_details_after_reconnect() {
         "publisher disconnected"
     );
     assert_eq!(disconnected_input["lastFailurePhase"], "disconnect");
+    assert_eq!(disconnected_input["disconnectGraceActive"], true);
+    assert!(
+        disconnected_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000)
+    );
 
     engine
         .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13082", "srt")
@@ -2073,6 +2089,8 @@ async fn health_endpoint_clears_recent_disconnect_details_after_reconnect() {
     assert!(input["lastDisconnectAt"].is_null());
     assert!(input["lastDisconnectAgeMs"].is_null());
     assert_eq!(input["recentDisconnectError"], false);
+    assert_eq!(input["disconnectGraceActive"], false);
+    assert!(input["disconnectGraceRemainingMs"].is_null());
 }
 
 // --- Regression: Round 6 #2 — Security headers ---

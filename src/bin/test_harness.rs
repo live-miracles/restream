@@ -9480,6 +9480,11 @@ async fn fault_resilience() -> Result<Value, String> {
             .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
             .await
             .ok();
+        let gap_health = api.get_json("/api/v1/engine/health").await.ok();
+        let gap_input = gap_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
         let gap_connections = metrics.connections.load(Ordering::Relaxed);
         let gap_status_running = gap_status
             .as_ref()
@@ -9494,11 +9499,17 @@ async fn fault_resilience() -> Result<Value, String> {
             .and_then(|status| status["lastError"].as_str())
             .map(|message| !message.is_empty())
             .unwrap_or(false);
+        let gap_grace_active = gap_input["disconnectGraceActive"] == true;
+        let gap_grace_remaining = gap_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000);
         let gap_preserved = gap_status.is_some()
             && gap_connections == baseline_connections
             && gap_status_running
             && !gap_retrying
-            && !gap_has_error;
+            && !gap_has_error
+            && gap_grace_active
+            && gap_grace_remaining;
 
         let mut resumed_child = spawn_publisher(
             &fixture_h264,
@@ -9570,6 +9581,9 @@ async fn fault_resilience() -> Result<Value, String> {
             "gapStatusRunning": gap_status_running,
             "gapRetrying": gap_retrying,
             "gapHasError": gap_has_error,
+            "gapGraceActive": gap_grace_active,
+            "gapGraceRemainingBounded": gap_grace_remaining,
+            "gapInputSnapshot": gap_input,
             "resumed": resumed,
             "finalConnections": final_connections,
             "finalStatusRunning": final_status_running,
@@ -9682,12 +9696,18 @@ async fn fault_resilience() -> Result<Value, String> {
             .map(|message| !message.is_empty())
             .unwrap_or(false);
         let gap_input_off = off_result.is_ok() && off_input["status"] == "off";
+        let gap_grace_active = off_input["disconnectGraceActive"] == true;
+        let gap_grace_remaining = off_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000);
         let gap_preserved = gap_input_off
             && gap_status.is_some()
             && gap_connections == baseline_connections
             && gap_status_running
             && !gap_retrying
-            && !gap_has_error;
+            && !gap_has_error
+            && gap_grace_active
+            && gap_grace_remaining;
 
         // SRT publishers can linger for a short teardown window after an
         // abrupt drop. Reconnect only after the prior session is fully off so
@@ -9772,6 +9792,8 @@ async fn fault_resilience() -> Result<Value, String> {
             "gapStatusRunning": gap_status_running,
             "gapRetrying": gap_retrying,
             "gapHasError": gap_has_error,
+            "gapGraceActive": gap_grace_active,
+            "gapGraceRemainingBounded": gap_grace_remaining,
             "resumed": resumed,
             "mediaReady": media_ready.is_ok(),
             "mediaReadyError": media_ready.err(),
@@ -9948,6 +9970,10 @@ async fn fault_resilience() -> Result<Value, String> {
             && gap_input["lastDisconnectReason"] == "publisher disconnected"
             && gap_input["lastFailurePhase"] == "disconnect"
             && gap_input["recentDisconnectError"] == false;
+        let gap_grace_active = gap_input["disconnectGraceActive"] == true;
+        let gap_grace_remaining = gap_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000);
 
         let recovery_metrics = Arc::new(GeneralizedSinkMetrics::default());
         let recovery_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
@@ -10033,6 +10059,8 @@ async fn fault_resilience() -> Result<Value, String> {
             && gap_output_retrying
             && gap_health_retrying
             && gap_disconnect_visible
+            && gap_grace_active
+            && gap_grace_remaining
             && media_ready.is_ok()
             && recovered
             && final_status_running
@@ -10064,6 +10092,8 @@ async fn fault_resilience() -> Result<Value, String> {
             "gapOutputRetrying": gap_output_retrying,
             "gapHealthRetrying": gap_health_retrying,
             "gapDisconnectVisible": gap_disconnect_visible,
+            "gapGraceActive": gap_grace_active,
+            "gapGraceRemainingBounded": gap_grace_remaining,
             "gapInputSnapshot": gap_input,
             "mediaReady": media_ready.is_ok(),
             "mediaReadyError": media_ready.err(),

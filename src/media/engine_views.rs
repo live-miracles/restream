@@ -29,6 +29,7 @@ pub(crate) async fn health_snapshot(
     engine: &MediaEngine,
     pipeline_ids: &[String],
     recording_enabled: &HashMap<String, bool>,
+    disconnect_grace_ms: u64,
 ) -> serde_json::Value {
     let ingests = engine.ingests.active.read().await;
     let egresses = engine.egresses.active.read().await;
@@ -125,6 +126,8 @@ pub(crate) async fn health_snapshot(
                 "lastDisconnectReason": null,
                 "lastFailurePhase": null,
                 "recentDisconnectError": false,
+                "disconnectGraceActive": false,
+                "disconnectGraceRemainingMs": null,
                 "lastRemoteAddr": null,
                 "lastSessionBytesReceived": null
             })
@@ -133,6 +136,11 @@ pub(crate) async fn health_snapshot(
             let last_disconnect_age_ms = recent.map(|recent| {
                 MediaEngine::now_epoch_ms().saturating_sub(recent.disconnected_at_ms)
             });
+            let disconnect_grace_remaining_ms = if disconnect_grace_ms == 0 {
+                None
+            } else {
+                last_disconnect_age_ms.and_then(|age_ms| disconnect_grace_ms.checked_sub(age_ms))
+            };
             serde_json::json!({
                 "status": "off",
                 "probeReady": false,
@@ -150,6 +158,8 @@ pub(crate) async fn health_snapshot(
                 "lastDisconnectReason": recent.and_then(|recent| recent.reason.clone()),
                 "lastFailurePhase": recent.and_then(|recent| recent.failure_phase.clone()),
                 "recentDisconnectError": recent.is_some_and(|recent| recent.had_error),
+                "disconnectGraceActive": disconnect_grace_remaining_ms.is_some(),
+                "disconnectGraceRemainingMs": disconnect_grace_remaining_ms,
                 "lastRemoteAddr": recent.and_then(|recent| recent.remote_addr.clone()),
                 "lastSessionBytesReceived": recent.map(|recent| recent.bytes_received)
             })
