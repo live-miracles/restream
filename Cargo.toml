@@ -12,6 +12,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 default = []
 agent-plane = []
 agent-execution = ["agent-plane"]
+mcp-core = ["agent-plane"]
+mcp-server = ["mcp-core"]
+mcp-http-backend = ["mcp-core"]
+mcp-embedded = ["mcp-core", "agent-plane"]
 
 [dependencies]
 tokio = { version = "1.35", features = [
@@ -63,6 +67,11 @@ pulp = { version = "0.22", features = ["x86-v4"] }
 wide = "1.5"
 proptest = "1"
 loom = { version = "0.7", features = ["checkpoint"] }
+
+[[bin]]
+name = "restream-mcp"
+path = "src/bin/restream-mcp.rs"
+required-features = ["mcp-server", "mcp-http-backend"]
 
 [[bench]]
 name = "simd_alternatives"

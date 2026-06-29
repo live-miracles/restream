@@ -232,3 +232,17 @@ If this repository promotes the pattern beyond docs:
 
 That keeps the control-plane API human-friendly while making the platform
 usable by serious tool-calling agents without asking them to improvise safety.
+
+## Shared Rust implementation
+
+If this repository wants embedded MCP, sidecar MCP, and central gateway modes
+without forking logic, keep the implementation in shared Rust and keep MCP as a
+transport adapter.
+
+See [mcp-rust-architecture.md](mcp-rust-architecture.md) for:
+
+- recommended module layout
+- backend trait shape
+- feature-flag plan
+- deployment-mode tradeoffs
+- migration steps from the current code
