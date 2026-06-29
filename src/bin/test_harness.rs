@@ -172,7 +172,6 @@ fn measurement_mode_requires_bench_profile(mode: &str) -> bool {
             | "mixed-h265-srt"
             | "mixed-h264-srt-multi"
             | "mixed-h265-srt-multi"
-            | "fault-resilience"
             | "resource-sweep"
             | "bitrate-sweep"
             | "branch-matrix"
@@ -9659,6 +9658,7 @@ mod tests {
     #[test]
     fn only_non_measurement_modes_parallelize_in_suite() {
         assert!(suite_mode_is_parallelizable("correctness-hevc-srt", false));
+        assert!(suite_mode_is_parallelizable("fault-resilience", false));
         assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));
         assert!(!suite_mode_is_parallelizable("preflight", true));
     }
