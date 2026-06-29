@@ -22,7 +22,7 @@ import {
   renderProtocolDetails,
 } from "./ingest-url-details.js";
 import { clearInputPreview, renderInputPreview } from "./input-preview.js";
-import { openControlRoomForOutput } from "./control-room.js";
+import { openOutputMonitoringUrl } from "./control-room.js";
 import { startRecording, stopRecording } from "../core/api.js";
 import type { AudioTrack, PipelineView, OutputView } from "../types.js";
 import {
@@ -813,7 +813,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
     }
 
     if (button.dataset.action === "monitor-output") {
-      openControlRoomForOutput(out.id);
+      openOutputMonitoringUrl(out.monitoringUrl);
     }
 
     if (button.dataset.action === "edit-output") {

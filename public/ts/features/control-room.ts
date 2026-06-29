@@ -2,7 +2,6 @@ import {
   copyText,
   escapeHtml,
   isValidMonitoringUrl,
-  sanitizeLogMessage,
   showCopiedNotification,
   showErrorAlert,
 } from "../core/utils.js";
@@ -10,13 +9,19 @@ import { withBasePath } from "../core/base-path.js";
 import { getYoutubeMonitoringStatus, updateOutput } from "../core/api.js";
 import type { YoutubeMonitoringStatus } from "../core/api.js";
 import { state } from "../core/state.js";
-import { clearManagedHlsPlayer, renderManagedHlsPlayer } from "./hls-player.js";
+import {
+  clearManagedHlsPlayer,
+  getManagedHlsController,
+  renderManagedHlsPlayer,
+} from "./hls-player.js";
+import { buildInputPreviewUrl } from "./input-preview.js";
 import { refreshDashboard } from "./dashboard.js";
 import type { OutputView, PipelineView } from "../types.js";
 
 interface ControlRoomState {
   pipelineId: string | null;
   page: number;
+  searchQuery: string;
 }
 
 interface ControlRoomOutputOption {
@@ -31,8 +36,6 @@ interface ControlRoomOutputOption {
 interface ControlRoomCardDescriptor {
   id: string;
   title: string;
-  kindLabel: string;
-  sourceLabel: string;
   mediaUrl: string | null;
   emptyMessage: string;
   openUrl: string | null;
@@ -94,11 +97,14 @@ const CONTROL_ROOM_MONITOR_FRAME_CLASS =
   "relative isolate w-full overflow-hidden rounded-[0.9rem] bg-neutral-950";
 const CONTROL_ROOM_MONITOR_BUTTON_CLASS =
   "btn btn-xs border border-white/15 bg-black/55 text-white shadow-sm backdrop-blur hover:border-white/25 hover:bg-black/75";
+const CONTROL_ROOM_CARD_BASE_CLASS =
+  "group flex min-h-[17rem] min-w-0 w-full max-w-full flex-col overflow-hidden rounded-2xl border p-3 shadow-[0_18px_45px_rgba(15,23,42,0.12)]";
 
 let controlRoomStateLoaded = false;
 let controlRoomState: ControlRoomState = {
   pipelineId: null,
   page: 0,
+  searchQuery: "",
 };
 const controlRoomMonitoringDrafts = new Map<string, string>();
 const controlRoomMonitoringSavePending = new Set<string>();
@@ -117,6 +123,8 @@ const controlRoomMediaControllers = new WeakMap<
 >();
 let pendingMonitoringInputFocusOutputId: string | null = null;
 let youtubeIframeApiPromise: Promise<YouTubeApiNamespace> | null = null;
+let controlRoomPlaybackIntent: "play" | "pause" = "play";
+let controlRoomMuteIntent: "mute" | "unmute" = "mute";
 const controlRoomNameCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
@@ -185,7 +193,15 @@ function normalizeState(): void {
     return;
   }
 
-  const outputs = listMonitoringOutputsForPipeline(selectedPipelineId);
+  let outputs = listMonitoringOutputsForPipeline(selectedPipelineId);
+  if (controlRoomState.searchQuery) {
+    const q = controlRoomState.searchQuery.toLowerCase().trim();
+    outputs = outputs.filter(
+      (out) =>
+        out.outputName.toLowerCase().includes(q) ||
+        (out.monitoringUrl || "").toLowerCase().includes(q),
+    );
+  }
   const pageCount = Math.max(1, Math.ceil(outputs.length / OUTPUTS_PER_PAGE));
   controlRoomState.page = Math.min(
     Math.max(0, controlRoomState.page),
@@ -222,17 +238,13 @@ function ensureStateLoaded(): void {
       page: Number.isFinite(parsed?.page)
         ? Math.max(0, Number(parsed.page))
         : 0,
+      searchQuery:
+        typeof parsed?.searchQuery === "string" ? parsed.searchQuery : "",
     };
   } catch {
-    controlRoomState = { pipelineId: null, page: 0 };
+    controlRoomState = { pipelineId: null, page: 0, searchQuery: "" };
   }
   normalizeState();
-}
-
-function buildLocalPreviewUrl(pipelineId: string): string {
-  return withBasePath(
-    `/preview/hls/${encodeURIComponent(pipelineId)}/master.m3u8`,
-  );
 }
 
 function listMountedMediaControllers(
@@ -255,16 +267,9 @@ function listMountedMediaControllers(
 function syncGlobalMuteButton(scope: ParentNode = document): void {
   const mounted = listMountedMediaControllers(scope);
   let canMute = false;
-  let anyMuted = false;
-  let anyUnmuted = false;
   for (const { controller } of mounted) {
     if (!controller.setMuted || !controller.isMuted) continue;
     canMute = true;
-    if (controller.isMuted()) {
-      anyMuted = true;
-    } else {
-      anyUnmuted = true;
-    }
   }
   const muteToggleButton = scope.querySelector<HTMLButtonElement>(
     '[data-action="control-room-toggle-mute-all"]',
@@ -276,7 +281,7 @@ function syncGlobalMuteButton(scope: ParentNode = document): void {
       muteToggleButton.disabled,
     );
     muteToggleButton.textContent =
-      anyUnmuted || !anyMuted ? "Mute All" : "Unmute All";
+      controlRoomMuteIntent === "mute" ? "Unmute All" : "Mute All";
   }
 }
 
@@ -297,41 +302,26 @@ function syncGlobalPlaybackButton(scope: ParentNode = document): void {
       "btn-disabled",
       playbackToggleButton.disabled,
     );
-    playbackToggleButton.textContent = anyPlaying ? "Pause All" : "Play All";
+    playbackToggleButton.textContent =
+      controlRoomPlaybackIntent === "play" || anyPlaying
+        ? "Pause All"
+        : "Play All";
   }
 }
 
 function syncGlobalMediaButtons(scope: ParentNode = document): void {
   syncGlobalPlaybackButton(scope);
   syncGlobalMuteButton(scope);
-}
-
-function compactUrlLabel(url: string | null): string {
-  if (!url) return "";
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.replace(/^www\./i, "");
-    if (host.endsWith("youtube.com") || host === "youtu.be")
-      return "YouTube live page";
-    const hostWithPort = parsed.port ? `${host}:${parsed.port}` : host;
-    const path = parsed.pathname
-      .replace(/\/index\.m3u8$/i, "")
-      .replace(/\/master\.m3u8$/i, "");
-    return `${hostWithPort}${path}`.replace(/\/+$/, "") || hostWithPort;
-  } catch {
-    return sanitizeLogMessage(url, false);
-  }
+  syncCardPlaybackButtons(scope);
 }
 
 function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
-  const localPreviewUrl = buildLocalPreviewUrl(pipe.id);
+  const localPreviewUrl = buildInputPreviewUrl(pipe.id);
   const inputLive =
     pipe.input.status === "on" || pipe.input.status === "warning";
   return {
     id: `local:${pipe.id}`,
     title: "Local HLS",
-    kindLabel: "Pipeline Preview",
-    sourceLabel: pipe.name,
     mediaUrl: inputLive ? localPreviewUrl : null,
     emptyMessage:
       pipe.input.status === "on" || pipe.input.status === "warning"
@@ -369,8 +359,6 @@ function buildOutputCard(
   return {
     id: `output:${output.outputId}`,
     title: output.outputName,
-    kindLabel: "Monitor URL",
-    sourceLabel: monitoringUrl ? compactUrlLabel(monitoringUrl) : "Not set",
     mediaUrl: previewable ? monitoringUrl : null,
     emptyMessage: monitoringUrl
       ? previewable
@@ -391,8 +379,6 @@ function buildEmptyCard(message: string): ControlRoomCardDescriptor {
   return {
     id: `empty:${message}`,
     title: "No Monitor",
-    kindLabel: "Setup",
-    sourceLabel: "",
     mediaUrl: null,
     emptyMessage: message,
     openUrl: null,
@@ -402,6 +388,40 @@ function buildEmptyCard(message: string): ControlRoomCardDescriptor {
     pipelineId: null,
     monitoringUrl: null,
   };
+}
+
+function getCardStatusToneClasses(
+  statusLabel: string | null | undefined,
+): string {
+  switch ((statusLabel || "").trim().toLowerCase()) {
+    case "live":
+      return "border-emerald-500/30 bg-emerald-500/[0.05]";
+    case "unstable":
+      return "border-amber-500/30 bg-amber-500/[0.06]";
+    case "down":
+      return "border-rose-500/30 bg-rose-500/[0.05]";
+    case "stopped":
+    case "offline":
+      return "border-base-content/10 bg-base-100";
+    default:
+      return "border-base-content/10 bg-base-100";
+  }
+}
+
+function getStatusLabelClasses(statusLabel: string | null | undefined): string {
+  switch ((statusLabel || "").trim().toLowerCase()) {
+    case "live":
+      return "text-emerald-700 dark:text-emerald-300";
+    case "unstable":
+      return "text-amber-700 dark:text-amber-300";
+    case "down":
+      return "text-rose-700 dark:text-rose-300";
+    case "stopped":
+    case "offline":
+      return "text-base-content/45";
+    default:
+      return "text-base-content/45";
+  }
 }
 
 function buildCardDescriptors(
@@ -418,13 +438,23 @@ function buildCardDescriptors(
   const descriptors: ControlRoomCardDescriptor[] = [
     buildLocalCard(selectedPipeline),
   ];
-  const outputs = listMonitoringOutputsForPipeline(selectedPipeline.id);
+  let outputs = listMonitoringOutputsForPipeline(selectedPipeline.id);
+  if (controlRoomState.searchQuery) {
+    const q = controlRoomState.searchQuery.toLowerCase().trim();
+    outputs = outputs.filter(
+      (out) =>
+        out.outputName.toLowerCase().includes(q) ||
+        (out.monitoringUrl || "").toLowerCase().includes(q),
+    );
+  }
   const start = controlRoomState.page * OUTPUTS_PER_PAGE;
   const pageOutputs = outputs.slice(start, start + OUTPUTS_PER_PAGE);
 
   if (pageOutputs.length === 0) {
     descriptors.push(
-      buildEmptyCard("This pipeline does not have any monitoring URLs yet."),
+      buildEmptyCard(
+        "This pipeline does not have any matching monitoring URLs yet.",
+      ),
     );
     return descriptors;
   }
@@ -454,6 +484,10 @@ function ensureShell(container: HTMLElement): void {
                         <span class="text-base-content/70 mb-1 block text-xs font-semibold uppercase">Pipeline</span>
                         <select id="control-room-pipeline-select" class="select select-sm w-full"></select>
                     </label>
+                    <label class="min-w-[12rem] flex-1 text-sm">
+                        <span class="text-base-content/70 mb-1 block text-xs font-semibold uppercase">Search Outputs</span>
+                        <input type="text" id="control-room-search-input" placeholder="Search outputs..." class="input input-sm input-bordered w-full" />
+                    </label>
                     <div class="flex items-center gap-2">
                         <button type="button" class="btn btn-sm btn-outline" data-action="control-room-prev-page">Prev</button>
                         <span id="control-room-page-label" class="text-base-content/70 min-w-[6rem] text-center text-sm">Page 1 / 1</span>
@@ -471,6 +505,18 @@ function ensureShell(container: HTMLElement): void {
     ) as HTMLSelectElement | null;
     if (!select) return;
     controlRoomState.pipelineId = select.value || null;
+    controlRoomState.page = 0;
+    normalizeState();
+    persistState();
+    renderControlRoom();
+  });
+
+  container.addEventListener("input", (event) => {
+    const input = (event.target as Element | null)?.closest?.(
+      "#control-room-search-input",
+    ) as HTMLInputElement | null;
+    if (!input) return;
+    controlRoomState.searchQuery = input.value || "";
     controlRoomState.page = 0;
     normalizeState();
     persistState();
@@ -498,9 +544,8 @@ function ensureShell(container: HTMLElement): void {
     }
     if (action === "control-room-toggle-playback-all") {
       const mounted = listMountedMediaControllers(container);
-      const shouldPause = mounted.some(
-        ({ controller }) => controller.isPlaying?.() === true,
-      );
+      const shouldPause = controlRoomPlaybackIntent === "play";
+      controlRoomPlaybackIntent = shouldPause ? "pause" : "play";
       mounted.forEach(({ controller }) => {
         if (shouldPause) {
           controller.pause?.();
@@ -508,14 +553,16 @@ function ensureShell(container: HTMLElement): void {
           controller.play?.();
         }
       });
-      syncGlobalPlaybackButton(container);
+      window.setTimeout(() => {
+        syncGlobalPlaybackButton(container);
+        syncCardPlaybackButtons(container);
+      }, 0);
       return;
     }
     if (action === "control-room-toggle-mute-all") {
       const mounted = listMountedMediaControllers(container);
-      const shouldMute = mounted.some(
-        ({ controller }) => controller.isMuted?.() === false,
-      );
+      const shouldMute = controlRoomMuteIntent !== "mute";
+      controlRoomMuteIntent = shouldMute ? "mute" : "unmute";
       mounted.forEach(({ controller }) => {
         controller.setMuted?.(shouldMute);
       });
@@ -548,8 +595,34 @@ function ensureShell(container: HTMLElement): void {
       if (!target?.controller.setMuted || !target.controller.isMuted) return;
       const muted = target.controller.isMuted();
       target.controller.setMuted(!muted);
+      controlRoomMuteIntent = !muted ? "mute" : "unmute";
       setMuteButtonLabel(button, !muted);
       syncGlobalMuteButton(container);
+      return;
+    }
+    if (action === "control-room-toggle-playback") {
+      const target = getMediaControllerForAction(button);
+      if (
+        !target?.controller.play ||
+        !target.controller.pause ||
+        !target.controller.isPlaying
+      ) {
+        return;
+      }
+      if (target.controller.isPlaying()) {
+        target.controller.pause();
+        controlRoomPlaybackIntent = "pause";
+      } else {
+        target.controller.play();
+        controlRoomPlaybackIntent = "play";
+      }
+      window.setTimeout(() => {
+        setPlaybackButtonLabel(
+          button,
+          target.controller.isPlaying?.() === true,
+        );
+        syncGlobalPlaybackButton(container);
+      }, 0);
       return;
     }
     if (action === "control-room-edit-url") {
@@ -610,6 +683,7 @@ function ensureShell(container: HTMLElement): void {
       controlRoomState = {
         pipelineId: getDefaultPipelineId(),
         page: 0,
+        searchQuery: "",
       };
       persistState();
       renderControlRoom();
@@ -744,12 +818,16 @@ function setCardWarning(shell: HTMLElement, message: string | null): void {
   );
   if (!warning) return;
   if (!message) {
-    warning.textContent = "";
+    warning.removeAttribute("title");
+    warning.setAttribute("aria-label", "");
     warning.classList.add("hidden");
+    warning.classList.remove("inline-flex");
     return;
   }
-  warning.textContent = message;
+  warning.setAttribute("title", message);
+  warning.setAttribute("aria-label", message);
   warning.classList.remove("hidden");
+  warning.classList.add("inline-flex");
 }
 
 function getYouTubeMonitoringWarning(
@@ -1008,6 +1086,12 @@ function openMonitorUrl(url: string, _title: string): void {
   openSizedPopup(url);
 }
 
+export function openOutputMonitoringUrl(url: string | null | undefined): void {
+  const openUrl = toOpenableMonitoringUrl(url || null);
+  if (!openUrl) return;
+  openMonitorUrl(openUrl, "Monitor");
+}
+
 function createMonitorFrame(shell: HTMLElement): {
   frame: HTMLElement;
   controls: HTMLElement;
@@ -1075,11 +1159,43 @@ function setMuteButtonLabel(button: HTMLButtonElement, muted: boolean): void {
   button.textContent = muted ? "Unmute" : "Mute";
 }
 
+function setPlaybackButtonLabel(
+  button: HTMLButtonElement,
+  playing: boolean,
+): void {
+  button.textContent = playing ? "Pause" : "Play";
+}
+
+function syncCardPlaybackButtons(scope: ParentNode = document): void {
+  listMountedMediaControllers(scope).forEach(({ shell, controller }) => {
+    const button = shell.querySelector<HTMLButtonElement>(
+      '[data-action="control-room-toggle-playback"]',
+    );
+    if (
+      !button ||
+      !controller.play ||
+      !controller.pause ||
+      !controller.isPlaying
+    ) {
+      return;
+    }
+    setPlaybackButtonLabel(button, controller.isPlaying());
+  });
+}
+
 function registerMediaController(
   shell: HTMLElement,
   controller: ControlRoomMediaController,
 ): void {
   controlRoomMediaControllers.set(shell, controller);
+  if (controller.setMuted) {
+    controller.setMuted(controlRoomMuteIntent === "mute");
+  }
+  if (controlRoomPlaybackIntent === "play") {
+    controller.play?.();
+  } else {
+    controller.pause?.();
+  }
 }
 
 function getMediaControllerForAction(
@@ -1178,6 +1294,11 @@ function syncCardMedia(
 
   if (embedKind === "hls" || embedKind === "video") {
     const { frame, controls } = createMonitorFrame(shell);
+    const playbackButton = addMonitorButton(
+      controls,
+      "control-room-toggle-playback",
+      "Play",
+    );
     const muteButton = addMonitorButton(
       controls,
       "control-room-toggle-mute",
@@ -1189,30 +1310,33 @@ function syncCardMedia(
       renderManagedHlsPlayer(frame, mediaUrl, {
         className: `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full bg-black object-contain`,
         loadingLabel: "Loading...",
-        playLabel: "Play",
+        idleLabel: "Paused",
+        showOverlayButton: false,
         controls: false,
       });
+      const managedController = getManagedHlsController(frame);
       const video = frame.querySelector<HTMLVideoElement>(
         '[data-role="managed-hls-video"]',
       );
-      if (!video) return;
+      if (!managedController || !video) return;
       registerMediaController(shell, {
         destroy: () => clearManagedHlsPlayer(frame),
-        play: () => {
-          void video.play().catch(() => {
-            // Autoplay can still be denied until the browser is ready.
-          });
-        },
-        pause: () => {
-          video.pause();
-        },
-        isPlaying: () => !video.paused && !video.ended,
-        isMuted: () => video.muted,
-        setMuted: (muted: boolean) => {
-          video.muted = muted;
-        },
+        play: () => managedController.play(),
+        pause: () => managedController.pause(),
+        isPlaying: () => managedController.isPlaying(),
+        isMuted: () => managedController.isMuted(),
+        setMuted: (muted: boolean) => managedController.setMuted(muted),
       });
       setMuteButtonLabel(muteButton, video.muted);
+      setPlaybackButtonLabel(playbackButton, managedController.isPlaying());
+      video.addEventListener("play", () => {
+        setPlaybackButtonLabel(playbackButton, true);
+        syncGlobalPlaybackButton(document);
+      });
+      video.addEventListener("pause", () => {
+        setPlaybackButtonLabel(playbackButton, false);
+        syncGlobalPlaybackButton(document);
+      });
     } else {
       const video = document.createElement("video");
       video.className = `${CONTROL_ROOM_PLAYER_HEIGHT_CLASS} w-full bg-black object-contain`;
@@ -1247,12 +1371,28 @@ function syncCardMedia(
         },
       });
       setMuteButtonLabel(muteButton, video.muted);
+      setPlaybackButtonLabel(playbackButton, !video.paused && !video.ended);
+      video.addEventListener("play", () => {
+        setPlaybackButtonLabel(playbackButton, true);
+        syncGlobalPlaybackButton(document);
+      });
+      video.addEventListener("pause", () => {
+        setPlaybackButtonLabel(playbackButton, false);
+        syncGlobalPlaybackButton(document);
+      });
     }
     return;
   }
 
   if (embedKind === "youtube") {
     const { frame, controls } = createMonitorFrame(shell);
+    const playbackButton = addMonitorButton(
+      controls,
+      "control-room-toggle-playback",
+      "Play",
+    );
+    playbackButton.disabled = true;
+    playbackButton.classList.add("btn-disabled");
     const cardId = shell.closest("article")?.dataset.cardId || "";
     setCardWarning(shell, controlRoomCardWarnings.get(cardId) || null);
     const muteButton = addMonitorButton(
@@ -1315,15 +1455,32 @@ function syncCardMedia(
             onReady: () => {
               if (!player) return;
               player.mute();
+              setPlaybackButtonLabel(
+                playbackButton,
+                player.getPlayerState?.() === 1,
+              );
+              playbackButton.disabled = false;
+              playbackButton.classList.remove("btn-disabled");
               setMuteButtonLabel(muteButton, true);
               muteButton.disabled = false;
               muteButton.classList.remove("btn-disabled");
               refreshYouTubeCardWarning(shell, mediaUrl);
             },
+            onStateChange: () => {
+              if (!player) return;
+              setPlaybackButtonLabel(
+                playbackButton,
+                player.getPlayerState?.() === 1,
+              );
+              syncGlobalPlaybackButton(document);
+            },
           },
         });
       })
       .catch(() => {
+        playbackButton.disabled = true;
+        playbackButton.classList.add("btn-disabled");
+        playbackButton.textContent = "Unavailable";
         muteButton.disabled = true;
         muteButton.classList.add("btn-disabled");
         muteButton.textContent = "Unavailable";
@@ -1369,14 +1526,13 @@ function ensureCardElements(grid: HTMLElement, cardCount: number): void {
 
   while (grid.children.length < cardCount) {
     const article = document.createElement("article");
-    article.className =
-      "group border-base-content/10 bg-base-100 flex min-h-[17rem] flex-col rounded-2xl border p-3 shadow-[0_18px_45px_rgba(15,23,42,0.12)]";
+    article.className = `${CONTROL_ROOM_CARD_BASE_CLASS} border-base-content/10 bg-base-100`;
     article.innerHTML = `
             <div class="min-w-0">
-                <div class="truncate text-sm font-semibold tracking-[0.01em]" data-role="control-room-title"></div>
+                <div class="min-w-0" data-role="control-room-title"></div>
             </div>
-            <div class="mt-2 min-h-[2rem]" data-role="control-room-details"></div>
-            <div class="border-base-content/10 bg-base-200/70 mt-3 overflow-hidden rounded-[1rem] border p-1" data-role="control-room-player-shell"></div>`;
+            <div class="mt-2 min-h-[1.75rem] min-w-0" data-role="control-room-details"></div>
+            <div class="border-base-content/10 bg-base-200/70 mt-3 min-w-0 overflow-hidden rounded-[1rem] border p-1" data-role="control-room-player-shell"></div>`;
     grid.appendChild(article);
   }
 }
@@ -1407,7 +1563,26 @@ function syncCard(
   );
   if (!title || !details || !playerShell) return;
 
-  title.textContent = descriptor.title;
+  article.className = `${CONTROL_ROOM_CARD_BASE_CLASS} ${getCardStatusToneClasses(descriptor.statusLabel)}`;
+  const statusLabel = descriptor.statusLabel
+    ? `<div class="${getStatusLabelClasses(descriptor.statusLabel)} shrink-0 text-[10px] font-medium uppercase tracking-[0.14em]">${escapeHtml(descriptor.statusLabel)}</div>`
+    : "";
+  title.innerHTML = `
+        <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 truncate text-sm font-semibold tracking-[0.01em]">${escapeHtml(descriptor.title)}</div>
+            <div class="flex shrink-0 items-center gap-1.5">
+                <div
+                    class="hidden h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-500/35 bg-amber-500/12 text-amber-700 dark:text-amber-300"
+                    data-role="control-room-card-warning"
+                    aria-label=""
+                    title="">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.72-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.981-1.742 2.981H4.42c-1.53 0-2.492-1.647-1.743-2.98l5.58-9.921ZM11 7a1 1 0 1 0-2 0v3a1 1 0 1 0 2 0V7Zm-1 7a1.25 1.25 0 1 0 0-2.5A1.25 1.25 0 0 0 10 14Z" clip-rule="evenodd" />
+                    </svg>
+                </div>
+                ${statusLabel}
+            </div>
+        </div>`;
   const isEditing =
     !!descriptor.outputId &&
     controlRoomMonitoringDrafts.has(descriptor.outputId);
@@ -1475,20 +1650,9 @@ function syncCard(
       : "";
     const copyDisabled = descriptor.copyUrl ? "" : " disabled";
     const openDisabled = descriptor.openUrl ? "" : " disabled";
-    const sourceLabel = descriptor.sourceLabel
-      ? `<div class="text-base-content/65 truncate text-xs">${escapeHtml(descriptor.sourceLabel)}</div>`
-      : "";
-    const statusLabel = descriptor.statusLabel
-      ? `<div class="text-base-content/45 text-[10px] font-medium uppercase tracking-[0.14em]">${escapeHtml(descriptor.statusLabel)}</div>`
-      : "";
     details.innerHTML = `
-            <div class="space-y-2">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="text-base-content/45 text-[10px] font-medium uppercase tracking-[0.14em]">${escapeHtml(descriptor.kindLabel)}</div>
-                    ${statusLabel}
-                </div>
-                ${sourceLabel}
-                <div class="flex flex-wrap gap-1.5">
+            <div class="min-w-0">
+                <div class="flex min-w-0 flex-wrap gap-1.5">
                     ${editButton}
                     <button
                         type="button"
@@ -1505,7 +1669,6 @@ function syncCard(
                         Open
                     </button>
                 </div>
-                <div class="alert alert-warning hidden px-2 py-1 text-xs leading-5" data-role="control-room-card-warning"></div>
             </div>`;
   }
 
@@ -1573,9 +1736,15 @@ function renderSummaryAndPagination(
   }
 
   const totalOutputs = selectedPipeline.outs.length;
-  const monitoringOutputs = listMonitoringOutputsForPipeline(
-    selectedPipeline.id,
-  );
+  let monitoringOutputs = listMonitoringOutputsForPipeline(selectedPipeline.id);
+  if (controlRoomState.searchQuery) {
+    const q = controlRoomState.searchQuery.toLowerCase().trim();
+    monitoringOutputs = monitoringOutputs.filter(
+      (out) =>
+        out.outputName.toLowerCase().includes(q) ||
+        (out.monitoringUrl || "").toLowerCase().includes(q),
+    );
+  }
   const missingMonitoring = totalOutputs - monitoringOutputs.length;
   const totalPages = Math.max(
     1,
@@ -1603,6 +1772,15 @@ function renderControlRoom(): void {
     pipelines.find((pipe) => pipe.id === controlRoomState.pipelineId) || null;
 
   renderPipelineSelect(container, pipelines);
+
+  // Sync search input value
+  const searchInput = container.querySelector<HTMLInputElement>(
+    "#control-room-search-input",
+  );
+  if (searchInput && searchInput.value !== controlRoomState.searchQuery) {
+    searchInput.value = controlRoomState.searchQuery;
+  }
+
   renderSummaryAndPagination(container, selectedPipeline);
 
   const grid = container.querySelector<HTMLElement>("#control-room-grid");
@@ -1697,6 +1875,7 @@ export function openControlRoomForOutput(outputId: string): void {
   controlRoomState = {
     pipelineId: pipeline.id,
     page: outputIndex >= 0 ? Math.floor(outputIndex / OUTPUTS_PER_PAGE) : 0,
+    searchQuery: "",
   };
   if (output && !output.monitoringUrl) controlRoomState.page = 0;
   persistState();

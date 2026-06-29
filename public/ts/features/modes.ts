@@ -876,7 +876,6 @@ export function openInspectGraph(pipeId: string): void {
 export function renderDashboardModes(): void {
   renderOverview();
   renderInspect();
-  renderControlRoom();
   applyMode(normalizeMode(getUrlParam("mode")));
 }
 

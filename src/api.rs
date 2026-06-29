@@ -180,13 +180,9 @@ async fn require_authenticated(
 async fn require_hls_access(
     state: &AppState,
     headers: &HeaderMap,
-    uri: &axum::http::Uri,
+    _uri: &axum::http::Uri,
 ) -> Option<axum::response::Response> {
-    if uri.path().starts_with("/preview/hls/") {
-        None
-    } else {
-        require_authenticated(state, headers).await
-    }
+    require_authenticated(state, headers).await
 }
 
 // Session cookie helper
@@ -495,7 +491,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         ))
         // HLS sub-router: allow any origin so browser-based players (hls.js,
         // Video.js) on a different origin can fetch playlists and segments.
-        // Merged last so the CORS layer only applies to /hls/ and /preview/hls/.
+        // Merged last so the CORS layer only applies to /hls/.
         .merge(
             Router::new()
                 .route("/hls/:pipeline_id", get(hls_playlist_handler))
@@ -518,35 +514,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
                     get(hls_audio_segment_handler),
                 )
                 .route("/hls/:pipeline_id/:segment", get(hls_segment_handler))
-                .route("/preview/hls/:pipeline_id", get(hls_playlist_handler))
-                .route(
-                    "/preview/hls/:pipeline_id/master.m3u8",
-                    get(hls_master_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/index.m3u8",
-                    get(hls_playlist_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/video/index.m3u8",
-                    get(hls_video_playlist_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/video/:segment",
-                    get(hls_video_segment_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/audio/:track_index/index.m3u8",
-                    get(hls_audio_playlist_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/audio/:track_index/:segment",
-                    get(hls_audio_segment_handler),
-                )
-                .route(
-                    "/preview/hls/:pipeline_id/:segment",
-                    get(hls_segment_handler),
-                )
                 .layer(
                     CorsLayer::new()
                         .allow_origin(AllowOrigin::any())
