@@ -171,6 +171,96 @@ fn next_output_retry_count(previous_retries: Option<u32>, had_progress: bool) ->
     }
 }
 
+fn persist_runtime_event(event: crate::events::Event) {
+    use crate::events::EventKind;
+
+    let seq = event.seq;
+    match event.kind {
+        EventKind::IngestConnected {
+            pipeline_id,
+            protocol,
+            ..
+        } => info!(
+            pipeline_id = %pipeline_id,
+            event_class = "lifecycle",
+            event_type = "ingest.connected",
+            protocol = %protocol,
+            seq,
+            "publisher connected",
+        ),
+        EventKind::IngestDisconnected {
+            pipeline_id,
+            protocol,
+        } => info!(
+            pipeline_id = %pipeline_id,
+            event_class = "lifecycle",
+            event_type = "ingest.disconnected",
+            protocol = %protocol,
+            seq,
+            "publisher disconnected",
+        ),
+        EventKind::StageStarted {
+            pipeline_id,
+            encoding,
+        } => info!(
+            pipeline_id = %pipeline_id,
+            event_class = "lifecycle",
+            event_type = "stage.started",
+            encoding = %encoding,
+            seq,
+            "stage started",
+        ),
+        EventKind::StageStopped {
+            pipeline_id,
+            encoding,
+        } => info!(
+            pipeline_id = %pipeline_id,
+            event_class = "lifecycle",
+            event_type = "stage.stopped",
+            encoding = %encoding,
+            seq,
+            "stage stopped",
+        ),
+        EventKind::EgressStarted {
+            pipeline_id,
+            output_id,
+        } => info!(
+            pipeline_id = %pipeline_id,
+            output_id = %output_id,
+            event_class = "lifecycle",
+            event_type = "egress.started",
+            seq,
+            "output started",
+        ),
+        EventKind::EgressStopped {
+            pipeline_id,
+            output_id,
+        } => info!(
+            pipeline_id = %pipeline_id,
+            output_id = %output_id,
+            event_class = "lifecycle",
+            event_type = "egress.stopped",
+            seq,
+            "output stopped",
+        ),
+        EventKind::EgressFailed {
+            pipeline_id,
+            output_id,
+            phase,
+            error: error_message,
+        } => error!(
+            pipeline_id = %pipeline_id,
+            output_id = %output_id,
+            event_class = "lifecycle",
+            event_type = "egress.failed",
+            phase = %phase,
+            error = %error_message,
+            seq,
+            "output failed",
+        ),
+    }
+}
+
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -269,10 +359,13 @@ pub async fn run_app() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     engine.set_event_sink(event_tx);
     {
-        // Drain the event channel so the EventLog broadcast stays live.
-        // Persistence is handled by the tracing DbLayer — lifecycle events emitted
-        // via tracing macros in the reconciler land in app_logs automatically.
-        tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+        // Bridge engine state transitions into the persisted app log so the UI
+        // can present one operator timeline across ingest, stage, and egress.
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                persist_runtime_event(event);
+            }
+        });
     }
     // Keep a clone of sessions for the reconciler's hourly prune tick.
     let sessions_for_reconciler = sessions.clone();
@@ -309,7 +402,12 @@ pub async fn run_app() {
                 ports.http, err
             )
         });
-    info!(addr = %http_addr, "dashboard API server listening");
+    info!(
+        event_class = "lifecycle",
+        event_type = "restream.http.ready",
+        addr = %http_addr,
+        "dashboard API server listening",
+    );
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(
@@ -372,7 +470,11 @@ pub async fn run_app() {
                     warn!(err = %e, "Ctrl+C error");
                 }
             }
-            info!("signal received — stopping reconciler");
+            info!(
+                event_class = "lifecycle",
+                event_type = "restream.shutdown.requested",
+                "signal received — stopping reconciler",
+            );
             shutdown_c.cancel();
         });
     }
@@ -430,6 +532,9 @@ pub async fn run_app() {
 
         for output in &outputs {
             let is_active = engine.has_active_egress(&output.id).await;
+            if is_active || output.desired_state != "running" {
+                engine.clear_egress_retry_state(&output.id).await;
+            }
             let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
             let within_disconnect_grace = engine
                 .has_recent_ingest_disconnect(
@@ -446,6 +551,7 @@ pub async fn run_app() {
 
             if output.desired_state == "running" && !is_active {
                 if !has_ingest {
+                    engine.clear_egress_retry_state(&output.id).await;
                     continue;
                 }
                 // Check backoff / max-retries for recently-failed outputs
@@ -454,6 +560,7 @@ pub async fn run_app() {
                     if retries >= tuning.output_max_retries {
                         lf.remove(&output.id);
                         drop(lf);
+                        engine.clear_egress_retry_state(&output.id).await;
                         warn!(
                             output_id = %output.id,
                             output_name = %output.name,
@@ -471,7 +578,18 @@ pub async fn run_app() {
                     }
                     let backoff_ms = tuning.output_backoff_ms(retries);
                     if failed_at.elapsed() < Duration::from_millis(backoff_ms) {
+                        let remaining_ms = backoff_ms.saturating_sub(
+                            failed_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                        );
                         drop(lf);
+                        engine
+                            .update_egress_retry_state(
+                                &output.id,
+                                retries,
+                                backoff_ms,
+                                remaining_ms,
+                            )
+                            .await;
                         continue; // Wait for backoff
                     }
                 }
@@ -618,6 +736,7 @@ pub async fn run_app() {
                 let url_c = output.url.clone();
                 let pool_c = pool.clone();
                 let last_failed_c = last_failed.clone();
+                let tuning_c = tuning;
 
                 tokio::spawn(async move {
                     // Unsupported URL: reject immediately before the panic-safe
@@ -641,13 +760,27 @@ pub async fn run_app() {
                         )
                         .await;
                         engine_c.unregister_egress(&output_id_c).await;
-                        {
+                        let retry_backoff = {
                             let mut lf = last_failed_c.lock().await;
                             let retries = next_output_retry_count(
                                 lf.get(&output_id_c).map(|(_, retries)| *retries),
                                 false,
                             );
-                            lf.insert(output_id_c, (Instant::now(), retries));
+                            lf.insert(output_id_c.clone(), (Instant::now(), retries));
+                            (retries < tuning_c.output_max_retries)
+                                .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                        };
+                        if let Some((retries, backoff_ms)) = retry_backoff {
+                            engine_c
+                                .update_egress_retry_state(
+                                    &output_id_c,
+                                    retries,
+                                    backoff_ms,
+                                    backoff_ms,
+                                )
+                                .await;
+                        } else {
+                            engine_c.clear_egress_retry_state(&output_id_c).await;
                         }
                         return;
                     }
@@ -775,7 +908,30 @@ pub async fn run_app() {
                             lf.get(&output_id_c).map(|(_, retries)| *retries),
                             had_progress,
                         );
-                        lf.insert(output_id_c, (Instant::now(), retries));
+                        lf.insert(output_id_c.clone(), (Instant::now(), retries));
+                    }
+                    let retry_backoff = if is_cancelled {
+                        None
+                    } else {
+                        lf.get(&output_id_c)
+                            .map(|(_, retries)| *retries)
+                            .and_then(|retries| {
+                                (retries < tuning_c.output_max_retries)
+                                    .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                            })
+                    };
+                    drop(lf);
+                    if let Some((retries, backoff_ms)) = retry_backoff {
+                        engine_c
+                            .update_egress_retry_state(
+                                &output_id_c,
+                                retries,
+                                backoff_ms,
+                                backoff_ms,
+                            )
+                            .await;
+                    } else {
+                        engine_c.clear_egress_retry_state(&output_id_c).await;
                     }
                 });
             } else if output.desired_state == "running" && is_active && !effective_has_ingest {
@@ -788,6 +944,7 @@ pub async fn run_app() {
                     "output job stopped because ingest is no longer active",
                 );
                 engine.unregister_egress(&output.id).await;
+                engine.clear_egress_retry_state(&output.id).await;
             } else if output.desired_state == "stopped" && is_active {
                 info!(
                     output_id = %output.id,
@@ -798,6 +955,7 @@ pub async fn run_app() {
                     "output job stopped",
                 );
                 engine.unregister_egress(&output.id).await;
+                engine.clear_egress_retry_state(&output.id).await;
             }
         }
 
@@ -923,7 +1081,11 @@ pub async fn run_app() {
     // segmenters.  Previously only egress tokens were cancelled, leaving ingest
     // OS threads, recording FFmpeg threads, and HLS segmenters alive until the
     // runtime forcibly dropped them.
-    info!("shutdown: cancelling all active tasks");
+    info!(
+        event_class = "lifecycle",
+        event_type = "restream.shutdown.started",
+        "shutdown: cancelling all active tasks",
+    );
     engine.cancel_all_active_tasks().await;
     engine.shutdown_all_hls_segmenters().await;
 
@@ -961,7 +1123,11 @@ pub async fn run_app() {
     // This must come after join_os_threads() above, which guarantees all
     // SRT sender threads have exited and called srt_close() on their sockets.
     crate::media::srt::teardown_srt();
-    info!("shutdown complete");
+    info!(
+        event_class = "lifecycle",
+        event_type = "restream.shutdown.completed",
+        "shutdown complete",
+    );
 }
 
 fn normalize_sbom_for_repo_compare(sbom: &mut serde_json::Value) {
