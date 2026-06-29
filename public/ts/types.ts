@@ -157,6 +157,9 @@ export interface InputHealth {
   readers?: number;
   bitrateKbps?: number | null;
   publishStartedAt?: string;
+  probeReady?: boolean;
+  probeStatus?: string;
+  probePendingMs?: number | null;
   video?: VideoTrack;
   audio?: AudioTrack;
   audioTracks?: AudioTrack[];
@@ -166,8 +169,15 @@ export interface InputHealth {
 
 export interface OutputHealth {
   status?: string;
+  rawStatus?: string;
+  phase?: string;
   totalSize?: number | null;
   bitrateKbps?: number | null;
+  lastProgressAt?: string | null;
+  lastProgressAgeMs?: number | null;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  failurePhase?: string | null;
 }
 
 export interface PipelineHealth {
@@ -240,6 +250,9 @@ export interface SystemMetrics {
 export interface InputView {
   status: string;
   time: number | null;
+  probeReady: boolean;
+  probeStatus: string;
+  probePendingMs: number | null;
   video: VideoTrack | null;
   audio: AudioTrack | null;
   audioTracks: AudioTrack[];
@@ -260,6 +273,13 @@ export interface OutputView {
   url: string;
   monitoringUrl: string | null;
   status: string;
+  rawStatus: string | null;
+  phase: string | null;
+  failurePhase: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastProgressAt: string | null;
+  lastProgressAgeMs: number | null;
   time: number | null;
   job: Job | null;
   totalSize: number | null;

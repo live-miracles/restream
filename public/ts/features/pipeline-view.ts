@@ -626,6 +626,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     pipe.input.time !== null
       ? `<span class="badge text-sm px-3">${msToHHMMSS(pipe.input.time)}</span>`
       : "",
+    pipe.input.status === "on" && !pipe.input.probeReady
+      ? `<span class="badge badge-warning text-sm px-3" title="Waiting for stream metadata${pipe.input.probePendingMs ? ` (${(pipe.input.probePendingMs / 1000).toFixed(1)}s)` : ""}">Probing</span>`
+      : "",
     publisher
       ? `<span class="badge badge-info text-sm px-3">${normalizePublisherProtocolLabel(publisher.protocol)}</span>`
       : "",
@@ -670,11 +673,15 @@ export function renderOutsColumn(selectedPipe: string | null): void {
       const statusColor =
         o.status === "on" || o.status === "running"
           ? "status-primary"
-          : o.status === "warning"
+          : o.status === "stalled"
             ? "status-warning"
-            : o.status === "error"
+            : o.status === "failed" || o.lastError
               ? "status-error"
-              : "status-neutral";
+              : o.status === "warning"
+                ? "status-warning"
+                : o.status === "error"
+                  ? "status-error"
+                  : "status-neutral";
 
       const isStopped = o.desiredState === "stopped";
       const isActive =
@@ -684,6 +691,33 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         o.id,
       );
       const metrics: string[] = [];
+      const outputIssue = (() => {
+        if (o.lastError) {
+          return {
+            label: "error",
+            text: escapeHtml(o.failurePhase || o.phase || "runtime"),
+            title: escapeHtml(o.lastError),
+          };
+        }
+        if (o.status === "stalled") {
+          const age = Number.isFinite(o.lastProgressAgeMs as number)
+            ? `${Math.round(Number(o.lastProgressAgeMs) / 1000)}s`
+            : "no progress";
+          return {
+            label: "stall",
+            text: age,
+            title: "Output is running but has stopped making forward progress.",
+          };
+        }
+        if (o.phase && o.phase !== "sending" && o.phase !== "segmenting") {
+          return {
+            label: "phase",
+            text: escapeHtml(o.phase),
+            title: `Current output phase: ${escapeHtml(o.phase)}`,
+          };
+        }
+        return null;
+      })();
 
       if (isActive && o.time !== null) {
         metrics.push(
@@ -694,6 +728,11 @@ export function renderOutsColumn(selectedPipe: string | null): void {
       metrics.push(
         metricPill("enc", escapeHtml(o.encoding), "Selected encoding"),
       );
+      if (outputIssue) {
+        metrics.push(
+          metricPill(outputIssue.label, outputIssue.text, outputIssue.title),
+        );
+      }
 
       if (isActive) {
         const outputTotalSizeBytes = Number(o.totalSize);
@@ -744,6 +783,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
                     <div class="flex flex-wrap items-center gap-1">
                         ${metrics.join("")}
                     </div>
+                    ${o.lastError ? `<div class="text-error text-xs leading-5" title="${escapeHtml(o.lastError)}">${escapeHtml(o.lastError)}</div>` : ""}
                 </div>
                 <div class="dropdown dropdown-end shrink-0">
                     <button type="button" tabindex="0" class="btn btn-xs btn-ghost" aria-label="Output actions">More</button>

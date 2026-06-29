@@ -98,6 +98,12 @@ function parsePipelinesInfo(
     if (inputVideo) inputVideo.bw = inputKbps;
 
     const inputStatus = healthByPipeline[p.id]?.input?.status || "off";
+    const probeReady = Boolean(healthByPipeline[p.id]?.input?.probeReady);
+    const probeStatus = healthByPipeline[p.id]?.input?.probeStatus || "off";
+    const rawProbePendingMs = healthByPipeline[p.id]?.input?.probePendingMs;
+    const probePendingMs = Number.isFinite(rawProbePendingMs as number)
+      ? Number(rawProbePendingMs)
+      : null;
     const publishStartedAt =
       healthByPipeline[p.id]?.input?.publishStartedAt || null;
     const publishStartedTs = publishStartedAt
@@ -123,6 +129,9 @@ function parsePipelinesInfo(
       input: {
         status: inputStatus,
         time: inputTime,
+        probeReady,
+        probeStatus,
+        probePendingMs,
         video: inputVideo,
         audio: inputAudioTracks[0] || null,
         audioTracks: inputAudioTracks,
@@ -167,6 +176,9 @@ function parsePipelinesInfo(
         input: {
           status: "off",
           time: null,
+          probeReady: false,
+          probeStatus: "off",
+          probePendingMs: null,
           video: null,
           audio: null,
           audioTracks: [],
@@ -218,6 +230,16 @@ function parsePipelinesInfo(
       url: out.url,
       monitoringUrl: out.monitoringUrl || null,
       status,
+      rawStatus: outHealth?.rawStatus || null,
+      phase: outHealth?.phase || null,
+      failurePhase: outHealth?.failurePhase || null,
+      lastError: outHealth?.lastError || null,
+      lastErrorAt: outHealth?.lastErrorAt || null,
+      lastProgressAt: outHealth?.lastProgressAt || null,
+      lastProgressAgeMs:
+        typeof outHealth?.lastProgressAgeMs === "number"
+          ? outHealth.lastProgressAgeMs
+          : null,
       time: outTime,
       job: latestJob || null,
       totalSize: outputTotalSize,

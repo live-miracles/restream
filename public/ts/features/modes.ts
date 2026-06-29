@@ -253,6 +253,14 @@ function pipelineHealthLabel(pipe: PipelineView): {
       detail: "waiting for input",
     };
   }
+  if (!pipe.input.probeReady) {
+    return {
+      label: "Input probing",
+      cls: badgeClassForTone("warning"),
+      tone: "warning",
+      detail: "waiting for stream metadata",
+    };
+  }
   if (pipe.outs.some(isOutputUnexpectedlyDown)) {
     return {
       label: "Output down",
@@ -280,6 +288,9 @@ function pipelineHealthLabel(pipe: PipelineView): {
 function outputStateLabel(out: OutputView): { label: string; cls: string } {
   if (isOutputIntentStopped(out))
     return { label: "Stopped", cls: "badge-neutral" };
+  if (out.status === "failed") return { label: "Failed", cls: "badge-error" };
+  if (out.status === "stalled")
+    return { label: "Stalled", cls: "badge-warning" };
   if (isOutputRunning(out)) return { label: "Running", cls: "badge-success" };
   if (out.status === "warning")
     return { label: "Warning", cls: "badge-warning" };
@@ -290,10 +301,13 @@ function summaryCounts() {
   const outputs = state.pipelines.flatMap((pipe) => pipe.outs);
   return {
     pipelines: state.pipelines.length,
-    liveInputs: state.pipelines.filter((pipe) => pipe.input.status === "on")
-      .length,
+    liveInputs: state.pipelines.filter(
+      (pipe) => pipe.input.status === "on" && pipe.input.probeReady,
+    ).length,
     warningInputs: state.pipelines.filter(
-      (pipe) => pipe.input.status === "warning",
+      (pipe) =>
+        pipe.input.status === "warning" ||
+        (pipe.input.status === "on" && !pipe.input.probeReady),
     ).length,
     runningOutputs: outputs.filter(isOutputRunning).length,
     stoppedOutputs: outputs.filter(isOutputIntentStopped).length,
@@ -313,6 +327,14 @@ function summaryCounts() {
 function inputOverviewPill(pipe: PipelineView): string {
   const protocol = pipe.input.publisher?.protocol?.toUpperCase();
   const rate = formatBitrate(pipe.stats.inputBitrateKbps);
+  if (pipe.input.status === "on" && !pipe.input.probeReady) {
+    const pendingMs = pipe.input.probePendingMs;
+    const detail =
+      Number.isFinite(pendingMs as number) && (pendingMs as number) > 0
+        ? `${protocol || "publisher"} / ${(Number(pendingMs) / 1000).toFixed(1)}s`
+        : protocol || "publisher";
+    return statusPill("Input probing", "warning", detail);
+  }
   if (pipe.input.status === "on") {
     return statusPill(
       "Live input",

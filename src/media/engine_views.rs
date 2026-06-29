@@ -84,10 +84,16 @@ pub(crate) async fn health_snapshot(
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>();
+            let probe_ready = ingest.video.is_some() || !audio_tracks.is_empty();
+            let probe_status = if probe_ready { "ready" } else { "pending" };
+            let probe_pending_ms = (!probe_ready).then_some((elapsed_secs * 1000.0).round() as u64);
 
             serde_json::json!({
                 "status": "on",
                 "publishStartedAt": publish_started_at,
+                "probeReady": probe_ready,
+                "probeStatus": probe_status,
+                "probePendingMs": probe_pending_ms,
                 "bytesReceived": bytes_received,
                 "bytesSent": total_bytes_sent,
                 "readers": readers_count,
@@ -102,6 +108,9 @@ pub(crate) async fn health_snapshot(
         } else {
             serde_json::json!({
                 "status": "off",
+                "probeReady": false,
+                "probeStatus": "off",
+                "probePendingMs": null,
                 "bytesReceived": 0,
                 "bytesSent": total_bytes_sent,
                 "readers": readers_count,

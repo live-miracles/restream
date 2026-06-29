@@ -2296,6 +2296,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn health_snapshot_reports_probe_readiness() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-probe", "stream-key", "srt")
+            .await
+            .unwrap();
+
+        let pending = engine
+            .health_snapshot(&["pipeline-probe".to_string()], &HashMap::new())
+            .await;
+        let pending_input = &pending["pipelines"]["pipeline-probe"]["input"];
+        assert_eq!(pending_input["probeReady"], false);
+        assert_eq!(pending_input["probeStatus"], "pending");
+        assert!(pending_input["probePendingMs"].as_u64().is_some());
+
+        let video = Some(VideoMeta {
+            codec: "h264".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            bw: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: None,
+        });
+        let audio = AudioMeta {
+            track_index: 0,
+            codec: "aac".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
+            channel_layout: None,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+        };
+        engine
+            .update_ingest_meta("pipeline-probe", video, Some(audio.clone()), None)
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipeline-probe", vec![audio])
+            .await;
+
+        let ready = engine
+            .health_snapshot(&["pipeline-probe".to_string()], &HashMap::new())
+            .await;
+        let ready_input = &ready["pipelines"]["pipeline-probe"]["input"];
+        assert_eq!(ready_input["probeReady"], true);
+        assert_eq!(ready_input["probeStatus"], "ready");
+        assert!(ready_input["probePendingMs"].is_null());
+    }
+
+    #[tokio::test]
     async fn health_snapshot_marks_hls_preview_active_when_consumer_exists() {
         let engine = MediaEngine::new();
         let pipeline_id = "pipeline-hls";
