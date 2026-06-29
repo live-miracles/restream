@@ -17,6 +17,9 @@ scripts/resource-limit cargo test \
 scripts/resource-limit cargo test \
   active_output_status_ignores_stale_retry_state_after_restart \
   --test api -- --nocapture
+scripts/resource-limit cargo test \
+  stale_job_update_cannot_clobber_replacement_attempt \
+  --test db -- --nocapture
 
 scripts/resource-limit cargo test recent_egress --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture

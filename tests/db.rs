@@ -234,6 +234,67 @@ async fn job_upsert_on_conflict() {
 }
 
 #[tokio::test]
+async fn stale_job_update_cannot_clobber_replacement_attempt() {
+    let pool = test_pool().await;
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
+        .await
+        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+
+    db::create_job(
+        &pool,
+        "j1",
+        "p1",
+        "o1",
+        Some(100),
+        "running",
+        "2024-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let replacement = db::create_job(
+        &pool,
+        "j2",
+        "p1",
+        "o1",
+        Some(200),
+        "running",
+        "2024-01-01T01:00:00Z",
+    )
+    .await
+    .unwrap();
+    assert_eq!(replacement.id, "j2");
+
+    let stale_cleanup = db::update_job(
+        &pool,
+        "j1",
+        None,
+        Some("failed"),
+        Some("2024-01-01T00:05:00Z"),
+        Some(1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(stale_cleanup.is_none());
+
+    let running = db::get_running_job_for(&pool, "p1", "o1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.id, "j2");
+    assert_eq!(running.status, "running");
+    assert_eq!(running.pid, Some(200));
+    assert!(running.ended_at.is_none());
+    assert!(running.exit_code.is_none());
+}
+
+#[tokio::test]
 async fn app_logs_can_be_queried_by_output_scope() {
     let pool = test_pool().await;
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
