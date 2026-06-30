@@ -4824,6 +4824,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
+    let jobs_json = api_view_models::job_response_json_list(&jobs);
     let ingests = db::list_ingests(&state.db).await.unwrap_or_default();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
     let health = state
@@ -4897,7 +4898,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     crate::agent_plane::redacted_context(
         &pipelines,
         &outputs,
-        &jobs,
+        &jobs_json,
         &ingests,
         status,
         health,
@@ -5524,7 +5525,11 @@ fn agent_desired_vs_actual(
                 .iter()
                 .filter(|job| job.pipeline_id == pipeline.id && job.output_id == output.id)
                 .take(5)
-                .map(crate::agent_plane::redact_secrets_from_serializable)
+                .map(|job| {
+                    crate::agent_plane::redact_secrets_from_serializable(
+                        &api_view_models::job_response_json(job),
+                    )
+                })
                 .collect();
             output_reports.push(serde_json::json!({
                 "outputId": output.id,

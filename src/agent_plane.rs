@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 use crate::application::output_path::{OutputPath, is_rtmp_url};
-use crate::types::{Ingest, Job, Output, Pipeline};
+use crate::types::{Ingest, Output, Pipeline};
 
 const OUTPUT_URL_SCHEME_ERROR: &str =
     "Supported schemes are rtmp://, rtmps://, srt://, hls://, http://, and https://";
@@ -124,7 +124,7 @@ pub struct PlanResponse {
 pub fn redacted_context(
     pipelines: &[Pipeline],
     outputs: &[Output],
-    jobs: &[Job],
+    jobs: &[Value],
     ingests: &[Ingest],
     status: Value,
     health: Value,
@@ -159,7 +159,7 @@ pub fn redacted_context(
             "pipelines": pipelines.iter().map(redacted_pipeline).collect::<Vec<_>>(),
             "outputs": outputs.iter().map(redacted_output).collect::<Vec<_>>(),
             "ingests": ingests.iter().map(redacted_ingest).collect::<Vec<_>>(),
-            "jobs": jobs.iter().map(redact_serializable).collect::<Vec<_>>()
+            "jobs": jobs.iter().cloned().map(redact_secrets).collect::<Vec<_>>()
         },
         "runtime": {
             "health": redact_secrets(health),

@@ -3533,7 +3533,7 @@ async fn agent_context_requires_auth() {
 #[cfg(feature = "agent-plane")]
 #[tokio::test]
 async fn agent_context_returns_redacted_state_bundle() {
-    let (app, _pool, engine) = test_app_with_engine().await;
+    let (app, pool, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
     let raw_stream_key = "agent-context-secret-key";
     let raw_output_url = "rtmp://example.com/live/super-secret-output-key";
@@ -3572,6 +3572,20 @@ async fn agent_context_returns_redacted_state_bundle() {
         .await
         .unwrap();
     assert_eq!(output_resp.status(), StatusCode::CREATED);
+    let output = body_json(output_resp).await;
+    let output_id = output["output"]["id"].as_str().unwrap().to_string();
+
+    db::create_job(
+        &pool,
+        "job-agent-context",
+        &pid,
+        &output_id,
+        Some(4321),
+        restream::types::JobStatus::Running,
+        "2024-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
 
     engine
         .runtime
@@ -3598,6 +3612,12 @@ async fn agent_context_returns_redacted_state_bundle() {
     );
     assert!(body["state"]["pipelines"].is_array());
     assert!(body["state"]["outputs"].is_array());
+    assert!(body["state"]["jobs"].is_array());
+    assert_eq!(body["state"]["jobs"][0]["id"], "job-agent-context");
+    assert_eq!(body["state"]["jobs"][0]["pipelineId"], pid);
+    assert_eq!(body["state"]["jobs"][0]["outputId"], output_id);
+    assert_eq!(body["state"]["jobs"][0]["pid"], 4321);
+    assert_eq!(body["state"]["jobs"][0]["status"], "running");
     assert!(body["runtime"]["health"].is_object());
     assert!(body["runtime"]["telemetry"]["engine"].is_object());
     assert!(body["runtime"]["graphs"].is_array());
@@ -3610,6 +3630,14 @@ async fn agent_context_returns_redacted_state_bundle() {
     assert_eq!(
         body["desiredVsActual"]["summary"]["outputs"].as_u64(),
         Some(1)
+    );
+    assert_eq!(
+        body["desiredVsActual"]["pipelines"][0]["outputs"][0]["recentJobs"][0]["id"],
+        "job-agent-context"
+    );
+    assert_eq!(
+        body["desiredVsActual"]["pipelines"][0]["outputs"][0]["recentJobs"][0]["outputId"],
+        output_id
     );
     assert!(body["diagnostics"]["pipelines"].as_array().unwrap().len() == 1);
     assert!(body["dependencies"]["hls"]["config"].is_object());
