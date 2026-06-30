@@ -7,6 +7,10 @@
 //! Egress: connects to an RTMP target URL and forwards packets from the
 //! `RingBuffer` via a `Reader`. Cancellation via `CancellationToken`.
 
+use crate::application::ingest::{
+    IngestAuthError, authenticate_publish_stream_key, lookup_pipeline_by_stream_key,
+};
+use crate::application::ports::PipelineLookup;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
@@ -635,15 +639,15 @@ fn parse_rtmp_url(url: &str) -> Option<RtmpUrlParts> {
 
 /// RTMP Ingest Server
 pub async fn start_rtmp_server(
-    db: sqlx::SqlitePool,
+    pipeline_lookup: Arc<dyn PipelineLookup>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
 ) {
-    start_rtmp_server_on(db, security, engine, 1935).await;
+    start_rtmp_server_on(pipeline_lookup, security, engine, 1935).await;
 }
 
 pub async fn start_rtmp_server_on(
-    db: sqlx::SqlitePool,
+    pipeline_lookup: Arc<dyn PipelineLookup>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
     port: u16,
@@ -661,13 +665,18 @@ pub async fn start_rtmp_server_on(
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
-                let db_clone = db.clone();
+                let pipeline_lookup_clone = pipeline_lookup.clone();
                 let security_clone = security.clone();
                 let engine_clone = engine.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_rtmp_client(socket, addr, db_clone, security_clone, engine_clone)
-                            .await
+                    if let Err(e) = handle_rtmp_client(
+                        socket,
+                        addr,
+                        pipeline_lookup_clone,
+                        security_clone,
+                        engine_clone,
+                    )
+                    .await
                     {
                         warn!("error handling client {}: {:?}", addr, e);
                     }
@@ -683,7 +692,7 @@ pub async fn start_rtmp_server_on(
 async fn handle_rtmp_client(
     mut socket: TcpStream,
     client_addr: SocketAddr,
-    db: sqlx::SqlitePool,
+    pipeline_lookup: Arc<dyn PipelineLookup>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
 ) -> Result<(), &'static str> {
@@ -794,7 +803,7 @@ async fn handle_rtmp_client(
             &mut session,
             results,
             &mut socket,
-            &db,
+            pipeline_lookup.as_ref(),
             &security,
             &engine,
             &client_ip,
@@ -845,7 +854,7 @@ async fn handle_rtmp_client(
                     &mut session,
                     results,
                     &mut socket,
-                    &db,
+                    pipeline_lookup.as_ref(),
                     &security,
                     &engine,
                     &client_ip,
@@ -944,7 +953,7 @@ async fn handle_session_results(
     session: &mut ServerSession,
     results: Vec<ServerSessionResult>,
     socket: &mut TcpStream,
-    db: &sqlx::SqlitePool,
+    pipeline_lookup: &dyn PipelineLookup,
     security: &IngestSecurityService,
     engine: &MediaEngine,
     client_ip: &str,
@@ -995,23 +1004,31 @@ async fn handle_session_results(
                         }
 
                         // Validate stream key against database pipelines
-                        let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
+                        let pipeline = match authenticate_publish_stream_key(
+                            pipeline_lookup,
+                            security,
+                            &stream_key,
+                            client_ip,
                         )
-                        .bind(&stream_key)
-                        .fetch_optional(db)
-                        .await {
-                            Ok(Some(p)) => p,
-                            Ok(None) => {
+                        .await
+                        {
+                            Ok(pipeline) => pipeline,
+                            Err(IngestAuthError::InvalidStreamKey) => {
                                 warn!("publish stream key not found: {:?}", stream_key);
-                                security.record_failure(client_ip);
-                                let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
+                                let _ = session.reject_request(
+                                    request_id,
+                                    "NetStream.Publish.BadName",
+                                    "Invalid stream key",
+                                );
                                 return Err("Invalid stream key");
                             }
-                            Err(e) => {
-                                error!("publish stream key DB query failed: {:?}", e);
-                                security.record_failure(client_ip);
-                                let _ = session.reject_request(request_id, "NetStream.Publish.BadName", "Invalid stream key");
+                            Err(IngestAuthError::LookupFailed(err)) => {
+                                error!("publish stream key lookup failed: {:?}", err);
+                                let _ = session.reject_request(
+                                    request_id,
+                                    "NetStream.Publish.BadName",
+                                    "Invalid stream key",
+                                );
                                 return Err("Invalid stream key");
                             }
                         };
@@ -1212,18 +1229,28 @@ async fn handle_session_results(
                         stream_id,
                     } => {
                         // Look up pipeline by stream key
-                        let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-                            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
-                        )
-                        .bind(&stream_key)
-                        .fetch_optional(db)
-                        .await {
-                            Ok(Some(p)) => p,
-                            _ => {
-                                let _ = session.reject_request(request_id, "NetStream.Play.StreamNotFound", "Invalid stream key");
-                                return Err("Invalid stream key for play");
-                            }
-                        };
+                        let pipeline =
+                            match lookup_pipeline_by_stream_key(pipeline_lookup, &stream_key).await
+                            {
+                                Ok(Some(pipeline)) => pipeline,
+                                Ok(None) => {
+                                    let _ = session.reject_request(
+                                        request_id,
+                                        "NetStream.Play.StreamNotFound",
+                                        "Invalid stream key",
+                                    );
+                                    return Err("Invalid stream key for play");
+                                }
+                                Err(err) => {
+                                    error!("play stream key lookup failed: {:?}", err);
+                                    let _ = session.reject_request(
+                                        request_id,
+                                        "NetStream.Play.StreamNotFound",
+                                        "Invalid stream key",
+                                    );
+                                    return Err("Invalid stream key for play");
+                                }
+                            };
 
                         // Check if there's an active ingest
                         if !engine

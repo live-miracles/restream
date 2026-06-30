@@ -38,6 +38,7 @@ pub mod agent_mcp;
 pub mod agent_plane;
 pub mod alerts;
 pub mod api;
+pub mod application;
 pub mod db;
 pub mod diag;
 pub mod domain;
@@ -369,6 +370,9 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
+    let pipeline_lookup: Arc<dyn crate::application::ports::PipelineLookup> = Arc::new(
+        crate::application::ports::SqlitePipelineLookup::new(pool.clone()),
+    );
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     engine.set_event_sink(event_tx);
     {
@@ -435,19 +439,24 @@ pub async fn run_app() {
     });
 
     // Start RTMP server — capture handle to detect early exit (M3).
-    let db_clone = pool.clone();
     let security_clone = security.clone();
     let engine_clone = engine.clone();
+    let pipeline_lookup_clone = pipeline_lookup.clone();
     let rtmp_port = ports.rtmp;
     let rtmp_handle = tokio::spawn(async move {
-        crate::media::rtmp::start_rtmp_server_on(db_clone, security_clone, engine_clone, rtmp_port)
-            .await;
+        crate::media::rtmp::start_rtmp_server_on(
+            pipeline_lookup_clone,
+            security_clone,
+            engine_clone,
+            rtmp_port,
+        )
+        .await;
         error!("RTMP server task exited unexpectedly");
     });
 
     // Start SRT server — pass security for rate limiting (H1).
     let srt_server = Arc::new(crate::media::srt::SrtServer::new(
-        pool.clone(),
+        pipeline_lookup,
         engine.clone(),
         security.clone(),
         srt_ingest_policy_store,

@@ -38,6 +38,8 @@ Two more narrow seams have now landed:
    - `618295c` `Move SRT ingest schema into domain`
 4. Ingest security policy config lives in `domain`.
    - `670a41f` `Move ingest security config into domain`
+5. Logging DTOs live in `logging::types`.
+   - `04ac53a` `Move log DTOs into logging module`
 
 ## Layering Ladder
 
@@ -91,6 +93,11 @@ implementation.
 Best next use in this repo:
 
 - make RTMP/SRT ingest depend on a lookup port instead of raw DB access
+
+That seam has now started:
+
+- `application::ports::PipelineLookup`
+- `application::ingest` for stream-key auth orchestration
 
 ### 6. Crate
 
@@ -151,6 +158,12 @@ Why first:
 - it reduces duplication before crate splitting
 - it provides a clean home for policy that should not live in `lib.rs`
 
+Progress so far:
+
+- started: `application::ports::PipelineLookup`
+- started: `application::ingest` stream-key lookup/auth helpers
+- next: `application::output_path` and reconciler extraction
+
 ### 3. Move Runtime Views Out Of The Engine Core
 
 Goal: `MediaEngine` should return typed state and snapshots, not primarily
@@ -189,6 +202,11 @@ Benefits:
 - better layering
 - easier testing
 - future crate split for protocol stacks becomes realistic
+
+Progress so far:
+
+- RTMP/SRT can be switched from inline SQL to a shared lookup port
+- the next step is extending that port pattern to other ingest-side lookups
 
 ### 5. Split `api.rs` By Route Family
 
@@ -294,9 +312,10 @@ When choosing the next refactor in an active worktree:
 
 Best next low-risk code steps:
 
-1. Move logging DTOs out of `types.rs` and into `logging`.
-2. Introduce `application::output_path` and remove duplicated output-path
+1. Introduce `application::output_path` and remove duplicated output-path
    resolution logic from `lib.rs`.
+2. Extend application ports beyond pipeline lookup where ingest/runtime still
+   reaches into DB details directly.
 3. Start converting engine JSON emitters into typed snapshots plus edge
    serializers.
 

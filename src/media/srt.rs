@@ -55,6 +55,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::application::ingest::authenticate_srt_stream_key;
+use crate::application::ports::PipelineLookup;
 use crate::media::engine::{EgressRegistration, MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
@@ -1227,7 +1229,7 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
 }
 
 pub struct SrtServer {
-    db: sqlx::SqlitePool,
+    pipeline_lookup: Arc<dyn PipelineLookup>,
     engine: Arc<MediaEngine>,
     security: Arc<crate::media::security::IngestSecurityService>,
     ingest_policy_store: Arc<SrtIngestPolicyStore>,
@@ -1235,7 +1237,7 @@ pub struct SrtServer {
 
 impl SrtServer {
     pub fn new(
-        db: sqlx::SqlitePool,
+        pipeline_lookup: Arc<dyn PipelineLookup>,
         engine: Arc<MediaEngine>,
         security: Arc<crate::media::security::IngestSecurityService>,
         ingest_policy_store: Arc<SrtIngestPolicyStore>,
@@ -1248,7 +1250,7 @@ impl SrtServer {
         }
         check_sysctl_limits();
         Self {
-            db,
+            pipeline_lookup,
             engine,
             security,
             ingest_policy_store,
@@ -1519,24 +1521,24 @@ impl SrtServer {
         let stream_key = parsed.stream_key.as_str();
 
         // Query pipeline for stream key validation
-        let pipeline = match sqlx::query_as::<_, crate::types::Pipeline>(
-            "SELECT id, name, stream_key, input_source, encoding, srt_ingest_policy FROM pipelines WHERE stream_key = ?"
+        let pipeline = match authenticate_srt_stream_key(
+            self.pipeline_lookup.as_ref(),
+            &self.security,
+            stream_key,
+            &client_ip,
         )
-        .bind(stream_key)
-        .fetch_optional(&self.db)
-        .await {
-            Ok(Some(p)) => p,
-            _ => {
+        .await
+        {
+            Ok(pipeline) => pipeline,
+            Err(_) => {
                 warn!("unauthorized connection for stream key: {}", stream_key);
-                self.security.record_failure(&client_ip);
                 // SAFETY: client_sock is a valid accepted socket not yet closed.
-                unsafe { srt_close(client_sock); }
+                unsafe {
+                    srt_close(client_sock);
+                }
                 return;
             }
         };
-
-        // Clear failure state on successful authentication.
-        self.security.record_success(&client_ip);
 
         info!(
             "[srt] Authenticated stream key: {} for pipeline: {} (mode={})",
