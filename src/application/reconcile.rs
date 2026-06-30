@@ -2,6 +2,7 @@ use crate::application::output_path::OutputPath;
 use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
+use crate::types::Output;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +118,31 @@ pub fn next_output_retry_count(previous_retries: Option<u32>, had_progress: bool
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputRuntimeSnapshot {
+    pub is_active: bool,
+    pub effective_has_ingest: bool,
+    pub ingest_video_codec: Option<String>,
+}
+
+pub async fn load_output_runtime_snapshot(
+    engine: &MediaEngine,
+    output: &Output,
+    ingest_disconnect_grace_ms: u64,
+) -> OutputRuntimeSnapshot {
+    let is_active = engine.has_active_egress(&output.id).await;
+    let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
+    let within_disconnect_grace = engine
+        .has_recent_ingest_disconnect(&output.pipeline_id, ingest_disconnect_grace_ms)
+        .await;
+
+    OutputRuntimeSnapshot {
+        is_active,
+        effective_has_ingest: has_ingest || within_disconnect_grace,
+        ingest_video_codec: engine.ingest_video_codec(&output.pipeline_id).await,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputStageSweepInput<'a> {
     pub pipeline_id: &'a str,
@@ -141,6 +167,21 @@ pub fn collect_needed_stage_keys<'a>(
         }
     }
     needed_stages
+}
+
+pub fn output_stage_sweep_input<'a>(
+    output: &'a Output,
+    snapshot: &OutputRuntimeSnapshot,
+) -> OutputStageSweepInput<'a> {
+    OutputStageSweepInput {
+        pipeline_id: output.pipeline_id.as_str(),
+        encoding: &output.encoding,
+        url: &output.url,
+        desired_state: &output.desired_state,
+        is_active: snapshot.is_active,
+        effective_has_ingest: snapshot.effective_has_ingest,
+        ingest_video_codec: snapshot.ingest_video_codec.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +236,7 @@ mod tests {
     use super::*;
     use crate::application::ports::{MetaLookupFuture, PipelineCatalogFuture};
     use crate::domain::stage::StageKind;
+    use crate::media::engine::VideoMeta;
     use crate::types::Pipeline;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -324,6 +366,92 @@ mod tests {
             )
         )));
         assert_eq!(stages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn output_runtime_snapshot_reads_active_ingest_and_codec() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe",
+                Some(VideoMeta {
+                    codec: "hevc".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+        let output = crate::types::Output {
+            id: "out-1".to_string(),
+            pipeline_id: "pipe".to_string(),
+            name: "Output".to_string(),
+            url: "rtmp://example/live/test".to_string(),
+            monitoring_url: None,
+            desired_state: "running".to_string(),
+            encoding: "source".to_string(),
+        };
+
+        let snapshot = load_output_runtime_snapshot(&engine, &output, 0).await;
+
+        assert!(!snapshot.is_active);
+        assert!(snapshot.effective_has_ingest);
+        assert_eq!(snapshot.ingest_video_codec.as_deref(), Some("hevc"));
+    }
+
+    #[tokio::test]
+    async fn output_runtime_snapshot_honors_recent_disconnect_grace() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine.unregister_ingest("pipe").await;
+        let output = crate::types::Output {
+            id: "out-1".to_string(),
+            pipeline_id: "pipe".to_string(),
+            name: "Output".to_string(),
+            url: "srt://example:9000".to_string(),
+            monitoring_url: None,
+            desired_state: "running".to_string(),
+            encoding: "source".to_string(),
+        };
+
+        let snapshot = load_output_runtime_snapshot(&engine, &output, 1_000).await;
+
+        assert!(!snapshot.is_active);
+        assert!(snapshot.effective_has_ingest);
+        assert_eq!(snapshot.ingest_video_codec, None);
+    }
+
+    #[test]
+    fn output_stage_sweep_input_uses_snapshot_fields() {
+        let output = crate::types::Output {
+            id: "out-1".to_string(),
+            pipeline_id: "pipe".to_string(),
+            name: "Output".to_string(),
+            url: "rtmp://example/live".to_string(),
+            monitoring_url: None,
+            desired_state: "running".to_string(),
+            encoding: "720p".to_string(),
+        };
+        let snapshot = OutputRuntimeSnapshot {
+            is_active: true,
+            effective_has_ingest: false,
+            ingest_video_codec: Some("hevc".to_string()),
+        };
+
+        let input = output_stage_sweep_input(&output, &snapshot);
+
+        assert_eq!(input.pipeline_id, "pipe");
+        assert_eq!(input.encoding, "720p");
+        assert!(input.is_active);
+        assert!(!input.effective_has_ingest);
+        assert_eq!(input.ingest_video_codec.as_deref(), Some("hevc"));
     }
 
     struct FakePipelineCatalog {

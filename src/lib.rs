@@ -55,7 +55,7 @@ pub mod types;
 use crate::application::reconcile::{
     OutputFailureWindow, OutputStartAction, OutputStopAction, build_recording_reconcile_plan,
     collect_needed_stage_keys, decide_output_start_action, decide_output_stop_action,
-    next_output_retry_count,
+    load_output_runtime_snapshot, next_output_retry_count, output_stage_sweep_input,
 };
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
@@ -563,22 +563,12 @@ pub async fn run_app() {
         };
 
         for output in &outputs {
-            let is_active = engine.has_active_egress(&output.id).await;
-            if is_active || output.desired_state != "running" {
+            let snapshot =
+                load_output_runtime_snapshot(&engine, output, tuning.ingest_disconnect_grace_ms)
+                    .await;
+            if snapshot.is_active || output.desired_state != "running" {
                 engine.clear_egress_retry_state(&output.id).await;
             }
-            let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
-            let within_disconnect_grace = engine
-                .has_recent_ingest_disconnect(
-                    &output.pipeline_id,
-                    tuning.ingest_disconnect_grace_ms,
-                )
-                .await;
-            // This grace is only for brief upstream ingest flaps. It keeps
-            // healthy egress sessions and shared stages alive while a publisher
-            // reconnects, but it is not used for dead push destinations:
-            // RTMP/SRT/HLS PUT destination loss still relies on retry/backoff.
-            let effective_has_ingest = has_ingest || within_disconnect_grace;
             let now_str = chrono::Utc::now().to_rfc3339();
             let failure = {
                 let lf = last_failed.lock().await;
@@ -592,8 +582,8 @@ pub async fn run_app() {
 
             match decide_output_start_action(
                 &output.desired_state,
-                is_active,
-                effective_has_ingest,
+                snapshot.is_active,
+                snapshot.effective_has_ingest,
                 failure,
                 tuning.output_retry_policy(),
             ) {
@@ -922,8 +912,11 @@ pub async fn run_app() {
                 }
             }
 
-            match decide_output_stop_action(&output.desired_state, is_active, effective_has_ingest)
-            {
+            match decide_output_stop_action(
+                &output.desired_state,
+                snapshot.is_active,
+                snapshot.effective_has_ingest,
+            ) {
                 OutputStopAction::KeepRunning => {}
                 OutputStopAction::StopBecauseIngestLost => {
                     info!(
@@ -958,25 +951,13 @@ pub async fn run_app() {
         {
             let mut stage_inputs = Vec::new();
             for output in &outputs {
-                let is_active = engine.has_active_egress(&output.id).await;
-                let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
-                let within_disconnect_grace = engine
-                    .has_recent_ingest_disconnect(
-                        &output.pipeline_id,
-                        tuning.ingest_disconnect_grace_ms,
-                    )
-                    .await;
-                let effective_has_ingest = has_ingest || within_disconnect_grace;
-                let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
-                stage_inputs.push(crate::application::reconcile::OutputStageSweepInput {
-                    pipeline_id: output.pipeline_id.as_str(),
-                    encoding: &output.encoding,
-                    url: &output.url,
-                    desired_state: &output.desired_state,
-                    is_active,
-                    effective_has_ingest,
-                    ingest_video_codec,
-                });
+                let snapshot = load_output_runtime_snapshot(
+                    &engine,
+                    output,
+                    tuning.ingest_disconnect_grace_ms,
+                )
+                .await;
+                stage_inputs.push(output_stage_sweep_input(output, &snapshot));
             }
             let needed_stages: std::collections::HashSet<StageKey> =
                 collect_needed_stage_keys(stage_inputs);
