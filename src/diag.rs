@@ -233,7 +233,7 @@ async fn check_engine_status(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &
         idx,
         "Engine Status",
         "MediaEngine active state",
-        "engine.health_snapshot()",
+        "engine_views::health_snapshot(...)",
         lines.join("\n"),
         start.elapsed().as_millis() as u64,
     )

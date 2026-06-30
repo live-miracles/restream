@@ -1,10 +1,9 @@
 //! Central media engine state — owns all active ingests, egresses, ring buffers,
 //! and recordings. Byte counters use `AtomicU64` for lock-free updates from the
-//! hot ingest/egress paths; the `health_snapshot()` method reads them atomically
-//! to build the JSON returned by `/api/v1/engine/health`.
+//! hot ingest/egress paths; higher layers read that state through
+//! `crate::media::engine_views` when they need API-facing health JSON.
 
 use ffmpeg_next as ffmpeg;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -2348,32 +2347,6 @@ impl MediaEngine {
             active_ingest_count: self.active_ingest_count().await,
         }
     }
-
-    /// Build the full health snapshot JSON that the `/api/v1/engine/health`
-    /// endpoint returns.
-    pub async fn health_snapshot(
-        &self,
-        pipeline_ids: &[String],
-        recording_enabled: &HashMap<String, bool>,
-    ) -> serde_json::Value {
-        self.health_snapshot_with_disconnect_grace(pipeline_ids, recording_enabled, 0)
-            .await
-    }
-
-    pub async fn health_snapshot_with_disconnect_grace(
-        &self,
-        pipeline_ids: &[String],
-        recording_enabled: &HashMap<String, bool>,
-        disconnect_grace_ms: u64,
-    ) -> serde_json::Value {
-        crate::media::engine_views::health_snapshot(
-            self,
-            pipeline_ids,
-            recording_enabled,
-            disconnect_grace_ms,
-        )
-        .await
-    }
 }
 
 #[cfg(test)]
@@ -2383,8 +2356,33 @@ mod tests {
     use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader};
     use bytes::Bytes;
     use proptest::prelude::*;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::process::Command;
+
+    async fn test_health_snapshot(
+        engine: &MediaEngine,
+        pipeline_ids: &[String],
+        recording_enabled: &HashMap<String, bool>,
+    ) -> serde_json::Value {
+        crate::media::engine_views::health_snapshot(engine, pipeline_ids, recording_enabled, 0)
+            .await
+    }
+
+    async fn test_health_snapshot_with_disconnect_grace(
+        engine: &MediaEngine,
+        pipeline_ids: &[String],
+        recording_enabled: &HashMap<String, bool>,
+        disconnect_grace_ms: u64,
+    ) -> serde_json::Value {
+        crate::media::engine_views::health_snapshot(
+            engine,
+            pipeline_ids,
+            recording_enabled,
+            disconnect_grace_ms,
+        )
+        .await
+    }
 
     #[test]
     fn pipe_metrics_snapshot_correctness() {
@@ -2851,7 +2849,7 @@ mod tests {
         );
 
         let pipelines = vec!["pipeline-race".to_string()];
-        let snapshot = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snapshot = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         let input = &snapshot["pipelines"]["pipeline-race"]["input"];
         assert_eq!(input["status"], "off");
         assert_eq!(input["lastSessionProtocol"], "srt");
@@ -2867,9 +2865,8 @@ mod tests {
             .register_egress("output-1", "pipeline-1", "rtmp://example/live/test")
             .await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-1".to_string()], &HashMap::new()).await;
 
         assert_eq!(
             snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
@@ -2891,9 +2888,8 @@ mod tests {
             .record_egress_error("output-1", "send", "connection refused")
             .await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-1".to_string()], &HashMap::new()).await;
 
         let output = &snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"];
         assert_eq!(output["status"], "failed");
@@ -2922,9 +2918,8 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-1".to_string()], &HashMap::new()).await;
 
         assert_eq!(
             snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"]["status"],
@@ -2953,9 +2948,8 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-1".to_string()], &HashMap::new()).await;
 
         let output = &snapshot["pipelines"]["pipeline-1"]["outputs"]["output-1"];
         assert_eq!(output["status"], "running");
@@ -3000,9 +2994,8 @@ mod tests {
             )
             .await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-audio".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-audio".to_string()], &HashMap::new()).await;
         let tracks = snapshot["pipelines"]["pipeline-audio"]["input"]["audioTracks"]
             .as_array()
             .unwrap();
@@ -3021,9 +3014,8 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = engine
-            .health_snapshot(&["pipeline-probe".to_string()], &HashMap::new())
-            .await;
+        let pending =
+            test_health_snapshot(&engine, &["pipeline-probe".to_string()], &HashMap::new()).await;
         let pending_input = &pending["pipelines"]["pipeline-probe"]["input"];
         assert_eq!(pending_input["probeReady"], false);
         assert_eq!(pending_input["probeStatus"], "pending");
@@ -3060,9 +3052,8 @@ mod tests {
             .update_ingest_audio_tracks("pipeline-probe", vec![audio])
             .await;
 
-        let ready = engine
-            .health_snapshot(&["pipeline-probe".to_string()], &HashMap::new())
-            .await;
+        let ready =
+            test_health_snapshot(&engine, &["pipeline-probe".to_string()], &HashMap::new()).await;
         let ready_input = &ready["pipelines"]["pipeline-probe"]["input"];
         assert_eq!(ready_input["probeReady"], true);
         assert_eq!(ready_input["probeStatus"], "ready");
@@ -3075,9 +3066,8 @@ mod tests {
         let pipeline_id = "pipeline-hls";
 
         let _ = engine.ensure_hls_segmenter(pipeline_id).await;
-        let snapshot = engine
-            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &[pipeline_id.to_string()], &HashMap::new()).await;
 
         assert_eq!(
             snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
@@ -3094,9 +3084,8 @@ mod tests {
         let token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
         token.cancel();
 
-        let snapshot = engine
-            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &[pipeline_id.to_string()], &HashMap::new()).await;
 
         assert_eq!(
             snapshot["pipelines"][pipeline_id]["hlsPreview"]["active"],
@@ -3115,9 +3104,8 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         rb.push(test_audio_packet(10, 10));
 
-        let snapshot = engine
-            .health_snapshot(&[pipeline_id.to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &[pipeline_id.to_string()], &HashMap::new()).await;
         let reader_metrics = snapshot["pipelines"][pipeline_id]["input"]["readerMetrics"]
             .as_array()
             .unwrap();
@@ -3173,9 +3161,8 @@ mod tests {
             )
             .await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipeline-bond".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipeline-bond".to_string()], &HashMap::new()).await;
         let quality = &snapshot["pipelines"]["pipeline-bond"]["input"]["publisher"]["quality"];
 
         assert_eq!(snapshot["srtListener"]["bondingAvailable"], true);
@@ -3306,7 +3293,7 @@ mod tests {
         );
 
         let pipelines = vec!["pipe-1".to_string()];
-        let snapshot = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snapshot = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-race"];
         assert_eq!(output["status"], "failed");
         assert_eq!(output["failurePhase"], "connect");
@@ -3412,9 +3399,8 @@ mod tests {
             .record_egress_error("out-1", "send", "synthetic send failure")
             .await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipe-1".to_string()], &HashMap::new()).await;
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
 
         assert_eq!(output["protocol"], "srt");
@@ -3472,9 +3458,8 @@ mod tests {
             .await;
         engine.record_egress_progress("out-1", 4096).await;
 
-        let snapshot = engine
-            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipe-1".to_string()], &HashMap::new()).await;
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
 
         assert_eq!(output["phase"], "uploading");
@@ -3527,7 +3512,7 @@ mod tests {
 
         let ids = vec!["pipe-1".to_string(), "pipe-2".to_string()];
         let rec = std::collections::HashMap::new();
-        let snap = engine.health_snapshot(&ids, &rec).await;
+        let snap = test_health_snapshot(&engine, &ids, &rec).await;
 
         let pipe1_outputs = &snap["pipelines"]["pipe-1"]["outputs"];
         assert!(pipe1_outputs.get("out-a").is_some());
@@ -3576,9 +3561,8 @@ mod tests {
 
         let mut recording_enabled = HashMap::new();
         recording_enabled.insert(pipeline_id.to_string(), true);
-        let snapshot = engine
-            .health_snapshot(&[pipeline_id.to_string()], &recording_enabled)
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &[pipeline_id.to_string()], &recording_enabled).await;
 
         assert_eq!(
             snapshot["pipelines"][pipeline_id]["recording"]["active"],
@@ -4505,18 +4489,18 @@ mod tests {
         let engine = MediaEngine::new();
         let pipelines = vec!["p1".to_string()];
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
 
         engine
             .try_register_ingest("p1", "key", "rtmp")
             .await
             .unwrap();
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
 
         engine.unregister_ingest("p1").await;
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
     }
 
@@ -4543,7 +4527,7 @@ mod tests {
             .await;
         engine.unregister_ingest("p1").await;
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         let input = &snap["pipelines"]["p1"]["input"];
         assert_eq!(input["status"], "off");
         assert_eq!(input["probeStatus"], "off");
@@ -4578,9 +4562,9 @@ mod tests {
             .await;
         engine.unregister_ingest("p1").await;
 
-        let snap = engine
-            .health_snapshot_with_disconnect_grace(&pipelines, &HashMap::new(), 5_000)
-            .await;
+        let snap =
+            test_health_snapshot_with_disconnect_grace(&engine, &pipelines, &HashMap::new(), 5_000)
+                .await;
         let input = &snap["pipelines"]["p1"]["input"];
         assert_eq!(input["status"], "off");
         assert_eq!(input["disconnectGraceActive"], true);
@@ -4590,7 +4574,7 @@ mod tests {
                 .is_some_and(|remaining| remaining > 0 && remaining <= 5_000)
         );
 
-        let no_grace = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let no_grace = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(
             no_grace["pipelines"]["p1"]["input"]["disconnectGraceActive"],
             false
@@ -4667,7 +4651,7 @@ mod tests {
             "plain unregister should still leave a recent disconnect marker for grace handling"
         );
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         let input = &snap["pipelines"]["p1"]["input"];
         assert_eq!(input["status"], "off");
         assert_eq!(input["probeStatus"], "off");
@@ -4702,7 +4686,7 @@ mod tests {
             .await;
         engine.unregister_ingest("p1").await;
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["probeStatus"], "failed");
         assert_eq!(
             snap["pipelines"]["p1"]["input"]["lastDisconnectReason"],
@@ -4713,7 +4697,7 @@ mod tests {
             .try_register_ingest("p1", "key", "srt")
             .await
             .unwrap();
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
         assert!(snap["pipelines"]["p1"]["input"]["lastSessionProtocol"].is_null());
         assert!(snap["pipelines"]["p1"]["input"]["lastDisconnectReason"].is_null());
@@ -4749,13 +4733,13 @@ mod tests {
         engine.unregister_ingest("p1").await;
         assert!(t1.is_cancelled());
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "off");
 
         let t2 = engine.try_register_ingest("p1", "key", "srt").await;
         assert!(t2.is_some(), "re-register after unregister must succeed");
 
-        let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+        let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
         assert_eq!(snap["pipelines"]["p1"]["input"]["status"], "on");
         assert_eq!(
             snap["pipelines"]["p1"]["input"]["publisher"]["protocol"],
@@ -4862,9 +4846,7 @@ mod tests {
 
         engine.unregister_egress("out-1").await;
 
-        let snapshot = engine
-            .health_snapshot(&[pipeline_id], &HashMap::new())
-            .await;
+        let snapshot = test_health_snapshot(&engine, &[pipeline_id], &HashMap::new()).await;
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
         assert_eq!(output["status"], "failed");
         assert_eq!(output["phase"], "failed");
@@ -5023,9 +5005,8 @@ mod tests {
         assert!(status["nextRetryAt"].is_string());
         assert!(status["retryRemainingMs"].as_u64().unwrap_or(0) > 0);
 
-        let snapshot = engine
-            .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
-            .await;
+        let snapshot =
+            test_health_snapshot(&engine, &["pipe-1".to_string()], &HashMap::new()).await;
         let output = &snapshot["pipelines"]["pipe-1"]["outputs"]["out-1"];
         assert_eq!(output["status"], "retrying");
         assert_eq!(output["phase"], "failed");
@@ -5122,9 +5103,9 @@ mod tests {
                     }
 
                     let status = crate::media::engine_views::output_status(&engine, "out-1").await;
-                    let snapshot = engine
-                        .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
-                        .await;
+                    let snapshot =
+                        test_health_snapshot(&engine, &["pipe-1".to_string()], &HashMap::new())
+                            .await;
                     let snapshot_output = snapshot["pipelines"]["pipe-1"]["outputs"].get("out-1");
                     let recent = engine.recent_egress_outcome("out-1").await;
                     let retry = engine.egress_retry_state("out-1").await;
@@ -5271,7 +5252,7 @@ mod tests {
                 .try_register_ingest("p1", "key", proto)
                 .await
                 .unwrap();
-            let snap = engine.health_snapshot(&pipelines, &HashMap::new()).await;
+            let snap = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
             assert_eq!(
                 snap["pipelines"]["p1"]["input"]["publisher"]["protocol"], proto,
                 "protocol mismatch for {proto}"
