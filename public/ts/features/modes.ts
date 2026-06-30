@@ -19,6 +19,10 @@ import {
   isOutputUnexpectedlyDown,
 } from "../core/output-status.js";
 import { selectPipeline } from "./render.js";
+import {
+  buildRestreamActivityBursts,
+  renderRestreamActivityCards,
+} from "./overview-activity.js";
 import type { AppLogRow, OutputView, PipelineView } from "../types.js";
 type DashboardMode =
   | "overview"
@@ -75,66 +79,6 @@ let overviewActivityLogs: AppLogRow[] = [];
 let overviewActivityFetchedAt = 0;
 let overviewActivityInFlight: Promise<void> | null = null;
 
-function normalizeActivityEventType(log: AppLogRow | null | undefined): string {
-  return String(log?.eventType || "")
-    .trim()
-    .toLowerCase();
-}
-
-function classifyOverviewActivity(log: AppLogRow): {
-  label: string;
-  badgeClass: string;
-} {
-  const eventType = normalizeActivityEventType(log);
-  const message = String(log?.message || "");
-  const level = String(log?.level || "").toUpperCase();
-
-  if (eventType === "restream.http.ready") {
-    return { label: "API Ready", badgeClass: "badge-success" };
-  }
-  if (eventType === "restream.shutdown.requested") {
-    return { label: "Shutdown Requested", badgeClass: "badge-warning" };
-  }
-  if (eventType === "restream.shutdown.started") {
-    return { label: "Stopping", badgeClass: "badge-warning" };
-  }
-  if (eventType === "restream.shutdown.completed") {
-    return { label: "Stopped", badgeClass: "badge-stopped" };
-  }
-  if (/task exited unexpectedly/i.test(message)) {
-    return { label: "Server Task Exit", badgeClass: "badge-error" };
-  }
-  if (/server listening/i.test(message)) {
-    return { label: "Listener Ready", badgeClass: "badge-success" };
-  }
-  if (level === "ERROR") {
-    return { label: "Error", badgeClass: "badge-error" };
-  }
-  if (level === "WARN") {
-    return { label: "Warning", badgeClass: "badge-warning" };
-  }
-  return { label: "Process", badgeClass: "badge-ghost" };
-}
-
-function isOverviewActivityLog(log: AppLogRow): boolean {
-  const eventType = normalizeActivityEventType(log);
-  const message = String(log?.message || "");
-  const level = String(log?.level || "").toUpperCase();
-
-  if (eventType.startsWith("restream.")) return true;
-  if (level === "WARN" || level === "ERROR") return true;
-  return /listening|shutdown|exited unexpectedly|raised file descriptor limit|loaded profiles|updated profiles/i.test(
-    message,
-  );
-}
-
-function formatOverviewActivityTime(ts: string | null | undefined): string {
-  if (!ts) return "--";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return ts;
-  return d.toLocaleTimeString();
-}
-
 function refreshOverviewActivityIfStale(): void {
   if (currentMode !== null && currentMode !== "overview") return;
   if (overviewActivityInFlight) return;
@@ -159,32 +103,24 @@ function refreshOverviewActivityIfStale(): void {
 }
 
 function overviewActivitySection(): string {
-  const items = overviewActivityLogs
-    .filter(isOverviewActivityLog)
-    .slice(0, OVERVIEW_ACTIVITY_LIMIT);
-  const loading = overviewActivityInFlight !== null && items.length === 0;
+  const bursts = buildRestreamActivityBursts(overviewActivityLogs).slice(
+    -OVERVIEW_ACTIVITY_LIMIT,
+  );
+  const loading = overviewActivityInFlight !== null && bursts.length === 0;
   const body = loading
     ? '<div class="text-base-content/60 text-sm">Loading recent restream activity...</div>'
-    : items.length === 0
+    : bursts.length === 0
       ? '<div class="text-base-content/60 text-sm">No recent restream-wide activity yet.</div>'
-      : `<div class="space-y-2">${items
-          .map((log) => {
-            const event = classifyOverviewActivity(log);
-            return `<div class="bg-base-100 rounded-lg p-3">
-                    <div class="flex items-center justify-between gap-2">
-                        <span class="badge badge-sm ${event.badgeClass}">${escapeHtml(event.label)}</span>
-                        <span class="text-xs opacity-70">${escapeHtml(formatOverviewActivityTime(log.ts))}</span>
-                    </div>
-                    <pre class="mt-2 whitespace-pre-wrap break-words text-xs">${escapeHtml(sanitizeLogMessage(log.message || "", true))}</pre>
-                </div>`;
-          })
-          .join("")}</div>`;
+      : `<div class="space-y-2">${renderRestreamActivityCards(
+          overviewActivityLogs,
+          OVERVIEW_ACTIVITY_LIMIT,
+        )}</div>`;
 
   return `<section class="border-base-content/10 bg-base-200/80 rounded-lg border">
         <div class="border-base-content/10 flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
             <div>
                 <h2 class="text-base font-semibold">Restream Activity</h2>
-                <p class="text-base-content/60 mt-1 text-sm">Recent operator events outside pipeline and output scope.</p>
+                <p class="text-base-content/60 mt-1 text-sm">Recent restream-wide event bursts, grouped for operator-friendly review.</p>
             </div>
             <button type="button" class="btn btn-sm btn-outline" id="overview-open-status-btn">Open Status</button>
         </div>
