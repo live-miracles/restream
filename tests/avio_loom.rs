@@ -1,14 +1,6 @@
-/// Loom model-checks for the close/wake contract behind MemoryQueue.
-///
-/// The production queue mixes std::sync::{Mutex, Condvar} with tokio::Notify,
-/// which loom cannot model directly. As with ring_migration_loom, we model the
-/// essential synchronization rule with loom primitives:
-///
-/// 1. A blocked writer must wake when the queue closes.
-/// 2. A blocked reader must wake when the queue closes.
-///
-/// That is the safety property the SRT/recording/transcoder thread hops depend
-/// on to avoid silent stalls during shutdown and downstream disconnects.
+//! Loom model-checks for the AV I/O queue synchronization boundary.
+//! This file owns the close/wake contract behind `MemoryQueue`, proving the
+//! shutdown and backpressure invariants that media thread hops rely on.
 
 #[cfg(loom)]
 mod loom_tests {

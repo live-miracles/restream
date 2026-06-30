@@ -1,13 +1,6 @@
-/// Loom model-check for the seal_and_forward / wait_for_data concurrent interaction.
-///
-/// Loom exhaustively explores every possible interleaving of atomic operations
-/// between the writer thread (sealer) and the reader thread (wait_for_data).
-/// This proves P4: the reader cannot sleep forever regardless of scheduling.
-///
-/// We model the core notification protocol as a simpler analogue because
-/// tokio::sync::Notify is not yet loom-aware.  We use loom's AtomicUsize for
-/// the write_idx, loom's AtomicBool for the "sealed/next" indicator, and
-/// loom's Condvar for the notification primitive.
+//! Loom model-checks for ring migration wake behavior.
+//! This file owns the concurrent `seal_and_forward`/`wait_for_data` contract,
+//! reduced to a loom-friendly model so missed-notify bugs stay impossible.
 
 #[cfg(loom)]
 mod loom_tests {

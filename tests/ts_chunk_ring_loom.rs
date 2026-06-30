@@ -1,14 +1,7 @@
-/// Loom model-check for the TS chunk reader wait/cancel contract.
-///
-/// Production `TsChunkReader::wait_for_data_or_cancelled()` uses `tokio::select!`
-/// between the ring wake and the cancellation token. Loom cannot model Tokio's
-/// async scheduler directly, so we reduce the contract to the synchronization
-/// rule we care about:
-///
-/// 1. A blocked reader must wake when data arrives.
-/// 2. A blocked reader must wake when cancellation arrives.
-/// 3. If data and cancellation race, the reader may observe either outcome, but
-///    it must not sleep forever or return an invalid third state.
+//! Loom model-checks for TS chunk wait/cancel coordination.
+//! This file owns the synchronization contract behind
+//! `TsChunkReader::wait_for_data_or_cancelled`, ensuring wakeups and
+//! cancellation race safely without deadlock or invalid states.
 
 #[cfg(loom)]
 mod loom_tests {

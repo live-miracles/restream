@@ -1,3 +1,7 @@
+//! Integration tests for the HTTP/API edge layer.
+//! This file owns route behavior, edge validation, and the public response
+//! shapes exposed over Axum.
+
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use restream::domain::stage::{StageKey, StageKind};

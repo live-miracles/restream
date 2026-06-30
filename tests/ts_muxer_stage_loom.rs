@@ -1,12 +1,6 @@
-/// Loom model-check for shared TS muxer stage replacement semantics.
-///
-/// The production registry uses a write lock around `get_or_create_ts_muxer_stage`
-/// and a cancellation token on each stage. The core invariants we need from that
-/// synchronization boundary are:
-///
-/// 1. A cancelled stage must not be reused.
-/// 2. Concurrent creators must converge on one replacement stage.
-/// 3. The registry must never publish more than one live stage for a key.
+//! Loom model-checks for shared TS muxer-stage replacement.
+//! This file owns the registry concurrency guarantees that prevent cancelled
+//! muxer stages from being reused or duplicated under concurrent creation.
 
 #[cfg(loom)]
 mod loom_tests {

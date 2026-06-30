@@ -1,3 +1,7 @@
+//! Contract tests for checked-in media fixtures.
+//! This file owns the canonical fixture lookup guarantees that higher-level
+//! correctness and integration tests depend on.
+
 #[test]
 fn checked_in_fixture_contract_is_satisfied() {
     for relative_path in restream::test_fixtures::REQUIRED_CHECKED_IN_FIXTURES {

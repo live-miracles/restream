@@ -1,13 +1,6 @@
-/// Loom model-check for shared H.265->H.264 transcoder stage replacement.
-///
-/// The production `get_or_create_h264_transcoder()` path stores one shared
-/// codec-edge stage per `(pipeline, upstream)` key in `stages.buffers`, guarded
-/// by a write lock plus a cancellation token. The invariants we need from that
-/// synchronization boundary are:
-///
-/// 1. A cancelled stage must never be reused.
-/// 2. Concurrent creators must converge on one replacement stage.
-/// 3. The registry must publish at most one live stage for the key.
+//! Loom model-checks for shared transcoder-stage replacement.
+//! This file owns the registry invariants around cancelled-stage replacement
+//! so concurrent creators converge on one live codec-edge stage per key.
 
 #[cfg(loom)]
 mod loom_tests {

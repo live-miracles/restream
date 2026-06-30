@@ -1,3 +1,7 @@
+//! Integration tests for the persistence layer.
+//! This file owns database-schema and query behavior so storage changes can be
+//! verified independently from HTTP and runtime concerns.
+
 use restream::{
     db,
     logging::types::{AppLogEntry, AppLogFilters},

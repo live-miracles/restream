@@ -1,4 +1,9 @@
-//! MCP transport implementations.
+//! MCP transport adapters for the agent-facing control surface.
+//! This file owns the protocol boundary for stdio and streamable-HTTP MCP
+//! sessions, including request framing, JSON-RPC flow, initialization, and
+//! transport-specific origin/header policy. Tool execution stays in handlers
+//! and backends; this layer is only responsible for carrying those operations
+//! over MCP transports.
 
 use crate::agent_core::backend::AgentBackend;
 use crate::agent_core::errors::AgentError;

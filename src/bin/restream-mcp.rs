@@ -1,4 +1,7 @@
-//! Standalone MCP binary scaffold for `restream`.
+//! Standalone MCP server bootstrap for `restream`.
+//! This binary owns CLI/env-driven startup concerns such as transport mode,
+//! compatibility policy, auth wiring, and backend selection before handing
+//! control to the shared MCP transport/runtime layers.
 
 #[cfg(feature = "mcp-server")]
 use std::sync::Arc;

@@ -1,30 +1,6 @@
-/// Correctness proofs for the seal-and-forward ring migration mechanism.
-///
-/// Properties verified here:
-///
-/// P1 – No packet loss: every packet pushed before seal is delivered; every
-///      packet pushed to the new ring after migration is delivered.
-///
-/// P2 – No duplication: read_idx never regresses; each packet is delivered
-///      at most once.
-///
-/// P3 – Write-index continuity: new_ring.write_idx >= reader.read_idx after
-///      migration, so the reader is never "ahead of" the writer.
-///
-/// P4 – Concurrent wake safety: if seal fires between notify.notified()
-///      subscription and .await, the reader wakes without a forever-sleep.
-///
-/// P5 – Chain migration: old → new1 → new2 works transparently with no
-///      reader intervention.
-///
-/// P6 – Sealed-ring isolation: sealing ring A does not disturb readers on
-///      ring B.
-///
-/// P7 – Overflow resilience: migration during an overflow event fast-forwards
-///      the reader correctly on the new ring.
-///
-/// The property-based tests (proptest) vary packet counts, capacity sizes, and
-/// reader lag at seal time to exercise the full reachable state space.
+//! Property-style correctness tests for ring migration.
+//! This file owns the behavioral proof that `seal_and_forward` preserves
+//! packet delivery, ordering, and wake semantics across reader migration.
 use bytes::Bytes;
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
