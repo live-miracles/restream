@@ -32,7 +32,9 @@ use tracing::{error, warn};
 
 use crate::alerts;
 use crate::api_view_models;
-use crate::application::ingest::{ResolveFileIngestError, resolve_file_ingest_context};
+use crate::application::ingest::{
+    ResolveFileIngestError, load_pipeline_file_ingest_state, resolve_file_ingest_context,
+};
 use crate::application::ingest_security::save_ingest_security_config;
 use crate::application::ports::{
     IngestLookup, PipelineStore, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
@@ -908,22 +910,18 @@ async fn config_get_handler(
     let mut pipelines = Vec::with_capacity(raw_pipelines.len());
     let ingest_lookup = SqliteIngestLookup::new(state.db.clone());
     for pipeline in &raw_pipelines {
-        let ingest = ingest_lookup
-            .get_ingest_by_stream_key(&pipeline.stream_key)
-            .await
-            .ok()
-            .flatten();
-        let running = match ingest.as_ref() {
-            Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
-            None => false,
-        };
+        let file_ingest =
+            match load_pipeline_file_ingest_state(&ingest_lookup, &state.engine, pipeline).await {
+                Ok(file_ingest) => file_ingest,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
         pipelines.push(api_view_models::pipeline_response_json_with_file_ingest(
             pipeline,
             effective_ingest_host,
             state.ports.rtmp,
             state.ports.srt,
-            ingest,
-            running,
+            file_ingest.ingest,
+            file_ingest.running,
         ));
     }
 
@@ -2349,19 +2347,22 @@ async fn pipeline_file_ingest_get_handler(
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
-    let ingest = match SqliteIngestLookup::new(state.db.clone())
-        .get_ingest_by_stream_key(&pipeline.stream_key)
-        .await
+    let file_ingest = match load_pipeline_file_ingest_state(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &state.engine,
+        &pipeline,
+    )
+    .await
     {
-        Ok(ingest) => ingest,
+        Ok(file_ingest) => file_ingest,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let running = match ingest.as_ref() {
-        Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
-        None => false,
-    };
 
-    Json(api_view_models::file_ingest_response(ingest, running)).into_response()
+    Json(api_view_models::file_ingest_response(
+        file_ingest.ingest,
+        file_ingest.running,
+    ))
+    .into_response()
 }
 
 async fn pipeline_file_ingest_put_handler(
@@ -4123,11 +4124,14 @@ async fn build_file_diagnostics_context(
         .await
         .ok()
         .flatten()?;
-    let ingest = SqliteIngestLookup::new(state.db.clone())
-        .get_ingest_by_stream_key(&pipeline.stream_key)
-        .await
-        .ok()
-        .flatten()?;
+    let ingest = load_pipeline_file_ingest_state(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &state.engine,
+        &pipeline,
+    )
+    .await
+    .ok()?
+    .ingest?;
     let path = expected_media_path(&state.media_dir, &ingest.filename);
     let metadata = std::fs::metadata(&path).ok();
     let file_exists = metadata.is_some();

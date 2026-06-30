@@ -4,6 +4,7 @@
 use crate::application::ports::{
     IngestLookup, IngestLookupError, PipelineStore, PipelineStoreError,
 };
+use crate::media::engine::MediaEngine;
 use crate::media::security::IngestSecurityService;
 use crate::types::{Ingest, Pipeline};
 
@@ -17,6 +18,12 @@ pub enum IngestAuthError {
 pub struct FileIngestContext {
     pub ingest: Ingest,
     pub pipeline: Pipeline,
+}
+
+#[derive(Debug)]
+pub struct PipelineFileIngestState {
+    pub ingest: Option<Ingest>,
+    pub running: bool,
 }
 
 #[derive(Debug)]
@@ -48,6 +55,22 @@ pub async fn resolve_file_ingest_context(
         })?;
 
     Ok(Some(FileIngestContext { ingest, pipeline }))
+}
+
+pub async fn load_pipeline_file_ingest_state(
+    ingest_lookup: &dyn IngestLookup,
+    engine: &MediaEngine,
+    pipeline: &Pipeline,
+) -> Result<PipelineFileIngestState, IngestLookupError> {
+    let ingest = ingest_lookup
+        .get_ingest_by_stream_key(&pipeline.stream_key)
+        .await?;
+    let running = match ingest.as_ref() {
+        Some(ingest) => engine.is_file_ingest_running(&ingest.id).await,
+        None => false,
+    };
+
+    Ok(PipelineFileIngestState { ingest, running })
 }
 
 pub async fn authenticate_publish_stream_key(
@@ -336,5 +359,32 @@ mod tests {
 
         assert_eq!(result.ingest.id, "ingest-1");
         assert_eq!(result.pipeline.id, "pipeline-1");
+    }
+
+    #[tokio::test]
+    async fn load_pipeline_file_ingest_state_returns_latest_ingest_and_running_flag() {
+        let ingest = FakeIngestLookup::ingest("ingest-1", "stream-key");
+        let lookup = FakeIngestLookup {
+            by_id: HashMap::new(),
+            by_stream_key: HashMap::from([("stream-key".to_string(), vec![ingest.clone()])]),
+            error: None,
+        };
+        let engine = MediaEngine::new();
+        engine.mark_file_ingest_running(&ingest.id).await;
+        let pipeline = Pipeline {
+            id: "pipeline-1".to_string(),
+            name: "Pipeline".to_string(),
+            stream_key: "stream-key".to_string(),
+            input_source: None,
+            encoding: None,
+            srt_ingest_policy: None,
+        };
+
+        let state = load_pipeline_file_ingest_state(&lookup, &engine, &pipeline)
+            .await
+            .unwrap();
+
+        assert_eq!(state.ingest.unwrap().id, "ingest-1");
+        assert!(state.running);
     }
 }
