@@ -4853,6 +4853,29 @@ async fn probe_dims_ramp(url: &str) -> Result<String, String> {
     probe_dims_ramp_with_cookie(url, None).await
 }
 
+#[derive(Clone, Debug)]
+struct HlsPlaylistSnapshot {
+    media_sequence: Option<u64>,
+    last_segment: Option<String>,
+}
+
+fn parse_hls_playlist_snapshot(body: &str) -> HlsPlaylistSnapshot {
+    let media_sequence = body
+        .lines()
+        .find_map(|line| line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:"))
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let last_segment = body
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .map(|line| line.trim().to_string());
+
+    HlsPlaylistSnapshot {
+        media_sequence,
+        last_segment,
+    }
+}
+
 async fn probe_dims_ramp_with_cookie(url: &str, cookie: Option<&str>) -> Result<String, String> {
     let mut command = Command::new("ffprobe");
     command.args([
@@ -9030,6 +9053,37 @@ async fn run_file_live_edge_case(
     let hls_preview =
         wait_for_api_hls_preview_state(api, &pipeline_id, true, Duration::from_secs(10)).await?;
     let hls_probe = probe_dims_ramp_with_cookie(&playlist_url, api.cookie.as_deref()).await;
+    let hls_progress_wait_secs = 5.0;
+    let hls_playlist_progress = {
+        let (_, playlist_before) = api
+            .get_text_response(&format!("/hls/{pipeline_id}/index.m3u8"))
+            .await?;
+        let before = parse_hls_playlist_snapshot(&playlist_before);
+        tokio::time::sleep(Duration::from_secs_f64(hls_progress_wait_secs)).await;
+        let (_, playlist_after) = api
+            .get_text_response(&format!("/hls/{pipeline_id}/index.m3u8"))
+            .await?;
+        let after = parse_hls_playlist_snapshot(&playlist_after);
+        let segment_changed = before.last_segment != after.last_segment;
+        let media_sequence_delta = match (before.media_sequence, after.media_sequence) {
+            (Some(before), Some(after)) => Some(after.saturating_sub(before)),
+            _ => None,
+        };
+        json!({
+            "passed": segment_changed,
+            "waitSecs": hls_progress_wait_secs,
+            "before": {
+                "mediaSequence": before.media_sequence,
+                "lastSegment": before.last_segment,
+            },
+            "after": {
+                "mediaSequence": after.media_sequence,
+                "lastSegment": after.last_segment,
+            },
+            "segmentChanged": segment_changed,
+            "mediaSequenceDelta": media_sequence_delta,
+        })
+    };
 
     let before_files = media_dir_entries(media_dir)?;
     api.post_json(
@@ -9072,7 +9126,9 @@ async fn run_file_live_edge_case(
     })?;
     let duration_delta_secs = absolute_delta_secs(recorded_duration_secs, capture_elapsed_secs);
     let duration_ok = duration_delta_secs <= FILE_LIVE_EDGE_MAX_DURATION_DRIFT_SECS;
-    let hls_ok = playlist_body.contains("#EXTM3U") && hls_probe.is_ok();
+    let hls_ok = playlist_body.contains("#EXTM3U")
+        && hls_probe.is_ok()
+        && hls_playlist_progress["passed"] == true;
     let live_optimized_gop_ok = if live_optimized {
         recorded_analysis
             .max_keyframe_interval_sec
@@ -9099,6 +9155,7 @@ async fn run_file_live_edge_case(
             Ok(dimensions) => json!({"passed": true, "dimensions": dimensions}),
             Err(error) => json!({"passed": false, "error": error}),
         },
+        "hlsPlaylistProgress": hls_playlist_progress,
         "liveOptimizedGopOk": live_optimized_gop_ok,
         "sourceRetained": source_retained,
         "recordingFile": recording_mp4,
