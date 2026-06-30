@@ -447,4 +447,19 @@ await runCheck("renderDashboardModes skips overview work when pipeline mode is a
   assert.equal(overview.stats.innerHTMLWrites, 0);
 });
 
+await runCheck("initDashboardApp bootstraps dashboard wiring once", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline";
+  appendRoot(document, "div", "dashboard-grid");
+
+  const app = await loadCompiledFrontendModule("app/dashboard-app.js");
+
+  app.initDashboardApp();
+  const firstSetDashboardMode = window.setDashboardMode;
+  app.initDashboardApp();
+
+  assert.equal(typeof firstSetDashboardMode, "function");
+  assert.equal(window.setDashboardMode, firstSetDashboardMode);
+});
+
 process.exit(0);

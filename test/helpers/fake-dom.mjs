@@ -361,6 +361,8 @@ export function installFakeDom() {
     localStorage: makeStorage(),
     sessionStorage: makeStorage(),
     addPipeBtn() {},
+    addEventListener() {},
+    removeEventListener() {},
   };
 
   Object.defineProperty(globalThis, "document", {
