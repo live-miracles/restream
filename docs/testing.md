@@ -24,6 +24,22 @@ Keep successful logs quiet. New tests should not land with compiler warnings,
 panic text, FFmpeg probe chatter, or similar “expected noise” in passing runs;
 fix or suppress that output at the helper level instead.
 
+## Frontend Test Split
+
+Frontend confidence is intentionally split between TypeScript ownership and
+compiled-bundle smoke coverage:
+
+- `npm run test:frontend` runs the Node-based frontend suites from a temporary
+  sourcemapped build of `public/ts/**`, then finishes with a smaller smoke pass
+  against the shipped `public/js/**` bundle.
+- `npm run test:frontend:coverage` keeps the same split, but reports coverage
+  back onto `public/ts/**` so the numbers point at the code we actually edit.
+- `npm run test:frontend:js-smoke` is the minimal direct guard for generated
+  `public/js/**`; use it when you only need to verify the compiled artifact.
+
+This keeps detailed behavior and coverage attached to the TypeScript source of
+truth without dropping confidence in the emitted browser bundle.
+
 As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
 integration, harness, and doctest targets.
 

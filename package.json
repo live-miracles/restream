@@ -5,8 +5,9 @@
     "build:css": "npx tailwindcss -i public/input.css -o public/output.css",
     "check:api-contract": "./scripts/check-api-contract.sh",
     "format:check": "npx tsc -p tsconfig.json --noEmit",
-    "test:frontend": "npm run build:frontend && FRONTEND_JS_DIR=public/js node --test test/frontend-api-contract.test.mjs test/history-nearby-render.test.mjs test/overview-activity-render.test.mjs test/frontend-chaos-scenarios.test.mjs test/frontend-dom-render.test.mjs",
-    "test:frontend:coverage": "npm run build:frontend && TMPDIR=/tmp FRONTEND_JS_DIR=public/js node --experimental-test-coverage --test --test-coverage-include='public/js/**' test/frontend-api-contract.test.mjs test/history-nearby-render.test.mjs test/overview-activity-render.test.mjs test/frontend-chaos-scenarios.test.mjs test/frontend-dom-render.test.mjs",
+    "test:frontend": "./scripts/run-frontend-node-tests.sh && npm run test:frontend:js-smoke",
+    "test:frontend:coverage": "./scripts/run-frontend-node-tests.sh --coverage && npm run test:frontend:js-smoke",
+    "test:frontend:js-smoke": "npm run build:frontend && FRONTEND_MODULES_DIR=public/js node --test test/frontend-api-contract.test.mjs test/frontend-build-smoke.test.mjs",
     "bench:frontend-dom": "npm run build:frontend && FRONTEND_JS_DIR=public/js node test/frontend-dom-render-bench.mjs",
     "test:e2e": "npx playwright test"
   },

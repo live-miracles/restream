@@ -106,6 +106,7 @@ Only needed when editing `public/ts/` or `public/input.css`:
 
 ```sh
 npm run build:frontend
+npm run test:frontend
 ```
 
 Edit `public/ts/`, not generated files in `public/js/`. The build now re-syncs
@@ -113,6 +114,9 @@ the browser HLS runtime from the `hls.js` npm dependency automatically.
 Frontend orchestration entrypoints live in `public/ts/app/`, shared transport
 and state helpers in `public/ts/core/`, bounded UI modules in
 `public/ts/features/`, and history-specific UI in `public/ts/history/`.
+The Node-based frontend suite now uses a temporary sourcemapped test build so
+coverage reports point at `public/ts/**`, while `npm run test:frontend:js-smoke`
+keeps a smaller direct check against the shipped `public/js/**` bundle.
 
 ## Testing
 

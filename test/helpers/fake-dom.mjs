@@ -1,6 +1,4 @@
-import assert from "node:assert/strict";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { loadFrontendModule } from "./frontend-module-loader.mjs";
 
 class FakeClassList {
   constructor(owner) {
@@ -403,8 +401,5 @@ export function installFakeDom() {
 }
 
 export async function loadCompiledFrontendModule(relativePath) {
-  const jsDir = process.env.FRONTEND_JS_DIR || process.env.API_CONTRACT_JS_DIR;
-  assert.ok(jsDir, "FRONTEND_JS_DIR or API_CONTRACT_JS_DIR must be set");
-  const moduleUrl = pathToFileURL(path.join(jsDir, relativePath)).href;
-  return import(moduleUrl);
+  return loadFrontendModule(relativePath);
 }

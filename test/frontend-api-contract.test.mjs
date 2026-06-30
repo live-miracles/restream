@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+
+import { loadFrontendModule } from "./helpers/frontend-module-loader.mjs";
 
 function makeStorage() {
   const data = new Map();
@@ -94,10 +94,7 @@ function installBrowserStubs() {
 
 async function loadCompiledModule(relativePath) {
   installBrowserStubs();
-  const jsDir = process.env.FRONTEND_JS_DIR || process.env.API_CONTRACT_JS_DIR;
-  assert.ok(jsDir, "FRONTEND_JS_DIR or API_CONTRACT_JS_DIR must be set");
-  const moduleUrl = pathToFileURL(path.join(jsDir, relativePath)).href;
-  return import(`${moduleUrl}?t=${Date.now()}`);
+  return loadFrontendModule(relativePath);
 }
 
 async function loadApiModule() {
