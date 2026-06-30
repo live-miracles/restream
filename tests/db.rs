@@ -1,6 +1,6 @@
 use restream::{
     db,
-    types::{AppLogEntry, AppLogFilters},
+    logging::types::{AppLogEntry, AppLogFilters},
 };
 
 async fn test_pool() -> sqlx::SqlitePool {

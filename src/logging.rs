@@ -8,6 +8,8 @@
 //! Call `init()` once at the top of `run_app()`, before any tasks are spawned.
 //! Hold the returned `LoggingHandles` for the process lifetime.
 
+pub mod types;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +26,7 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Layer};
 
-use crate::types::AppLogEntry;
+pub use self::types::{AppLogEntry, AppLogFilters, AppLogRow};
 
 static CORRELATION_SEQ: AtomicU64 = AtomicU64::new(1);
 

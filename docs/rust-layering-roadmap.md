@@ -32,6 +32,78 @@ Two low-risk extractions already landed:
 
 These are useful because they move "what this means" out of "how this runs."
 
+Two more narrow seams have now landed:
+
+3. SRT ingest config and validation live in `domain`.
+   - `618295c` `Move SRT ingest schema into domain`
+4. Ingest security policy config lives in `domain`.
+   - `670a41f` `Move ingest security config into domain`
+
+## Layering Ladder
+
+When deciding whether to use a file, module, trait, or crate, prefer the
+lightest boundary that prevents the wrong coupling.
+
+### 1. File split
+
+Use when the problem is readability or merge pressure, not ownership.
+
+Good target here:
+
+- split `api.rs` by route family
+
+### 2. Module
+
+Use when one concept should own its types, parsing, validation, and helpers,
+but still live in the same crate and dependency graph.
+
+Good examples in this repo:
+
+- `domain::audio_routing`
+- `domain::transcode_profile`
+- `domain::srt_ingest`
+- `domain::ingest_security`
+
+### 3. Visibility boundary
+
+Use `pub`, `pub(crate)`, and `pub(super)` to turn modules into real seams.
+
+Rule of thumb:
+
+- `domain` should expose stable typed meaning
+- runtime helpers inside `media` should stay narrow
+- `api` should depend on edge-facing models, not internal helper state
+
+### 4. Newtypes and enums
+
+Use them when stringly-typed coupling is the problem.
+
+Good examples:
+
+- stage vocabulary in `domain::stage`
+- resolved ingest/security policy enums in `domain`
+
+### 5. Traits
+
+Use traits when one layer should depend on a capability instead of a concrete
+implementation.
+
+Best next use in this repo:
+
+- make RTMP/SRT ingest depend on a lookup port instead of raw DB access
+
+### 6. Crate
+
+Use a crate only after the module boundary is already stable.
+
+Signals that a crate split is justified:
+
+- the API can be described in one sentence
+- it should not depend on `axum`, `sqlx`, or FFmpeg bindings
+- compile-time or dependency isolation is actually valuable
+
+That makes crates the last step, not the first.
+
 ## Refactor Order
 
 ### 1. Finish Domain Schema Extraction
@@ -49,6 +121,12 @@ Target outcome:
 - `domain` owns typed config and validation
 - `media` and `api` consume those types
 - `types.rs` shrinks toward DB/API DTOs instead of being a catch-all
+
+Progress so far:
+
+- done: SRT ingest configuration types and validation
+- done: ingest security configuration
+- next: log DTO ownership and any remaining output/stage resolution request types
 
 ### 2. Add an Application Layer
 
@@ -216,7 +294,7 @@ When choosing the next refactor in an active worktree:
 
 Best next low-risk code steps:
 
-1. Move SRT ingest config types/validation into `domain`.
+1. Move logging DTOs out of `types.rs` and into `logging`.
 2. Introduce `application::output_path` and remove duplicated output-path
    resolution logic from `lib.rs`.
 3. Start converting engine JSON emitters into typed snapshots plus edge

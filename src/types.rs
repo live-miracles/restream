@@ -6,6 +6,7 @@ pub use crate::domain::srt_ingest::{
     DEFAULT_SRT_PBKEYLEN, ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtGlobalIngestMode,
     SrtPipelineIngestConfig, SrtPipelineIngestMode,
 };
+pub use crate::logging::types::{AppLogEntry, AppLogFilters, AppLogRow};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -56,50 +57,4 @@ pub struct Job {
     pub ended_at: Option<String>,
     pub exit_code: Option<i64>,
     pub exit_signal: Option<String>,
-}
-
-/// Full row returned by /api/v1/logs.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[serde(rename_all = "camelCase")]
-pub struct AppLogRow {
-    pub id: i64,
-    pub ts: String,
-    pub level: String,
-    pub target: String,
-    pub message: String,
-    pub fields: Option<String>,
-    pub pipeline_id: Option<String>,
-    pub output_id: Option<String>,
-    pub event_type: Option<String>,
-}
-
-/// Entry written by the DbLayer drain task.
-#[derive(Debug, Clone)]
-pub struct AppLogEntry {
-    pub ts: String,
-    pub level: String,
-    pub target: String,
-    pub message: String,
-    pub fields: Option<String>,
-    pub pipeline_id: Option<String>,
-    pub output_id: Option<String>,
-    pub event_type: Option<String>,
-    pub event_class: Option<String>,
-}
-
-/// Filters for the /api/v1/logs endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppLogFilters {
-    pub level: Option<String>,
-    pub since: Option<String>,
-    pub until: Option<String>,
-    pub target: Option<String>,
-    pub scope: Option<String>,
-    pub pipeline_id: Option<String>,
-    pub output_id: Option<String>,
-    pub event_class: Option<String>,
-    pub prefix: Option<String>,
-    pub limit: Option<i64>,
-    pub order: Option<String>,
 }

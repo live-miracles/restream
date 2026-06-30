@@ -553,7 +553,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
 /// Batch-insert log entries. Called by the DbLayer drain task every 100 ms.
 pub async fn append_app_log_batch(
     pool: &SqlitePool,
-    entries: &[crate::types::AppLogEntry],
+    entries: &[crate::logging::types::AppLogEntry],
 ) -> Result<(), sqlx::Error> {
     if entries.is_empty() {
         return Ok(());
@@ -584,8 +584,8 @@ pub async fn append_app_log_batch(
 /// event_class, prefix (message LIKE), time range, limit, order.
 pub async fn list_app_logs(
     pool: &SqlitePool,
-    filters: &crate::types::AppLogFilters,
-) -> Result<Vec<crate::types::AppLogRow>, sqlx::Error> {
+    filters: &crate::logging::types::AppLogFilters,
+) -> Result<Vec<crate::logging::types::AppLogRow>, sqlx::Error> {
     let mut clauses: Vec<String> = vec![];
 
     let levels: &[&str] = match filters.level.as_deref().unwrap_or("info") {
@@ -660,7 +660,7 @@ pub async fn list_app_logs(
         where_clause, order, order, limit
     );
 
-    let mut q = sqlx::query_as::<_, crate::types::AppLogRow>(AssertSqlSafe(sql));
+    let mut q = sqlx::query_as::<_, crate::logging::types::AppLogRow>(AssertSqlSafe(sql));
     for l in levels {
         q = q.bind(l);
     }
