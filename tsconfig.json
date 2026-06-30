@@ -13,5 +13,5 @@
     "sourceMap": false,
     "removeComments": true
   },
-  "include": ["public/ts/**/*.ts"]
+  "include": ["public/ts/**/*.ts", "public/ts/**/*.d.ts"]
 }

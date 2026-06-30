@@ -94,8 +94,8 @@ function installBrowserStubs() {
 
 async function loadCompiledModule(relativePath) {
   installBrowserStubs();
-  const jsDir = process.env.API_CONTRACT_JS_DIR;
-  assert.ok(jsDir, "API_CONTRACT_JS_DIR must be set");
+  const jsDir = process.env.FRONTEND_JS_DIR || process.env.API_CONTRACT_JS_DIR;
+  assert.ok(jsDir, "FRONTEND_JS_DIR or API_CONTRACT_JS_DIR must be set");
   const moduleUrl = pathToFileURL(path.join(jsDir, relativePath)).href;
   return import(`${moduleUrl}?t=${Date.now()}`);
 }

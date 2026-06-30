@@ -17,6 +17,12 @@ import { renderHealthBanner, renderServerMetrics } from "./metrics.js";
 import { state } from "../core/state.js";
 import type { PipelineView } from "../types.js";
 
+function setHtmlIfChanged(target: HTMLElement | null, html: string): boolean {
+  if (!target || target.innerHTML === html) return false;
+  target.innerHTML = html;
+  return true;
+}
+
 function formatBitrate(kbps: number | null | undefined): string {
   if (!Number.isFinite(kbps as number) || (kbps as number) < 0) return "--";
   const value = kbps as number;
@@ -29,16 +35,31 @@ function renderPipelinesList(selectedPipe: string | null): void {
   const sortedPipelines = [...state.pipelines].sort((a, b) =>
     a.name.localeCompare(b.name),
   );
-  const pipelinesList = document.getElementById("pipelines");
+  const pipelinesList = document.getElementById(
+    "pipelines",
+  ) as HTMLElement | null;
   if (!pipelinesList) return;
 
+  if (pipelinesList.dataset.boundSelectPipeline !== "1") {
+    pipelinesList.dataset.boundSelectPipeline = "1";
+    pipelinesList.onclick = (e: MouseEvent) => {
+      const row = (e.target as Element).closest(
+        ".js-select-pipeline",
+      ) as HTMLElement | null;
+      if (!row?.dataset.pipelineId) return;
+      selectPipeline(row.dataset.pipelineId);
+    };
+  }
+
   if (sortedPipelines.length === 0) {
-    pipelinesList.innerHTML =
-      '<li><div class="text-base-content/60 px-2 py-3 text-sm">No pipelines configured.</div></li>';
+    setHtmlIfChanged(
+      pipelinesList,
+      '<li><div class="text-base-content/60 px-2 py-3 text-sm">No pipelines configured.</div></li>',
+    );
     return;
   }
 
-  pipelinesList.innerHTML = sortedPipelines
+  const nextHtml = sortedPipelines
     .map((p: PipelineView) => {
       let outStatus = "off";
       if (p.outs.some((o) => isOutputUnexpectedlyDown(o))) outStatus = "error";
@@ -75,18 +96,12 @@ function renderPipelinesList(selectedPipe: string | null): void {
             </li>`;
     })
     .join("");
-
-  pipelinesList.onclick = (e: MouseEvent) => {
-    const row = (e.target as Element).closest(
-      ".js-select-pipeline",
-    ) as HTMLElement | null;
-    if (!row?.dataset.pipelineId) return;
-    selectPipeline(row.dataset.pipelineId);
-  };
+  // Skip full list replacement when the 5s poll produced identical markup.
+  setHtmlIfChanged(pipelinesList, nextHtml);
 }
 
 function renderStatsColumn(selectedPipe: string | null): void {
-  const statsCol = document.getElementById("stats-col");
+  const statsCol = document.getElementById("stats-col") as HTMLElement | null;
   if (selectedPipe) {
     statsCol?.classList.add("hidden");
     return;
@@ -95,15 +110,17 @@ function renderStatsColumn(selectedPipe: string | null): void {
   }
 
   if (statsCol) {
-    statsCol.innerHTML = `<section class="flex min-h-[22rem] items-center justify-center">
+    const nextHtml = `<section class="flex min-h-[22rem] items-center justify-center">
             <div class="max-w-md text-center">
                 <h2 class="text-lg font-semibold">${state.pipelines.length ? "No pipeline selected" : "No pipelines configured"}</h2>
                 <p class="text-base-content/60 mt-2 text-sm">${state.pipelines.length ? "Pipeline details, ingest preview, outputs, and controls appear here." : "Create a pipeline to start configuring ingest and outputs."}</p>
                 <button type="button" class="btn btn-sm btn-accent btn-outline mt-4" id="pipeline-empty-add-btn">Add Pipeline</button>
             </div>
         </section>`;
-    const addBtn = document.getElementById("pipeline-empty-add-btn");
-    if (addBtn) addBtn.onclick = () => void window.addPipeBtn();
+    if (setHtmlIfChanged(statsCol, nextHtml)) {
+      const addBtn = document.getElementById("pipeline-empty-add-btn");
+      if (addBtn) addBtn.onclick = () => void window.addPipeBtn();
+    }
   }
   return;
 }

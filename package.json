@@ -5,6 +5,8 @@
     "build:css": "npx tailwindcss -i public/input.css -o public/output.css",
     "check:api-contract": "./scripts/check-api-contract.sh",
     "format:check": "npx tsc -p tsconfig.json --noEmit",
+    "test:frontend": "npm run build:frontend && FRONTEND_JS_DIR=public/js node --test test/frontend-api-contract.test.mjs && FRONTEND_JS_DIR=public/js node test/frontend-dom-render.test.mjs",
+    "bench:frontend-dom": "npm run build:frontend && FRONTEND_JS_DIR=public/js node test/frontend-dom-render-bench.mjs",
     "test:e2e": "npx playwright test"
   },
   "devDependencies": {

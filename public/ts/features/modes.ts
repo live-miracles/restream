@@ -1046,9 +1046,10 @@ export function openInspectGraph(pipeId: string): void {
 }
 
 export function renderDashboardModes(): void {
-  renderOverview();
-  renderInspect();
-  applyMode(normalizeMode(getUrlParam("mode")));
+  const activeMode = normalizeMode(getUrlParam("mode"));
+  if (activeMode === "overview") renderOverview();
+  if (activeMode === "inspect") renderInspect();
+  applyMode(activeMode);
 }
 
 export function initDashboardModes(): void {

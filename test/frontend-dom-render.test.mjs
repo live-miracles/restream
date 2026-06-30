@@ -1,0 +1,342 @@
+import assert from "node:assert/strict";
+
+import {
+  FakeElement,
+  installFakeDom,
+  loadCompiledFrontendModule,
+} from "./helpers/fake-dom.mjs";
+
+function makeOutput(overrides = {}) {
+  return {
+    id: "out-1",
+    pipe: "pipe-1",
+    name: "Primary Output",
+    desiredState: "started",
+    encoding: "source",
+    url: "rtmp://example.com/live/secret",
+    monitoringUrl: "https://example.com/monitor/out-1",
+    status: "running",
+    rawStatus: "running",
+    phase: "sending",
+    failurePhase: null,
+    lastError: null,
+    lastErrorAt: null,
+    lastProgressAt: null,
+    lastProgressAgeMs: null,
+    retrying: false,
+    retryAttempts: null,
+    retryBackoffMs: null,
+    nextRetryAt: null,
+    retryRemainingMs: null,
+    time: 15_000,
+    job: null,
+    totalSize: 2 * 1024 * 1024,
+    bitrateKbps: 1500,
+    ...overrides,
+  };
+}
+
+function makePipeline(overrides = {}) {
+  return {
+    id: "pipe-1",
+    name: "Pipeline 1",
+    key: "stream-key",
+    inputSource: null,
+    ingestUrls: { rtmp: null, srt: null },
+    input: {
+      status: "on",
+      time: 30_000,
+      probeReady: true,
+      probeStatus: "ready",
+      probePendingMs: null,
+      video: null,
+      audio: null,
+      audioTracks: [],
+      bytesReceived: 0,
+      bytesSent: 0,
+      readers: 0,
+      bitrateKbps: 3200,
+      publisher: null,
+      unexpectedReadersCount: 0,
+      lastSessionProtocol: null,
+      lastDisconnectAt: null,
+      lastDisconnectAgeMs: null,
+      lastDisconnectReason: null,
+      lastFailurePhase: null,
+      recentDisconnectError: false,
+      lastRemoteAddr: null,
+      lastSessionBytesReceived: null,
+    },
+    outs: [makeOutput()],
+    stats: {
+      inputBitrateKbps: 3200,
+      outputBitrateKbps: 1500,
+      readerCount: 0,
+      outputCount: 1,
+      readerMismatch: false,
+      unexpectedReadersCount: 0,
+    },
+    recording: { enabled: false, active: false },
+    hlsPreview: {
+      active: false,
+      persistentConsumers: 0,
+      lastAccessAgeMs: null,
+      segments: 0,
+      playlistBytes: 0,
+    },
+    ...overrides,
+  };
+}
+
+function appendRoot(document, tagName, id) {
+  const element = document.createElement(tagName);
+  element.id = id;
+  document.body.appendChild(element);
+  return element;
+}
+
+async function runCheck(name, fn) {
+  try {
+    await fn();
+    console.log(`ok - ${name}`);
+  } catch (error) {
+    console.error(`not ok - ${name}`);
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+await runCheck("renderPipelinesList skips identical sidebar rewrites", async () => {
+  const { document } = installFakeDom();
+  const pipelinesList = appendRoot(document, "ul", "pipelines");
+
+  const render = await loadCompiledFrontendModule("features/render.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [makePipeline()];
+
+  render.renderPipelinesList(null);
+  const firstWriteCount = pipelinesList.stats.innerHTMLWrites;
+  const firstHandler = pipelinesList.onclick;
+
+  render.renderPipelinesList(null);
+
+  assert.equal(pipelinesList.stats.innerHTMLWrites, firstWriteCount);
+  assert.equal(pipelinesList.onclick, firstHandler);
+});
+
+await runCheck("renderStatsColumn skips identical empty-state rewrites", async () => {
+  const { document, window } = installFakeDom();
+  const statsCol = appendRoot(document, "div", "stats-col");
+  window.addPipeBtn = () => {};
+
+  const render = await loadCompiledFrontendModule("features/render.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [];
+
+  render.renderStatsColumn(null);
+  const firstWriteCount = statsCol.stats.innerHTMLWrites;
+
+  render.renderStatsColumn(null);
+
+  assert.equal(statsCol.stats.innerHTMLWrites, firstWriteCount);
+});
+
+await runCheck("renderOutsColumn reuses cards and patches live telemetry fields", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "outs-col");
+  const outputsList = appendRoot(document, "div", "outputs-list");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  const pipeline = makePipeline({
+    outs: [
+      makeOutput(),
+      makeOutput({
+        id: "out-2",
+        name: "Backup Output",
+        url: "rtmp://example.com/live/backup",
+        monitoringUrl: null,
+        bitrateKbps: 600,
+      }),
+    ],
+  });
+  state.pipelines = [pipeline];
+
+  pipelineView.setPipelineViewDependencies({
+    isOutputToggleBusy: () => false,
+  });
+  pipelineView.renderOutsColumn("pipe-1");
+
+  assert.equal(outputsList.children.length, 2);
+  const firstCard = outputsList.children[0];
+  const metrics = firstCard.querySelector('[data-role="output-metrics"]');
+  const toggleButton = firstCard.querySelector('[data-role="toggle-output"]');
+  const error = firstCard.querySelector('[data-role="output-error"]');
+  const url = firstCard.querySelector('[data-role="output-url"]');
+
+  assert.ok(firstCard instanceof FakeElement);
+  assert.ok(metrics instanceof FakeElement);
+  assert.ok(toggleButton instanceof FakeElement);
+  assert.ok(error instanceof FakeElement);
+  assert.ok(url instanceof FakeElement);
+  assert.match(metrics.innerHTML, /1\.5 Mb\/s/);
+  assert.equal(url.title, "rtmp://example.com/live/secret");
+
+  pipeline.outs[0].time = 25_000;
+  pipeline.outs[0].bitrateKbps = 2750;
+  pipeline.outs[0].lastError = "connection reset";
+  pipeline.outs[0].status = "running";
+
+  pipelineView.renderOutsColumn("pipe-1");
+
+  assert.equal(outputsList.children[0], firstCard);
+  assert.match(metrics.innerHTML, /2\.8 Mb\/s/);
+  assert.equal(error.textContent, "connection reset");
+  assert.equal(error.classList.contains("hidden"), false);
+  assert.equal(toggleButton.textContent, "Stop");
+});
+
+await runCheck("renderOutsColumn preserves keyed cards across reorder and removes stale cards", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "outs-col");
+  const outputsList = appendRoot(document, "div", "outputs-list");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  const first = makeOutput({ id: "out-1", name: "First" });
+  const second = makeOutput({ id: "out-2", name: "Second", url: "rtmp://example.com/live/second" });
+  const third = makeOutput({ id: "out-3", name: "Third", url: "rtmp://example.com/live/third" });
+  state.pipelines = [makePipeline({ outs: [first, second, third] })];
+
+  pipelineView.setPipelineViewDependencies({
+    isOutputToggleBusy: () => false,
+  });
+  pipelineView.renderOutsColumn("pipe-1");
+
+  const initialCards = Array.from(outputsList.children);
+  const secondCard = initialCards[1];
+
+  state.pipelines[0].outs = [third, second];
+  pipelineView.renderOutsColumn("pipe-1");
+
+  assert.equal(outputsList.children.length, 2);
+  assert.equal(outputsList.children[1], secondCard);
+  assert.equal(
+    outputsList.children[0].querySelector('[data-role="output-name"]').textContent,
+    "Third",
+  );
+});
+
+await runCheck("renderOutsColumn delegates actions with stable output ids", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "outs-col");
+  const outputsList = appendRoot(document, "div", "outputs-list");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  const calls = [];
+  state.pipelines = [makePipeline()];
+
+  pipelineView.setPipelineViewDependencies({
+    isOutputToggleBusy: () => false,
+    stopOutBtn: async (pipeId, outId) => {
+      calls.push(["stop", pipeId, outId]);
+    },
+  });
+  pipelineView.renderOutsColumn("pipe-1");
+
+  const toggleButton = outputsList.querySelector('[data-role="toggle-output"]');
+  assert.ok(toggleButton instanceof FakeElement);
+  assert.equal(typeof outputsList.onclick, "function");
+
+  await outputsList.onclick({ target: toggleButton });
+
+  assert.deepEqual(calls, [["stop", "pipe-1", "out-1"]]);
+});
+
+await runCheck("renderPipelineInfoColumn reuses publisher meta badges across refreshes", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "pipe-info-col");
+  appendRoot(document, "div", "pipe-name");
+  const statsShell = appendRoot(document, "div", "stats-shell");
+  const inputStats = document.createElement("div");
+  inputStats.id = "input-stats";
+  statsShell.appendChild(inputStats);
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      input: {
+        ...makePipeline().input,
+        publisher: { protocol: "srt", remoteAddr: "10.0.0.1:5000" },
+      },
+      hlsPreview: {
+        active: true,
+        persistentConsumers: 1,
+        lastAccessAgeMs: 2000,
+        segments: 3,
+        playlistBytes: 256,
+      },
+    }),
+  ];
+
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+  const publisherMeta = document.getElementById("publisher-meta");
+  const qualityBadge = publisherMeta.querySelector('[data-meta-key="quality"]');
+
+  assert.ok(publisherMeta instanceof FakeElement);
+  assert.ok(qualityBadge instanceof FakeElement);
+  assert.equal(publisherMeta.stats.innerHTMLWrites, 0);
+
+  state.pipelines[0].input.time = 35_000;
+  state.pipelines[0].hlsPreview.lastAccessAgeMs = 5_000;
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+
+  assert.equal(publisherMeta.querySelector('[data-meta-key="quality"]'), qualityBadge);
+  assert.equal(publisherMeta.stats.innerHTMLWrites, 0);
+});
+
+await runCheck("metric-format reuses subtle-unit spans across updates", async () => {
+  const { document } = installFakeDom();
+  const metric = appendRoot(document, "div", "metric");
+
+  const metricFormat = await loadCompiledFrontendModule("features/metric-format.js");
+
+  metricFormat.setBitrateWithSubtleUnit("metric", 1500);
+  const firstValueSpan = metric.children[0];
+  const firstUnitSpan = metric.children[1];
+  const firstAppendCount = metric.stats.appendChildCalls;
+
+  metricFormat.setBitrateWithSubtleUnit("metric", 2750);
+
+  assert.equal(metric.children[0], firstValueSpan);
+  assert.equal(metric.children[1], firstUnitSpan);
+  assert.equal(metric.stats.appendChildCalls, firstAppendCount);
+  assert.equal(metric.textContent, "2.8Mb/s");
+});
+
+await runCheck("renderDashboardModes skips overview work when pipeline mode is active", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline";
+  appendRoot(document, "div", "overview-mode-content");
+  appendRoot(document, "div", "dashboard-grid");
+
+  const modes = await loadCompiledFrontendModule("features/modes.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [makePipeline()];
+  modes.renderDashboardModes();
+
+  const overview = document.getElementById("overview-mode-content");
+  assert.ok(overview instanceof FakeElement);
+  assert.equal(overview.stats.innerHTMLWrites, 0);
+});
+
+process.exit(0);

@@ -8,10 +8,7 @@ import {
   sanitizeLogMessage,
   showCopiedNotification,
 } from "../core/utils.js";
-import {
-  setBadgeBitrateWithSubtleUnit,
-  setBitrateWithSubtleUnit,
-} from "./metric-format.js";
+import { setBitrateWithSubtleUnit } from "./metric-format.js";
 import { state } from "../core/state.js";
 import {
   getPublisherQualityAlerts,
@@ -80,6 +77,37 @@ const ingestUiState = {
 const audioLabelEditKeys = new Set<string>();
 const audioLabelDrafts = new Map<string, string>();
 let pendingAudioLabelFocusKey: string | null = null;
+
+interface OutputCardRefs {
+  statusDot: HTMLElement;
+  name: HTMLElement;
+  url: HTMLElement;
+  toggleButton: HTMLButtonElement;
+  metrics: HTMLElement;
+  error: HTMLElement;
+  historyButton: HTMLButtonElement;
+  monitorItem: HTMLElement;
+  monitorButton: HTMLButtonElement;
+  editButton: HTMLButtonElement;
+  deleteButton: HTMLButtonElement;
+}
+
+interface OutputMetricSpec {
+  key: string;
+  label: string;
+  text: string;
+  title: string;
+}
+
+interface PublisherMetaBadgeSpec {
+  key: string;
+  tagName: "span" | "button";
+  className: string;
+  text: string;
+  title: string;
+}
+
+const outputCardRefs = new WeakMap<HTMLElement, OutputCardRefs>();
 
 function editIconSvg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -350,9 +378,10 @@ function renderVideoTrackDetails(
   const hasPid = Number.isFinite(video.pid as number);
   pidStat?.classList.toggle("hidden", !hasPid);
   if (pidValue) {
-    pidValue.textContent = hasPid
-      ? `0x${Number(video.pid).toString(16).toUpperCase()}`
-      : "";
+    setTextIfChanged(
+      pidValue,
+      hasPid ? `0x${Number(video.pid).toString(16).toUpperCase()}` : "",
+    );
   }
 }
 
@@ -615,7 +644,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
 
     const setTextContent = (id: string, value: unknown): void => {
       const el = document.getElementById(id);
-      if (el) el.textContent = String(value ?? "--");
+      if (el) setTextIfChanged(el, String(value ?? "--"));
     };
 
     setTextContent("input-video-codec", formatCodecName(video.codec) || "--");
@@ -661,14 +690,6 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   const qualityAlerts = publisher ? getPublisherQualityAlerts(publisher) : [];
   const isHealthy = qualityAlerts.length === 0;
   const unexpectedCount = pipe.input.unexpectedReadersCount || 0;
-  const healthBadgeClasses = `badge text-sm px-3 ${isHealthy ? "badge-success" : "badge-warning"}`;
-  const healthBadgeLabel = isHealthy ? "Healthy" : "Unhealthy";
-  const healthBadgeTitle = qualityAlerts.length
-    ? qualityAlerts.map((alert) => alert.label).join("\n")
-    : "Open publisher health details";
-  const healthBadge = publisher
-    ? `<button type="button" class="${healthBadgeClasses} cursor-pointer js-quality-btn" title="${healthBadgeTitle}">${healthBadgeLabel}</button>`
-    : "";
   const hlsPreview = pipe.hlsPreview;
   const lastDisconnectTitle = [
     pipe.input.lastSessionProtocol
@@ -686,10 +707,6 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   ]
     .filter(Boolean)
     .join(" ");
-  const disconnectBadge =
-    pipe.input.status === "off" && pipe.input.lastDisconnectAt
-      ? `<span class="badge ${pipe.input.recentDisconnectError ? "badge-warning" : "badge-outline"} text-sm px-3" title="${escapeHtml(lastDisconnectTitle || "Recent ingest disconnect")}">${pipe.input.recentDisconnectError ? "Last failure" : "Last disconnect"}</span>`
-      : "";
   const hlsPreviewTitle = [
     hlsPreview.active
       ? "Browser preview segmenter is active."
@@ -699,222 +716,537 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     `persistentConsumers=${hlsPreview.persistentConsumers}`,
     `lastAccess=${formatShortDurationMs(hlsPreview.lastAccessAgeMs)} ago`,
   ].join(" ");
-  const hlsPreviewBadge =
-    hlsPreview.active ||
-    hlsPreview.segments > 0 ||
-    hlsPreview.persistentConsumers > 0
-      ? `<span class="badge ${hlsPreview.active ? "badge-success" : "badge-outline"} text-sm px-3" title="${escapeHtml(hlsPreviewTitle)}">${hlsPreview.active ? "Preview live" : "Preview idle"}</span>`
-      : "";
-
-  publisherMeta.innerHTML = [
-    pipe.input.time !== null
-      ? `<span class="badge text-sm px-3">${msToHHMMSS(pipe.input.time)}</span>`
-      : "",
-    pipe.input.status === "on" && !pipe.input.probeReady
-      ? `<span class="badge badge-warning text-sm px-3" title="Waiting for stream metadata${pipe.input.probePendingMs ? ` (${(pipe.input.probePendingMs / 1000).toFixed(1)}s)` : ""}">Probing</span>`
-      : "",
-    publisher
-      ? `<span class="badge badge-info text-sm px-3">${normalizePublisherProtocolLabel(publisher.protocol)}</span>`
-      : "",
-    publisher?.remoteAddr
-      ? `<span class="badge badge-outline font-mono text-sm px-3">${publisher.remoteAddr}</span>`
-      : "",
-    healthBadge,
-    disconnectBadge,
-    hlsPreviewBadge,
-    unexpectedCount > 0
-      ? `<span class="badge badge-sm badge-error">${unexpectedCount} unexpected reader${unexpectedCount === 1 ? "" : "s"}</span>`
-      : "",
-  ].join("");
-
-  publisherMeta
-    .querySelector(".js-quality-btn")
-    ?.addEventListener("click", () => {
-      pipelineViewDependencies.openPublisherHealthModal?.(pipe.id);
-    });
+  syncPublisherMeta(
+    publisherMeta as HTMLElement,
+    [
+      pipe.input.time !== null
+        ? {
+            key: "uptime",
+            tagName: "span",
+            className: "badge text-sm px-3",
+            text: msToHHMMSS(pipe.input.time) || "--",
+            title: "",
+          }
+        : null,
+      pipe.input.status === "on" && !pipe.input.probeReady
+        ? {
+            key: "probe",
+            tagName: "span",
+            className: "badge badge-warning text-sm px-3",
+            text: "Probing",
+            title: `Waiting for stream metadata${pipe.input.probePendingMs ? ` (${(pipe.input.probePendingMs / 1000).toFixed(1)}s)` : ""}`,
+          }
+        : null,
+      publisher
+        ? {
+            key: "protocol",
+            tagName: "span",
+            className: "badge badge-info text-sm px-3",
+            text: normalizePublisherProtocolLabel(publisher.protocol),
+            title: "",
+          }
+        : null,
+      publisher?.remoteAddr
+        ? {
+            key: "remote",
+            tagName: "span",
+            className: "badge badge-outline font-mono text-sm px-3",
+            text: publisher.remoteAddr,
+            title: "",
+          }
+        : null,
+      publisher
+        ? {
+            key: "quality",
+            tagName: "button",
+            className: `badge text-sm px-3 cursor-pointer ${isHealthy ? "badge-success" : "badge-warning"}`,
+            text: isHealthy ? "Healthy" : "Unhealthy",
+            title: qualityAlerts.length
+              ? qualityAlerts.map((alert) => alert.label).join("\n")
+              : "Open publisher health details",
+          }
+        : null,
+      pipe.input.status === "off" && pipe.input.lastDisconnectAt
+        ? {
+            key: "disconnect",
+            tagName: "span",
+            className: `badge ${pipe.input.recentDisconnectError ? "badge-warning" : "badge-outline"} text-sm px-3`,
+            text: pipe.input.recentDisconnectError
+              ? "Last failure"
+              : "Last disconnect",
+            title: escapeHtml(
+              lastDisconnectTitle || "Recent ingest disconnect",
+            ),
+          }
+        : null,
+      hlsPreview.active ||
+      hlsPreview.segments > 0 ||
+      hlsPreview.persistentConsumers > 0
+        ? {
+            key: "preview",
+            tagName: "span",
+            className: `badge ${hlsPreview.active ? "badge-success" : "badge-outline"} text-sm px-3`,
+            text: hlsPreview.active ? "Preview live" : "Preview idle",
+            title: escapeHtml(hlsPreviewTitle),
+          }
+        : null,
+      unexpectedCount > 0
+        ? {
+            key: "unexpected",
+            tagName: "span",
+            className: "badge badge-sm badge-error",
+            text: `${unexpectedCount} unexpected reader${unexpectedCount === 1 ? "" : "s"}`,
+            title: "",
+          }
+        : null,
+    ].filter(Boolean) as PublisherMetaBadgeSpec[],
+    pipe.id,
+  );
 }
 
-export function renderOutsColumn(selectedPipe: string | null): void {
-  if (!selectedPipe) {
-    document.getElementById("outs-col")?.classList.add("hidden");
-    return;
+function setTextIfChanged(target: HTMLElement, text: string): void {
+  if (target.textContent !== text) {
+    target.textContent = text;
+  }
+}
+
+function setClassNameIfChanged(target: HTMLElement, className: string): void {
+  if (target.className !== className) {
+    target.className = className;
+  }
+}
+
+function setTitleIfChanged(target: HTMLElement, title: string): void {
+  if (target.title !== title) {
+    target.title = title;
+  }
+}
+
+function createPublisherMetaBadge(spec: PublisherMetaBadgeSpec): HTMLElement {
+  const badge = document.createElement(spec.tagName);
+  badge.dataset.metaKey = spec.key;
+  if (spec.tagName === "button") {
+    (badge as HTMLButtonElement).type = "button";
+  }
+  setClassNameIfChanged(badge, spec.className);
+  setTextIfChanged(badge, spec.text);
+  setTitleIfChanged(badge, spec.title);
+  return badge;
+}
+
+function syncPublisherMeta(
+  container: HTMLElement,
+  specs: PublisherMetaBadgeSpec[],
+  pipeId: string,
+): void {
+  const existingBadges = new Map<string, HTMLElement>();
+  Array.from(container.children).forEach((child) => {
+    if (!(child instanceof HTMLElement) || !child.dataset.metaKey) return;
+    existingBadges.set(child.dataset.metaKey, child);
+  });
+
+  for (const [index, spec] of specs.entries()) {
+    let badge = existingBadges.get(spec.key);
+    if (!badge) {
+      badge = createPublisherMetaBadge(spec);
+    } else {
+      existingBadges.delete(spec.key);
+      setClassNameIfChanged(badge, spec.className);
+      setTextIfChanged(badge, spec.text);
+      setTitleIfChanged(badge, spec.title);
+    }
+
+    if (spec.key === "quality" && badge instanceof HTMLButtonElement) {
+      badge.onclick = () => {
+        pipelineViewDependencies.openPublisherHealthModal?.(pipeId);
+      };
+    }
+
+    const currentAtIndex = container.children[index] as HTMLElement | undefined;
+    if (currentAtIndex !== badge) {
+      container.insertBefore(badge, currentAtIndex ?? null);
+    }
   }
 
-  document.getElementById("outs-col")?.classList.remove("hidden");
+  for (const staleBadge of existingBadges.values()) {
+    staleBadge.remove();
+  }
+}
 
-  const pipe = state.pipelines.find((p) => p.id === selectedPipe);
-  if (!pipe) {
-    console.error("Pipeline not found:", selectedPipe);
-    return;
+function outputCardKey(pipeId: string, outputId: string): string {
+  return `${pipeId}:${outputId}`;
+}
+
+function buildOutputIssue(output: OutputView): {
+  label: string;
+  text: string;
+  title: string;
+} | null {
+  if (output.retrying || output.status === "retrying") {
+    return {
+      label: "retry",
+      text: escapeHtml(formatRetryIssueText(output)),
+      title: escapeHtml(buildRetryIssueTitle(output)),
+    };
+  }
+  if (output.lastError) {
+    return {
+      label: "error",
+      text: escapeHtml(output.failurePhase || output.phase || "runtime"),
+      title: escapeHtml(output.lastError),
+    };
+  }
+  if (output.status === "stalled") {
+    const age = Number.isFinite(output.lastProgressAgeMs as number)
+      ? `${Math.round(Number(output.lastProgressAgeMs) / 1000)}s`
+      : "no progress";
+    return {
+      label: "stall",
+      text: age,
+      title: "Output is running but has stopped making forward progress.",
+    };
+  }
+  if (
+    output.phase &&
+    output.phase !== "sending" &&
+    output.phase !== "segmenting"
+  ) {
+    return {
+      label: "phase",
+      text: escapeHtml(output.phase),
+      title: `Current output phase: ${escapeHtml(output.phase)}`,
+    };
+  }
+  return null;
+}
+
+function buildOutputMetricSpecs(output: OutputView): OutputMetricSpec[] {
+  const isActive =
+    output.status === "on" ||
+    output.status === "running" ||
+    output.status === "warning";
+  const metrics: OutputMetricSpec[] = [];
+  const outputIssue = buildOutputIssue(output);
+
+  if (isActive && output.time !== null) {
+    metrics.push({
+      key: "up",
+      label: "up",
+      text: msToHHMMSS(output.time) ?? "",
+      title: "Output uptime",
+    });
   }
 
-  const metricPill = (label: string, text: string, title: string): string =>
-    `<span class="border-base-content/10 bg-base-200/70 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs" title="${title}"><span class="text-base-content/50">${label}</span><span class="font-mono tabular-nums">${text}</span></span>`;
+  metrics.push({
+    key: "enc",
+    label: "enc",
+    text: output.encoding,
+    title: "Selected encoding",
+  });
+  if (outputIssue) {
+    metrics.push({
+      key: "issue",
+      label: outputIssue.label,
+      text: outputIssue.text,
+      title: outputIssue.title,
+    });
+  }
 
-  const outputsList = document.getElementById("outputs-list");
-  if (!outputsList) return;
+  if (isActive) {
+    const outputTotalSizeBytes = Number(output.totalSize);
+    if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
+      metrics.push({
+        key: "sent",
+        label: "sent",
+        text: `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
+        title: "Output total size from FFmpeg progress",
+      });
+    }
 
-  outputsList.innerHTML = pipe.outs
-    .map((o: OutputView, outputIndex: number) => {
-      const statusColor =
-        o.status === "on" || o.status === "running"
-          ? "status-primary"
-          : o.retrying || o.status === "retrying"
-            ? "status-warning"
-            : o.status === "stalled"
+    if (output.bitrateKbps !== null && output.bitrateKbps >= 0) {
+      const kbps = output.bitrateKbps;
+      const bitrateText =
+        kbps >= 1000
+          ? `${(kbps / 1000).toFixed(1)} Mb/s`
+          : `${kbps.toFixed(1)} Kb/s`;
+      metrics.push({
+        key: "rate",
+        label: "rate",
+        text: bitrateText,
+        title: "Output bitrate from FFmpeg progress",
+      });
+    }
+  }
+
+  return metrics;
+}
+
+function createOutputMetricPill(spec: OutputMetricSpec): HTMLElement {
+  const pill = document.createElement("span");
+  pill.dataset.metricKey = spec.key;
+  pill.className =
+    "border-base-content/10 bg-base-200/70 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs";
+
+  const label = document.createElement("span");
+  label.dataset.role = "metric-label";
+  label.className = "text-base-content/50";
+
+  const value = document.createElement("span");
+  value.dataset.role = "metric-value";
+  value.className = "font-mono tabular-nums";
+
+  pill.append(label, value);
+  syncOutputMetricPill(pill, spec);
+  return pill;
+}
+
+function syncOutputMetricPill(pill: HTMLElement, spec: OutputMetricSpec): void {
+  pill.dataset.metricKey = spec.key;
+  setTitleIfChanged(pill, spec.title);
+
+  const label = pill.querySelector(
+    '[data-role="metric-label"]',
+  ) as HTMLElement | null;
+  const value = pill.querySelector(
+    '[data-role="metric-value"]',
+  ) as HTMLElement | null;
+  if (label) setTextIfChanged(label, spec.label);
+  if (value) setTextIfChanged(value, spec.text);
+}
+
+function syncOutputMetrics(
+  container: HTMLElement,
+  specs: OutputMetricSpec[],
+): void {
+  const existingPills = new Map<string, HTMLElement>();
+  Array.from(container.children).forEach((child) => {
+    if (!(child instanceof HTMLElement) || !child.dataset.metricKey) return;
+    existingPills.set(child.dataset.metricKey, child);
+  });
+
+  for (const [index, spec] of specs.entries()) {
+    let pill = existingPills.get(spec.key);
+    if (!pill) {
+      pill = createOutputMetricPill(spec);
+    } else {
+      existingPills.delete(spec.key);
+      syncOutputMetricPill(pill, spec);
+    }
+
+    const currentAtIndex = container.children[index] as HTMLElement | undefined;
+    if (currentAtIndex !== pill) {
+      container.insertBefore(pill, currentAtIndex ?? null);
+    }
+  }
+
+  for (const stalePill of existingPills.values()) {
+    stalePill.remove();
+  }
+}
+
+function createMenuAction(
+  label: string,
+  action: string,
+  role: string,
+  extraClass = "",
+): { item: HTMLElement; button: HTMLButtonElement } {
+  const item = document.createElement("li");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.action = action;
+  button.dataset.role = role;
+  if (extraClass) {
+    button.className = extraClass;
+  }
+  button.textContent = label;
+  item.appendChild(button);
+  return { item, button };
+}
+
+function createOutputCard(pipeId: string, outputId: string): HTMLElement {
+  const card = document.createElement("div");
+  card.dataset.outputKey = outputCardKey(pipeId, outputId);
+  card.className =
+    "border-base-content/10 bg-base-100 flex w-full items-start gap-3 rounded-lg border px-3 py-3";
+
+  const statusWrap = document.createElement("div");
+  statusWrap.className = "pt-1";
+  const statusDot = document.createElement("div");
+  statusDot.dataset.role = "status-dot";
+  statusDot.setAttribute("aria-label", "status");
+  statusWrap.appendChild(statusDot);
+
+  const content = document.createElement("div");
+  content.className = "flex min-w-0 flex-1 flex-col gap-2";
+
+  const header = document.createElement("div");
+  header.className = "flex min-w-0 items-start justify-between gap-3";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "min-w-0";
+  const name = document.createElement("div");
+  name.dataset.role = "output-name";
+  name.className = "truncate font-semibold";
+  const url = document.createElement("code");
+  url.dataset.role = "output-url";
+  url.className = "text-base-content/60 block truncate text-xs font-normal";
+  titleWrap.append(name, url);
+
+  const toggleButton = document.createElement("button");
+  toggleButton.type = "button";
+  toggleButton.dataset.action = "toggle-output";
+  toggleButton.dataset.role = "toggle-output";
+
+  header.append(titleWrap, toggleButton);
+
+  const metrics = document.createElement("div");
+  metrics.dataset.role = "output-metrics";
+  metrics.className = "flex flex-wrap items-center gap-1";
+
+  const error = document.createElement("div");
+  error.dataset.role = "output-error";
+  error.className = "text-error hidden text-xs leading-5";
+
+  content.append(header, metrics, error);
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "dropdown dropdown-end shrink-0";
+  const dropdownButton = document.createElement("button");
+  dropdownButton.type = "button";
+  dropdownButton.tabIndex = 0;
+  dropdownButton.className = "btn btn-xs btn-ghost";
+  dropdownButton.setAttribute("aria-label", "Output actions");
+  dropdownButton.textContent = "More";
+  const menu = document.createElement("ul");
+  menu.tabIndex = 0;
+  menu.className =
+    "dropdown-content menu bg-base-100 border-base-content/10 z-20 mt-2 w-36 rounded-lg border p-1 shadow";
+
+  const { button: historyButton, item: historyItem } = createMenuAction(
+    "History",
+    "history-output",
+    "history-output",
+  );
+  const { button: monitorButton, item: monitorItem } = createMenuAction(
+    "Monitor",
+    "monitor-output",
+    "monitor-output",
+  );
+  const { button: editButton, item: editItem } = createMenuAction(
+    "Edit",
+    "edit-output",
+    "edit-output",
+  );
+  const { button: deleteButton, item: deleteItem } = createMenuAction(
+    "Delete",
+    "delete-output",
+    "delete-output",
+    "text-error",
+  );
+
+  menu.append(historyItem, monitorItem, editItem, deleteItem);
+  dropdown.append(dropdownButton, menu);
+  card.append(statusWrap, content, dropdown);
+
+  outputCardRefs.set(card, {
+    statusDot,
+    name,
+    url,
+    toggleButton,
+    metrics,
+    error,
+    historyButton,
+    monitorItem,
+    monitorButton,
+    editButton,
+    deleteButton,
+  });
+
+  return card;
+}
+
+function syncOutputCard(
+  card: HTMLElement,
+  pipe: PipelineView,
+  output: OutputView,
+): void {
+  const refs = outputCardRefs.get(card);
+  if (!refs) return;
+
+  const statusColor =
+    output.status === "on" || output.status === "running"
+      ? "status-primary"
+      : output.retrying || output.status === "retrying"
+        ? "status-warning"
+        : output.status === "stalled"
+          ? "status-warning"
+          : output.status === "failed" || output.lastError
+            ? "status-error"
+            : output.status === "warning"
               ? "status-warning"
-              : o.status === "failed" || o.lastError
+              : output.status === "error"
                 ? "status-error"
-                : o.status === "warning"
-                  ? "status-warning"
-                  : o.status === "error"
-                    ? "status-error"
-                    : "status-neutral";
+                : "status-neutral";
+  const isStopped = output.desiredState === "stopped";
+  const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(
+    pipe.id,
+    output.id,
+  );
 
-      const isStopped = o.desiredState === "stopped";
-      const isActive =
-        o.status === "on" || o.status === "running" || o.status === "warning";
-      const toggleBusy = pipelineViewDependencies.isOutputToggleBusy?.(
-        pipe.id,
-        o.id,
-      );
-      const metrics: string[] = [];
-      const outputIssue = (() => {
-        if (o.retrying || o.status === "retrying") {
-          return {
-            label: "retry",
-            text: escapeHtml(formatRetryIssueText(o)),
-            title: escapeHtml(buildRetryIssueTitle(o)),
-          };
-        }
-        if (o.lastError) {
-          return {
-            label: "error",
-            text: escapeHtml(o.failurePhase || o.phase || "runtime"),
-            title: escapeHtml(o.lastError),
-          };
-        }
-        if (o.status === "stalled") {
-          const age = Number.isFinite(o.lastProgressAgeMs as number)
-            ? `${Math.round(Number(o.lastProgressAgeMs) / 1000)}s`
-            : "no progress";
-          return {
-            label: "stall",
-            text: age,
-            title: "Output is running but has stopped making forward progress.",
-          };
-        }
-        if (o.phase && o.phase !== "sending" && o.phase !== "segmenting") {
-          return {
-            label: "phase",
-            text: escapeHtml(o.phase),
-            title: `Current output phase: ${escapeHtml(o.phase)}`,
-          };
-        }
-        return null;
-      })();
+  setClassNameIfChanged(refs.statusDot, `status status-lg ${statusColor}`);
+  setTextIfChanged(refs.name, output.name);
+  setTextIfChanged(refs.url, sanitizeLogMessage(output.url, true));
+  setTitleIfChanged(refs.url, output.url || "");
 
-      if (isActive && o.time !== null) {
-        metrics.push(
-          metricPill("up", msToHHMMSS(o.time) ?? "", "Output uptime"),
-        );
-      }
+  // Reuse both the card DOM and the metric pills so live telemetry refreshes only
+  // patch text/title on the specific badges that changed.
+  syncOutputMetrics(refs.metrics, buildOutputMetricSpecs(output));
 
-      metrics.push(
-        metricPill("enc", escapeHtml(o.encoding), "Selected encoding"),
-      );
-      if (outputIssue) {
-        metrics.push(
-          metricPill(outputIssue.label, outputIssue.text, outputIssue.title),
-        );
-      }
+  const nextToggleClass = `btn btn-xs shrink-0 ${isStopped ? "btn-accent" : "btn-accent btn-outline"} ${toggleBusy ? "btn-disabled" : ""}`;
+  setClassNameIfChanged(refs.toggleButton, nextToggleClass);
+  refs.toggleButton.disabled = Boolean(toggleBusy);
+  setTextIfChanged(refs.toggleButton, isStopped ? "Start" : "Stop");
 
-      if (isActive) {
-        const outputTotalSizeBytes = Number(o.totalSize);
-        if (Number.isFinite(outputTotalSizeBytes) && outputTotalSizeBytes > 0) {
-          metrics.push(
-            metricPill(
-              "sent",
-              `${(outputTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB`,
-              "Output total size from FFmpeg progress",
-            ),
-          );
-        }
+  refs.historyButton.dataset.outputId = output.id;
+  refs.monitorButton.dataset.outputId = output.id;
+  refs.editButton.dataset.outputId = output.id;
+  refs.deleteButton.dataset.outputId = output.id;
+  refs.toggleButton.dataset.outputId = output.id;
 
-        if (o.bitrateKbps !== null && o.bitrateKbps >= 0) {
-          const kbps = o.bitrateKbps;
-          const bitrateText =
-            kbps >= 1000
-              ? `${(kbps / 1000).toFixed(1)} Mb/s`
-              : `${kbps.toFixed(1)} Kb/s`;
-          metrics.push(
-            metricPill(
-              "rate",
-              bitrateText,
-              "Output bitrate from FFmpeg progress",
-            ),
-          );
-        }
-      }
+  refs.monitorItem.classList.toggle("hidden", !output.monitoringUrl);
 
-      return `
-            <div class="border-base-content/10 bg-base-100 flex w-full items-start gap-3 rounded-lg border px-3 py-3">
-                <div class="pt-1"><div aria-label="status" class="status status-lg ${statusColor}"></div></div>
-                <div class="flex min-w-0 flex-1 flex-col gap-2">
-                    <div class="flex min-w-0 items-start justify-between gap-3">
-                        <div class="min-w-0">
-                            <div class="truncate font-semibold">${escapeHtml(o.name)}</div>
-                            <code class="text-base-content/60 block truncate text-xs font-normal" data-output-url="${outputIndex}">
-                                ${sanitizeLogMessage(o.url, true)}
-                            </code>
-                        </div>
-                        <button class="btn btn-xs shrink-0 ${isStopped ? "btn-accent" : "btn-accent btn-outline"} ${toggleBusy ? "btn-disabled" : ""}"
-                            data-action="toggle-output"
-                            data-output-index="${outputIndex}"
-                            ${toggleBusy ? "disabled" : ""}>
-                            ${isStopped ? "Start" : "Stop"}
-                        </button>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-1">
-                        ${metrics.join("")}
-                    </div>
-                    ${o.lastError ? `<div class="text-error text-xs leading-5" title="${escapeHtml(o.lastError)}">${escapeHtml(o.lastError)}</div>` : ""}
-                </div>
-                <div class="dropdown dropdown-end shrink-0">
-                    <button type="button" tabindex="0" class="btn btn-xs btn-ghost" aria-label="Output actions">More</button>
-                    <ul tabindex="0" class="dropdown-content menu bg-base-100 border-base-content/10 z-20 mt-2 w-36 rounded-lg border p-1 shadow">
-                        <li><button type="button" data-action="history-output" data-output-index="${outputIndex}">History</button></li>
-                        ${o.monitoringUrl ? `<li><button type="button" data-action="monitor-output" data-output-index="${outputIndex}">Monitor</button></li>` : ""}
-                        <li><button type="button" data-action="edit-output" data-output-index="${outputIndex}">Edit</button></li>
-                        <li><button type="button" class="text-error ${isStopped ? "" : "btn-disabled"}" data-action="delete-output" data-output-index="${outputIndex}">Delete</button></li>
-                    </ul>
-                </div>
-            </div>`;
-    })
-    .join("");
+  const nextDeleteClass =
+    `text-error ${isStopped ? "" : "btn-disabled"}`.trim();
+  setClassNameIfChanged(refs.deleteButton, nextDeleteClass);
+  refs.deleteButton.disabled = !isStopped;
 
-  outputsList
-    .querySelectorAll<HTMLElement>("[data-output-url]")
-    .forEach((urlElem) => {
-      const out = pipe.outs[Number(urlElem.dataset.outputUrl)];
-      urlElem.title = out?.url || "";
-    });
+  if (output.lastError) {
+    refs.error.classList.remove("hidden");
+    setTextIfChanged(refs.error, output.lastError);
+    setTitleIfChanged(refs.error, output.lastError);
+  } else {
+    refs.error.classList.add("hidden");
+    setTextIfChanged(refs.error, "");
+    setTitleIfChanged(refs.error, "");
+  }
+}
 
-  outputsList
-    .querySelectorAll<HTMLElement>("[data-output-bitrate]")
-    .forEach((badge) => {
-      setBadgeBitrateWithSubtleUnit(badge, Number(badge.dataset.outputBitrate));
-    });
-
+function ensureOutputsListHandler(outputsList: HTMLElement): void {
+  if (outputsList.dataset.boundOutputActions === "1") return;
+  outputsList.dataset.boundOutputActions = "1";
   outputsList.onclick = async (event: MouseEvent) => {
     const button = (event.target as Element)?.closest?.(
       "[data-action]",
     ) as HTMLButtonElement | null;
     if (!button) return;
 
-    const outputIndex = Number(button.dataset.outputIndex);
-    const out = pipe.outs[outputIndex];
-    if (!out) return;
+    const pipeId = outputsList.dataset.pipeId;
+    const outputId = button.dataset.outputId;
+    if (!pipeId || !outputId) return;
+
+    const pipe = state.pipelines.find((entry) => entry.id === pipeId);
+    const out = pipe?.outs.find((entry) => entry.id === outputId);
+    if (!pipe || !out) return;
 
     if (button.dataset.action === "toggle-output") {
       if (button.disabled) return;
@@ -937,6 +1269,7 @@ export function renderOutsColumn(selectedPipe: string | null): void {
           button.classList.remove("btn-disabled");
         }
       }
+      return;
     }
 
     if (button.dataset.action === "history-output") {
@@ -945,14 +1278,17 @@ export function renderOutsColumn(selectedPipe: string | null): void {
         out.id,
         out.name,
       );
+      return;
     }
 
     if (button.dataset.action === "monitor-output") {
       openOutputMonitoringUrl(out.monitoringUrl);
+      return;
     }
 
     if (button.dataset.action === "edit-output") {
       pipelineViewDependencies.editOutBtn?.(pipe.id, out.id);
+      return;
     }
 
     if (button.dataset.action === "delete-output") {
@@ -960,4 +1296,54 @@ export function renderOutsColumn(selectedPipe: string | null): void {
       pipelineViewDependencies.deleteOutBtn?.(pipe.id, out.id);
     }
   };
+}
+
+export function renderOutsColumn(selectedPipe: string | null): void {
+  if (!selectedPipe) {
+    document.getElementById("outs-col")?.classList.add("hidden");
+    return;
+  }
+
+  document.getElementById("outs-col")?.classList.remove("hidden");
+
+  const pipe = state.pipelines.find((p) => p.id === selectedPipe);
+  if (!pipe) {
+    console.error("Pipeline not found:", selectedPipe);
+    return;
+  }
+
+  const outputsList = document.getElementById(
+    "outputs-list",
+  ) as HTMLElement | null;
+  if (!outputsList) return;
+  outputsList.dataset.pipeId = pipe.id;
+  ensureOutputsListHandler(outputsList);
+
+  const existingCards = new Map<string, HTMLElement>();
+  Array.from(outputsList.children).forEach((child) => {
+    if (!(child instanceof HTMLElement) || !child.dataset.outputKey) return;
+    existingCards.set(child.dataset.outputKey, child);
+  });
+
+  for (const [index, output] of pipe.outs.entries()) {
+    const cardKey = outputCardKey(pipe.id, output.id);
+    let card = existingCards.get(cardKey);
+    if (!card) {
+      card = createOutputCard(pipe.id, output.id);
+    } else {
+      existingCards.delete(cardKey);
+    }
+    syncOutputCard(card, pipe, output);
+    // Leave cards in place when the keyed order is unchanged to avoid
+    // unnecessary DOM moves during steady-state polling.
+    const currentAtIndex = outputsList.children[index] as
+      HTMLElement | undefined;
+    if (currentAtIndex !== card) {
+      outputsList.insertBefore(card, currentAtIndex ?? null);
+    }
+  }
+
+  for (const staleCard of existingCards.values()) {
+    staleCard.remove();
+  }
 }
