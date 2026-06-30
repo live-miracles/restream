@@ -1,6 +1,9 @@
 use crate::application::ports::{MetaLookupError, MetaStore, MetaStoreWriter};
+use crate::media::engine::MediaEngine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 pub const RECORDING_SETTINGS_META_KEY: &str = "recording_settings";
 
@@ -59,11 +62,47 @@ pub async fn save_recording_settings(
         .map(|_| ())
 }
 
+pub async fn spawn_recording_task(
+    engine: Arc<MediaEngine>,
+    pipeline_name: String,
+    pipeline_id: String,
+    input_source: Option<String>,
+    media_dir: String,
+    recording_settings: RecordingSettings,
+) -> CancellationToken {
+    let ring_buffer = engine.get_or_create_pipeline(&pipeline_id).await;
+    let cancel_token = engine.register_recording(&pipeline_id).await;
+    let cancel_token_for_task = cancel_token.clone();
+    let engine_for_task = engine.clone();
+    let pipeline_id_for_cleanup = pipeline_id.clone();
+
+    tokio::spawn(async move {
+        crate::media::recording::start_recording(
+            pipeline_name,
+            pipeline_id.clone(),
+            input_source,
+            media_dir,
+            recording_settings,
+            ring_buffer,
+            engine_for_task.clone(),
+            cancel_token_for_task,
+        )
+        .await;
+        engine_for_task
+            .unregister_recording(&pipeline_id_for_cleanup)
+            .await;
+    });
+
+    cancel_token
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::application::ports::{MetaLookupFuture, MetaWriteFuture};
+    use std::path::PathBuf;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     struct FakeMetaStore {
         values: Mutex<HashMap<String, String>>,
@@ -183,5 +222,45 @@ mod tests {
                 .cloned(),
             Some("{\"retainSourceTs\":true}".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_recording_task_registers_and_cleans_up_recording() {
+        let engine = Arc::new(MediaEngine::new());
+        let media_dir = unique_test_media_dir("recording-launch");
+
+        let cancel_token = spawn_recording_task(
+            engine.clone(),
+            "Launch Test".to_string(),
+            "pipeline-launch".to_string(),
+            None,
+            media_dir.display().to_string(),
+            RecordingSettings::default(),
+        )
+        .await;
+
+        assert!(engine.is_recording_active("pipeline-launch").await);
+
+        cancel_token.cancel();
+        wait_for_recording_shutdown(&engine, "pipeline-launch").await;
+        assert!(!engine.is_recording_active("pipeline-launch").await);
+
+        let _ = std::fs::remove_dir_all(media_dir);
+    }
+
+    fn unique_test_media_dir(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{prefix}-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&path).expect("test media dir should be created");
+        path
+    }
+
+    async fn wait_for_recording_shutdown(engine: &Arc<MediaEngine>, pipeline_id: &str) {
+        for _ in 0..50 {
+            if !engine.is_recording_active(pipeline_id).await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("recording task did not shut down in time");
     }
 }

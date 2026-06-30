@@ -1090,30 +1090,17 @@ pub async fn run_app() {
             match decide_recording_action(rec_enabled, effective_has_ingest, rec_active) {
                 RecordingAction::Keep => {}
                 RecordingAction::Start => {
-                    let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
-                    let cancel_token = engine.register_recording(&pipeline.id).await;
-                    let engine_c = engine.clone();
-                    let pid = pipeline.id.clone();
-                    let pipe_name = pipeline.name.clone();
-                    let input_source = pipeline.input_source.clone();
-                    let engine_rec = engine_c.clone();
-                    let media_dir_rec = reconciler_media_dir.clone();
                     let recording_settings =
                         crate::application::recording::load_recording_settings(&meta_store).await;
-                    tokio::spawn(async move {
-                        crate::media::recording::start_recording(
-                            pipe_name,
-                            pid.clone(),
-                            input_source,
-                            media_dir_rec,
-                            recording_settings,
-                            ring_buf,
-                            engine_rec,
-                            cancel_token,
-                        )
-                        .await;
-                        engine_c.unregister_recording(&pid).await;
-                    });
+                    crate::application::recording::spawn_recording_task(
+                        engine.clone(),
+                        pipeline.name.clone(),
+                        pipeline.id.clone(),
+                        pipeline.input_source.clone(),
+                        reconciler_media_dir.clone(),
+                        recording_settings,
+                    )
+                    .await;
                 }
                 RecordingAction::Stop => {
                     engine.unregister_recording(&pipeline.id).await;

@@ -6134,32 +6134,19 @@ async fn recording_start_handler(
         .await
         .contains_key(&pipeline_id);
     if has_ingest && !state.engine.is_recording_active(&pipeline_id).await {
-        let ring_buf = state.engine.get_or_create_pipeline(&pipeline_id).await;
-        let cancel_token = state.engine.register_recording(&pipeline_id).await;
-        let engine = state.engine.clone();
-        let pid = pipeline_id.clone();
-        let pipe_name = pipeline.name.clone();
-        let input_source = pipeline.input_source.clone();
-        let engine_rec = engine.clone();
-        let media_dir = state.media_dir.clone();
         let recording_settings = crate::application::recording::load_recording_settings(
             &SqliteMetaStore::new(state.db.clone()),
         )
         .await;
-        tokio::spawn(async move {
-            crate::media::recording::start_recording(
-                pipe_name,
-                pid.clone(),
-                input_source,
-                media_dir,
-                recording_settings,
-                ring_buf,
-                engine_rec,
-                cancel_token,
-            )
-            .await;
-            engine.unregister_recording(&pid).await;
-        });
+        crate::application::recording::spawn_recording_task(
+            state.engine.clone(),
+            pipeline.name.clone(),
+            pipeline_id.clone(),
+            pipeline.input_source.clone(),
+            state.media_dir.clone(),
+            recording_settings,
+        )
+        .await;
     }
 
     let active = state.engine.is_recording_active(&pipeline_id).await;
