@@ -60,6 +60,7 @@ scripts/resource-limit cargo test \
 scripts/resource-limit cargo test recent_egress --lib -- --nocapture
 scripts/resource-limit cargo test recent_ingest_disconnect_respects_grace_window --lib -- --nocapture
 scripts/resource-limit cargo test build_recent_ingest_outcome_resets_flap_streak_outside_window --lib -- --nocapture
+scripts/resource-limit cargo test prop_ingest_lifecycle_preserves_health_invariants --lib -- --nocapture
 scripts/resource-limit cargo test build_recent_egress_outcome_resets_flap_streak_outside_window --lib -- --nocapture
 scripts/resource-limit cargo test health_snapshot_surfaces_flapping_after_repeated_reconnects --lib -- --nocapture
 scripts/resource-limit cargo test health_snapshot_surfaces_flapping_after_repeated_egress_recoveries --lib -- --nocapture

@@ -134,6 +134,7 @@ surface already covers it.
   - `stale_egress_error_cannot_poison_replacement_attempt`
   - `stale_egress_queue_removal_cannot_drop_replacement_queue`
   - `build_recent_ingest_outcome_resets_flap_streak_outside_window`
+  - `prop_ingest_lifecycle_preserves_health_invariants`
   - `build_recent_egress_outcome_resets_flap_streak_outside_window`
   - `health_snapshot_surfaces_flapping_after_repeated_reconnects`
   - `health_snapshot_surfaces_flapping_after_repeated_egress_recoveries`
