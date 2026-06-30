@@ -467,51 +467,33 @@ pub(crate) async fn processing_graph(
     let ingest = ingests.get(pipeline_id);
     let ingest_node_id = format!("{pipeline_id}_ingest");
     let ingest_protocol = ingest.map(|ingest| ingest.protocol.as_str());
-    nodes.push(serde_json::json!({
-        "id": ingest_node_id,
-        "type": "ingest",
-        "label": if let Some(ingest) = ingest {
-            format!("{} ingest", ingest.protocol.to_uppercase())
-        } else {
-            "No ingest".to_string()
-        },
-        "active": ingest.is_some(),
-        "details": ingest.map(|ingest| {
-            let elapsed_secs = ingest.start_time.elapsed().as_secs_f64();
-            let bytes_received = ingest.bytes_received.load(Ordering::Relaxed);
-            let bitrate_kbps = if elapsed_secs > 1.0 {
-                Some(((bytes_received as f64 * 8.0) / (elapsed_secs * 1000.0) * 10.0).round() / 10.0)
-            } else {
-                None
-            };
-            serde_json::json!({
-                "protocol": ingest.protocol,
-                "remoteAddr": ingest.remote_addr,
-                "video": ingest.video,
-                "audio": ingest.audio,
-                "bytesReceived": bytes_received,
-                "bitrateKbps": bitrate_kbps,
-            })
-        }),
-        "metrics": ingest.map(|ingest| ingest.metrics.snapshot()),
-    }));
+    nodes.push(api_view_models::processing_graph_node(
+        ingest_node_id.clone(),
+        "ingest",
+        ingest
+            .map(|ingest| format!("{} ingest", ingest.protocol.to_uppercase()))
+            .unwrap_or_else(|| "No ingest".to_string()),
+        ingest.is_some(),
+        ingest.map(api_view_models::processing_graph_ingest_details),
+        ingest.map(|ingest| ingest.metrics.snapshot()),
+    ));
 
     let demux_node_id = format!("{pipeline_id}_ingest_demux");
-    nodes.push(serde_json::json!({
-        "id": demux_node_id,
-        "type": "demux",
-        "label": ingest
-            .map(|ingest| format!("{} demux/probe", MediaEngine::graph_protocol_label(&ingest.protocol)))
+    nodes.push(api_view_models::processing_graph_node(
+        demux_node_id.clone(),
+        "demux",
+        ingest
+            .map(|ingest| {
+                format!(
+                    "{} demux/probe",
+                    MediaEngine::graph_protocol_label(&ingest.protocol)
+                )
+            })
             .unwrap_or_else(|| "Demux/probe idle".to_string()),
-        "active": ingest.is_some(),
-        "details": ingest.map(|ingest| serde_json::json!({
-            "protocol": ingest.protocol,
-            "video": ingest.video,
-            "audio": ingest.audio,
-            "audioTracks": ingest.audio_tracks.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect::<Vec<_>>(),
-        })),
-        "metrics": ingest.map(|ingest| ingest.metrics.snapshot()),
-    }));
+        ingest.is_some(),
+        ingest.map(api_view_models::processing_graph_demux_details),
+        ingest.map(|ingest| ingest.metrics.snapshot()),
+    ));
 
     let rb_node_id = format!("{pipeline_id}_source_rb");
     let rb_info = pipelines.get(pipeline_id).map(|ring| {
@@ -519,20 +501,7 @@ pub(crate) async fn processing_graph(
         let reader_stats: Vec<serde_json::Value> = ring
             .reader_snapshots()
             .into_iter()
-            .map(|reader| {
-                serde_json::json!({
-                    "name": reader.name,
-                    "readIndex": reader.read_idx,
-                    "writeIndex": reader.write_idx,
-                    "lagSlots": reader.lag_slots,
-                    "overflowCount": reader.overflow_count,
-                    "overflows": reader.overflow_count,
-                    "packetAgeMs": reader.packet_age_ms,
-                    "burstCount": reader.burst_count,
-                    "avgBurstSize": (reader.avg_burst_size * 10.0).round() / 10.0,
-                    "medianBurstSize": reader.median_burst_size,
-                })
-            })
+            .map(|reader| api_view_models::reader_snapshot_json(&reader))
             .collect();
         (
             fill,
@@ -541,32 +510,34 @@ pub(crate) async fn processing_graph(
             reader_stats,
         )
     });
-    nodes.push(serde_json::json!({
-        "id": rb_node_id,
-        "type": "ring_buffer",
-        "label": "Source Buffer",
-        "active": rb_info.is_some(),
-        "details": rb_info.map(|(fill, cap, payload_stats, readers)| serde_json::json!({
-            "fill": fill,
-            "capacity": cap,
-            "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
-            "payloadStats": payload_stats,
-            "format": MediaEngine::source_buffer_format(ingest_protocol),
-            "readers": readers,
-        })),
-    }));
-    edges.push(serde_json::json!({
-        "from": ingest_node_id,
-        "to": demux_node_id,
-        "label": ingest_protocol
+    nodes.push(api_view_models::processing_graph_node(
+        rb_node_id.clone(),
+        "ring_buffer",
+        "Source Buffer",
+        rb_info.is_some(),
+        rb_info.map(|(fill, cap, payload_stats, readers)| {
+            api_view_models::processing_graph_source_ring_details(
+                fill,
+                cap,
+                payload_stats,
+                MediaEngine::source_buffer_format(ingest_protocol),
+                readers,
+            )
+        }),
+        None,
+    ));
+    edges.push(api_view_models::processing_graph_edge(
+        ingest_node_id,
+        demux_node_id.clone(),
+        ingest_protocol
             .map(MediaEngine::graph_protocol_label)
             .unwrap_or_else(|| "input".to_string()),
-    }));
-    edges.push(serde_json::json!({
-        "from": demux_node_id,
-        "to": rb_node_id,
-        "label": "push(MediaPacket)",
-    }));
+    ));
+    edges.push(api_view_models::processing_graph_edge(
+        demux_node_id,
+        rb_node_id.clone(),
+        "push(MediaPacket)",
+    ));
 
     for (key, (stage_ring, token)) in transcoder_buffers.iter() {
         if key.pipeline.as_str() == pipeline_id {
@@ -575,17 +546,17 @@ pub(crate) async fn processing_graph(
             let stage_id = kind.graph_node_id(pipeline_id);
             let queue_stats = all_input_queues.get(key).map(|queue| queue.stats());
             let pipe_stats = all_pipe_metrics.get(key).map(|pipe| pipe.snapshot());
-            nodes.push(serde_json::json!({
-                "id": stage_id,
-                "type": kind.graph_type(),
-                "label": kind.graph_label(),
-                "stageKey": stage_key_str,
-                "active": !token.is_cancelled(),
-                "metrics": all_stage_metrics.get(key).map(|metrics| metrics.snapshot()),
-                "queueMetrics": queue_stats,
-                "pipeMetrics": pipe_stats,
-                "payloadStats": api_view_models::ring_payload_stats_json(stage_ring),
-            }));
+            nodes.push(api_view_models::processing_graph_stage_node(
+                stage_id.clone(),
+                kind.graph_type(),
+                kind.graph_label(),
+                stage_key_str,
+                !token.is_cancelled(),
+                all_stage_metrics.get(key).map(|metrics| metrics.snapshot()),
+                queue_stats.map(|stats| serde_json::json!(stats)),
+                pipe_stats,
+                api_view_models::ring_payload_stats_json(stage_ring),
+            ));
 
             if let Some(upstream) = kind.upstream() {
                 let (from, label) = if matches!(upstream, StageKind::Source) {
@@ -603,17 +574,15 @@ pub(crate) async fn processing_graph(
                         "video copy + audio select",
                     )
                 };
-                edges.push(serde_json::json!({
-                    "from": from,
-                    "to": stage_id,
-                    "label": label,
-                }));
+                edges.push(api_view_models::processing_graph_edge(
+                    from, stage_id, label,
+                ));
             } else if let StageKind::VideoPreset { preset } = &kind {
-                edges.push(serde_json::json!({
-                    "from": rb_node_id,
-                    "to": stage_id,
-                    "label": format!("decode → {preset} encode"),
-                }));
+                edges.push(api_view_models::processing_graph_edge(
+                    rb_node_id.clone(),
+                    stage_id,
+                    format!("decode → {preset} encode"),
+                ));
             }
         }
     }
@@ -635,22 +604,18 @@ pub(crate) async fn processing_graph(
         let protocol = MediaEngine::egress_protocol_from_url(&output.url);
         let protocol_label = MediaEngine::graph_protocol_label(protocol);
 
-        nodes.push(serde_json::json!({
-            "id": output_node_id,
-            "type": "egress",
-            "label": format!("{protocol_label} sender: {}", output.name.as_str()),
-            "active": egress.is_some_and(|egress| MediaEngine::egress_effective_status(egress, ingest.is_some()) == "running"),
-            "details": egress.map(|egress| {
-                let bytes = egress.bytes_sent.load(Ordering::Relaxed);
-                let mut details = api_view_models::egress_runtime_json(egress, true, ingest.is_some());
-                details["totalSize"] = serde_json::json!(bytes);
-                details["bitrateKbps"] =
-                    serde_json::json!(*egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()));
-                details["startedAt"] = serde_json::Value::String(egress.started_at.clone());
-                details
+        nodes.push(api_view_models::processing_graph_node(
+            output_node_id.clone(),
+            "egress",
+            format!("{protocol_label} sender: {}", output.name.as_str()),
+            egress.is_some_and(|egress| {
+                MediaEngine::egress_effective_status(egress, ingest.is_some()) == "running"
             }),
-            "metrics": egress.map(|egress| egress.metrics.snapshot()),
-        }));
+            egress.map(|egress| {
+                api_view_models::processing_graph_egress_details(egress, ingest.is_some())
+            }),
+            egress.map(|egress| egress.metrics.snapshot()),
+        ));
 
         let output_path = OutputPath::resolve(pipeline_id, &output.encoding, &output.url);
         let terminal_kind = output_path.terminal_stage_kind(ingest_is_hevc.then_some("hevc"));
@@ -678,53 +643,57 @@ pub(crate) async fn processing_graph(
                 .get(&mux_key)
                 .map(|stage| api_view_models::ring_payload_stats_json(&stage.ring));
             if added_packetizers.insert(mux_node_id.clone()) {
-                nodes.push(serde_json::json!({
-                    "id": mux_node_id.clone(),
-                    "type": "packetizer",
-                    "label": format!("MPEG-TS mux: {}", output.encoding.as_str()),
-                    "active": mux_active,
-                    "details": serde_json::json!({
-                        "protocol": "srt",
-                        "encoding": output.encoding.as_str(),
-                        "stageKey": mux_key,
-                        "payloadStats": mux_payload_stats,
-                    }),
-                }));
-                edges.push(serde_json::json!({
-                    "from": terminal_node_id,
-                    "to": mux_node_id.clone(),
-                    "label": "media packets",
-                }));
+                nodes.push(api_view_models::processing_graph_node(
+                    mux_node_id.clone(),
+                    "packetizer",
+                    format!("MPEG-TS mux: {}", output.encoding.as_str()),
+                    mux_active,
+                    Some(api_view_models::processing_graph_packetizer_details(
+                        "srt",
+                        output.encoding.as_str(),
+                        mux_key,
+                        mux_payload_stats,
+                    )),
+                    None,
+                ));
+                edges.push(api_view_models::processing_graph_edge(
+                    terminal_node_id,
+                    mux_node_id.clone(),
+                    "media packets",
+                ));
             }
-            edges.push(serde_json::json!({
-                "from": mux_node_id,
-                "to": output_node_id,
-                "label": "SRT send",
-            }));
+            edges.push(api_view_models::processing_graph_edge(
+                mux_node_id,
+                output_node_id,
+                "SRT send",
+            ));
         } else {
-            edges.push(serde_json::json!({
-                "from": terminal_node_id,
-                "to": output_node_id,
-                "label": MediaEngine::source_to_egress_label(protocol),
-            }));
+            edges.push(api_view_models::processing_graph_edge(
+                terminal_node_id,
+                output_node_id,
+                MediaEngine::source_to_egress_label(protocol),
+            ));
         }
     }
 
     if let Some(token) = rec_tokens.get(pipeline_id) {
         let rec_id = format!("{pipeline_id}_recording");
         let rec_stage_key = StageKey::new(pipeline_id, StageKind::recording());
-        nodes.push(serde_json::json!({
-            "id": rec_id,
-            "type": "recording",
-            "label": "MKV Recording",
-            "active": !token.is_cancelled(),
-            "metrics": all_stage_metrics.get(&rec_stage_key).map(|metrics| metrics.snapshot()),
-        }));
-        edges.push(serde_json::json!({
-            "from": rb_node_id,
-            "to": rec_id,
-            "label": "MKV mux",
-        }));
+        nodes.push(api_view_models::processing_graph_node(
+            rec_id.clone(),
+            "recording",
+            "MKV Recording",
+            !token.is_cancelled(),
+            None,
+            all_stage_metrics
+                .get(&rec_stage_key)
+                .map(|metrics| metrics.snapshot()),
+        ));
+        edges.push(api_view_models::processing_graph_edge(
+            rb_node_id.clone(),
+            rec_id,
+            "MKV mux",
+        ));
     }
 
     if hls_stores.contains_key(pipeline_id) {
@@ -733,24 +702,27 @@ pub(crate) async fn processing_graph(
         let hls_active = hls_consumers
             .get(pipeline_id)
             .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
-        nodes.push(serde_json::json!({
-            "id": hls_id,
-            "type": "hls",
-            "label": "HLS Preview",
-            "active": hls_active,
-            "metrics": all_stage_metrics.get(&hls_stage_key).map(|metrics| metrics.snapshot()),
-        }));
-        edges.push(serde_json::json!({
-            "from": rb_node_id,
-            "to": hls_id,
-            "label": "MPEG-TS segment",
-        }));
+        nodes.push(api_view_models::processing_graph_node(
+            hls_id.clone(),
+            "hls",
+            "HLS Preview",
+            hls_active,
+            None,
+            all_stage_metrics
+                .get(&hls_stage_key)
+                .map(|metrics| metrics.snapshot()),
+        ));
+        edges.push(api_view_models::processing_graph_edge(
+            rb_node_id,
+            hls_id,
+            "MPEG-TS segment",
+        ));
     }
 
-    serde_json::json!({
-        "generatedAt": chrono::Utc::now().to_rfc3339(),
-        "pipelineId": pipeline_id,
-        "nodes": nodes,
-        "edges": edges,
-    })
+    api_view_models::processing_graph_json(
+        chrono::Utc::now().to_rfc3339(),
+        pipeline_id,
+        nodes,
+        edges,
+    )
 }

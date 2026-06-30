@@ -547,6 +547,156 @@ pub(crate) fn single_stage_telemetry_json(
     value
 }
 
+pub(crate) fn processing_graph_node(
+    id: impl Into<String>,
+    node_type: &'static str,
+    label: impl Into<String>,
+    active: bool,
+    details: Option<serde_json::Value>,
+    metrics: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id.into(),
+        "type": node_type,
+        "label": label.into(),
+        "active": active,
+        "details": details,
+        "metrics": metrics,
+    })
+}
+
+pub(crate) fn processing_graph_edge(
+    from: impl Into<String>,
+    to: impl Into<String>,
+    label: impl Into<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "from": from.into(),
+        "to": to.into(),
+        "label": label.into(),
+    })
+}
+
+pub(crate) fn processing_graph_ingest_details(ingest: &ActiveIngest) -> serde_json::Value {
+    let elapsed_secs = ingest.start_time.elapsed().as_secs_f64();
+    let bytes_received = ingest.bytes_received.load(Ordering::Relaxed);
+    let bitrate_kbps = if elapsed_secs > 1.0 {
+        Some(((bytes_received as f64 * 8.0) / (elapsed_secs * 1000.0) * 10.0).round() / 10.0)
+    } else {
+        None
+    };
+
+    serde_json::json!({
+        "protocol": ingest.protocol,
+        "remoteAddr": ingest.remote_addr,
+        "video": ingest.video,
+        "audio": ingest.audio,
+        "bytesReceived": bytes_received,
+        "bitrateKbps": bitrate_kbps,
+    })
+}
+
+pub(crate) fn processing_graph_demux_details(ingest: &ActiveIngest) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": ingest.protocol,
+        "video": ingest.video,
+        "audio": ingest.audio,
+        "audioTracks": ingest
+            .audio_tracks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+    })
+}
+
+pub(crate) fn processing_graph_source_ring_details(
+    fill: usize,
+    capacity: usize,
+    payload_stats: serde_json::Value,
+    format: impl Into<String>,
+    readers: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "fill": fill,
+        "capacity": capacity,
+        "fillPercent": (fill * 100).checked_div(capacity).unwrap_or(0),
+        "payloadStats": payload_stats,
+        "format": format.into(),
+        "readers": readers,
+    })
+}
+
+pub(crate) fn processing_graph_stage_node(
+    id: impl Into<String>,
+    node_type: &'static str,
+    label: impl Into<String>,
+    stage_key: impl Into<String>,
+    active: bool,
+    metrics: Option<serde_json::Value>,
+    queue_metrics: Option<serde_json::Value>,
+    pipe_metrics: Option<serde_json::Value>,
+    payload_stats: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id.into(),
+        "type": node_type,
+        "label": label.into(),
+        "stageKey": stage_key.into(),
+        "active": active,
+        "metrics": metrics,
+        "queueMetrics": queue_metrics,
+        "pipeMetrics": pipe_metrics,
+        "payloadStats": payload_stats,
+    })
+}
+
+pub(crate) fn processing_graph_egress_details(
+    egress: &ActiveEgress,
+    has_ingest: bool,
+) -> serde_json::Value {
+    let bytes = egress.bytes_sent.load(Ordering::Relaxed);
+    let mut details = egress_runtime_json(egress, true, has_ingest);
+    details["totalSize"] = serde_json::json!(bytes);
+    details["bitrateKbps"] = serde_json::json!(
+        *egress
+            .bitrate_kbps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    );
+    details["startedAt"] = serde_json::Value::String(egress.started_at.clone());
+    details
+}
+
+pub(crate) fn processing_graph_packetizer_details(
+    protocol: &'static str,
+    encoding: &str,
+    stage_key: String,
+    payload_stats: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": protocol,
+        "encoding": encoding,
+        "stageKey": stage_key,
+        "payloadStats": payload_stats,
+    })
+}
+
+pub(crate) fn processing_graph_json(
+    generated_at: String,
+    pipeline_id: &str,
+    nodes: Vec<serde_json::Value>,
+    edges: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "generatedAt": generated_at,
+        "pipelineId": pipeline_id,
+        "nodes": nodes,
+        "edges": edges,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +839,48 @@ mod tests {
             value["memoryAccounting"]["tsMuxerRings"][0]["stageKey"],
             "pipeline-a_ts"
         );
+    }
+
+    #[test]
+    fn processing_graph_helpers_wrap_node_edge_and_root_shape() {
+        let node = processing_graph_node(
+            "pipe_ingest",
+            "ingest",
+            "RTMP ingest",
+            true,
+            Some(serde_json::json!({"protocol": "rtmp"})),
+            Some(serde_json::json!({"packetsIn": 1})),
+        );
+        let edge = processing_graph_edge("pipe_ingest", "pipe_demux", "RTMP");
+        let graph = processing_graph_json(
+            "2026-06-30T12:00:00Z".to_string(),
+            "pipe",
+            vec![node.clone()],
+            vec![edge.clone()],
+        );
+
+        assert_eq!(node["type"], "ingest");
+        assert_eq!(node["details"]["protocol"], "rtmp");
+        assert_eq!(edge["label"], "RTMP");
+        assert_eq!(graph["pipelineId"], "pipe");
+        assert_eq!(graph["nodes"][0]["id"], "pipe_ingest");
+        assert_eq!(graph["edges"][0]["to"], "pipe_demux");
+    }
+
+    #[test]
+    fn processing_graph_source_ring_details_reports_fill_percent() {
+        let details = processing_graph_source_ring_details(
+            2,
+            8,
+            serde_json::json!({"payloadBytes": 512}),
+            "mpegts".to_string(),
+            vec![serde_json::json!({"name": "preview"})],
+        );
+
+        assert_eq!(details["fill"], 2);
+        assert_eq!(details["capacity"], 8);
+        assert_eq!(details["fillPercent"], 25);
+        assert_eq!(details["payloadStats"]["payloadBytes"], 512);
+        assert_eq!(details["readers"][0]["name"], "preview");
     }
 }
