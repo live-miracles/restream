@@ -45,6 +45,8 @@ cargo fmt --all
 # Frontend
 npx tsc -p tsconfig.json
 npx tailwindcss -i public/input.css -o public/output.css
+npm run test:frontend
+npm run test:frontend:coverage
 npx playwright test
 
 # Benchmarks and integration tests
@@ -53,6 +55,11 @@ scripts/resource-limit ./test/run-integration.sh mixed-scale   # also: ramp, bon
 ```
 
 Edit `public/ts/` and `public/input.css`. Do not hand-edit generated files in `public/js/`.
+Use `npm run test:frontend` as the default frontend verification loop. The main
+coverage gate is `npm run test:frontend:coverage`, which measures the
+deterministic Node/fake-DOM TypeScript surface. `npm run test:frontend:coverage:all`
+is a broader diagnostic report and `npm run test:frontend:js-smoke` keeps a
+small direct guard on generated `public/js/`.
 Integration tests use a private loopback namespace by default; use `--host` only when required.
 
 ### Build Safety (WSL2)
@@ -130,7 +137,7 @@ keep a scalar fallback; use runtime feature detection; minimize `unsafe` and doc
 - Only correctness-oriented harness slices may parallelize by default. Criterion runs and
   measurement-oriented harness modes stay serial unless the run is intentionally resource-isolated.
 - `cargo test av_sync` for timestamp/DTS/PTS changes; protocol-matched probes for RTMP/SRT.
-- UI changes: `npx tsc` + relevant Playwright tests.
+- UI changes: `npm run test:frontend` plus relevant Playwright tests when browser-only behavior is touched.
 - Scale/integration: `scripts/resource-limit ./test/run-integration.sh mixed-scale` (ramp, bonding).
 
 ## Session Hygiene
