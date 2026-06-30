@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-use crate::domain::stage::EncodingStagePlan;
+use crate::application::output_path::{OutputPath, is_rtmp_url};
 use crate::types::{Ingest, Job, Output, Pipeline};
 
 const OUTPUT_URL_SCHEME_ERROR: &str =
@@ -770,19 +770,16 @@ fn graph_preview(request: &PlanRequest, current_graph: Option<&Value>) -> GraphP
                 .or(request.pipeline_id.as_deref()),
             change.encoding.as_deref(),
         ) {
-            let plan = EncodingStagePlan::from_encoding(pid, encoding);
-            if let Some(stage) = plan.video_stage() {
+            let output_path =
+                OutputPath::resolve(pid, encoding, change.url.as_deref().unwrap_or(""));
+            if let Some(stage) = output_path.video_stage() {
                 candidate_stages.insert(stage.kind.to_string());
             }
-            if let Some(stage) = plan.audio_stage() {
+            if let Some(stage) = output_path.audio_stage() {
                 candidate_stages.insert(stage.kind.to_string());
             }
-            if change
-                .url
-                .as_deref()
-                .is_some_and(|url| url.starts_with("rtmp://") || url.starts_with("rtmps://"))
-            {
-                candidate_stages.insert(plan.codec_edge_stage("hevc_to_h264").kind.to_string());
+            if let Some(stage) = output_path.codec_edge_candidate_stage() {
+                candidate_stages.insert(stage.kind.to_string());
             }
         }
     }
@@ -834,11 +831,12 @@ fn impact_preview(request: &PlanRequest) -> ImpactPreview {
         {
             affected_pipelines.insert(pid.to_string());
             if let Some(encoding) = change.encoding.as_deref() {
-                let plan = EncodingStagePlan::from_encoding(pid, encoding);
-                if let Some(stage) = plan.video_stage() {
+                let output_path =
+                    OutputPath::resolve(pid, encoding, change.url.as_deref().unwrap_or(""));
+                if let Some(stage) = output_path.video_stage() {
                     shared_stage_candidates.insert(stage.kind.to_string());
                 }
-                if let Some(stage) = plan.audio_stage() {
+                if let Some(stage) = output_path.audio_stage() {
                     shared_stage_candidates.insert(stage.kind.to_string());
                 }
             }
@@ -846,11 +844,7 @@ fn impact_preview(request: &PlanRequest) -> ImpactPreview {
         if let Some(output_id) = &change.output_id {
             affected_outputs.insert(output_id.clone());
         }
-        if change
-            .url
-            .as_deref()
-            .is_some_and(|url| url.starts_with("rtmp://") || url.starts_with("rtmps://"))
-        {
+        if change.url.as_deref().is_some_and(is_rtmp_url) {
             engineering_notes.push(
                 "RTMP/RTMPS outputs may require a shared HEVC-to-H.264 codec edge when the source is HEVC."
                     .to_string(),

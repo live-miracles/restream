@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use crate::domain::stage::{EncodingStagePlan, StageKey, StageKind};
+use crate::application::output_path::OutputPath;
+use crate::domain::stage::{StageKey, StageKind};
 use crate::media::engine::MediaEngine;
 
 pub(crate) async fn output_status(
@@ -785,12 +786,8 @@ pub(crate) async fn processing_graph(
             "metrics": egress.map(|egress| egress.metrics.snapshot()),
         }));
 
-        let stage_plan = EncodingStagePlan::from_encoding(pipeline_id, &output.encoding);
-        let terminal_kind = if protocol == "rtmp" && ingest_is_hevc {
-            StageKind::codec_edge("hevc_to_h264", stage_plan.terminal_kind().clone())
-        } else {
-            stage_plan.terminal_kind().clone()
-        };
+        let output_path = OutputPath::resolve(pipeline_id, &output.encoding, &output.url);
+        let terminal_kind = output_path.terminal_stage_kind(ingest_is_hevc.then_some("hevc"));
         let terminal_node_id = if matches!(terminal_kind, StageKind::Source) {
             rb_node_id.clone()
         } else {

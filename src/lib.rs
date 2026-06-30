@@ -51,7 +51,8 @@ pub mod runtime_info;
 pub mod test_fixtures;
 pub mod types;
 
-use crate::domain::stage::{EncodingStagePlan, StageKey};
+use crate::application::output_path::OutputPath;
+use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
 use std::collections::HashMap;
@@ -651,15 +652,9 @@ pub async fn run_app() {
                 // Transcoder backend: external by default (subprocess FFmpeg,
                 // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
                 // in-process libavcodec path.  See docs/media-pipeline.md.
-                let stage_plan =
-                    EncodingStagePlan::from_encoding(output.pipeline_id.as_str(), &output.encoding);
-
-                let is_rtmp =
-                    output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
-                let ingest_is_hevc = engine
-                    .ingest_video_codec(&output.pipeline_id)
-                    .await
-                    .is_some_and(|codec| codec == "hevc" || codec == "h265");
+                let output_path =
+                    OutputPath::resolve(output.pipeline_id.as_str(), &output.encoding, &output.url);
+                let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
                 // Stage graph (new design — H.265→H.264 conversion at the output
                 // edge, not up-front):
                 //
@@ -674,23 +669,21 @@ pub async fn run_app() {
                 // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
                 // applied after the video+audio stages, avoiding a redundant
                 // source-resolution encode pass.
-                let video_stage = stage_plan.video_stage();
-                // H.265→H.264 is only needed at the RTMP output edge.
-                let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
                 // Pass the ingest codec as override so the video:preset ring is
                 // tagged with the correct codec hint for downstream audio stages
                 // and egress writers (source ring has no hint; active_ingests is
                 // the authoritative source).
-                let ingest_codec_override = if ingest_is_hevc { Some("hevc") } else { None };
+                let ingest_codec_override =
+                    output_path.ingest_codec_override(ingest_video_codec.as_deref());
 
                 // Stage 1: video transcode from source ring (H.265 flows through
                 // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
                 // the input_codec_override passed into the stage).
-                let video_buf = if let Some(stage) = &video_stage {
+                let video_buf = if let Some(stage) = output_path.video_stage() {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
-                            stage.kind.clone(),
+                            stage.kind,
                             source_buf.clone(),
                             ingest_codec_override,
                         )
@@ -702,7 +695,7 @@ pub async fn run_app() {
                 // Stage 2: optional audio filter (keyed on video stage to prevent
                 // cross-contamination between presets). Shared between RTMP and SRT
                 // egresses on the same preset.
-                let pre_h264_buf = if let Some(stage) = stage_plan.audio_stage() {
+                let pre_h264_buf = if let Some(stage) = output_path.audio_stage() {
                     engine
                         .get_or_create_transcoder(
                             &output.pipeline_id,
@@ -720,11 +713,11 @@ pub async fn run_app() {
                 // Keyed by terminal_kind so RTMP-passthrough and RTMP-720p each
                 // get their own converter, and all RTMP egresses on the same preset
                 // share it.
-                let ring_buf = if needs_rtmp_h264_conv {
+                let ring_buf = if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
                     engine
                         .get_or_create_h264_transcoder(
                             &output.pipeline_id,
-                            stage_plan.terminal_kind().clone(),
+                            output_path.codec_edge_upstream_kind().clone(),
                             pre_h264_buf,
                         )
                         .await
@@ -1041,27 +1034,15 @@ pub async fn run_app() {
                     .await;
                 let effective_has_ingest = has_ingest || within_disconnect_grace;
                 if effective_has_ingest && (is_active || output.desired_state == "running") {
-                    let is_rtmp =
-                        output.url.starts_with("rtmp://") || output.url.starts_with("rtmps://");
-                    let ingest_is_hevc = engine
-                        .ingest_video_codec(&output.pipeline_id)
-                        .await
-                        .is_some_and(|codec| codec == "hevc" || codec == "h265");
-
-                    let stage_plan = EncodingStagePlan::from_encoding(
+                    let output_path = OutputPath::resolve(
                         output.pipeline_id.as_str(),
                         &output.encoding,
+                        &output.url,
                     );
-                    let needs_rtmp_h264_conv = ingest_is_hevc && is_rtmp;
+                    let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
 
-                    if let Some(stage) = stage_plan.video_stage() {
+                    for stage in output_path.needed_stage_keys(ingest_video_codec.as_deref()) {
                         needed_stages.insert(stage);
-                    }
-                    if let Some(stage) = stage_plan.audio_stage() {
-                        needed_stages.insert(stage);
-                    }
-                    if needs_rtmp_h264_conv {
-                        needed_stages.insert(stage_plan.codec_edge_stage("hevc_to_h264"));
                     }
                 }
             }

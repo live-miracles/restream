@@ -133,7 +133,9 @@ Progress so far:
 
 - done: SRT ingest configuration types and validation
 - done: ingest security configuration
-- next: log DTO ownership and any remaining output/stage resolution request types
+- done: logging DTO ownership
+- done: application-owned output-path stage resolution
+- next: remaining output/stage resolution request types that still leak through DTO catch-alls
 
 ### 2. Add an Application Layer
 
@@ -162,7 +164,8 @@ Progress so far:
 
 - started: `application::ports::PipelineLookup`
 - started: `application::ingest` stream-key lookup/auth helpers
-- next: `application::output_path` and reconciler extraction
+- done: `application::output_path` for source/video/audio/codec-edge planning
+- next: `application::reconcile` so `lib.rs` owns less lifecycle orchestration
 
 ### 3. Move Runtime Views Out Of The Engine Core
 
