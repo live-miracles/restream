@@ -95,22 +95,7 @@ test("overview activity uses a restream-scoped log stream after the initial snap
   await flushAsyncWork();
 
   assert.deepEqual(requests, ["/api/v1/logs?scope=restream&limit=24&order=desc"]);
-  assert.equal(streams.length, 2);
-  assert.equal(
-    streams.some(
-      (stream) => stream.url === "/api/v1/logs/stream?event_class=lifecycle",
-    ),
-    true,
-    "overview mode should also keep the dashboard lifecycle stream open",
-  );
-  assert.equal(
-    streams.some(
-      (stream) =>
-        stream.url === "/api/v1/logs/stream?scope=restream&last_event_id=41",
-    ),
-    true,
-    "overview activity should still open its restream-scoped activity stream",
-  );
+  assert.equal(streams.length, 1);
 
   const overviewActivityStream = streams.find(
     (stream) =>

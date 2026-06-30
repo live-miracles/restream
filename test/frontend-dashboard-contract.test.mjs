@@ -18,6 +18,13 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function waitForCondition(check, attempts = 40) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (check()) return;
+    await Promise.resolve();
+  }
+}
+
 test("dashboard steady-state polling avoids repeated settings fetches", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const summaryHealthUrl = "/api/v1/engine/health?view=summary";
@@ -206,13 +213,15 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
   }
 });
 
-test("overview lifecycle SSE wakes the dashboard runtime without waiting for the next poll", async () => {
+test("overview activity SSE wakes the dashboard runtime without waiting for the next poll", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const summaryHealthUrl = "/api/v1/engine/health?view=summary";
   const fullMetricsUrl = "/metrics/system";
   const summaryMetricsUrl = "/metrics/system?view=summary";
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=overview";
+  appendRoot(document, "div", "overview-mode-panel");
+  appendRoot(document, "div", "overview-mode-content");
   appendRoot(document, "div", "dashboard-grid");
 
   const requests = [];
@@ -269,6 +278,26 @@ test("overview lifecycle SSE wakes the dashboard runtime without waiting for the
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (href === "/api/v1/logs?scope=restream&limit=24&order=desc") {
+      return new Response(
+        JSON.stringify({
+          logs: [
+            {
+              id: 41,
+              ts: "2026-06-30T00:00:00Z",
+              level: "INFO",
+              target: "restream::server",
+              message: "dashboard api server listening",
+              fields: "{}",
+              pipelineId: null,
+              outputId: null,
+              eventType: "restream.http.ready",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
 
     throw new Error(`Unexpected fetch: ${href}`);
   };
@@ -320,16 +349,17 @@ test("overview lifecycle SSE wakes the dashboard runtime without waiting for the
 
   try {
     const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+    const modes = await loadCompiledFrontendModule("features/modes.js");
 
     await dashboard.refreshDashboardRuntime();
-    dashboard.syncDashboardRuntimeStream();
-    await flushAsyncWork();
+    modes.renderDashboardModes();
+    await waitForCondition(() => streams.length === 1);
 
-    assert.equal(streams.length, 1, "overview mode should open a lifecycle SSE stream");
+    assert.equal(streams.length, 1, "overview mode should open one restream activity SSE stream");
     assert.equal(
       streams[0].url,
-      "/api/v1/logs/stream?event_class=lifecycle",
-      "overview runtime should listen to lifecycle events across restream, pipeline, and output scopes",
+      "/api/v1/logs/stream?scope=restream&last_event_id=41",
+      "overview runtime should reuse the restream activity stream instead of a second lifecycle-only feed",
     );
 
     const initialSummaryHealthCount = requests.filter(
@@ -349,9 +379,12 @@ test("overview lifecycle SSE wakes the dashboard runtime without waiting for the
       pipelineId: "pipe-1",
       outputId: null,
       eventType: "pipeline.publisher.connected",
-      eventClass: "lifecycle",
     });
-    await flushAsyncWork();
+    await waitForCondition(
+      () =>
+        requests.filter((href) => href === summaryHealthUrl).length ===
+        initialSummaryHealthCount + 1,
+    );
 
     assert.equal(
       requests.filter((href) => href === summaryHealthUrl).length,
@@ -361,9 +394,12 @@ test("overview lifecycle SSE wakes the dashboard runtime without waiting for the
     assert.equal(
       requests.filter((href) => href === summaryMetricsUrl).length,
       initialSummaryMetricsCount + 1,
-      "a lifecycle event should also refresh summary metrics immediately",
+      "an overview activity lifecycle event should also refresh summary metrics immediately",
     );
   } finally {
+    for (const stream of streams) {
+      stream.close?.();
+    }
     if (originalEventSource === undefined) {
       delete globalThis.EventSource;
     } else {
@@ -502,6 +538,7 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     modes.renderDashboardModes();
     await flushAsyncWork();
     await flushAsyncWork();
+    await flushAsyncWork();
 
     assert.equal(
       requests.filter((href) => href === summaryHealthUrl).length,
@@ -521,7 +558,7 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     assert.equal(
       streams.length,
       0,
-      "settings mode should keep the lifecycle stream closed",
+      "settings mode should keep runtime log streams closed",
     );
 
     requests.length = 0;
@@ -548,6 +585,7 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     modes.setDashboardMode("overview");
     await flushAsyncWork();
     await flushAsyncWork();
+    await flushAsyncWork();
 
     assert.equal(
       requests.filter((href) => href === summaryHealthUrl).length,
@@ -560,26 +598,16 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
       "returning to a runtime mode should also refresh dashboard config",
     );
     assert.equal(
-      streams.some(
-        (stream) =>
-          String(stream.url).startsWith(
-            "/api/v1/logs/stream?event_class=lifecycle",
-          ) ||
-          String(stream.url).includes("&event_class=lifecycle"),
+      streams.some((stream) =>
+        String(stream.url).startsWith("/api/v1/logs/stream?scope=restream"),
       ),
       true,
-      "returning to a runtime mode should open the lifecycle stream",
-    );
-    assert.equal(
-      streams.some(
-        (stream) =>
-          String(stream.url).startsWith("/api/v1/logs/stream?scope=restream") ||
-          String(stream.url).includes("&scope=restream"),
-      ),
-      true,
-      "returning to overview should also resume the restream activity stream",
+      "returning to overview should resume the restream activity stream",
     );
   } finally {
+    for (const stream of streams) {
+      stream.close?.();
+    }
     if (originalEventSource === undefined) {
       delete globalThis.EventSource;
     } else {

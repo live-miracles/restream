@@ -32,6 +32,7 @@ import {
   renderRestreamActivityCards,
 } from "./overview-activity.js";
 import {
+  handleDashboardRuntimeLifecycleLog,
   refreshDashboard,
   refreshDashboardRuntime,
   requestDetailedMetricsRefresh,
@@ -167,6 +168,7 @@ function ensureOverviewActivityStream(): void {
     try {
       const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
       mergeOverviewActivityLogs([data]);
+      handleDashboardRuntimeLifecycleLog(data);
       if (currentMode === "overview" || currentMode === null) renderOverview();
     } catch {
       // Ignore malformed frames and wait for the next reconnect/snapshot.

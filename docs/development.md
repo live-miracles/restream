@@ -118,8 +118,10 @@ The Node-based frontend suite now uses a temporary sourcemapped test build so
 coverage reports point at `public/ts/**`, while `npm run test:frontend:js-smoke`
 keeps a smaller direct check against the shipped `public/js/**` bundle.
 Use `npm run test:frontend:coverage` for the Node-scope TypeScript coverage
-gate and `npm run test:frontend:coverage:all` when you want the broader
-all-files report as a diagnostic view.
+gate. That covered surface now includes the dashboard/history/status transport
+modules that own the polling-vs-SSE split. Use
+`npm run test:frontend:coverage:all` when you want the broader all-files
+report as a diagnostic view.
 
 ## Testing
 

@@ -38,6 +38,11 @@ const DASHBOARD_RUNTIME_MODES = new Set([
   "inspect",
   "control",
 ]);
+const DASHBOARD_RUNTIME_LIFECYCLE_STREAM_MODES = new Set([
+  "pipeline",
+  "inspect",
+  "control",
+]);
 const DASHBOARD_CONFIG_MODES = new Set([
   "overview",
   "pipeline",
@@ -167,7 +172,7 @@ function publisherHealthModalOpen(): boolean {
 
 function dashboardRuntimeStreamingEnabled(): boolean {
   if (document.hidden) return false;
-  return shouldFetchRuntimeHealth();
+  return DASHBOARD_RUNTIME_LIFECYCLE_STREAM_MODES.has(currentDashboardMode());
 }
 
 function shouldFetchRuntimeHealth(): boolean {
@@ -214,9 +219,16 @@ function scheduleDashboardRuntimeRefresh(): void {
   if (dashboardRuntimeRefreshTimer) return;
   dashboardRuntimeRefreshTimer = setTimeout(() => {
     dashboardRuntimeRefreshTimer = null;
-    if (!dashboardRuntimeStreamingEnabled()) return;
+    if (document.hidden || !shouldFetchRuntimeHealth()) return;
     void requestDashboardRefresh(false);
   }, DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS);
+}
+
+export function handleDashboardRuntimeLifecycleLog(log: AppLogRow): void {
+  rememberDashboardRuntimeEventId(log);
+  if (lifecycleEventShouldRefresh(log)) {
+    scheduleDashboardRuntimeRefresh();
+  }
 }
 
 function openDashboardRuntimeStream(): void {
@@ -236,10 +248,7 @@ function openDashboardRuntimeStream(): void {
       if (dashboardRuntimeStream !== stream) return;
       try {
         const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
-        rememberDashboardRuntimeEventId(data);
-        if (lifecycleEventShouldRefresh(data)) {
-          scheduleDashboardRuntimeRefresh();
-        }
+        handleDashboardRuntimeLifecycleLog(data);
       } catch {
         // Ignore malformed frames and wait for the next lifecycle event.
       }

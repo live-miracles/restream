@@ -246,11 +246,13 @@ Lagging receivers are closed; the browser reconnects automatically using
 `Last-Event-ID`.
 The dashboard overview activity rail uses an initial `GET /api/logs` snapshot
 plus this SSE endpoint filtered with `scope=restream` for live restream-wide
-activity updates.
-Runtime dashboard surfaces also subscribe to this SSE endpoint with
-`event_class=lifecycle` so overview, pipeline, control-room, and publisher
-health refresh immediately on process lifecycle transitions instead of waiting
-for the next periodic poll.
+activity updates. Overview also reuses that same restream-scoped stream to
+wake runtime summary refreshes on lifecycle events, avoiding a second
+lifecycle-only SSE connection in that mode.
+Pipeline, inspect, control-room, and publisher-health runtime surfaces
+subscribe to this SSE endpoint with `event_class=lifecycle` so they refresh
+immediately on process lifecycle transitions instead of waiting for the next
+periodic poll.
 The output-history and pipeline-history "Live" views use the same SSE endpoint
 with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
 resume cursors instead of periodic history re-polls.

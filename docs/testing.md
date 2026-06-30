@@ -34,7 +34,10 @@ compiled-bundle smoke coverage:
   against the shipped `public/js/**` bundle.
 - `npm run test:frontend:coverage` keeps the same split, but reports coverage
   back onto the deterministic TypeScript modules that the Node/fake-DOM suite
-  is meant to own. This is the main frontend coverage gate.
+  is meant to own. This is the main frontend coverage gate. Runtime transport
+  modules such as `features/dashboard.ts`, `features/modes.ts`,
+  `features/status.ts`, `features/publisher-health.ts`, and
+  `history/controller.ts` are part of this covered surface.
 - `npm run test:frontend:coverage:all` keeps the same runtime path but emits a
   broader all-files TypeScript report for diagnostic use; expect browser-heavy
   modules to stay lower until they get Playwright or browser-native coverage.
