@@ -169,6 +169,7 @@ await runCheck("renderOutsColumn reuses cards and patches live telemetry fields"
     isOutputToggleBusy: () => false,
   });
   pipelineView.renderOutsColumn("pipe-1");
+  const firstHandler = outputsList.onclick;
 
   assert.equal(outputsList.children.length, 2);
   const firstCard = outputsList.children[0];
@@ -193,6 +194,7 @@ await runCheck("renderOutsColumn reuses cards and patches live telemetry fields"
   pipelineView.renderOutsColumn("pipe-1");
 
   assert.equal(outputsList.children[0], firstCard);
+  assert.equal(outputsList.onclick, firstHandler);
   assert.match(metrics.innerHTML, /2\.8 Mb\/s/);
   assert.equal(error.textContent, "connection reset");
   assert.equal(error.classList.contains("hidden"), false);
