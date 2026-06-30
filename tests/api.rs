@@ -106,6 +106,56 @@ async fn authenticated_app_with_temp_media()
     (app, cookie, temp_dir, pool)
 }
 
+async fn authenticated_app_with_temp_media_and_engine() -> (
+    axum::Router,
+    String,
+    std::path::PathBuf,
+    SqlitePool,
+    Arc<MediaEngine>,
+) {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    db::setup_database_schema(&pool).await.unwrap();
+
+    let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
+    api::initialize_auth(&pool, &sessions).await;
+
+    let security = Arc::new(IngestSecurityService::new(
+        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
+    ));
+    let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
+        restream::types::SrtGlobalIngestConfig::default(),
+        &[],
+    ));
+    let (log_broadcast, _) = broadcast::channel(32);
+    let engine = Arc::new(MediaEngine::new());
+    let temp_dir =
+        std::env::temp_dir().join(format!("restream-api-media-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let media_dir = temp_dir.to_string_lossy().to_string();
+
+    let state = Arc::new(api::AppState {
+        db: pool.clone(),
+        security,
+        ingest_policy_store,
+        sessions,
+        engine: engine.clone(),
+        ingest_disconnect_grace_ms: restream::RuntimeTuning::default().ingest_disconnect_grace_ms,
+        ports: api::PortConfig {
+            rtmp: 1935,
+            srt: 10080,
+        },
+        media_dir,
+        alert_tracker: restream::alerts::AlertTracker::new(),
+        log_broadcast,
+        #[cfg(feature = "agent-execution")]
+        agent_execution: Arc::new(restream::agent_execution::AgentExecutionStore::default()),
+    });
+
+    let app = api::create_router(state);
+    let cookie = login(&app).await;
+    (app, cookie, temp_dir, pool, engine)
+}
+
 async fn login(app: &axum::Router) -> String {
     let resp = app
         .clone()
@@ -1497,6 +1547,67 @@ async fn diagnostics_requires_active_ingest() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn diagnostics_supports_active_file_ingest() {
+    let (app, cookie, media_dir, pool, engine) =
+        authenticated_app_with_temp_media_and_engine().await;
+
+    db::create_pipeline(
+        &pool,
+        "pipe-file-diag",
+        "File Diagnostics",
+        "file-diag-key",
+        Some("file"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    db::create_ingest(
+        &pool,
+        "ingest-file-diag",
+        "source.mp4",
+        "file-diag-key",
+        true,
+        "00:00:02",
+        false,
+        2,
+    )
+    .await
+    .unwrap();
+
+    std::fs::copy(
+        restream::test_fixtures::sparse_gop_mp4_fixture().unwrap(),
+        media_dir.join("source.mp4"),
+    )
+    .unwrap();
+
+    engine
+        .try_register_ingest("pipe-file-diag", "file-diag-key", "file")
+        .await
+        .expect("file ingest should register");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/pipelines/pipe-file-diag/diagnostics?probe=file",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = String::from_utf8(body_bytes(resp).await.to_vec()).unwrap();
+    assert!(body.contains("\"name\":\"File Source\""));
+    assert!(body.contains("\"name\":\"File Ingest Runtime\""));
+    assert!(body.contains("\"name\":\"Preview & Recording\""));
+    assert!(!body.contains("\"name\":\"Publisher Transport\""));
+    assert!(!body.contains("\"name\":\"Network Bandwidth\""));
+    assert!(!body.contains("\"name\":\"SRT Listener Socket\""));
 }
 
 // --- Password change ---

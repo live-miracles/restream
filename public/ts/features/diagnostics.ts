@@ -35,6 +35,15 @@ let publisherProtocol: string | null = null;
 let probeRawStdout: string = "";
 let probeRawStderr: string = "";
 
+function normalizeProbeProtocol(
+  protocol: string | null,
+  pipe: PipelineView | undefined,
+): string {
+  if (protocol === "file" || pipe?.inputSource === "file") return "file";
+  if (protocol === "srt") return "srt";
+  return "rtmp";
+}
+
 function getModal(): HTMLDialogElement | null {
   return document.getElementById(
     "diagnostics-modal",
@@ -52,7 +61,7 @@ export function openDiagnosticsModal(pipeId: string): void {
   diagnosticsPipeId = pipeId;
   const pipe = getPipeline();
   publisherProtocol = pipe?.input.publisher?.protocol || null;
-  activeProbeProtocol = publisherProtocol || "rtmp";
+  activeProbeProtocol = normalizeProbeProtocol(publisherProtocol, pipe);
 
   resetState();
 
@@ -96,6 +105,11 @@ function resetState(): void {
 function renderControls(): void {
   const container = document.getElementById("diagnostics-probe-toggle");
   if (!container) return;
+
+  if (activeProbeProtocol === "file") {
+    container.innerHTML = `<span class="badge badge-outline badge-info">FILE</span>`;
+    return;
+  }
 
   const isRtmp = activeProbeProtocol === "rtmp";
   container.innerHTML =

@@ -710,10 +710,7 @@ impl MediaEngine {
             .read()
             .await
             .get(pipeline_id)
-            .map(|ingest| match ingest.protocol.as_str() {
-                "file" => "rtmp".to_string(),
-                protocol => protocol.to_string(),
-            })
+            .map(|ingest| ingest.protocol.clone())
     }
 
     pub async fn ingest_video_codec(&self, pipeline_id: &str) -> Option<String> {

@@ -17,6 +17,23 @@ use serde_json::json;
 use sysinfo::{Disks, Networks, System};
 
 use crate::media::engine::MediaEngine;
+use crate::media::file_analysis::MediaFileAnalysis;
+
+#[derive(Debug, Clone)]
+pub struct FileDiagnosticsContext {
+    pub ingest_id: String,
+    pub filename: String,
+    pub path: PathBuf,
+    pub file_exists: bool,
+    pub file_size_bytes: Option<u64>,
+    pub file_modified_at: Option<String>,
+    pub loop_enabled: bool,
+    pub start_time: String,
+    pub live_optimized: bool,
+    pub target_gop_seconds: u32,
+    pub analysis: Option<MediaFileAnalysis>,
+    pub analysis_error: Option<String>,
+}
 
 fn media_root_path() -> PathBuf {
     let configured = std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".to_string());
@@ -40,6 +57,25 @@ fn disk_for_path<'a>(disks: &'a Disks, path: &Path) -> Option<(&'a sysinfo::Disk
                 .then_some((disk, mount.components().count()))
         })
         .max_by_key(|(_, depth)| *depth)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const KIB: f64 = 1024.0;
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2} GiB", bytes as f64 / GIB)
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.2} MiB", bytes as f64 / MIB)
+    } else if bytes >= 1024 {
+        format!("{:.2} KiB", bytes as f64 / KIB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 // ─── SSE event helpers ────────────────────────────────────────────────────────
@@ -802,6 +838,201 @@ async fn check_gop_analysis(idx: u32, engine: &Arc<MediaEngine>, pipeline_id: &s
     .with_issues(issues)
 }
 
+async fn check_file_source(idx: u32, file: Option<&FileDiagnosticsContext>) -> DiagResult {
+    let start = Instant::now();
+    let mut lines = vec![];
+    let mut issues = vec![];
+
+    if let Some(file) = file {
+        lines.push(format!("Filename: {}", file.filename));
+        lines.push(format!("Path: {}", file.path.display()));
+        lines.push(format!("Exists: {}", yes_no(file.file_exists)));
+        lines.push(format!("Loop enabled: {}", yes_no(file.loop_enabled)));
+        lines.push(format!("Start time: {}", file.start_time));
+        lines.push(format!(
+            "Live optimized: {}",
+            if file.live_optimized {
+                format!("yes (target {}s GOP)", file.target_gop_seconds)
+            } else {
+                "no".to_string()
+            }
+        ));
+        if let Some(size) = file.file_size_bytes {
+            lines.push(format!("Size: {}", format_bytes(size)));
+        }
+        if let Some(modified_at) = &file.file_modified_at {
+            lines.push(format!("Modified: {}", modified_at));
+        }
+        if !file.file_exists {
+            issues.push("Configured source file is missing from the media directory.".to_string());
+        }
+
+        if let Some(analysis) = &file.analysis {
+            lines.push(format!(
+                "Container analysis: codec={}, fps={}, duration={}s",
+                analysis.video_codec.as_deref().unwrap_or("unknown"),
+                analysis
+                    .fps
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                analysis
+                    .duration_sec
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+            lines.push(format!("Keyframes found: {}", analysis.keyframe_count));
+            if let Some(avg) = analysis.average_keyframe_interval_sec {
+                lines.push(format!("Average source GOP: {:.2}s", avg));
+            }
+            if let Some(max) = analysis.max_keyframe_interval_sec {
+                lines.push(format!("Max source GOP: {:.2}s", max));
+            }
+            if analysis.sparse_for_live {
+                if file.live_optimized {
+                    issues.push(format!(
+                        "Source GOP is sparse (max {:.2}s), so playback depends on Live Optimized re-encoding toward a {}s GOP.",
+                        analysis.max_keyframe_interval_sec.unwrap_or_default(),
+                        file.target_gop_seconds
+                    ));
+                } else {
+                    issues.push(format!(
+                        "Source GOP is sparse (max {:.2}s) and Live Optimized is disabled. Preview and recording may stutter until the next source keyframe.",
+                        analysis.max_keyframe_interval_sec.unwrap_or_default()
+                    ));
+                }
+            }
+        } else if let Some(error) = &file.analysis_error {
+            lines.push("Container analysis: unavailable".to_string());
+            issues.push(format!("Source file analysis failed: {error}"));
+        } else if file.file_exists {
+            lines.push("Container analysis: skipped".to_string());
+        }
+    } else {
+        lines.push("No file-ingest metadata was found for the active pipeline.".to_string());
+        issues.push("The pipeline is running in file-ingest mode, but its source-file configuration could not be loaded.".to_string());
+    }
+
+    DiagResult::ok(
+        idx,
+        "File Source",
+        "Configured file-ingest source and live-stream suitability",
+        "file_ingest config + media file analysis",
+        lines.join("\n"),
+        start.elapsed().as_millis() as u64,
+    )
+    .with_issues(issues)
+}
+
+async fn check_file_ingest_runtime(
+    idx: u32,
+    engine: &Arc<MediaEngine>,
+    pipeline_id: &str,
+    file: Option<&FileDiagnosticsContext>,
+) -> DiagResult {
+    let start = Instant::now();
+    let mut lines = vec![];
+    let mut issues = vec![];
+
+    let ingest = engine.active_ingest_diag_snapshot(pipeline_id).await;
+    if let Some(ingest) = &ingest {
+        lines.push(format!("Protocol: {}", ingest.protocol));
+        lines.push(format!("Ingest uptime: {:.1}s", ingest.uptime_secs));
+        lines.push(format!("Bytes injected: {}", ingest.bytes_received));
+        if ingest.uptime_secs >= 3.0 && ingest.bytes_received == 0 {
+            issues.push(
+                "File ingest has been active for several seconds but has not injected any bytes."
+                    .to_string(),
+            );
+        }
+    } else {
+        lines.push("No active file ingest is registered in MediaEngine.".to_string());
+        issues.push("File ingest runtime is missing from MediaEngine active state.".to_string());
+    }
+
+    if let Some(file) = file {
+        lines.push(format!("Ingest id: {}", file.ingest_id));
+        let dependency = engine
+            .file_ingest_dependency_snapshot(&file.ingest_id)
+            .await;
+        lines.push(format!(
+            "Marked active in registry: {}",
+            yes_no(dependency.marked_active)
+        ));
+        lines.push(format!(
+            "Subprocess registered: {}",
+            yes_no(dependency.child_registered)
+        ));
+        if !dependency.marked_active {
+            issues
+                .push("File ingest is not marked active in the file-ingest registry.".to_string());
+        }
+        if !dependency.child_registered {
+            issues.push(
+                "No file-ingest subprocess is currently registered for this pipeline.".to_string(),
+            );
+        }
+    } else {
+        lines.push(
+            "Ingest registry details are unavailable without a file-ingest record.".to_string(),
+        );
+    }
+
+    DiagResult::ok(
+        idx,
+        "File Ingest Runtime",
+        "Internal file-ingest registration and byte flow",
+        "engine.file_ingest_dependency_snapshot()",
+        lines.join("\n"),
+        start.elapsed().as_millis() as u64,
+    )
+    .with_issues(issues)
+}
+
+async fn check_preview_recording_state(
+    idx: u32,
+    engine: &Arc<MediaEngine>,
+    pipeline_id: &str,
+) -> DiagResult {
+    let start = Instant::now();
+    let hls = engine.hls_dependency_snapshot(pipeline_id).await;
+    let recording_active = engine.is_recording_active(pipeline_id).await;
+    let mut lines = vec![];
+    let mut issues = vec![];
+
+    lines.push(format!("HLS store exists: {}", yes_no(hls.store_exists)));
+    lines.push(format!("HLS segmenter active: {}", yes_no(hls.active)));
+    lines.push(format!(
+        "Persistent HLS consumers: {}",
+        hls.persistent_consumers
+    ));
+    lines.push(format!("Segments in store: {}", hls.segments));
+    lines.push(format!("Playlist bytes: {}", hls.playlist_bytes));
+    lines.push(format!("Recording active: {}", yes_no(recording_active)));
+    if let Some(age_ms) = hls.last_access_age_ms {
+        lines.push(format!("Last HLS access: {}ms ago", age_ms));
+    }
+
+    if hls.active && hls.segments == 0 {
+        issues.push("HLS preview is active but has not produced any segments yet.".to_string());
+    }
+    if hls.active && hls.playlist_bytes == 0 {
+        issues.push("HLS preview is active but the playlist is currently empty.".to_string());
+    }
+    if recording_active && !hls.store_exists && !hls.active {
+        lines.push("Recording can run without an active HLS preview session.".to_string());
+    }
+
+    DiagResult::ok(
+        idx,
+        "Preview & Recording",
+        "Browser preview and recording readiness for file ingest",
+        "engine.hls_dependency_snapshot() + engine.is_recording_active()",
+        lines.join("\n"),
+        start.elapsed().as_millis() as u64,
+    )
+    .with_issues(issues)
+}
+
 async fn check_srt_listener_socket(idx: u32, engine: &Arc<MediaEngine>) -> DiagResult {
     let start = Instant::now();
     let stats = engine.srt_listener_diag_snapshot().await;
@@ -935,6 +1166,7 @@ pub async fn run_diagnostics(
     engine: Arc<MediaEngine>,
     pipeline_id: String,
     probe_protocol: String,
+    file_context: Option<FileDiagnosticsContext>,
     tx: tokio::sync::mpsc::Sender<String>,
 ) {
     let overall_start = Instant::now();
@@ -958,61 +1190,121 @@ pub async fn run_diagnostics(
         check_engine_status(0, &engine, &pipeline_id)
     );
 
-    run_check!(
-        1,
-        "Stream Info",
-        "Video and audio codec parameters from demuxer",
-        check_ingest_stream_info(1, &engine, &pipeline_id)
-    );
+    if probe_protocol == "file" {
+        run_check!(
+            1,
+            "File Source",
+            "Configured file-ingest source and live-stream suitability",
+            check_file_source(1, file_context.as_ref())
+        );
 
-    run_check!(
-        2,
-        "GOP Analysis",
-        "Keyframe interval consistency and stability",
-        check_gop_analysis(2, &engine, &pipeline_id)
-    );
+        run_check!(
+            2,
+            "Stream Info",
+            "Video and audio codec parameters from demuxer",
+            check_ingest_stream_info(2, &engine, &pipeline_id)
+        );
 
-    run_check!(
-        3,
-        "Publisher Transport",
-        "Network connection quality metrics",
-        check_publisher_transport(3, &engine, &pipeline_id, &probe_protocol)
-    );
+        run_check!(
+            3,
+            "GOP Analysis",
+            "Keyframe interval consistency and stability",
+            check_gop_analysis(3, &engine, &pipeline_id)
+        );
 
-    run_check!(
-        4,
-        "Ring Buffer Health",
-        "In-process media ring buffer fill level and alignment",
-        check_ring_buffer_health(4, &engine, &pipeline_id)
-    );
+        run_check!(
+            4,
+            "File Ingest Runtime",
+            "Internal file-ingest registration and byte flow",
+            check_file_ingest_runtime(4, &engine, &pipeline_id, file_context.as_ref())
+        );
 
-    run_check!(
-        5,
-        "Active Outputs",
-        "Egress target status and throughput",
-        check_active_outputs(5, &engine, &pipeline_id)
-    );
+        run_check!(
+            5,
+            "Ring Buffer Health",
+            "In-process media ring buffer fill level and alignment",
+            check_ring_buffer_health(5, &engine, &pipeline_id)
+        );
 
-    run_check!(
-        6,
-        "System Resources",
-        "CPU, RAM, and disk utilization",
-        check_system_resources(6)
-    );
+        run_check!(
+            6,
+            "Preview & Recording",
+            "Browser preview and recording readiness for file ingest",
+            check_preview_recording_state(6, &engine, &pipeline_id)
+        );
 
-    run_check!(
-        7,
-        "Network Bandwidth",
-        "Per-interface RX/TX throughput measurement",
-        check_network_bandwidth(7)
-    );
+        run_check!(
+            7,
+            "Active Outputs",
+            "Egress target status and throughput",
+            check_active_outputs(7, &engine, &pipeline_id)
+        );
 
-    run_check!(
-        8,
-        "SRT Listener Socket",
-        "Shared UDP socket buffer occupancy",
-        check_srt_listener_socket(8, &engine)
-    );
+        run_check!(
+            8,
+            "System Resources",
+            "CPU, RAM, and disk utilization",
+            check_system_resources(8)
+        );
+    } else {
+        run_check!(
+            1,
+            "Stream Info",
+            "Video and audio codec parameters from demuxer",
+            check_ingest_stream_info(1, &engine, &pipeline_id)
+        );
+
+        run_check!(
+            2,
+            "GOP Analysis",
+            "Keyframe interval consistency and stability",
+            check_gop_analysis(2, &engine, &pipeline_id)
+        );
+
+        run_check!(
+            3,
+            "Publisher Transport",
+            "Network connection quality metrics",
+            check_publisher_transport(3, &engine, &pipeline_id, &probe_protocol)
+        );
+
+        run_check!(
+            4,
+            "Ring Buffer Health",
+            "In-process media ring buffer fill level and alignment",
+            check_ring_buffer_health(4, &engine, &pipeline_id)
+        );
+
+        run_check!(
+            5,
+            "Active Outputs",
+            "Egress target status and throughput",
+            check_active_outputs(5, &engine, &pipeline_id)
+        );
+
+        run_check!(
+            6,
+            "System Resources",
+            "CPU, RAM, and disk utilization",
+            check_system_resources(6)
+        );
+
+        run_check!(
+            7,
+            "Network Bandwidth",
+            "Per-interface RX/TX throughput measurement",
+            check_network_bandwidth(7)
+        );
+
+        if probe_protocol == "srt" {
+            run_check!(
+                8,
+                "SRT Listener Socket",
+                "Shared UDP socket buffer occupancy",
+                check_srt_listener_socket(8, &engine)
+            );
+        }
+    }
 
     let total_ms = overall_start.elapsed().as_millis() as u64;
     let _ = tx
@@ -1032,7 +1324,14 @@ mod tests {
         drop(rx);
 
         let start = Instant::now();
-        run_diagnostics(engine, "pipe-test".to_string(), "rtmp".to_string(), tx).await;
+        run_diagnostics(
+            engine,
+            "pipe-test".to_string(),
+            "rtmp".to_string(),
+            None,
+            tx,
+        )
+        .await;
         assert!(start.elapsed().as_millis() < 100);
     }
 }
