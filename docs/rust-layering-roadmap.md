@@ -192,6 +192,7 @@ Success condition:
 Progress so far:
 
 - started: top-level `api_view_models` helpers for egress/probe/ring payload JSON
+- started: health snapshot pipeline/input/hls JSON helpers in `api_view_models`
 - next: move broader health/telemetry/graph serialization out of `media::engine_views`
 
 ### 4. Replace Raw SQL Lookups In Protocol Handlers
