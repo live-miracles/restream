@@ -181,6 +181,10 @@ Create/update body:
 The one-second reconciler starts and stops native egress tasks from
 `desiredState`.
 
+Create, update, start, and stop responses include a normalized `output` object
+plus the mutation message so clients can patch local output config state without
+an immediate follow-up settings fetch.
+
 Output encoding accepts `source`, built-in video presets, and audio-routing
 suffixes. `custom` output encoding is rejected with `400 Bad Request` because
 custom FFmpeg arguments are persisted for future use but are not applied by the

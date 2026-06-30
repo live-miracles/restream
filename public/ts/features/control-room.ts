@@ -15,7 +15,7 @@ import {
   renderManagedHlsPlayer,
 } from "./hls-player.js";
 import { buildInputPreviewUrl } from "./input-preview.js";
-import { refreshDashboard } from "./dashboard.js";
+import { upsertDashboardOutputConfig } from "./dashboard.js";
 import type { OutputView, PipelineView } from "../types.js";
 
 interface ControlRoomState {
@@ -1871,7 +1871,7 @@ async function saveMonitoringUrlFromControlRoom(
     });
     if (res === null) return;
     controlRoomMonitoringDrafts.delete(outputId);
-    await refreshDashboard();
+    upsertDashboardOutputConfig(res.output);
   } finally {
     controlRoomMonitoringSavePending.delete(outputId);
     renderControlRoom();

@@ -19,7 +19,7 @@ import {
 import { renderPipelines, renderMetrics } from "./render.js";
 import { syncHistoryPollingWithVisibility } from "../history/controller.js";
 import { state } from "../core/state.js";
-import type { AppLogRow, PipelineView } from "../types.js";
+import type { AppLogRow, ConfigOutput, PipelineView } from "../types.js";
 
 interface DashboardHooks {
   afterRender: (() => void) | null;
@@ -97,6 +97,15 @@ async function requestDashboardRefresh(
       }
     }
   } while (dashboardRefreshQueued);
+}
+
+function rerenderDashboardFromState(): void {
+  const previousPipelines = state.pipelines;
+  state.pipelines = parsePipelinesInfo(state.config, state.health);
+  reconcileSelectedPipeline(previousPipelines);
+  renderPipelines();
+  renderMetrics();
+  dashboardHooks.afterRender?.();
 }
 
 function replaceUrlParam(param: string, value: string | null): void {
@@ -334,13 +343,7 @@ async function fetchAndRerender(): Promise<void> {
   } else {
     syncRestreamProcessIndicatorFromHealth(state.health?.status);
   }
-
-  const previousPipelines = state.pipelines;
-  state.pipelines = parsePipelinesInfo(state.config, state.health);
-  reconcileSelectedPipeline(previousPipelines);
-  renderPipelines();
-  renderMetrics();
-  dashboardHooks.afterRender?.();
+  rerenderDashboardFromState();
 }
 
 const DASHBOARD_POLL_INTERVAL_MS = 5000;
@@ -395,4 +398,27 @@ export function startDashboardRuntime(): void {
 
 export function requestDetailedMetricsRefresh(): void {
   fetchDetailedMetricsNextTick = true;
+}
+
+export function upsertDashboardOutputConfig(output: ConfigOutput): void {
+  const nextOutputs = Array.isArray(state.config.outputs)
+    ? [...state.config.outputs]
+    : [];
+  const existingIndex = nextOutputs.findIndex(
+    (candidate) =>
+      candidate.id === output.id && candidate.pipelineId === output.pipelineId,
+  );
+  if (existingIndex >= 0) {
+    nextOutputs[existingIndex] = {
+      ...nextOutputs[existingIndex],
+      ...output,
+    };
+  } else {
+    nextOutputs.push(output);
+  }
+  state.config = {
+    ...state.config,
+    outputs: nextOutputs,
+  };
+  rerenderDashboardFromState();
 }

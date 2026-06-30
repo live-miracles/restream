@@ -51,7 +51,11 @@ import {
 import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
 import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
-import { refreshDashboard, refreshDashboardRuntime } from "./dashboard.js";
+import {
+  refreshDashboard,
+  refreshDashboardRuntime,
+  upsertDashboardOutputConfig,
+} from "./dashboard.js";
 import {
   beginOutputControlIntent,
   finishOutputControlIntent,
@@ -1715,10 +1719,10 @@ export async function editOutFormBtn(event: Event): Promise<void> {
     return;
   }
 
+  upsertDashboardOutputConfig(res.output);
   (
     document.getElementById("edit-out-modal") as HTMLDialogElement | null
   )?.close();
-  await refreshDashboard();
 }
 
 export async function deleteOutBtn(

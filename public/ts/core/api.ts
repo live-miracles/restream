@@ -1,6 +1,7 @@
 import { showLoading, hideLoading, showErrorAlert } from "./utils.js";
 import { withBasePath } from "./base-path.js";
 import type {
+  ConfigOutput,
   ConfigData,
   HealthData,
   IngestSecurityConfig,
@@ -236,6 +237,12 @@ interface CreatePipelineArgs {
   srtIngestPolicy?: SrtPipelineIngestConfig | null;
 }
 
+export interface OutputMutationResponse {
+  message?: string;
+  desiredState?: string;
+  output: ConfigOutput;
+}
+
 async function createPipeline(
   args: CreatePipelineArgs,
 ): Promise<unknown | null> {
@@ -279,29 +286,32 @@ async function deletePipeline(pipeId: string): Promise<unknown | null> {
 async function createOutput(
   pipeId: string,
   data: unknown,
-): Promise<unknown | null> {
+): Promise<OutputMutationResponse | null> {
   if (!pipeId) {
     showErrorAlert("Pipeline id is required");
     return null;
   }
 
-  return apiRequest(`/api/v1/pipelines/${encodeURIComponent(pipeId)}/outputs`, {
-    method: "POST",
-    body: data,
-  });
+  return apiRequest<OutputMutationResponse>(
+    `/api/v1/pipelines/${encodeURIComponent(pipeId)}/outputs`,
+    {
+      method: "POST",
+      body: data,
+    },
+  );
 }
 
 async function updateOutput(
   pipeId: string,
   outId: string,
   data: unknown,
-): Promise<unknown | null> {
+): Promise<OutputMutationResponse | null> {
   if (!pipeId || !outId) {
     showErrorAlert("Pipeline id and output id are required");
     return null;
   }
 
-  return apiRequest(
+  return apiRequest<OutputMutationResponse>(
     `/api/v1/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}`,
     { method: "PATCH", body: data },
   );
@@ -325,25 +335,28 @@ async function deleteOutput(
 async function startOut(
   pipeId: string,
   outId: string,
-): Promise<unknown | null> {
+): Promise<OutputMutationResponse | null> {
   if (!pipeId || !outId) {
     showErrorAlert("Pipeline id and output id are required");
     return null;
   }
 
-  return apiRequest(
+  return apiRequest<OutputMutationResponse>(
     `/api/v1/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/start`,
     { method: "POST" },
   );
 }
 
-async function stopOut(pipeId: string, outId: string): Promise<unknown | null> {
+async function stopOut(
+  pipeId: string,
+  outId: string,
+): Promise<OutputMutationResponse | null> {
   if (!pipeId || !outId) {
     showErrorAlert("Pipeline id and output id are required");
     return null;
   }
 
-  return apiRequest(
+  return apiRequest<OutputMutationResponse>(
     `/api/v1/pipelines/${encodeURIComponent(pipeId)}/outputs/${encodeURIComponent(outId)}/stop`,
     { method: "POST" },
   );

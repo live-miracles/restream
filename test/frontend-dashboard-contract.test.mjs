@@ -356,6 +356,211 @@ test("output start and stop controls refresh runtime without invalidating dashbo
   );
 });
 
+test("output config mutations reuse returned output payloads instead of refetching dashboard settings", async () => {
+  const settingsUrl = "/api/v1/settings?view=dashboard";
+  const fullRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+  const updateUrl = "/api/v1/pipelines/pipe-1/outputs/out-1";
+  const createUrl = "/api/v1/pipelines/pipe-1/outputs";
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+  appendRoot(document, "div", "dashboard-grid");
+
+  const appendField = (tagName, id, value = "") => {
+    const element = document.createElement(tagName);
+    element.id = id;
+    element.value = value;
+    document.body.appendChild(element);
+    return element;
+  };
+
+  appendField("dialog", "edit-out-modal").close = () => {};
+  appendField("input", "out-mode-input", "edit");
+  appendField("input", "out-pipe-id-input", "pipe-1");
+  appendField("input", "out-id-input", "out-1");
+  appendField("select", "out-protocol-input", "rtmp");
+  appendField("select", "out-server-url-input", "");
+  appendField(
+    "input",
+    "out-rtmp-key-input",
+    "rtmp://example.com/live/updated-secret",
+  );
+  appendField("select", "out-encoding-input", "source");
+  appendField("input", "out-name-input", "Renamed Output");
+  appendField(
+    "input",
+    "out-monitoring-url-input",
+    "https://example.com/live/out.m3u8",
+  );
+  appendRoot(document, "div", "out-rtmp-error").classList.add("hidden");
+  appendRoot(document, "div", "out-monitoring-error").classList.add("hidden");
+
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const href = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+    requests.push([method, href]);
+
+    if (href === settingsUrl) {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          ingestHost: "stream.example.com",
+          pipelines: [
+            {
+              id: "pipe-1",
+              name: "Pipeline 1",
+              streamKey: "stream-key",
+              inputSource: null,
+            },
+          ],
+          outputs: [
+            {
+              id: "out-1",
+              pipelineId: "pipe-1",
+              name: "Primary Output",
+              url: "rtmp://example.com/live/original-secret",
+              monitoringUrl: null,
+              encoding: "source",
+              desiredState: "started",
+            },
+          ],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === fullRuntimeUrl) {
+      return new Response(
+        JSON.stringify({
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  probeStatus: "ready",
+                  bytesReceived: 0,
+                  bytesSent: 0,
+                  readers: 0,
+                  bitrateKbps: 3200,
+                },
+                outputs: {
+                  "out-1": {
+                    status: "running",
+                    rawStatus: "running",
+                    phase: "sending",
+                    bitrateKbps: 1500,
+                    totalSize: 2048,
+                  },
+                },
+              },
+            },
+          },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:00Z",
+            cpu: { usagePercent: 12 },
+            memory: { usedPercent: 20 },
+            disk: { usedPercent: 40 },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+            engine: {
+              cpuPercent: 3,
+              totalMemoryBytes: 1234,
+              cpuSampleReady: true,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === updateUrl) {
+      return new Response(
+        JSON.stringify({
+          message: "Output updated",
+          output: {
+            id: "out-1",
+            pipelineId: "pipe-1",
+            name: "Renamed Output",
+            url: "rtmp://example.com/live/updated-secret",
+            monitoringUrl: "https://example.com/live/out.m3u8",
+            encoding: "source",
+            desiredState: "started",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === createUrl) {
+      return new Response(
+        JSON.stringify({
+          message: "Output created",
+          output: {
+            id: "out-2",
+            pipelineId: "pipe-1",
+            name: "Backup Output",
+            url: "rtmp://backup.example.com/live/backup-secret",
+            monitoringUrl: null,
+            encoding: "source",
+            desiredState: "stopped",
+          },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${href}`);
+  };
+
+  const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+  const editor = await loadCompiledFrontendModule("features/editor.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  await dashboard.refreshDashboard();
+  requests.length = 0;
+
+  await editor.editOutFormBtn({ preventDefault() {} });
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [["PATCH", updateUrl]]);
+  assert.equal(
+    requests.some(([, href]) => href === settingsUrl),
+    false,
+    "editing an output should not refetch dashboard settings when the API returned the updated output",
+  );
+  assert.equal(state.config.outputs[0].name, "Renamed Output");
+  assert.equal(
+    state.pipelines[0].outs[0].monitoringUrl,
+    "https://example.com/live/out.m3u8",
+  );
+
+  requests.length = 0;
+  document.getElementById("out-mode-input").value = "create";
+  document.getElementById("out-id-input").value = "";
+  document.getElementById("out-name-input").value = "Backup Output";
+  document.getElementById("out-rtmp-key-input").value =
+    "rtmp://backup.example.com/live/backup-secret";
+  document.getElementById("out-monitoring-url-input").value = "";
+
+  await editor.editOutFormBtn({ preventDefault() {} });
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [["POST", createUrl]]);
+  assert.equal(
+    requests.some(([, href]) => href === settingsUrl),
+    false,
+    "creating an output should not refetch dashboard settings when the API returned the created output",
+  );
+  assert.equal(state.config.outputs.length, 2);
+  assert.equal(
+    state.config.outputs.some((output) => output.id === "out-2"),
+    true,
+  );
+});
+
 test("recording and file-ingest controls refresh runtime without invalidating dashboard settings", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
