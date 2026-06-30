@@ -20,7 +20,12 @@ import {
 } from "./ingest-url-details.js";
 import { clearInputPreview, renderInputPreview } from "./input-preview.js";
 import { openOutputMonitoringUrl } from "./control-room.js";
-import { startRecording, stopRecording } from "../core/api.js";
+import {
+  startIngest,
+  startRecording,
+  stopIngest,
+  stopRecording,
+} from "../core/api.js";
 import type { AudioTrack, PipelineView, OutputView } from "../types.js";
 import {
   audioTrackKey,
@@ -77,6 +82,22 @@ const ingestUiState = {
 const audioLabelEditKeys = new Set<string>();
 const audioLabelDrafts = new Map<string, string>();
 let pendingAudioLabelFocusKey: string | null = null;
+
+function getFileSourceName(pipe: PipelineView): string | null {
+  if (pipe.fileIngest?.filename) return pipe.fileIngest.filename;
+  const inputSource = (pipe.inputSource || "").trim();
+  if (!inputSource.startsWith("file:")) return null;
+  const filename = inputSource.slice("file:".length).trim();
+  return filename || null;
+}
+
+function hideFileIngestControl(button: HTMLButtonElement): void {
+  button.classList.add("hidden");
+  button.disabled = true;
+  button.classList.add("btn-disabled");
+  button.title = "";
+  button.onclick = null;
+}
 
 interface OutputCardRefs {
   statusDot: HTMLElement;
@@ -404,6 +425,8 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     console.error("Pipeline not found:", selectedPipe);
     return;
   }
+  const isFileSource = (pipe.inputSource || "").startsWith("file:");
+  const fileSourceName = getFileSourceName(pipe);
 
   const pipeNameEl = document.getElementById("pipe-name");
   if (pipeNameEl) pipeNameEl.textContent = pipe.name;
@@ -437,6 +460,37 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
       }
       await pipelineViewDependencies.refreshDashboard?.();
     };
+  }
+
+  const fileIngestBtn = document.getElementById(
+    "file-ingest-pipe-btn",
+  ) as HTMLButtonElement | null;
+  if (fileIngestBtn) {
+    const fileIngest = pipe.fileIngest || null;
+    const configured = Boolean(isFileSource && fileIngest?.configured);
+    if (!configured || !fileIngest?.id) {
+      hideFileIngestControl(fileIngestBtn);
+    } else {
+      const running = Boolean(fileIngest.running);
+      fileIngestBtn.classList.remove("hidden");
+      fileIngestBtn.textContent = running ? "Stop File" : "Start File";
+      fileIngestBtn.classList.toggle("btn-error", running);
+      fileIngestBtn.classList.toggle("btn-accent", !running);
+      fileIngestBtn.classList.toggle("btn-outline", !running);
+      fileIngestBtn.disabled = false;
+      fileIngestBtn.classList.remove("btn-disabled");
+      fileIngestBtn.title = fileIngest.filename
+        ? `${running ? "Stop" : "Start"} file ingest for ${fileIngest.filename}`
+        : "";
+      fileIngestBtn.onclick = async () => {
+        if (running) {
+          await stopIngest(fileIngest.id as string);
+        } else {
+          await startIngest(fileIngest.id as string);
+        }
+        await pipelineViewDependencies.refreshDashboard?.();
+      };
+    }
   }
 
   const graphBtn = document.getElementById(
@@ -495,22 +549,35 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     }
   }
 
+  const streamKeySection = document.getElementById("stream-key-section");
+  streamKeySection?.classList.toggle("hidden", isFileSource);
+  const fileSourceSection = document.getElementById("file-source-section");
+  fileSourceSection?.classList.toggle("hidden", !isFileSource);
+  const fileSourceInline = document.getElementById("file-source-inline");
+  if (fileSourceInline) {
+    fileSourceInline.textContent = fileSourceName || "--";
+    fileSourceInline.title = fileSourceName || "";
+  }
+
   const streamKey = pipe.key;
   const streamKeyInline = document.getElementById("stream-key-inline");
   const streamKeyCopyBtn = document.getElementById(
     "stream-key-copy-btn",
   ) as HTMLButtonElement | null;
-  if (streamKeyInline) {
+  if (streamKeyInline && !isFileSource) {
     streamKeyInline.dataset.copy = streamKey ?? "";
     streamKeyInline.textContent = formatMaskedStreamKey(streamKey);
     streamKeyInline.title = "";
   }
   if (streamKeyCopyBtn) {
-    streamKeyCopyBtn.disabled = false;
-    streamKeyCopyBtn.classList.remove("btn-disabled");
-    streamKeyCopyBtn.onclick = async () => {
-      if (streamKey && (await copyText(streamKey))) showCopiedNotification();
-    };
+    streamKeyCopyBtn.disabled = isFileSource;
+    streamKeyCopyBtn.classList.toggle("btn-disabled", isFileSource);
+    streamKeyCopyBtn.onclick = isFileSource
+      ? null
+      : async () => {
+          if (streamKey && (await copyText(streamKey)))
+            showCopiedNotification();
+        };
   }
 
   const ingestUrls = pipe.ingestUrls || {};
@@ -575,7 +642,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   if (ingestUrlSection) {
     ingestUrlSection.classList.toggle(
       "hidden",
-      availableProtocols.length === 0,
+      isFileSource || availableProtocols.length === 0,
     );
   }
 
@@ -586,21 +653,24 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   const ingestUrlValue = document.getElementById("ingest-url");
   const ingestUrlSurface = document.getElementById("ingest-url-surface");
   if (ingestUrlValue) {
-    ingestUrlValue.dataset.copy = selectedUrl;
-    ingestUrlValue.textContent = maskedUrl || "--";
+    ingestUrlValue.dataset.copy = isFileSource ? "" : selectedUrl;
+    ingestUrlValue.textContent = isFileSource ? "" : maskedUrl || "--";
   }
   if (ingestUrlSurface) {
-    ingestUrlSurface.classList.toggle("hidden", !selectedUrl);
+    ingestUrlSurface.classList.toggle("hidden", isFileSource || !selectedUrl);
   }
 
   const ingestUrlCopyBtn = document.getElementById(
     "ingest-url-copy-btn",
   ) as HTMLButtonElement | null;
   if (ingestUrlCopyBtn) {
-    ingestUrlCopyBtn.disabled = !selectedUrl;
-    ingestUrlCopyBtn.classList.toggle("btn-disabled", !selectedUrl);
+    ingestUrlCopyBtn.disabled = isFileSource || !selectedUrl;
+    ingestUrlCopyBtn.classList.toggle(
+      "btn-disabled",
+      isFileSource || !selectedUrl,
+    );
     ingestUrlCopyBtn.onclick = async () => {
-      if (!selectedUrl) return;
+      if (isFileSource || !selectedUrl) return;
       if (await copyText(selectedUrl)) showCopiedNotification();
     };
   }
@@ -616,7 +686,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   if (ingestUrlDetails) {
     ingestUrlDetails.classList.toggle(
       "hidden",
-      !selectedUrl || !parsedIngestDetails,
+      isFileSource || !selectedUrl || !parsedIngestDetails,
     );
   }
   renderProtocolDetails(

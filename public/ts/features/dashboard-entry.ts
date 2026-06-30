@@ -12,7 +12,6 @@ import {
 } from "../history/controller.js";
 import { setPipelineViewDependencies } from "./pipeline-view.js";
 import { openDiagnosticsModal } from "./diagnostics.js";
-import { renderFileIngestControl } from "./file-ingest-controls.js";
 import {
   openPublisherHealthModal,
   renderPublisherHealthModal,
@@ -27,7 +26,6 @@ setDashboardHooks({
   afterRender: () => {
     renderPublisherHealthModal();
     renderDashboardModes();
-    renderFileIngestControl();
   },
 });
 

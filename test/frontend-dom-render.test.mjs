@@ -303,6 +303,86 @@ await runCheck("renderPipelineInfoColumn reuses publisher meta badges across ref
   assert.equal(publisherMeta.stats.innerHTMLWrites, 0);
 });
 
+await runCheck("renderPipelineInfoColumn shows file ingest controls for file sources", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "pipe-info-col");
+  appendRoot(document, "div", "pipe-name");
+  appendRoot(document, "button", "file-ingest-pipe-btn");
+  appendRoot(document, "button", "record-pipe-btn");
+  appendRoot(document, "button", "graph-pipe-btn");
+  appendRoot(document, "button", "diagnose-pipe-btn");
+  appendRoot(document, "button", "edit-pipe-btn");
+  appendRoot(document, "button", "delete-pipe-btn");
+  appendRoot(document, "div", "input-time");
+  appendRoot(document, "section", "file-source-section");
+  appendRoot(document, "code", "file-source-inline");
+  appendRoot(document, "section", "stream-key-section");
+  appendRoot(document, "code", "stream-key-inline");
+  appendRoot(document, "button", "stream-key-copy-btn");
+  appendRoot(document, "section", "ingest-url-section");
+  appendRoot(document, "button", "ingest-url-copy-btn");
+  appendRoot(document, "div", "ingest-url-surface");
+  appendRoot(document, "code", "ingest-url");
+  appendRoot(document, "div", "ingest-url-details");
+  appendRoot(document, "div", "ingest-details-grid");
+  appendRoot(document, "div", "video-player");
+  appendRoot(document, "div", "input-stats");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      inputSource: "file:session-recording.ts",
+      input: {
+        ...makePipeline().input,
+        status: "off",
+      },
+      fileIngest: {
+        configured: true,
+        id: "ingest-1",
+        filename: "session-recording.ts",
+        running: false,
+      },
+      ingestUrls: {
+        rtmp: "rtmp://example.com/live/secret",
+        srt: "srt://example.com:9000?streamid=secret",
+      },
+    }),
+  ];
+
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+
+  assert.equal(
+    document.getElementById("file-ingest-pipe-btn").classList.contains("hidden"),
+    false,
+  );
+  assert.equal(
+    document.getElementById("file-ingest-pipe-btn").textContent,
+    "Start File",
+  );
+  assert.equal(
+    document.getElementById("file-source-section").classList.contains("hidden"),
+    false,
+  );
+  assert.equal(
+    document.getElementById("file-source-inline").textContent,
+    "session-recording.ts",
+  );
+  assert.equal(
+    document.getElementById("stream-key-section").classList.contains("hidden"),
+    true,
+  );
+  assert.equal(
+    document.getElementById("stream-key-copy-btn").disabled,
+    true,
+  );
+  assert.equal(
+    document.getElementById("ingest-url-section").classList.contains("hidden"),
+    true,
+  );
+});
+
 await runCheck("metric-format reuses subtle-unit spans across updates", async () => {
   const { document } = installFakeDom();
   const metric = appendRoot(document, "div", "metric");
