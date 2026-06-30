@@ -38,6 +38,7 @@ pub mod agent_mcp;
 pub mod agent_plane;
 pub mod alerts;
 pub mod api;
+pub mod api_view_models;
 pub mod application;
 pub mod db;
 pub mod diag;

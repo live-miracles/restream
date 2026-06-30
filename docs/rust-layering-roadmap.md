@@ -189,6 +189,11 @@ Success condition:
 - engine code no longer needs to know UI/HTTP serialization details
 - JSON assembly happens at the edge
 
+Progress so far:
+
+- started: top-level `api_view_models` helpers for egress/probe/ring payload JSON
+- next: move broader health/telemetry/graph serialization out of `media::engine_views`
+
 ### 4. Replace Raw SQL Lookups In Protocol Handlers
 
 Goal: RTMP and SRT should depend on a lookup port, not query text.

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use crate::api_view_models;
 use crate::application::output_path::OutputPath;
 use crate::domain::stage::{StageKey, StageKind};
 use crate::media::engine::MediaEngine;
@@ -12,16 +13,16 @@ pub(crate) async fn output_status(
     let retry = engine.egresses.retry.read().await.get(output_id).cloned();
     let egresses = engine.egresses.active.read().await;
     if let Some(egress) = egresses.get(output_id) {
-        let mut value = MediaEngine::egress_runtime_json(egress, false, true);
-        MediaEngine::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        let mut value = api_view_models::egress_runtime_json(egress, false, true);
+        api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
         return Some(value);
     }
     drop(egresses);
 
     let recent = engine.egresses.recent.read().await;
     recent.get(output_id).map(|outcome| {
-        let mut value = MediaEngine::recent_egress_runtime_json(outcome, false);
-        MediaEngine::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        let mut value = api_view_models::recent_egress_runtime_json(outcome, false);
+        api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
         value
     })
 }
@@ -199,8 +200,9 @@ pub(crate) async fn health_snapshot(
 
                 let has_ingest = ingests.contains_key(pipeline_id.as_str());
 
-                let mut output_json = MediaEngine::egress_runtime_json(egress, false, has_ingest);
-                MediaEngine::apply_egress_retry_state_json(
+                let mut output_json =
+                    api_view_models::egress_runtime_json(egress, false, has_ingest);
+                api_view_models::apply_egress_retry_state_json(
                     &mut output_json,
                     retry_egresses.get(output_id),
                 );
@@ -212,8 +214,8 @@ pub(crate) async fn health_snapshot(
         }
         for (output_id, outcome) in recent_egresses.iter() {
             if outcome.pipeline_id == *pipeline_id && !outputs_json.contains_key(output_id) {
-                let mut output_json = MediaEngine::recent_egress_runtime_json(outcome, false);
-                MediaEngine::apply_egress_retry_state_json(
+                let mut output_json = api_view_models::recent_egress_runtime_json(outcome, false);
+                api_view_models::apply_egress_retry_state_json(
                     &mut output_json,
                     retry_egresses.get(output_id),
                 );
@@ -340,7 +342,7 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
     let egress_arr: Vec<serde_json::Value> = egresses
         .values()
         .map(|egress| {
-            MediaEngine::egress_runtime_json(
+            api_view_models::egress_runtime_json(
                 egress,
                 true,
                 ingests.contains_key(egress.pipeline_id.as_str()),
@@ -353,7 +355,7 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
         .map(|(pipeline_id, ring)| {
             serde_json::json!({
                 "pipelineId": pipeline_id,
-                "payloadStats": MediaEngine::ring_payload_stats_json(ring),
+                "payloadStats": api_view_models::ring_payload_stats_json(ring),
             })
         })
         .collect();
@@ -365,7 +367,7 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
                 "pipelineId": key.pipeline.as_str(),
                 "kind": key.kind.to_string(),
                 "active": !token.is_cancelled(),
-                "payloadStats": MediaEngine::ring_payload_stats_json(ring),
+                "payloadStats": api_view_models::ring_payload_stats_json(ring),
             })
         })
         .collect();
@@ -375,7 +377,7 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
             serde_json::json!({
                 "stageKey": stage_key,
                 "active": !stage.cancel.is_cancelled(),
-                "payloadStats": MediaEngine::ring_payload_stats_json(&stage.ring),
+                "payloadStats": api_view_models::ring_payload_stats_json(&stage.ring),
             })
         })
         .collect();
@@ -493,7 +495,7 @@ pub(crate) async fn pipeline_telemetry(
             "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
             "estimatedPktRatePerSec": ring.estimated_pkt_rate.load(Ordering::Relaxed),
             "bufferDepthSecs": ring.buffer_depth_secs(),
-            "payloadStats": MediaEngine::ring_payload_stats_json(ring),
+            "payloadStats": api_view_models::ring_payload_stats_json(ring),
             "readers": readers,
         })
     });
@@ -511,7 +513,7 @@ pub(crate) async fn pipeline_telemetry(
             }
             if let Some((ring, token)) = buffers.get(key) {
                 val["active"] = serde_json::json!(!token.is_cancelled());
-                val["payloadStats"] = MediaEngine::ring_payload_stats_json(ring);
+                val["payloadStats"] = api_view_models::ring_payload_stats_json(ring);
             }
             val
         })
@@ -521,7 +523,7 @@ pub(crate) async fn pipeline_telemetry(
         .values()
         .filter(|egress| egress.pipeline_id == pipeline_id)
         .map(|egress| {
-            MediaEngine::egress_runtime_json(egress, true, ingests.contains_key(pipeline_id))
+            api_view_models::egress_runtime_json(egress, true, ingests.contains_key(pipeline_id))
         })
         .collect();
 
@@ -671,7 +673,7 @@ pub(crate) async fn processing_graph(
         (
             fill,
             cap,
-            MediaEngine::ring_payload_stats_json(ring),
+            api_view_models::ring_payload_stats_json(ring),
             reader_stats,
         )
     });
@@ -718,7 +720,7 @@ pub(crate) async fn processing_graph(
                 "metrics": all_stage_metrics.get(key).map(|metrics| metrics.snapshot()),
                 "queueMetrics": queue_stats,
                 "pipeMetrics": pipe_stats,
-                "payloadStats": MediaEngine::ring_payload_stats_json(stage_ring),
+                "payloadStats": api_view_models::ring_payload_stats_json(stage_ring),
             }));
 
             if let Some(upstream) = kind.upstream() {
@@ -776,7 +778,7 @@ pub(crate) async fn processing_graph(
             "active": egress.is_some_and(|egress| MediaEngine::egress_effective_status(egress, ingest.is_some()) == "running"),
             "details": egress.map(|egress| {
                 let bytes = egress.bytes_sent.load(Ordering::Relaxed);
-                let mut details = MediaEngine::egress_runtime_json(egress, true, ingest.is_some());
+                let mut details = api_view_models::egress_runtime_json(egress, true, ingest.is_some());
                 details["totalSize"] = serde_json::json!(bytes);
                 details["bitrateKbps"] =
                     serde_json::json!(*egress.bitrate_kbps.lock().unwrap_or_else(|e| e.into_inner()));
@@ -810,7 +812,7 @@ pub(crate) async fn processing_graph(
                 .is_some_and(|stage| !stage.cancel.is_cancelled());
             let mux_payload_stats = ts_muxers
                 .get(&mux_key)
-                .map(|stage| MediaEngine::ring_payload_stats_json(&stage.ring));
+                .map(|stage| api_view_models::ring_payload_stats_json(&stage.ring));
             if added_packetizers.insert(mux_node_id.clone()) {
                 nodes.push(serde_json::json!({
                     "id": mux_node_id.clone(),
