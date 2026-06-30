@@ -31,6 +31,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, warn};
 
 use crate::alerts;
+use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
 use crate::application::ports::SqliteMetaStore;
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::srt_ingest::{
@@ -90,7 +91,6 @@ pub struct EmbeddedAssets;
 const SESSION_COOKIE_NAME: &str = "session";
 const SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const PASSWORD_META_KEY: &str = "dashboardPasswordHash";
-const INGEST_SECURITY_CONFIG_META_KEY: &str = "ingest_security_config";
 const DEFAULT_INGEST_HOST: &str = "localhost";
 
 // Hardcoded stream keys matching mediamtx.yml compatibility
@@ -4112,6 +4112,70 @@ struct DiagnosticsQuery {
     since: Option<String>,
 }
 
+fn expected_media_path(media_dir: &str, filename: &str) -> PathBuf {
+    let configured = PathBuf::from(media_dir);
+    let root = if configured.is_absolute() {
+        configured
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(configured)
+    };
+    root.join(filename)
+}
+
+async fn build_file_diagnostics_context(
+    state: &AppState,
+    pipeline_id: &str,
+) -> Option<diag::FileDiagnosticsContext> {
+    let pipeline = db::get_pipeline(&state.db, pipeline_id)
+        .await
+        .ok()
+        .flatten()?;
+    let ingest = db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key)
+        .await
+        .ok()
+        .flatten()?;
+    let path = expected_media_path(&state.media_dir, &ingest.filename);
+    let metadata = std::fs::metadata(&path).ok();
+    let file_exists = metadata.is_some();
+    let file_size_bytes = metadata.as_ref().map(std::fs::Metadata::len);
+    let file_modified_at = metadata
+        .as_ref()
+        .and_then(|meta| meta.modified().ok())
+        .map(|timestamp| chrono::DateTime::<chrono::Utc>::from(timestamp).to_rfc3339());
+
+    let (analysis, analysis_error) = if file_exists {
+        let path_for_task = path.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::media::file_analysis::analyze_media_file(&path_for_task)
+        })
+        .await
+        {
+            Ok(Ok(analysis)) => (Some(analysis), None),
+            Ok(Err(error)) => (None, Some(error)),
+            Err(error) => (None, Some(format!("analysis task failed: {error}"))),
+        }
+    } else {
+        (None, None)
+    };
+
+    Some(diag::FileDiagnosticsContext {
+        ingest_id: ingest.id,
+        filename: ingest.filename,
+        path,
+        file_exists,
+        file_size_bytes,
+        file_modified_at,
+        loop_enabled: ingest.loop_flag,
+        start_time: ingest.start_time,
+        live_optimized: ingest.live_optimized,
+        target_gop_seconds: ingest.target_gop_seconds,
+        analysis,
+        analysis_error,
+    })
+}
+
 async fn pipeline_probe_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5988,6 +6052,11 @@ async fn pipeline_diagnostics_sse_handler(
             .into_response();
     }
     let engine = state.engine.clone();
+    let file_context = if probe_protocol == "file" {
+        build_file_diagnostics_context(&state, &pipeline_id).await
+    } else {
+        None
+    };
 
     // Acquire per-pipeline semaphore to prevent concurrent diagnostics on the same pipeline
     let sem = engine.get_or_create_diag_semaphore(&pipeline_id).await;
@@ -6005,7 +6074,7 @@ async fn pipeline_diagnostics_sse_handler(
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     tokio::spawn(async move {
         let _permit = permit;
-        diag::run_diagnostics(engine, pipeline_id, probe_protocol, tx).await;
+        diag::run_diagnostics(engine, pipeline_id, probe_protocol, file_context, tx).await;
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);

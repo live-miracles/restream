@@ -1,4 +1,5 @@
 pub mod ingest;
+pub mod ingest_security;
 pub mod output_path;
 pub mod ports;
 pub mod reconcile;

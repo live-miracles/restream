@@ -165,6 +165,7 @@ Progress so far:
 - started: `application::ports::PipelineLookup`
 - started: `application::ports::MetaStore`
 - started: `application::ingest` stream-key lookup/auth helpers
+- started: `application::ingest_security` MetaStore-backed config loading
 - started: `application::recording` meta-backed recording enablement helpers for lib/api orchestration
 - started: `application::reconcile` output retry/stop, recording, and stage-sweep decisions
 - started: `application::srt_ingest` global config lookup via port

@@ -351,19 +351,12 @@ pub async fn run_app() {
         .expect("Failed to reset stale running jobs");
 
     // Initialize services
-    let config_str = db::get_meta(&pool, "ingest_security_config")
-        .await
-        .unwrap_or(None);
-    let sec_config = if let Some(s) = config_str {
-        serde_json::from_str::<crate::types::IngestSecurityConfig>(&s)
-            .unwrap_or(crate::media::security::DEFAULT_INGEST_SECURITY_CONFIG)
-    } else {
-        crate::media::security::DEFAULT_INGEST_SECURITY_CONFIG
-    };
+    let meta_store = crate::application::ports::SqliteMetaStore::new(pool.clone());
+    let sec_config =
+        crate::application::ingest_security::load_ingest_security_config(&meta_store).await;
     let security = Arc::new(crate::media::security::IngestSecurityService::new(
         sec_config,
     ));
-    let meta_store = crate::application::ports::SqliteMetaStore::new(pool.clone());
     let srt_ingest_global =
         crate::application::srt_ingest::load_global_srt_ingest_config(&meta_store).await;
     let srt_ingest_pipelines = db::list_pipelines(&pool).await.unwrap_or_default();
