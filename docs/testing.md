@@ -45,6 +45,41 @@ This keeps detailed behavior and coverage attached to the TypeScript source of
 truth without dropping confidence in the emitted browser bundle, while avoiding
 misleading Node-only coverage targets for browser-heavy modules.
 
+### Layered UI Strategy
+
+Treat frontend confidence as four layers, each owning a different kind of risk:
+
+| Layer | Purpose | Typical command |
+|---|---|---|
+| TypeScript/source logic | Keep parsing, helpers, API choke points, and pure UI state logic deterministic and cheap. | `npm run test:frontend` |
+| Fake-DOM scenario matrices | Replace repetitive manual "check every state" work for state-heavy renderers. | `npm run test:frontend` |
+| Browser-native DOM checks | Prove real DOM events, focus/ARIA behavior, overlay positioning hooks, and browser-only widget behavior without starting the full Rust app. | `npm run test:frontend:browser-dom` |
+| Full app/browser integration | Prove login, navigation, media playback, real network wiring, and end-to-end runtime behavior against the running dashboard. | `npm run test:e2e` |
+
+Use the lowest layer that can actually catch the bug. Move upward only when the
+lower layer cannot prove the behavior.
+
+### UI Scenario Matrices
+
+When a dashboard surface starts accumulating too many manual "click every state"
+checks, add a fake-DOM scenario matrix instead of growing Playwright coverage
+for every badge and branch.
+
+- Use `test/helpers/ui-scenario-harness.mjs` to mount the minimum DOM, load the
+  compiled frontend module, and run a named state matrix under `npm run test:frontend`.
+- Current examples:
+  `test/frontend-output-scenarios.test.mjs` and
+  `test/frontend-pipeline-info-scenarios.test.mjs`.
+- Feed renderers a bounded set of important states such as healthy, retrying,
+  flapping, stalled, stopped, long text, and missing optional metadata.
+- Assert operator-visible structure and state: the right action label,
+  warning/error affordance, hidden/visible controls, and critical metrics.
+- Keep browser-native checks in Playwright for things the fake DOM cannot prove:
+  navigation, focus, media playback, sizing, and real browser APIs.
+- Use `npm run test:frontend:browser-dom` for a self-contained browser-native
+  slice that serves the compiled frontend assets from a lightweight local static
+  server instead of requiring the full Rust dashboard app to be started first.
+
 As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
 integration, harness, and doctest targets.
 

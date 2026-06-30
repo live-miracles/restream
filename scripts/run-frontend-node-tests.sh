@@ -28,6 +28,8 @@ TEST_FILES=(
   test/history-nearby-render.test.mjs
   test/overview-activity-render.test.mjs
   test/frontend-chaos-scenarios.test.mjs
+  test/frontend-output-scenarios.test.mjs
+  test/frontend-pipeline-info-scenarios.test.mjs
   test/frontend-dom-render.test.mjs
 )
 

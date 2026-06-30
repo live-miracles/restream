@@ -113,6 +113,7 @@ export class FakeElement {
     this._innerHTML = "";
     this.value = "";
     this.onclick = null;
+    this.eventListeners = new Map();
     this.disabled = false;
     this.tabIndex = 0;
     this.type = "";
@@ -303,6 +304,31 @@ export class FakeElement {
   select() {}
 
   setSelectionRange() {}
+
+  addEventListener(type, listener) {
+    if (!type || typeof listener !== "function") return;
+    const listeners = this.eventListeners.get(type) || [];
+    listeners.push(listener);
+    this.eventListeners.set(type, listeners);
+  }
+
+  removeEventListener(type, listener) {
+    const listeners = this.eventListeners.get(type);
+    if (!listeners) return;
+    this.eventListeners.set(
+      type,
+      listeners.filter((entry) => entry !== listener),
+    );
+  }
+
+  dispatchEvent(event) {
+    const type = event?.type;
+    if (!type) return true;
+    for (const listener of this.eventListeners.get(type) || []) {
+      listener.call(this, event);
+    }
+    return true;
+  }
 
   scrollIntoView(options = null) {
     this.scrolledIntoView = options;

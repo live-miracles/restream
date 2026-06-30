@@ -10,6 +10,7 @@
     "test:frontend:coverage": "./scripts/run-frontend-node-tests.sh --coverage && npm run test:frontend:js-smoke",
     "test:frontend:coverage:all": "./scripts/run-frontend-node-tests.sh --coverage-all && npm run test:frontend:js-smoke",
     "test:frontend:js-smoke": "npm run build:frontend && FRONTEND_MODULES_DIR=public/js node --test test/frontend-api-contract.test.mjs test/frontend-build-smoke.test.mjs",
+    "test:frontend:browser-dom": "npm run build:frontend && node ./scripts/run-frontend-browser-dom-tests.mjs",
     "bench:frontend-dom": "npm run build:frontend && FRONTEND_JS_DIR=public/js node test/frontend-dom-render-bench.mjs",
     "test:e2e": "npx playwright test"
   },
