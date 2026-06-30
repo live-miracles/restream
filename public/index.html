@@ -334,6 +334,41 @@
                 </label>
               </fieldset>
             </div>
+            <div class="mt-3 grid gap-3 sm:grid-cols-[1fr_8rem]">
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">Live Optimized</legend>
+                <label class="flex h-10 items-center gap-3">
+                  <input
+                    type="checkbox"
+                    id="pipe-file-live-optimized-input"
+                    class="checkbox checkbox-sm"
+                  />
+                  <span class="text-sm"
+                    >Re-encode for steady live playback and tighter
+                    keyframes</span
+                  >
+                </label>
+              </fieldset>
+              <fieldset class="fieldset">
+                <legend class="fieldset-legend">GOP (sec)</legend>
+                <input
+                  type="number"
+                  id="pipe-file-gop-seconds-input"
+                  class="input w-full"
+                  min="1"
+                  step="1"
+                  value="2"
+                />
+              </fieldset>
+            </div>
+            <p
+              id="pipe-file-analysis-summary"
+              class="text-base-content/60 mt-2 text-xs"
+            ></p>
+            <div
+              id="pipe-file-warning"
+              class="alert alert-warning mt-3 hidden py-2 text-sm"
+            ></div>
           </div>
 
           <div
@@ -1215,6 +1250,10 @@
                   class="text-base-content/90 min-w-0 flex-1 truncate text-sm"
                 ></span>
               </div>
+              <div
+                id="file-source-gop-warning"
+                class="alert alert-warning mt-3 hidden py-2 text-sm"
+              ></div>
               <details id="file-source-details" class="mt-3">
                 <summary
                   class="text-base-content/70 cursor-pointer text-sm font-medium"
@@ -1254,6 +1293,36 @@
                       Start Offset
                     </div>
                     <div id="file-source-start-time" class="mt-1">--</div>
+                  </div>
+                  <div>
+                    <div class="text-base-content/60 text-xs uppercase">
+                      Live Optimized
+                    </div>
+                    <div id="file-source-optimization" class="mt-1">--</div>
+                  </div>
+                  <div>
+                    <div class="text-base-content/60 text-xs uppercase">
+                      Video Codec
+                    </div>
+                    <div id="file-source-video-codec" class="mt-1">--</div>
+                  </div>
+                  <div>
+                    <div class="text-base-content/60 text-xs uppercase">
+                      Frame Rate
+                    </div>
+                    <div id="file-source-fps" class="mt-1">--</div>
+                  </div>
+                  <div>
+                    <div class="text-base-content/60 text-xs uppercase">
+                      Duration
+                    </div>
+                    <div id="file-source-duration" class="mt-1">--</div>
+                  </div>
+                  <div>
+                    <div class="text-base-content/60 text-xs uppercase">
+                      GOP
+                    </div>
+                    <div id="file-source-gop" class="mt-1">--</div>
                   </div>
                 </div>
               </details>

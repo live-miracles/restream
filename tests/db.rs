@@ -619,21 +619,34 @@ async fn scoped_app_logs_can_be_limited_to_restream_only_entries() {
 async fn ingest_crud() {
     let pool = test_pool().await;
 
-    let i = db::create_ingest(&pool, "i1", "video.mp4", "key01", true, "00:00:05")
-        .await
-        .unwrap();
+    let i = db::create_ingest(
+        &pool,
+        "i1",
+        "video.mp4",
+        "key01",
+        true,
+        "00:00:05",
+        false,
+        2,
+    )
+    .await
+    .unwrap();
     assert_eq!(i.filename, "video.mp4");
     assert!(i.loop_flag);
+    assert!(!i.live_optimized);
+    assert_eq!(i.target_gop_seconds, 2);
 
     let all = db::list_ingests(&pool).await.unwrap();
     assert_eq!(all.len(), 1);
 
-    let updated = db::update_ingest(&pool, "i1", "other.mp4", "key02", false, "")
+    let updated = db::update_ingest(&pool, "i1", "other.mp4", "key02", false, "", true, 4)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(updated.filename, "other.mp4");
     assert!(!updated.loop_flag);
+    assert!(updated.live_optimized);
+    assert_eq!(updated.target_gop_seconds, 4);
 
     assert!(db::delete_ingest(&pool, "i1").await.unwrap());
     assert!(db::list_ingests(&pool).await.unwrap().is_empty());

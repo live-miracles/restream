@@ -270,7 +270,7 @@ pub async fn start_hls_segmenter(
             pipeline_id: pipeline_id.clone(),
             encoding: "hls".to_string(),
         });
-    let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer.clone());
+    let mut reader = Reader::new_live(format!("hls:{}", pipeline_id), ring_buffer.clone());
     let mut packets = Vec::with_capacity(32);
     let mut feeder: Option<TsPacketFeeder> = None;
     // Pre-populate SPS/PPS cache from the engine's stored FLV sequence header.

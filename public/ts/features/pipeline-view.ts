@@ -21,13 +21,14 @@ import {
 import { clearInputPreview, renderInputPreview } from "./input-preview.js";
 import { openOutputMonitoringUrl } from "./control-room.js";
 import {
+  getMediaFileAnalysis,
   listMediaFiles,
   startIngest,
   startRecording,
   stopIngest,
   stopRecording,
 } from "../core/api.js";
-import type { MediaFile } from "../core/api.js";
+import type { MediaFile, MediaFileAnalysis } from "../core/api.js";
 import type { AudioTrack, PipelineView, OutputView } from "../types.js";
 import {
   audioTrackKey,
@@ -85,7 +86,9 @@ const audioLabelEditKeys = new Set<string>();
 const audioLabelDrafts = new Map<string, string>();
 let pendingAudioLabelFocusKey: string | null = null;
 const sourceFileMetadataCache = new Map<string, MediaFile | null>();
+const sourceFileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
 let sourceFileMetadataLoadPromise: Promise<void> | null = null;
+let sourceFileAnalysisLoadPromise: Promise<void> | null = null;
 
 function getFileSourceName(pipe: PipelineView): string | null {
   if (pipe.fileIngest?.filename) return pipe.fileIngest.filename;
@@ -136,6 +139,28 @@ function formatFileContainer(name: string | null | undefined): string {
   }
 }
 
+function formatSourceDuration(value: number | null | undefined): string {
+  if (!Number.isFinite(value as number) || (value as number) <= 0) return "--";
+  return `${Number(value).toFixed(1)}s`;
+}
+
+function formatSourceFps(value: number | null | undefined): string {
+  if (!Number.isFinite(value as number) || (value as number) <= 0) return "--";
+  const fps = Number(value);
+  return `${fps.toFixed(fps === Math.round(fps) ? 0 : 1)} FPS`;
+}
+
+function formatSourceGop(analysis: MediaFileAnalysis | null): string {
+  if (
+    !analysis ||
+    !Number.isFinite(analysis.averageKeyframeIntervalSec as number) ||
+    !Number.isFinite(analysis.maxKeyframeIntervalSec as number)
+  ) {
+    return "--";
+  }
+  return `avg ${Number(analysis.averageKeyframeIntervalSec).toFixed(1)}s | max ${Number(analysis.maxKeyframeIntervalSec).toFixed(1)}s`;
+}
+
 function setTextIfPresent(id: string, value: string): void {
   const element = document.getElementById(id);
   if (element) element.textContent = value;
@@ -162,6 +187,28 @@ function scheduleSourceFileMetadataLoad(
     })
     .finally(() => {
       sourceFileMetadataLoadPromise = null;
+      if (state.pipelines.some((pipe) => pipe.id === selectedPipe)) {
+        renderPipelineInfoColumn(selectedPipe);
+      }
+    });
+}
+
+function scheduleSourceFileAnalysisLoad(
+  selectedPipe: string,
+  filename: string | null,
+): void {
+  if (!filename || sourceFileAnalysisCache.has(filename)) return;
+  if (typeof fetch !== "function" || sourceFileAnalysisLoadPromise) return;
+
+  sourceFileAnalysisLoadPromise = getMediaFileAnalysis(filename)
+    .then((analysis) => {
+      sourceFileAnalysisCache.set(filename, analysis);
+    })
+    .catch(() => {
+      sourceFileAnalysisCache.set(filename, null);
+    })
+    .finally(() => {
+      sourceFileAnalysisLoadPromise = null;
       if (state.pipelines.some((pipe) => pipe.id === selectedPipe)) {
         renderPipelineInfoColumn(selectedPipe);
       }
@@ -632,8 +679,12 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
   const cachedSourceFile = fileSourceName
     ? sourceFileMetadataCache.get(fileSourceName) || null
     : null;
+  const cachedSourceAnalysis = fileSourceName
+    ? sourceFileAnalysisCache.get(fileSourceName) || null
+    : null;
   if (isFileSource) {
     scheduleSourceFileMetadataLoad(selectedPipe, fileSourceName);
+    scheduleSourceFileAnalysisLoad(selectedPipe, fileSourceName);
   }
   setTextIfPresent(
     "file-source-container",
@@ -663,6 +714,45 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
       ? pipe.fileIngest.startTime || "00:00:00"
       : "--",
   );
+  setTextIfPresent(
+    "file-source-optimization",
+    pipe.fileIngest?.configured
+      ? pipe.fileIngest.liveOptimized
+        ? `Enabled (${pipe.fileIngest.targetGopSeconds || 2}s GOP)`
+        : "Disabled"
+      : "--",
+  );
+  setTextIfPresent(
+    "file-source-video-codec",
+    cachedSourceAnalysis?.videoCodec
+      ? cachedSourceAnalysis.videoCodec.toUpperCase()
+      : "--",
+  );
+  setTextIfPresent(
+    "file-source-fps",
+    formatSourceFps(cachedSourceAnalysis?.fps),
+  );
+  setTextIfPresent(
+    "file-source-duration",
+    formatSourceDuration(cachedSourceAnalysis?.durationSec),
+  );
+  setTextIfPresent("file-source-gop", formatSourceGop(cachedSourceAnalysis));
+  const fileSourceWarning = document.getElementById("file-source-gop-warning");
+  if (fileSourceWarning) {
+    const targetGopSeconds = pipe.fileIngest?.targetGopSeconds || 2;
+    const sparse =
+      Number(cachedSourceAnalysis?.maxKeyframeIntervalSec ?? 0) >
+      targetGopSeconds;
+    if (isFileSource && sparse) {
+      fileSourceWarning.textContent = pipe.fileIngest?.liveOptimized
+        ? `Sparse source GOP detected: max ${Number(cachedSourceAnalysis?.maxKeyframeIntervalSec).toFixed(1)}s. Live Optimized is targeting ${targetGopSeconds}s keyframes.`
+        : `Sparse source GOP detected: max ${Number(cachedSourceAnalysis?.maxKeyframeIntervalSec).toFixed(1)}s exceeds the ${targetGopSeconds}s live target.`;
+      fileSourceWarning.classList.remove("hidden");
+    } else {
+      fileSourceWarning.classList.add("hidden");
+      fileSourceWarning.textContent = "";
+    }
+  }
 
   const streamKey = pipe.key;
   const streamKeyInline = document.getElementById("stream-key-inline");

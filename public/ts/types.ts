@@ -104,6 +104,8 @@ export interface PipelineFileIngestState {
   streamKey?: string;
   loop?: boolean;
   startTime?: string;
+  liveOptimized?: boolean;
+  targetGopSeconds?: number;
   running: boolean;
 }
 

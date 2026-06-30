@@ -112,10 +112,26 @@ pub async fn setup_database_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
             filename TEXT NOT NULL,
             stream_key TEXT NOT NULL,
             loop INTEGER NOT NULL DEFAULT 0,
-            start_time TEXT NOT NULL DEFAULT ''
+            start_time TEXT NOT NULL DEFAULT '',
+            live_optimized INTEGER NOT NULL DEFAULT 0,
+            target_gop_seconds INTEGER NOT NULL DEFAULT 2
         );",
     )
     .execute(pool)
+    .await?;
+    ensure_column_exists(
+        pool,
+        "ingests",
+        "live_optimized",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_exists(
+        pool,
+        "ingests",
+        "target_gop_seconds",
+        "INTEGER NOT NULL DEFAULT 2",
+    )
     .await?;
 
     // Meta Config
@@ -734,15 +750,19 @@ pub async fn create_ingest(
     stream_key: &str,
     loop_flag: bool,
     start_time: &str,
+    live_optimized: bool,
+    target_gop_seconds: u32,
 ) -> Result<Ingest, sqlx::Error> {
     sqlx::query(
-        "INSERT INTO ingests (id, filename, stream_key, loop, start_time) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO ingests (id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(filename)
     .bind(stream_key)
     .bind(if loop_flag { 1 } else { 0 })
     .bind(start_time)
+    .bind(if live_optimized { 1 } else { 0 })
+    .bind(i64::from(target_gop_seconds))
     .execute(pool)
     .await?;
 
@@ -753,7 +773,7 @@ pub async fn create_ingest(
 
 pub async fn get_ingest(pool: &SqlitePool, id: &str) -> Result<Option<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
-        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE id = ?",
+        "SELECT id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds FROM ingests WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -765,7 +785,7 @@ pub async fn get_ingest_by_stream_key(
     stream_key: &str,
 ) -> Result<Option<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
-        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE stream_key = ? ORDER BY rowid DESC LIMIT 1",
+        "SELECT id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds FROM ingests WHERE stream_key = ? ORDER BY rowid DESC LIMIT 1",
     )
     .bind(stream_key)
     .fetch_optional(pool)
@@ -777,7 +797,7 @@ pub async fn list_ingests_for_stream_key(
     stream_key: &str,
 ) -> Result<Vec<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
-        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE stream_key = ? ORDER BY rowid ASC",
+        "SELECT id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds FROM ingests WHERE stream_key = ? ORDER BY rowid ASC",
     )
     .bind(stream_key)
     .fetch_all(pool)
@@ -786,7 +806,7 @@ pub async fn list_ingests_for_stream_key(
 
 pub async fn list_ingests(pool: &SqlitePool) -> Result<Vec<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
-        "SELECT id, filename, stream_key, loop, start_time FROM ingests ORDER BY rowid ASC",
+        "SELECT id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds FROM ingests ORDER BY rowid ASC",
     )
     .fetch_all(pool)
     .await
@@ -797,7 +817,7 @@ pub async fn list_ingests_for_filename(
     filename: &str,
 ) -> Result<Vec<Ingest>, sqlx::Error> {
     sqlx::query_as::<_, Ingest>(
-        "SELECT id, filename, stream_key, loop, start_time FROM ingests WHERE filename = ?",
+        "SELECT id, filename, stream_key, loop, start_time, live_optimized, target_gop_seconds FROM ingests WHERE filename = ?",
     )
     .bind(filename)
     .fetch_all(pool)
@@ -811,14 +831,18 @@ pub async fn update_ingest(
     stream_key: &str,
     loop_flag: bool,
     start_time: &str,
+    live_optimized: bool,
+    target_gop_seconds: u32,
 ) -> Result<Option<Ingest>, sqlx::Error> {
     let result = sqlx::query(
-        "UPDATE ingests SET filename = ?, stream_key = ?, loop = ?, start_time = ? WHERE id = ?",
+        "UPDATE ingests SET filename = ?, stream_key = ?, loop = ?, start_time = ?, live_optimized = ?, target_gop_seconds = ? WHERE id = ?",
     )
     .bind(filename)
     .bind(stream_key)
     .bind(if loop_flag { 1 } else { 0 })
     .bind(start_time)
+    .bind(if live_optimized { 1 } else { 0 })
+    .bind(i64::from(target_gop_seconds))
     .bind(id)
     .execute(pool)
     .await?;

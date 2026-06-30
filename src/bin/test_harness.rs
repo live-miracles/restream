@@ -37,6 +37,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "correctness-hevc-rtmp",
     "correctness-hevc-srt",
     "fault-resilience",
+    "file-live-edge",
     "mixed-file-h264",
     "resource-sweep",
     "bitrate-sweep",
@@ -95,6 +96,7 @@ fn command_requires_port_namespace(command: &str) -> bool {
             | "correctness-hevc-srt"
             | "fault-egress-retry"
             | "fault-resilience"
+            | "file-live-edge"
             | "recovery"
             | "mixed-file-h264"
             | "resource-sweep"
@@ -305,6 +307,7 @@ async fn run() -> Result<(), String> {
         "correctness-hevc-srt" => hevc_srt_passthrough_correctness().await,
         "fault-egress-retry" => fault_egress_retry().await,
         "fault-resilience" => fault_resilience().await,
+        "file-live-edge" => file_live_edge().await,
         "recovery" => recovery().await,
         "mixed-file-h264" => mixed_file_h264_correctness().await,
         "resource-sweep" => resource_sweep().await,
@@ -317,7 +320,7 @@ async fn run() -> Result<(), String> {
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-egress-retry, fault-resilience, recovery, mixed-file-h264, resource-sweep, bitrate-sweep, \
+              fault-egress-retry, fault-resilience, file-live-edge, recovery, mixed-file-h264, resource-sweep, bitrate-sweep, \
               branch-matrix, or srt-crypto-matrix"
         )),
     };
@@ -518,7 +521,17 @@ async fn start_restream_child(
     db_path: &Path,
     log_path: &Path,
 ) -> Result<Child, String> {
-    start_restream_child_opts(bin, ports, db_path, log_path, true).await
+    start_restream_child_opts(bin, ports, db_path, log_path, true, None).await
+}
+
+async fn start_restream_child_in_media_dir(
+    bin: &Path,
+    ports: &TestPorts,
+    db_path: &Path,
+    log_path: &Path,
+    media_dir: &Path,
+) -> Result<Child, String> {
+    start_restream_child_opts(bin, ports, db_path, log_path, true, Some(media_dir)).await
 }
 
 async fn start_restream_child_opts(
@@ -527,6 +540,7 @@ async fn start_restream_child_opts(
     db_path: &Path,
     log_path: &Path,
     clean_db: bool,
+    media_dir: Option<&Path>,
 ) -> Result<Child, String> {
     if !bin.exists() {
         return Err(format!("restream binary not found at {}", bin.display()));
@@ -544,7 +558,8 @@ async fn start_restream_child_opts(
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
     let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .env("RESTREAM_HTTP_PORT", ports.http.to_string())
         .env("RESTREAM_RTMP_PORT", ports.rtmp.to_string())
         .env("RESTREAM_SRT_PORT", ports.srt.to_string())
@@ -552,9 +567,14 @@ async fn start_restream_child_opts(
         .env("RESTREAM_DB_PATH", db_path.to_string_lossy().to_string())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr_log))
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .kill_on_drop(true);
+    if let Some(media_dir) = media_dir {
+        command.env(
+            "RESTREAM_MEDIA_DIR",
+            media_dir.to_string_lossy().to_string(),
+        );
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
     if let Err(err) = wait_for_http_ok(
         &format!("http://127.0.0.1:{}/healthz", ports.http),
         Duration::from_secs(30),
@@ -4108,9 +4128,10 @@ async fn api_smoke() -> Result<Value, String> {
     println!("[api-smoke] stopped first instance");
 
     let log2_path = work_dir.join("restream-2.log");
-    let mut child2 = start_restream_child_opts(&restream_bin, &ports, &db_path, &log2_path, false)
-        .await
-        .map_err(|e| format!("restart failed: {e}"))?;
+    let mut child2 =
+        start_restream_child_opts(&restream_bin, &ports, &db_path, &log2_path, false, None)
+            .await
+            .map_err(|e| format!("restart failed: {e}"))?;
     let mut api2 = RampApi::new(ports.http);
     api2.login().await?;
     println!("[api-smoke] restarted and authenticated");
@@ -8894,6 +8915,244 @@ async fn mixed_file_h264_correctness() -> Result<Value, String> {
             }
         })
     })
+}
+
+fn media_dir_entries(path: &Path) -> Result<HashSet<String>, String> {
+    let mut files = HashSet::new();
+    if !path.exists() {
+        return Ok(files);
+    }
+    for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            files.insert(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    Ok(files)
+}
+
+async fn wait_for_new_media_file(
+    media_dir: &Path,
+    before: &HashSet<String>,
+    extension: &str,
+    timeout: Duration,
+) -> Result<PathBuf, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let files = media_dir_entries(media_dir)?;
+        if let Some(name) = files
+            .iter()
+            .find(|name| !before.contains(*name) && name.ends_with(extension))
+        {
+            return Ok(media_dir.join(name));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "no new {extension} media file appeared in {} within {}s",
+                media_dir.display(),
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn absolute_delta_secs(actual: f64, expected: f64) -> f64 {
+    (actual - expected).abs()
+}
+
+async fn run_file_live_edge_case(
+    api: &mut RampApi,
+    ports: &TestPorts,
+    media_dir: &Path,
+    fixture: &Path,
+    case_id: &str,
+    live_optimized: bool,
+    target_gop_seconds: u32,
+) -> Result<Value, String> {
+    let fixture_name = format!(
+        "{case_id}-{}",
+        fixture
+            .file_name()
+            .ok_or("fixture missing file name")?
+            .to_string_lossy()
+    );
+    let media_dest = media_dir.join(&fixture_name);
+    std::fs::copy(fixture, &media_dest).map_err(|e| e.to_string())?;
+
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": case_id, "streamKey": case_id}),
+        )
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create response missing pipeline.id")?
+        .to_string();
+
+    api.put_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/file-ingest"),
+        json!({
+            "filename": fixture_name,
+            "loop": true,
+            "liveOptimized": live_optimized,
+            "targetGopSeconds": target_gop_seconds,
+        }),
+    )
+    .await?;
+
+    let source_analysis = api
+        .get_json(&format!("/api/v1/media/{}/analysis", fixture_name))
+        .await?;
+
+    let ingest = api
+        .get_json(&format!("/api/v1/pipelines/{pipeline_id}/file-ingest"))
+        .await?;
+    let ingest_id = ingest["id"]
+        .as_str()
+        .ok_or("pipeline file ingest missing id")?
+        .to_string();
+
+    api.post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
+        .await?;
+    wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(30)).await?;
+    wait_for_pipeline_file_ingest_running_state(api, &pipeline_id, true, Duration::from_secs(10))
+        .await?;
+
+    let playlist_url = format!(
+        "http://127.0.0.1:{}/hls/{pipeline_id}/master.m3u8",
+        ports.http
+    );
+    let (_playlist_status, playlist_body) =
+        wait_for_hls_playlist_ready(api, &pipeline_id, Duration::from_secs(20)).await?;
+    let hls_preview =
+        wait_for_api_hls_preview_state(api, &pipeline_id, true, Duration::from_secs(10)).await?;
+    let hls_probe = probe_dims_ramp_with_cookie(&playlist_url, api.cookie.as_deref()).await;
+
+    let before_files = media_dir_entries(media_dir)?;
+    api.post_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/start"),
+        json!({}),
+    )
+    .await?;
+    wait_for_api_recording_state(api, &pipeline_id, true, Duration::from_secs(10)).await?;
+
+    let capture_target_secs = 8.0;
+    let recording_started = Instant::now();
+    tokio::time::sleep(Duration::from_secs_f64(capture_target_secs)).await;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/stop"),
+        json!({}),
+    )
+    .await?;
+    let capture_elapsed_secs = recording_started.elapsed().as_secs_f64();
+    wait_for_api_recording_state(api, &pipeline_id, false, Duration::from_secs(20)).await?;
+
+    let recording_mp4 =
+        wait_for_new_media_file(media_dir, &before_files, ".mp4", Duration::from_secs(30)).await?;
+    let recorded_analysis = restream::media::file_analysis::analyze_media_file(&recording_mp4)?;
+
+    let expected_source_ts = recording_mp4.with_extension("ts");
+    let source_retained = expected_source_ts.exists();
+
+    api.post_json(&format!("/api/v1/ingests/{ingest_id}/stop"), json!({}))
+        .await?;
+    wait_for_pipeline_file_ingest_running_state(api, &pipeline_id, false, Duration::from_secs(10))
+        .await?;
+    wait_for_api_input_off(api, &pipeline_id, Duration::from_secs(20)).await?;
+
+    let recorded_duration_secs = recorded_analysis.duration_sec.ok_or_else(|| {
+        format!(
+            "recorded output {} has no duration",
+            recording_mp4.display()
+        )
+    })?;
+    let duration_delta_secs = absolute_delta_secs(recorded_duration_secs, capture_elapsed_secs);
+    let duration_ok = duration_delta_secs <= 2.0;
+    let hls_ok = playlist_body.contains("#EXTM3U") && hls_probe.is_ok();
+    let live_optimized_gop_ok = if live_optimized {
+        recorded_analysis
+            .max_keyframe_interval_sec
+            .is_some_and(|value| value <= target_gop_seconds as f64 + 0.6)
+    } else {
+        true
+    };
+
+    Ok(json!({
+        "case": case_id,
+        "passed": duration_ok && hls_ok && live_optimized_gop_ok && !source_retained,
+        "liveOptimized": live_optimized,
+        "targetGopSeconds": target_gop_seconds,
+        "captureElapsedSecs": capture_elapsed_secs,
+        "recordedDurationSecs": recorded_duration_secs,
+        "durationDeltaSecs": duration_delta_secs,
+        "durationOk": duration_ok,
+        "sourceAnalysis": source_analysis,
+        "recordedAnalysis": recorded_analysis,
+        "hlsPreview": hls_preview,
+        "hlsPlaylistReady": playlist_body.contains("#EXTM3U"),
+        "hlsProbe": match hls_probe {
+            Ok(dimensions) => json!({"passed": true, "dimensions": dimensions}),
+            Err(error) => json!({"passed": false, "error": error}),
+        },
+        "liveOptimizedGopOk": live_optimized_gop_ok,
+        "sourceRetained": source_retained,
+        "recordingFile": recording_mp4,
+    }))
+}
+
+async fn file_live_edge() -> Result<Value, String> {
+    let work_dir = artifact_path("file-live-edge");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = default_restream_bin();
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let media_dir = work_dir.join("media");
+    std::fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
+
+    let ports = TestPorts::from_env();
+    let mut child =
+        start_restream_child_in_media_dir(&restream_bin, &ports, &db_path, &log_path, &media_dir)
+            .await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let passthrough = run_file_live_edge_case(
+        &mut api,
+        &ports,
+        &media_dir,
+        &checked_h264_fixture()?,
+        "file-live-edge-passthrough",
+        false,
+        2,
+    )
+    .await?;
+
+    let live_optimized = run_file_live_edge_case(
+        &mut api,
+        &ports,
+        &media_dir,
+        &restream::test_fixtures::sparse_gop_mp4_fixture()?,
+        "file-live-edge-optimized",
+        true,
+        2,
+    )
+    .await?;
+
+    stop_child(&mut child).await;
+
+    let cases = vec![passthrough, live_optimized];
+    let passed = cases.iter().all(|case| case["passed"] == true);
+    Ok(json!({
+        "mode": "file-live-edge",
+        "passed": passed,
+        "cases": cases,
+        "mediaDir": media_dir,
+        "logPath": log_path,
+    }))
 }
 
 async fn run_mixed_file_h264_config(

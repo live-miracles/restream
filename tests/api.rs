@@ -888,7 +888,9 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     let file_ingest = serde_json::json!({
         "filename": "clip.mp4",
         "loop": true,
-        "startTime": "00:00:05"
+        "startTime": "00:00:05",
+        "liveOptimized": true,
+        "targetGopSeconds": 4
     });
     let uri = format!("/api/v1/pipelines/{pipeline_id}/file-ingest");
     let resp = app
@@ -908,6 +910,8 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     assert_eq!(json["streamKey"], "key01_6c71124cde80358ca7c13081");
     assert_eq!(json["loop"], true);
     assert_eq!(json["startTime"], "00:00:05");
+    assert_eq!(json["liveOptimized"], true);
+    assert_eq!(json["targetGopSeconds"], 4);
 
     let resp = app
         .clone()
@@ -918,6 +922,8 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     let json = body_json(resp).await;
     assert_eq!(json["configured"], true);
     assert_eq!(json["filename"], "clip.mp4");
+    assert_eq!(json["liveOptimized"], true);
+    assert_eq!(json["targetGopSeconds"], 4);
 
     let resp = app
         .clone()
@@ -930,6 +936,8 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     assert_eq!(json["pipelines"][0]["fileIngest"]["configured"], true);
     assert_eq!(json["pipelines"][0]["fileIngest"]["filename"], "clip.mp4");
     assert_eq!(json["pipelines"][0]["fileIngest"]["running"], false);
+    assert_eq!(json["pipelines"][0]["fileIngest"]["liveOptimized"], true);
+    assert_eq!(json["pipelines"][0]["fileIngest"]["targetGopSeconds"], 4);
 
     let resp = app
         .clone()
@@ -1540,6 +1548,37 @@ async fn change_password() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn media_analysis_reports_sparse_checked_in_fixture() {
+    let (app, cookie, temp_dir, _pool) = authenticated_app_with_temp_media().await;
+    let fixture = restream::test_fixtures::sparse_gop_mp4_fixture()
+        .expect("checked-in sparse GOP fixture should exist");
+    let target = temp_dir.join("sparse-gop-5s.mp4");
+    tokio::fs::copy(&fixture, &target).await.unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            "/api/v1/media/sparse-gop-5s.mp4/analysis",
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let json = body_json(resp).await;
+    assert_eq!(json["videoCodec"], "h264");
+    assert_eq!(json["keyframeCount"], 3);
+    assert_eq!(json["averageKeyframeIntervalSec"], 5.0);
+    assert_eq!(json["maxKeyframeIntervalSec"], 5.0);
+    assert_eq!(json["sparseForLive"], true);
+    assert_eq!(json["liveGopTargetSeconds"], 2);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]
@@ -2223,6 +2262,8 @@ async fn media_library_classifies_serves_and_deletes_files() {
         "stream-key-1",
         false,
         "",
+        false,
+        2,
     )
     .await
     .unwrap();

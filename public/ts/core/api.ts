@@ -449,6 +449,8 @@ export interface IngestConfig {
   streamKey: string;
   loop: boolean;
   startTime: string;
+  liveOptimized: boolean;
+  targetGopSeconds: number;
   running: boolean;
 }
 
@@ -459,7 +461,20 @@ export interface PipelineFileIngestConfig {
   streamKey?: string;
   loop?: boolean;
   startTime?: string;
+  liveOptimized?: boolean;
+  targetGopSeconds?: number;
   running: boolean;
+}
+
+export interface MediaFileAnalysis {
+  videoCodec?: string | null;
+  fps?: number | null;
+  durationSec?: number | null;
+  keyframeCount: number;
+  averageKeyframeIntervalSec?: number | null;
+  maxKeyframeIntervalSec?: number | null;
+  sparseForLive: boolean;
+  liveGopTargetSeconds: number;
 }
 
 export interface AudioCapsPayload {
@@ -571,11 +586,25 @@ async function getPipelineFileIngest(
 
 async function putPipelineFileIngest(
   pipeId: string,
-  data: { filename: string; loopFlag: boolean; startTime: string },
+  data: {
+    filename: string;
+    loopFlag: boolean;
+    startTime: string;
+    liveOptimized: boolean;
+    targetGopSeconds: number;
+  },
 ): Promise<PipelineFileIngestConfig | null> {
   return apiRequest<PipelineFileIngestConfig>(
     `/api/v1/pipelines/${encodeURIComponent(pipeId)}/file-ingest`,
     { method: "PUT", body: data },
+  );
+}
+
+async function getMediaFileAnalysis(
+  filename: string,
+): Promise<MediaFileAnalysis | null> {
+  return apiRequest<MediaFileAnalysis>(
+    `/api/v1/media/${encodeURIComponent(filename)}/analysis`,
   );
 }
 
@@ -653,6 +682,7 @@ export {
   stopIngest,
   getPipelineFileIngest,
   putPipelineFileIngest,
+  getMediaFileAnalysis,
   deletePipelineFileIngest,
   logout,
   changePassword,

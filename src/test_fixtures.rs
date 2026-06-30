@@ -19,6 +19,7 @@ pub const REQUIRED_CHECKED_IN_FIXTURES: &[&str] = &[
     "test/fixtures/bench-h265-8m.ts",
     "test/fixtures/bench-h265-1_5m-2a.ts",
     "test/fixtures/hls-first-audio-only-6s.ts",
+    "test/fixtures/sparse-gop-5s.mp4",
     "media/colorbar-timer-2v16a.mp4",
     "test/mediamtx-sink.yml",
 ];
@@ -45,6 +46,10 @@ pub fn canonical_h264_ts_fixture() -> Result<PathBuf, String> {
 
 pub fn canonical_h265_ts_fixture() -> Result<PathBuf, String> {
     checked_in_fixture("test/fixtures/correctness-h265.ts")
+}
+
+pub fn sparse_gop_mp4_fixture() -> Result<PathBuf, String> {
+    checked_in_fixture("test/fixtures/sparse-gop-5s.mp4")
 }
 
 pub fn canonical_ts_fixture(codec: &str) -> Result<PathBuf, String> {

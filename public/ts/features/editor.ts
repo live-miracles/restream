@@ -10,10 +10,15 @@ import {
   deleteOutput,
   listMediaFiles,
   getPipelineFileIngest,
+  getMediaFileAnalysis,
   putPipelineFileIngest,
   deletePipelineFileIngest,
 } from "../core/api.js";
-import type { MediaFile, PipelineFileIngestConfig } from "../core/api.js";
+import type {
+  MediaFile,
+  MediaFileAnalysis,
+  PipelineFileIngestConfig,
+} from "../core/api.js";
 import {
   getUrlParam,
   isValidOutput,
@@ -58,6 +63,10 @@ import type {
 function getDefaultOutputHost(): string {
   return state.config?.ingestHost || "localhost";
 }
+
+const DEFAULT_FILE_INGEST_GOP_SECONDS = 2;
+const fileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
+let pendingFileAnalysisRequest = 0;
 
 function populateOutputServerOptions(
   protocol: string,
@@ -847,6 +856,123 @@ function setPipeSourceUi(sourceType: "publisher" | "file"): void {
   const fileFields = document.getElementById("pipe-file-fields");
   if (sourceSelect) sourceSelect.value = sourceType;
   fileFields?.classList.toggle("hidden", sourceType !== "file");
+  if (sourceType !== "file") {
+    const summary = document.getElementById("pipe-file-analysis-summary");
+    const warning = document.getElementById("pipe-file-warning");
+    if (summary) summary.textContent = "";
+    if (warning) {
+      warning.classList.add("hidden");
+      warning.textContent = "";
+    }
+  }
+}
+
+function setPipeFileOptimizationUi(liveOptimized: boolean): void {
+  const gopInput = document.getElementById(
+    "pipe-file-gop-seconds-input",
+  ) as HTMLInputElement | null;
+  if (!gopInput) return;
+  gopInput.disabled = !liveOptimized;
+  gopInput.classList.toggle("input-disabled", !liveOptimized);
+}
+
+function describePipeFileAnalysis(analysis: MediaFileAnalysis | null): string {
+  if (!analysis) return "Could not analyze the selected file yet.";
+  if (!analysis.videoCodec)
+    return "No video stream detected in the selected file.";
+  const parts = [analysis.videoCodec.toUpperCase()];
+  if (Number.isFinite(analysis.fps as number)) {
+    const fps = Number(analysis.fps);
+    parts.push(`${fps.toFixed(fps === Math.round(fps) ? 0 : 1)} FPS`);
+  }
+  if (Number.isFinite(analysis.durationSec as number)) {
+    parts.push(`${Number(analysis.durationSec).toFixed(1)}s`);
+  }
+  if (Number.isFinite(analysis.averageKeyframeIntervalSec as number)) {
+    parts.push(
+      `GOP avg ${Number(analysis.averageKeyframeIntervalSec).toFixed(1)}s`,
+    );
+  }
+  if (Number.isFinite(analysis.maxKeyframeIntervalSec as number)) {
+    parts.push(`max ${Number(analysis.maxKeyframeIntervalSec).toFixed(1)}s`);
+  }
+  return parts.join(" | ");
+}
+
+function renderPipeFileAnalysis(
+  filename: string,
+  analysis: MediaFileAnalysis | null,
+): void {
+  const summary = document.getElementById("pipe-file-analysis-summary");
+  const warning = document.getElementById("pipe-file-warning");
+  if (summary) {
+    summary.textContent = filename ? describePipeFileAnalysis(analysis) : "";
+  }
+  if (!warning) return;
+
+  const liveOptimized =
+    (
+      document.getElementById(
+        "pipe-file-live-optimized-input",
+      ) as HTMLInputElement | null
+    )?.checked ?? false;
+  const targetGopSeconds = Math.max(
+    Number(
+      (
+        document.getElementById(
+          "pipe-file-gop-seconds-input",
+        ) as HTMLInputElement | null
+      )?.value || DEFAULT_FILE_INGEST_GOP_SECONDS,
+    ) || DEFAULT_FILE_INGEST_GOP_SECONDS,
+    1,
+  );
+
+  const sparse =
+    Number(analysis?.maxKeyframeIntervalSec ?? 0) > targetGopSeconds;
+  if (!filename || !analysis?.videoCodec || !sparse) {
+    warning.classList.add("hidden");
+    warning.textContent = "";
+    return;
+  }
+
+  warning.textContent = liveOptimized
+    ? `Sparse source GOP detected: max ${Number(analysis.maxKeyframeIntervalSec).toFixed(1)}s. Live Optimized will re-encode toward a ${targetGopSeconds}s GOP.`
+    : `Sparse source GOP detected: max ${Number(analysis.maxKeyframeIntervalSec).toFixed(1)}s exceeds the ${targetGopSeconds}s live target. Enable Live Optimized for steadier preview and recording.`;
+  warning.classList.remove("hidden");
+}
+
+async function refreshPipeFileAnalysis(selectedFilename = ""): Promise<void> {
+  const sourceType =
+    (
+      document.getElementById(
+        "pipe-source-type-input",
+      ) as HTMLSelectElement | null
+    )?.value === "file"
+      ? "file"
+      : "publisher";
+  if (sourceType !== "file") return;
+
+  const fileSelect = document.getElementById(
+    "pipe-file-input",
+  ) as HTMLSelectElement | null;
+  const filename = selectedFilename || fileSelect?.value?.trim() || "";
+  if (!filename) {
+    renderPipeFileAnalysis("", null);
+    return;
+  }
+
+  if (fileAnalysisCache.has(filename)) {
+    renderPipeFileAnalysis(filename, fileAnalysisCache.get(filename) || null);
+    return;
+  }
+
+  const summary = document.getElementById("pipe-file-analysis-summary");
+  if (summary) summary.textContent = "Analyzing source file…";
+  const requestId = ++pendingFileAnalysisRequest;
+  const analysis = await getMediaFileAnalysis(filename).catch(() => null);
+  if (requestId !== pendingFileAnalysisRequest) return;
+  fileAnalysisCache.set(filename, analysis);
+  renderPipeFileAnalysis(filename, analysis);
 }
 
 async function populatePipeFileSelect(selectedFilename = ""): Promise<void> {
@@ -889,13 +1015,47 @@ function resetPipeFileOptions(
   const startInput = document.getElementById(
     "pipe-file-start-time-input",
   ) as HTMLInputElement | null;
+  const liveOptimizedInput = document.getElementById(
+    "pipe-file-live-optimized-input",
+  ) as HTMLInputElement | null;
+  const gopInput = document.getElementById(
+    "pipe-file-gop-seconds-input",
+  ) as HTMLInputElement | null;
   if (loopCheck)
     loopCheck.checked = fileIngest?.configured ? !!fileIngest.loop : false;
   if (startInput)
     startInput.value = fileIngest?.configured
       ? fileIngest.startTime || ""
       : "00:00:00";
+  if (liveOptimizedInput) {
+    liveOptimizedInput.checked = fileIngest?.configured
+      ? !!fileIngest.liveOptimized
+      : false;
+    liveOptimizedInput.onchange = () => {
+      setPipeFileOptimizationUi(liveOptimizedInput.checked);
+      void refreshPipeFileAnalysis();
+    };
+    setPipeFileOptimizationUi(liveOptimizedInput.checked);
+  }
+  if (gopInput) {
+    gopInput.value = String(
+      fileIngest?.configured
+        ? fileIngest.targetGopSeconds || DEFAULT_FILE_INGEST_GOP_SECONDS
+        : DEFAULT_FILE_INGEST_GOP_SECONDS,
+    );
+    gopInput.oninput = () => {
+      const selectedFile =
+        (
+          document.getElementById("pipe-file-input") as HTMLSelectElement | null
+        )?.value?.trim() || filename;
+      renderPipeFileAnalysis(
+        selectedFile,
+        fileAnalysisCache.get(selectedFile) || null,
+      );
+    };
+  }
   void populatePipeFileSelect(filename);
+  void refreshPipeFileAnalysis(filename);
 }
 
 async function openPipeModal(
@@ -933,6 +1093,11 @@ async function openPipeModal(
     "pipe-file-input",
   ) as HTMLSelectElement | null;
   fileSelect?.classList.remove("select-error");
+  if (fileSelect) {
+    fileSelect.onchange = () => {
+      void refreshPipeFileAnalysis(fileSelect.value.trim());
+    };
+  }
 
   const fallbackFilename = filenameFromInputSource(pipe?.inputSource);
   let fileIngest: PipelineFileIngestConfig | null = null;
@@ -949,7 +1114,12 @@ async function openPipeModal(
   ) as HTMLSelectElement | null;
   if (sourceSelect) {
     sourceSelect.onchange = () => {
-      setPipeSourceUi(sourceSelect.value === "file" ? "file" : "publisher");
+      const nextSourceType =
+        sourceSelect.value === "file" ? "file" : "publisher";
+      setPipeSourceUi(nextSourceType);
+      if (nextSourceType === "file") {
+        void refreshPipeFileAnalysis();
+      }
     };
   }
 
@@ -1118,6 +1288,22 @@ export async function pipeFormBtn(event: Event): Promise<void> {
         "pipe-file-start-time-input",
       ) as HTMLInputElement | null
     )?.value.trim() || "";
+  const liveOptimized =
+    (
+      document.getElementById(
+        "pipe-file-live-optimized-input",
+      ) as HTMLInputElement | null
+    )?.checked ?? false;
+  const targetGopSeconds = Math.max(
+    Number(
+      (
+        document.getElementById(
+          "pipe-file-gop-seconds-input",
+        ) as HTMLInputElement | null
+      )?.value || DEFAULT_FILE_INGEST_GOP_SECONDS,
+    ) || DEFAULT_FILE_INGEST_GOP_SECONDS,
+    1,
+  );
 
   let savedPipeId = pipeId;
   if (
@@ -1155,6 +1341,8 @@ export async function pipeFormBtn(event: Event): Promise<void> {
       filename,
       loopFlag,
       startTime,
+      liveOptimized,
+      targetGopSeconds,
     });
     if (response === null) return;
   } else {

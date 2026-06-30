@@ -432,7 +432,7 @@ pub async fn start_recording(
         }
     });
 
-    let mut reader = Reader::new(format!("recording:{}", pipeline_name), ring_buffer);
+    let mut reader = Reader::new_live(format!("recording:{}", pipeline_name), ring_buffer);
     let mut packets = Vec::with_capacity(32);
 
     // Lazily initialized when first packet arrives.

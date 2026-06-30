@@ -19,6 +19,16 @@ pub struct Ingest {
     #[sqlx(rename = "loop")]
     pub loop_flag: bool,
     pub start_time: String,
+    #[serde(default)]
+    pub live_optimized: bool,
+    #[serde(default = "default_file_ingest_target_gop_seconds")]
+    pub target_gop_seconds: u32,
+}
+
+pub const DEFAULT_FILE_INGEST_TARGET_GOP_SECONDS: u32 = 2;
+
+pub fn default_file_ingest_target_gop_seconds() -> u32 {
+    DEFAULT_FILE_INGEST_TARGET_GOP_SECONDS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

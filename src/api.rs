@@ -498,6 +498,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/engine/health", get(v1_engine_health_handler))
         .route("/api/v1/media", get(media_list_handler))
         .route(
+            "/api/v1/media/:filename/analysis",
+            get(media_analysis_handler),
+        )
+        .route(
             "/api/v1/media/:filename",
             patch(media_rename_handler).delete(media_delete_handler),
         )
@@ -2189,6 +2193,8 @@ async fn ingests_get_handler(
             "streamKey": i.stream_key,
             "loop": i.loop_flag,
             "startTime": i.start_time,
+            "liveOptimized": i.live_optimized,
+            "targetGopSeconds": i.target_gop_seconds,
             "running": running
         }));
     }
@@ -2203,6 +2209,8 @@ struct IngestPayload {
     #[serde(alias = "loop")]
     loop_flag: Option<bool>,
     start_time: Option<String>,
+    live_optimized: Option<bool>,
+    target_gop_seconds: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -2212,6 +2220,14 @@ struct PipelineFileIngestPayload {
     #[serde(alias = "loop")]
     loop_flag: Option<bool>,
     start_time: Option<String>,
+    live_optimized: Option<bool>,
+    target_gop_seconds: Option<u32>,
+}
+
+fn sanitize_target_gop_seconds(value: Option<u32>) -> u32 {
+    value
+        .unwrap_or(crate::types::DEFAULT_FILE_INGEST_TARGET_GOP_SECONDS)
+        .max(1)
 }
 
 fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> serde_json::Value {
@@ -2223,6 +2239,8 @@ fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> serde_json::Va
             "streamKey": ingest.stream_key,
             "loop": ingest.loop_flag,
             "startTime": ingest.start_time,
+            "liveOptimized": ingest.live_optimized,
+            "targetGopSeconds": ingest.target_gop_seconds,
             "running": running
         }),
         None => serde_json::json!({
@@ -2253,15 +2271,46 @@ fn build_file_ingest_args(ingest: &Ingest, file_path: &FsPath) -> Vec<String> {
         args.extend(["-ss".into(), ingest.start_time.clone()]);
     }
     args.extend(["-i".into(), file_path.to_string_lossy().into_owned()]);
-    args.extend([
-        "-map".into(),
-        "0".into(),
-        "-c".into(),
-        "copy".into(),
-        "-f".into(),
-        "mpegts".into(),
-        "pipe:1".into(),
-    ]);
+    if ingest.live_optimized {
+        let target_gop_seconds = ingest.target_gop_seconds.max(1);
+        args.extend([
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "0:a?".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-sc_threshold".into(),
+            "0".into(),
+            "-force_key_frames".into(),
+            format!("expr:gte(t,n_forced*{target_gop_seconds})"),
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "192k".into(),
+            "-ar".into(),
+            "48000".into(),
+            "-f".into(),
+            "mpegts".into(),
+            "pipe:1".into(),
+        ]);
+    } else {
+        args.extend([
+            "-map".into(),
+            "0".into(),
+            "-c".into(),
+            "copy".into(),
+            "-f".into(),
+            "mpegts".into(),
+            "pipe:1".into(),
+        ]);
+    }
     args
 }
 
@@ -2384,6 +2433,8 @@ async fn pipeline_file_ingest_put_handler(
 
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
+    let live_optimized = payload.live_optimized.unwrap_or(false);
+    let target_gop_seconds = sanitize_target_gop_seconds(payload.target_gop_seconds);
     let existing = match db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key).await {
         Ok(ingest) => ingest,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2397,6 +2448,8 @@ async fn pipeline_file_ingest_put_handler(
             &pipeline.stream_key,
             loop_val,
             &start_time,
+            live_optimized,
+            target_gop_seconds,
         )
         .await
         {
@@ -2412,6 +2465,8 @@ async fn pipeline_file_ingest_put_handler(
                 &pipeline.stream_key,
                 loop_val,
                 &start_time,
+                live_optimized,
+                target_gop_seconds,
             )
             .await
             {
@@ -2742,6 +2797,8 @@ async fn ingests_post_handler(
     let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
+    let live_optimized = payload.live_optimized.unwrap_or(false);
+    let target_gop_seconds = sanitize_target_gop_seconds(payload.target_gop_seconds);
 
     match db::create_ingest(
         &state.db,
@@ -2750,6 +2807,8 @@ async fn ingests_post_handler(
         &payload.stream_key,
         loop_val,
         &start_time,
+        live_optimized,
+        target_gop_seconds,
     )
     .await
     {
@@ -2759,6 +2818,8 @@ async fn ingests_post_handler(
             "streamKey": ingest.stream_key,
             "loop": ingest.loop_flag,
             "startTime": ingest.start_time,
+            "liveOptimized": ingest.live_optimized,
+            "targetGopSeconds": ingest.target_gop_seconds,
             "running": false
         }))
         .into_response(),
@@ -2787,6 +2848,8 @@ async fn ingests_update_handler(
     }
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
+    let live_optimized = payload.live_optimized.unwrap_or(false);
+    let target_gop_seconds = sanitize_target_gop_seconds(payload.target_gop_seconds);
 
     match db::update_ingest(
         &state.db,
@@ -2795,6 +2858,8 @@ async fn ingests_update_handler(
         &payload.stream_key,
         loop_val,
         &start_time,
+        live_optimized,
+        target_gop_seconds,
     )
     .await
     {
@@ -2806,6 +2871,8 @@ async fn ingests_update_handler(
                 "streamKey": ingest.stream_key,
                 "loop": ingest.loop_flag,
                 "startTime": ingest.start_time,
+                "liveOptimized": ingest.live_optimized,
+                "targetGopSeconds": ingest.target_gop_seconds,
                 "running": running
             }))
             .into_response()
@@ -2905,7 +2972,7 @@ async fn ingests_start_handler(
 
     state.engine.mark_file_ingest_running(&ingest.id).await;
 
-    if crate::media::file_ingest::use_internal_file_ingest() {
+    if crate::media::file_ingest::use_internal_file_ingest() && !ingest.live_optimized {
         if let Err(e) = crate::media::file_ingest::spawn_internal_file_ingest(
             state.engine.clone(),
             tokio::runtime::Handle::current(),
@@ -2956,6 +3023,8 @@ async fn ingests_start_handler(
         "streamKey": ingest.stream_key,
         "loop": ingest.loop_flag,
         "startTime": ingest.start_time,
+        "liveOptimized": ingest.live_optimized,
+        "targetGopSeconds": ingest.target_gop_seconds,
         "running": true
     }))
     .into_response()
@@ -2989,6 +3058,8 @@ async fn ingests_stop_handler(
         "streamKey": ingest.stream_key,
         "loop": ingest.loop_flag,
         "startTime": ingest.start_time,
+        "liveOptimized": ingest.live_optimized,
+        "targetGopSeconds": ingest.target_gop_seconds,
         "running": false
     }))
     .into_response()
@@ -3369,6 +3440,49 @@ async fn media_list_handler(
     Json(serde_json::json!({ "files": files })).into_response()
 }
 
+async fn media_analysis_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(filename): Path<String>,
+) -> impl IntoResponse {
+    if let Some(token) = get_session_token_from_headers(&headers) {
+        if !state.is_authenticated(&token).await {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    } else {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let path = match media_path_under_root(&state.media_dir, &filename) {
+        Ok(path) => path,
+        Err(status) => return status.into_response(),
+    };
+
+    let analysis = match tokio::task::spawn_blocking(move || {
+        crate::media::file_analysis::analyze_media_file(&path)
+    })
+    .await
+    {
+        Ok(Ok(analysis)) => analysis,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("analysis task failed: {error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    Json(analysis).into_response()
+}
+
 fn media_content_type(filename: &str) -> &'static str {
     match filename
         .rsplit('.')
@@ -3655,6 +3769,8 @@ async fn media_rename_handler(
             &ingest.stream_key,
             ingest.loop_flag,
             &ingest.start_time,
+            ingest.live_optimized,
+            ingest.target_gop_seconds,
         )
         .await
         {
@@ -5574,6 +5690,8 @@ async fn agent_dependency_summary(
             "backend": if crate::media::file_ingest::use_internal_file_ingest() { "internal" } else { "ffmpeg-subprocess" },
             "loop": ingest.loop_flag,
             "startTime": ingest.start_time,
+            "liveOptimized": ingest.live_optimized,
+            "targetGopSeconds": ingest.target_gop_seconds,
             "streamKey": ingest.stream_key,
         }));
     }
@@ -6690,6 +6808,54 @@ mod tests {
         assert_eq!(to_hex(&[0x00]), "00");
         assert_eq!(to_hex(&[0xFF]), "ff");
         assert_eq!(to_hex(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
+    }
+
+    #[test]
+    fn sanitize_target_gop_seconds_defaults_and_clamps() {
+        assert_eq!(
+            sanitize_target_gop_seconds(None),
+            crate::types::DEFAULT_FILE_INGEST_TARGET_GOP_SECONDS
+        );
+        assert_eq!(sanitize_target_gop_seconds(Some(0)), 1);
+        assert_eq!(sanitize_target_gop_seconds(Some(4)), 4);
+    }
+
+    fn test_ingest(live_optimized: bool, target_gop_seconds: u32) -> Ingest {
+        Ingest {
+            id: "ingest_test".to_string(),
+            filename: "clip.mp4".to_string(),
+            stream_key: "stream-key".to_string(),
+            loop_flag: true,
+            start_time: "00:00:03".to_string(),
+            live_optimized,
+            target_gop_seconds,
+        }
+    }
+
+    #[test]
+    fn build_file_ingest_args_defaults_to_copy_passthrough() {
+        let ingest = test_ingest(false, 2);
+        let args = build_file_ingest_args(&ingest, std::path::Path::new("media/clip.mp4"));
+
+        assert!(args.windows(2).any(|pair| pair == ["-re", "-stream_loop"]));
+        assert!(args.windows(2).any(|pair| pair == ["-ss", "00:00:03"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "mpegts"]));
+        assert!(!args.iter().any(|arg| arg == "libx264"));
+    }
+
+    #[test]
+    fn build_file_ingest_args_supports_live_optimized_mode() {
+        let ingest = test_ingest(true, 3);
+        let args = build_file_ingest_args(&ingest, std::path::Path::new("media/clip.mp4"));
+
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "libx264"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "aac"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-force_key_frames", "expr:gte(t,n_forced*3)"])
+        );
+        assert!(!args.windows(2).any(|pair| pair == ["-c", "copy"]));
     }
 
     #[test]
