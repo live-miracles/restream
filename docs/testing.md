@@ -33,12 +33,17 @@ compiled-bundle smoke coverage:
   sourcemapped build of `public/ts/**`, then finishes with a smaller smoke pass
   against the shipped `public/js/**` bundle.
 - `npm run test:frontend:coverage` keeps the same split, but reports coverage
-  back onto `public/ts/**` so the numbers point at the code we actually edit.
+  back onto the deterministic TypeScript modules that the Node/fake-DOM suite
+  is meant to own. This is the main frontend coverage gate.
+- `npm run test:frontend:coverage:all` keeps the same runtime path but emits a
+  broader all-files TypeScript report for diagnostic use; expect browser-heavy
+  modules to stay lower until they get Playwright or browser-native coverage.
 - `npm run test:frontend:js-smoke` is the minimal direct guard for generated
   `public/js/**`; use it when you only need to verify the compiled artifact.
 
 This keeps detailed behavior and coverage attached to the TypeScript source of
-truth without dropping confidence in the emitted browser bundle.
+truth without dropping confidence in the emitted browser bundle, while avoiding
+misleading Node-only coverage targets for browser-heavy modules.
 
 As of June 29, 2026 `cargo test -- --list` enumerates 621 tests across unit,
 integration, harness, and doctest targets.

@@ -117,6 +117,9 @@ and state helpers in `public/ts/core/`, bounded UI modules in
 The Node-based frontend suite now uses a temporary sourcemapped test build so
 coverage reports point at `public/ts/**`, while `npm run test:frontend:js-smoke`
 keeps a smaller direct check against the shipped `public/js/**` bundle.
+Use `npm run test:frontend:coverage` for the Node-scope TypeScript coverage
+gate and `npm run test:frontend:coverage:all` when you want the broader
+all-files report as a diagnostic view.
 
 ## Testing
 

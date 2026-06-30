@@ -405,6 +405,110 @@ runCheck("renderPipelineInfoColumn shows file ingest controls for file sources",
   );
 });
 
+runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "pipe-info-col");
+  appendRoot(document, "div", "pipe-name");
+  appendRoot(document, "button", "file-ingest-pipe-btn");
+  appendRoot(document, "button", "record-pipe-btn");
+  appendRoot(document, "button", "graph-pipe-btn");
+  appendRoot(document, "button", "diagnose-pipe-btn");
+  appendRoot(document, "button", "edit-pipe-btn");
+  appendRoot(document, "button", "delete-pipe-btn");
+  appendRoot(document, "div", "input-time");
+  appendRoot(document, "div", "input-stats");
+  appendRoot(document, "div", "input-video-codec");
+  appendRoot(document, "div", "input-video-resolution");
+  appendRoot(document, "div", "input-video-fps");
+  appendRoot(document, "div", "input-video-level");
+  appendRoot(document, "div", "input-video-profile");
+  appendRoot(document, "div", "input-video-pid-stat");
+  appendRoot(document, "div", "input-video-pid");
+  appendRoot(document, "div", "input-audio-tracks");
+  appendRoot(document, "div", "input-total-bw");
+  appendRoot(document, "div", "output-total-bw");
+  appendRoot(document, "div", "input-reader-count");
+  appendRoot(document, "div", "input-output-count");
+  appendRoot(document, "section", "file-source-section");
+  appendRoot(document, "span", "file-source-inline");
+  appendRoot(document, "details", "file-source-details");
+  appendRoot(document, "div", "file-source-container");
+  appendRoot(document, "div", "file-source-size");
+  appendRoot(document, "div", "file-source-modified");
+  appendRoot(document, "div", "file-source-loop");
+  appendRoot(document, "div", "file-source-start-time");
+  appendRoot(document, "section", "stream-key-section");
+  appendRoot(document, "code", "stream-key-inline");
+  appendRoot(document, "button", "stream-key-copy-btn");
+  appendRoot(document, "section", "ingest-url-section");
+  appendRoot(document, "button", "ingest-url-copy-btn");
+  appendRoot(document, "div", "ingest-url-surface");
+  appendRoot(document, "code", "ingest-url");
+  appendRoot(document, "div", "ingest-url-details");
+  appendRoot(document, "div", "ingest-details-grid");
+  appendRoot(document, "div", "ingest-url-details-heading");
+  appendRoot(document, "div", "ingest-url-details-note");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      input: {
+        ...makePipeline().input,
+        status: "on",
+        time: 42_000,
+        video: {
+          codec: "h264",
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          level: "4.2",
+          profile: "High",
+          pid: 256,
+        },
+        audioTracks: [
+          {
+            index: 0,
+            pid: 257,
+            codec: "aac",
+            channels: 2,
+            sample_rate: 48_000,
+            language: "eng",
+            title: "Main Mix",
+            profile: "LC",
+          },
+        ],
+      },
+      stats: {
+        inputBitrateKbps: 4500,
+        outputBitrateKbps: 2200,
+        readerCount: 3,
+        outputCount: 1,
+        readerMismatch: false,
+        unexpectedReadersCount: 0,
+      },
+      ingestUrls: {
+        rtmp: "rtmp://example.com/live/stream-key",
+        srt: "srt://example.com:10080?streamid=publish:live/stream-key",
+      },
+    }),
+  ];
+
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+
+  assert.equal(document.getElementById("input-video-codec").textContent, "H.264");
+  assert.equal(
+    document.getElementById("input-video-resolution").textContent,
+    "1920x1080",
+  );
+  assert.equal(document.getElementById("input-video-pid").textContent, "0x100");
+  assert.match(document.getElementById("input-audio-tracks").innerHTML, /Main Mix/);
+  assert.match(document.getElementById("input-audio-tracks").innerHTML, /Stereo/);
+  assert.equal(document.getElementById("input-reader-count").textContent, "3");
+  assert.equal(document.getElementById("input-output-count").textContent, "1");
+});
+
 runCheck("metric-format reuses subtle-unit spans across updates", async () => {
   const { document } = installFakeDom();
   const metric = appendRoot(document, "div", "metric");

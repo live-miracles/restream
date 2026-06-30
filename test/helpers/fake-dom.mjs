@@ -117,6 +117,7 @@ export class FakeElement {
     this.tabIndex = 0;
     this.type = "";
     this.title = "";
+    this.scrolledIntoView = null;
     this.stats = {
       innerHTMLWrites: 0,
       textWrites: 0,
@@ -302,6 +303,10 @@ export class FakeElement {
   select() {}
 
   setSelectionRange() {}
+
+  scrollIntoView(options = null) {
+    this.scrolledIntoView = options;
+  }
 }
 
 export class FakeDocument {
@@ -322,6 +327,12 @@ export class FakeDocument {
   createElement(tagName) {
     this.stats.createElementCalls += 1;
     return new FakeElement(tagName, this);
+  }
+
+  createTextNode(text) {
+    const node = new FakeElement("#text", this);
+    node.textContent = text;
+    return node;
   }
 
   getElementById(id) {
@@ -387,8 +398,20 @@ export function installFakeDom() {
     value: FakeElement,
     configurable: true,
   });
+  Object.defineProperty(globalThis, "HTMLInputElement", {
+    value: FakeElement,
+    configurable: true,
+  });
   Object.defineProperty(globalThis, "HTMLDialogElement", {
     value: FakeElement,
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, "CSS", {
+    value: {
+      escape(value) {
+        return String(value);
+      },
+    },
     configurable: true,
   });
   Object.defineProperty(globalThis, "__FRONTEND_MODULE_TOKEN__", {
