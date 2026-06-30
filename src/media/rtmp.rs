@@ -7,9 +7,7 @@
 //! Egress: connects to an RTMP target URL and forwards packets from the
 //! `RingBuffer` via a `Reader`. Cancellation via `CancellationToken`.
 
-use crate::application::ingest::{
-    IngestAuthError, authenticate_publish_stream_key, lookup_pipeline_by_stream_key,
-};
+use crate::application::ingest::{IngestAuthError, authenticate_publish_stream_key};
 use crate::application::ports::PipelineLookup;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
@@ -1229,28 +1227,29 @@ async fn handle_session_results(
                         stream_id,
                     } => {
                         // Look up pipeline by stream key
-                        let pipeline =
-                            match lookup_pipeline_by_stream_key(pipeline_lookup, &stream_key).await
-                            {
-                                Ok(Some(pipeline)) => pipeline,
-                                Ok(None) => {
-                                    let _ = session.reject_request(
-                                        request_id,
-                                        "NetStream.Play.StreamNotFound",
-                                        "Invalid stream key",
-                                    );
-                                    return Err("Invalid stream key for play");
-                                }
-                                Err(err) => {
-                                    error!("play stream key lookup failed: {:?}", err);
-                                    let _ = session.reject_request(
-                                        request_id,
-                                        "NetStream.Play.StreamNotFound",
-                                        "Invalid stream key",
-                                    );
-                                    return Err("Invalid stream key for play");
-                                }
-                            };
+                        let pipeline = match pipeline_lookup
+                            .get_pipeline_by_stream_key(&stream_key)
+                            .await
+                        {
+                            Ok(Some(pipeline)) => pipeline,
+                            Ok(None) => {
+                                let _ = session.reject_request(
+                                    request_id,
+                                    "NetStream.Play.StreamNotFound",
+                                    "Invalid stream key",
+                                );
+                                return Err("Invalid stream key for play");
+                            }
+                            Err(err) => {
+                                error!("play stream key lookup failed: {:?}", err);
+                                let _ = session.reject_request(
+                                    request_id,
+                                    "NetStream.Play.StreamNotFound",
+                                    "Invalid stream key",
+                                );
+                                return Err("Invalid stream key for play");
+                            }
+                        };
 
                         // Check if there's an active ingest
                         if !engine

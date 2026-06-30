@@ -26,40 +26,13 @@ pub enum ResolveFileIngestError {
     MissingPipelineForStreamKey(String),
 }
 
-pub async fn lookup_pipeline_by_stream_key(
-    pipeline_lookup: &dyn PipelineLookup,
-    stream_key: &str,
-) -> Result<Option<Pipeline>, PipelineLookupError> {
-    pipeline_lookup.get_pipeline_by_stream_key(stream_key).await
-}
-
-pub async fn load_file_ingest_by_id(
-    ingest_lookup: &dyn IngestLookup,
-    ingest_id: &str,
-) -> Result<Option<Ingest>, IngestLookupError> {
-    ingest_lookup.get_ingest(ingest_id).await
-}
-
-pub async fn load_configured_file_ingest(
-    ingest_lookup: &dyn IngestLookup,
-    stream_key: &str,
-) -> Result<Option<Ingest>, IngestLookupError> {
-    ingest_lookup.get_ingest_by_stream_key(stream_key).await
-}
-
-pub async fn list_file_ingests_for_stream_key(
-    ingest_lookup: &dyn IngestLookup,
-    stream_key: &str,
-) -> Result<Vec<Ingest>, IngestLookupError> {
-    ingest_lookup.list_ingests_for_stream_key(stream_key).await
-}
-
 pub async fn resolve_file_ingest_context(
     ingest_lookup: &dyn IngestLookup,
     pipeline_lookup: &dyn PipelineLookup,
     ingest_id: &str,
 ) -> Result<Option<FileIngestContext>, ResolveFileIngestError> {
-    let Some(ingest) = load_file_ingest_by_id(ingest_lookup, ingest_id)
+    let Some(ingest) = ingest_lookup
+        .get_ingest(ingest_id)
         .await
         .map_err(ResolveFileIngestError::IngestLookup)?
     else {
@@ -83,7 +56,7 @@ pub async fn authenticate_publish_stream_key(
     stream_key: &str,
     client_ip: &str,
 ) -> Result<Pipeline, IngestAuthError> {
-    match lookup_pipeline_by_stream_key(pipeline_lookup, stream_key).await {
+    match pipeline_lookup.get_pipeline_by_stream_key(stream_key).await {
         Ok(Some(pipeline)) => Ok(pipeline),
         Ok(None) => {
             security.record_failure(client_ip);
@@ -359,30 +332,5 @@ mod tests {
 
         assert_eq!(result.ingest.id, "ingest-1");
         assert_eq!(result.pipeline.id, "pipeline-1");
-    }
-
-    #[tokio::test]
-    async fn list_file_ingests_returns_stream_key_slice() {
-        let first = FakeIngestLookup::ingest("ingest-1", "stream-key");
-        let second = FakeIngestLookup::ingest("ingest-2", "stream-key");
-        let ingest_lookup = FakeIngestLookup {
-            by_id: HashMap::from([
-                (first.id.clone(), first.clone()),
-                (second.id.clone(), second.clone()),
-            ]),
-            by_stream_key: HashMap::from([(
-                "stream-key".to_string(),
-                vec![first.clone(), second.clone()],
-            )]),
-            error: None,
-        };
-
-        let ingests = list_file_ingests_for_stream_key(&ingest_lookup, "stream-key")
-            .await
-            .unwrap();
-
-        assert_eq!(ingests.len(), 2);
-        assert_eq!(ingests[0].id, "ingest-1");
-        assert_eq!(ingests[1].id, "ingest-2");
     }
 }
