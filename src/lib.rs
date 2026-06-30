@@ -52,6 +52,11 @@ pub mod test_fixtures;
 pub mod types;
 
 use crate::application::output_path::OutputPath;
+use crate::application::reconcile::{
+    OutputFailureWindow, OutputStartAction, OutputStopAction, RecordingAction,
+    collect_needed_stage_keys, decide_output_start_action, decide_output_stop_action,
+    decide_recording_action, next_output_retry_count,
+};
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
 use futures_util::FutureExt as _;
@@ -163,19 +168,15 @@ impl RuntimeTuning {
     }
 
     fn output_backoff_ms(&self, retries: u32) -> u64 {
-        let shift = retries.min(16);
-        let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
-        self.output_retry_base_ms
-            .saturating_mul(multiplier)
-            .min(self.output_retry_max_ms)
+        self.output_retry_policy().backoff_ms(retries)
     }
-}
 
-fn next_output_retry_count(previous_retries: Option<u32>, had_progress: bool) -> u32 {
-    if had_progress {
-        1
-    } else {
-        previous_retries.unwrap_or(0).saturating_add(1).max(1)
+    fn output_retry_policy(&self) -> crate::application::reconcile::OutputRetryPolicy {
+        crate::application::reconcile::OutputRetryPolicy {
+            max_retries: self.output_max_retries,
+            base_ms: self.output_retry_base_ms,
+            max_ms: self.output_retry_max_ms,
+        }
     }
 }
 
@@ -574,227 +575,422 @@ pub async fn run_app() {
             // RTMP/SRT/HLS PUT destination loss still relies on retry/backoff.
             let effective_has_ingest = has_ingest || within_disconnect_grace;
             let now_str = chrono::Utc::now().to_rfc3339();
+            let failure = {
+                let lf = last_failed.lock().await;
+                lf.get(&output.id)
+                    .map(|(failed_at, retries)| OutputFailureWindow {
+                        retries: *retries,
+                        elapsed_ms: failed_at.elapsed().as_millis().min(u128::from(u64::MAX))
+                            as u64,
+                    })
+            };
 
-            if output.desired_state == "running" && !is_active {
-                if !effective_has_ingest {
+            match decide_output_start_action(
+                &output.desired_state,
+                is_active,
+                effective_has_ingest,
+                failure,
+                tuning.output_retry_policy(),
+            ) {
+                OutputStartAction::NotApplicable => {}
+                OutputStartAction::SkipNoIngest => {
                     engine.clear_egress_retry_state(&output.id).await;
                     continue;
                 }
-                // Check backoff / max-retries for recently-failed outputs
-                let mut lf = last_failed.lock().await;
-                if let Some(&(failed_at, retries)) = lf.get(&output.id) {
-                    if retries >= tuning.output_max_retries {
-                        lf.remove(&output.id);
-                        drop(lf);
-                        engine.clear_egress_retry_state(&output.id).await;
-                        warn!(
-                            correlation_id = %crate::logging::next_correlation_id("out"),
-                            output_id = %output.id,
-                            output_name = %output.name,
-                            max_retries = tuning.output_max_retries,
-                            "output exceeded max retries — marking failed",
-                        );
-                        let _ = db::set_output_desired_state(
-                            &pool,
-                            &output.pipeline_id,
-                            &output.id,
-                            "failed",
-                        )
-                        .await;
-                        continue;
-                    }
-                    let backoff_ms = tuning.output_backoff_ms(retries);
-                    if failed_at.elapsed() < Duration::from_millis(backoff_ms) {
-                        let remaining_ms = backoff_ms.saturating_sub(
-                            failed_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-                        );
-                        drop(lf);
-                        engine
-                            .update_egress_retry_state(
-                                &output.id,
-                                retries,
-                                backoff_ms,
-                                remaining_ms,
-                            )
-                            .await;
-                        continue; // Wait for backoff
-                    }
+                OutputStartAction::MarkFailed => {
+                    let mut lf = last_failed.lock().await;
+                    lf.remove(&output.id);
+                    drop(lf);
+                    engine.clear_egress_retry_state(&output.id).await;
+                    warn!(
+                        correlation_id = %crate::logging::next_correlation_id("out"),
+                        output_id = %output.id,
+                        output_name = %output.name,
+                        max_retries = tuning.output_max_retries,
+                        "output exceeded max retries — marking failed",
+                    );
+                    let _ = db::set_output_desired_state(
+                        &pool,
+                        &output.pipeline_id,
+                        &output.id,
+                        "failed",
+                    )
+                    .await;
+                    continue;
                 }
-                drop(lf);
-
-                let output_correlation_id = crate::logging::next_correlation_id("out");
-                info!(
-                    correlation_id = %output_correlation_id,
-                    output_id = %output.id,
-                    output_name = %output.name,
-                    pipeline_id = %output.pipeline_id,
-                    event_class = "lifecycle",
-                    event_type = "lifecycle.start",
-                    "output job started",
-                );
-
-                // Get source pipeline ring buffer
-                let source_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
-
-                // ── Ring-buffer routing ────────────────────────────────────────────
-                //
-                // Passthrough (source/custom): read directly from source_ring.
-                // Transcoded  (e.g. 720p):     route through a shared transcoder
-                //   stage that produces its own output_ring.  All egresses for the
-                //   same (pipeline, preset) share one stage process and one ring.
-                //
-                // Stage graph:
-                //   source_ring
-                //     │  [if video preset]          video:preset shared stage
-                //     │  [if audio routing suffix]  audio filter shared stage
-                //     │  [if RTMP + H.265 ingest]   hevc_to_h264:from:<upstream>
-                //     ↓
-                //   ring_buf   ←── egress reads from here
-                //
-                // Transcoder backend: external by default (subprocess FFmpeg,
-                // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
-                // in-process libavcodec path.  See docs/media-pipeline.md.
-                let output_path =
-                    OutputPath::resolve(output.pipeline_id.as_str(), &output.encoding, &output.url);
-                let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
-                // Stage graph (new design — H.265→H.264 conversion at the output
-                // edge, not up-front):
-                //
-                //   source_ring (H.265 or H.264)
-                //     │  [Stage 1, if preset] video:NNNp   ← preserves input codec
-                //     │  [Stage 2, if audio]  audio filter ← shared by RTMP + SRT
-                //     │  [Stage 3, RTMP only] hevc_to_h264 ← keyed by upstream
-                //     ↓
-                //   ring_buf  ←── egress reads from here
-                //
-                // SRT outputs receive native H.265 at the target resolution.
-                // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
-                // applied after the video+audio stages, avoiding a redundant
-                // source-resolution encode pass.
-                // Pass the ingest codec as override so the video:preset ring is
-                // tagged with the correct codec hint for downstream audio stages
-                // and egress writers (source ring has no hint; active_ingests is
-                // the authoritative source).
-                let ingest_codec_override =
-                    output_path.ingest_codec_override(ingest_video_codec.as_deref());
-
-                // Stage 1: video transcode from source ring (H.265 flows through
-                // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
-                // the input_codec_override passed into the stage).
-                let video_buf = if let Some(stage) = output_path.video_stage() {
+                OutputStartAction::WaitRetry {
+                    retries,
+                    backoff_ms,
+                    remaining_ms,
+                } => {
                     engine
-                        .get_or_create_transcoder(
-                            &output.pipeline_id,
-                            stage.kind,
-                            source_buf.clone(),
-                            ingest_codec_override,
-                        )
-                        .await
-                } else {
-                    source_buf.clone()
-                };
+                        .update_egress_retry_state(&output.id, retries, backoff_ms, remaining_ms)
+                        .await;
+                    continue;
+                }
+                OutputStartAction::StartNow => {
+                    let output_correlation_id = crate::logging::next_correlation_id("out");
+                    info!(
+                        correlation_id = %output_correlation_id,
+                        output_id = %output.id,
+                        output_name = %output.name,
+                        pipeline_id = %output.pipeline_id,
+                        event_class = "lifecycle",
+                        event_type = "lifecycle.start",
+                        "output job started",
+                    );
 
-                // Stage 2: optional audio filter (keyed on video stage to prevent
-                // cross-contamination between presets). Shared between RTMP and SRT
-                // egresses on the same preset.
-                let pre_h264_buf = if let Some(stage) = output_path.audio_stage() {
-                    engine
-                        .get_or_create_transcoder(
-                            &output.pipeline_id,
-                            stage.kind,
-                            video_buf.clone(),
-                            None,
-                        )
-                        .await
-                } else {
-                    video_buf.clone()
-                };
+                    // Get source pipeline ring buffer
+                    let source_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
 
-                // Stage 3: H.265→H.264 conversion for RTMP only (applied after
-                // audio routing so the converter sees the selected audio tracks).
-                // Keyed by terminal_kind so RTMP-passthrough and RTMP-720p each
-                // get their own converter, and all RTMP egresses on the same preset
-                // share it.
-                let ring_buf = if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
-                    engine
-                        .get_or_create_h264_transcoder(
-                            &output.pipeline_id,
-                            output_path.codec_edge_upstream_kind().clone(),
-                            pre_h264_buf,
-                        )
-                        .await
-                } else {
-                    pre_h264_buf
-                };
+                    // ── Ring-buffer routing ────────────────────────────────────────────
+                    //
+                    // Passthrough (source/custom): read directly from source_ring.
+                    // Transcoded  (e.g. 720p):     route through a shared transcoder
+                    //   stage that produces its own output_ring.  All egresses for the
+                    //   same (pipeline, preset) share one stage process and one ring.
+                    //
+                    // Stage graph:
+                    //   source_ring
+                    //     │  [if video preset]          video:preset shared stage
+                    //     │  [if audio routing suffix]  audio filter shared stage
+                    //     │  [if RTMP + H.265 ingest]   hevc_to_h264:from:<upstream>
+                    //     ↓
+                    //   ring_buf   ←── egress reads from here
+                    //
+                    // Transcoder backend: external by default (subprocess FFmpeg,
+                    // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
+                    // in-process libavcodec path.  See docs/media-pipeline.md.
+                    let output_path = OutputPath::resolve(
+                        output.pipeline_id.as_str(),
+                        &output.encoding,
+                        &output.url,
+                    );
+                    let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
+                    // Stage graph (new design — H.265→H.264 conversion at the output
+                    // edge, not up-front):
+                    //
+                    //   source_ring (H.265 or H.264)
+                    //     │  [Stage 1, if preset] video:NNNp   ← preserves input codec
+                    //     │  [Stage 2, if audio]  audio filter ← shared by RTMP + SRT
+                    //     │  [Stage 3, RTMP only] hevc_to_h264 ← keyed by upstream
+                    //     ↓
+                    //   ring_buf  ←── egress reads from here
+                    //
+                    // SRT outputs receive native H.265 at the target resolution.
+                    // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
+                    // applied after the video+audio stages, avoiding a redundant
+                    // source-resolution encode pass.
+                    // Pass the ingest codec as override so the video:preset ring is
+                    // tagged with the correct codec hint for downstream audio stages
+                    // and egress writers (source ring has no hint; active_ingests is
+                    // the authoritative source).
+                    let ingest_codec_override =
+                        output_path.ingest_codec_override(ingest_video_codec.as_deref());
 
-                // Register egress and get an attempt-scoped handle so stale
-                // workers cannot later scribble over a replacement session.
-                let registration = engine
-                    .register_egress_attempt(&output.id, &output.pipeline_id, &output.url)
+                    // Stage 1: video transcode from source ring (H.265 flows through
+                    // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
+                    // the input_codec_override passed into the stage).
+                    let video_buf = if let Some(stage) = output_path.video_stage() {
+                        engine
+                            .get_or_create_transcoder(
+                                &output.pipeline_id,
+                                stage.kind,
+                                source_buf.clone(),
+                                ingest_codec_override,
+                            )
+                            .await
+                    } else {
+                        source_buf.clone()
+                    };
+
+                    // Stage 2: optional audio filter (keyed on video stage to prevent
+                    // cross-contamination between presets). Shared between RTMP and SRT
+                    // egresses on the same preset.
+                    let pre_h264_buf = if let Some(stage) = output_path.audio_stage() {
+                        engine
+                            .get_or_create_transcoder(
+                                &output.pipeline_id,
+                                stage.kind,
+                                video_buf.clone(),
+                                None,
+                            )
+                            .await
+                    } else {
+                        video_buf.clone()
+                    };
+
+                    // Stage 3: H.265→H.264 conversion for RTMP only (applied after
+                    // audio routing so the converter sees the selected audio tracks).
+                    // Keyed by terminal_kind so RTMP-passthrough and RTMP-720p each
+                    // get their own converter, and all RTMP egresses on the same preset
+                    // share it.
+                    let ring_buf =
+                        if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
+                            engine
+                                .get_or_create_h264_transcoder(
+                                    &output.pipeline_id,
+                                    output_path.codec_edge_upstream_kind().clone(),
+                                    pre_h264_buf,
+                                )
+                                .await
+                        } else {
+                            pre_h264_buf
+                        };
+
+                    // Register egress and get an attempt-scoped handle so stale
+                    // workers cannot later scribble over a replacement session.
+                    let registration = engine
+                        .register_egress_attempt(&output.id, &output.pipeline_id, &output.url)
+                        .await;
+
+                    let job_id = next_output_job_id(&output.id);
+                    let _ = db::create_job(
+                        &pool,
+                        &job_id,
+                        &output.pipeline_id,
+                        &output.id,
+                        None,
+                        "running",
+                        &now_str,
+                    )
                     .await;
 
-                let job_id = next_output_job_id(&output.id);
-                let _ = db::create_job(
-                    &pool,
-                    &job_id,
-                    &output.pipeline_id,
-                    &output.id,
-                    None,
-                    "running",
-                    &now_str,
-                )
-                .await;
+                    let engine_c = engine.clone();
 
-                let engine_c = engine.clone();
+                    // Spawn the specific egress client.
+                    // ring_buf already points to the correct ring:
+                    //   • passthrough  → source_ring
+                    //   • transcoded   → shared transcoder stage output_ring
+                    // The egress client is protocol-agnostic w.r.t. this choice.
+                    let output_id_c = output.id.clone();
+                    let pipeline_id_c = output.pipeline_id.clone();
+                    let encoding_c = output.encoding.clone();
+                    let url_c = output.url.clone();
+                    let pool_c = pool.clone();
+                    let last_failed_c = last_failed.clone();
+                    let tuning_c = tuning;
+                    let output_correlation_id_c = output_correlation_id.clone();
+                    let registration_c = registration.clone();
 
-                // Spawn the specific egress client.
-                // ring_buf already points to the correct ring:
-                //   • passthrough  → source_ring
-                //   • transcoded   → shared transcoder stage output_ring
-                // The egress client is protocol-agnostic w.r.t. this choice.
-                let output_id_c = output.id.clone();
-                let pipeline_id_c = output.pipeline_id.clone();
-                let encoding_c = output.encoding.clone();
-                let url_c = output.url.clone();
-                let pool_c = pool.clone();
-                let last_failed_c = last_failed.clone();
-                let tuning_c = tuning;
-                let output_correlation_id_c = output_correlation_id.clone();
-                let registration_c = registration.clone();
+                    tokio::spawn(async move {
+                        // Unsupported URL: reject immediately before the panic-safe
+                        // block so its early `return` exits the entire spawn task.
+                        let is_supported = url_c.starts_with("rtmp://")
+                            || url_c.starts_with("rtmps://")
+                            || url_c.starts_with("srt://")
+                            || url_c.starts_with("hls://")
+                            || url_c.starts_with("http://")
+                            || url_c.starts_with("https://");
+                        if !is_supported {
+                            let end_now = chrono::Utc::now().to_rfc3339();
+                            let _ = db::update_job(
+                                &pool_c,
+                                &job_id,
+                                None,
+                                Some("failed"),
+                                Some(&end_now),
+                                Some(0),
+                                None,
+                            )
+                            .await;
+                            let was_current = engine_c
+                                .unregister_egress_if_current(&output_id_c, &registration_c)
+                                .await;
+                            let retry_backoff = if was_current {
+                                let mut lf = last_failed_c.lock().await;
+                                let retries = next_output_retry_count(
+                                    lf.get(&output_id_c).map(|(_, retries)| *retries),
+                                    false,
+                                );
+                                lf.insert(output_id_c.clone(), (Instant::now(), retries));
+                                (retries < tuning_c.output_max_retries)
+                                    .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                            } else {
+                                None
+                            };
+                            if let Some((retries, backoff_ms)) = retry_backoff {
+                                engine_c
+                                    .update_egress_retry_state(
+                                        &output_id_c,
+                                        retries,
+                                        backoff_ms,
+                                        backoff_ms,
+                                    )
+                                    .await;
+                            } else {
+                                engine_c.clear_egress_retry_state(&output_id_c).await;
+                            }
+                            error!(
+                                correlation_id = %output_correlation_id_c,
+                                output_id = %output_id_c,
+                                pipeline_id = %pipeline_id_c,
+                                event_class = "lifecycle",
+                                event_type = "egress.failed",
+                                failure_reason = "unsupported_url_scheme",
+                                url = %url_c,
+                                "output rejected unsupported URL scheme",
+                            );
+                            return;
+                        }
 
-                tokio::spawn(async move {
-                    // Unsupported URL: reject immediately before the panic-safe
-                    // block so its early `return` exits the entire spawn task.
-                    let is_supported = url_c.starts_with("rtmp://")
-                        || url_c.starts_with("rtmps://")
-                        || url_c.starts_with("srt://")
-                        || url_c.starts_with("hls://")
-                        || url_c.starts_with("http://")
-                        || url_c.starts_with("https://");
-                    if !is_supported {
+                        // Wrap the egress call in catch_unwind so a panic does not
+                        // prevent the cleanup path below (unregister_egress, job-
+                        // status update) from running.
+                        let mut hls_persistent_registered = false;
+                        let panicked = std::panic::AssertUnwindSafe(async {
+                            if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
+                                crate::media::rtmp::start_rtmp_egress(
+                                    output_id_c.clone(),
+                                    pipeline_id_c.clone(),
+                                    url_c.clone(),
+                                    ring_buf,
+                                    engine_c.clone(),
+                                    registration_c.clone(),
+                                )
+                                .await;
+                            } else if url_c.starts_with("srt://") {
+                                crate::media::srt::start_srt_egress(
+                                    output_id_c.clone(),
+                                    pipeline_id_c.clone(),
+                                    encoding_c,
+                                    url_c.clone(),
+                                    ring_buf,
+                                    engine_c.clone(),
+                                    registration_c.clone(),
+                                )
+                                .await;
+                            } else if url_c.starts_with("hls://")
+                                || url_c.starts_with("http://")
+                                || url_c.starts_with("https://")
+                            {
+                                // HLS egress: use the shared segmenter, register as persistent consumer
+                                let (store, already_running) =
+                                    engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
+                                if !already_running {
+                                    let Some(hls_cancel) =
+                                        engine_c.get_hls_cancel_token(&pipeline_id_c).await
+                                    else {
+                                        warn!(
+                                            correlation_id = %output_correlation_id_c,
+                                            pipeline_id = %pipeline_id_c,
+                                            output_id = %output_id_c,
+                                            "HLS segmenter token missing — skipping"
+                                        );
+                                        return;
+                                    };
+                                    let eng2 = engine_c.clone();
+                                    let pid2 = pipeline_id_c.clone();
+                                    let rb2 = ring_buf.clone();
+                                    let store_for_segmenter = store.clone();
+                                    tokio::spawn(async move {
+                                        crate::media::hls::start_hls_segmenter(
+                                            pid2.clone(),
+                                            store_for_segmenter,
+                                            rb2,
+                                            eng2.clone(),
+                                            hls_cancel,
+                                        )
+                                        .await;
+                                        eng2.shutdown_hls_segmenter(&pid2).await;
+                                    });
+                                }
+                                engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
+                                hls_persistent_registered = true;
+                                if url_c.starts_with("http://") || url_c.starts_with("https://") {
+                                    crate::media::hls_upload::start_hls_put_upload(
+                                        output_id_c.clone(),
+                                        pipeline_id_c.clone(),
+                                        url_c.clone(),
+                                        store,
+                                        engine_c.clone(),
+                                        registration_c.clone(),
+                                    )
+                                    .await;
+                                } else {
+                                    engine_c
+                                        .update_egress_phase_if_current(
+                                            &output_id_c,
+                                            &registration_c,
+                                            "segmenting",
+                                        )
+                                        .await;
+                                    registration_c.cancel_token.cancelled().await;
+                                }
+                                // remove_hls_persistent_consumer is intentionally called
+                                // in the always-runs cleanup section below (outside the
+                                // catch_unwind) so a panic between add and here cannot
+                                // permanently leak the refcount.
+                            }
+                        })
+                        .catch_unwind()
+                        .await
+                        .is_err();
+
+                        if panicked {
+                            error!(
+                                correlation_id = %output_correlation_id_c,
+                                output_id = %output_id_c,
+                                pipeline_id = %pipeline_id_c,
+                                event_class = "lifecycle",
+                                event_type = "egress.failed",
+                                failure_reason = "panic",
+                                "panic in egress task"
+                            );
+                        }
+
+                        // Cleanup always runs — even after a panic in the egress fn.
+                        let is_cancelled = registration_c.cancel_token.is_cancelled();
+                        let had_progress = engine_c
+                            .egress_has_recorded_progress_if_current(&output_id_c, &registration_c)
+                            .await;
+                        let was_current = engine_c
+                            .unregister_egress_if_current(&output_id_c, &registration_c)
+                            .await;
+                        if hls_persistent_registered {
+                            engine_c
+                                .remove_hls_persistent_consumer(&pipeline_id_c)
+                                .await;
+                        }
+
                         let end_now = chrono::Utc::now().to_rfc3339();
+                        let job_status = if is_cancelled { "stopped" } else { "failed" };
                         let _ = db::update_job(
                             &pool_c,
                             &job_id,
                             None,
-                            Some("failed"),
+                            Some(job_status),
                             Some(&end_now),
                             Some(0),
                             None,
                         )
                         .await;
-                        let was_current = engine_c
-                            .unregister_egress_if_current(&output_id_c, &registration_c)
-                            .await;
+
                         let retry_backoff = if was_current {
                             let mut lf = last_failed_c.lock().await;
-                            let retries = next_output_retry_count(
-                                lf.get(&output_id_c).map(|(_, retries)| *retries),
-                                false,
-                            );
-                            lf.insert(output_id_c.clone(), (Instant::now(), retries));
-                            (retries < tuning_c.output_max_retries)
-                                .then_some((retries, tuning_c.output_backoff_ms(retries)))
+                            if is_cancelled {
+                                lf.remove(&output_id_c);
+                            } else {
+                                let retries = next_output_retry_count(
+                                    lf.get(&output_id_c).map(|(_, retries)| *retries),
+                                    had_progress,
+                                );
+                                lf.insert(output_id_c.clone(), (Instant::now(), retries));
+                            }
+                            let retry_backoff = if is_cancelled {
+                                None
+                            } else {
+                                lf.get(&output_id_c).map(|(_, retries)| *retries).and_then(
+                                    |retries| {
+                                        (retries < tuning_c.output_max_retries).then_some((
+                                            retries,
+                                            tuning_c.output_backoff_ms(retries),
+                                        ))
+                                    },
+                                )
+                            };
+                            drop(lf);
+                            retry_backoff
                         } else {
                             None
                         };
@@ -810,221 +1006,45 @@ pub async fn run_app() {
                         } else {
                             engine_c.clear_egress_retry_state(&output_id_c).await;
                         }
-                        error!(
-                            correlation_id = %output_correlation_id_c,
-                            output_id = %output_id_c,
-                            pipeline_id = %pipeline_id_c,
-                            event_class = "lifecycle",
-                            event_type = "egress.failed",
-                            failure_reason = "unsupported_url_scheme",
-                            url = %url_c,
-                            "output rejected unsupported URL scheme",
-                        );
-                        return;
-                    }
+                    });
+                }
+            }
 
-                    // Wrap the egress call in catch_unwind so a panic does not
-                    // prevent the cleanup path below (unregister_egress, job-
-                    // status update) from running.
-                    let mut hls_persistent_registered = false;
-                    let panicked = std::panic::AssertUnwindSafe(async {
-                        if url_c.starts_with("rtmp://") || url_c.starts_with("rtmps://") {
-                            crate::media::rtmp::start_rtmp_egress(
-                                output_id_c.clone(),
-                                pipeline_id_c.clone(),
-                                url_c.clone(),
-                                ring_buf,
-                                engine_c.clone(),
-                                registration_c.clone(),
-                            )
-                            .await;
-                        } else if url_c.starts_with("srt://") {
-                            crate::media::srt::start_srt_egress(
-                                output_id_c.clone(),
-                                pipeline_id_c.clone(),
-                                encoding_c,
-                                url_c.clone(),
-                                ring_buf,
-                                engine_c.clone(),
-                                registration_c.clone(),
-                            )
-                            .await;
-                        } else if url_c.starts_with("hls://")
-                            || url_c.starts_with("http://")
-                            || url_c.starts_with("https://")
-                        {
-                            // HLS egress: use the shared segmenter, register as persistent consumer
-                            let (store, already_running) =
-                                engine_c.ensure_hls_segmenter(&pipeline_id_c).await;
-                            if !already_running {
-                                let Some(hls_cancel) =
-                                    engine_c.get_hls_cancel_token(&pipeline_id_c).await
-                                else {
-                                    warn!(
-                                        correlation_id = %output_correlation_id_c,
-                                        pipeline_id = %pipeline_id_c,
-                                        output_id = %output_id_c,
-                                        "HLS segmenter token missing — skipping"
-                                    );
-                                    return;
-                                };
-                                let eng2 = engine_c.clone();
-                                let pid2 = pipeline_id_c.clone();
-                                let rb2 = ring_buf.clone();
-                                let store_for_segmenter = store.clone();
-                                tokio::spawn(async move {
-                                    crate::media::hls::start_hls_segmenter(
-                                        pid2.clone(),
-                                        store_for_segmenter,
-                                        rb2,
-                                        eng2.clone(),
-                                        hls_cancel,
-                                    )
-                                    .await;
-                                    eng2.shutdown_hls_segmenter(&pid2).await;
-                                });
-                            }
-                            engine_c.add_hls_persistent_consumer(&pipeline_id_c).await;
-                            hls_persistent_registered = true;
-                            if url_c.starts_with("http://") || url_c.starts_with("https://") {
-                                crate::media::hls_upload::start_hls_put_upload(
-                                    output_id_c.clone(),
-                                    pipeline_id_c.clone(),
-                                    url_c.clone(),
-                                    store,
-                                    engine_c.clone(),
-                                    registration_c.clone(),
-                                )
-                                .await;
-                            } else {
-                                engine_c
-                                    .update_egress_phase_if_current(
-                                        &output_id_c,
-                                        &registration_c,
-                                        "segmenting",
-                                    )
-                                    .await;
-                                registration_c.cancel_token.cancelled().await;
-                            }
-                            // remove_hls_persistent_consumer is intentionally called
-                            // in the always-runs cleanup section below (outside the
-                            // catch_unwind) so a panic between add and here cannot
-                            // permanently leak the refcount.
-                        }
-                    })
-                    .catch_unwind()
-                    .await
-                    .is_err();
-
-                    if panicked {
-                        error!(
-                            correlation_id = %output_correlation_id_c,
-                            output_id = %output_id_c,
-                            pipeline_id = %pipeline_id_c,
-                            event_class = "lifecycle",
-                            event_type = "egress.failed",
-                            failure_reason = "panic",
-                            "panic in egress task"
-                        );
-                    }
-
-                    // Cleanup always runs — even after a panic in the egress fn.
-                    let is_cancelled = registration_c.cancel_token.is_cancelled();
-                    let had_progress = engine_c
-                        .egress_has_recorded_progress_if_current(&output_id_c, &registration_c)
-                        .await;
-                    let was_current = engine_c
-                        .unregister_egress_if_current(&output_id_c, &registration_c)
-                        .await;
-                    if hls_persistent_registered {
-                        engine_c
-                            .remove_hls_persistent_consumer(&pipeline_id_c)
-                            .await;
-                    }
-
-                    let end_now = chrono::Utc::now().to_rfc3339();
-                    let job_status = if is_cancelled { "stopped" } else { "failed" };
-                    let _ = db::update_job(
-                        &pool_c,
-                        &job_id,
-                        None,
-                        Some(job_status),
-                        Some(&end_now),
-                        Some(0),
-                        None,
-                    )
-                    .await;
-
-                    let retry_backoff = if was_current {
-                        let mut lf = last_failed_c.lock().await;
-                        if is_cancelled {
-                            lf.remove(&output_id_c);
-                        } else {
-                            let retries = next_output_retry_count(
-                                lf.get(&output_id_c).map(|(_, retries)| *retries),
-                                had_progress,
-                            );
-                            lf.insert(output_id_c.clone(), (Instant::now(), retries));
-                        }
-                        let retry_backoff = if is_cancelled {
-                            None
-                        } else {
-                            lf.get(&output_id_c)
-                                .map(|(_, retries)| *retries)
-                                .and_then(|retries| {
-                                    (retries < tuning_c.output_max_retries)
-                                        .then_some((retries, tuning_c.output_backoff_ms(retries)))
-                                })
-                        };
-                        drop(lf);
-                        retry_backoff
-                    } else {
-                        None
-                    };
-                    if let Some((retries, backoff_ms)) = retry_backoff {
-                        engine_c
-                            .update_egress_retry_state(
-                                &output_id_c,
-                                retries,
-                                backoff_ms,
-                                backoff_ms,
-                            )
-                            .await;
-                    } else {
-                        engine_c.clear_egress_retry_state(&output_id_c).await;
-                    }
-                });
-            } else if output.desired_state == "running" && is_active && !effective_has_ingest {
-                info!(
-                    correlation_id = %crate::logging::next_correlation_id("out"),
-                    output_id = %output.id,
-                    output_name = %output.name,
-                    pipeline_id = %output.pipeline_id,
-                    event_class = "lifecycle",
-                    event_type = "lifecycle.stop",
-                    "output job stopped because ingest is no longer active",
-                );
-                engine.unregister_egress(&output.id).await;
-                engine.clear_egress_retry_state(&output.id).await;
-            } else if output.desired_state == "stopped" && is_active {
-                info!(
-                    correlation_id = %crate::logging::next_correlation_id("out"),
-                    output_id = %output.id,
-                    output_name = %output.name,
-                    pipeline_id = %output.pipeline_id,
-                    event_class = "lifecycle",
-                    event_type = "lifecycle.stop",
-                    "output job stopped",
-                );
-                engine.unregister_egress(&output.id).await;
-                engine.clear_egress_retry_state(&output.id).await;
+            match decide_output_stop_action(&output.desired_state, is_active, effective_has_ingest)
+            {
+                OutputStopAction::KeepRunning => {}
+                OutputStopAction::StopBecauseIngestLost => {
+                    info!(
+                        correlation_id = %crate::logging::next_correlation_id("out"),
+                        output_id = %output.id,
+                        output_name = %output.name,
+                        pipeline_id = %output.pipeline_id,
+                        event_class = "lifecycle",
+                        event_type = "lifecycle.stop",
+                        "output job stopped because ingest is no longer active",
+                    );
+                    engine.unregister_egress(&output.id).await;
+                    engine.clear_egress_retry_state(&output.id).await;
+                }
+                OutputStopAction::StopRequested => {
+                    info!(
+                        correlation_id = %crate::logging::next_correlation_id("out"),
+                        output_id = %output.id,
+                        output_name = %output.name,
+                        pipeline_id = %output.pipeline_id,
+                        event_class = "lifecycle",
+                        event_type = "lifecycle.stop",
+                        "output job stopped",
+                    );
+                    engine.unregister_egress(&output.id).await;
+                    engine.clear_egress_retry_state(&output.id).await;
+                }
             }
         }
 
         // Clean up unused shared transcoder stages
         {
-            let mut needed_stages: std::collections::HashSet<StageKey> =
-                std::collections::HashSet::new();
+            let mut stage_inputs = Vec::new();
             for output in &outputs {
                 let is_active = engine.has_active_egress(&output.id).await;
                 let has_ingest = engine.has_active_ingest(&output.pipeline_id).await;
@@ -1035,19 +1055,19 @@ pub async fn run_app() {
                     )
                     .await;
                 let effective_has_ingest = has_ingest || within_disconnect_grace;
-                if effective_has_ingest && (is_active || output.desired_state == "running") {
-                    let output_path = OutputPath::resolve(
-                        output.pipeline_id.as_str(),
-                        &output.encoding,
-                        &output.url,
-                    );
-                    let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
-
-                    for stage in output_path.needed_stage_keys(ingest_video_codec.as_deref()) {
-                        needed_stages.insert(stage);
-                    }
-                }
+                let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
+                stage_inputs.push(crate::application::reconcile::OutputStageSweepInput {
+                    pipeline_id: output.pipeline_id.as_str(),
+                    encoding: &output.encoding,
+                    url: &output.url,
+                    desired_state: &output.desired_state,
+                    is_active,
+                    effective_has_ingest,
+                    ingest_video_codec,
+                });
             }
+            let needed_stages: std::collections::HashSet<StageKey> =
+                collect_needed_stage_keys(stage_inputs);
             engine.sweep_unused_transcoder_stages(&needed_stages).await;
             engine.sweep_unused_stages().await;
         }
@@ -1077,33 +1097,37 @@ pub async fn run_app() {
                 .unwrap_or(false);
             let rec_active = engine.is_recording_active(&pipeline.id).await;
 
-            if rec_enabled && effective_has_ingest && !rec_active {
-                let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
-                let cancel_token = engine.register_recording(&pipeline.id).await;
-                let engine_c = engine.clone();
-                let pid = pipeline.id.clone();
-                let pipe_name = pipeline.name.clone();
-                let input_source = pipeline.input_source.clone();
-                let engine_rec = engine_c.clone();
-                let media_dir_rec = reconciler_media_dir.clone();
-                let recording_settings =
-                    crate::media::recording::load_recording_settings(&pool).await;
-                tokio::spawn(async move {
-                    crate::media::recording::start_recording(
-                        pipe_name,
-                        pid.clone(),
-                        input_source,
-                        media_dir_rec,
-                        recording_settings,
-                        ring_buf,
-                        engine_rec,
-                        cancel_token,
-                    )
-                    .await;
-                    engine_c.unregister_recording(&pid).await;
-                });
-            } else if rec_active && (!rec_enabled || !effective_has_ingest) {
-                engine.unregister_recording(&pipeline.id).await;
+            match decide_recording_action(rec_enabled, effective_has_ingest, rec_active) {
+                RecordingAction::Keep => {}
+                RecordingAction::Start => {
+                    let ring_buf = engine.get_or_create_pipeline(&pipeline.id).await;
+                    let cancel_token = engine.register_recording(&pipeline.id).await;
+                    let engine_c = engine.clone();
+                    let pid = pipeline.id.clone();
+                    let pipe_name = pipeline.name.clone();
+                    let input_source = pipeline.input_source.clone();
+                    let engine_rec = engine_c.clone();
+                    let media_dir_rec = reconciler_media_dir.clone();
+                    let recording_settings =
+                        crate::media::recording::load_recording_settings(&pool).await;
+                    tokio::spawn(async move {
+                        crate::media::recording::start_recording(
+                            pipe_name,
+                            pid.clone(),
+                            input_source,
+                            media_dir_rec,
+                            recording_settings,
+                            ring_buf,
+                            engine_rec,
+                            cancel_token,
+                        )
+                        .await;
+                        engine_c.unregister_recording(&pid).await;
+                    });
+                }
+                RecordingAction::Stop => {
+                    engine.unregister_recording(&pipeline.id).await;
+                }
             }
         }
 
@@ -1267,19 +1291,6 @@ mod tests {
         };
 
         assert_eq!(tuning.session_prune_every_ticks(), 14_400);
-    }
-
-    #[test]
-    fn output_retry_count_accumulates_only_consecutive_start_failures() {
-        assert_eq!(next_output_retry_count(None, false), 1);
-        assert_eq!(next_output_retry_count(Some(1), false), 2);
-        assert_eq!(next_output_retry_count(Some(9), false), 10);
-    }
-
-    #[test]
-    fn output_retry_count_resets_after_any_successful_progress() {
-        assert_eq!(next_output_retry_count(None, true), 1);
-        assert_eq!(next_output_retry_count(Some(4), true), 1);
     }
 
     #[test]

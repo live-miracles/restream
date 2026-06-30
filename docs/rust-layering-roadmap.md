@@ -165,9 +165,10 @@ Progress so far:
 - started: `application::ports::PipelineLookup`
 - started: `application::ports::MetaStore`
 - started: `application::ingest` stream-key lookup/auth helpers
+- started: `application::reconcile` output retry/stop, recording, and stage-sweep decisions
 - started: `application::srt_ingest` global config lookup via port
 - done: `application::output_path` for source/video/audio/codec-edge planning
-- next: `application::reconcile` so `lib.rs` owns less lifecycle orchestration
+- next: move more spawn/wiring orchestration from `lib.rs` into `application::reconcile`
 
 ### 3. Move Runtime Views Out Of The Engine Core
 
