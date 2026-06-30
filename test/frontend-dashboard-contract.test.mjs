@@ -27,7 +27,10 @@ async function waitForCondition(check, attempts = 40) {
 
 test("dashboard steady-state polling avoids repeated settings fetches", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
-  const summaryHealthUrl = "/api/v1/engine/health?view=summary";
+  const summaryRuntimeWithFullMetricsUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=full";
+  const summaryRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary";
   const fullMetricsUrl = "/metrics/system";
   const summaryMetricsUrl = "/metrics/system?view=summary";
   const { document, window } = installFakeDom();
@@ -56,49 +59,54 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === summaryHealthUrl) {
+    if (href === summaryRuntimeWithFullMetricsUrl) {
       return new Response(
-        JSON.stringify({ status: "ready", pipelines: {} }),
+        JSON.stringify({
+          health: { status: "ready", pipelines: {} },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:00Z",
+            mediaDisk: {
+              usedBytes: 100,
+              totalBytes: 200,
+              usedPercent: 50,
+              mountPoint: "/media",
+              mediaRoot: "/srv/media",
+            },
+            network: {
+              downloadKbps: 1,
+              uploadKbps: 2,
+              interfaces: [{ name: "eth0" }],
+              ignoredInterfaces: ["lo"],
+            },
+            disk: { usedPercent: 40, mountPoint: "/", root: "/" },
+            cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
+            memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
+            engine: {
+              cpuPercent: 3,
+              totalMemoryBytes: 1234,
+              cpuSampleReady: true,
+            },
+          },
+        }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === fullMetricsUrl) {
+    if (href === summaryRuntimeUrl) {
       return new Response(
         JSON.stringify({
-          generatedAt: "2026-06-30T00:00:00Z",
-          mediaDisk: {
-            usedBytes: 100,
-            totalBytes: 200,
-            usedPercent: 50,
-            mountPoint: "/media",
-            mediaRoot: "/srv/media",
+          health: { status: "ready", pipelines: {} },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 14 },
+            memory: { usedPercent: 22 },
+            disk: { usedPercent: 42 },
+            network: { downloadKbps: 3, uploadKbps: 4 },
+            engine: {
+              cpuPercent: 5,
+              totalMemoryBytes: 1236,
+              cpuSampleReady: true,
+            },
           },
-          network: {
-            downloadKbps: 1,
-            uploadKbps: 2,
-            interfaces: [{ name: "eth0" }],
-            ignoredInterfaces: ["lo"],
-          },
-          disk: { usedPercent: 40, mountPoint: "/", root: "/" },
-          cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
-          memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
-          engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      );
-    }
-    if (href === summaryMetricsUrl) {
-      return new Response(
-        JSON.stringify({
-          generatedAt: "2026-06-30T00:00:05Z",
-          cpu: { usagePercent: 14 },
-          memory: { usedPercent: 22 },
-          disk: { usedPercent: 42 },
-          network: { downloadKbps: 3, uploadKbps: 4 },
-          engine: { cpuPercent: 5, totalMemoryBytes: 1236, cpuSampleReady: true },
         }),
         {
           status: 200,
@@ -132,14 +140,14 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
       "initial boot should fetch settings once",
     );
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
+      requests.filter((href) => href === summaryRuntimeWithFullMetricsUrl).length,
       1,
-      "initial boot should fetch summary health once",
+      "initial boot should fetch the combined summary runtime snapshot once",
     );
     assert.equal(
       requests.filter((href) => href === fullMetricsUrl).length,
-      1,
-      "initial boot should fetch full metrics once",
+      0,
+      "initial boot should no longer fetch metrics separately when runtime health is needed",
     );
     assert.equal(typeof pollCallback, "function");
 
@@ -152,14 +160,14 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
       "steady-state poll should reuse cached settings",
     );
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
-      2,
-      "steady-state poll should still refresh summary health",
+      requests.filter((href) => href === summaryRuntimeUrl).length,
+      1,
+      "steady-state poll should use the combined summary runtime view",
     );
     assert.equal(
       requests.filter((href) => href === summaryMetricsUrl).length,
-      1,
-      "steady-state poll should use the summary metrics view",
+      0,
+      "steady-state poll should no longer fetch summary metrics separately",
     );
     assert.equal(
       state.metrics.mediaDisk?.mountPoint,
@@ -180,14 +188,14 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
       "explicit dashboard refresh should invalidate settings",
     );
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
-      3,
-      "explicit dashboard refresh should still refresh summary health",
+      requests.filter((href) => href === summaryRuntimeUrl).length,
+      2,
+      "explicit dashboard refresh should still refresh the combined summary runtime snapshot",
     );
     assert.equal(
       requests.filter((href) => href === summaryMetricsUrl).length,
-      2,
-      "explicit dashboard refresh should still use summary metrics",
+      0,
+      "explicit dashboard refresh should no longer fetch summary metrics separately",
     );
 
     await dashboard.refreshDashboardRuntime();
@@ -198,14 +206,14 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
       "runtime-only refresh should not invalidate settings",
     );
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
-      4,
-      "runtime-only refresh should refresh summary health",
+      requests.filter((href) => href === summaryRuntimeUrl).length,
+      3,
+      "runtime-only refresh should refresh the combined summary runtime snapshot",
     );
     assert.equal(
       requests.filter((href) => href === summaryMetricsUrl).length,
-      3,
-      "runtime-only refresh should refresh summary metrics",
+      0,
+      "runtime-only refresh should no longer fetch summary metrics separately",
     );
   } finally {
     globalThis.setInterval = originalSetInterval;
@@ -215,9 +223,10 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
 
 test("overview activity SSE wakes the dashboard runtime without waiting for the next poll", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
-  const summaryHealthUrl = "/api/v1/engine/health?view=summary";
-  const fullMetricsUrl = "/metrics/system";
-  const summaryMetricsUrl = "/metrics/system?view=summary";
+  const summaryRuntimeWithFullMetricsUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=full";
+  const summaryRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary";
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=overview";
   appendRoot(document, "div", "overview-mode-panel");
@@ -246,34 +255,38 @@ test("overview activity SSE wakes the dashboard runtime without waiting for the 
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === summaryHealthUrl) {
-      return new Response(
-        JSON.stringify({ status: "ready", pipelines: {} }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    if (href === fullMetricsUrl) {
+    if (href === summaryRuntimeWithFullMetricsUrl) {
       return new Response(
         JSON.stringify({
-          generatedAt: "2026-06-30T00:00:00Z",
-          cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
-          memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
-          engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
-          disk: { usedPercent: 40, mountPoint: "/", root: "/" },
-          network: { downloadKbps: 1, uploadKbps: 2 },
+          health: { status: "ready", pipelines: {} },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:00Z",
+            cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
+            memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
+            engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
+            disk: { usedPercent: 40, mountPoint: "/", root: "/" },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === summaryMetricsUrl) {
+    if (href === summaryRuntimeUrl) {
       return new Response(
         JSON.stringify({
-          generatedAt: "2026-06-30T00:00:05Z",
-          cpu: { usagePercent: 14 },
-          memory: { usedPercent: 22 },
-          disk: { usedPercent: 42 },
-          network: { downloadKbps: 3, uploadKbps: 4 },
-          engine: { cpuPercent: 5, totalMemoryBytes: 1236, cpuSampleReady: true },
+          health: { status: "ready", pipelines: {} },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 14 },
+            memory: { usedPercent: 22 },
+            disk: { usedPercent: 42 },
+            network: { downloadKbps: 3, uploadKbps: 4 },
+            engine: {
+              cpuPercent: 5,
+              totalMemoryBytes: 1236,
+              cpuSampleReady: true,
+            },
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -363,12 +376,8 @@ test("overview activity SSE wakes the dashboard runtime without waiting for the 
     );
 
     const initialSummaryHealthCount = requests.filter(
-      (href) => href === summaryHealthUrl,
+      (href) => href === summaryRuntimeUrl,
     ).length;
-    const initialSummaryMetricsCount = requests.filter(
-      (href) => href === summaryMetricsUrl,
-    ).length;
-
     streams[0].emit("log", {
       id: 88,
       ts: "2026-06-30T00:00:08Z",
@@ -382,19 +391,19 @@ test("overview activity SSE wakes the dashboard runtime without waiting for the 
     });
     await waitForCondition(
       () =>
-        requests.filter((href) => href === summaryHealthUrl).length ===
+        requests.filter((href) => href === summaryRuntimeUrl).length ===
         initialSummaryHealthCount + 1,
     );
 
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
+      requests.filter((href) => href === summaryRuntimeUrl).length,
       initialSummaryHealthCount + 1,
-      "a lifecycle event should trigger an immediate runtime health refresh",
+      "a lifecycle event should trigger an immediate combined runtime refresh",
     );
     assert.equal(
-      requests.filter((href) => href === summaryMetricsUrl).length,
-      initialSummaryMetricsCount + 1,
-      "an overview activity lifecycle event should also refresh summary metrics immediately",
+      requests.some((href) => href.includes("/metrics/system")),
+      false,
+      "overview lifecycle wakeups should not fall back to standalone metrics fetches",
     );
   } finally {
     for (const stream of streams) {
@@ -418,7 +427,8 @@ test("overview activity SSE wakes the dashboard runtime without waiting for the 
 test("dashboard non-runtime modes skip health polling until a runtime mode resumes", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullSettingsUrl = "/api/v1/settings";
-  const summaryHealthUrl = "/api/v1/engine/health?view=summary";
+  const summaryRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary";
   const summaryMetricsUrl = "/metrics/system?view=summary";
   const fullMetricsUrl = "/metrics/system";
   const { document, window } = installFakeDom();
@@ -485,13 +495,6 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === summaryHealthUrl) {
-      return new Response(
-        JSON.stringify({ status: "ready", pipelines: {} }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-
     throw new Error(`Unexpected fetch: ${href}`);
   };
 
@@ -541,7 +544,7 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     await flushAsyncWork();
 
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
+      requests.filter((href) => href === summaryRuntimeUrl).length,
       0,
       "settings mode should skip boot-time health fetches",
     );
@@ -573,7 +576,7 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     await flushAsyncWork();
 
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
+      requests.filter((href) => href === summaryRuntimeUrl).length,
       0,
       "settings mode steady-state polls should skip health fetches",
     );
@@ -595,9 +598,9 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     await flushAsyncWork();
 
     assert.equal(
-      requests.filter((href) => href === summaryHealthUrl).length,
+      requests.filter((href) => href === summaryRuntimeUrl).length,
       1,
-      "returning to a runtime mode should trigger an immediate summary health refresh",
+      "returning to a runtime mode should trigger an immediate combined summary runtime refresh",
     );
     assert.equal(
       requests.filter((href) => href === settingsUrl).length,
@@ -630,9 +633,12 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
 
 test("pipeline runtime mode keeps the full health contract", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
-  const fullHealthUrl = "/api/v1/engine/health";
-  const summaryHealthUrl = "/api/v1/engine/health?view=summary";
-  const fullMetricsUrl = "/metrics/system";
+  const fullRuntimeWithFullMetricsUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+  const fullRuntimeWithSummaryMetricsUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+  const summaryRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary";
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
   appendRoot(document, "div", "dashboard-grid");
@@ -666,42 +672,42 @@ test("pipeline runtime mode keeps the full health contract", async () => {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === fullHealthUrl) {
+    if (
+      href === fullRuntimeWithFullMetricsUrl ||
+      href === fullRuntimeWithSummaryMetricsUrl
+    ) {
       return new Response(
         JSON.stringify({
-          status: "ready",
-          pipelines: {
-            "pipe-1": {
-              input: {
-                status: "on",
-                probeReady: true,
-                video: null,
-                audioTracks: [],
-                publisher: { protocol: "srt", quality: { msRtt: 10 } },
-              },
-              outputs: {},
-              recording: { enabled: false, active: false },
-              hlsPreview: {
-                active: false,
-                persistentConsumers: 0,
-                segments: 0,
-                playlistBytes: 0,
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  video: null,
+                  audioTracks: [],
+                  publisher: { protocol: "srt", quality: { msRtt: 10 } },
+                },
+                outputs: {},
+                recording: { enabled: false, active: false },
+                hlsPreview: {
+                  active: false,
+                  persistentConsumers: 0,
+                  segments: 0,
+                  playlistBytes: 0,
+                },
               },
             },
           },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    if (href === fullMetricsUrl) {
-      return new Response(
-        JSON.stringify({
-          generatedAt: "2026-06-30T00:00:00Z",
-          cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
-          memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
-          engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
-          disk: { usedPercent: 40, mountPoint: "/", root: "/" },
-          network: { downloadKbps: 1, uploadKbps: 2 },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:00Z",
+            cpu: { usagePercent: 12, cores: 4, load1: 0.5 },
+            memory: { usedPercent: 20, totalBytes: 200, usedBytes: 40 },
+            engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
+            disk: { usedPercent: 40, mountPoint: "/", root: "/" },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -722,14 +728,16 @@ test("pipeline runtime mode keeps the full health contract", async () => {
     await flushAsyncWork();
 
     assert.equal(
-      requests.includes(fullHealthUrl),
+      requests.some((href) =>
+        href.startsWith("/api/v1/dashboard/runtime?health_view=full&"),
+      ),
       true,
-      "pipeline mode should request the full health view",
+      "pipeline mode should request a runtime snapshot with the full health view",
     );
     assert.equal(
-      requests.includes(summaryHealthUrl),
+      requests.includes(summaryRuntimeUrl),
       false,
-      "pipeline mode should not downgrade to the summary health view",
+      "pipeline mode should not downgrade to the summary runtime view",
     );
   } finally {
     globalThis.setInterval = originalSetInterval;

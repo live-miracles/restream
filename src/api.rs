@@ -327,6 +327,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/stream-keys", get(stream_keys_handler))
         .route(
+            "/api/v1/dashboard/runtime",
+            get(v1_dashboard_runtime_handler),
+        )
+        .route(
             "/api/v1/monitoring/youtube-status",
             get(youtube_monitoring_status_handler),
         )
@@ -3170,6 +3174,215 @@ async fn build_health_summary_snapshot(state: &AppState) -> serde_json::Value {
     .await
 }
 
+async fn build_system_metrics_snapshot(state: &AppState, summary: bool) -> serde_json::Value {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    let cpu_pct = sys.global_cpu_info().cpu_usage() as f64;
+    let total_mem = sys.total_memory();
+    let used_mem = sys.used_memory();
+    let free_mem = total_mem.saturating_sub(used_mem);
+    let mem_pct = if total_mem > 0 {
+        (used_mem as f64 / total_mem as f64) * 100.0
+    } else {
+        0.0
+    };
+    let core_count = sys.cpus().len();
+    let load_avg = System::load_average();
+    let engine = engine_metrics(&sys, core_count);
+
+    let media_root = {
+        let configured = FsPath::new(&state.media_dir);
+        let absolute = if configured.is_absolute() {
+            configured.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(configured)
+        };
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    };
+    let disks = Disks::new_with_refreshed_list();
+
+    fn disk_usage_for_path(disks: &Disks, path: &FsPath) -> Option<(u64, u64, String)> {
+        disks
+            .iter()
+            .filter_map(|disk| {
+                let mount = disk.mount_point();
+                path.starts_with(mount)
+                    .then_some((disk, mount.components().count()))
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(disk, _)| {
+                let total = disk.total_space();
+                let used = total.saturating_sub(disk.available_space());
+                (total, used, disk.mount_point().display().to_string())
+            })
+    }
+
+    let system_root = {
+        #[cfg(unix)]
+        {
+            PathBuf::from("/")
+        }
+        #[cfg(not(unix))]
+        {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
+    };
+    let (total_disk, used_disk, disk_mount) =
+        if let Some((total, used, mount)) = disk_usage_for_path(&disks, &system_root) {
+            (total, used, Some(mount))
+        } else {
+            let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
+                (
+                    t + d.total_space(),
+                    u + (d.total_space() - d.available_space()),
+                )
+            });
+            (total, used, None)
+        };
+    let free_disk = total_disk.saturating_sub(used_disk);
+    let disk_pct = if total_disk > 0 {
+        (used_disk as f64 / total_disk as f64) * 100.0
+    } else {
+        0.0
+    };
+    let media_disk = disk_usage_for_path(&disks, &media_root).map(|(total, used, mount)| {
+        let free = total.saturating_sub(used);
+        let used_pct = if total > 0 {
+            (used as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "totalBytes": total,
+            "usedBytes": used,
+            "freeBytes": free,
+            "usedPercent": used_pct,
+            "scope": "mediaDir",
+            "mountPoint": mount,
+            "mediaDir": state.media_dir,
+            "mediaRoot": media_root.display().to_string()
+        })
+    });
+
+    fn is_external_interface(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        if lower == "lo" || lower.starts_with("lo:") {
+            return false;
+        }
+        let virtual_prefixes = [
+            "docker",
+            "br-",
+            "veth",
+            "virbr",
+            "vmnet",
+            "zt",
+            "tailscale",
+            "tun",
+            "tap",
+            "wg",
+        ];
+        !virtual_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+    }
+
+    let nets1 = Networks::new_with_refreshed_list();
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+    let nets2 = Networks::new_with_refreshed_list();
+    let mut total_rx = 0u64;
+    let mut total_tx = 0u64;
+    let mut external_interfaces = Vec::new();
+    let mut ignored_interfaces = Vec::new();
+    for (iface, n2) in nets2.iter() {
+        if let Some(n1) = nets1.get(iface) {
+            let rx = n2.total_received().saturating_sub(n1.total_received());
+            let tx = n2
+                .total_transmitted()
+                .saturating_sub(n1.total_transmitted());
+            let active = rx > 0 || tx > 0;
+            if is_external_interface(iface) {
+                total_rx += rx;
+                total_tx += tx;
+                if active {
+                    external_interfaces.push(serde_json::json!({
+                        "name": iface,
+                        "downloadBytesPerSec": rx * 4,
+                        "uploadBytesPerSec": tx * 4,
+                        "downloadKbps": (rx * 4 * 8) as f64 / 1000.0,
+                        "uploadKbps": (tx * 4 * 8) as f64 / 1000.0,
+                    }));
+                }
+            } else if active {
+                ignored_interfaces.push(iface.to_string());
+            }
+        }
+    }
+    let dl_bytes_sec = total_rx * 4;
+    let ul_bytes_sec = total_tx * 4;
+    let dl_kbps = (dl_bytes_sec * 8) as f64 / 1000.0;
+    let ul_kbps = (ul_bytes_sec * 8) as f64 / 1000.0;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    if summary {
+        serde_json::json!({
+            "generatedAt": now,
+            "cpu": {
+                "usagePercent": cpu_pct,
+            },
+            "memory": {
+                "usedPercent": mem_pct
+            },
+            "engine": engine,
+            "disk": {
+                "usedPercent": disk_pct,
+            },
+            "network": {
+                "downloadKbps": dl_kbps,
+                "uploadKbps": ul_kbps,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "generatedAt": now,
+            "cpu": {
+                "usagePercent": cpu_pct,
+                "cores": core_count,
+                "load1": load_avg.one
+            },
+            "memory": {
+                "totalBytes": total_mem,
+                "usedBytes": used_mem,
+                "freeBytes": free_mem,
+                "usedPercent": mem_pct
+            },
+            "engine": engine,
+            "disk": {
+                "totalBytes": total_disk,
+                "usedBytes": used_disk,
+                "freeBytes": free_disk,
+                "usedPercent": disk_pct,
+                "scope": "systemRoot",
+                "mountPoint": disk_mount,
+                "root": system_root.display().to_string()
+            },
+            "mediaDisk": media_disk,
+            "network": {
+                "scope": "external",
+                "downloadBytesPerSec": dl_bytes_sec,
+                "uploadBytesPerSec": ul_bytes_sec,
+                "downloadKbps": dl_kbps,
+                "uploadKbps": ul_kbps,
+                "interfaces": external_interfaces,
+                "ignoredInterfaces": ignored_interfaces,
+                "sampleMs": 250
+            }
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct EngineHealthQuery {
     view: Option<String>,
@@ -3189,6 +3402,41 @@ async fn v1_engine_health_handler(
         build_health_snapshot(&state).await
     };
     Json(response).into_response()
+}
+
+#[derive(Deserialize)]
+struct DashboardRuntimeQuery {
+    health_view: Option<String>,
+    metrics_view: Option<String>,
+}
+
+async fn v1_dashboard_runtime_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<DashboardRuntimeQuery>,
+) -> impl IntoResponse {
+    if let Some(response) = require_authenticated(&state, &headers).await {
+        return response;
+    }
+
+    let summary_health = query.health_view.as_deref() == Some("summary");
+    let summary_metrics = query.metrics_view.as_deref() == Some("summary");
+    let (health, metrics) = tokio::join!(
+        async {
+            if summary_health {
+                build_health_summary_snapshot(&state).await
+            } else {
+                build_health_snapshot(&state).await
+            }
+        },
+        build_system_metrics_snapshot(&state, summary_metrics)
+    );
+
+    Json(serde_json::json!({
+        "health": health,
+        "metrics": metrics,
+    }))
+    .into_response()
 }
 
 fn system_status(sys: &System) -> serde_json::Value {
@@ -3998,216 +4246,8 @@ async fn metrics_system_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let cpu_pct = sys.global_cpu_info().cpu_usage() as f64;
-    let total_mem = sys.total_memory();
-    let used_mem = sys.used_memory();
-    let free_mem = total_mem.saturating_sub(used_mem);
-    let mem_pct = if total_mem > 0 {
-        (used_mem as f64 / total_mem as f64) * 100.0
-    } else {
-        0.0
-    };
-    let core_count = sys.cpus().len();
-    let load_avg = System::load_average();
-    let engine = engine_metrics(&sys, core_count);
-
-    let media_root = {
-        let configured = FsPath::new(&state.media_dir);
-        let absolute = if configured.is_absolute() {
-            configured.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(configured)
-        };
-        std::fs::canonicalize(&absolute).unwrap_or(absolute)
-    };
-    let disks = Disks::new_with_refreshed_list();
-
-    fn disk_usage_for_path(disks: &Disks, path: &FsPath) -> Option<(u64, u64, String)> {
-        disks
-            .iter()
-            .filter_map(|disk| {
-                let mount = disk.mount_point();
-                path.starts_with(mount)
-                    .then_some((disk, mount.components().count()))
-            })
-            .max_by_key(|(_, depth)| *depth)
-            .map(|(disk, _)| {
-                let total = disk.total_space();
-                let used = total.saturating_sub(disk.available_space());
-                (total, used, disk.mount_point().display().to_string())
-            })
-    }
-
-    let system_root = {
-        #[cfg(unix)]
-        {
-            PathBuf::from("/")
-        }
-        #[cfg(not(unix))]
-        {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        }
-    };
-    let (total_disk, used_disk, disk_mount) =
-        if let Some((total, used, mount)) = disk_usage_for_path(&disks, &system_root) {
-            (total, used, Some(mount))
-        } else {
-            let (total, used) = disks.iter().fold((0u64, 0u64), |(t, u), d| {
-                (
-                    t + d.total_space(),
-                    u + (d.total_space() - d.available_space()),
-                )
-            });
-            (total, used, None)
-        };
-    let free_disk = total_disk.saturating_sub(used_disk);
-    let disk_pct = if total_disk > 0 {
-        (used_disk as f64 / total_disk as f64) * 100.0
-    } else {
-        0.0
-    };
-    let media_disk = disk_usage_for_path(&disks, &media_root).map(|(total, used, mount)| {
-        let free = total.saturating_sub(used);
-        let used_pct = if total > 0 {
-            (used as f64 / total as f64) * 100.0
-        } else {
-            0.0
-        };
-        serde_json::json!({
-            "totalBytes": total,
-            "usedBytes": used,
-            "freeBytes": free,
-            "usedPercent": used_pct,
-            "scope": "mediaDir",
-            "mountPoint": mount,
-            "mediaDir": state.media_dir,
-            "mediaRoot": media_root.display().to_string()
-        })
-    });
-
-    fn is_external_interface(name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
-        if lower == "lo" || lower.starts_with("lo:") {
-            return false;
-        }
-        let virtual_prefixes = [
-            "docker",
-            "br-",
-            "veth",
-            "virbr",
-            "vmnet",
-            "zt",
-            "tailscale",
-            "tun",
-            "tap",
-            "wg",
-        ];
-        !virtual_prefixes
-            .iter()
-            .any(|prefix| lower.starts_with(prefix))
-    }
-
-    // Collect a short network sample. The navbar reports external interfaces so
-    // local RTMP/SRT test traffic on loopback does not drown out host egress.
-    let nets1 = Networks::new_with_refreshed_list();
-    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-    let nets2 = Networks::new_with_refreshed_list();
-    let mut total_rx = 0u64;
-    let mut total_tx = 0u64;
-    let mut external_interfaces = Vec::new();
-    let mut ignored_interfaces = Vec::new();
-    for (iface, n2) in nets2.iter() {
-        if let Some(n1) = nets1.get(iface) {
-            let rx = n2.total_received().saturating_sub(n1.total_received());
-            let tx = n2
-                .total_transmitted()
-                .saturating_sub(n1.total_transmitted());
-            let active = rx > 0 || tx > 0;
-            if is_external_interface(iface) {
-                total_rx += rx;
-                total_tx += tx;
-                if active {
-                    external_interfaces.push(serde_json::json!({
-                        "name": iface,
-                        "downloadBytesPerSec": rx * 4,
-                        "uploadBytesPerSec": tx * 4,
-                        "downloadKbps": (rx * 4 * 8) as f64 / 1000.0,
-                        "uploadKbps": (tx * 4 * 8) as f64 / 1000.0,
-                    }));
-                }
-            } else if active {
-                ignored_interfaces.push(iface.to_string());
-            }
-        }
-    }
-    // Scale 250ms sample to per-second
-    let dl_bytes_sec = total_rx * 4;
-    let ul_bytes_sec = total_tx * 4;
-    let dl_kbps = (dl_bytes_sec * 8) as f64 / 1000.0;
-    let ul_kbps = (ul_bytes_sec * 8) as f64 / 1000.0;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let response = if query.view.as_deref() == Some("summary") {
-        serde_json::json!({
-            "generatedAt": now,
-            "cpu": {
-                "usagePercent": cpu_pct,
-            },
-            "memory": {
-                "usedPercent": mem_pct
-            },
-            "engine": engine,
-            "disk": {
-                "usedPercent": disk_pct,
-            },
-            "network": {
-                "downloadKbps": dl_kbps,
-                "uploadKbps": ul_kbps,
-            }
-        })
-    } else {
-        serde_json::json!({
-            "generatedAt": now,
-            "cpu": {
-                "usagePercent": cpu_pct,
-                "cores": core_count,
-                "load1": load_avg.one
-            },
-            "memory": {
-                "totalBytes": total_mem,
-                "usedBytes": used_mem,
-                "freeBytes": free_mem,
-                "usedPercent": mem_pct
-            },
-            "engine": engine,
-            "disk": {
-                "totalBytes": total_disk,
-                "usedBytes": used_disk,
-                "freeBytes": free_disk,
-                "usedPercent": disk_pct,
-                "scope": "systemRoot",
-                "mountPoint": disk_mount,
-                "root": system_root.display().to_string()
-            },
-            "mediaDisk": media_disk,
-            "network": {
-                "scope": "external",
-                "downloadBytesPerSec": dl_bytes_sec,
-                "uploadBytesPerSec": ul_bytes_sec,
-                "downloadKbps": dl_kbps,
-                "uploadKbps": ul_kbps,
-                "interfaces": external_interfaces,
-                "ignoredInterfaces": ignored_interfaces,
-                "sampleMs": 250
-            }
-        })
-    };
-
+    let response =
+        build_system_metrics_snapshot(&state, query.view.as_deref() == Some("summary")).await;
     Json(response).into_response()
 }
 

@@ -302,6 +302,11 @@ export interface SystemMetrics {
   };
 }
 
+export interface DashboardRuntimeSnapshot {
+  health?: HealthData | null;
+  metrics?: SystemMetrics | null;
+}
+
 export interface InputView {
   status: string;
   time: number | null;

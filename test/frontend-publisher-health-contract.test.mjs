@@ -82,8 +82,10 @@ function makePipelineView() {
 
 test("publisher health modal reuses dashboard runtime refresh instead of starting its own poller", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
-  const fullMetricsUrl = "/metrics/system";
-  const summaryMetricsUrl = "/metrics/system?view=summary";
+  const fullRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+  const fullHealthWithSummaryMetricsUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=pipeline";
 
@@ -123,43 +125,40 @@ test("publisher health modal reuses dashboard runtime refresh instead of startin
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
-    if (href === "/api/v1/engine/health") {
+    if (href === fullRuntimeUrl || href === fullHealthWithSummaryMetricsUrl) {
       return new Response(
         JSON.stringify({
-          status: "ready",
-          pipelines: {
-            "pipe-1": {
-              input: {
-                status: "on",
-                probeReady: true,
-                probeStatus: "ready",
-                bytesReceived: 1024,
-                bytesSent: 0,
-                readers: 1,
-                bitrateKbps: 3200,
-                publisher: {
-                  protocol: "srt",
-                  remoteAddr: "198.51.100.10:9000",
-                  quality: { msRTT: 34, mbpsReceiveRate: 5.2 },
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  probeStatus: "ready",
+                  bytesReceived: 1024,
+                  bytesSent: 0,
+                  readers: 1,
+                  bitrateKbps: 3200,
+                  publisher: {
+                    protocol: "srt",
+                    remoteAddr: "198.51.100.10:9000",
+                    quality: { msRTT: 34, mbpsReceiveRate: 5.2 },
+                  },
+                  audioTracks: [],
+                  video: null,
+                  unexpectedReaders: { count: 0 },
                 },
-                audioTracks: [],
-                video: null,
-                unexpectedReaders: { count: 0 },
+                outputs: {},
+                recording: { enabled: false, active: false },
+                hlsPreview: {},
               },
-              outputs: {},
-              recording: { enabled: false, active: false },
-              hlsPreview: {},
             },
           },
+          metrics: {},
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
-    }
-    if (href === fullMetricsUrl || href === summaryMetricsUrl) {
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
     }
 
     throw new Error(`Unexpected fetch: ${href}`);
@@ -227,7 +226,7 @@ test("publisher health modal reuses dashboard runtime refresh instead of startin
       0,
       "modal should not install a dedicated polling timer",
     );
-    assert.deepEqual(requests, ["/api/v1/engine/health", summaryMetricsUrl]);
+    assert.deepEqual(requests, [fullHealthWithSummaryMetricsUrl]);
     assert.equal(
       document.getElementById("publisher-health-subtitle")?.textContent,
       "SRT | 198.51.100.10:9000",

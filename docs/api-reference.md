@@ -247,7 +247,7 @@ Lagging receivers are closed; the browser reconnects automatically using
 The dashboard overview activity rail uses an initial `GET /api/logs` snapshot
 plus this SSE endpoint filtered with `scope=restream` for live restream-wide
 activity updates. Overview also reuses that same restream-scoped stream to
-wake runtime summary refreshes on lifecycle events, avoiding a second
+wake `/api/v1/dashboard/runtime` summary refreshes on lifecycle events, avoiding a second
 lifecycle-only SSE connection in that mode.
 Pipeline, inspect, control-room, and publisher-health runtime surfaces
 subscribe to this SSE endpoint with `event_class=lifecycle` so they refresh
@@ -553,6 +553,55 @@ the stored FFmpeg argument string.
 
 ## Health and Status
 
+### `GET /api/v1/dashboard/runtime`
+
+Authenticated dashboard-optimized runtime snapshot. Returns `health` and
+`metrics` together so lifecycle-triggered dashboard refreshes can re-sync in a
+single round trip instead of fetching `/api/v1/engine/health` and
+`/metrics/system` separately.
+
+Query params:
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `health_view` | `full` | `summary` trims pipeline/output runtime detail for overview wakes and lighter dashboard refreshes. |
+| `metrics_view` | `full` | `summary` trims the host metrics payload to aggregate percentages/rates while preserving `engine` totals. |
+
+```json
+{
+  "health": {
+    "status": "ready",
+    "pipelines": {}
+  },
+  "metrics": {
+    "generatedAt": "2026-06-30T00:00:00Z",
+    "cpu": { "usagePercent": 12 },
+    "memory": { "usedPercent": 20 },
+    "disk": { "usedPercent": 40 },
+    "network": {
+      "downloadKbps": 1,
+      "uploadKbps": 2
+    },
+    "engine": {
+      "cpuPercent": 3,
+      "totalMemoryBytes": 1234,
+      "cpuSampleReady": true
+    }
+  }
+}
+```
+
+The dashboard currently uses:
+
+- `health_view=summary&metrics_view=full` on the first overview load so static
+  disk/interface metadata can be cached client-side
+- `health_view=summary&metrics_view=summary` for steady-state overview wakes and
+  SSE-triggered refreshes
+- `health_view=full` for pipeline/inspect/control and publisher-health paths
+  that need detailed runtime state
+- standalone `/metrics/system` fetches only in modes that do not need runtime
+  health in the same refresh
+
 ### `GET /api/v1/engine/health`
 
 Authenticated native state snapshot:
@@ -627,6 +676,10 @@ Query params:
 | Param | Default | Notes |
 | --- | --- | --- |
 | `view` | `full` | `summary` trims steady-state dashboard polls down to aggregate percentages/rates plus engine totals. The first dashboard load still uses `full` so static disk/interface metadata can be cached client-side. |
+
+This route remains the generic host-metrics surface. The dashboard now prefers
+`/api/v1/dashboard/runtime` whenever it also needs engine health in the same
+refresh.
 
 ### `GET /api/v1/engine`
 

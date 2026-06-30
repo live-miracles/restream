@@ -1,7 +1,7 @@
 import {
   buildLogsStreamUrl,
   getConfig,
-  getHealth,
+  getDashboardRuntimeSnapshot,
   getSystemMetrics,
 } from "../core/api.js";
 import { loadAudioCaps } from "../core/audio-caps.js";
@@ -293,14 +293,21 @@ async function fetchAndRerender(): Promise<void> {
   fetchConfigNextTick = false;
   fetchDetailedMetricsNextTick = false;
 
-  const [configResult, healthResult, metricsResult] = await Promise.all([
+  const runtimeMetricsView = fetchDetailedMetrics ? "full" : "summary";
+  const runtimeHealthView = fetchDetailedHealth ? "full" : "summary";
+  const [configResult, runtimeResult, metricsResult] = await Promise.all([
     fetchConf && fetchConfig
       ? getConfig({ view: "dashboard" })
       : Promise.resolve(null),
     fetchHealth
-      ? getHealth({ view: fetchDetailedHealth ? "full" : "summary" })
+      ? getDashboardRuntimeSnapshot({
+          healthView: runtimeHealthView,
+          metricsView: runtimeMetricsView,
+        })
       : Promise.resolve(null),
-    getSystemMetrics({ view: fetchDetailedMetrics ? "full" : "summary" }),
+    fetchHealth
+      ? Promise.resolve(null)
+      : getSystemMetrics({ view: runtimeMetricsView }),
   ]);
 
   if (configResult) {
@@ -310,11 +317,15 @@ async function fetchAndRerender(): Promise<void> {
     };
     setServerConfig(state.config?.serverName);
   }
-  if (healthResult) state.health = healthResult;
-  if (metricsResult !== null)
+  if (runtimeResult?.health) {
+    state.health = runtimeResult.health;
+  }
+  const nextMetrics =
+    runtimeResult?.metrics ?? (metricsResult as typeof state.metrics | null);
+  if (nextMetrics !== null)
     state.metrics = mergeSystemMetricsSnapshot(
       state.metrics,
-      metricsResult as typeof state.metrics,
+      nextMetrics as typeof state.metrics,
     );
   syncRestreamProcessIndicatorFromHealth(state.health?.status);
 

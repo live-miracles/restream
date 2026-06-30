@@ -307,6 +307,7 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 | `GET` | `/api/v1/media/:filename/analysis` | ✓ | — | |
 | `PATCH` | `/api/v1/media/:filename` | ✓ | — | Rename + ingest reference update |
 | `DELETE` | `/api/v1/media/:filename` | ✓ | — | Path traversal tested |
+| `GET` | `/api/v1/dashboard/runtime` | ✓ | — | Frontend contract + Node transport tests |
 | `GET` | `/api/v1/engine/health` | ✓ | ✓ | |
 | `GET` | `/healthz` | ✓ | ✓ | |
 | `GET` | `/metrics/system` | ✓ | — | Structured cpu/memory/disk/network |
@@ -343,6 +344,7 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 | `POST` | `/api/v1/agent/verify` | ✓ | — | 404 when compiled out |
 
 Frontend transport/control layering now has explicit Node-scope coverage for:
+- the combined `/api/v1/dashboard/runtime` fetch shape that replaces paired dashboard health+metrics reads
 - output toggle responsiveness while start/stop API requests are in flight
 - restream process-indicator transitions driven by lifecycle logs and health recovery
 - non-runtime mode lifecycle SSE behavior that keeps process state live without re-enabling health polls

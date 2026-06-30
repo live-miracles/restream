@@ -124,6 +124,10 @@ output control intent and Rust-process lifecycle indication. Use
 `npm run test:frontend:coverage:all` when you want the broader all-files
 report as a diagnostic view.
 
+The dashboard runtime surface now prefers a single `/api/v1/dashboard/runtime`
+snapshot whenever a refresh needs both engine health and host metrics; only
+metrics-only modes still hit `/metrics/system` directly.
+
 ## Testing
 
 For the broader testing story, use [Testing](testing.md). The short version:

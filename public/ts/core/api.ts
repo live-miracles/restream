@@ -7,6 +7,7 @@ import type {
   RecordingSettings,
   SrtGlobalIngestConfig,
   SrtPipelineIngestConfig,
+  DashboardRuntimeSnapshot,
   SystemMetrics,
   StreamKey,
 } from "../types.js";
@@ -153,6 +154,24 @@ async function getSystemMetrics(
   const suffix = query.toString();
   const url = suffix ? `/metrics/system?${suffix}` : "/metrics/system";
   return apiRequest<SystemMetrics>(url);
+}
+
+interface GetDashboardRuntimeOptions {
+  healthView?: "full" | "summary";
+  metricsView?: "full" | "summary";
+}
+
+async function getDashboardRuntimeSnapshot(
+  options: GetDashboardRuntimeOptions = {},
+): Promise<DashboardRuntimeSnapshot | null> {
+  const query = new URLSearchParams();
+  if (options.healthView) query.set("health_view", options.healthView);
+  if (options.metricsView) query.set("metrics_view", options.metricsView);
+  const suffix = query.toString();
+  const url = suffix
+    ? `/api/v1/dashboard/runtime?${suffix}`
+    : "/api/v1/dashboard/runtime";
+  return apiRequest<DashboardRuntimeSnapshot>(url);
 }
 
 async function getStreamKeys(): Promise<StreamKey[] | null> {
@@ -715,6 +734,7 @@ export {
   getConfig,
   getHealth,
   getSystemMetrics,
+  getDashboardRuntimeSnapshot,
   getStreamKeys,
   getEngineStatus,
   getEngineSbomEndpoint,
