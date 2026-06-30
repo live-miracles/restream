@@ -85,31 +85,7 @@ pub(crate) async fn health_snapshot(
             if egress.pipeline_id == *pipeline_id {
                 let output_id = egress_key;
                 let bytes_sent = egress.bytes_sent.load(Ordering::Relaxed);
-                let bitrate_kbps = {
-                    let prev = egress.prev_bytes_sent.load(Ordering::Relaxed);
-                    let mut prev_time = egress
-                        .prev_sample_time
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    let elapsed = prev_time.elapsed().as_secs_f64();
-
-                    if elapsed > 0.5 && bytes_sent > prev {
-                        let delta = bytes_sent - prev;
-                        let rate = (delta as f64 * 8.0) / (elapsed * 1000.0);
-                        egress.prev_bytes_sent.store(bytes_sent, Ordering::Relaxed);
-                        *prev_time = std::time::Instant::now();
-                        *egress
-                            .bitrate_kbps
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = Some(rate);
-                        Some(rate)
-                    } else {
-                        *egress
-                            .bitrate_kbps
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                    }
-                };
+                let bitrate_kbps = MediaEngine::sample_egress_bitrate_kbps(egress);
 
                 let has_ingest = ingests.contains_key(pipeline_id.as_str());
 
