@@ -1,7 +1,7 @@
 //! Application-layer loading for ingest security configuration, bridging
 //! persisted metadata into the domain config used at runtime.
 
-use crate::application::ports::MetaStore;
+use crate::application::ports::{MetaLookupError, MetaStore, MetaStoreWriter};
 use crate::domain::ingest_security::IngestSecurityConfig;
 
 pub const INGEST_SECURITY_CONFIG_META_KEY: &str = "ingest_security_config";
@@ -16,13 +16,26 @@ pub async fn load_ingest_security_config(meta_store: &dyn MetaStore) -> IngestSe
         .unwrap_or_default()
 }
 
+pub async fn save_ingest_security_config(
+    meta_store: &dyn MetaStoreWriter,
+    config: &IngestSecurityConfig,
+) -> Result<(), MetaLookupError> {
+    let raw =
+        serde_json::to_string(config).map_err(|error| MetaLookupError::new(error.to_string()))?;
+    meta_store
+        .set_meta(INGEST_SECURITY_CONFIG_META_KEY, &raw)
+        .await
+        .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::{MetaLookupError, MetaLookupFuture, MetaStore};
+    use crate::application::ports::{MetaLookupFuture, MetaWriteFuture};
+    use std::sync::Mutex;
 
     struct FakeMetaStore {
-        value: Option<String>,
+        value: Mutex<Option<String>>,
         fail: bool,
     }
 
@@ -35,7 +48,22 @@ mod tests {
                 if self.fail {
                     return Err(MetaLookupError::new("db unavailable"));
                 }
-                Ok(self.value.clone())
+                Ok(self.value.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            })
+        }
+    }
+
+    impl MetaStoreWriter for FakeMetaStore {
+        fn set_meta<'a>(&'a self, key: &'a str, value: &'a str) -> MetaWriteFuture<'a> {
+            Box::pin(async move {
+                if key != INGEST_SECURITY_CONFIG_META_KEY {
+                    return Err(MetaLookupError::new("unexpected key"));
+                }
+                if self.fail {
+                    return Err(MetaLookupError::new("db unavailable"));
+                }
+                *self.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(value.to_string());
+                Ok(value.to_string())
             })
         }
     }
@@ -43,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn load_ingest_security_config_reads_valid_json() {
         let store = FakeMetaStore {
-            value: Some(
+            value: Mutex::new(Some(
                 serde_json::json!({
                     "failureLimit": 3,
                     "failureWindowMs": 10_000,
@@ -51,7 +79,7 @@ mod tests {
                     "trackedIpLimit": 42
                 })
                 .to_string(),
-            ),
+            )),
             fail: false,
         };
 
@@ -66,7 +94,7 @@ mod tests {
     #[tokio::test]
     async fn load_ingest_security_config_falls_back_to_default_on_error() {
         let store = FakeMetaStore {
-            value: Some("{\"failureLimit\":\"bad\"}".to_string()),
+            value: Mutex::new(Some("{\"failureLimit\":\"bad\"}".to_string())),
             fail: true,
         };
 
@@ -77,5 +105,33 @@ mod tests {
         assert_eq!(config.failure_window_ms, default.failure_window_ms);
         assert_eq!(config.ban_ms, default.ban_ms);
         assert_eq!(config.tracked_ip_limit, default.tracked_ip_limit);
+    }
+
+    #[tokio::test]
+    async fn save_ingest_security_config_serializes_to_meta_store() {
+        let store = FakeMetaStore {
+            value: Mutex::new(None),
+            fail: false,
+        };
+        let config = IngestSecurityConfig {
+            failure_limit: 3,
+            failure_window_ms: 10_000,
+            ban_ms: 30_000,
+            tracked_ip_limit: 42,
+        };
+
+        save_ingest_security_config(&store, &config).await.unwrap();
+
+        let persisted = store
+            .value
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
+        let roundtrip: IngestSecurityConfig = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(roundtrip.failure_limit, config.failure_limit);
+        assert_eq!(roundtrip.failure_window_ms, config.failure_window_ms);
+        assert_eq!(roundtrip.ban_ms, config.ban_ms);
+        assert_eq!(roundtrip.tracked_ip_limit, config.tracked_ip_limit);
     }
 }

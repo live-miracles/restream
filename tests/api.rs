@@ -810,6 +810,58 @@ async fn config_patch_recording_settings_persists() {
     assert_eq!(json["recordingSettings"]["retainSourceTs"], true);
 }
 
+#[tokio::test]
+async fn config_patch_ingest_security_persists() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestSecurity"]["failureLimit"], 10);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/api/v1/settings",
+            &cookie,
+            Some(
+                r#"{"ingestSecurity":{"failureLimit":3,"failureWindowMs":15000,"banMs":45000,"trackedIpLimit":64}}"#,
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestSecurity"]["failureLimit"], 3);
+    assert_eq!(json["ingestSecurity"]["failureWindowMs"], 15000);
+    assert_eq!(json["ingestSecurity"]["banMs"], 45000);
+    assert_eq!(json["ingestSecurity"]["trackedIpLimit"], 64);
+
+    let stored = restream::application::ingest_security::load_ingest_security_config(
+        &restream::application::ports::SqliteMetaStore::new(pool.clone()),
+    )
+    .await;
+    assert_eq!(stored.failure_limit, 3);
+    assert_eq!(stored.failure_window_ms, 15_000);
+    assert_eq!(stored.ban_ms, 45_000);
+    assert_eq!(stored.tracked_ip_limit, 64);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/settings", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["ingestSecurity"]["failureLimit"], 3);
+}
+
 // --- Audio caps ---
 
 #[tokio::test]

@@ -33,7 +33,7 @@ use tracing::{error, warn};
 use crate::alerts;
 use crate::api_view_models;
 use crate::application::ingest::{ResolveFileIngestError, resolve_file_ingest_context};
-use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
+use crate::application::ingest_security::save_ingest_security_config;
 use crate::application::ports::{
     IngestLookup, PipelineStore, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
 };
@@ -996,8 +996,11 @@ async fn config_patch_handler(
 
     if let Some(ref sec) = payload.ingest_security {
         state.security.update_config(sec.clone());
-        if let Ok(raw_json) = serde_json::to_string(sec) {
-            let _ = db::set_meta(&state.db, INGEST_SECURITY_CONFIG_META_KEY, &raw_json).await;
+        if save_ingest_security_config(&SqliteMetaStore::new(state.db.clone()), sec)
+            .await
+            .is_err()
+        {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
 
