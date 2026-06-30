@@ -448,6 +448,8 @@ pub fn investigation_response(
     request: InvestigationRequest,
     pipeline_exists: bool,
     output_exists: bool,
+    selected_pipeline: Option<Value>,
+    selected_output: Option<Value>,
     health: Value,
     graph: Option<Value>,
     telemetry: Value,
@@ -506,6 +508,10 @@ pub fn investigation_response(
         },
         "findings": findings,
         "evidence": {
+            "scope": {
+                "pipeline": selected_pipeline,
+                "output": selected_output,
+            },
             "health": redact_secrets(health),
             "graph": graph.map(redact_secrets),
             "telemetry": redact_secrets(telemetry),

@@ -4218,7 +4218,8 @@ async fn pipeline_graph_handler(
     }
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
-    let graph = state.engine.processing_graph(&pipeline_id, &outputs).await;
+    let graph =
+        crate::media::engine_views::processing_graph(&state.engine, &pipeline_id, &outputs).await;
     Json(graph).into_response()
 }
 
@@ -4482,6 +4483,11 @@ async fn agent_investigation_handler(
         .pipeline_id
         .as_deref()
         .is_none_or(|pid| pipelines.iter().any(|p| p.id == pid));
+    let selected_pipeline = request
+        .pipeline_id
+        .as_deref()
+        .and_then(|pid| pipelines.iter().find(|pipeline| pipeline.id == pid))
+        .map(crate::agent_plane::redact_secrets_from_serializable);
     let output_exists = request.output_id.as_deref().is_none_or(|oid| {
         outputs.iter().any(|output| {
             output.id == oid
@@ -4491,6 +4497,19 @@ async fn agent_investigation_handler(
                     .is_none_or(|pid| output.pipeline_id == pid)
         })
     });
+    let selected_output = request
+        .output_id
+        .as_deref()
+        .and_then(|oid| {
+            outputs.iter().find(|output| {
+                output.id == oid
+                    && request
+                        .pipeline_id
+                        .as_deref()
+                        .is_none_or(|pid| output.pipeline_id == pid)
+            })
+        })
+        .map(crate::agent_plane::redact_secrets_from_serializable);
 
     let pipeline_ids: Vec<String> = request
         .pipeline_id
@@ -4506,7 +4525,7 @@ async fn agent_investigation_handler(
     let graph = if let Some(pid) = request.pipeline_id.as_deref()
         && pipeline_exists
     {
-        Some(state.engine.processing_graph(pid, &outputs).await)
+        Some(crate::media::engine_views::processing_graph(&state.engine, pid, &outputs).await)
     } else {
         None
     };
@@ -4524,6 +4543,8 @@ async fn agent_investigation_handler(
         request,
         pipeline_exists,
         output_exists,
+        selected_pipeline,
+        selected_output,
         health,
         graph,
         telemetry,
@@ -4840,7 +4861,10 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     for pipeline_id in &pipeline_ids {
         pipeline_telemetry
             .push(crate::media::engine_views::pipeline_telemetry(&state.engine, pipeline_id).await);
-        graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
+        graphs.push(
+            crate::media::engine_views::processing_graph(&state.engine, pipeline_id, &outputs)
+                .await,
+        );
     }
     let desired_vs_actual = agent_desired_vs_actual(
         &pipelines,
@@ -5352,7 +5376,10 @@ async fn verify_agent_operation(
 
     let mut graphs = Vec::new();
     for pipeline_id in &pipeline_ids {
-        graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
+        graphs.push(
+            crate::media::engine_views::processing_graph(&state.engine, pipeline_id, &outputs)
+                .await,
+        );
     }
     let active_graph_nodes = graphs
         .iter()
@@ -5822,7 +5849,7 @@ async fn build_agent_plan(
     let current_graph = if let Some(pid) = request.pipeline_id.as_deref()
         && pipelines.iter().any(|p| p.id == pid)
     {
-        Some(state.engine.processing_graph(pid, &outputs).await)
+        Some(crate::media::engine_views::processing_graph(&state.engine, pid, &outputs).await)
     } else {
         None
     };
@@ -5945,10 +5972,12 @@ async fn v1_pipeline_summary_handler(
         .into_iter()
         .filter(|output| output.pipeline_id == pipeline_id)
         .collect::<Vec<_>>();
-    let graph = state
-        .engine
-        .processing_graph(&pipeline_id, &pipeline_outputs)
-        .await;
+    let graph = crate::media::engine_views::processing_graph(
+        &state.engine,
+        &pipeline_id,
+        &pipeline_outputs,
+    )
+    .await;
     let graph_nodes = graph["nodes"]
         .as_array()
         .map(|nodes| nodes.len())

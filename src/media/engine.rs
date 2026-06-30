@@ -2374,16 +2374,6 @@ impl MediaEngine {
         )
         .await
     }
-
-    /// Build a processing graph for a pipeline showing all stages and connections.
-    /// Returns a JSON structure suitable for visualization.
-    pub async fn processing_graph(
-        &self,
-        pipeline_id: &str,
-        outputs: &[crate::types::Output],
-    ) -> serde_json::Value {
-        crate::media::engine_views::processing_graph(self, pipeline_id, outputs).await
-    }
 }
 
 #[cfg(test)]
@@ -3140,7 +3130,7 @@ mod tests {
             "health reader metrics should expose unread packet age"
         );
 
-        let graph = engine.processing_graph(pipeline_id, &[]).await;
+        let graph = crate::media::engine_views::processing_graph(&engine, pipeline_id, &[]).await;
         let source = graph["nodes"]
             .as_array()
             .unwrap()
@@ -3607,7 +3597,7 @@ mod tests {
         let hls_token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
         hls_token.cancel();
 
-        let graph = engine.processing_graph(pipeline_id, &[]).await;
+        let graph = crate::media::engine_views::processing_graph(&engine, pipeline_id, &[]).await;
         let nodes = graph["nodes"].as_array().unwrap();
 
         let recording = nodes
@@ -3638,7 +3628,8 @@ mod tests {
             encoding: "source".to_string(),
         };
 
-        let graph = engine.processing_graph(pipeline_id, &[output]).await;
+        let graph =
+            crate::media::engine_views::processing_graph(&engine, pipeline_id, &[output]).await;
         let nodes = graph["nodes"].as_array().unwrap();
         let edges = graph["edges"].as_array().unwrap();
 
@@ -3689,7 +3680,8 @@ mod tests {
             encoding: "source".to_string(),
         };
 
-        let graph = engine.processing_graph(pipeline_id, &[output]).await;
+        let graph =
+            crate::media::engine_views::processing_graph(&engine, pipeline_id, &[output]).await;
         let nodes = graph["nodes"].as_array().unwrap();
         let egress = nodes
             .iter()
