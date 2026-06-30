@@ -887,6 +887,7 @@ async fn stream_keys_handler(
 async fn config_get_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ConfigGetQuery>,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         if !state.is_authenticated(&token).await {
@@ -929,24 +930,52 @@ async fn config_get_handler(
     }
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
-    let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
     let settings = match load_settings_snapshot(&state.db, &state.security).await {
         Ok(settings) => settings,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let is_dashboard_view = query.view.as_deref() == Some("dashboard");
+    let jobs_json = if is_dashboard_view {
+        Vec::new()
+    } else {
+        let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
+        if query.jobs.as_deref() == Some("latest") {
+            api_view_models::latest_job_response_json_list(&jobs)
+        } else {
+            api_view_models::job_response_json_list(&jobs)
+        }
+    };
 
-    Json(serde_json::json!({
-        "serverName": settings.server_name,
-        "ingestHost": settings.ingest_host,
-        "ingestSecurity": settings.ingest_security,
-        "recordingSettings": settings.recording_settings,
-        "srtIngest": settings.srt_ingest,
-        "transcodeProfiles": settings.transcode_profiles,
-        "pipelines": pipelines,
-        "outputs": api_view_models::output_response_json_list(&outputs),
-        "jobs": api_view_models::job_response_json_list(&jobs)
-    }))
-    .into_response()
+    let response = if is_dashboard_view {
+        serde_json::json!({
+            "serverName": settings.server_name,
+            "ingestHost": settings.ingest_host,
+            "transcodeProfiles": settings.transcode_profiles,
+            "pipelines": pipelines,
+            "outputs": api_view_models::output_response_json_list(&outputs),
+            "jobs": jobs_json
+        })
+    } else {
+        serde_json::json!({
+            "serverName": settings.server_name,
+            "ingestHost": settings.ingest_host,
+            "ingestSecurity": settings.ingest_security,
+            "recordingSettings": settings.recording_settings,
+            "srtIngest": settings.srt_ingest,
+            "transcodeProfiles": settings.transcode_profiles,
+            "pipelines": pipelines,
+            "outputs": api_view_models::output_response_json_list(&outputs),
+            "jobs": jobs_json
+        })
+    };
+
+    Json(response).into_response()
+}
+
+#[derive(Deserialize)]
+struct ConfigGetQuery {
+    jobs: Option<String>,
+    view: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1977,9 +2006,76 @@ async fn logs_handler(
 struct LogsStreamQuery {
     level: Option<String>,
     target: Option<String>,
+    scope: Option<String>,
     pipeline_id: Option<String>,
     output_id: Option<String>,
+    event_class: Option<String>,
+    prefix: Option<String>,
     last_event_id: Option<i64>,
+}
+
+fn log_stream_scope_matches(
+    scope: Option<&str>,
+    pipeline_id: Option<&str>,
+    output_id: Option<&str>,
+) -> bool {
+    match scope {
+        Some("restream") => pipeline_id.is_none() && output_id.is_none(),
+        Some("pipeline") => pipeline_id.is_some() && output_id.is_none(),
+        Some("output") => output_id.is_some(),
+        _ => true,
+    }
+}
+
+fn log_stream_prefix_matches(prefix: Option<&str>, message: &str) -> bool {
+    let Some(prefix) = prefix else {
+        return true;
+    };
+
+    prefix
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .any(|part| message.starts_with(part))
+}
+
+fn log_broadcast_matches_stream_filters(
+    entry: &crate::logging::LogBroadcast,
+    target: Option<&str>,
+    scope: Option<&str>,
+    pipeline_id: Option<&str>,
+    output_id: Option<&str>,
+    event_class: Option<&str>,
+    prefix: Option<&str>,
+) -> bool {
+    if let Some(target) = target
+        && !entry.target.starts_with(target)
+    {
+        return false;
+    }
+    if !log_stream_scope_matches(
+        scope,
+        entry.pipeline_id.as_deref(),
+        entry.output_id.as_deref(),
+    ) {
+        return false;
+    }
+    if let Some(pipeline_id) = pipeline_id
+        && entry.pipeline_id.as_deref() != Some(pipeline_id)
+    {
+        return false;
+    }
+    if let Some(output_id) = output_id
+        && entry.output_id.as_deref() != Some(output_id)
+    {
+        return false;
+    }
+    if let Some(event_class) = event_class
+        && entry.event_class.as_deref() != Some(event_class)
+    {
+        return false;
+    }
+    log_stream_prefix_matches(prefix, &entry.message)
 }
 
 async fn logs_stream_handler(
@@ -2004,8 +2100,11 @@ async fn logs_stream_handler(
 
     let min_level = query.level.unwrap_or_else(|| "info".to_string());
     let filter_target = query.target;
+    let filter_scope = query.scope;
     let filter_pipeline = query.pipeline_id;
     let filter_output = query.output_id;
+    let filter_event_class = query.event_class;
+    let filter_prefix = query.prefix;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
 
@@ -2030,11 +2129,11 @@ async fn logs_stream_handler(
                     since: None,
                     until: None,
                     target: filter_target.clone(),
-                    scope: None,
+                    scope: filter_scope.clone(),
                     pipeline_id: filter_pipeline.clone(),
                     output_id: filter_output.clone(),
-                    event_class: None,
-                    prefix: None,
+                    event_class: filter_event_class.clone(),
+                    prefix: filter_prefix.clone(),
                     limit: Some(200),
                     order: Some("asc".to_string()),
                 },
@@ -2067,14 +2166,16 @@ async fn logs_stream_handler(
                     match entry {
                         Ok(e) => {
                             if !level_passes(&e.level) { continue; }
-                            if let Some(ref t) = filter_target {
-                                if !e.target.starts_with(t.as_str()) { continue; }
-                            }
-                            if let Some(ref p) = filter_pipeline {
-                                if e.pipeline_id.as_deref() != Some(p.as_str()) { continue; }
-                            }
-                            if let Some(ref o) = filter_output {
-                                if e.output_id.as_deref() != Some(o.as_str()) { continue; }
+                            if !log_broadcast_matches_stream_filters(
+                                &e,
+                                filter_target.as_deref(),
+                                filter_scope.as_deref(),
+                                filter_pipeline.as_deref(),
+                                filter_output.as_deref(),
+                                filter_event_class.as_deref(),
+                                filter_prefix.as_deref(),
+                            ) {
+                                continue;
                             }
                             let data = serde_json::to_string(&e).unwrap_or_default();
                             let frame = format!("id: {}\nevent: log\ndata: {}\n\n", e.id, data);
@@ -3054,14 +3155,40 @@ async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
     .await
 }
 
+async fn build_health_summary_snapshot(state: &AppState) -> serde_json::Value {
+    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
+        Err(_) => vec![],
+    };
+    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+    crate::api_runtime_views::health_summary_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        state.ingest_disconnect_grace_ms,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct EngineHealthQuery {
+    view: Option<String>,
+}
+
 async fn v1_engine_health_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<EngineHealthQuery>,
 ) -> impl IntoResponse {
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    Json(build_health_snapshot(&state).await).into_response()
+    let response = if query.view.as_deref() == Some("summary") {
+        build_health_summary_snapshot(&state).await
+    } else {
+        build_health_snapshot(&state).await
+    };
+    Json(response).into_response()
 }
 
 fn system_status(sys: &System) -> serde_json::Value {
@@ -3853,9 +3980,15 @@ fn engine_metrics(sys: &System, core_count: usize) -> serde_json::Value {
     })
 }
 
+#[derive(Deserialize)]
+struct MetricsSystemQuery {
+    view: Option<String>,
+}
+
 async fn metrics_system_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<MetricsSystemQuery>,
 ) -> impl IntoResponse {
     if let Some(token) = get_session_token_from_headers(&headers) {
         if !state.is_authenticated(&token).await {
@@ -4019,42 +4152,63 @@ async fn metrics_system_handler(
     let ul_kbps = (ul_bytes_sec * 8) as f64 / 1000.0;
 
     let now = chrono::Utc::now().to_rfc3339();
-    Json(serde_json::json!({
-        "generatedAt": now,
-        "cpu": {
-            "usagePercent": cpu_pct,
-            "cores": core_count,
-            "load1": load_avg.one
-        },
-        "memory": {
-            "totalBytes": total_mem,
-            "usedBytes": used_mem,
-            "freeBytes": free_mem,
-            "usedPercent": mem_pct
-        },
-        "engine": engine,
-        "disk": {
-            "totalBytes": total_disk,
-            "usedBytes": used_disk,
-            "freeBytes": free_disk,
-            "usedPercent": disk_pct,
-            "scope": "systemRoot",
-            "mountPoint": disk_mount,
-            "root": system_root.display().to_string()
-        },
-        "mediaDisk": media_disk,
-        "network": {
-            "scope": "external",
-            "downloadBytesPerSec": dl_bytes_sec,
-            "uploadBytesPerSec": ul_bytes_sec,
-            "downloadKbps": dl_kbps,
-            "uploadKbps": ul_kbps,
-            "interfaces": external_interfaces,
-            "ignoredInterfaces": ignored_interfaces,
-            "sampleMs": 250
-        }
-    }))
-    .into_response()
+    let response = if query.view.as_deref() == Some("summary") {
+        serde_json::json!({
+            "generatedAt": now,
+            "cpu": {
+                "usagePercent": cpu_pct,
+            },
+            "memory": {
+                "usedPercent": mem_pct
+            },
+            "engine": engine,
+            "disk": {
+                "usedPercent": disk_pct,
+            },
+            "network": {
+                "downloadKbps": dl_kbps,
+                "uploadKbps": ul_kbps,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "generatedAt": now,
+            "cpu": {
+                "usagePercent": cpu_pct,
+                "cores": core_count,
+                "load1": load_avg.one
+            },
+            "memory": {
+                "totalBytes": total_mem,
+                "usedBytes": used_mem,
+                "freeBytes": free_mem,
+                "usedPercent": mem_pct
+            },
+            "engine": engine,
+            "disk": {
+                "totalBytes": total_disk,
+                "usedBytes": used_disk,
+                "freeBytes": free_disk,
+                "usedPercent": disk_pct,
+                "scope": "systemRoot",
+                "mountPoint": disk_mount,
+                "root": system_root.display().to_string()
+            },
+            "mediaDisk": media_disk,
+            "network": {
+                "scope": "external",
+                "downloadBytesPerSec": dl_bytes_sec,
+                "uploadBytesPerSec": ul_bytes_sec,
+                "downloadKbps": dl_kbps,
+                "uploadKbps": ul_kbps,
+                "interfaces": external_interfaces,
+                "ignoredInterfaces": ignored_interfaces,
+                "sampleMs": 250
+            }
+        })
+    };
+
+    Json(response).into_response()
 }
 
 /// Server-Sent Events endpoint for per-pipeline diagnostics.
@@ -6864,6 +7018,64 @@ mod tests {
         assert!(meta.live_now);
         assert!(!meta.upcoming);
         assert_eq!(meta.title.as_deref(), Some("Sample Live"));
+    }
+
+    #[test]
+    fn log_broadcast_matches_stream_filters_honors_scope_event_class_and_prefix() {
+        let restream_entry = crate::logging::LogBroadcast {
+            id: 1,
+            ts: "2026-06-30T00:00:00Z".into(),
+            level: "INFO".into(),
+            target: "restream::server".into(),
+            message: "stderr publisher disconnected".into(),
+            fields: None,
+            pipeline_id: None,
+            output_id: None,
+            event_type: Some("restream.shutdown.started".into()),
+            event_class: Some("lifecycle".into()),
+        };
+        let output_entry = crate::logging::LogBroadcast {
+            pipeline_id: Some("pipe-1".into()),
+            output_id: Some("out-1".into()),
+            ..restream_entry.clone()
+        };
+
+        assert!(log_broadcast_matches_stream_filters(
+            &restream_entry,
+            Some("restream::"),
+            Some("restream"),
+            None,
+            None,
+            Some("lifecycle"),
+            Some("stderr,exit"),
+        ));
+        assert!(!log_broadcast_matches_stream_filters(
+            &output_entry,
+            Some("restream::"),
+            Some("restream"),
+            None,
+            None,
+            Some("lifecycle"),
+            Some("stderr,exit"),
+        ));
+        assert!(!log_broadcast_matches_stream_filters(
+            &restream_entry,
+            Some("restream::"),
+            Some("restream"),
+            None,
+            None,
+            Some("lifecycle"),
+            Some("control"),
+        ));
+        assert!(log_broadcast_matches_stream_filters(
+            &output_entry,
+            Some("restream::"),
+            Some("output"),
+            Some("pipe-1"),
+            Some("out-1"),
+            Some("lifecycle"),
+            Some("stderr"),
+        ));
     }
 
     #[test]

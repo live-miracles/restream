@@ -1,4 +1,8 @@
-import { getOutputHistory, getPipelineHistory } from "../core/api.js";
+import {
+  buildLogsStreamUrl,
+  getOutputHistory,
+  getPipelineHistory,
+} from "../core/api.js";
 import {
   historyConstants,
   outputHistoryState,
@@ -21,6 +25,41 @@ const {
   OUTPUT_HISTORY_RAW_LIMIT,
   OUTPUT_HISTORY_CONTEXT_LIMIT,
 } = historyConstants;
+const OUTPUT_HISTORY_TIMELINE_LIMIT = 200;
+const PIPELINE_HISTORY_LIMIT = 200;
+
+let outputHistoryStream: EventSource | null = null;
+let pipelineHistoryStream: EventSource | null = null;
+
+function historyLogKey(log: AppLogRow | null | undefined): string {
+  const id = Number(log?.id);
+  if (Number.isFinite(id) && id > 0) return `id:${id}`;
+  return `msg:${String(log?.ts || "")}:${String(log?.target || "")}:${String(log?.message || "")}`;
+}
+
+function mergeHistoryLogs(
+  existing: AppLogRow[],
+  incoming: AppLogRow[],
+  limit: number,
+): AppLogRow[] {
+  const merged = new Map<string, AppLogRow>();
+  for (const log of Array.isArray(existing) ? existing : []) {
+    merged.set(historyLogKey(log), log);
+  }
+  for (const log of Array.isArray(incoming) ? incoming : []) {
+    merged.set(historyLogKey(log), log);
+  }
+  return [...merged.values()]
+    .sort((a, b) => Date.parse(a?.ts || "") - Date.parse(b?.ts || ""))
+    .slice(-limit);
+}
+
+function latestHistoryLogId(logs: AppLogRow[]): number | null {
+  const ids = (Array.isArray(logs) ? logs : [])
+    .map((log) => Number(log?.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  return ids.length > 0 ? Math.max(...ids) : null;
+}
 
 async function ensureOutputHistoryContext(log: AppLogRow): Promise<void> {
   const contextKey = getOutputHistoryContextKey(log);
@@ -125,7 +164,11 @@ export function setOutputHistoryMode(mode: string): void {
   const newMode = mode === "raw" ? "raw" : ("timeline" as const);
   if (outputHistoryState.mode === newMode) return;
   outputHistoryState.mode = newMode;
-  void pollHistoryOnce(true);
+  void pollHistoryOnce(true).finally(() => {
+    if (outputHistoryState.playing) {
+      syncOutputHistoryLiveTransport(false);
+    }
+  });
 }
 
 type PollerState = {
@@ -167,6 +210,13 @@ function stopPoller(s: PollerState): void {
   s.playing = false;
 }
 
+function stopPollerKeepPlaying(s: PollerState): void {
+  if (s.pollTimer) clearTimeout(s.pollTimer);
+  s.pollTimer = null;
+  s.pollEveryMs = null;
+  s.isPolling = false;
+}
+
 function updatePlayPauseBtn(id: string, playing: boolean): void {
   const btn = document.getElementById(id);
   if (!btn) return;
@@ -198,21 +248,209 @@ async function pollHistoryOnce(scrollToTop = false): Promise<void> {
   renderOutputHistory(scrollToTop);
 }
 
+function closeOutputHistoryStream(): void {
+  if (outputHistoryStream) {
+    outputHistoryStream.close();
+    outputHistoryStream = null;
+  }
+}
+
+function closePipelineHistoryStream(): void {
+  if (pipelineHistoryStream) {
+    pipelineHistoryStream.close();
+    pipelineHistoryStream = null;
+  }
+}
+
+function currentHistoryPollIntervalMs(): number {
+  return document.hidden
+    ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
+    : OUTPUT_HISTORY_POLL_INTERVAL_MS;
+}
+
+function startOutputHistoryPollFallback(refreshNow = false): void {
+  if (!outputHistoryState.playing) return;
+  if (refreshNow) void pollHistoryOnce();
+  startPoller(
+    outputHistoryState,
+    currentHistoryPollIntervalMs(),
+    pollHistoryOnce,
+  );
+}
+
+function startPipelineHistoryPollFallback(refreshNow = false): void {
+  if (!pipelineHistoryState.playing) return;
+  if (refreshNow) void pollPipelineHistoryOnce();
+  startPoller(
+    pipelineHistoryState,
+    currentHistoryPollIntervalMs(),
+    pollPipelineHistoryOnce,
+  );
+}
+
+function outputHistoryStreamUrl(): string | null {
+  const { pipelineId, outputId, mode, lifecycleLogs, rawLogs } =
+    outputHistoryState;
+  if (!pipelineId || !outputId) return null;
+  return mode === "timeline"
+    ? buildLogsStreamUrl({
+        pipelineId,
+        outputId,
+        eventClass: "lifecycle",
+        lastEventId: latestHistoryLogId(lifecycleLogs),
+      })
+    : buildLogsStreamUrl({
+        pipelineId,
+        outputId,
+        lastEventId: latestHistoryLogId(rawLogs),
+      });
+}
+
+function pipelineHistoryStreamUrl(): string | null {
+  const { pipelineId, logs } = pipelineHistoryState;
+  if (!pipelineId) return null;
+  return buildLogsStreamUrl({
+    scope: "pipeline",
+    pipelineId,
+    lastEventId: latestHistoryLogId(logs),
+  });
+}
+
+function fallbackOutputHistoryStreamIfClosed(source: EventSource): void {
+  const closedState =
+    typeof EventSource === "function" &&
+    typeof (EventSource as typeof EventSource & { CLOSED?: number }).CLOSED ===
+      "number"
+      ? (EventSource as typeof EventSource & { CLOSED: number }).CLOSED
+      : 2;
+  const readyState = (
+    source as EventSource & {
+      readyState?: number;
+    }
+  ).readyState;
+  if (readyState !== undefined && readyState !== closedState) return;
+  if (outputHistoryStream !== source || !outputHistoryState.playing) return;
+  closeOutputHistoryStream();
+  startOutputHistoryPollFallback(true);
+}
+
+function fallbackPipelineHistoryStreamIfClosed(source: EventSource): void {
+  const closedState =
+    typeof EventSource === "function" &&
+    typeof (EventSource as typeof EventSource & { CLOSED?: number }).CLOSED ===
+      "number"
+      ? (EventSource as typeof EventSource & { CLOSED: number }).CLOSED
+      : 2;
+  const readyState = (
+    source as EventSource & {
+      readyState?: number;
+    }
+  ).readyState;
+  if (readyState !== undefined && readyState !== closedState) return;
+  if (pipelineHistoryStream !== source || !pipelineHistoryState.playing) return;
+  closePipelineHistoryStream();
+  startPipelineHistoryPollFallback(true);
+}
+
+function openOutputHistoryStream(): boolean {
+  if (typeof EventSource !== "function") return false;
+  const url = outputHistoryStreamUrl();
+  if (!url) return false;
+
+  try {
+    const stream = new EventSource(url);
+    outputHistoryStream = stream;
+    stream.addEventListener("log", (event: Event) => {
+      if (outputHistoryStream !== stream) return;
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+        if (outputHistoryState.mode === "timeline") {
+          outputHistoryState.lifecycleLogs = mergeHistoryLogs(
+            outputHistoryState.lifecycleLogs,
+            [data],
+            OUTPUT_HISTORY_TIMELINE_LIMIT,
+          );
+        } else {
+          outputHistoryState.rawLogs = mergeHistoryLogs(
+            outputHistoryState.rawLogs,
+            [data],
+            OUTPUT_HISTORY_RAW_LIMIT,
+          );
+        }
+        renderOutputHistory(false);
+      } catch {
+        // Ignore malformed frames and wait for browser reconnect/backfill.
+      }
+    });
+    stream.onerror = () => {
+      fallbackOutputHistoryStreamIfClosed(stream);
+    };
+    return true;
+  } catch {
+    closeOutputHistoryStream();
+    return false;
+  }
+}
+
+function openPipelineHistoryStream(): boolean {
+  if (typeof EventSource !== "function") return false;
+  const url = pipelineHistoryStreamUrl();
+  if (!url) return false;
+
+  try {
+    const stream = new EventSource(url);
+    pipelineHistoryStream = stream;
+    stream.addEventListener("log", (event: Event) => {
+      if (pipelineHistoryStream !== stream) return;
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+        pipelineHistoryState.logs = mergeHistoryLogs(
+          pipelineHistoryState.logs,
+          [data],
+          PIPELINE_HISTORY_LIMIT,
+        );
+        renderPipelineHistory(false);
+      } catch {
+        // Ignore malformed frames and wait for browser reconnect/backfill.
+      }
+    });
+    stream.onerror = () => {
+      fallbackPipelineHistoryStreamIfClosed(stream);
+    };
+    return true;
+  } catch {
+    closePipelineHistoryStream();
+    return false;
+  }
+}
+
+function syncOutputHistoryLiveTransport(refreshFallback = false): void {
+  stopPollerKeepPlaying(outputHistoryState);
+  closeOutputHistoryStream();
+  if (!outputHistoryState.playing) return;
+  if (!openOutputHistoryStream()) {
+    startOutputHistoryPollFallback(refreshFallback);
+  }
+}
+
+function syncPipelineHistoryLiveTransport(refreshFallback = false): void {
+  stopPollerKeepPlaying(pipelineHistoryState);
+  closePipelineHistoryStream();
+  if (!pipelineHistoryState.playing) return;
+  if (!openPipelineHistoryStream()) {
+    startPipelineHistoryPollFallback(refreshFallback);
+  }
+}
+
 export function toggleHistoryPlayPause(): void {
   if (outputHistoryState.playing) {
     stopPoller(outputHistoryState);
+    closeOutputHistoryStream();
     updatePlayPauseBtn("output-history-playpause", false);
   } else {
     outputHistoryState.playing = true;
     updatePlayPauseBtn("output-history-playpause", true);
-    void pollHistoryOnce();
-    startPoller(
-      outputHistoryState,
-      document.hidden
-        ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
-        : OUTPUT_HISTORY_POLL_INTERVAL_MS,
-      pollHistoryOnce,
-    );
+    syncOutputHistoryLiveTransport(true);
   }
 }
 
@@ -230,6 +468,7 @@ export async function openOutputHistoryModal(
   if (!modal || !title || !loading) return;
 
   stopPoller(outputHistoryState);
+  closeOutputHistoryStream();
   updatePlayPauseBtn("output-history-playpause", false);
 
   outputHistoryState.pipelineId = pipeId;
@@ -264,6 +503,7 @@ export async function openOutputHistoryModal(
     "close",
     () => {
       stopPoller(outputHistoryState);
+      closeOutputHistoryStream();
       updatePlayPauseBtn("output-history-playpause", false);
     },
     { once: true },
@@ -294,18 +534,12 @@ async function pollPipelineHistoryOnce(): Promise<void> {
 export function togglePipelineHistoryPlayPause(): void {
   if (pipelineHistoryState.playing) {
     stopPoller(pipelineHistoryState);
+    closePipelineHistoryStream();
     updatePlayPauseBtn("pipeline-history-playpause", false);
   } else {
     pipelineHistoryState.playing = true;
     updatePlayPauseBtn("pipeline-history-playpause", true);
-    void pollPipelineHistoryOnce();
-    startPoller(
-      pipelineHistoryState,
-      document.hidden
-        ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
-        : OUTPUT_HISTORY_POLL_INTERVAL_MS,
-      pollPipelineHistoryOnce,
-    );
+    syncPipelineHistoryLiveTransport(true);
   }
 }
 
@@ -322,6 +556,7 @@ export async function openPipelineHistoryModal(
   if (!modal || !title || !loading) return;
 
   stopPoller(pipelineHistoryState);
+  closePipelineHistoryStream();
 
   pipelineHistoryState.pipelineId = pipeId;
   pipelineHistoryState.pipelineName = pipeName || pipeId;
@@ -348,6 +583,7 @@ export async function openPipelineHistoryModal(
     "close",
     () => {
       stopPoller(pipelineHistoryState);
+      closePipelineHistoryStream();
       updatePlayPauseBtn("pipeline-history-playpause", false);
     },
     { once: true },
@@ -355,17 +591,29 @@ export async function openPipelineHistoryModal(
 }
 
 export async function syncHistoryPollingWithVisibility(): Promise<void> {
-  const interval = document.hidden
-    ? OUTPUT_HISTORY_HIDDEN_POLL_INTERVAL_MS
-    : OUTPUT_HISTORY_POLL_INTERVAL_MS;
-
   if (outputHistoryState.playing) {
-    startPoller(outputHistoryState, interval, pollHistoryOnce);
-    if (!document.hidden) await pollHistoryOnce();
+    if (outputHistoryStream) {
+      if (!document.hidden) renderOutputHistory(false);
+    } else {
+      startPoller(
+        outputHistoryState,
+        currentHistoryPollIntervalMs(),
+        pollHistoryOnce,
+      );
+      if (!document.hidden) await pollHistoryOnce();
+    }
   }
   if (pipelineHistoryState.playing) {
-    startPoller(pipelineHistoryState, interval, pollPipelineHistoryOnce);
-    if (!document.hidden) await pollPipelineHistoryOnce();
+    if (pipelineHistoryStream) {
+      if (!document.hidden) renderPipelineHistory(false);
+    } else {
+      startPoller(
+        pipelineHistoryState,
+        currentHistoryPollIntervalMs(),
+        pollPipelineHistoryOnce,
+      );
+      if (!document.hidden) await pollPipelineHistoryOnce();
+    }
   }
 }
 

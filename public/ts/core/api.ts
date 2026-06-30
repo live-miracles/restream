@@ -109,16 +109,50 @@ async function apiRequest<T = unknown>(
   return data;
 }
 
-async function getConfig(): Promise<ConfigData | null> {
-  return apiRequest<ConfigData>("/api/v1/settings");
+interface GetConfigOptions {
+  jobs?: "all" | "latest";
+  view?: "full" | "dashboard";
 }
 
-async function getHealth(): Promise<HealthData | null> {
-  return apiRequest<HealthData>("/api/v1/engine/health");
+async function getConfig(
+  options: GetConfigOptions = {},
+): Promise<ConfigData | null> {
+  const query = new URLSearchParams();
+  if (options.jobs === "latest") query.set("jobs", "latest");
+  if (options.view === "dashboard") query.set("view", "dashboard");
+  const suffix = query.toString();
+  const url = suffix ? `/api/v1/settings?${suffix}` : "/api/v1/settings";
+  return apiRequest<ConfigData>(url);
 }
 
-async function getSystemMetrics(): Promise<SystemMetrics | null> {
-  return apiRequest<SystemMetrics>("/metrics/system");
+interface GetHealthOptions {
+  view?: "full" | "summary";
+}
+
+async function getHealth(
+  options: GetHealthOptions = {},
+): Promise<HealthData | null> {
+  const query = new URLSearchParams();
+  if (options.view === "summary") query.set("view", "summary");
+  const suffix = query.toString();
+  const url = suffix
+    ? `/api/v1/engine/health?${suffix}`
+    : "/api/v1/engine/health";
+  return apiRequest<HealthData>(url);
+}
+
+interface GetSystemMetricsOptions {
+  view?: "full" | "summary";
+}
+
+async function getSystemMetrics(
+  options: GetSystemMetricsOptions = {},
+): Promise<SystemMetrics | null> {
+  const query = new URLSearchParams();
+  if (options.view === "summary") query.set("view", "summary");
+  const suffix = query.toString();
+  const url = suffix ? `/metrics/system?${suffix}` : "/metrics/system";
+  return apiRequest<SystemMetrics>(url);
 }
 
 async function getStreamKeys(): Promise<StreamKey[] | null> {
@@ -144,6 +178,35 @@ function buildPipelineDiagnosticsUrl(
   params: URLSearchParams,
 ): string {
   return `/api/v1/pipelines/${encodeURIComponent(pipelineId)}/diagnostics?${params.toString()}`;
+}
+
+interface BuildLogsStreamUrlOptions {
+  level?: string | null;
+  target?: string | null;
+  scope?: string | null;
+  pipelineId?: string | null;
+  outputId?: string | null;
+  eventClass?: string | null;
+  lastEventId?: number | null;
+  prefixes?: string[] | null;
+}
+
+function buildLogsStreamUrl(options: BuildLogsStreamUrlOptions = {}): string {
+  const query = new URLSearchParams();
+  if (options.level) query.set("level", String(options.level));
+  if (options.target) query.set("target", String(options.target));
+  if (options.scope) query.set("scope", String(options.scope));
+  if (options.pipelineId) query.set("pipeline_id", String(options.pipelineId));
+  if (options.outputId) query.set("output_id", String(options.outputId));
+  if (options.eventClass) query.set("event_class", String(options.eventClass));
+  if (Number.isFinite(options.lastEventId as number)) {
+    query.set("last_event_id", String(options.lastEventId));
+  }
+  if (Array.isArray(options.prefixes) && options.prefixes.length > 0) {
+    query.set("prefix", options.prefixes.join(","));
+  }
+  const suffix = query.toString();
+  return suffix ? `/api/v1/logs/stream?${suffix}` : "/api/v1/logs/stream";
 }
 
 interface CreatePipelineArgs {
@@ -657,6 +720,7 @@ export {
   getEngineSbomEndpoint,
   getAudioCapsPayload,
   buildPipelineDiagnosticsUrl,
+  buildLogsStreamUrl,
   createPipeline,
   updatePipeline,
   deletePipeline,

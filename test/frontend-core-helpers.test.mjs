@@ -339,6 +339,7 @@ test("pipeline parsing maps input, output, retry, and throughput fields", async 
           "out-1": {
             status: "retrying",
             retrying: true,
+            uptimeSecs: 12.5,
             bytesSent: 10_000,
             bytesDelivered: 10_000,
             lastError: "connection reset",
@@ -367,6 +368,7 @@ test("pipeline parsing maps input, output, retry, and throughput fields", async 
           "out-1": {
             ...baseHealth.pipelines["pipe-1"].outputs["out-1"],
             status: "running",
+            uptimeSecs: 9.25,
             bytesSent: 30_000,
             bytesDelivered: 30_000,
           },
@@ -382,6 +384,8 @@ test("pipeline parsing maps input, output, retry, and throughput fields", async 
   assert.equal(first[0].outs[0].retrying, true);
   assert.equal(first[0].stats.unexpectedReadersCount, 1);
   assert.equal(first[0].outs[0].job.startedAt, "2026-06-30T00:00:20Z");
+  assert.equal(first[0].outs[0].time, null);
+  assert.equal(second[0].outs[0].time, 9_250);
   assert.equal(second[0].outs[0].bitrateKbps !== null, true);
 });
 

@@ -44,6 +44,12 @@ The canonical authenticated settings surface is `/api/v1/settings`.
 ### `GET /api/v1/settings`
 
 Returns SQLite-backed settings plus configured pipelines, outputs, and jobs.
+Query params:
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `jobs` | `all` | `latest` returns only the newest job per `(pipelineId, outputId)` pair for consumers that need a slimmed job list. |
+| `view` | `full` | `dashboard` trims admin-only settings fields (`ingestSecurity`, `recordingSettings`, `srtIngest`) and omits job rows from the dashboard runtime fetch while keeping editor/runtime fields such as `ingestHost`, `transcodeProfiles`, pipelines, and outputs. Settings mode upgrades itself back to `full` on entry. |
 
 ```json
 {
@@ -238,6 +244,18 @@ header (or `?last_event_id=`) from the database, then streams new entries
 from the broadcast channel. A `": ping"` comment is sent every 20 seconds.
 Lagging receivers are closed; the browser reconnects automatically using
 `Last-Event-ID`.
+The dashboard overview activity rail uses an initial `GET /api/logs` snapshot
+plus this SSE endpoint filtered with `scope=restream` for live restream-wide
+activity updates.
+Runtime dashboard surfaces also subscribe to this SSE endpoint with
+`event_class=lifecycle` so overview, pipeline, control-room, and publisher
+health refresh immediately on process lifecycle transitions instead of waiting
+for the next periodic poll.
+The output-history and pipeline-history "Live" views use the same SSE endpoint
+with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
+resume cursors instead of periodic history re-polls.
+Status mode also layers the same `scope=restream` stream over its initial
+snapshot so restream process activity can update live without repeated log GETs.
 
 ## Output Status
 
@@ -590,6 +608,11 @@ rates, and an `engine` object for restream self metrics. `engine.cpuPercent`
 and `engine.totalMemoryBytes` include the restream process plus child FFmpeg
 processes launched by restream; `restream*` and `externalFfmpeg*` fields provide
 the breakdown. This is not Prometheus text format.
+Query params:
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `view` | `full` | `summary` trims steady-state dashboard polls down to aggregate percentages/rates plus engine totals. The first dashboard load still uses `full` so static disk/interface metadata can be cached client-side. |
 
 ### `GET /api/v1/engine`
 
@@ -736,6 +759,51 @@ plane.
 Authenticated engine health snapshot. Returns the same pipeline/ingest/output
 health model documented above on the v1 authenticated control-plane surface.
 
+Query params:
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `view` | `full` | `summary` trims steady-state overview/control polls down to per-pipeline status, bitrate, uptime, recording state, and reconnect/grace flags. Pipeline, inspect, and publisher-quality flows continue using `full`. |
+
+Summary response shape:
+
+```json
+{
+  "status": "ready",
+  "pipelines": {
+    "pipeline_id": {
+      "input": {
+        "status": "on",
+        "publishStartedAt": "2026-06-20T11:59:00Z",
+        "probeReady": true,
+        "probeStatus": "ready",
+        "probePendingMs": null,
+        "bytesReceived": 12000000,
+        "bytesSent": 24000000,
+        "readers": 2,
+        "bitrateKbps": 1600,
+        "publisher": {
+          "protocol": "srt",
+          "remoteAddr": "203.0.113.10:50000"
+        },
+        "disconnectGraceActive": false,
+        "disconnectGraceRemainingMs": null
+      },
+      "outputs": {
+        "output_id": {
+          "status": "running",
+          "uptimeSecs": 42.5,
+          "totalSize": 16000000,
+          "bitrateKbps": 1500,
+          "retrying": false
+        }
+      },
+      "recording": { "enabled": false, "active": false }
+    }
+  }
+}
+```
+
 ### `GET /api/v1/overview`
 
 Engine-wide operator summary: pipeline counts, alert rollup, SRT listener state.
@@ -808,6 +876,9 @@ Authenticated SSE diagnostics endpoint for the pipeline diagnostics stream.
 ### `GET /api/v1/settings`
 
 Authenticated settings/configuration read endpoint.
+Supports `?jobs=latest` for consumers that only need the newest job per output,
+and `?view=dashboard` for the slim dashboard config shape used by runtime
+overview/control flows.
 
 ### `PATCH /api/v1/settings`
 

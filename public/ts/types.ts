@@ -209,6 +209,7 @@ export interface OutputHealth {
   status?: string;
   rawStatus?: string;
   phase?: string;
+  uptimeSecs?: number | null;
   totalSize?: number | null;
   bitrateKbps?: number | null;
   lastProgressAt?: string | null;

@@ -105,6 +105,21 @@ pub(crate) fn job_response_json_list(jobs: &[Job]) -> Vec<serde_json::Value> {
     jobs.iter().map(job_response_json).collect()
 }
 
+pub(crate) fn latest_job_response_json_list(jobs: &[Job]) -> Vec<serde_json::Value> {
+    let mut latest_by_output: std::collections::HashSet<(&str, &str)> =
+        std::collections::HashSet::new();
+    let mut latest_jobs = Vec::new();
+
+    for job in jobs {
+        let key = (job.pipeline_id.as_str(), job.output_id.as_str());
+        if latest_by_output.insert(key) {
+            latest_jobs.push(job_response_json(job));
+        }
+    }
+
+    latest_jobs
+}
+
 pub(crate) fn egress_runtime_json(
     egress: &ActiveEgress,
     include_target_url: bool,
@@ -395,6 +410,49 @@ pub(crate) fn active_pipeline_input_json(
     })
 }
 
+pub(crate) fn active_pipeline_input_summary_json(
+    ingest: &ActiveIngest,
+    total_bytes_sent: u64,
+    readers_count: usize,
+) -> serde_json::Value {
+    let elapsed_secs = ingest.start_time.elapsed().as_secs_f64();
+    let bytes_received = ingest.bytes_received.load(Ordering::Relaxed);
+    let bitrate_kbps = if elapsed_secs > 1.0 {
+        Some((bytes_received as f64 * 8.0) / (elapsed_secs * 1000.0))
+    } else {
+        None
+    };
+    let publish_started_at = {
+        let ts = chrono::Utc::now() - chrono::Duration::seconds(elapsed_secs as i64);
+        ts.to_rfc3339()
+    };
+    let audio_tracks = ingest
+        .audio_tracks
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let probe_ready = ingest.video.is_some() || !audio_tracks.is_empty();
+    let probe_status = if probe_ready { "ready" } else { "pending" };
+    let probe_pending_ms = (!probe_ready).then_some((elapsed_secs * 1000.0).round() as u64);
+
+    serde_json::json!({
+        "status": "on",
+        "publishStartedAt": publish_started_at,
+        "probeReady": probe_ready,
+        "probeStatus": probe_status,
+        "probePendingMs": probe_pending_ms,
+        "bytesReceived": bytes_received,
+        "bytesSent": total_bytes_sent,
+        "readers": readers_count,
+        "bitrateKbps": bitrate_kbps,
+        "publisher": {
+            "protocol": ingest.protocol,
+            "remoteAddr": ingest.remote_addr,
+        },
+        "disconnectGraceActive": false,
+        "disconnectGraceRemainingMs": null,
+    })
+}
+
 pub(crate) fn inactive_pipeline_input_json(
     recent: Option<&RecentIngestOutcome>,
     total_bytes_sent: u64,
@@ -436,6 +494,35 @@ pub(crate) fn inactive_pipeline_input_json(
     })
 }
 
+pub(crate) fn inactive_pipeline_input_summary_json(
+    recent: Option<&RecentIngestOutcome>,
+    total_bytes_sent: u64,
+    readers_count: usize,
+    disconnect_grace_ms: u64,
+) -> serde_json::Value {
+    let last_disconnect_age_ms =
+        recent.map(|recent| MediaEngine::now_epoch_ms().saturating_sub(recent.disconnected_at_ms));
+    let disconnect_grace_remaining_ms = if disconnect_grace_ms == 0 {
+        None
+    } else {
+        last_disconnect_age_ms.and_then(|age_ms| disconnect_grace_ms.checked_sub(age_ms))
+    };
+
+    serde_json::json!({
+        "status": "off",
+        "probeReady": false,
+        "probeStatus": if recent.is_some_and(|recent| recent.had_error) { "failed" } else { "off" },
+        "probePendingMs": null,
+        "bytesReceived": 0,
+        "bytesSent": total_bytes_sent,
+        "readers": readers_count,
+        "bitrateKbps": serde_json::Value::Null,
+        "publisher": serde_json::Value::Null,
+        "disconnectGraceActive": disconnect_grace_remaining_ms.is_some(),
+        "disconnectGraceRemainingMs": disconnect_grace_remaining_ms,
+    })
+}
+
 pub(crate) fn hls_preview_json(
     active: bool,
     persistent_consumers: u64,
@@ -464,6 +551,19 @@ pub(crate) fn pipeline_health_json(
         "outputs": serde_json::Value::Object(outputs),
         "recording": { "enabled": recording_enabled, "active": recording_active },
         "hlsPreview": hls_preview,
+    })
+}
+
+pub(crate) fn pipeline_health_summary_json(
+    input: serde_json::Value,
+    outputs: serde_json::Map<String, serde_json::Value>,
+    recording_enabled: bool,
+    recording_active: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "input": input,
+        "outputs": serde_json::Value::Object(outputs),
+        "recording": { "enabled": recording_enabled, "active": recording_active },
     })
 }
 
@@ -844,6 +944,7 @@ mod tests {
     use crate::media::engine::RecentIngestOutcome;
     use crate::media::srt::serialize_pipeline_srt_ingest_policy;
     use crate::media::stage_metrics::StageMetrics;
+    use crate::types::Job;
 
     #[test]
     fn pipeline_response_helpers_preserve_pipeline_and_file_ingest_shape() {
@@ -1201,5 +1302,50 @@ mod tests {
         assert_eq!(details["fillPercent"], 25);
         assert_eq!(details["payloadStats"]["payloadBytes"], 512);
         assert_eq!(details["readers"][0]["name"], "preview");
+    }
+
+    #[test]
+    fn latest_job_response_json_list_keeps_only_newest_job_per_output() {
+        let jobs = vec![
+            Job {
+                id: "job-newest".to_string(),
+                pipeline_id: "pipe-1".to_string(),
+                output_id: "out-1".to_string(),
+                pid: Some(200),
+                status: "running".to_string(),
+                started_at: "2026-06-30T12:00:00Z".to_string(),
+                ended_at: None,
+                exit_code: None,
+                exit_signal: None,
+            },
+            Job {
+                id: "job-older".to_string(),
+                pipeline_id: "pipe-1".to_string(),
+                output_id: "out-1".to_string(),
+                pid: Some(100),
+                status: "stopped".to_string(),
+                started_at: "2026-06-30T11:00:00Z".to_string(),
+                ended_at: Some("2026-06-30T11:30:00Z".to_string()),
+                exit_code: Some(0),
+                exit_signal: None,
+            },
+            Job {
+                id: "job-other-output".to_string(),
+                pipeline_id: "pipe-1".to_string(),
+                output_id: "out-2".to_string(),
+                pid: Some(300),
+                status: "failed".to_string(),
+                started_at: "2026-06-30T10:00:00Z".to_string(),
+                ended_at: Some("2026-06-30T10:10:00Z".to_string()),
+                exit_code: Some(1),
+                exit_signal: None,
+            },
+        ];
+
+        let response = latest_job_response_json_list(&jobs);
+
+        assert_eq!(response.len(), 2);
+        assert_eq!(response[0]["id"], "job-newest");
+        assert_eq!(response[1]["id"], "job-other-output");
     }
 }

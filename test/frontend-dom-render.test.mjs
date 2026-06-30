@@ -123,7 +123,6 @@ function appendInspectDom(document) {
   appendRoot(document, "div", "inspect-graph-container");
   appendRoot(document, "div", "workspace-mode-summary");
 }
-
 async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -663,6 +662,192 @@ runCheck("renderDashboardModes skips overview work when pipeline mode is active"
   const overview = document.getElementById("overview-mode-content");
   assert.ok(overview instanceof FakeElement);
   assert.equal(overview.stats.innerHTMLWrites, 0);
+});
+
+runCheck("renderDashboardModes does not refetch media mode data on same-mode rerenders", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=media";
+  appendRoot(document, "div", "dashboard-grid");
+  appendRoot(document, "div", "overview-mode-panel");
+  appendRoot(document, "div", "inspect-mode-panel");
+  appendRoot(document, "div", "control-mode-panel");
+  appendRoot(document, "div", "media-mode-panel");
+  appendRoot(document, "div", "settings-mode-panel");
+  appendRoot(document, "div", "status-mode-panel");
+  appendRoot(document, "div", "media-mode-content");
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === "/api/v1/settings?jobs=latest") {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          pipelines: [],
+          outputs: [],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/api/v1/engine/health") {
+      return new Response(
+        JSON.stringify({ status: "ready", pipelines: {} }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/metrics/system") {
+      return new Response(
+        JSON.stringify({
+          generatedAt: "2026-06-30T00:00:00Z",
+          mediaDisk: {
+            usedBytes: 100,
+            totalBytes: 200,
+            usedPercent: 50,
+            mountPoint: "/media",
+            mediaRoot: "/srv/media",
+          },
+          network: { downloadKbps: 1, uploadKbps: 2, interfaces: [] },
+          disk: { usedPercent: 40 },
+          cpu: { usagePercent: 12 },
+          memory: { usedPercent: 20 },
+          engine: { cpuPercent: 3, totalMemoryBytes: 1234, cpuSampleReady: true },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/api/v1/media") {
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              name: "recording-1.ts",
+              size: 1024,
+              modifiedAt: "2026-06-30T00:00:00Z",
+              kind: "recording",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const modes = await loadCompiledFrontendModule("features/modes.js");
+
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+  await flushAsyncWork();
+
+  assert.equal(
+    requests.filter((href) => href === "/api/v1/settings?view=dashboard").length,
+    0,
+  );
+  assert.equal(
+    requests.filter((href) => href === "/api/v1/engine/health").length,
+    0,
+  );
+  assert.equal(requests.filter((href) => href === "/metrics/system").length, 1);
+  assert.equal(requests.filter((href) => href === "/api/v1/media").length, 1);
+
+  requests.length = 0;
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+
+  assert.deepEqual(
+    requests,
+    [],
+    "same-mode rerender should not refetch runtime or media inventory",
+  );
+});
+
+runCheck("renderDashboardModes upgrades dashboard config to full settings on settings mode entry", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=settings";
+  appendRoot(document, "div", "overview-mode-panel");
+  appendRoot(document, "div", "dashboard-grid");
+  appendRoot(document, "div", "inspect-mode-panel");
+  appendRoot(document, "div", "control-mode-panel");
+  appendRoot(document, "div", "media-mode-panel");
+  appendRoot(document, "div", "settings-mode-panel");
+  appendRoot(document, "div", "status-mode-panel");
+  appendRoot(document, "div", "settings-mode-content");
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === "/api/v1/settings") {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          ingestHost: "stream.example.com",
+          ingestSecurity: {
+            failureLimit: 10,
+            failureWindowMs: 60000,
+            banMs: 600000,
+            trackedIpLimit: 10000,
+          },
+          recordingSettings: {
+            retainSourceTs: true,
+          },
+          srtIngest: {
+            mode: "encrypted",
+            passphrase: "supersecret1",
+            pbkeylen: 24,
+          },
+          transcodeProfiles: {
+            custom: {
+              preset: "fast",
+              tune: "zerolatency",
+              crf: 23,
+              gop: 2,
+              bframes: 0,
+              bitrate: 2500,
+              maxBitrate: 3000,
+              width: 1280,
+              height: 720,
+            },
+          },
+          pipelines: [],
+          outputs: [],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+  const modes = await loadCompiledFrontendModule("features/modes.js");
+  state.config = {
+    serverName: "Restream",
+    ingestHost: "stream.example.com",
+    transcodeProfiles: {},
+    pipelines: [],
+    outputs: [],
+    jobs: [],
+  };
+
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, ["/api/v1/settings"]);
+  assert.equal(state.config.ingestSecurity?.failureLimit, 10);
+  assert.equal(state.config.recordingSettings?.retainSourceTs, true);
+  assert.equal(state.config.srtIngest?.pbkeylen, 24);
+  assert.equal(
+    state.config.transcodeProfiles?.custom?.preset,
+    "fast",
+  );
 });
 
 runCheck("initDashboardApp wires dashboard mode bootstrapping once", async () => {

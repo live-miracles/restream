@@ -1,4 +1,5 @@
 import {
+  getConfig,
   patchConfig,
   logout,
   changePassword,
@@ -12,9 +13,28 @@ import { withBasePath } from "../core/base-path.js";
 
 // ── Load ──────────────────────────────────────────────
 
+function needsFullSettingsConfig(): boolean {
+  return (
+    state.config?.ingestSecurity === undefined ||
+    state.config?.recordingSettings === undefined ||
+    state.config?.srtIngest === undefined
+  );
+}
+
+async function ensureFullSettingsConfig(): Promise<void> {
+  if (!needsFullSettingsConfig()) return;
+  const fullConfig = await getConfig();
+  if (!fullConfig) return;
+  state.config = {
+    ...state.config,
+    ...fullConfig,
+  };
+}
+
 export async function loadSettings({
   embedded = false,
 }: { embedded?: boolean } = {}): Promise<void> {
+  await ensureFullSettingsConfig();
   if (!embedded) applySettingsChrome();
   const nameInput = document.getElementById(
     "settings-server-name",

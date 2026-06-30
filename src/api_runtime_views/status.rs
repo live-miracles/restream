@@ -198,3 +198,113 @@ pub(crate) async fn health_snapshot(
         },
     })
 }
+
+pub(crate) async fn health_summary_snapshot(
+    engine: &MediaEngine,
+    pipeline_ids: &[String],
+    recording_enabled: &HashMap<String, bool>,
+    disconnect_grace_ms: u64,
+) -> serde_json::Value {
+    let ingests = engine.ingests.active.read().await;
+    let egresses = engine.egresses.active.read().await;
+    let rec_tokens = engine.recordings.cancel_tokens.read().await;
+    let recent_ingests = engine.ingests.recent.read().await;
+    let recent_egresses = engine.egresses.recent.read().await;
+    let retry_egresses = engine.egresses.retry.read().await;
+    let pipelines = engine.ingests.pipelines.read().await;
+
+    let mut pipelines_json = serde_json::Map::new();
+
+    for pipeline_id in pipeline_ids {
+        let ingest_opt = ingests.get(pipeline_id.as_str());
+        let reader_count = pipelines
+            .get(pipeline_id.as_str())
+            .map(|rb| rb.reader_snapshots().len())
+            .unwrap_or(0);
+
+        let mut total_bytes_sent = 0u64;
+        for (_, egress) in egresses.iter() {
+            if egress.pipeline_id == *pipeline_id {
+                total_bytes_sent += egress.bytes_sent.load(Ordering::Relaxed);
+            }
+        }
+
+        let input_json = if let Some(ingest) = ingest_opt {
+            api_view_models::active_pipeline_input_summary_json(
+                ingest,
+                total_bytes_sent,
+                reader_count,
+            )
+        } else {
+            let recent = recent_ingests.get(pipeline_id.as_str());
+            api_view_models::inactive_pipeline_input_summary_json(
+                recent,
+                total_bytes_sent,
+                reader_count,
+                disconnect_grace_ms,
+            )
+        };
+
+        let mut outputs_json = serde_json::Map::new();
+        for (output_id, egress) in egresses.iter() {
+            if egress.pipeline_id != *pipeline_id {
+                continue;
+            }
+
+            let bytes_sent = egress.bytes_sent.load(Ordering::Relaxed);
+            let bitrate_kbps = MediaEngine::sample_egress_bitrate_kbps(egress);
+            let has_ingest = ingests.contains_key(pipeline_id.as_str());
+            let status = MediaEngine::egress_effective_status(egress, has_ingest);
+            let retry_state = retry_egresses.get(output_id);
+
+            outputs_json.insert(
+                output_id.to_string(),
+                serde_json::json!({
+                    "status": if retry_state.is_some() { "retrying" } else { status },
+                    "uptimeSecs": egress.start_instant.elapsed().as_secs_f64(),
+                    "totalSize": bytes_sent,
+                    "bitrateKbps": bitrate_kbps,
+                    "retrying": retry_state.is_some(),
+                }),
+            );
+        }
+
+        for (output_id, outcome) in recent_egresses.iter() {
+            if outcome.pipeline_id != *pipeline_id || outputs_json.contains_key(output_id) {
+                continue;
+            }
+
+            let retry_state = retry_egresses.get(output_id);
+            outputs_json.insert(
+                output_id.to_string(),
+                serde_json::json!({
+                    "status": if retry_state.is_some() { "retrying" } else { outcome.status.clone() },
+                    "uptimeSecs": outcome.uptime_secs,
+                    "totalSize": outcome.bytes_sent,
+                    "bitrateKbps": serde_json::Value::Null,
+                    "retrying": retry_state.is_some(),
+                }),
+            );
+        }
+
+        let rec_enabled = recording_enabled.get(pipeline_id).copied().unwrap_or(false);
+        let rec_active = rec_tokens
+            .get(pipeline_id.as_str())
+            .is_some_and(|token| !token.is_cancelled());
+
+        pipelines_json.insert(
+            pipeline_id.clone(),
+            api_view_models::pipeline_health_summary_json(
+                input_json,
+                outputs_json,
+                rec_enabled,
+                rec_active,
+            ),
+        );
+    }
+
+    serde_json::json!({
+        "status": "ready",
+        "pipelines": serde_json::Value::Object(pipelines_json),
+    })
+}

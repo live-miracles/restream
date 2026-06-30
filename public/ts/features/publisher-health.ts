@@ -1,5 +1,3 @@
-import { getHealth } from "../core/api.js";
-import { parsePipelinesInfo } from "../core/pipeline.js";
 import { state } from "../core/state.js";
 import type { PipelineView } from "../types.js";
 import {
@@ -7,13 +5,12 @@ import {
   getPublisherQualityMetrics,
   normalizePublisherProtocolLabel,
 } from "./publisher-quality.js";
+import {
+  refreshDashboardRuntime,
+  syncDashboardRuntimeStream,
+} from "./dashboard.js";
 
 let publisherHealthModalPipeId: string | null = null;
-let modalRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let modalRefreshInFlight = false;
-
-/** Matches the backend HEALTH_SNAPSHOT_INTERVAL_MS (2 s). */
-const MODAL_REFRESH_INTERVAL_MS = 2000;
 
 function getModal(): HTMLDialogElement | null {
   return document.getElementById(
@@ -25,36 +22,6 @@ function getPipeline(): PipelineView | undefined {
   return (state.pipelines || []).find(
     (p) => p.id === publisherHealthModalPipeId,
   );
-}
-
-function startModalRefreshTimer(): void {
-  if (modalRefreshTimer) return;
-  modalRefreshTimer = setInterval(() => {
-    if (document.hidden) return;
-    if (modalRefreshInFlight) return;
-    modalRefreshInFlight = true;
-    getHealth()
-      .then((healthResult) => {
-        if (healthResult) {
-          state.health = healthResult;
-          state.pipelines = parsePipelinesInfo(state.config, state.health);
-        }
-      })
-      .catch(() => {
-        // Silently ignore — the dashboard's own poll will retry.
-      })
-      .finally(() => {
-        modalRefreshInFlight = false;
-        renderPublisherHealthModal();
-      });
-  }, MODAL_REFRESH_INTERVAL_MS);
-}
-
-function stopModalRefreshTimer(): void {
-  if (modalRefreshTimer) {
-    clearInterval(modalRefreshTimer);
-    modalRefreshTimer = null;
-  }
 }
 
 export function renderPublisherHealthModal(): void {
@@ -128,29 +95,17 @@ export function openPublisherHealthModal(pipeId: string): void {
   const modal = getModal();
   if (!modal) return;
 
-  // Stop any previous timer before (re-)opening.
-  stopModalRefreshTimer();
-
   if (!modal.open) {
     modal.showModal();
+    if (modal.dataset.runtimeSyncBound !== "1") {
+      modal.dataset.runtimeSyncBound = "1";
+      modal.addEventListener?.("close", () => {
+        syncDashboardRuntimeStream();
+      });
+    }
   }
 
+  syncDashboardRuntimeStream();
   renderPublisherHealthModal();
-  startModalRefreshTimer();
+  void refreshDashboardRuntime();
 }
-
-// When the modal is closed (via backdrop click, Close button, or Escape),
-// stop the dedicated refresh timer so we don't poll unnecessarily.
-function initModalCloseListener(): void {
-  const modal = getModal();
-  if (!modal) return;
-  modal.addEventListener("close", () => {
-    stopModalRefreshTimer();
-  });
-  // Also handle cancel (Escape key) for <dialog>.
-  modal.addEventListener("cancel", () => {
-    stopModalRefreshTimer();
-  });
-}
-
-initModalCloseListener();

@@ -23,8 +23,13 @@ export TMPDIR="$TMP_BASE"
 
 TEST_FILES=(
   test/frontend-api-contract.test.mjs
+  test/frontend-dashboard-contract.test.mjs
   test/frontend-core-helpers.test.mjs
+  test/frontend-history-stream.test.mjs
   test/frontend-history-helpers.test.mjs
+  test/frontend-overview-activity-stream.test.mjs
+  test/frontend-publisher-health-contract.test.mjs
+  test/frontend-status-stream.test.mjs
   test/history-nearby-render.test.mjs
   test/overview-activity-render.test.mjs
   test/frontend-chaos-scenarios.test.mjs
@@ -67,12 +72,13 @@ if [[ "${1:-}" == "--coverage" ]]; then
   for file in "${NODE_COVERAGE_EXCLUDES[@]}"; do
     COVERAGE_ARGS+=("--test-coverage-exclude=$file")
   done
-  node "${COVERAGE_ARGS[@]}" "${TEST_FILES[@]}"
+  node --experimental-default-type=module "${COVERAGE_ARGS[@]}" "${TEST_FILES[@]}"
   exit 0
 fi
 
 if [[ "${1:-}" == "--coverage-all" ]]; then
   node \
+    --experimental-default-type=module \
     --enable-source-maps \
     --experimental-test-coverage \
     --test \
@@ -81,4 +87,4 @@ if [[ "${1:-}" == "--coverage-all" ]]; then
   exit 0
 fi
 
-node --enable-source-maps --test "${TEST_FILES[@]}"
+node --experimental-default-type=module --enable-source-maps --test "${TEST_FILES[@]}"

@@ -51,6 +51,7 @@ pub struct LogBroadcast {
     pub pipeline_id: Option<String>,
     pub output_id: Option<String>,
     pub event_type: Option<String>,
+    pub event_class: Option<String>,
 }
 
 // ── LoggingHandles ────────────────────────────────────────────────────────────
@@ -312,6 +313,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
         let pipeline_id = fc.pipeline_id.take().or(span_ctx.pipeline_id);
         let output_id = fc.output_id.take().or(span_ctx.output_id);
         let event_type = fc.event_type.take();
+        let event_class = fc.event_class.take();
         let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let level = meta.level().to_string().to_uppercase();
 
@@ -325,6 +327,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
             pipeline_id,
             output_id,
             event_type,
+            event_class,
         };
 
         // send() fails only when all receivers have dropped — ignore the error.

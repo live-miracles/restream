@@ -231,6 +231,12 @@ function setHtmlIfChanged(id: string, html: string): boolean {
   return true;
 }
 
+export function refreshMediaLibraryMetricsOnly(): void {
+  if (!mediaShellMounted || !document.getElementById("media-library-root"))
+    return;
+  setHtmlIfChanged("media-disk-summary", mediaDiskSummaryHtml());
+}
+
 function attachMediaActions(container: HTMLElement): void {
   container
     .querySelectorAll<HTMLButtonElement>(".js-rename-media")

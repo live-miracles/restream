@@ -1,4 +1,4 @@
-import { getRestreamHistory } from "../core/api.js";
+import { buildLogsStreamUrl, getRestreamHistory } from "../core/api.js";
 import {
   escapeHtml,
   getUrlParam,
@@ -9,9 +9,12 @@ import { state } from "../core/state.js";
 import { openDiagnosticsModal } from "./diagnostics.js";
 import { renderControlRoom } from "./control-room.js";
 import { fetchProcessingGraph, renderGraphInto } from "./graph.js";
-import { renderMediaLibraryMode } from "./media-library.js";
+import {
+  refreshMediaLibraryMetricsOnly,
+  renderMediaLibraryMode,
+} from "./media-library.js";
 import { loadSettings, renderSettingsPanel } from "./settings.js";
-import { loadStatus } from "./status.js";
+import { loadStatus, setStatusStreamActive } from "./status.js";
 import {
   isOutputFlapping,
   isOutputIntentStopped,
@@ -24,6 +27,12 @@ import {
   buildRestreamActivityBursts,
   renderRestreamActivityCards,
 } from "./overview-activity.js";
+import {
+  refreshDashboard,
+  refreshDashboardRuntime,
+  requestDetailedMetricsRefresh,
+  syncDashboardRuntimeStream,
+} from "./dashboard.js";
 import type { AppLogRow, OutputView, PipelineView } from "../types.js";
 type DashboardMode =
   | "overview"
@@ -42,6 +51,12 @@ const validModes = new Set([
   "media",
   "settings",
   "status",
+]);
+const runtimeDashboardModes = new Set([
+  "overview",
+  "pipeline",
+  "inspect",
+  "control",
 ]);
 let currentMode: DashboardMode | null = null;
 let inspectPipelineId: string | null = null;
@@ -80,26 +95,104 @@ let lastOverviewMetricsSampleKey: string | null = null;
 let overviewActivityLogs: AppLogRow[] = [];
 let overviewActivityFetchedAt = 0;
 let overviewActivityInFlight: Promise<void> | null = null;
+let overviewActivityStream: EventSource | null = null;
+
+function overviewActivityLogKey(log: AppLogRow): string {
+  const id = Number(log?.id);
+  if (Number.isFinite(id) && id > 0) return `id:${id}`;
+  return `msg:${String(log?.ts || "")}:${String(log?.target || "")}:${String(log?.message || "")}`;
+}
+
+function setOverviewActivityLogs(logs: AppLogRow[]): void {
+  const deduped = new Map<string, AppLogRow>();
+  for (const log of Array.isArray(logs) ? logs : []) {
+    deduped.set(overviewActivityLogKey(log), log);
+  }
+  overviewActivityLogs = [...deduped.values()]
+    .sort((a, b) => Date.parse(b.ts || "") - Date.parse(a.ts || ""))
+    .slice(0, OVERVIEW_ACTIVITY_FETCH_LIMIT);
+  overviewActivityFetchedAt = Date.now();
+}
+
+function mergeOverviewActivityLogs(logs: AppLogRow[]): void {
+  if (!Array.isArray(logs) || logs.length === 0) return;
+  setOverviewActivityLogs([...logs, ...overviewActivityLogs]);
+}
+
+function latestOverviewActivityId(): number | null {
+  const ids = overviewActivityLogs
+    .map((log) => Number(log?.id))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return ids.length > 0 ? Math.max(...ids) : null;
+}
+
+function closeOverviewActivityStream(): void {
+  if (overviewActivityStream) {
+    overviewActivityStream.close();
+    overviewActivityStream = null;
+  }
+}
+
+function ensureOverviewActivityStream(): void {
+  if (typeof EventSource !== "function") return;
+  if (currentMode !== null && currentMode !== "overview") {
+    closeOverviewActivityStream();
+    return;
+  }
+  if (overviewActivityStream) return;
+
+  overviewActivityStream = new EventSource(
+    buildLogsStreamUrl({
+      scope: "restream",
+      lastEventId: latestOverviewActivityId(),
+    }),
+  );
+  overviewActivityStream.addEventListener("log", (event: Event) => {
+    try {
+      const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+      mergeOverviewActivityLogs([data]);
+      if (currentMode === "overview" || currentMode === null) renderOverview();
+    } catch {
+      // Ignore malformed frames and wait for the next reconnect/snapshot.
+    }
+  });
+  overviewActivityStream.onerror = () => {
+    closeOverviewActivityStream();
+    overviewActivityFetchedAt = 0;
+    if (currentMode === "overview" || currentMode === null) {
+      refreshOverviewActivityIfStale();
+    }
+  };
+}
 
 function refreshOverviewActivityIfStale(): void {
-  if (currentMode !== null && currentMode !== "overview") return;
-  if (overviewActivityInFlight) return;
-  if (Date.now() - overviewActivityFetchedAt < OVERVIEW_ACTIVITY_STALE_MS)
+  if (currentMode !== null && currentMode !== "overview") {
+    closeOverviewActivityStream();
     return;
+  }
+  const shouldFetchSnapshot =
+    overviewActivityLogs.length === 0 ||
+    (overviewActivityStream === null &&
+      Date.now() - overviewActivityFetchedAt >= OVERVIEW_ACTIVITY_STALE_MS);
+  if (!shouldFetchSnapshot) {
+    ensureOverviewActivityStream();
+    return;
+  }
+  if (overviewActivityInFlight) return;
 
   overviewActivityInFlight = (async () => {
     const res = await getRestreamHistory({
       limit: OVERVIEW_ACTIVITY_FETCH_LIMIT,
       order: "desc",
     });
-    overviewActivityFetchedAt = Date.now();
     if (res && Array.isArray(res.logs)) {
-      overviewActivityLogs = res.logs as AppLogRow[];
+      setOverviewActivityLogs(res.logs as AppLogRow[]);
     }
   })()
     .catch(() => {})
     .finally(() => {
       overviewActivityInFlight = null;
+      ensureOverviewActivityStream();
       if (currentMode === "overview" || currentMode === null) renderOverview();
     });
 }
@@ -991,7 +1084,13 @@ function refreshActiveMode(): void {
 }
 
 function applyMode(mode: DashboardMode): void {
+  const previousMode = currentMode;
   currentMode = mode;
+  if (mode !== "overview") {
+    closeOverviewActivityStream();
+  }
+  setStatusStreamActive(mode === "status");
+  syncDashboardRuntimeStream();
   const panels: Record<DashboardMode, HTMLElement | null> = {
     overview: document.getElementById("overview-mode-panel"),
     pipeline: document.getElementById("dashboard-grid"),
@@ -1033,8 +1132,24 @@ function applyMode(mode: DashboardMode): void {
                   : "Runtime status";
   }
   syncInspectGraphAutoRefresh();
+  if (
+    previousMode !== null &&
+    previousMode !== mode &&
+    !runtimeDashboardModes.has(previousMode) &&
+    runtimeDashboardModes.has(mode)
+  ) {
+    void refreshDashboard();
+  }
   if (mode === "control") renderControlRoom();
-  if (mode === "media") void renderMediaLibraryMode();
+  if (mode === "media") {
+    if (previousMode !== "media") {
+      requestDetailedMetricsRefresh();
+      void refreshDashboardRuntime();
+      void renderMediaLibraryMode();
+    } else {
+      refreshMediaLibraryMetricsOnly();
+    }
+  }
   if (mode === "settings") renderSettingsMode();
   if (mode === "status") renderStatusMode();
 }

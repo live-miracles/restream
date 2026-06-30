@@ -1,4 +1,5 @@
 import {
+  buildLogsStreamUrl,
   getEngineSbomEndpoint,
   getEngineStatus,
   getRestreamHistory,
@@ -88,6 +89,10 @@ interface StatusData {
 
 const STATUS_PROCESS_LOG_LIMIT = 80;
 const STATUS_ACTIVITY_LIMIT = 12;
+let statusDataSnapshot: StatusData | null = null;
+let statusProcessLogs: AppLogRow[] = [];
+let statusStream: EventSource | null = null;
+let statusStreamActive = false;
 
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "--";
@@ -346,6 +351,32 @@ function renderProcessLog(logs: AppLogRow[]): string {
     </section>`;
 }
 
+function statusLogKey(log: AppLogRow | null | undefined): string {
+  const id = Number(log?.id);
+  if (Number.isFinite(id) && id > 0) return `id:${id}`;
+  return `msg:${String(log?.ts || "")}:${String(log?.target || "")}:${String(log?.message || "")}`;
+}
+
+function mergeStatusProcessLogs(logs: AppLogRow[]): void {
+  const merged = new Map<string, AppLogRow>();
+  for (const log of Array.isArray(statusProcessLogs) ? statusProcessLogs : []) {
+    merged.set(statusLogKey(log), log);
+  }
+  for (const log of Array.isArray(logs) ? logs : []) {
+    merged.set(statusLogKey(log), log);
+  }
+  statusProcessLogs = [...merged.values()]
+    .sort((a, b) => Date.parse(b.ts || "") - Date.parse(a.ts || ""))
+    .slice(0, STATUS_PROCESS_LOG_LIMIT);
+}
+
+function latestStatusProcessLogId(): number | null {
+  const ids = statusProcessLogs
+    .map((log) => Number(log?.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  return ids.length > 0 ? Math.max(...ids) : null;
+}
+
 function timestampForFilename(): string {
   return new Date()
     .toISOString()
@@ -413,23 +444,19 @@ function bindActions(status: StatusData, sbomEndpoint: string): void {
     });
 }
 
-export async function loadStatus(): Promise<void> {
-  const container = document.getElementById("status-versions");
-  if (!container) return;
-
-  const [data, processHistory] = await Promise.all([
-    getEngineStatus<StatusData>(),
-    getRestreamHistory({ limit: STATUS_PROCESS_LOG_LIMIT, order: "desc" }),
-  ]);
-  if (!data) {
-    container.innerHTML =
-      '<p class="text-error text-sm">Failed to load status info.</p>';
-    return;
+function closeStatusStream(): void {
+  if (statusStream) {
+    statusStream.close();
+    statusStream = null;
   }
-  const processLogs = Array.isArray(processHistory?.logs)
-    ? (processHistory?.logs as AppLogRow[])
-    : [];
+}
 
+function renderStatusSnapshot(): void {
+  const container = document.getElementById("status-versions");
+  if (!container || !statusDataSnapshot) return;
+
+  const data = statusDataSnapshot;
+  const processLogs = statusProcessLogs;
   const ffmpeg = data.nativeLibraries?.ffmpeg;
   const srt = data.nativeLibraries?.srt;
   const mbedtls = data.nativeLibraries?.mbedtls;
@@ -511,4 +538,68 @@ export async function loadStatus(): Promise<void> {
         </div>`,
   ].join("");
   bindActions(data, sbomEndpoint);
+}
+
+function openStatusStream(): void {
+  if (!statusStreamActive || !statusDataSnapshot) return;
+  if (typeof EventSource !== "function") return;
+  if (statusStream) return;
+
+  try {
+    const stream = new EventSource(
+      buildLogsStreamUrl({
+        scope: "restream",
+        lastEventId: latestStatusProcessLogId(),
+      }),
+    );
+    statusStream = stream;
+    stream.addEventListener("log", (event: Event) => {
+      if (statusStream !== stream) return;
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+        mergeStatusProcessLogs([data]);
+        renderStatusSnapshot();
+      } catch {
+        // Ignore malformed frames and wait for reconnect/backfill.
+      }
+    });
+    stream.onerror = () => {
+      if (statusStream !== stream) return;
+      closeStatusStream();
+      if (statusStreamActive) openStatusStream();
+    };
+  } catch {
+    closeStatusStream();
+  }
+}
+
+export function setStatusStreamActive(active: boolean): void {
+  statusStreamActive = active;
+  if (!active) {
+    closeStatusStream();
+    return;
+  }
+  openStatusStream();
+}
+
+export async function loadStatus(): Promise<void> {
+  const container = document.getElementById("status-versions");
+  if (!container) return;
+
+  const [data, processHistory] = await Promise.all([
+    getEngineStatus<StatusData>(),
+    getRestreamHistory({ limit: STATUS_PROCESS_LOG_LIMIT, order: "desc" }),
+  ]);
+  if (!data) {
+    container.innerHTML =
+      '<p class="text-error text-sm">Failed to load status info.</p>';
+    return;
+  }
+  statusDataSnapshot = data;
+  statusProcessLogs = Array.isArray(processHistory?.logs)
+    ? (processHistory?.logs as AppLogRow[])
+    : [];
+  renderStatusSnapshot();
+  closeStatusStream();
+  openStatusStream();
 }

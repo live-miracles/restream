@@ -118,6 +118,10 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
   const api = await loadApiModule();
 
   await api.getConfig();
+  await api.getConfig({ view: "dashboard" });
+  await api.getConfig({ jobs: "latest" });
+  await api.getHealth({ view: "summary" });
+  await api.getSystemMetrics({ view: "summary" });
   await api.updatePipeline("pipe-1", { name: "Updated" });
   await api.updateOutput("pipe-1", "out-1", { name: "Output" });
   await api.getPipelineHistory("pipe-1", 25);
@@ -130,6 +134,10 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
     requests.map((request) => [request.method, request.url]),
     [
       ["GET", "/api/v1/settings"],
+      ["GET", "/api/v1/settings?view=dashboard"],
+      ["GET", "/api/v1/settings?jobs=latest"],
+      ["GET", "/api/v1/engine/health?view=summary"],
+      ["GET", "/metrics/system?view=summary"],
       ["PATCH", "/api/v1/pipelines/pipe-1"],
       ["PATCH", "/api/v1/pipelines/pipe-1/outputs/out-1"],
       ["GET", "/api/v1/logs?pipeline_id=pipe-1&limit=25"],
@@ -182,6 +190,16 @@ test("frontend API helpers preserve response fields and build diagnostics URLs c
   assert.equal(
     api.buildPipelineDiagnosticsUrl("pipe 1", params),
     "/api/v1/pipelines/pipe%201/diagnostics?probe=srt&since=now",
+  );
+  assert.equal(
+    api.buildLogsStreamUrl({
+      scope: "restream",
+      level: "warn",
+      eventClass: "lifecycle",
+      lastEventId: 12,
+      prefixes: ["stderr", "exit"],
+    }),
+    "/api/v1/logs/stream?level=warn&scope=restream&event_class=lifecycle&last_event_id=12&prefix=stderr%2Cexit",
   );
 });
 

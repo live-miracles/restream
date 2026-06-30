@@ -304,7 +304,17 @@ function parsePipelinesInfo(
       );
 
     let outTime: number | null = null;
-    if ((status === "on" || status === "running") && latestJob?.startedAt) {
+    const runtimeUptimeSecs = Number(outHealth?.uptimeSecs);
+    if (
+      (status === "on" || status === "running") &&
+      Number.isFinite(runtimeUptimeSecs) &&
+      runtimeUptimeSecs >= 0
+    ) {
+      outTime = Math.round(runtimeUptimeSecs * 1000);
+    } else if (
+      (status === "on" || status === "running") &&
+      latestJob?.startedAt
+    ) {
       outTime = Math.max(0, nowMs - new Date(latestJob.startedAt).getTime());
     }
 

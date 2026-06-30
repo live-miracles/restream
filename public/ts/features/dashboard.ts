@@ -1,4 +1,9 @@
-import { getConfig, getHealth, getSystemMetrics } from "../core/api.js";
+import {
+  buildLogsStreamUrl,
+  getConfig,
+  getHealth,
+  getSystemMetrics,
+} from "../core/api.js";
 import { loadAudioCaps } from "../core/audio-caps.js";
 import { parsePipelinesInfo } from "../core/pipeline.js";
 import {
@@ -9,7 +14,7 @@ import {
 import { renderPipelines, renderMetrics } from "./render.js";
 import { syncHistoryPollingWithVisibility } from "../history/controller.js";
 import { state } from "../core/state.js";
-import type { PipelineView } from "../types.js";
+import type { AppLogRow, PipelineView } from "../types.js";
 
 interface DashboardHooks {
   afterRender: (() => void) | null;
@@ -21,17 +26,45 @@ const dashboardHooks: DashboardHooks = {
 
 let dashboardRefreshInFlight: Promise<void> | null = null;
 let dashboardRefreshQueued = false;
+let fetchDetailedMetricsNextTick = true;
+let dashboardRuntimeStream: EventSource | null = null;
+let dashboardRuntimeStreamReconnectTimer: ReturnType<typeof setTimeout> | null =
+  null;
+let dashboardRuntimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let dashboardRuntimeLastEventId: number | null = null;
+const DASHBOARD_RUNTIME_MODES = new Set([
+  "overview",
+  "pipeline",
+  "inspect",
+  "control",
+]);
+const DASHBOARD_CONFIG_MODES = new Set([
+  "overview",
+  "pipeline",
+  "inspect",
+  "control",
+]);
+const DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS = 200;
+const DASHBOARD_RUNTIME_STREAM_RECONNECT_MS = 1000;
 
 export function setDashboardHooks(hooks: Partial<DashboardHooks>): void {
   Object.assign(dashboardHooks, hooks || {});
 }
 
 export async function refreshDashboard(): Promise<void> {
-  fetchConfigNextTick = true;
-  await requestDashboardRefresh();
+  await requestDashboardRefresh(true);
 }
 
-async function requestDashboardRefresh(): Promise<void> {
+export async function refreshDashboardRuntime(): Promise<void> {
+  await requestDashboardRefresh(false);
+}
+
+async function requestDashboardRefresh(
+  forceConfigRefresh = false,
+): Promise<void> {
+  if (forceConfigRefresh) {
+    fetchConfigNextTick = true;
+  }
   if (dashboardRefreshInFlight) {
     dashboardRefreshQueued = true;
     return dashboardRefreshInFlight;
@@ -94,23 +127,177 @@ function reconcileSelectedPipeline(
 
 let fetchConfigNextTick = true;
 
+function mergeMetricsSection<T extends Record<string, unknown>>(
+  previous: T | null | undefined,
+  next: T | null | undefined,
+): T | undefined {
+  if (!previous && !next) return undefined;
+  return { ...(previous || {}), ...(next || {}) } as T;
+}
+
+function mergeSystemMetricsSnapshot(
+  previous: typeof state.metrics,
+  next: typeof state.metrics,
+): typeof state.metrics {
+  return {
+    ...previous,
+    ...next,
+    cpu: mergeMetricsSection(previous.cpu, next.cpu),
+    memory: mergeMetricsSection(previous.memory, next.memory),
+    engine: mergeMetricsSection(previous.engine, next.engine),
+    disk: mergeMetricsSection(previous.disk, next.disk),
+    mediaDisk: next.mediaDisk ?? previous.mediaDisk,
+    network: mergeMetricsSection(previous.network, next.network),
+  };
+}
+
+function currentDashboardMode(): string {
+  const mode = getUrlParam("mode");
+  if (mode === "admin") return "settings";
+  if (mode) return mode;
+  return getUrlParam("p") ? "pipeline" : "overview";
+}
+
+function publisherHealthModalOpen(): boolean {
+  const modal = document.getElementById(
+    "publisher-health-modal",
+  ) as HTMLDialogElement | null;
+  return Boolean(modal?.open);
+}
+
+function dashboardRuntimeStreamingEnabled(): boolean {
+  if (document.hidden) return false;
+  return shouldFetchRuntimeHealth();
+}
+
+function shouldFetchRuntimeHealth(): boolean {
+  if (publisherHealthModalOpen()) return true;
+  return DASHBOARD_RUNTIME_MODES.has(currentDashboardMode());
+}
+
+function shouldFetchDetailedRuntimeHealth(): boolean {
+  if (publisherHealthModalOpen()) return true;
+  const mode = currentDashboardMode();
+  return mode === "pipeline" || mode === "inspect";
+}
+
+function shouldFetchDashboardConfig(): boolean {
+  return DASHBOARD_CONFIG_MODES.has(currentDashboardMode());
+}
+
+function closeDashboardRuntimeStream(): void {
+  if (dashboardRuntimeStreamReconnectTimer) {
+    clearTimeout(dashboardRuntimeStreamReconnectTimer);
+    dashboardRuntimeStreamReconnectTimer = null;
+  }
+  if (dashboardRuntimeStream) {
+    dashboardRuntimeStream.close();
+    dashboardRuntimeStream = null;
+  }
+}
+
+function rememberDashboardRuntimeEventId(log: AppLogRow): void {
+  const id = Number(log?.id);
+  if (Number.isFinite(id) && id > 0) {
+    dashboardRuntimeLastEventId = id;
+  }
+}
+
+function lifecycleEventShouldRefresh(log: AppLogRow): boolean {
+  const eventType = String(log?.eventType || "")
+    .trim()
+    .toLowerCase();
+  return !eventType.startsWith("restream.shutdown.");
+}
+
+function scheduleDashboardRuntimeRefresh(): void {
+  if (dashboardRuntimeRefreshTimer) return;
+  dashboardRuntimeRefreshTimer = setTimeout(() => {
+    dashboardRuntimeRefreshTimer = null;
+    if (!dashboardRuntimeStreamingEnabled()) return;
+    void requestDashboardRefresh(false);
+  }, DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS);
+}
+
+function openDashboardRuntimeStream(): void {
+  if (!dashboardRuntimeStreamingEnabled()) return;
+  if (typeof EventSource !== "function") return;
+  if (dashboardRuntimeStream) return;
+
+  try {
+    const stream = new EventSource(
+      buildLogsStreamUrl({
+        eventClass: "lifecycle",
+        lastEventId: dashboardRuntimeLastEventId,
+      }),
+    );
+    dashboardRuntimeStream = stream;
+    stream.addEventListener("log", (event: Event) => {
+      if (dashboardRuntimeStream !== stream) return;
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+        rememberDashboardRuntimeEventId(data);
+        if (lifecycleEventShouldRefresh(data)) {
+          scheduleDashboardRuntimeRefresh();
+        }
+      } catch {
+        // Ignore malformed frames and wait for the next lifecycle event.
+      }
+    });
+    stream.onerror = () => {
+      if (dashboardRuntimeStream !== stream) return;
+      closeDashboardRuntimeStream();
+      if (!dashboardRuntimeStreamingEnabled()) return;
+      dashboardRuntimeStreamReconnectTimer = setTimeout(() => {
+        dashboardRuntimeStreamReconnectTimer = null;
+        openDashboardRuntimeStream();
+      }, DASHBOARD_RUNTIME_STREAM_RECONNECT_MS);
+    };
+  } catch {
+    closeDashboardRuntimeStream();
+  }
+}
+
+export function syncDashboardRuntimeStream(): void {
+  if (!dashboardRuntimeStreamingEnabled()) {
+    closeDashboardRuntimeStream();
+    return;
+  }
+  openDashboardRuntimeStream();
+}
+
 async function fetchAndRerender(): Promise<void> {
   const fetchConf = fetchConfigNextTick;
-  fetchConfigNextTick = !fetchConfigNextTick;
+  const fetchDetailedMetrics = fetchDetailedMetricsNextTick;
+  const fetchHealth = shouldFetchRuntimeHealth();
+  const fetchDetailedHealth = shouldFetchDetailedRuntimeHealth();
+  const fetchConfig = shouldFetchDashboardConfig();
+  fetchConfigNextTick = false;
+  fetchDetailedMetricsNextTick = false;
 
   const [configResult, healthResult, metricsResult] = await Promise.all([
-    fetchConf ? getConfig() : Promise.resolve(null),
-    getHealth(),
-    getSystemMetrics(),
+    fetchConf && fetchConfig
+      ? getConfig({ view: "dashboard" })
+      : Promise.resolve(null),
+    fetchHealth
+      ? getHealth({ view: fetchDetailedHealth ? "full" : "summary" })
+      : Promise.resolve(null),
+    getSystemMetrics({ view: fetchDetailedMetrics ? "full" : "summary" }),
   ]);
 
   if (configResult) {
-    state.config = configResult;
+    state.config = {
+      ...state.config,
+      ...configResult,
+    };
     setServerConfig(state.config?.serverName);
   }
   if (healthResult) state.health = healthResult;
   if (metricsResult !== null)
-    state.metrics = metricsResult as typeof state.metrics;
+    state.metrics = mergeSystemMetricsSnapshot(
+      state.metrics,
+      metricsResult as typeof state.metrics,
+    );
 
   const previousPipelines = state.pipelines;
   state.pipelines = parsePipelinesInfo(state.config, state.health);
@@ -139,13 +326,14 @@ function startDashboardPolling(intervalMs: number): void {
 async function onVisibilityChange(): Promise<void> {
   if (document.hidden) {
     startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
+    syncDashboardRuntimeStream();
     await syncHistoryPollingWithVisibility();
     return;
   }
-  fetchConfigNextTick = true;
   startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
+  syncDashboardRuntimeStream();
   await syncHistoryPollingWithVisibility();
-  await requestDashboardRefresh();
+  await requestDashboardRefresh(true);
 }
 
 export function startDashboardRuntime(): void {
@@ -160,10 +348,15 @@ export function startDashboardRuntime(): void {
   void (async () => {
     await loadAudioCaps();
     await requestDashboardRefresh();
+    syncDashboardRuntimeStream();
     startDashboardPolling(
       document.hidden
         ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS
         : DASHBOARD_POLL_INTERVAL_MS,
     );
   })();
+}
+
+export function requestDetailedMetricsRefresh(): void {
+  fetchDetailedMetricsNextTick = true;
 }
