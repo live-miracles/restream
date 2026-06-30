@@ -55,6 +55,9 @@ Returns SQLite-backed settings plus configured pipelines, outputs, and jobs.
     "banMs": 600000,
     "trackedIpLimit": 10000
   },
+  "recordingSettings": {
+    "retainSourceTs": false
+  },
   "pipelines": [],
   "outputs": [],
   "jobs": []
@@ -76,6 +79,9 @@ Updates any supplied setting:
     "failureWindowMs": 60000,
     "banMs": 600000,
     "trackedIpLimit": 10000
+  },
+  "recordingSettings": {
+    "retainSourceTs": false
   }
 }
 ```
@@ -261,9 +267,14 @@ egresses, HLS, and recording nodes where present.
 
 ### `GET /api/v1/pipelines/:pipelineId/diagnostics`
 
-Streams Server-Sent Events. An optional `probe=rtmp|srt` query must match the
+Streams Server-Sent Events. An optional `probe=rtmp|srt|file` query must match the
 active ingest protocol. Returns `404` without an active ingest and `400` for a
 protocol mismatch.
+
+RTMP and SRT inputs run the transport-oriented checks documented in
+[Observability](observability.md). File inputs switch to file-aware checks:
+source-file presence and analysis, file-ingest runtime state, and preview /
+recording readiness.
 
 ## Optional Agent Plane
 
@@ -393,6 +404,20 @@ lifetime is shorter than five seconds are deleted as transient artifacts. The
 recording feeder uses the shared TS packet feeder before writing to the
 MemoryQueue-backed file writer.
 
+When a recording stops successfully and is at least five seconds long, the
+runtime starts a one-off FFmpeg remux from the source `.ts` into a sibling
+`.mp4`. The media library prefers the `.mp4` for browser playback, keeps the
+original `.ts` available for download while it exists, and surfaces
+`conversionStatus` as `converting`, `ready`, or `failed`.
+
+The deployment-wide setting `recordingSettings.retainSourceTs` controls whether
+the original `.ts` is kept after a successful remux:
+
+- `false` (default): delete the source `.ts` only after the `.mp4` is created successfully
+- `true`: keep both files
+
+Failed remuxes keep the source `.ts` regardless of this setting.
+
 ## File Ingest
 
 | Method | Route | Purpose |
@@ -411,7 +436,9 @@ Create/update body:
   "filename": "example.mp4",
   "streamKey": "stream-key",
   "loop": true,
-  "startTime": "00:00:05"
+  "startTime": "00:00:05",
+  "liveOptimized": true,
+  "targetGopSeconds": 2
 }
 ```
 
@@ -426,9 +453,18 @@ By default the backend is the embedded `public/bin/ffmpeg` subprocess:
 ffmpeg -re [-stream_loop -1] [-ss <start>] -i media/<file> -map 0 -c copy -f mpegts pipe:1
 ```
 
-Set `RESTREAM_USE_INTERNAL_FILE_INGEST=1` to switch start/stop to the
-in-process remux path instead. Deleting an ingest definition terminates the
-running ingest regardless of backend.
+Set `RESTREAM_USE_INTERNAL_FILE_INGEST=1` to switch passthrough
+`liveOptimized=false` starts to the in-process remux path instead.
+
+When `liveOptimized=true`, start always uses the embedded FFmpeg subprocess and
+re-encodes toward a live-friendly GOP cadence:
+
+- video: H.264 (`libx264`)
+- audio: AAC
+- forced keyframes every `targetGopSeconds`
+- scene-cut GOP drift disabled
+
+Deleting an ingest definition terminates the running ingest regardless of backend.
 Both stop and delete kill the child and call `wait()` to reap it immediately so
 no zombie processes remain.
 
@@ -436,13 +472,32 @@ no zombie processes remain.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/media` | List `.mkv`, `.mp4`, and `.mov` files in `media/` |
-| `DELETE` | `/api/media/:filename` | Delete an unreferenced file under `media/` |
+| `GET` | `/api/v1/media` | List supported media files in `media/` |
+| `GET` | `/api/v1/media/:filename/analysis` | Return source-file codec / duration / GOP analysis |
+| `PATCH` | `/api/v1/media/:filename` | Rename a media file without changing its extension |
+| `DELETE` | `/api/v1/media/:filename` | Delete an unreferenced file under `media/` |
 
 Deletion returns `409` when a configured file ingest references the filename.
 Deletion canonicalizes both the `media/` root and the requested target path.
 Requests that resolve outside `media/` (path traversal) return `400`.
 Missing files return `404`.
+
+`GET /api/v1/media` returns entries for `.ts`, `.mkv`, `.mp4`, and `.mov`
+files. Recording-backed entries may include:
+
+- `sourceName` / `sourceSize`
+- `convertedName` / `convertedSize`
+- `playName`
+- `conversionStatus`
+- `conversionError`
+- `conversionUpdatedAt`
+
+For recordings with a successful `.mp4` remux, `playName` points at the `.mp4`
+while `sourceName` still refers to the original recording `.ts`.
+
+Renaming keeps the file extension fixed. For recording source `.ts` files, the
+server also renames any sibling converted `.mp4` and conversion-state JSON, and
+updates configured file-ingest rows that referenced the old filename.
 
 ## Custom Encoding
 

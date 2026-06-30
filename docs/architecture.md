@@ -662,6 +662,12 @@ Recordings are written as raw MPEG-TS files under `media/`. Recordings shorter
 than five seconds are removed automatically. Recording uses the shared TS packet
 feeder and a MemoryQueue-backed writer thread.
 
+After a successful recording stop, the runtime launches a one-off FFmpeg remux
+to a sibling `.mp4` for browser-friendly playback. Operators can choose whether
+the source `.ts` is retained after a successful remux via the persisted
+`recordingSettings.retainSourceTs` setting. Failed remuxes always keep the
+source `.ts`.
+
 ## File Ingest
 
 Configured file ingest has two backends:
@@ -682,6 +688,12 @@ ffmpeg -re [-stream_loop -1] [-ss <start>] -i media/<file> -map 0 -c copy -f mpe
 Both backends converge on `TsDemuxer`, push `MediaPacket`s into the source
 ring, track running state by ingest ID, and stop through the API without any
 RTMP loopback hop.
+
+File ingest also exposes a `liveOptimized` mode with configurable
+`targetGopSeconds`. That mode always uses the embedded FFmpeg subprocess so it
+can re-encode video to H.264, audio to AAC, and force a live-friendly keyframe
+cadence when the source file's GOP is too sparse for steady preview and
+recording.
 
 ## State and Authentication
 

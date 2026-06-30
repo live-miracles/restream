@@ -148,13 +148,14 @@ Unit coverage includes:
   counters, Annex-B NAL scanning, vectorized resync
 - Codec helpers: FLV stripping, video/audio payload conversion for TsMuxer
 
-The API suite (66 tests) covers authentication, configuration, pipeline/output
+The API suite covers authentication, configuration, pipeline/output
 CRUD, ingests, HLS aliases, status, graph, diagnostics preconditions, custom
 encoding persistence/rejection for runtime outputs, HLS upload output
 acceptance, RTMPS output acceptance, egress-pipeline association in `/api/v1/engine/health`,
-deletion-cancellation of egress tasks, pipeline and aggregate alerts response
-shape, system metrics structured response, agent graph-diff-preview compiled-out
-behavior, and operator telemetry/events/overview/summary endpoints.
+deletion-cancellation of egress tasks, media list / analysis / rename / delete
+behavior, pipeline and aggregate alerts response shape, system metrics
+structured response, agent graph-diff-preview compiled-out behavior, and
+operator telemetry/events/overview/summary endpoints.
 
 ## API Route Coverage Matrix
 
@@ -243,8 +244,10 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 |---|---|:---:|:---:|---|
 | `GET` | `/api/v1/engine` | ✓ | — | |
 | `GET` | `/api/v1/engine/sbom` | ✓ | — | |
-| `GET` | `/api/media` | ✓ | — | |
-| `DELETE` | `/api/media/:filename` | ✓ | — | Path traversal tested |
+| `GET` | `/api/v1/media` | ✓ | — | |
+| `GET` | `/api/v1/media/:filename/analysis` | ✓ | — | |
+| `PATCH` | `/api/v1/media/:filename` | ✓ | — | Rename + ingest reference update |
+| `DELETE` | `/api/v1/media/:filename` | ✓ | — | Path traversal tested |
 | `GET` | `/api/v1/engine/health` | ✓ | ✓ | |
 | `GET` | `/healthz` | ✓ | ✓ | |
 | `GET` | `/metrics/system` | ✓ | — | Structured cpu/memory/disk/network |

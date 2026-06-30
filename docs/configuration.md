@@ -12,7 +12,7 @@ in SQLite.
 | RTMP listener | `0.0.0.0:1935` | `RESTREAM_RTMP_PORT` |
 | SRT listener | `0.0.0.0:10080` | `RESTREAM_SRT_PORT` |
 | Transcoder backend | External FFmpeg subprocess | `RESTREAM_USE_INTERNAL_TRANSCODER` (`1`/`true`/`yes`/`on` to enable in-process backend) |
-| File-ingest backend | External embedded FFmpeg subprocess | `RESTREAM_USE_INTERNAL_FILE_INGEST` (`1`/`true`/`yes`/`on` to enable in-process remux + demux) |
+| File-ingest backend | External embedded FFmpeg subprocess | `RESTREAM_USE_INTERNAL_FILE_INGEST` (`1`/`true`/`yes`/`on` to enable in-process remux + demux for passthrough file ingest) |
 | External transcoder and file-ingest executable | Embedded `public/bin/ffmpeg`, extracted to `/tmp/restream-ffmpeg/ffmpeg` at startup | `FFMPEG_BIN_PATH` |
 | SQLite database | `data.db` | `RESTREAM_DB_PATH` |
 | Media directory | `media/` | `RESTREAM_MEDIA_DIR` |
@@ -35,8 +35,9 @@ as `BASE_PATH`, `PUBLIC_INGEST_HOST`, `HEALTH_SNAPSHOT_INTERVAL_MS`,
 or the old output-recovery knobs. Do not depend on those variables.
 
 `FFMPEG_BIN_PATH` overrides the shared subprocess FFmpeg path used by the
-external transcoder and by file ingest when
-`RESTREAM_USE_INTERNAL_FILE_INGEST` is not enabled.
+external transcoder, the default file-ingest backend, and post-recording
+`.ts` → `.mp4` remux. The recording remux path requires that binary to expose
+the `mov/mp4` muxer.
 
 ## SQLite-Backed Settings
 
@@ -52,6 +53,9 @@ updates any supplied field.
     "failureWindowMs": 60000,
     "banMs": 600000,
     "trackedIpLimit": 10000
+  },
+  "recordingSettings": {
+    "retainSourceTs": false
   }
 }
 ```
@@ -61,6 +65,7 @@ updates any supplied field.
 | `serverName` | Dashboard display name; must be non-empty |
 | `ingestHost` | Hostname used when generating RTMP/SRT publisher URLs; blank falls back to `localhost` |
 | `ingestSecurity` | In-memory failed-publish tracking and temporary IP bans; changes are persisted |
+| `recordingSettings.retainSourceTs` | Deployment-wide recording retention policy. Default `false`: after a successful `.mp4` remux, the source recording `.ts` is deleted. Failed remuxes always keep the source `.ts`. |
 | Dashboard password | Scrypt hash stored in SQLite; first-run password is `admin` |
 | Custom encoding | Stored through `/api/v1/encodings/custom` for future use; not offered as an output encoding and rejected by output create/update |
 | Recording enabled | Stored per pipeline as `recording_enabled:<pipelineId>` |
@@ -151,6 +156,30 @@ looks like custom FFmpeg execution.
 Audio routing accepts `atrack`, `remap`, and `downmix`. `atrack` stays on the
 packet-only selector path; channel-level `remap` and `downmix` routes run
 through an external FFmpeg audio stage and re-encode stereo AAC.
+
+## File Ingest Configuration
+
+File ingest is configured per pipeline or through the standalone ingest routes.
+Each definition stores:
+
+- `filename`
+- `loop`
+- `startTime`
+- `liveOptimized`
+- `targetGopSeconds`
+
+`liveOptimized=false` keeps the default passthrough path. With the subprocess
+backend that means:
+
+```text
+ffmpeg -re [-stream_loop -1] [-ss <start>] -i media/<file> -map 0 -c copy -f mpegts pipe:1
+```
+
+`liveOptimized=true` forces the subprocess backend even when
+`RESTREAM_USE_INTERNAL_FILE_INGEST=1`. In that mode the embedded FFmpeg binary
+re-encodes video to H.264, audio to AAC, disables scene-cut GOP drift, and
+forces keyframes at the configured `targetGopSeconds` cadence for steadier HLS
+preview and recording from sparse-GOP source files.
 
 ## SRT Socket Policy
 

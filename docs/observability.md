@@ -14,7 +14,7 @@ It does not expose a Prometheus text endpoint, proxy Grafana, or poll a sidecar.
 | `GET /api/v1/engine/sbom` | Session | CycloneDX 1.5 runtime SBOM for resolved Rust crates and linked native libraries |
 | `GET /api/v1/pipelines/:id/probe` | Session | Active input codec, dimensions, audio tracks, bitrate, and GOP summary |
 | `GET /api/v1/pipelines/:id/graph` | Session | Processing stages, buffers, and output connections |
-| `GET /api/v1/pipelines/:id/diagnostics` | Session | Nine-check diagnostic run streamed over SSE |
+| `GET /api/v1/pipelines/:id/diagnostics` | Session | Protocol-aware diagnostic run streamed over SSE |
 | `GET /api/v1/overview` | Session | Engine-wide operator summary: pipeline counts, alert rollup, SRT listener |
 | `GET /api/v1/alerts` | Session | Aggregate alerts across all pipelines with `firstSeen`/`lastSeen` tracking |
 | `GET /api/v1/events` | Session | Lifecycle event log (ingest, stage, egress transitions) |
@@ -244,7 +244,10 @@ prepared with bonding support or the wrong binary was linked.
 
 ## Diagnostic Checks
 
-The SSE diagnostic run (`GET /api/v1/pipelines/:id/diagnostics`) emits nine checks:
+The SSE diagnostic run (`GET /api/v1/pipelines/:id/diagnostics`) is
+protocol-aware.
+
+RTMP and SRT ingests run these checks:
 
 | # | Check | Notes |
 |---|---|---|
@@ -256,12 +259,26 @@ The SSE diagnostic run (`GET /api/v1/pipelines/:id/diagnostics`) emits nine chec
 | 6 | Active Outputs | Output state and bytes; egresses associated via `ActiveEgress.pipeline_id` |
 | 7 | System Resources | CPU, RAM, disk |
 | 8 | Network Bandwidth | Host-wide interface rates (not pipeline-specific latency) |
-| 9 | SRT Listener Socket | Bonding availability, shared UDP queue/peak/drops (listener-wide, Linux-specific) |
+| 9 | SRT Listener Socket | SRT-only: bonding availability, shared UDP queue/peak/drops (listener-wide, Linux-specific) |
+
+File ingests run a file-specific set instead:
+
+| # | Check | Notes |
+|---|---|---|
+| 1 | Engine Status | Same core ingest / ring / output summary as other protocols |
+| 2 | File Source | Source filename/path/existence, size, modified time, loop/start offset, live-optimized settings, codec/fps/duration, and sparse-GOP warnings |
+| 3 | Stream Info | Runtime demux metadata from the active file ingest |
+| 4 | GOP Analysis | Observed runtime keyframe cadence after ingest starts |
+| 5 | File Ingest Runtime | Ingest uptime, bytes injected, ingest ID, registry state, and subprocess registration state |
+| 6 | Ring Buffer Health | Same reader lag / overflow view as other protocols |
+| 7 | Preview & Recording | HLS preview store / segmenter state plus active recording state |
+| 8 | Active Outputs | Output state and bytes |
+| 9 | System Resources | CPU, RAM, disk |
 
 The diagnostic runner warns above 50% SRT queue occupancy, alerts above 75%,
 and reports any kernel drop count.
 
-An optional `probe=rtmp|srt` query must match the active ingest protocol.
+An optional `probe=rtmp|srt|file` query must match the active ingest protocol.
 Returns `404` without an active ingest and `400` for a protocol mismatch.
 
 ## Known Instrumentation Gaps
@@ -274,10 +291,9 @@ These should be fixed before adding new timing work:
 - `MemoryQueue::stats()` exposes current depth, capacity, high-water bytes,
   blocked write count, blocked write time, and closed state. These counters
   still need to be surfaced in higher-level graph/API snapshots where useful.
-- The frontend still describes diagnostic step 5 as ffprobe wall-clock packet
-  timing, but native step 5 is Active Outputs.
-- The native runner no longer emits `probe-raw`, while the report still claims
-  raw ffprobe packets and frames are attached.
+- Some diagnostic-report copy still reflects the legacy ffprobe-based runner.
+  The native runner is protocol-aware, does not emit raw ffprobe packet/frame
+  dumps, and file-mode diagnostics are entirely in-process.
 - HLS, recording, and in-process transcoder input share the TS packet feeder.
   Diagnostics must still avoid implying those mux paths are healthy merely
   because their task/token is active.
