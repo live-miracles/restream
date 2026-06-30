@@ -315,7 +315,13 @@ await runCheck("renderPipelineInfoColumn shows file ingest controls for file sou
   appendRoot(document, "button", "delete-pipe-btn");
   appendRoot(document, "div", "input-time");
   appendRoot(document, "section", "file-source-section");
-  appendRoot(document, "code", "file-source-inline");
+  appendRoot(document, "span", "file-source-inline");
+  appendRoot(document, "details", "file-source-details");
+  appendRoot(document, "div", "file-source-container");
+  appendRoot(document, "div", "file-source-size");
+  appendRoot(document, "div", "file-source-modified");
+  appendRoot(document, "div", "file-source-loop");
+  appendRoot(document, "div", "file-source-start-time");
   appendRoot(document, "section", "stream-key-section");
   appendRoot(document, "code", "stream-key-inline");
   appendRoot(document, "button", "stream-key-copy-btn");
@@ -368,6 +374,26 @@ await runCheck("renderPipelineInfoColumn shows file ingest controls for file sou
   assert.equal(
     document.getElementById("file-source-inline").textContent,
     "session-recording.ts",
+  );
+  assert.equal(
+    document.getElementById("file-source-inline").className.includes("font-mono"),
+    false,
+  );
+  assert.equal(
+    document.getElementById("file-source-details").classList.contains("hidden"),
+    false,
+  );
+  assert.equal(
+    document.getElementById("file-source-container").textContent,
+    "MPEG-TS",
+  );
+  assert.equal(
+    document.getElementById("file-source-loop").textContent,
+    "Disabled",
+  );
+  assert.equal(
+    document.getElementById("file-source-start-time").textContent,
+    "00:00:00",
   );
   assert.equal(
     document.getElementById("stream-key-section").classList.contains("hidden"),

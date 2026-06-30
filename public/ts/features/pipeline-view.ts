@@ -21,11 +21,13 @@ import {
 import { clearInputPreview, renderInputPreview } from "./input-preview.js";
 import { openOutputMonitoringUrl } from "./control-room.js";
 import {
+  listMediaFiles,
   startIngest,
   startRecording,
   stopIngest,
   stopRecording,
 } from "../core/api.js";
+import type { MediaFile } from "../core/api.js";
 import type { AudioTrack, PipelineView, OutputView } from "../types.js";
 import {
   audioTrackKey,
@@ -82,6 +84,8 @@ const ingestUiState = {
 const audioLabelEditKeys = new Set<string>();
 const audioLabelDrafts = new Map<string, string>();
 let pendingAudioLabelFocusKey: string | null = null;
+const sourceFileMetadataCache = new Map<string, MediaFile | null>();
+let sourceFileMetadataLoadPromise: Promise<void> | null = null;
 
 function getFileSourceName(pipe: PipelineView): string | null {
   if (pipe.fileIngest?.filename) return pipe.fileIngest.filename;
@@ -97,6 +101,71 @@ function hideFileIngestControl(button: HTMLButtonElement): void {
   button.classList.add("btn-disabled");
   button.title = "";
   button.onclick = null;
+}
+
+function formatFileSize(bytes: number | null | undefined): string {
+  if (!Number.isFinite(bytes as number) || (bytes as number) <= 0) return "--";
+  const value = bytes as number;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  if (value < 1024 * 1024 * 1024)
+    return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
+function formatFileModifiedAt(value: string | null | undefined): string {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return date.toLocaleString();
+}
+
+function formatFileContainer(name: string | null | undefined): string {
+  const ext = name?.split(".").pop()?.trim().toLowerCase() || "";
+  switch (ext) {
+    case "ts":
+      return "MPEG-TS";
+    case "mp4":
+      return "MP4";
+    case "mkv":
+      return "Matroska";
+    case "mov":
+      return "QuickTime";
+    default:
+      return ext ? ext.toUpperCase() : "--";
+  }
+}
+
+function setTextIfPresent(id: string, value: string): void {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function scheduleSourceFileMetadataLoad(
+  selectedPipe: string,
+  filename: string | null,
+): void {
+  if (!filename || sourceFileMetadataCache.has(filename)) return;
+  if (typeof fetch !== "function" || sourceFileMetadataLoadPromise) return;
+
+  sourceFileMetadataLoadPromise = listMediaFiles()
+    .then((result) => {
+      for (const file of result?.files || []) {
+        sourceFileMetadataCache.set(file.name, file);
+      }
+      if (!sourceFileMetadataCache.has(filename)) {
+        sourceFileMetadataCache.set(filename, null);
+      }
+    })
+    .catch(() => {
+      sourceFileMetadataCache.set(filename, null);
+    })
+    .finally(() => {
+      sourceFileMetadataLoadPromise = null;
+      if (state.pipelines.some((pipe) => pipe.id === selectedPipe)) {
+        renderPipelineInfoColumn(selectedPipe);
+      }
+    });
 }
 
 interface OutputCardRefs {
@@ -558,6 +627,42 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     fileSourceInline.textContent = fileSourceName || "--";
     fileSourceInline.title = fileSourceName || "";
   }
+  const fileSourceDetails = document.getElementById("file-source-details");
+  fileSourceDetails?.classList.toggle("hidden", !isFileSource);
+  const cachedSourceFile = fileSourceName
+    ? sourceFileMetadataCache.get(fileSourceName) || null
+    : null;
+  if (isFileSource) {
+    scheduleSourceFileMetadataLoad(selectedPipe, fileSourceName);
+  }
+  setTextIfPresent(
+    "file-source-container",
+    formatFileContainer(fileSourceName || pipe.fileIngest?.filename || null),
+  );
+  setTextIfPresent(
+    "file-source-size",
+    formatFileSize(
+      cachedSourceFile?.sourceSize ?? cachedSourceFile?.size ?? null,
+    ),
+  );
+  setTextIfPresent(
+    "file-source-modified",
+    formatFileModifiedAt(cachedSourceFile?.modifiedAt || null),
+  );
+  setTextIfPresent(
+    "file-source-loop",
+    pipe.fileIngest?.configured
+      ? pipe.fileIngest.loop
+        ? "Enabled"
+        : "Disabled"
+      : "--",
+  );
+  setTextIfPresent(
+    "file-source-start-time",
+    pipe.fileIngest?.configured
+      ? pipe.fileIngest.startTime || "00:00:00"
+      : "--",
+  );
 
   const streamKey = pipe.key;
   const streamKeyInline = document.getElementById("stream-key-inline");
