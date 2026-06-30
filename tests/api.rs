@@ -657,6 +657,29 @@ async fn config_get_returns_structured_data() {
     db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
         .await
         .unwrap();
+    db::create_output(
+        &pool,
+        "o1",
+        "p1",
+        "Out",
+        "rtmp://dest/live",
+        None,
+        "running",
+        "source",
+    )
+    .await
+    .unwrap();
+    db::create_job(
+        &pool,
+        "j1",
+        "p1",
+        "o1",
+        Some(1234),
+        restream::types::JobStatus::Running,
+        "2024-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
 
     let resp = app
         .clone()
@@ -668,6 +691,12 @@ async fn config_get_returns_structured_data() {
     assert!(json["pipelines"].is_array());
     assert!(json["outputs"].is_array());
     assert!(json["jobs"].is_array());
+    assert_eq!(json["jobs"][0]["id"], "j1");
+    assert_eq!(json["jobs"][0]["pipelineId"], "p1");
+    assert_eq!(json["jobs"][0]["outputId"], "o1");
+    assert_eq!(json["jobs"][0]["pid"], 1234);
+    assert_eq!(json["jobs"][0]["status"], "running");
+    assert_eq!(json["jobs"][0]["startedAt"], "2024-01-01T00:00:00Z");
     assert!(json["serverName"].is_string());
     assert_eq!(json["ingestHost"], "");
     assert_eq!(json["recordingSettings"]["retainSourceTs"], false);

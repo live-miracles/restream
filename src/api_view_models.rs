@@ -8,7 +8,7 @@ use crate::media::engine::{
 };
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::srt::parse_pipeline_srt_ingest_policy;
-use crate::types::{Ingest, Output, Pipeline};
+use crate::types::{Ingest, Job, Output, Pipeline};
 use std::sync::atomic::Ordering;
 
 pub(crate) fn pipeline_response_json(
@@ -85,6 +85,24 @@ pub(crate) fn output_response_json(output: &Output) -> serde_json::Value {
 
 pub(crate) fn output_response_json_list(outputs: &[Output]) -> Vec<serde_json::Value> {
     outputs.iter().map(output_response_json).collect()
+}
+
+pub(crate) fn job_response_json(job: &Job) -> serde_json::Value {
+    serde_json::json!({
+        "id": job.id,
+        "pipelineId": job.pipeline_id,
+        "outputId": job.output_id,
+        "pid": job.pid,
+        "status": job.status,
+        "startedAt": job.started_at,
+        "endedAt": job.ended_at,
+        "exitCode": job.exit_code,
+        "exitSignal": job.exit_signal,
+    })
+}
+
+pub(crate) fn job_response_json_list(jobs: &[Job]) -> Vec<serde_json::Value> {
+    jobs.iter().map(job_response_json).collect()
 }
 
 pub(crate) fn egress_runtime_json(

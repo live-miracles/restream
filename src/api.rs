@@ -948,7 +948,7 @@ async fn config_get_handler(
         "transcodeProfiles": transcode_profiles,
         "pipelines": pipelines,
         "outputs": api_view_models::output_response_json_list(&outputs),
-        "jobs": jobs
+        "jobs": api_view_models::job_response_json_list(&jobs)
     }))
     .into_response()
 }
