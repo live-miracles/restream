@@ -162,6 +162,270 @@ interface PipelineIncident {
 
 const PIPELINE_INCIDENT_WINDOW_MS = 20_000;
 const PIPELINE_INCIDENT_MAX_SPAN_MS = PIPELINE_INCIDENT_WINDOW_MS * 2;
+const PIPELINE_RELATION_SCORE_THRESHOLD = 45;
+
+type PipelineIncidentLinkKind = "correlation" | "output" | "stage" | "causal";
+
+interface PipelineIncidentRelation {
+  kinds: Set<PipelineIncidentLinkKind>;
+  score: number;
+}
+
+function getEventFieldString(log: AppLogRow, ...keys: string[]): string | null {
+  const data = getEventData(log);
+  if (!data) return null;
+  for (const key of keys) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function getPipelineStageEncoding(log: AppLogRow): string | null {
+  const dataEncoding = getEventFieldString(
+    log,
+    "stage_encoding",
+    "stageEncoding",
+    "encoding",
+  );
+  if (dataEncoding) return dataEncoding;
+
+  const message = String(log?.message || "");
+  const extEncodingMatch = message.match(/\bencoding=([^\s)]+)/i);
+  if (extEncodingMatch?.[1]) return extEncodingMatch[1].trim();
+
+  const stderrEncodingMatch = message.match(/\([^:]+:([^)]+)\):/);
+  if (stderrEncodingMatch?.[1]) return stderrEncodingMatch[1].trim();
+
+  return null;
+}
+
+function getPipelineStageBackend(log: AppLogRow): string | null {
+  const backend = getEventFieldString(log, "stage_backend", "stageBackend");
+  if (backend) return backend;
+  return String(log?.target || "").includes("external_transcoder")
+    ? "external_transcoder"
+    : null;
+}
+
+function getPipelineStageIdentity(log: AppLogRow): string | null {
+  const pipelineId = String(log?.pipelineId || "").trim();
+  const encoding = getPipelineStageEncoding(log);
+  if (!pipelineId || !encoding) return null;
+  const backend = getPipelineStageBackend(log) || "unknown";
+  return `${pipelineId}::${backend}::${encoding}`;
+}
+
+function getPipelineSemanticKind(log: AppLogRow): string {
+  const eventType = getNormalizedEventType(log);
+  const message = String(log?.message || "");
+  const level = String(log?.level || "").toUpperCase();
+  const target = String(log?.target || "");
+  const inputState = getPipelineInputState(log);
+
+  if (
+    eventType === "pipeline.config.created" ||
+    eventType.startsWith("pipeline.config.") ||
+    message.startsWith("[config]")
+  ) {
+    return "config";
+  }
+  if (eventType === "ingest.connected" || inputState === "on") {
+    return "ingest_on";
+  }
+  if (
+    eventType === "ingest.disconnected" ||
+    inputState === "off" ||
+    eventType === "pipeline.input_state.reset"
+  ) {
+    return "ingest_off";
+  }
+  if (inputState === "warning") return "input_warning";
+  if (inputState === "error") return "input_error";
+  if (eventType === "stage.started") return "stage_start";
+  if (eventType === "stage.stopped") return "stage_stop";
+  if (eventType === "egress.started" || eventType === "lifecycle.start") {
+    return "output_start";
+  }
+  if (eventType === "egress.stopped" || eventType === "lifecycle.stop") {
+    return "output_stop";
+  }
+  if (eventType === "egress.failed") return "output_fail";
+  if (
+    target.includes("external_transcoder") &&
+    (level === "WARN" ||
+      level === "ERROR" ||
+      message.includes("ffmpeg stderr") ||
+      message.includes("failed to spawn ffmpeg") ||
+      message.includes("stdin write failed"))
+  ) {
+    return "stage_fault";
+  }
+  return "generic";
+}
+
+function isNearbyPipelineCausalPair(a: AppLogRow, b: AppLogRow): boolean {
+  const aMs = parseHistoryTimeMs(a?.ts);
+  const bMs = parseHistoryTimeMs(b?.ts);
+  if (aMs === null || bMs === null) return false;
+  if (Math.abs(aMs - bMs) > PIPELINE_INCIDENT_WINDOW_MS) return false;
+
+  const [earlier, later] = aMs <= bMs ? [a, b] : [b, a];
+  if (
+    String(earlier?.pipelineId || "").trim() !==
+    String(later?.pipelineId || "").trim()
+  ) {
+    return false;
+  }
+
+  const earlierKind = getPipelineSemanticKind(earlier);
+  const laterKind = getPipelineSemanticKind(later);
+
+  if (
+    ["ingest_off", "input_warning", "input_error"].includes(earlierKind) &&
+    ["stage_stop", "output_stop", "output_fail", "stage_fault"].includes(
+      laterKind,
+    )
+  ) {
+    return true;
+  }
+  if (
+    earlierKind === "ingest_on" &&
+    ["stage_start", "output_start"].includes(laterKind)
+  ) {
+    return true;
+  }
+  if (
+    earlierKind === "config" &&
+    [
+      "stage_start",
+      "stage_stop",
+      "output_start",
+      "output_stop",
+      "output_fail",
+      "stage_fault",
+    ].includes(laterKind)
+  ) {
+    return true;
+  }
+  if (
+    ["stage_fault", "stage_stop"].includes(earlierKind) &&
+    ["output_fail", "output_stop"].includes(laterKind)
+  ) {
+    return true;
+  }
+  if (earlierKind === "stage_start" && laterKind === "output_start") {
+    return true;
+  }
+
+  return false;
+}
+
+function getPipelineIncidentRelation(
+  a: AppLogRow,
+  b: AppLogRow,
+): PipelineIncidentRelation {
+  const kinds = new Set<PipelineIncidentLinkKind>();
+  const aMs = parseHistoryTimeMs(a?.ts);
+  const bMs = parseHistoryTimeMs(b?.ts);
+  if (aMs === null || bMs === null) return { kinds, score: 0 };
+  if (Math.abs(aMs - bMs) > PIPELINE_INCIDENT_WINDOW_MS) {
+    return { kinds, score: 0 };
+  }
+
+  const pipelineA = String(a?.pipelineId || "").trim();
+  const pipelineB = String(b?.pipelineId || "").trim();
+  if (pipelineA && pipelineB && pipelineA !== pipelineB) {
+    return { kinds, score: 0 };
+  }
+
+  let score = 0;
+  const correlationA = getCorrelationId(a);
+  const correlationB = getCorrelationId(b);
+  if (correlationA && correlationA === correlationB) {
+    kinds.add("correlation");
+    score += 100;
+  }
+
+  const outputA = String(a?.outputId || "").trim();
+  const outputB = String(b?.outputId || "").trim();
+  if (outputA && outputA === outputB) {
+    kinds.add("output");
+    score += 70;
+  }
+
+  const stageA = getPipelineStageIdentity(a);
+  const stageB = getPipelineStageIdentity(b);
+  if (stageA && stageA === stageB) {
+    kinds.add("stage");
+    score += 60;
+  }
+
+  if (isNearbyPipelineCausalPair(a, b)) {
+    kinds.add("causal");
+    score += 50;
+  }
+
+  return { kinds, score };
+}
+
+function collectPipelineIncidentLinkKinds(
+  logs: AppLogRow[],
+): Set<PipelineIncidentLinkKind> {
+  const linkKinds = new Set<PipelineIncidentLinkKind>();
+  for (let i = 0; i < logs.length; i += 1) {
+    for (let j = i + 1; j < logs.length; j += 1) {
+      const relation = getPipelineIncidentRelation(logs[i], logs[j]);
+      relation.kinds.forEach((kind) => linkKinds.add(kind));
+    }
+  }
+  return linkKinds;
+}
+
+function splitPipelineIncidentCluster(logs: AppLogRow[]): AppLogRow[][] {
+  const ordered = getOrderedOutputLogs(logs, "asc");
+  if (ordered.length <= 1) return ordered.length > 0 ? [ordered] : [];
+
+  const groups: AppLogRow[][] = [];
+  let currentGroup: AppLogRow[] = [];
+  let groupStartMs: number | null = null;
+
+  ordered.forEach((log) => {
+    const currentMs = parseHistoryTimeMs(log?.ts);
+    if (currentGroup.length === 0) {
+      currentGroup.push(log);
+      groupStartMs = currentMs;
+      return;
+    }
+
+    const withinSpan =
+      currentMs !== null &&
+      groupStartMs !== null &&
+      currentMs - groupStartMs <= PIPELINE_INCIDENT_MAX_SPAN_MS;
+    const hasStrongLink = currentGroup.some(
+      (existing) =>
+        getPipelineIncidentRelation(existing, log).score >=
+        PIPELINE_RELATION_SCORE_THRESHOLD,
+    );
+
+    if (!withinSpan || !hasStrongLink) {
+      groups.push(currentGroup);
+      currentGroup = [log];
+      groupStartMs = currentMs;
+      return;
+    }
+
+    currentGroup.push(log);
+  });
+
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+
+  return groups;
+}
 
 function classifyHistoryEvent(
   log: AppLogRow,
@@ -695,6 +959,7 @@ function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
   const entries = Array.isArray(logs) ? logs : [];
   const eventTypes = new Set(entries.map((log) => getNormalizedEventType(log)));
   const correlationIds = getDistinctCorrelationIds(entries);
+  const linkKinds = collectPipelineIncidentLinkKinds(entries);
   const inputStates = new Set(
     entries
       .map((log) => getPipelineInputState(log))
@@ -839,6 +1104,16 @@ function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
     detailBadges.push(`Stages: ${stageStartCount} started`);
   }
 
+  if (linkKinds.has("correlation")) {
+    detailBadges.push("Link: correlation id");
+  } else if (linkKinds.has("output")) {
+    detailBadges.push("Link: same output");
+  } else if (linkKinds.has("stage")) {
+    detailBadges.push("Link: same stage");
+  } else if (linkKinds.has("causal")) {
+    detailBadges.push("Link: nearby 20s");
+  }
+
   return {
     badgeClass,
     correlationIds,
@@ -851,49 +1126,62 @@ function summarizePipelineIncident(logs: AppLogRow[]): PipelineIncident {
   };
 }
 
-function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
+export function buildPipelineIncidents(logs: AppLogRow[]): PipelineIncident[] {
   const entries = Array.isArray(logs) ? logs : [];
   if (entries.length === 0) return [];
 
-  const groups: AppLogRow[][] = [];
-  let currentGroup: AppLogRow[] = [];
-  let groupStartMs: number | null = null;
-  let previousMs: number | null = null;
+  const ordered = getOrderedOutputLogs(entries, "asc");
+  const parent = ordered.map((_, index) => index);
 
-  entries.forEach((log) => {
-    const currentMs = parseHistoryTimeMs(log?.ts);
-    if (currentGroup.length === 0) {
-      currentGroup.push(log);
-      groupStartMs = currentMs;
-      previousMs = currentMs;
-      return;
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) {
+      root = parent[root];
     }
-
-    const withinWindow =
-      currentMs !== null &&
-      previousMs !== null &&
-      currentMs - previousMs <= PIPELINE_INCIDENT_WINDOW_MS;
-    const withinSpan =
-      currentMs !== null &&
-      groupStartMs !== null &&
-      currentMs - groupStartMs <= PIPELINE_INCIDENT_MAX_SPAN_MS;
-
-    if (!withinWindow || !withinSpan) {
-      groups.push(currentGroup);
-      currentGroup = [log];
-      groupStartMs = currentMs;
-    } else {
-      currentGroup.push(log);
+    while (parent[index] !== index) {
+      const next = parent[index];
+      parent[index] = root;
+      index = next;
     }
+    return root;
+  };
 
-    previousMs = currentMs;
-  });
+  const union = (a: number, b: number): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) {
+      parent[rootB] = rootA;
+    }
+  };
 
-  if (currentGroup.length > 0) {
-    groups.push(currentGroup);
+  for (let i = 0; i < ordered.length; i += 1) {
+    const aMs = parseHistoryTimeMs(ordered[i]?.ts);
+    if (aMs === null) continue;
+    for (let j = i + 1; j < ordered.length; j += 1) {
+      const bMs = parseHistoryTimeMs(ordered[j]?.ts);
+      if (bMs === null) continue;
+      if (bMs - aMs > PIPELINE_INCIDENT_WINDOW_MS) break;
+      const relation = getPipelineIncidentRelation(ordered[i], ordered[j]);
+      if (relation.score >= PIPELINE_RELATION_SCORE_THRESHOLD) {
+        union(i, j);
+      }
+    }
   }
 
-  return groups.map(summarizePipelineIncident);
+  const byRoot = new Map<number, AppLogRow[]>();
+  ordered.forEach((log, index) => {
+    const root = find(index);
+    const group = byRoot.get(root);
+    if (group) {
+      group.push(log);
+    } else {
+      byRoot.set(root, [log]);
+    }
+  });
+
+  return [...byRoot.values()]
+    .flatMap((group) => splitPipelineIncidentCluster(group))
+    .map(summarizePipelineIncident);
 }
 
 function renderEventDataSummary(log: AppLogRow): string {
