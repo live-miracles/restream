@@ -126,7 +126,9 @@ report as a diagnostic view.
 
 The dashboard runtime surface now prefers a single `/api/v1/dashboard/runtime`
 snapshot whenever a refresh needs both engine health and host metrics; only
-metrics-only modes still hit `/metrics/system` directly.
+metrics-only modes still hit `/metrics/system` directly. Output start/stop
+controls now reuse runtime-only refreshes so they do not pull dashboard
+settings again after every toggle.
 
 ## Testing
 

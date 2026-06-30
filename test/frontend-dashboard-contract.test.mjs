@@ -221,6 +221,141 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
   }
 });
 
+test("output start and stop controls refresh runtime without invalidating dashboard settings", async () => {
+  const settingsUrl = "/api/v1/settings?view=dashboard";
+  const fullRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+  const steadyRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+  const startUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/start";
+  const stopUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/stop";
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+  appendRoot(document, "div", "dashboard-grid");
+
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const href = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+    requests.push([method, href]);
+
+    if (href === settingsUrl) {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          ingestHost: "stream.example.com",
+          pipelines: [
+            {
+              id: "pipe-1",
+              name: "Pipeline 1",
+              streamKey: "stream-key",
+              inputSource: null,
+            },
+          ],
+          outputs: [
+            {
+              id: "out-1",
+              pipelineId: "pipe-1",
+              name: "Primary Output",
+              url: "rtmp://example.com/live/secret",
+              encoding: "source",
+              desiredState: "started",
+            },
+          ],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === fullRuntimeUrl || href === steadyRuntimeUrl) {
+      return new Response(
+        JSON.stringify({
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  probeStatus: "ready",
+                  bytesReceived: 0,
+                  bytesSent: 0,
+                  readers: 0,
+                  bitrateKbps: 3200,
+                },
+                outputs: {
+                  "out-1": {
+                    status: "running",
+                    rawStatus: "running",
+                    phase: "sending",
+                    bitrateKbps: 1500,
+                    totalSize: 2048,
+                  },
+                },
+              },
+            },
+          },
+          metrics: {
+            generatedAt:
+              href === fullRuntimeUrl
+                ? "2026-06-30T00:00:00Z"
+                : "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 12 },
+            memory: { usedPercent: 20 },
+            disk: { usedPercent: 40 },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+            engine: {
+              cpuPercent: 3,
+              totalMemoryBytes: 1234,
+              cpuSampleReady: true,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === startUrl || href === stopUrl) {
+      return new Response(
+        JSON.stringify({ ok: true }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${href}`);
+  };
+
+  const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+  const editor = await loadCompiledFrontendModule("features/editor.js");
+
+  await dashboard.refreshDashboard();
+  requests.length = 0;
+
+  await editor.startOutBtn("pipe-1", "out-1");
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [
+    ["POST", startUrl],
+    ["GET", steadyRuntimeUrl],
+  ]);
+
+  requests.length = 0;
+
+  await editor.stopOutBtn("pipe-1", "out-1");
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [
+    ["POST", stopUrl],
+    ["GET", steadyRuntimeUrl],
+  ]);
+  assert.equal(
+    requests.some(([, href]) => href === settingsUrl),
+    false,
+    "output controls should not refetch dashboard settings after steady-state boot",
+  );
+});
+
 test("overview activity SSE wakes the dashboard runtime without waiting for the next poll", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const summaryRuntimeWithFullMetricsUrl =

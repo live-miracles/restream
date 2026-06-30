@@ -599,6 +599,8 @@ The dashboard currently uses:
   SSE-triggered refreshes
 - `health_view=full` for pipeline/inspect/control and publisher-health paths
   that need detailed runtime state
+- runtime-only output start/stop follow-up refreshes so operator controls do not
+  invalidate cached dashboard settings on every toggle
 - standalone `/metrics/system` fetches only in modes that do not need runtime
   health in the same refresh
 

@@ -51,7 +51,7 @@ import {
 import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
 import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
-import { refreshDashboard } from "./dashboard.js";
+import { refreshDashboard, refreshDashboardRuntime } from "./dashboard.js";
 import {
   beginOutputControlIntent,
   finishOutputControlIntent,
@@ -720,7 +720,7 @@ export async function startOutBtn(
   try {
     const res = await startOut(pipeId, outId);
     if (res !== null) {
-      await refreshDashboard();
+      await refreshDashboardRuntime();
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);
@@ -741,7 +741,7 @@ export async function stopOutBtn(
   try {
     const res = await stopOut(pipeId, outId);
     if (res !== null) {
-      await refreshDashboard();
+      await refreshDashboardRuntime();
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);
