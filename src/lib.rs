@@ -382,7 +382,7 @@ pub async fn run_app() {
     );
     let sessions = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
     crate::api::initialize_auth(&pool, &sessions).await;
-    crate::media::profiles::load_from_db(&pool).await;
+    crate::application::transcode_profiles::load_transcode_profiles(&meta_store).await;
     let engine = Arc::new(MediaEngine::new());
     let pipeline_lookup: Arc<dyn crate::application::ports::PipelineStore> =
         Arc::new(pipeline_store);

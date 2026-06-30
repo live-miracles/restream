@@ -44,6 +44,7 @@ use crate::application::ports::{
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::settings::load_settings_snapshot;
 use crate::application::srt_ingest::{SRT_INGEST_GLOBAL_CONFIG_META_KEY, refresh_policy_store};
+use crate::application::transcode_profiles::save_transcode_profiles;
 use crate::db;
 use crate::diag;
 use crate::domain::ingest_security::IngestSecurityConfig;
@@ -1041,7 +1042,9 @@ async fn config_patch_handler(
                     .into_response();
             }
         }
-        if let Err(e) = crate::media::profiles::save_to_db(&state.db, profiles).await {
+        if let Err(e) =
+            save_transcode_profiles(&SqliteMetaStore::new(state.db.clone()), profiles).await
+        {
             warn!(err = %e, "failed to save transcode profiles");
             return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save profiles").into_response();
         }

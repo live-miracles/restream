@@ -1,26 +1,10 @@
-//! Transcode profile configuration — stored in DB `meta` table, editable
-//! via the settings API + frontend.
+//! Runtime transcode profile cache and built-in defaults used by the
+//! transcoder and API-facing settings reads.
 //!
 //! Profiles are looked up by name (e.g. "h264", "720p") and control all
-//! encoder settings. Stored as JSON in `meta.transcode_profiles`.
-//! If the DB key is absent, built-in realtime defaults are used.
-//!
-//! Schema (stored as `meta.transcode_profiles` value):
-//! ```json
-//! {
-//!   "h264": {
-//!     "preset": "ultrafast",
-//!     "tune": "zerolatency",
-//!     "crf": 23,
-//!     "gop": 60,
-//!     "bframes": 0,
-//!     "bitrate": 0,
-//!     "maxBitrate": 0,
-//!     "width": 0,
-//!     "height": 0
-//!   }
-//! }
-//! ```
+//! encoder settings. Persistence and JSON/meta-table round-tripping live in
+//! `crate::application::transcode_profiles`; this module only owns built-ins
+//! plus the in-memory cache consumed on hot runtime paths.
 //!
 //! - `bitrate: 0` → CRF mode (constant quality, adapts to content)
 //! - `width/height: 0` → passthrough (match source resolution)
@@ -28,12 +12,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
 
 use crate::domain::transcode_profile::{TranscodeProfile, TranscodeProfiles};
-
-/// Meta key in the DB `meta` table.
-pub const META_KEY: &str = "transcode_profiles";
 
 /// Runtime cache of profiles. Loaded from DB at startup, updated when
 /// the settings API patches the config. The transcoder reads from this
@@ -61,49 +41,10 @@ pub async fn current_effective() -> TranscodeProfiles {
     effective_profiles(&cache)
 }
 
-/// Load profiles from the DB `meta` table and update the runtime cache.
-/// Called at startup and when the settings API patches the config.
-pub async fn load_from_db(pool: &sqlx::SqlitePool) {
-    let profiles = match crate::db::get_meta(pool, META_KEY).await {
-        Ok(Some(json_str)) => match serde_json::from_str::<TranscodeProfiles>(&json_str) {
-            Ok(p) if !p.is_empty() => {
-                info!(count = p.len(), "loaded profiles from DB");
-                p
-            }
-            Ok(_) => {
-                warn!("DB has empty profiles, using defaults");
-                built_in_defaults()
-            }
-            Err(e) => {
-                warn!(err = %e, "failed to parse DB profiles, using defaults");
-                built_in_defaults()
-            }
-        },
-        _ => {
-            info!("no DB profiles found, using built-in defaults");
-            built_in_defaults()
-        }
-    };
-
-    let mut cache = cache().write().await;
-    *cache = profiles;
-}
-
-/// Save profiles to the DB and update the runtime cache.
-/// Called by the settings API PATCH handler.
-pub async fn save_to_db(
-    pool: &sqlx::SqlitePool,
-    profiles: &TranscodeProfiles,
-) -> Result<(), String> {
-    let json = serde_json::to_string(profiles).map_err(|e| e.to_string())?;
-    crate::db::set_meta(pool, META_KEY, &json)
-        .await
-        .map_err(|e| e.to_string())?;
-
+/// Replace the runtime cache from a persisted/configured profile set.
+pub async fn replace_runtime_profiles(profiles: &TranscodeProfiles) {
     let mut cache = cache().write().await;
     *cache = effective_profiles(profiles);
-    info!(count = profiles.len(), "updated profiles in DB + cache");
-    Ok(())
 }
 
 /// Get a profile by name. Falls back to "h264", then to default.

@@ -10,3 +10,4 @@ pub mod reconcile;
 pub mod recording;
 pub mod settings;
 pub mod srt_ingest;
+pub mod transcode_profiles;
