@@ -4391,7 +4391,7 @@ async fn v1_engine_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    Json(state.engine.engine_telemetry().await).into_response()
+    Json(crate::media::engine_views::engine_telemetry(&state.engine).await).into_response()
 }
 
 async fn v1_pipeline_telemetry_handler(
@@ -4402,7 +4402,8 @@ async fn v1_pipeline_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    Json(state.engine.pipeline_telemetry(&pipeline_id).await).into_response()
+    Json(crate::media::engine_views::pipeline_telemetry(&state.engine, &pipeline_id).await)
+        .into_response()
 }
 
 async fn v1_stage_telemetry_handler(
@@ -4413,7 +4414,7 @@ async fn v1_stage_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    match state.engine.stage_telemetry_by_display(&stage_key).await {
+    match crate::media::engine_views::stage_telemetry_by_display(&state.engine, &stage_key).await {
         Some(val) => Json(val).into_response(),
         None => (StatusCode::NOT_FOUND, "Stage not found").into_response(),
     }
@@ -4510,9 +4511,9 @@ async fn agent_investigation_handler(
         None
     };
     let telemetry = if let Some(pid) = request.pipeline_id.as_deref() {
-        state.engine.pipeline_telemetry(pid).await
+        crate::media::engine_views::pipeline_telemetry(&state.engine, pid).await
     } else {
-        state.engine.engine_telemetry().await
+        crate::media::engine_views::engine_telemetry(&state.engine).await
     };
     let events = state.engine.recent_events(
         request.event_limit.min(events::MAX_EVENTS),
@@ -4833,11 +4834,12 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .await;
     let alerts = alerts::derive_alerts(&health);
     let events = state.engine.recent_events(events::MAX_EVENTS, None);
-    let engine_telemetry = state.engine.engine_telemetry().await;
+    let engine_telemetry = crate::media::engine_views::engine_telemetry(&state.engine).await;
     let mut pipeline_telemetry = Vec::new();
     let mut graphs = Vec::new();
     for pipeline_id in &pipeline_ids {
-        pipeline_telemetry.push(state.engine.pipeline_telemetry(pipeline_id).await);
+        pipeline_telemetry
+            .push(crate::media::engine_views::pipeline_telemetry(&state.engine, pipeline_id).await);
         graphs.push(state.engine.processing_graph(pipeline_id, &outputs).await);
     }
     let desired_vs_actual = agent_desired_vs_actual(

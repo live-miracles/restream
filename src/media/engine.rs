@@ -2375,29 +2375,6 @@ impl MediaEngine {
         .await
     }
 
-    /// Engine-wide telemetry: raw counters for all active ingests, stages, and
-    /// egresses. Intended for engineer dashboards and debugging.
-    pub async fn engine_telemetry(&self) -> serde_json::Value {
-        crate::media::engine_views::engine_telemetry(self).await
-    }
-
-    /// Per-pipeline telemetry: ingest metrics, all stage metrics for this
-    /// pipeline, and egress metrics. Returns None if the pipeline has no
-    /// active components.
-    pub async fn pipeline_telemetry(&self, pipeline_id: &str) -> serde_json::Value {
-        crate::media::engine_views::pipeline_telemetry(self, pipeline_id).await
-    }
-
-    /// Single-stage telemetry by StageKey. Returns raw counters and pipe
-    /// metrics (if present). Used by the engineer stage telemetry endpoint.
-    pub async fn stage_telemetry(&self, key: &StageKey) -> Option<serde_json::Value> {
-        crate::media::engine_views::stage_telemetry(self, key).await
-    }
-
-    pub async fn stage_telemetry_by_display(&self, display: &str) -> Option<serde_json::Value> {
-        crate::media::engine_views::stage_telemetry_by_display(self, display).await
-    }
-
     /// Build a processing graph for a pipeline showing all stages and connections.
     /// Returns a JSON structure suitable for visualization.
     pub async fn processing_graph(

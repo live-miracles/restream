@@ -408,24 +408,6 @@ pub(crate) async fn pipeline_telemetry(
     )
 }
 
-pub(crate) async fn stage_telemetry(
-    engine: &MediaEngine,
-    key: &StageKey,
-) -> Option<serde_json::Value> {
-    let all_stage_metrics = engine.stages.metrics.read().await;
-    let metrics = all_stage_metrics.get(key)?;
-
-    let all_pipe_metrics = engine.stages.pipe_metrics.read().await;
-    let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
-
-    Some(api_view_models::single_stage_telemetry_json(
-        chrono::Utc::now().to_rfc3339(),
-        key,
-        metrics.snapshot(),
-        pipe,
-    ))
-}
-
 pub(crate) async fn stage_telemetry_by_display(
     engine: &MediaEngine,
     display: &str,
