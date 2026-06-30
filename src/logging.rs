@@ -21,6 +21,7 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Id, Metadata, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
@@ -190,6 +191,13 @@ impl Visit for SpanVisitor {
     }
 }
 
+fn history_level_enabled(level: &tracing::Level) -> bool {
+    matches!(
+        *level,
+        tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
+    )
+}
+
 // ── DbLayer ───────────────────────────────────────────────────────────────────
 
 struct DbLayer {
@@ -222,8 +230,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let meta = event.metadata();
-        // Only persist INFO and above to the database.
-        if *meta.level() > tracing::Level::INFO {
+        if !history_level_enabled(meta.level()) {
             return;
         }
 
@@ -292,7 +299,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let meta = event.metadata();
-        if *meta.level() > tracing::Level::INFO {
+        if !history_level_enabled(meta.level()) {
             return;
         }
 
@@ -395,12 +402,15 @@ pub fn init(db_pool: SqlitePool) -> LoggingHandles {
         .with_target(true)
         .json();
 
+    let history_filter = filter_fn(|meta: &Metadata<'_>| history_level_enabled(meta.level()));
+
     let subscriber = tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt_layer_stdout)
-        .with(fmt_layer_file)
-        .with(db_layer)
-        .with(bc_layer);
+        .with(fmt_layer_stdout.with_filter(filter.clone()))
+        .with(fmt_layer_file.with_filter(filter))
+        .with(db_layer.with_filter(history_filter))
+        .with(bc_layer.with_filter(filter_fn(|meta: &Metadata<'_>| {
+            history_level_enabled(meta.level())
+        })));
 
     // set_global_default panics if called twice — acceptable for a process-lifetime init.
     tracing::subscriber::set_global_default(subscriber)
@@ -445,5 +455,23 @@ pub fn init(db_pool: SqlitePool) -> LoggingHandles {
         broadcast_tx,
         _db_tx: db_tx,
         _file_guard: file_guard,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_level_enabled;
+
+    #[test]
+    fn history_level_filter_keeps_operator_levels() {
+        assert!(history_level_enabled(&tracing::Level::ERROR));
+        assert!(history_level_enabled(&tracing::Level::WARN));
+        assert!(history_level_enabled(&tracing::Level::INFO));
+    }
+
+    #[test]
+    fn history_level_filter_drops_debug_and_trace() {
+        assert!(!history_level_enabled(&tracing::Level::DEBUG));
+        assert!(!history_level_enabled(&tracing::Level::TRACE));
     }
 }

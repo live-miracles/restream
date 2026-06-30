@@ -1301,6 +1301,36 @@ async fn verify_live_history_contract(
     }))
 }
 
+async fn verify_external_transcoder_history_contract(api: &RampApi) -> Result<Value, String> {
+    let logs = get_logs(
+        api,
+        "target=restream::media::external_transcoder&limit=200&order=desc",
+    )
+    .await?;
+
+    if logs.is_empty() {
+        return Err(
+            "external transcoder history contract found no restream::media::external_transcoder logs"
+                .to_string(),
+        );
+    }
+
+    let correlated_log_count = logs
+        .iter()
+        .filter(|log| log_has_correlation_id(log))
+        .count();
+    if correlated_log_count == 0 {
+        return Err(
+            "external transcoder history contract found no correlated stage logs".to_string(),
+        );
+    }
+
+    Ok(json!({
+        "targetLogCount": logs.len(),
+        "correlatedLogCount": correlated_log_count,
+    }))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceSweepLifecycle {
     Isolated,
@@ -11069,6 +11099,7 @@ async fn fault_resilience() -> Result<Value, String> {
     }
 
     let history_contract = verify_live_history_contract(&api, &["egress.failed"]).await?;
+    let external_transcoder_history = verify_external_transcoder_history_contract(&api).await?;
     println!("[fault-resilience] history contract verified");
 
     stop_child(&mut child).await;
@@ -11079,6 +11110,7 @@ async fn fault_resilience() -> Result<Value, String> {
         "passed": all_passed,
         "tests": results,
         "historyContract": history_contract,
+        "externalTranscoderHistory": external_transcoder_history,
     });
 
     let result_path = work_dir.join("fault-resilience.json");
