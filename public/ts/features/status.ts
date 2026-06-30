@@ -89,10 +89,13 @@ interface StatusData {
 
 const STATUS_PROCESS_LOG_LIMIT = 80;
 const STATUS_ACTIVITY_LIMIT = 12;
+const STATUS_STREAM_RECONNECT_MS = 1000;
 let statusDataSnapshot: StatusData | null = null;
 let statusProcessLogs: AppLogRow[] = [];
 let statusStream: EventSource | null = null;
 let statusStreamActive = false;
+let statusStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let statusStreamLastEventId: number | null = null;
 
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "--";
@@ -377,6 +380,13 @@ function latestStatusProcessLogId(): number | null {
   return ids.length > 0 ? Math.max(...ids) : null;
 }
 
+function rememberStatusProcessLogId(log: AppLogRow | null | undefined): void {
+  const id = Number(log?.id);
+  if (Number.isFinite(id) && id > 0) {
+    statusStreamLastEventId = id;
+  }
+}
+
 function timestampForFilename(): string {
   return new Date()
     .toISOString()
@@ -445,10 +455,18 @@ function bindActions(status: StatusData, sbomEndpoint: string): void {
 }
 
 function closeStatusStream(): void {
+  if (statusStreamReconnectTimer) {
+    clearTimeout(statusStreamReconnectTimer);
+    statusStreamReconnectTimer = null;
+  }
   if (statusStream) {
     statusStream.close();
     statusStream = null;
   }
+}
+
+function statusStreamingEnabled(): boolean {
+  return statusStreamActive && !document.hidden;
 }
 
 function renderStatusSnapshot(): void {
@@ -541,7 +559,7 @@ function renderStatusSnapshot(): void {
 }
 
 function openStatusStream(): void {
-  if (!statusStreamActive || !statusDataSnapshot) return;
+  if (!statusStreamingEnabled() || !statusDataSnapshot) return;
   if (typeof EventSource !== "function") return;
   if (statusStream) return;
 
@@ -549,7 +567,7 @@ function openStatusStream(): void {
     const stream = new EventSource(
       buildLogsStreamUrl({
         scope: "restream",
-        lastEventId: latestStatusProcessLogId(),
+        lastEventId: statusStreamLastEventId ?? latestStatusProcessLogId(),
       }),
     );
     statusStream = stream;
@@ -557,6 +575,7 @@ function openStatusStream(): void {
       if (statusStream !== stream) return;
       try {
         const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
+        rememberStatusProcessLogId(data);
         mergeStatusProcessLogs([data]);
         renderStatusSnapshot();
       } catch {
@@ -566,7 +585,11 @@ function openStatusStream(): void {
     stream.onerror = () => {
       if (statusStream !== stream) return;
       closeStatusStream();
-      if (statusStreamActive) openStatusStream();
+      if (!statusStreamingEnabled()) return;
+      statusStreamReconnectTimer = setTimeout(() => {
+        statusStreamReconnectTimer = null;
+        openStatusStream();
+      }, STATUS_STREAM_RECONNECT_MS);
     };
   } catch {
     closeStatusStream();
@@ -575,7 +598,15 @@ function openStatusStream(): void {
 
 export function setStatusStreamActive(active: boolean): void {
   statusStreamActive = active;
-  if (!active) {
+  if (!statusStreamingEnabled()) {
+    closeStatusStream();
+    return;
+  }
+  openStatusStream();
+}
+
+export function syncStatusStreamVisibility(): void {
+  if (!statusStreamingEnabled()) {
     closeStatusStream();
     return;
   }
@@ -599,6 +630,7 @@ export async function loadStatus(): Promise<void> {
   statusProcessLogs = Array.isArray(processHistory?.logs)
     ? (processHistory?.logs as AppLogRow[])
     : [];
+  statusStreamLastEventId = latestStatusProcessLogId();
   renderStatusSnapshot();
   closeStatusStream();
   openStatusStream();

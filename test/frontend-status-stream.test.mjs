@@ -18,7 +18,7 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("status mode reuses restream log SSE for live process activity and closes outside status mode", async () => {
+test("status mode reuses restream log SSE, pauses it while hidden, and resumes from the last event id", async () => {
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=status";
   const container = appendRoot(document, "div", "status-versions");
@@ -130,6 +130,18 @@ test("status mode reuses restream log SSE for live process activity and closes o
 
   assert.match(container.innerHTML, /task exited unexpectedly/);
 
-  status.setStatusStreamActive(false);
+  document.hidden = true;
+  status.syncStatusStreamVisibility();
   assert.equal(streams[0].closed, true);
+
+  document.hidden = false;
+  status.syncStatusStreamVisibility();
+  assert.equal(streams.length, 2);
+  assert.equal(
+    streams[1].url,
+    "/api/v1/logs/stream?scope=restream&last_event_id=92",
+  );
+
+  status.setStatusStreamActive(false);
+  assert.equal(streams[1].closed, true);
 });

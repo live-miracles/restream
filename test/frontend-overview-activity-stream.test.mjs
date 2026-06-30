@@ -19,7 +19,7 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("overview activity uses a restream-scoped log stream after the initial snapshot", async () => {
+test("overview activity uses a restream-scoped log stream after the initial snapshot and pauses it while hidden", async () => {
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=overview";
 
@@ -122,7 +122,7 @@ test("overview activity uses a restream-scoped log stream after the initial snap
   );
 
   overviewActivityStream.emit("log", {
-    id: 0,
+    id: 42,
     ts: "2026-06-30T00:00:05Z",
     level: "WARN",
     target: "restream::worker",
@@ -138,4 +138,21 @@ test("overview activity uses a restream-scoped log stream after the initial snap
   const overview = document.getElementById("overview-mode-content");
   assert.ok(overview instanceof FakeElement);
   assert.match(overview.innerHTML, /Server Task Exit/);
+
+  document.hidden = true;
+  modes.syncOverviewActivityStream();
+  assert.equal(overviewActivityStream.closed, true);
+
+  document.hidden = false;
+  modes.syncOverviewActivityStream();
+
+  const resumedOverviewActivityStream = streams.find(
+    (stream) =>
+      stream !== overviewActivityStream &&
+      stream.url === "/api/v1/logs/stream?scope=restream&last_event_id=42",
+  );
+  assert.equal(
+    resumedOverviewActivityStream?.url,
+    "/api/v1/logs/stream?scope=restream&last_event_id=42",
+  );
 });

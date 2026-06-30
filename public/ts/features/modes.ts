@@ -14,7 +14,11 @@ import {
   renderMediaLibraryMode,
 } from "./media-library.js";
 import { loadSettings, renderSettingsPanel } from "./settings.js";
-import { loadStatus, setStatusStreamActive } from "./status.js";
+import {
+  loadStatus,
+  setStatusStreamActive,
+  syncStatusStreamVisibility,
+} from "./status.js";
 import {
   isOutputFlapping,
   isOutputIntentStopped,
@@ -83,6 +87,7 @@ const OVERVIEW_HISTORY_LIMIT = 28;
 const OVERVIEW_ACTIVITY_LIMIT = 6;
 const OVERVIEW_ACTIVITY_FETCH_LIMIT = 24;
 const OVERVIEW_ACTIVITY_STALE_MS = 15_000;
+const OVERVIEW_ACTIVITY_RECONNECT_MS = 1000;
 const overviewMetricHistory: Record<OverviewMetricKey, number[]> = {
   inputs: [],
   outputs: [],
@@ -96,6 +101,7 @@ let overviewActivityLogs: AppLogRow[] = [];
 let overviewActivityFetchedAt = 0;
 let overviewActivityInFlight: Promise<void> | null = null;
 let overviewActivityStream: EventSource | null = null;
+let overviewActivityReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function overviewActivityLogKey(log: AppLogRow): string {
   const id = Number(log?.id);
@@ -127,15 +133,25 @@ function latestOverviewActivityId(): number | null {
 }
 
 function closeOverviewActivityStream(): void {
+  if (overviewActivityReconnectTimer) {
+    clearTimeout(overviewActivityReconnectTimer);
+    overviewActivityReconnectTimer = null;
+  }
   if (overviewActivityStream) {
     overviewActivityStream.close();
     overviewActivityStream = null;
   }
 }
 
+function overviewActivityStreamingEnabled(): boolean {
+  return (
+    !document.hidden && (currentMode === null || currentMode === "overview")
+  );
+}
+
 function ensureOverviewActivityStream(): void {
   if (typeof EventSource !== "function") return;
-  if (currentMode !== null && currentMode !== "overview") {
+  if (!overviewActivityStreamingEnabled()) {
     closeOverviewActivityStream();
     return;
   }
@@ -159,20 +175,22 @@ function ensureOverviewActivityStream(): void {
   overviewActivityStream.onerror = () => {
     closeOverviewActivityStream();
     overviewActivityFetchedAt = 0;
-    if (currentMode === "overview" || currentMode === null) {
+    if (!overviewActivityStreamingEnabled()) return;
+    overviewActivityReconnectTimer = setTimeout(() => {
+      overviewActivityReconnectTimer = null;
       refreshOverviewActivityIfStale();
-    }
+    }, OVERVIEW_ACTIVITY_RECONNECT_MS);
   };
 }
 
 function refreshOverviewActivityIfStale(): void {
-  if (currentMode !== null && currentMode !== "overview") {
+  if (!overviewActivityStreamingEnabled()) {
     closeOverviewActivityStream();
     return;
   }
   const shouldFetchSnapshot =
-    overviewActivityLogs.length === 0 ||
-    (overviewActivityStream === null &&
+    overviewActivityStream === null &&
+    (overviewActivityLogs.length === 0 ||
       Date.now() - overviewActivityFetchedAt >= OVERVIEW_ACTIVITY_STALE_MS);
   if (!shouldFetchSnapshot) {
     ensureOverviewActivityStream();
@@ -195,6 +213,14 @@ function refreshOverviewActivityIfStale(): void {
       ensureOverviewActivityStream();
       if (currentMode === "overview" || currentMode === null) renderOverview();
     });
+}
+
+export function syncOverviewActivityStream(): void {
+  if (!overviewActivityStreamingEnabled()) {
+    closeOverviewActivityStream();
+    return;
+  }
+  refreshOverviewActivityIfStale();
 }
 
 function overviewActivitySection(): string {
@@ -1086,9 +1112,7 @@ function refreshActiveMode(): void {
 function applyMode(mode: DashboardMode): void {
   const previousMode = currentMode;
   currentMode = mode;
-  if (mode !== "overview") {
-    closeOverviewActivityStream();
-  }
+  syncOverviewActivityStream();
   setStatusStreamActive(mode === "status");
   syncDashboardRuntimeStream();
   const panels: Record<DashboardMode, HTMLElement | null> = {
@@ -1198,6 +1222,10 @@ export function initDashboardModes(): void {
         setDashboardMode(button.dataset.dashboardMode || "overview");
     });
   window.addEventListener("popstate", refreshActiveMode);
+  document.addEventListener("visibilitychange", () => {
+    syncOverviewActivityStream();
+    syncStatusStreamVisibility();
+  });
   window.setDashboardMode = setDashboardMode;
   refreshActiveMode();
 }

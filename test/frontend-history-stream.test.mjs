@@ -230,6 +230,9 @@ test("output history live mode uses filtered log SSE and reconnects when switchi
       historyState.outputHistoryState.rawLogs.map((log) => log.id),
       [50, 51],
     );
+
+    historyController.toggleHistoryPlayPause();
+    await flushAsyncWork();
   } finally {
     globalThis.setInterval = originalSetInterval;
     FakeElement.prototype.querySelector = originalQuerySelector;
@@ -348,7 +351,145 @@ test("pipeline history live mode uses pipeline-scoped log SSE", async () => {
       historyState.pipelineHistoryState.logs.map((log) => log.id),
       [61, 62],
     );
+
+    historyController.togglePipelineHistoryPlayPause();
+    await flushAsyncWork();
   } finally {
     globalThis.setInterval = originalSetInterval;
+  }
+});
+
+test("output history live mode closes SSE while hidden and resumes from the latest event id when visible again", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/";
+  mountOutputHistoryDom(document);
+
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (
+      href ===
+      "/api/v1/logs?pipeline_id=pipe-1&output_id=out-1&event_class=lifecycle"
+    ) {
+      return new Response(
+        JSON.stringify({
+          logs: [
+            {
+              id: 41,
+              ts: "2026-06-30T00:00:00Z",
+              level: "INFO",
+              target: "restream::output",
+              message: "[lifecycle] started",
+              fields: "{}",
+              pipelineId: "pipe-1",
+              outputId: "out-1",
+              eventType: "lifecycle.started",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const streams = [];
+  class FakeEventSource {
+    static CLOSED = 2;
+
+    constructor(url) {
+      this.url = String(url);
+      this.handlers = new Map();
+      this.readyState = 1;
+      this.closed = false;
+      this.onerror = null;
+      streams.push(this);
+    }
+
+    addEventListener(type, handler) {
+      const handlers = this.handlers.get(type) || [];
+      handlers.push(handler);
+      this.handlers.set(type, handlers);
+    }
+
+    emit(type, payload) {
+      const handlers = this.handlers.get(type) || [];
+      for (const handler of handlers) {
+        handler({ data: JSON.stringify(payload) });
+      }
+    }
+
+    close() {
+      this.closed = true;
+      this.readyState = FakeEventSource.CLOSED;
+    }
+  }
+
+  Object.defineProperty(globalThis, "EventSource", {
+    value: FakeEventSource,
+    configurable: true,
+  });
+
+  const originalQuerySelector = FakeElement.prototype.querySelector;
+  FakeElement.prototype.querySelector = function querySelector(selector) {
+    if (selector === ".js-log-msg" && this.innerHTML.includes("js-log-msg")) {
+      return new FakeElement("pre", this.ownerDocument);
+    }
+    if (selector === ".js-toggle" && this.innerHTML.includes("js-toggle")) {
+      return new FakeElement("button", this.ownerDocument);
+    }
+    return originalQuerySelector.call(this, selector);
+  };
+
+  try {
+    const historyController = await loadCompiledFrontendModule(
+      "history/controller.js",
+    );
+
+    await historyController.openOutputHistoryModal("pipe-1", "out-1", "Main");
+    await flushAsyncWork();
+
+    historyController.toggleHistoryPlayPause();
+    await flushAsyncWork();
+
+    assert.equal(streams.length, 1);
+    assert.equal(
+      streams[0].url,
+      "/api/v1/logs/stream?pipeline_id=pipe-1&output_id=out-1&event_class=lifecycle&last_event_id=41",
+    );
+
+    streams[0].emit("log", {
+      id: 42,
+      ts: "2026-06-30T00:00:01Z",
+      level: "INFO",
+      target: "restream::output",
+      message: "[lifecycle] stop requested",
+      fields: "{}",
+      pipelineId: "pipe-1",
+      outputId: "out-1",
+      eventType: "lifecycle.stop_requested",
+    });
+    await flushAsyncWork();
+
+    document.hidden = true;
+    await historyController.syncHistoryPollingWithVisibility();
+    assert.equal(streams[0].closed, true);
+
+    document.hidden = false;
+    await historyController.syncHistoryPollingWithVisibility();
+    const resumedStream = streams.find(
+      (stream) =>
+        stream.url ===
+          "/api/v1/logs/stream?pipeline_id=pipe-1&output_id=out-1&event_class=lifecycle&last_event_id=42" &&
+        !stream.closed,
+    );
+    assert.equal(
+      resumedStream?.url,
+      "/api/v1/logs/stream?pipeline_id=pipe-1&output_id=out-1&event_class=lifecycle&last_event_id=42",
+    );
+
+    historyController.toggleHistoryPlayPause();
+    await flushAsyncWork();
+  } finally {
+    FakeElement.prototype.querySelector = originalQuerySelector;
   }
 });

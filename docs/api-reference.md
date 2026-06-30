@@ -256,6 +256,9 @@ with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
 resume cursors instead of periodic history re-polls.
 Status mode also layers the same `scope=restream` stream over its initial
 snapshot so restream process activity can update live without repeated log GETs.
+Hidden dashboard tabs now close these SSE feeds and resume from the last seen
+event id when visible again, falling back to slower snapshot polling only while
+the tab is backgrounded.
 
 ## Output Status
 

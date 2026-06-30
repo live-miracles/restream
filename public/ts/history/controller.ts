@@ -428,7 +428,10 @@ function syncOutputHistoryLiveTransport(refreshFallback = false): void {
   stopPollerKeepPlaying(outputHistoryState);
   closeOutputHistoryStream();
   if (!outputHistoryState.playing) return;
-  if (!openOutputHistoryStream()) {
+  if (!document.hidden && openOutputHistoryStream()) {
+    return;
+  }
+  if (outputHistoryState.playing) {
     startOutputHistoryPollFallback(refreshFallback);
   }
 }
@@ -437,7 +440,10 @@ function syncPipelineHistoryLiveTransport(refreshFallback = false): void {
   stopPollerKeepPlaying(pipelineHistoryState);
   closePipelineHistoryStream();
   if (!pipelineHistoryState.playing) return;
-  if (!openPipelineHistoryStream()) {
+  if (!document.hidden && openPipelineHistoryStream()) {
+    return;
+  }
+  if (pipelineHistoryState.playing) {
     startPipelineHistoryPollFallback(refreshFallback);
   }
 }
@@ -592,27 +598,29 @@ export async function openPipelineHistoryModal(
 
 export async function syncHistoryPollingWithVisibility(): Promise<void> {
   if (outputHistoryState.playing) {
-    if (outputHistoryStream) {
-      if (!document.hidden) renderOutputHistory(false);
+    if (document.hidden) {
+      closeOutputHistoryStream();
+      startOutputHistoryPollFallback(false);
     } else {
-      startPoller(
-        outputHistoryState,
-        currentHistoryPollIntervalMs(),
-        pollHistoryOnce,
-      );
-      if (!document.hidden) await pollHistoryOnce();
+      syncOutputHistoryLiveTransport(false);
+      if (outputHistoryStream) {
+        renderOutputHistory(false);
+      } else {
+        await pollHistoryOnce();
+      }
     }
   }
   if (pipelineHistoryState.playing) {
-    if (pipelineHistoryStream) {
-      if (!document.hidden) renderPipelineHistory(false);
+    if (document.hidden) {
+      closePipelineHistoryStream();
+      startPipelineHistoryPollFallback(false);
     } else {
-      startPoller(
-        pipelineHistoryState,
-        currentHistoryPollIntervalMs(),
-        pollPipelineHistoryOnce,
-      );
-      if (!document.hidden) await pollPipelineHistoryOnce();
+      syncPipelineHistoryLiveTransport(false);
+      if (pipelineHistoryStream) {
+        renderPipelineHistory(false);
+      } else {
+        await pollPipelineHistoryOnce();
+      }
     }
   }
 }

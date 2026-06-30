@@ -560,9 +560,24 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
       "returning to a runtime mode should also refresh dashboard config",
     );
     assert.equal(
-      streams.length,
-      1,
+      streams.some(
+        (stream) =>
+          String(stream.url).startsWith(
+            "/api/v1/logs/stream?event_class=lifecycle",
+          ) ||
+          String(stream.url).includes("&event_class=lifecycle"),
+      ),
+      true,
       "returning to a runtime mode should open the lifecycle stream",
+    );
+    assert.equal(
+      streams.some(
+        (stream) =>
+          String(stream.url).startsWith("/api/v1/logs/stream?scope=restream") ||
+          String(stream.url).includes("&scope=restream"),
+      ),
+      true,
+      "returning to overview should also resume the restream activity stream",
     );
   } finally {
     if (originalEventSource === undefined) {
