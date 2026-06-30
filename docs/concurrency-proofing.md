@@ -38,9 +38,9 @@ Use the narrowest proof that can actually catch the bug:
      OS-thread boundaries.
    - Current live contract slices: `fault-resilience` and `recovery`.
      `recovery` also covers hung HLS PUT destinations timing out, surfacing
-     retry/error state, recovering after the sink restarts, and repeated RTMP
-     and SRT downstream sink flaps surfacing as recovered-but-unstable output
-     health.
+     retry/error state, recovering after the sink restarts, rapid same-pipeline
+     SRT publisher replacement races, and repeated RTMP and SRT downstream sink
+     flaps surfacing as recovered-but-unstable output health.
 
 5. Benchmarks
    - Use only for hot-path or end-to-end performance-sensitive changes.

@@ -10786,6 +10786,222 @@ async fn recovery_live_cases(
         sink_task.abort();
     }
 
+    // ── 2b. Rapid SRT publisher replacement preserves egress ownership ──
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-srt-replacement-race", "streamKey": "fault-srt-replacement-race"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+            .await
+            .map_err(|e| format!("sink bind {sink_port}: {e}"))?;
+        let sink_metrics = metrics.clone();
+        let sink_task = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let sink_metrics = sink_metrics.clone();
+                tokio::spawn(handle_generalized_sink_client(socket, sink_metrics));
+            }
+        });
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "srt-replacement-race-sink",
+                    "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-srt-replacement-race-sink"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-srt-replacement-race&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        while metrics.video_count.load(Ordering::Relaxed) < 10 {
+            if Instant::now() >= warm_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let baseline_video = metrics.video_count.load(Ordering::Relaxed);
+        let baseline_connections = metrics.connections.load(Ordering::Relaxed);
+
+        stop_child(&mut pub_child).await;
+
+        // Reconnect immediately so the old ingest's late disconnect/unregister
+        // cleanup races a replacement publisher on the same pipeline.
+        let replacement_url = format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/fault-srt-replacement-race&pkt_size=1316",
+            ports.srt
+        );
+        let mut replacement_child =
+            Some(spawn_publisher(fixture_h264, &replacement_url, "mpegts", true).await?);
+        let mut replacement_attempts = 1u64;
+        let recovery_deadline = Instant::now() + Duration::from_secs(30);
+        let mut saw_gap_grace = false;
+        let mut saw_recent_disconnect = false;
+        let mut saw_output_retrying = false;
+        let mut saw_output_missing = false;
+        let mut saw_output_nonrunning = false;
+        let mut recovered = false;
+        while Instant::now() < recovery_deadline {
+            if let Some(child) = replacement_child.as_mut()
+                && child.try_wait().map_err(|e| e.to_string())?.is_some()
+            {
+                replacement_child =
+                    Some(spawn_publisher(fixture_h264, &replacement_url, "mpegts", true).await?);
+                replacement_attempts += 1;
+            }
+
+            let health = api.get_json("/api/v1/engine/health").await.ok();
+            let input = health
+                .as_ref()
+                .map(|snapshot| snapshot["pipelines"][&pid]["input"].clone())
+                .unwrap_or(Value::Null);
+            saw_gap_grace |= input["disconnectGraceActive"] == true;
+            saw_recent_disconnect |= input["recentDisconnectCount"]
+                .as_u64()
+                .is_some_and(|count| count >= 1);
+
+            let status = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await;
+            match status {
+                Ok(status) => {
+                    saw_output_retrying |= status["retrying"].as_bool().unwrap_or(false);
+                    saw_output_nonrunning |= status["status"].as_str() != Some("running");
+                }
+                Err(_) => {
+                    saw_output_missing = true;
+                }
+            }
+
+            let disconnect_cleared = input["status"] == "on"
+                && input["probeStatus"] == "ready"
+                && input["lastSessionProtocol"].is_null()
+                && input["lastDisconnectReason"].is_null()
+                && input["lastFailurePhase"].is_null()
+                && input["recentDisconnectError"] == false;
+            let output_progressed =
+                metrics.video_count.load(Ordering::Relaxed) > baseline_video + 10;
+            if disconnect_cleared && output_progressed {
+                recovered = true;
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        let final_connections = metrics.connections.load(Ordering::Relaxed);
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_input = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let final_disconnect_cleared = final_input["status"] == "on"
+            && final_input["probeStatus"] == "ready"
+            && final_input["lastSessionProtocol"].is_null()
+            && final_input["lastDisconnectReason"].is_null()
+            && final_input["lastFailurePhase"].is_null()
+            && final_input["recentDisconnectError"] == false;
+        let final_recent_disconnect_count =
+            final_input["recentDisconnectCount"].as_u64().unwrap_or(0);
+        let passed = baseline_video >= 10
+            && baseline_connections == 1
+            && recovered
+            && final_connections == baseline_connections
+            && final_status_running
+            && !final_retrying
+            && final_disconnect_cleared
+            && !saw_output_retrying
+            && !saw_output_missing
+            && !saw_output_nonrunning;
+        println!(
+            "[fault] Rapid SRT publisher replacement preserves egress: {} (connections={} recovered={} attempts={} sawGapGrace={} sawRecentDisconnect={} sawRetrying={} sawMissing={} sawNonRunning={} finalRetrying={} disconnectCleared={} recentDisconnectCount={})",
+            if passed { "PASS" } else { "FAIL" },
+            final_connections,
+            recovered,
+            replacement_attempts,
+            saw_gap_grace,
+            saw_recent_disconnect,
+            saw_output_retrying,
+            saw_output_missing,
+            saw_output_nonrunning,
+            final_retrying,
+            final_disconnect_cleared,
+            final_recent_disconnect_count,
+        );
+        results.push(json!({
+            "test": "rapid-srt-replacement-preserves-egress",
+            "passed": passed,
+            "baselineVideo": baseline_video,
+            "baselineConnections": baseline_connections,
+            "recovered": recovered,
+            "replacementAttempts": replacement_attempts,
+            "sawGapGrace": saw_gap_grace,
+            "sawRecentDisconnect": saw_recent_disconnect,
+            "sawOutputRetrying": saw_output_retrying,
+            "sawOutputMissing": saw_output_missing,
+            "sawOutputNonRunning": saw_output_nonrunning,
+            "finalConnections": final_connections,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalDisconnectCleared": final_disconnect_cleared,
+            "finalRecentDisconnectCount": final_recent_disconnect_count,
+            "finalInputSnapshot": final_input,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        if let Some(child) = replacement_child.as_mut() {
+            stop_child(child).await;
+        }
+        sink_task.abort();
+    }
+
     // ── 3. Egress retry survives transient ingest gap within grace ─────
     {
         let pipeline = api
