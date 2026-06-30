@@ -169,7 +169,7 @@ Progress so far:
 - started: `application::ports::MetaStore`
 - started: `application::egress` shared output stage/ring preparation for lib runtime wiring
 - started: `application::ingest` stream-key lookup/auth helpers
-- started: `application::file_ingest` read-side ingest resolution shared by api handlers
+- started: `application::ingest` read-side file-ingest resolution shared by api handlers
 - started: `application::ingest_security` MetaStore-backed config loading
 - started: `application::recording` meta-backed recording enablement helpers for lib/api orchestration
 - started: `application::recording` settings load/save extracted from `media::recording`

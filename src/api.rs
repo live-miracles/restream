@@ -32,11 +32,10 @@ use tracing::{error, warn};
 
 use crate::alerts;
 use crate::api_view_models;
-use crate::application::file_ingest::{
+use crate::application::ingest::{
     ResolveFileIngestError, list_file_ingests_for_stream_key, load_configured_file_ingest,
-    load_file_ingest_by_id, resolve_file_ingest_context,
+    load_file_ingest_by_id, lookup_pipeline_by_stream_key, resolve_file_ingest_context,
 };
-use crate::application::ingest::lookup_pipeline_by_stream_key;
 use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
 use crate::application::ports::{SqliteIngestLookup, SqliteMetaStore, SqlitePipelineLookup};
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
