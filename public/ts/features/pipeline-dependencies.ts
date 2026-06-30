@@ -21,6 +21,7 @@ export interface PipelineViewDependencies {
   editOutBtn: ((pipeId: string, outId: string) => void) | null;
   deleteOutBtn: ((pipeId: string, outId: string) => void) | null;
   refreshDashboard: (() => Promise<void>) | null;
+  refreshDashboardRuntime: (() => Promise<void>) | null;
   openDiagnosticsModal: ((pipeId: string) => void) | null;
   openGraphExplorer: ((pipeId: string) => void) | null;
 }
@@ -35,6 +36,7 @@ export const pipelineViewDependencies: PipelineViewDependencies = {
   editOutBtn: null,
   deleteOutBtn: null,
   refreshDashboard: null,
+  refreshDashboardRuntime: null,
   openDiagnosticsModal: null,
   openGraphExplorer: null,
 };

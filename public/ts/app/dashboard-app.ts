@@ -1,4 +1,8 @@
-import { refreshDashboard, setDashboardHooks } from "../features/dashboard.js";
+import {
+  refreshDashboard,
+  refreshDashboardRuntime,
+  setDashboardHooks,
+} from "../features/dashboard.js";
 import {
   deleteOutBtn,
   editOutBtn,
@@ -45,6 +49,7 @@ export function initDashboardApp(): void {
     editOutBtn,
     deleteOutBtn,
     refreshDashboard,
+    refreshDashboardRuntime,
     openDiagnosticsModal,
     openGraphExplorer: openInspectGraph,
   });

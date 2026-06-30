@@ -356,6 +356,194 @@ test("output start and stop controls refresh runtime without invalidating dashbo
   );
 });
 
+test("recording and file-ingest controls refresh runtime without invalidating dashboard settings", async () => {
+  const settingsUrl = "/api/v1/settings?view=dashboard";
+  const fullRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+  const steadyRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+  const startRecordingUrl = "/api/v1/pipelines/pipe-1/recording/start";
+  const startIngestUrl = "/api/v1/ingests/ingest-1/start";
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+  appendRoot(document, "div", "dashboard-grid");
+  appendRoot(document, "div", "pipe-info-col");
+  appendRoot(document, "div", "pipe-name");
+  appendRoot(document, "button", "pipe-history-btn");
+  appendRoot(document, "button", "file-ingest-pipe-btn");
+  appendRoot(document, "button", "record-pipe-btn");
+  appendRoot(document, "button", "graph-pipe-btn");
+  appendRoot(document, "button", "diagnose-pipe-btn");
+  appendRoot(document, "button", "edit-pipe-btn");
+  appendRoot(document, "button", "delete-pipe-btn");
+  appendRoot(document, "div", "input-time");
+  appendRoot(document, "section", "file-source-section");
+  appendRoot(document, "span", "file-source-inline");
+  appendRoot(document, "details", "file-source-details");
+  appendRoot(document, "div", "file-source-container");
+  appendRoot(document, "div", "file-source-size");
+  appendRoot(document, "div", "file-source-modified");
+  appendRoot(document, "div", "file-source-loop");
+  appendRoot(document, "div", "file-source-start-time");
+  appendRoot(document, "div", "file-source-optimization");
+  appendRoot(document, "div", "file-source-video-codec");
+  appendRoot(document, "div", "file-source-fps");
+  appendRoot(document, "div", "file-source-duration");
+  appendRoot(document, "div", "file-source-gop");
+  appendRoot(document, "div", "file-source-gop-warning");
+  appendRoot(document, "section", "stream-key-section");
+  appendRoot(document, "code", "stream-key-inline");
+  appendRoot(document, "button", "stream-key-copy-btn");
+  appendRoot(document, "button", "ingest-protocol-rtmp");
+  appendRoot(document, "button", "ingest-protocol-srt");
+  appendRoot(document, "section", "ingest-url-section");
+  appendRoot(document, "button", "ingest-url-copy-btn");
+  appendRoot(document, "div", "ingest-url-surface");
+  appendRoot(document, "code", "ingest-url");
+  appendRoot(document, "div", "ingest-url-details");
+  appendRoot(document, "div", "ingest-details-grid");
+  appendRoot(document, "div", "video-player");
+  appendRoot(document, "div", "input-stats");
+
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const href = String(url);
+    const method = String(options.method || "GET").toUpperCase();
+    requests.push([method, href]);
+
+    if (href === settingsUrl) {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          ingestHost: "stream.example.com",
+          pipelines: [
+            {
+              id: "pipe-1",
+              name: "Pipeline 1",
+              streamKey: "stream-key",
+              inputSource: "file:session-recording.ts",
+              fileIngest: {
+                configured: true,
+                id: "ingest-1",
+                filename: "session-recording.ts",
+                running: false,
+              },
+              ingestUrls: {
+                rtmp: "rtmp://example.com/live/stream-key",
+                srt: "srt://example.com:10080?streamid=publish:live/stream-key",
+              },
+            },
+          ],
+          outputs: [],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === fullRuntimeUrl || href === steadyRuntimeUrl) {
+      return new Response(
+        JSON.stringify({
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  probeStatus: "ready",
+                  bytesReceived: 0,
+                  bytesSent: 0,
+                  readers: 0,
+                  bitrateKbps: 3200,
+                },
+                recording: { enabled: false, active: false },
+                outputs: {},
+              },
+            },
+          },
+          metrics: {
+            generatedAt:
+              href === fullRuntimeUrl
+                ? "2026-06-30T00:00:00Z"
+                : "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 12 },
+            memory: { usedPercent: 20 },
+            disk: { usedPercent: 40 },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+            engine: {
+              cpuPercent: 3,
+              totalMemoryBytes: 1234,
+              cpuSampleReady: true,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === startRecordingUrl) {
+      return new Response(
+        JSON.stringify({ enabled: true, active: true }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === startIngestUrl) {
+      return new Response(
+        JSON.stringify({
+          id: "ingest-1",
+          filename: "session-recording.ts",
+          streamKey: "stream-key",
+          loop: false,
+          startTime: "00:00:00",
+          liveOptimized: false,
+          targetGopSeconds: 2,
+          running: true,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${method} ${href}`);
+  };
+
+  const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+
+  pipelineView.setPipelineViewDependencies({
+    refreshDashboardRuntime: dashboard.refreshDashboardRuntime,
+  });
+
+  await dashboard.refreshDashboard();
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+  requests.length = 0;
+
+  await document.getElementById("record-pipe-btn").onclick();
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [
+    ["POST", startRecordingUrl],
+    ["GET", steadyRuntimeUrl],
+  ]);
+
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+  requests.length = 0;
+
+  await document.getElementById("file-ingest-pipe-btn").onclick();
+  await flushAsyncWork();
+
+  assert.deepEqual(requests, [
+    ["POST", startIngestUrl],
+    ["GET", steadyRuntimeUrl],
+  ]);
+  assert.equal(
+    requests.some(([, href]) => href === settingsUrl),
+    false,
+    "pipeline runtime controls should not refetch dashboard settings after steady-state boot",
+  );
+});
+
 test("overview activity SSE wakes the dashboard runtime without waiting for the next poll", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const summaryRuntimeWithFullMetricsUrl =

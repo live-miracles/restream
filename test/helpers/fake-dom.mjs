@@ -275,6 +275,18 @@ export class FakeElement {
     this.attributes.delete(String(name));
   }
 
+  toggleAttribute(name, force) {
+    const key = String(name);
+    const shouldHaveAttribute =
+      force === undefined ? !this.attributes.has(key) : Boolean(force);
+    if (shouldHaveAttribute) {
+      this.attributes.set(key, "");
+      return true;
+    }
+    this.attributes.delete(key);
+    return false;
+  }
+
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
   }

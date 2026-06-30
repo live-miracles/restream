@@ -479,12 +479,12 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     recordBtn.classList.toggle("btn-disabled", !canStart);
     recordBtn.title = !canStart ? "Input must be on to start recording" : "";
     recordBtn.onclick = async () => {
-      if (isRecordingEnabled) {
-        await stopRecording(pipe.id);
-      } else {
-        await startRecording(pipe.id);
+      const res = isRecordingEnabled
+        ? await stopRecording(pipe.id)
+        : await startRecording(pipe.id);
+      if (res !== null) {
+        await pipelineViewDependencies.refreshDashboardRuntime?.();
       }
-      await pipelineViewDependencies.refreshDashboard?.();
     };
   }
 
@@ -509,12 +509,12 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         ? `${running ? "Stop" : "Start"} file ingest for ${fileIngest.filename}`
         : "";
       fileIngestBtn.onclick = async () => {
-        if (running) {
-          await stopIngest(fileIngest.id as string);
-        } else {
-          await startIngest(fileIngest.id as string);
+        const res = running
+          ? await stopIngest(fileIngest.id as string)
+          : await startIngest(fileIngest.id as string);
+        if (res !== null) {
+          await pipelineViewDependencies.refreshDashboardRuntime?.();
         }
-        await pipelineViewDependencies.refreshDashboard?.();
       };
     }
   }
