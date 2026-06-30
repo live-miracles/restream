@@ -964,8 +964,10 @@ async fn config_get_handler(
         .unwrap_or(Some("Name".to_string()))
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
-    let srt_ingest = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
-    let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
+    let meta_store = SqliteMetaStore::new(state.db.clone());
+    let srt_ingest = load_global_srt_ingest_config(&meta_store).await;
+    let recording_settings =
+        crate::application::recording::load_recording_settings(&meta_store).await;
 
     // Transcode profiles from runtime cache, with built-ins exposed when unset.
     let transcode_profiles = crate::media::profiles::current_effective().await;
@@ -1033,9 +1035,12 @@ async fn config_patch_handler(
     }
 
     if let Some(ref recording_settings) = payload.recording_settings
-        && crate::media::recording::save_recording_settings(&state.db, recording_settings)
-            .await
-            .is_err()
+        && crate::application::recording::save_recording_settings(
+            &SqliteMetaStore::new(state.db.clone()),
+            recording_settings,
+        )
+        .await
+        .is_err()
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -6137,7 +6142,10 @@ async fn recording_start_handler(
         let input_source = pipeline.input_source.clone();
         let engine_rec = engine.clone();
         let media_dir = state.media_dir.clone();
-        let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
+        let recording_settings = crate::application::recording::load_recording_settings(
+            &SqliteMetaStore::new(state.db.clone()),
+        )
+        .await;
         tokio::spawn(async move {
             crate::media::recording::start_recording(
                 pipe_name,

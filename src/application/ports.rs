@@ -8,6 +8,8 @@ pub type PipelineLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Pipeline>, PipelineLookupError>> + Send + 'a>>;
 pub type MetaLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<String>, MetaLookupError>> + Send + 'a>>;
+pub type MetaWriteFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<String, MetaLookupError>> + Send + 'a>>;
 
 #[derive(Debug, Clone)]
 pub struct PipelineLookupError {
@@ -59,6 +61,10 @@ pub trait MetaStore: Send + Sync {
     fn get_meta<'a>(&'a self, key: &'a str) -> MetaLookupFuture<'a>;
 }
 
+pub trait MetaStoreWriter: Send + Sync {
+    fn set_meta<'a>(&'a self, key: &'a str, value: &'a str) -> MetaWriteFuture<'a>;
+}
+
 #[derive(Clone)]
 pub struct SqlitePipelineLookup {
     pool: SqlitePool,
@@ -95,6 +101,16 @@ impl MetaStore for SqliteMetaStore {
     fn get_meta<'a>(&'a self, key: &'a str) -> MetaLookupFuture<'a> {
         Box::pin(async move {
             crate::db::get_meta(&self.pool, key)
+                .await
+                .map_err(|err| MetaLookupError::new(err.to_string()))
+        })
+    }
+}
+
+impl MetaStoreWriter for SqliteMetaStore {
+    fn set_meta<'a>(&'a self, key: &'a str, value: &'a str) -> MetaWriteFuture<'a> {
+        Box::pin(async move {
+            crate::db::set_meta(&self.pool, key, value)
                 .await
                 .map_err(|err| MetaLookupError::new(err.to_string()))
         })
@@ -147,6 +163,17 @@ mod tests {
 
         let value = store.get_meta("test-key").await.unwrap();
 
+        assert_eq!(value.as_deref(), Some("test-value"));
+    }
+
+    #[tokio::test]
+    async fn sqlite_meta_store_writes_meta_value() {
+        let pool = test_pool().await;
+        let store = SqliteMetaStore::new(pool.clone());
+
+        store.set_meta("test-key", "test-value").await.unwrap();
+
+        let value = crate::db::get_meta(&pool, "test-key").await.unwrap();
         assert_eq!(value.as_deref(), Some("test-value"));
     }
 }

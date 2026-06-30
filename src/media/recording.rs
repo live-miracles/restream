@@ -8,6 +8,7 @@
 //! ends we optionally remux the completed `.ts` into `.mp4` via the configured
 //! FFmpeg subprocess when that binary exposes the MP4 muxer.
 
+pub use crate::application::recording::RecordingSettings;
 use crate::media::engine::MediaEngine;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
@@ -24,7 +25,6 @@ use tracing::{error, info, warn};
 
 const MIN_DURATION_SECS: u64 = 5;
 const MP4_MUXER_NAME: &str = "mov";
-const RECORDING_SETTINGS_META_KEY: &str = "recording_settings";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,12 +41,6 @@ pub struct RecordingConversionState {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct RecordingSettings {
-    pub retain_source_ts: bool,
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -142,23 +136,18 @@ pub(crate) fn load_conversion_state(ts_path: &Path) -> Option<RecordingConversio
 }
 
 pub async fn load_recording_settings(db: &SqlitePool) -> RecordingSettings {
-    crate::db::get_meta(db, RECORDING_SETTINGS_META_KEY)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str::<RecordingSettings>(&raw).ok())
-        .unwrap_or_default()
+    let meta_store = crate::application::ports::SqliteMetaStore::new(db.clone());
+    crate::application::recording::load_recording_settings(&meta_store).await
 }
 
 pub async fn save_recording_settings(
     db: &SqlitePool,
     settings: &RecordingSettings,
 ) -> Result<(), sqlx::Error> {
-    let raw = serde_json::to_string(settings)
-        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-    crate::db::set_meta(db, RECORDING_SETTINGS_META_KEY, &raw)
+    let meta_store = crate::application::ports::SqliteMetaStore::new(db.clone());
+    crate::application::recording::save_recording_settings(&meta_store, settings)
         .await
-        .map(|_| ())
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))
 }
 
 fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
