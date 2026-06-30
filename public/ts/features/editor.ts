@@ -52,6 +52,7 @@ import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
 import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
 import {
+  awaitDashboardRuntimeMutationConvergence,
   removeDashboardOutputConfig,
   removeDashboardPipelineConfig,
   refreshDashboardRuntime,
@@ -727,7 +728,10 @@ export async function startOutBtn(
   try {
     const res = await startOut(pipeId, outId);
     if (res !== null) {
-      await refreshDashboardRuntime();
+      if (res.output?.id && res.output?.pipelineId) {
+        upsertDashboardOutputConfig(res.output);
+      }
+      await awaitDashboardRuntimeMutationConvergence();
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);
@@ -748,7 +752,10 @@ export async function stopOutBtn(
   try {
     const res = await stopOut(pipeId, outId);
     if (res !== null) {
-      await refreshDashboardRuntime();
+      if (res.output?.id && res.output?.pipelineId) {
+        upsertDashboardOutputConfig(res.output);
+      }
+      await awaitDashboardRuntimeMutationConvergence();
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);

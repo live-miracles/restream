@@ -345,7 +345,7 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 
 Frontend transport/control layering now has explicit Node-scope coverage for:
 - the combined `/api/v1/dashboard/runtime` fetch shape that replaces paired dashboard health+metrics reads
-- output start/stop mutations reusing runtime-only refreshes instead of refetching dashboard settings
+- output start/stop mutations reusing lifecycle SSE convergence with a runtime-refresh fallback instead of always forcing an immediate runtime GET
 - recording and file-ingest mutations reusing runtime-only refreshes instead of refetching dashboard settings
 - output toggle responsiveness while start/stop API requests are in flight
 - output create/update mutations reusing returned payloads instead of refetching dashboard settings

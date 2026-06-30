@@ -42,7 +42,12 @@ let dashboardRuntimeStream: EventSource | null = null;
 let dashboardRuntimeStreamReconnectTimer: ReturnType<typeof setTimeout> | null =
   null;
 let dashboardRuntimeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let dashboardRuntimeMutationFallbackTimer: ReturnType<
+  typeof setTimeout
+> | null = null;
 let dashboardRuntimeLastEventId: number | null = null;
+let dashboardRuntimeMutationConvergencePromise: Promise<void> | null = null;
+let resolveDashboardRuntimeMutationConvergence: (() => void) | null = null;
 const DASHBOARD_RUNTIME_MODES = new Set([
   "overview",
   "pipeline",
@@ -64,6 +69,7 @@ const DASHBOARD_CONFIG_MODES = new Set([
 ]);
 const DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS = 200;
 const DASHBOARD_RUNTIME_STREAM_RECONNECT_MS = 1000;
+const DASHBOARD_RUNTIME_MUTATION_FALLBACK_MS = 1500;
 
 export function setDashboardHooks(hooks: Partial<DashboardHooks>): void {
   Object.assign(dashboardHooks, hooks || {});
@@ -242,8 +248,48 @@ function scheduleDashboardRuntimeRefresh(): void {
   dashboardRuntimeRefreshTimer = setTimeout(() => {
     dashboardRuntimeRefreshTimer = null;
     if (document.hidden || !shouldFetchRuntimeHealth()) return;
-    void requestDashboardRefresh(false);
+    void requestDashboardRefresh(false).finally(() => {
+      finishDashboardRuntimeMutationConvergence();
+    });
   }, DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS);
+}
+
+function clearDashboardRuntimeMutationFallbackTimer(): void {
+  if (!dashboardRuntimeMutationFallbackTimer) return;
+  clearTimeout(dashboardRuntimeMutationFallbackTimer);
+  dashboardRuntimeMutationFallbackTimer = null;
+}
+
+function finishDashboardRuntimeMutationConvergence(): void {
+  clearDashboardRuntimeMutationFallbackTimer();
+  if (!resolveDashboardRuntimeMutationConvergence) return;
+  const resolve = resolveDashboardRuntimeMutationConvergence;
+  resolveDashboardRuntimeMutationConvergence = null;
+  dashboardRuntimeMutationConvergencePromise = null;
+  resolve();
+}
+
+export function awaitDashboardRuntimeMutationConvergence(): Promise<void> {
+  clearDashboardRuntimeMutationFallbackTimer();
+
+  if (!dashboardRuntimeStreamingEnabled() || !dashboardRuntimeStream) {
+    return requestDashboardRefresh(false);
+  }
+
+  if (!dashboardRuntimeMutationConvergencePromise) {
+    dashboardRuntimeMutationConvergencePromise = new Promise((resolve) => {
+      resolveDashboardRuntimeMutationConvergence = resolve;
+    });
+  }
+
+  dashboardRuntimeMutationFallbackTimer = setTimeout(() => {
+    dashboardRuntimeMutationFallbackTimer = null;
+    void requestDashboardRefresh(false).finally(() => {
+      finishDashboardRuntimeMutationConvergence();
+    });
+  }, DASHBOARD_RUNTIME_MUTATION_FALLBACK_MS);
+
+  return dashboardRuntimeMutationConvergencePromise;
 }
 
 export function handleDashboardRuntimeLifecycleLog(log: AppLogRow): void {
@@ -348,6 +394,9 @@ async function fetchAndRerender(): Promise<void> {
     syncRestreamProcessIndicatorFromApiReachability();
   } else {
     syncRestreamProcessIndicatorFromHealth(state.health?.status);
+  }
+  if (runtimeResult?.health) {
+    finishDashboardRuntimeMutationConvergence();
   }
   rerenderDashboardFromState();
 }
