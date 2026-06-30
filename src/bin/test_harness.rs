@@ -1,3 +1,6 @@
+//! End-to-end integration harness that drives RTMP, SRT, HLS, and API flows
+//! against a running restream instance for higher-level verification.
+
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, OriginalUri, State};
 use axum::http::{HeaderMap, StatusCode};

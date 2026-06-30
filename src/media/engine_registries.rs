@@ -1,3 +1,6 @@
+//! Registry structs for `MediaEngine` state ownership, grouping the
+//! synchronized maps and sets that back ingest, egress, HLS, and stage lifecycles.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;

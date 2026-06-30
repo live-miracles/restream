@@ -1,3 +1,6 @@
+//! Application-layer loading for ingest security configuration, bridging
+//! persisted metadata into the domain config used at runtime.
+
 use crate::application::ports::MetaStore;
 use crate::domain::ingest_security::IngestSecurityConfig;
 

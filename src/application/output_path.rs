@@ -1,3 +1,6 @@
+//! Application-layer output path planning that interprets output encoding and
+//! target protocol choices into stage-aware routing decisions.
+
 use crate::domain::stage::{EncodingStagePlan, PipelineId, StageKey, StageKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

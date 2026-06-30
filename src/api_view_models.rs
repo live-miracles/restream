@@ -1,3 +1,6 @@
+//! HTTP-facing JSON serializers and view helpers assembled from typed runtime
+//! state so API handlers do not need to shape payloads inline.
+
 use crate::domain::stage::StageKey;
 use crate::media::engine::{
     ActiveEgress, ActiveIngest, EgressRetryState, MediaEngine, RecentEgressOutcome,

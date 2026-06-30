@@ -1,3 +1,6 @@
+//! Domain model for ingest security limits and ban-window settings that define
+//! how repeated ingest authentication failures are tracked and enforced.
+
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_INGEST_SECURITY_CONFIG: IngestSecurityConfig = IngestSecurityConfig {

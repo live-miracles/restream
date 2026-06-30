@@ -1,3 +1,6 @@
+//! Compatibility view builders that project `MediaEngine` runtime state into
+//! API-facing JSON while the engine/view split is still being tightened.
+
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 

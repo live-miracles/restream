@@ -1,3 +1,6 @@
+//! Application-layer output preparation that turns persisted output settings
+//! into the runtime ring and transcoder wiring owned by the media engine.
+
 use crate::application::output_path::OutputPath;
 use crate::media::engine::MediaEngine;
 use crate::media::ring_buffer::RingBuffer;

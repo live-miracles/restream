@@ -1,3 +1,6 @@
+//! Runtime dependency and build-version introspection exposed to status and
+//! diagnostics surfaces.
+
 use std::ffi::{CStr, c_char};
 
 use serde_json::{Value, json};

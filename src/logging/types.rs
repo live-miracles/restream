@@ -1,3 +1,6 @@
+//! Shared logging DTOs and filter shapes exchanged between persistence, API,
+//! and runtime logging code.
+
 use serde::{Deserialize, Serialize};
 
 /// Full row returned by /api/v1/logs.

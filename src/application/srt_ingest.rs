@@ -1,3 +1,6 @@
+//! Application-layer SRT ingest configuration loading and policy-store refresh
+//! that connect persisted settings and pipeline catalogs to runtime enforcement.
+
 use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
 use crate::domain::srt_ingest::{DEFAULT_SRT_PBKEYLEN, SrtGlobalIngestConfig, SrtGlobalIngestMode};
 use crate::media::srt::SrtIngestPolicyStore;

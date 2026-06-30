@@ -1,3 +1,6 @@
+//! Thin MPEG-TS chunk ring wrapper that gives TS consumers a cancelable view
+//! over pre-muxed packets stored in the shared ring buffer.
+
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 use bytes::Bytes;
 use std::sync::Arc;

@@ -1,3 +1,6 @@
+//! Crate root for the restream server, owning module wiring and the shared
+//! application/runtime orchestration used by binary entrypoints.
+//!
 //! # Threading Model
 //!
 //! ```text

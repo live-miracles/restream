@@ -1,3 +1,6 @@
+//! Offline media-file inspection helpers used to validate ingest suitability
+//! and expose operator diagnostics for stored media assets.
+
 use ffmpeg_next::{format, media};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

@@ -1,3 +1,6 @@
+//! Application-layer ingest coordination that resolves pipelines, loads
+//! file-ingest context, and validates stream access before media processing begins.
+
 use crate::application::ports::{
     IngestLookup, IngestLookupError, PipelineLookup, PipelineLookupError,
 };

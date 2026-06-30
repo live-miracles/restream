@@ -1,3 +1,6 @@
+//! Application-layer recording control that owns persisted recording settings
+//! and translates them into engine-facing recording commands.
+
 use crate::application::ports::{MetaLookupError, MetaStore, MetaStoreWriter};
 use crate::application::reconcile::RecordingCommand;
 use crate::media::engine::MediaEngine;

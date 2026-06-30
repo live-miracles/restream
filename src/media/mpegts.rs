@@ -1,3 +1,6 @@
+//! Low-level MPEG-TS muxing, demuxing, and metadata extraction shared by
+//! ingest, HLS, recording, and transcoding paths.
+
 use bytes::Bytes;
 use tracing::error;
 

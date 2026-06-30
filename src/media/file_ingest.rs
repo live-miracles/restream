@@ -1,3 +1,6 @@
+//! File-backed ingest pipeline that reads stored media through FFmpeg and
+//! feeds the live ring-buffer graph as if it were an active publisher.
+
 use crate::media::avio::{CustomOutput, MemoryQueue};
 use crate::media::engine::{IngestRegistration, MediaEngine, StageMetrics};
 use crate::media::mpegts::TsDemuxer;

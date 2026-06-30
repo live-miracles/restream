@@ -1,3 +1,6 @@
+//! Application-layer orchestration for ingest, egress, reconciliation, and
+//! persistence-facing ports.
+
 pub mod egress;
 pub mod ingest;
 pub mod ingest_security;

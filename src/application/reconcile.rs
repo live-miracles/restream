@@ -1,3 +1,6 @@
+//! Application-layer reconciliation logic that compares desired output and
+//! recording state with engine reality and computes convergence actions.
+
 use crate::application::output_path::OutputPath;
 use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
 use crate::domain::stage::StageKey;

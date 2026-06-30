@@ -1,3 +1,6 @@
+//! Application-layer port traits and adapter types defining the storage and
+//! catalog capabilities that orchestration code depends on.
+
 use crate::types::{Ingest, Pipeline};
 use sqlx::SqlitePool;
 use std::fmt;
