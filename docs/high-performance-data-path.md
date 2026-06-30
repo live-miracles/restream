@@ -723,7 +723,7 @@ Track:
 | `data_path/mpegts_mux` | real 6.7 MB fixture re-mux throughput |
 | `data_path/mpegts_resync` | `memchr` versus scalar sync scan, and full demuxer recovery from a 64 KiB corrupted prefix |
 | `simd_alternatives` | Portable byte-search and copy alternatives used to decide whether custom architecture-specific routines are justified |
-| `hls_cost` | Native HLS mux, accumulation, segment-store CPU cost, and retained HLS-window memory across representative profiles |
+| `hls_cost` | Native HLS TS mux, segment accumulation, segment-store push, and playlist/window snapshot cost across representative profiles |
 | `transcoder_runtime_stage` | Exact current FFmpeg `MemoryQueue` + custom-AVIO source passthrough stage over the full H.264 fixture; this is not labelled transcoding until decode/filter/encode is implemented |
 
 It also prints `MediaPacket` and aligned-slot sizes.

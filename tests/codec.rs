@@ -5,8 +5,8 @@
 //! called in SRT/HLS egress and the transcoder feeder), not a hand-rolled copy.
 
 use restream::media::codec::{
-    audio_for_rtmp, audio_for_ts, avcc_to_annexb, build_adts_header, build_avcc_sequence_header,
-    parse_avcc_config, strip_adts, video_for_rtmp, video_for_ts,
+    audio_for_rtmp, audio_for_ts, avcc_to_annexb, build_aac_sequence_header, build_adts_header,
+    build_avcc_sequence_header, parse_avcc_config, strip_adts, video_for_rtmp, video_for_ts,
 };
 use restream::media::engine::{AudioMeta, VideoMeta};
 use restream::media::mpegts::TsMuxer;
@@ -224,6 +224,25 @@ fn audio_for_rtmp_raw_aac_no_adts() {
     assert_eq!(result[0], 0xAF);
     assert_eq!(result[1], 0x01);
     assert_eq!(&result[2..], raw_aac);
+}
+
+#[test]
+fn youtube_safe_aac_rtmp_shapes_use_seq_header_then_non_adts_raw_data() {
+    let sequence_header = build_aac_sequence_header(48_000, 2);
+    assert_eq!(&sequence_header[..2], &[0xAF, 0x00]);
+    assert_eq!(&sequence_header[2..], &[0x11, 0x90]);
+
+    let raw_aac = &[0xDE, 0xAD, 0xBE, 0xEF];
+    let mut adts_aac = build_adts_header(raw_aac.len(), 48_000, 2).to_vec();
+    adts_aac.extend_from_slice(raw_aac);
+    let data_packet = audio_for_rtmp(&adts_aac);
+
+    assert_eq!(&data_packet[..2], &[0xAF, 0x01]);
+    assert_eq!(&data_packet[2..], raw_aac);
+    assert!(
+        !(data_packet.len() >= 4 && data_packet[2] == 0xFF && (data_packet[3] & 0xF0) == 0xF0),
+        "RTMP AAC payload must not retain an ADTS header"
+    );
 }
 
 #[test]
