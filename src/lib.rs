@@ -359,8 +359,8 @@ pub async fn run_app() {
     let security = Arc::new(crate::media::security::IngestSecurityService::new(
         sec_config,
     ));
-    let pipeline_store = crate::application::ports::SqlitePipelineLookup::new(pool.clone());
-    let pipeline_catalog: Arc<dyn crate::application::ports::PipelineCatalog> =
+    let pipeline_store = crate::application::ports::SqlitePipelineStore::new(pool.clone());
+    let pipeline_catalog: Arc<dyn crate::application::ports::PipelineStore> =
         Arc::new(pipeline_store.clone());
     let srt_ingest_policy_store = Arc::new(
         match crate::application::srt_ingest::load_policy_store(&meta_store, &pipeline_store).await
@@ -383,7 +383,7 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
-    let pipeline_lookup: Arc<dyn crate::application::ports::PipelineLookup> =
+    let pipeline_lookup: Arc<dyn crate::application::ports::PipelineStore> =
         Arc::new(pipeline_store);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     engine.set_event_sink(event_tx);

@@ -35,7 +35,7 @@ use crate::api_view_models;
 use crate::application::ingest::{ResolveFileIngestError, resolve_file_ingest_context};
 use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
 use crate::application::ports::{
-    IngestLookup, PipelineLookup, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineLookup,
+    IngestLookup, PipelineStore, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
 };
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::srt_ingest::{
@@ -216,7 +216,7 @@ async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
 
 async fn refresh_srt_ingest_policy_store(state: &AppState) {
     let meta_store = SqliteMetaStore::new(state.db.clone());
-    let pipeline_store = SqlitePipelineLookup::new(state.db.clone());
+    let pipeline_store = SqlitePipelineStore::new(state.db.clone());
     if let Err(error) =
         refresh_policy_store(&state.ingest_policy_store, &meta_store, &pipeline_store).await
     {
@@ -2302,7 +2302,7 @@ async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
 }
 
 async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &str) {
-    if let Ok(Some(pipeline)) = SqlitePipelineLookup::new(state.db.clone())
+    if let Ok(Some(pipeline)) = SqlitePipelineStore::new(state.db.clone())
         .get_pipeline_by_stream_key(stream_key)
         .await
     {
@@ -2893,7 +2893,7 @@ async fn ingests_start_handler(
 
     let resolved = match resolve_file_ingest_context(
         &SqliteIngestLookup::new(state.db.clone()),
-        &SqlitePipelineLookup::new(state.db.clone()),
+        &SqlitePipelineStore::new(state.db.clone()),
         &id,
     )
     .await
@@ -2910,7 +2910,7 @@ async fn ingests_start_handler(
         Err(ResolveFileIngestError::IngestLookup(_)) => {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        Err(ResolveFileIngestError::PipelineLookup(e)) => {
+        Err(ResolveFileIngestError::PipelineStore(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("Failed to resolve pipeline: {e}")})),

@@ -56,7 +56,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::application::ingest::authenticate_srt_stream_key;
-use crate::application::ports::PipelineLookup;
+use crate::application::ports::PipelineStore;
 use crate::media::engine::{EgressRegistration, MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
@@ -1226,7 +1226,7 @@ async fn monitor_listener_socket(port: u16, stats: Arc<crate::media::engine::Lis
 }
 
 pub struct SrtServer {
-    pipeline_lookup: Arc<dyn PipelineLookup>,
+    pipeline_lookup: Arc<dyn PipelineStore>,
     engine: Arc<MediaEngine>,
     security: Arc<crate::media::security::IngestSecurityService>,
     ingest_policy_store: Arc<SrtIngestPolicyStore>,
@@ -1234,7 +1234,7 @@ pub struct SrtServer {
 
 impl SrtServer {
     pub fn new(
-        pipeline_lookup: Arc<dyn PipelineLookup>,
+        pipeline_lookup: Arc<dyn PipelineStore>,
         engine: Arc<MediaEngine>,
         security: Arc<crate::media::security::IngestSecurityService>,
         ingest_policy_store: Arc<SrtIngestPolicyStore>,

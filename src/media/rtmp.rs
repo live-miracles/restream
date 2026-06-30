@@ -8,7 +8,7 @@
 //! `RingBuffer` via a `Reader`. Cancellation via `CancellationToken`.
 
 use crate::application::ingest::{IngestAuthError, authenticate_publish_stream_key};
-use crate::application::ports::PipelineLookup;
+use crate::application::ports::PipelineStore;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{
     ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
@@ -637,7 +637,7 @@ fn parse_rtmp_url(url: &str) -> Option<RtmpUrlParts> {
 
 /// RTMP Ingest Server
 pub async fn start_rtmp_server(
-    pipeline_lookup: Arc<dyn PipelineLookup>,
+    pipeline_lookup: Arc<dyn PipelineStore>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
 ) {
@@ -645,7 +645,7 @@ pub async fn start_rtmp_server(
 }
 
 pub async fn start_rtmp_server_on(
-    pipeline_lookup: Arc<dyn PipelineLookup>,
+    pipeline_lookup: Arc<dyn PipelineStore>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
     port: u16,
@@ -690,7 +690,7 @@ pub async fn start_rtmp_server_on(
 async fn handle_rtmp_client(
     mut socket: TcpStream,
     client_addr: SocketAddr,
-    pipeline_lookup: Arc<dyn PipelineLookup>,
+    pipeline_lookup: Arc<dyn PipelineStore>,
     security: Arc<IngestSecurityService>,
     engine: Arc<MediaEngine>,
 ) -> Result<(), &'static str> {
@@ -951,7 +951,7 @@ async fn handle_session_results(
     session: &mut ServerSession,
     results: Vec<ServerSessionResult>,
     socket: &mut TcpStream,
-    pipeline_lookup: &dyn PipelineLookup,
+    pipeline_lookup: &dyn PipelineStore,
     security: &IngestSecurityService,
     engine: &MediaEngine,
     client_ip: &str,

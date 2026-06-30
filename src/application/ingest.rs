@@ -2,7 +2,7 @@
 //! file-ingest context, and validates stream access before media processing begins.
 
 use crate::application::ports::{
-    IngestLookup, IngestLookupError, PipelineLookup, PipelineLookupError,
+    IngestLookup, IngestLookupError, PipelineStore, PipelineStoreError,
 };
 use crate::media::security::IngestSecurityService;
 use crate::types::{Ingest, Pipeline};
@@ -10,7 +10,7 @@ use crate::types::{Ingest, Pipeline};
 #[derive(Debug)]
 pub enum IngestAuthError {
     InvalidStreamKey,
-    LookupFailed(PipelineLookupError),
+    LookupFailed(PipelineStoreError),
 }
 
 #[derive(Debug)]
@@ -22,13 +22,13 @@ pub struct FileIngestContext {
 #[derive(Debug)]
 pub enum ResolveFileIngestError {
     IngestLookup(IngestLookupError),
-    PipelineLookup(PipelineLookupError),
+    PipelineStore(PipelineStoreError),
     MissingPipelineForStreamKey(String),
 }
 
 pub async fn resolve_file_ingest_context(
     ingest_lookup: &dyn IngestLookup,
-    pipeline_lookup: &dyn PipelineLookup,
+    pipeline_lookup: &dyn PipelineStore,
     ingest_id: &str,
 ) -> Result<Option<FileIngestContext>, ResolveFileIngestError> {
     let Some(ingest) = ingest_lookup
@@ -42,7 +42,7 @@ pub async fn resolve_file_ingest_context(
     let pipeline = pipeline_lookup
         .get_pipeline_by_stream_key(&ingest.stream_key)
         .await
-        .map_err(ResolveFileIngestError::PipelineLookup)?
+        .map_err(ResolveFileIngestError::PipelineStore)?
         .ok_or_else(|| {
             ResolveFileIngestError::MissingPipelineForStreamKey(ingest.stream_key.clone())
         })?;
@@ -51,7 +51,7 @@ pub async fn resolve_file_ingest_context(
 }
 
 pub async fn authenticate_publish_stream_key(
-    pipeline_lookup: &dyn PipelineLookup,
+    pipeline_lookup: &dyn PipelineStore,
     security: &IngestSecurityService,
     stream_key: &str,
     client_ip: &str,
@@ -70,7 +70,7 @@ pub async fn authenticate_publish_stream_key(
 }
 
 pub async fn authenticate_srt_stream_key(
-    pipeline_lookup: &dyn PipelineLookup,
+    pipeline_lookup: &dyn PipelineStore,
     security: &IngestSecurityService,
     stream_key: &str,
     client_ip: &str,
@@ -101,12 +101,12 @@ mod tests {
         }
     }
 
-    struct FakePipelineLookup {
+    struct FakePipelineStore {
         pipelines: HashMap<String, Pipeline>,
         error: Option<&'static str>,
     }
 
-    impl FakePipelineLookup {
+    impl FakePipelineStore {
         fn success(stream_key: &str) -> Self {
             let mut pipelines = HashMap::new();
             pipelines.insert(
@@ -127,17 +127,21 @@ mod tests {
         }
     }
 
-    impl PipelineLookup for FakePipelineLookup {
+    impl PipelineStore for FakePipelineStore {
         fn get_pipeline_by_stream_key<'a>(
             &'a self,
             stream_key: &'a str,
         ) -> PipelineLookupFuture<'a> {
             Box::pin(async move {
                 if let Some(message) = self.error {
-                    return Err(PipelineLookupError::new(message));
+                    return Err(PipelineStoreError::new(message));
                 }
                 Ok(self.pipelines.get(stream_key).cloned())
             })
+        }
+
+        fn list_pipelines<'a>(&'a self) -> crate::application::ports::PipelineListFuture<'a> {
+            Box::pin(async move { Ok(self.pipelines.values().cloned().collect()) })
         }
     }
 
@@ -202,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_auth_records_failure_for_missing_stream_key() {
-        let lookup = FakePipelineLookup {
+        let lookup = FakePipelineStore {
             pipelines: HashMap::new(),
             error: None,
         };
@@ -218,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_auth_returns_pipeline_on_success() {
-        let lookup = FakePipelineLookup::success("live");
+        let lookup = FakePipelineStore::success("live");
         let security = IngestSecurityService::new(test_security_config());
 
         let pipeline = authenticate_publish_stream_key(&lookup, &security, "live", "10.0.0.1")
@@ -230,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_auth_surfaces_lookup_error_and_records_failure() {
-        let lookup = FakePipelineLookup {
+        let lookup = FakePipelineStore {
             pipelines: HashMap::new(),
             error: Some("db unavailable"),
         };
@@ -246,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn srt_auth_clears_failure_state_after_success() {
-        let lookup = FakePipelineLookup::success("live");
+        let lookup = FakePipelineStore::success("live");
         let security = Arc::new(IngestSecurityService::new(test_security_config()));
         let ip = "10.0.0.2";
 
@@ -269,7 +273,7 @@ mod tests {
             by_stream_key: HashMap::new(),
             error: None,
         };
-        let pipeline_lookup = FakePipelineLookup {
+        let pipeline_lookup = FakePipelineStore {
             pipelines: HashMap::new(),
             error: None,
         };
@@ -289,7 +293,7 @@ mod tests {
             by_stream_key: HashMap::from([("stream-key".to_string(), vec![ingest])]),
             error: None,
         };
-        let pipeline_lookup = FakePipelineLookup {
+        let pipeline_lookup = FakePipelineStore {
             pipelines: HashMap::new(),
             error: None,
         };
@@ -320,7 +324,7 @@ mod tests {
             by_stream_key: HashMap::from([("stream-key".to_string(), vec![ingest.clone()])]),
             error: None,
         };
-        let pipeline_lookup = FakePipelineLookup {
+        let pipeline_lookup = FakePipelineStore {
             pipelines: HashMap::from([("stream-key".to_string(), pipeline.clone())]),
             error: None,
         };

@@ -2,7 +2,7 @@
 //! recording state with engine reality and computes convergence actions.
 
 use crate::application::output_path::OutputPath;
-use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
+use crate::application::ports::{MetaStore, PipelineStore, PipelineStoreError};
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
 use crate::types::Output;
@@ -201,10 +201,10 @@ pub enum RecordingCommand {
 
 pub async fn build_recording_reconcile_plan(
     engine: &MediaEngine,
-    pipeline_catalog: &dyn PipelineCatalog,
+    pipeline_catalog: &dyn PipelineStore,
     meta_store: &dyn MetaStore,
     ingest_disconnect_grace_ms: u64,
-) -> Result<Vec<RecordingCommand>, PipelineCatalogError> {
+) -> Result<Vec<RecordingCommand>, PipelineStoreError> {
     let pipelines = pipeline_catalog.list_pipelines().await?;
     let mut commands = Vec::new();
 
@@ -237,7 +237,7 @@ pub async fn build_recording_reconcile_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::{MetaLookupFuture, PipelineCatalogFuture};
+    use crate::application::ports::{MetaLookupFuture, PipelineListFuture};
     use crate::domain::stage::StageKind;
     use crate::media::engine::VideoMeta;
     use crate::types::Pipeline;
@@ -457,16 +457,29 @@ mod tests {
         assert_eq!(input.ingest_video_codec.as_deref(), Some("hevc"));
     }
 
-    struct FakePipelineCatalog {
+    struct FakePipelineStore {
         pipelines: Vec<Pipeline>,
         error: Option<&'static str>,
     }
 
-    impl PipelineCatalog for FakePipelineCatalog {
-        fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a> {
+    impl PipelineStore for FakePipelineStore {
+        fn get_pipeline_by_stream_key<'a>(
+            &'a self,
+            stream_key: &'a str,
+        ) -> crate::application::ports::PipelineLookupFuture<'a> {
+            Box::pin(async move {
+                Ok(self
+                    .pipelines
+                    .iter()
+                    .find(|pipeline| pipeline.stream_key == stream_key)
+                    .cloned())
+            })
+        }
+
+        fn list_pipelines<'a>(&'a self) -> PipelineListFuture<'a> {
             Box::pin(async move {
                 if let Some(message) = self.error {
-                    return Err(PipelineCatalogError::new(message));
+                    return Err(PipelineStoreError::new(message));
                 }
                 Ok(self.pipelines.clone())
             })
@@ -497,7 +510,7 @@ mod tests {
             .try_register_ingest("pipeline-1", "stream-one", "rtmp")
             .await
             .unwrap();
-        let catalog = FakePipelineCatalog {
+        let catalog = FakePipelineStore {
             pipelines: vec![Pipeline {
                 id: "pipeline-1".to_string(),
                 name: "Pipeline One".to_string(),
@@ -533,7 +546,7 @@ mod tests {
     async fn recording_reconcile_plan_stops_disabled_active_recording() {
         let engine = MediaEngine::new();
         let _token = engine.register_recording("pipeline-1").await;
-        let catalog = FakePipelineCatalog {
+        let catalog = FakePipelineStore {
             pipelines: vec![Pipeline {
                 id: "pipeline-1".to_string(),
                 name: "Pipeline One".to_string(),
