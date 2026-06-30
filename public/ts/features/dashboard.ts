@@ -11,6 +11,10 @@ import {
   readSelectedPipelineHint,
   setServerConfig,
 } from "../core/utils.js";
+import {
+  syncRestreamProcessIndicatorFromHealth,
+  updateRestreamProcessIndicatorFromLog,
+} from "./restream-process-indicator.js";
 import { renderPipelines, renderMetrics } from "./render.js";
 import { syncHistoryPollingWithVisibility } from "../history/controller.js";
 import { state } from "../core/state.js";
@@ -42,6 +46,9 @@ const DASHBOARD_RUNTIME_LIFECYCLE_STREAM_MODES = new Set([
   "pipeline",
   "inspect",
   "control",
+  "media",
+  "settings",
+  "status",
 ]);
 const DASHBOARD_CONFIG_MODES = new Set([
   "overview",
@@ -226,6 +233,7 @@ function scheduleDashboardRuntimeRefresh(): void {
 
 export function handleDashboardRuntimeLifecycleLog(log: AppLogRow): void {
   rememberDashboardRuntimeEventId(log);
+  updateRestreamProcessIndicatorFromLog(log);
   if (lifecycleEventShouldRefresh(log)) {
     scheduleDashboardRuntimeRefresh();
   }
@@ -239,6 +247,7 @@ function openDashboardRuntimeStream(): void {
   try {
     const stream = new EventSource(
       buildLogsStreamUrl({
+        scope: shouldFetchRuntimeHealth() ? null : "restream",
         eventClass: "lifecycle",
         lastEventId: dashboardRuntimeLastEventId,
       }),
@@ -307,6 +316,7 @@ async function fetchAndRerender(): Promise<void> {
       state.metrics,
       metricsResult as typeof state.metrics,
     );
+  syncRestreamProcessIndicatorFromHealth(state.health?.status);
 
   const previousPipelines = state.pipelines;
   state.pipelines = parsePipelinesInfo(state.config, state.health);

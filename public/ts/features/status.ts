@@ -12,6 +12,7 @@ import {
   showCopiedNotification,
   showErrorAlert,
 } from "../core/utils.js";
+import { updateRestreamProcessIndicatorFromLog } from "./restream-process-indicator.js";
 import type { AppLogRow } from "../types.js";
 
 interface StatusData {
@@ -96,6 +97,12 @@ let statusStream: EventSource | null = null;
 let statusStreamActive = false;
 let statusStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let statusStreamLastEventId: number | null = null;
+
+function syncProcessIndicatorFromLogs(logs: AppLogRow[]): void {
+  for (const log of logs) {
+    updateRestreamProcessIndicatorFromLog(log);
+  }
+}
 
 function valueOrDash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "--";
@@ -577,6 +584,7 @@ function openStatusStream(): void {
         const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
         rememberStatusProcessLogId(data);
         mergeStatusProcessLogs([data]);
+        syncProcessIndicatorFromLogs([data]);
         renderStatusSnapshot();
       } catch {
         // Ignore malformed frames and wait for reconnect/backfill.
@@ -630,6 +638,7 @@ export async function loadStatus(): Promise<void> {
   statusProcessLogs = Array.isArray(processHistory?.logs)
     ? (processHistory?.logs as AppLogRow[])
     : [];
+  syncProcessIndicatorFromLogs([...statusProcessLogs].reverse());
   statusStreamLastEventId = latestStatusProcessLogId();
   renderStatusSnapshot();
   closeStatusStream();

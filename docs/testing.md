@@ -342,6 +342,11 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 | `POST` | `/.../operations/:id/verify` | ✓ | — | |
 | `POST` | `/api/v1/agent/verify` | ✓ | — | 404 when compiled out |
 
+Frontend transport/control layering now has explicit Node-scope coverage for:
+- output toggle responsiveness while start/stop API requests are in flight
+- restream process-indicator transitions driven by lifecycle logs and health recovery
+- non-runtime mode lifecycle SSE behavior that keeps process state live without re-enabling health polls
+
 ## Code Coverage
 
 Line coverage from `cargo llvm-cov` (unit tests only, June 29, 2026):

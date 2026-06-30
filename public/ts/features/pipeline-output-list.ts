@@ -1,6 +1,7 @@
 import { escapeHtml, msToHHMMSS, sanitizeLogMessage } from "../core/utils.js";
 import { state } from "../core/state.js";
 import { openOutputMonitoringUrl } from "./control-room.js";
+import { getOutputControlIntent } from "./output-control-state.js";
 import { pipelineViewDependencies } from "./pipeline-dependencies.js";
 import type { OutputView, PipelineView } from "../types.js";
 
@@ -97,11 +98,28 @@ function outputCardKey(pipeId: string, outputId: string): string {
   return `${pipeId}:${outputId}`;
 }
 
-function buildOutputIssue(output: OutputView): {
+function buildOutputIssue(
+  output: OutputView,
+  controlIntent: "starting" | "stopping" | null,
+): {
   label: string;
   text: string;
   title: string;
 } | null {
+  if (controlIntent === "starting") {
+    return {
+      label: "control",
+      text: "starting",
+      title: "Start was requested and the Rust runtime is applying it now.",
+    };
+  }
+  if (controlIntent === "stopping") {
+    return {
+      label: "control",
+      text: "stopping",
+      title: "Stop was requested and the Rust runtime is draining it now.",
+    };
+  }
   if (output.retrying || output.status === "retrying") {
     return {
       label: "retry",
@@ -148,13 +166,16 @@ function buildOutputIssue(output: OutputView): {
   return null;
 }
 
-function buildOutputMetricSpecs(output: OutputView): OutputMetricSpec[] {
+function buildOutputMetricSpecs(
+  output: OutputView,
+  controlIntent: "starting" | "stopping" | null,
+): OutputMetricSpec[] {
   const isActive =
     output.status === "on" ||
     output.status === "running" ||
     output.status === "warning";
   const metrics: OutputMetricSpec[] = [];
-  const outputIssue = buildOutputIssue(output);
+  const outputIssue = buildOutputIssue(output, controlIntent);
 
   if (isActive && output.time !== null) {
     metrics.push({
@@ -401,8 +422,10 @@ function syncOutputCard(
   const refs = outputCardRefs.get(card);
   if (!refs) return;
 
-  const statusColor =
-    output.status === "on" || output.status === "running"
+  const controlIntent = getOutputControlIntent(pipe.id, output.id);
+  const statusColor = controlIntent
+    ? "status-warning"
+    : output.status === "on" || output.status === "running"
       ? output.flapping
         ? "status-warning"
         : "status-primary"
@@ -430,12 +453,30 @@ function syncOutputCard(
 
   // Reuse both the card DOM and the metric pills so live telemetry refreshes only
   // patch text/title on the specific badges that changed.
-  syncOutputMetrics(refs.metrics, buildOutputMetricSpecs(output));
+  syncOutputMetrics(
+    refs.metrics,
+    buildOutputMetricSpecs(output, controlIntent),
+  );
 
-  const nextToggleClass = `btn btn-xs shrink-0 ${isStopped ? "btn-accent" : "btn-accent btn-outline"} ${toggleBusy ? "btn-disabled" : ""}`;
+  const nextToggleClass = `btn btn-xs shrink-0 ${
+    controlIntent
+      ? "btn-warning"
+      : isStopped
+        ? "btn-accent"
+        : "btn-accent btn-outline"
+  } ${toggleBusy ? "btn-disabled" : ""}`;
   setClassNameIfChanged(refs.toggleButton, nextToggleClass);
   refs.toggleButton.disabled = Boolean(toggleBusy);
-  setTextIfChanged(refs.toggleButton, isStopped ? "Start" : "Stop");
+  setTextIfChanged(
+    refs.toggleButton,
+    controlIntent === "starting"
+      ? "Starting..."
+      : controlIntent === "stopping"
+        ? "Stopping..."
+        : isStopped
+          ? "Start"
+          : "Stop",
+  );
 
   refs.historyButton.dataset.outputId = output.id;
   refs.monitorButton.dataset.outputId = output.id;
@@ -450,7 +491,11 @@ function syncOutputCard(
   setClassNameIfChanged(refs.deleteButton, nextDeleteClass);
   refs.deleteButton.disabled = !isStopped;
 
-  if (output.lastError) {
+  if (controlIntent) {
+    refs.error.classList.add("hidden");
+    setTextIfChanged(refs.error, "");
+    setTitleIfChanged(refs.error, "");
+  } else if (output.lastError) {
     refs.error.classList.remove("hidden");
     setTextIfChanged(refs.error, output.lastError);
     setTitleIfChanged(refs.error, output.lastError);
@@ -484,11 +529,12 @@ function ensureOutputsListHandler(outputsList: HTMLElement): void {
       button.classList.add("btn-disabled");
       try {
         const shouldStop = out.desiredState !== "stopped";
-        if (shouldStop) {
-          await pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, button);
-        } else {
-          await pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, button);
-        }
+        const actionPromise = shouldStop
+          ? pipelineViewDependencies.stopOutBtn?.(pipe.id, out.id, button)
+          : pipelineViewDependencies.startOutBtn?.(pipe.id, out.id, button);
+        renderOutsColumn(pipe.id);
+        await actionPromise;
+        renderOutsColumn(pipe.id);
       } finally {
         const stillBusy = pipelineViewDependencies.isOutputToggleBusy?.(
           pipe.id,
@@ -498,6 +544,7 @@ function ensureOutputsListHandler(outputsList: HTMLElement): void {
           button.disabled = false;
           button.classList.remove("btn-disabled");
         }
+        renderOutsColumn(pipe.id);
       }
       return;
     }

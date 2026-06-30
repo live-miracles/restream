@@ -253,6 +253,10 @@ Pipeline, inspect, control-room, and publisher-health runtime surfaces
 subscribe to this SSE endpoint with `event_class=lifecycle` so they refresh
 immediately on process lifecycle transitions instead of waiting for the next
 periodic poll.
+Settings, media, and status also keep a narrower restream-scoped
+`event_class=lifecycle` feed open so the global Rust-process indicator can
+react to shutdown/fault/ready events without waking the heavier runtime health
+polls in those modes.
 The output-history and pipeline-history "Live" views use the same SSE endpoint
 with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
 resume cursors instead of periodic history re-polls.
@@ -263,6 +267,11 @@ event id when visible again, falling back to slower snapshot polling only while
 the tab is backgrounded.
 
 ## Output Status
+
+Dashboard output start/stop controls update their button/card state
+optimistically as soon as the API request is accepted, then let the next
+runtime refresh confirm the actual engine state. That keeps control feedback
+immediate without requiring a dedicated per-output poller.
 
 ### `GET /api/v1/pipelines/:pipelineId/outputs/:outputId/status`
 

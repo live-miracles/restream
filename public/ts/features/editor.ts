@@ -52,6 +52,10 @@ import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
 import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
 import { refreshDashboard } from "./dashboard.js";
+import {
+  beginOutputControlIntent,
+  finishOutputControlIntent,
+} from "./output-control-state.js";
 import type {
   AudioTrack,
   PipelineView,
@@ -711,6 +715,7 @@ export async function startOutBtn(
 ): Promise<void> {
   if (isOutputToggleBusy(pipeId, outId)) return;
   setOutputTogglePending(pipeId, outId, true);
+  beginOutputControlIntent(pipeId, outId, "starting");
   setOutputToggleBusy(button, true);
   try {
     const res = await startOut(pipeId, outId);
@@ -718,6 +723,7 @@ export async function startOutBtn(
       await refreshDashboard();
     }
   } finally {
+    finishOutputControlIntent(pipeId, outId);
     setOutputTogglePending(pipeId, outId, false);
     setOutputToggleBusy(button, false);
   }
@@ -730,6 +736,7 @@ export async function stopOutBtn(
 ): Promise<void> {
   if (isOutputToggleBusy(pipeId, outId)) return;
   setOutputTogglePending(pipeId, outId, true);
+  beginOutputControlIntent(pipeId, outId, "stopping");
   setOutputToggleBusy(button, true);
   try {
     const res = await stopOut(pipeId, outId);
@@ -737,6 +744,7 @@ export async function stopOutBtn(
       await refreshDashboard();
     }
   } finally {
+    finishOutputControlIntent(pipeId, outId);
     setOutputTogglePending(pipeId, outId, false);
     setOutputToggleBusy(button, false);
   }

@@ -557,8 +557,15 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
     );
     assert.equal(
       streams.length,
-      0,
-      "settings mode should keep runtime log streams closed",
+      1,
+      "settings mode should keep a restream lifecycle stream open for process responsiveness",
+    );
+    assert.equal(
+      String(streams[0]?.url).startsWith(
+        "/api/v1/logs/stream?scope=restream&event_class=lifecycle",
+      ),
+      true,
+      "settings mode should subscribe only to restream lifecycle events",
     );
 
     requests.length = 0;

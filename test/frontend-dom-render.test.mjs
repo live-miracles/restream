@@ -283,6 +283,104 @@ runCheck("renderOutsColumn delegates actions with stable output ids", async () =
   assert.deepEqual(calls, [["stop", "pipe-1", "out-1"]]);
 });
 
+runCheck("renderOutsColumn shows an immediate starting state while a start request is in flight", async () => {
+  const { document } = installFakeDom();
+  appendRoot(document, "div", "outs-col");
+  const outputsList = appendRoot(document, "div", "outputs-list");
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const controlState = await loadCompiledFrontendModule(
+    "features/output-control-state.js",
+  );
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      outs: [
+        makeOutput({
+          desiredState: "stopped",
+          status: "off",
+          rawStatus: "stopped",
+          time: null,
+          bitrateKbps: null,
+        }),
+      ],
+    }),
+  ];
+
+  let busy = false;
+  let resolveStart = null;
+  pipelineView.setPipelineViewDependencies({
+    isOutputToggleBusy: () => busy,
+    startOutBtn: async () => {
+      busy = true;
+      controlState.beginOutputControlIntent("pipe-1", "out-1", "starting");
+      await new Promise((resolve) => {
+        resolveStart = () => {
+          state.pipelines[0].outs[0].desiredState = "running";
+          state.pipelines[0].outs[0].status = "running";
+          state.pipelines[0].outs[0].rawStatus = "running";
+          state.pipelines[0].outs[0].time = 2_000;
+          busy = false;
+          controlState.finishOutputControlIntent("pipe-1", "out-1");
+          resolve();
+        };
+      });
+    },
+  });
+  pipelineView.renderOutsColumn("pipe-1");
+
+  const toggleButton = outputsList.querySelector('[data-role="toggle-output"]');
+  const metrics = outputsList.querySelector('[data-role="output-metrics"]');
+  assert.ok(toggleButton instanceof FakeElement);
+  assert.ok(metrics instanceof FakeElement);
+
+  const clickPromise = outputsList.onclick({ target: toggleButton });
+  await flushAsyncWork();
+
+  assert.equal(toggleButton.textContent, "Starting...");
+  assert.equal(toggleButton.disabled, true);
+  assert.match(metrics.innerHTML, /starting/);
+
+  resolveStart?.();
+  await clickPromise;
+
+  assert.equal(toggleButton.textContent, "Stop");
+  assert.equal(toggleButton.disabled, false);
+});
+
+runCheck("restream process indicator reacts to lifecycle logs and health recovery", async () => {
+  const { document } = installFakeDom();
+  const badge = appendRoot(document, "div", "restream-process-indicator");
+  const dot = appendRoot(document, "span", "restream-process-dot");
+  const label = appendRoot(document, "span", "restream-process-text");
+  badge.appendChild(dot);
+  badge.appendChild(label);
+
+  const indicator = await loadCompiledFrontendModule(
+    "features/restream-process-indicator.js",
+  );
+
+  indicator.renderRestreamProcessIndicator();
+  assert.equal(label.textContent, "Connecting");
+
+  indicator.updateRestreamProcessIndicatorFromLog({
+    eventType: "restream.shutdown.started",
+  });
+  assert.equal(label.textContent, "Stopping");
+
+  indicator.updateRestreamProcessIndicatorFromLog({
+    message: "task exited unexpectedly",
+  });
+  assert.equal(label.textContent, "Faulted");
+
+  indicator.syncRestreamProcessIndicatorFromHealth("ready");
+  assert.equal(label.textContent, "Running");
+
+  indicator.syncRestreamProcessIndicatorFromHealth("degraded");
+  assert.equal(label.textContent, "Degraded");
+});
+
 runCheck("renderPipelineInfoColumn reuses publisher meta badges across refreshes", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "pipe-info-col");

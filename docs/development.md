@@ -119,7 +119,8 @@ coverage reports point at `public/ts/**`, while `npm run test:frontend:js-smoke`
 keeps a smaller direct check against the shipped `public/js/**` bundle.
 Use `npm run test:frontend:coverage` for the Node-scope TypeScript coverage
 gate. That covered surface now includes the dashboard/history/status transport
-modules that own the polling-vs-SSE split. Use
+modules that own the polling-vs-SSE split, plus the small reactive helpers for
+output control intent and Rust-process lifecycle indication. Use
 `npm run test:frontend:coverage:all` when you want the broader all-files
 report as a diagnostic view.
 

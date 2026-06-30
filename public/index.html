@@ -21,6 +21,17 @@
           Restream
         </button>
         <div
+          id="restream-process-indicator"
+          class="badge badge-sm gap-2 badge-neutral"
+          title="Waiting for runtime telemetry from the Rust restream process."
+        >
+          <span
+            id="restream-process-dot"
+            class="status status-sm status-neutral"
+          ></span>
+          <span id="restream-process-text">Connecting</span>
+        </div>
+        <div
           id="saving-badge"
           class="hidden items-center gap-2 text-sm opacity-60"
         >
