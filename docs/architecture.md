@@ -5,6 +5,100 @@ media path. The previous Node.js/MediaMTX runtime is archived under `old/`.
 MediaMTX may be used as an independent test sink, but it is not a production
 dependency.
 
+## Layer Ownership
+
+These boundaries are intentional. When refactoring, prefer moving code toward
+the owner layer instead of introducing a new abstraction first.
+
+### `domain`
+
+Owns:
+
+- typed configuration, validation, and parsing rules
+- stable vocabulary shared across API, application, and media
+- enums/newtypes that replace stringly-typed contracts
+
+Should not own:
+
+- SQL
+- HTTP request/response shaping
+- runtime registries, sockets, or hot-path packet behavior
+
+### `application`
+
+Owns:
+
+- orchestration across persistence, runtime, and edge concerns
+- persistence policy for config stored in meta or related tables
+- capability traits/ports used to decouple orchestration from storage
+- shared workflows reused by more than one API/runtime entry point
+
+Should not own:
+
+- raw SQL text
+- packet-level media behavior
+- HTTP transport details
+- large runtime state machines
+
+### `db`
+
+Owns:
+
+- raw SQL
+- schema-aware reads and writes
+- row/DTO persistence mechanics
+
+Should not own:
+
+- orchestration across multiple workflows
+- runtime policy
+- HTTP semantics
+
+### `media`
+
+Owns:
+
+- runtime engine state
+- protocol implementations
+- hot-path packet transforms and caches
+- process/thread lifecycle directly tied to media flow
+
+Should not own:
+
+- API-shaped JSON
+- meta-table serialization policy
+- duplicated control-plane orchestration
+- broad cross-source settings assembly
+
+### `api`
+
+Owns:
+
+- auth gates
+- request validation and field-length checks
+- HTTP status codes and response shaping
+- edge/view serialization
+
+Should not own:
+
+- duplicated orchestration already shared elsewhere
+- persistence policy
+- runtime-internal view assembly when the same data can come from application
+
+### `lib`
+
+Owns:
+
+- process bootstrap
+- top-level wiring of services, runtime tasks, and reconcilers
+- spawning loops that connect already-owned modules
+
+Should not own:
+
+- reusable orchestration logic that can live in `application`
+- API-facing serialization
+- domain validation rules
+
 ## System Shape
 
 ```text

@@ -21,6 +21,82 @@ dependency flow:
 - protocol handlers read raw SQL directly
 - some config/domain schemas still live inside runtime modules
 
+## Ownership Matrix
+
+Use this matrix before extracting a new module, trait, or crate.
+
+### `domain`
+
+Owns:
+
+- meaning
+- validation
+- parsing
+- shared typed vocabulary
+
+Does not own:
+
+- SQL
+- runtime caches
+- HTTP response shape
+
+### `application`
+
+Owns:
+
+- orchestration
+- persistence policy
+- shared multi-step workflows
+- ports/capabilities that isolate storage from orchestration
+
+Does not own:
+
+- raw SQL
+- packet-level runtime behavior
+- HTTP transport details
+
+### `db`
+
+Owns:
+
+- raw queries
+- schema-aware CRUD
+
+Does not own:
+
+- workflow policy
+- cross-layer orchestration
+
+### `media`
+
+Owns:
+
+- runtime state
+- protocol loops
+- hot-path transforms
+- caches/defaults used directly by runtime consumers
+
+Does not own:
+
+- persistence serialization policy
+- API-facing JSON contracts
+- duplicated control-plane orchestration
+
+### `api`
+
+Owns:
+
+- request validation
+- auth checks
+- status codes
+- edge/view shaping
+
+Does not own:
+
+- reusable orchestration
+- runtime internals
+- persistence policy
+
 ## What We Already Moved
 
 Two low-risk extractions already landed:
