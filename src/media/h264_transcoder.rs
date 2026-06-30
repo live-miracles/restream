@@ -146,8 +146,10 @@ pub async fn start_h264_transcoder(
                     }
                 }
                 // One lock acquisition for the whole burst.
-                if !ts_batch.is_empty() {
-                    input_queue.write(&ts_batch).await;
+                if !ts_batch.is_empty()
+                    && !input_queue.write_cancellable(&ts_batch, &cancel_token).await
+                {
+                    break;
                 }
             }
         }

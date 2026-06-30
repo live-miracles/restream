@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 const AVIO_BUFFER_SIZE: usize = 32768;
@@ -119,6 +120,45 @@ impl MemoryQueue {
         inner.buf.extend(data.iter().copied());
         self.record_depth(inner.buf.len());
         self.cvar.notify_all();
+    }
+
+    pub async fn write_cancellable(&self, data: &[u8], cancel: &CancellationToken) -> bool {
+        let mut blocked_since = None;
+        loop {
+            {
+                let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.closed || inner.buf.len() < self.capacity {
+                    break;
+                }
+            }
+            if blocked_since.is_none() {
+                blocked_since = Some(Instant::now());
+                self.blocked_writes.fetch_add(1, Ordering::Relaxed);
+            }
+            tokio::select! {
+                _ = self.space_available.notified() => {}
+                _ = cancel.cancelled() => {
+                    if let Some(start) = blocked_since {
+                        self.blocked_write_us
+                            .fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    }
+                    return false;
+                }
+            }
+        }
+        if let Some(start) = blocked_since {
+            self.blocked_write_us
+                .fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed || cancel.is_cancelled() {
+            return false;
+        }
+        inner.buf.extend(data.iter().copied());
+        self.record_depth(inner.buf.len());
+        self.cvar.notify_all();
+        true
     }
 
     /// Append multiple chunks while taking the queue lock and notifying once.
@@ -758,6 +798,31 @@ mod tests {
         assert!(
             blocked_write.await.unwrap(),
             "blocked writer should observe queue closure and return"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellable_write_unblocks_when_token_cancels() {
+        let queue = Arc::new(MemoryQueue::new_with_capacity(5));
+        queue.write(b"hello").await;
+
+        let writer_queue = queue.clone();
+        let cancel = CancellationToken::new();
+        let writer_cancel = cancel.clone();
+        let blocked_write = tokio::spawn(async move {
+            writer_queue
+                .write_cancellable(b"blocked", &writer_cancel)
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!blocked_write.is_finished());
+
+        cancel.cancel();
+
+        assert!(
+            !blocked_write.await.unwrap(),
+            "blocked writer should stop once cancellation is requested"
         );
     }
 

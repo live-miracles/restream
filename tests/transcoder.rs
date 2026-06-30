@@ -3,15 +3,19 @@
 //! Uses the checked-in canonical MPEG-TS fixture and verifies that the
 //! transcoder demuxes it and pushes MediaPackets to the output RingBuffer.
 
+use restream::domain::stage::{StageKey, StageKind};
 use restream::media::avio::MemoryQueue;
+use restream::media::engine::MediaEngine;
 use restream::media::engine::VideoMeta;
 use restream::media::external_transcoder::build_stage_ffmpeg_args;
 use restream::media::mpegts::{TsDemuxer, TsMuxer};
 use restream::media::ring_buffer::{MediaType, PayloadFormat, Reader, RingBuffer};
 use restream::media::transcoder::{run_ffmpeg_transcode_with_scale, run_ffmpeg_transcoder_stage};
+use restream::media::{h264_transcoder, transcoder};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 static FFMPEG_EXTRACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -23,6 +27,16 @@ fn load_fixture() -> Vec<u8> {
     let path =
         restream::test_fixtures::canonical_h264_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("fixture missing at {}: {e}", path.display()))
+}
+
+fn load_primary_transport_packets(
+    codec: &str,
+) -> (
+    restream::media::engine::VideoMeta,
+    Vec<restream::media::engine::AudioMeta>,
+    Vec<restream::media::ring_buffer::MediaPacket>,
+) {
+    restream::test_fixtures::primary_av_packets_for_codec(codec).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn configure_ffmpeg_test_logging() {
@@ -194,6 +208,22 @@ fn run_internal_scale_stage(
     output_packets
 }
 
+async fn collect_packets_with_deadline(
+    reader: &mut Reader,
+    min_packets: usize,
+    timeout: Duration,
+) -> Vec<std::sync::Arc<restream::media::ring_buffer::MediaPacket>> {
+    let deadline = Instant::now() + timeout;
+    let mut packets = Vec::new();
+    while packets.len() < min_packets && Instant::now() < deadline {
+        match reader.pull() {
+            Ok(Some(packet)) => packets.push(packet),
+            _ => tokio::time::sleep(Duration::from_millis(10)).await,
+        }
+    }
+    packets
+}
+
 #[test]
 fn source_passthrough_produces_output() {
     let fixture = load_fixture();
@@ -337,4 +367,184 @@ fn internal_transcode_builtin_video_presets_produce_video() {
             );
         }
     }
+}
+
+#[test]
+fn rtmp_shaped_h264_packets_drive_source_stage() {
+    configure_ffmpeg_test_logging();
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(async {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("rtmp-h264").await;
+        let output = Arc::new(RingBuffer::new(4096));
+        let cancel = CancellationToken::new();
+
+        engine
+            .try_register_ingest("rtmp-h264", "stream-key", "rtmp")
+            .await
+            .unwrap();
+
+        let (video, audio_tracks, mut packets) = load_primary_transport_packets("h264");
+        let (video_sh, audio_sh) = restream::test_fixtures::wrap_packets_for_rtmp_ingest(
+            &video,
+            &audio_tracks,
+            &mut packets,
+        );
+        packets.truncate(100);
+        let expected_packets = restream::test_fixtures::count_ts_feedable_packets(
+            &video,
+            &audio_tracks,
+            &packets,
+            video_sh.as_ref(),
+        );
+
+        engine
+            .update_ingest_meta(
+                "rtmp-h264",
+                Some(video.clone()),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("rtmp-h264", audio_tracks.clone())
+            .await;
+        if let Some(vsh) = video_sh {
+            engine.cache_sequence_header("rtmp-h264", true, vsh).await;
+        }
+        if let Some(ash) = audio_sh {
+            engine.cache_sequence_header("rtmp-h264", false, ash).await;
+        }
+
+        for packet in packets.iter().take(10) {
+            source.push(packet.clone());
+        }
+
+        let handle = tokio::spawn(transcoder::start_transcoder(
+            "rtmp-h264".to_string(),
+            "source".to_string(),
+            source.clone(),
+            output.clone(),
+            engine.clone(),
+            cancel.clone(),
+            StageKey::new("rtmp-h264", StageKind::source()),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        for packet in packets.into_iter().skip(10) {
+            source.push(packet);
+        }
+
+        let mut reader = Reader::new("rtmp_h264_stage".to_string(), output);
+        let packets =
+            collect_packets_with_deadline(&mut reader, expected_packets, Duration::from_secs(3))
+                .await;
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "expected video packets from RTMP-shaped h264 source stage"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Audio),
+            "expected audio packets from RTMP-shaped h264 source stage"
+        );
+    });
+}
+
+#[test]
+fn rtmp_shaped_hevc_packets_drive_h264_edge_stage() {
+    configure_ffmpeg_test_logging();
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(async {
+        let engine = Arc::new(MediaEngine::new());
+        let source = engine.get_or_create_pipeline("rtmp-hevc").await;
+        let output = Arc::new(RingBuffer::new(4096));
+        output.set_codec_hint("h264");
+        let cancel = CancellationToken::new();
+
+        engine
+            .try_register_ingest("rtmp-hevc", "stream-key", "rtmp")
+            .await
+            .unwrap();
+
+        let (video, audio_tracks, mut packets) = load_primary_transport_packets("h265");
+        let (_video_sh, audio_sh) = restream::test_fixtures::wrap_packets_for_rtmp_ingest(
+            &video,
+            &audio_tracks,
+            &mut packets,
+        );
+        packets.truncate(100);
+
+        engine
+            .update_ingest_meta(
+                "rtmp-hevc",
+                Some(video.clone()),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("rtmp-hevc", audio_tracks.clone())
+            .await;
+        if let Some(ash) = audio_sh {
+            engine.cache_sequence_header("rtmp-hevc", false, ash).await;
+        }
+
+        for packet in packets.iter().take(10) {
+            source.push(packet.clone());
+        }
+
+        let handle = tokio::spawn(h264_transcoder::start_h264_transcoder(
+            "rtmp-hevc".to_string(),
+            source.clone(),
+            output.clone(),
+            engine.clone(),
+            cancel.clone(),
+            StageKey::new(
+                "rtmp-hevc",
+                StageKind::codec_edge("hevc_to_h264", StageKind::source()),
+            ),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        for packet in packets.into_iter().skip(10) {
+            source.push(packet);
+        }
+
+        let mut reader = Reader::new("rtmp_hevc_h264_edge".to_string(), output.clone());
+        let packets = collect_packets_with_deadline(&mut reader, 40, Duration::from_secs(5)).await;
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert_eq!(output.codec_hint_str(), "h264");
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "expected video packets from RTMP-shaped hevc h264 edge stage"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Audio),
+            "expected audio packets from RTMP-shaped hevc h264 edge stage"
+        );
+        assert!(
+            packets
+                .iter()
+                .filter(|packet| packet.media_type == MediaType::Video)
+                .all(|packet| packet.format == PayloadFormat::Raw),
+            "expected raw H.264 packets out of the hevc_to_h264 edge stage"
+        );
+    });
 }
