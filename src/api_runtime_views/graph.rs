@@ -8,6 +8,7 @@ use crate::application::output_path::OutputPath;
 use crate::domain::stage::{StageKey, StageKind};
 use crate::media::engine::MediaEngine;
 use crate::types::Output;
+use std::collections::HashSet;
 
 pub(crate) async fn processing_graph(
     engine: &MediaEngine,
@@ -104,8 +105,27 @@ pub(crate) async fn processing_graph(
         "push(MediaPacket)",
     ));
 
+    let pipeline_outputs: Vec<_> = outputs
+        .iter()
+        .filter(|output| output.pipeline_id == pipeline_id)
+        .collect();
+    let ingest_video_codec = ingest
+        .and_then(|ingest| ingest.video.as_ref())
+        .map(|video| video.codec.as_str());
+    let visible_stage_keys: HashSet<StageKey> = pipeline_outputs
+        .iter()
+        .filter(|output| {
+            ingest.is_some()
+                && (output.desired_state == "running" || egresses.contains_key(&output.id))
+        })
+        .flat_map(|output| {
+            OutputPath::resolve(pipeline_id, &output.encoding, &output.url)
+                .needed_stage_keys(ingest_video_codec)
+        })
+        .collect();
+
     for (key, (stage_ring, token)) in transcoder_buffers.iter() {
-        if key.pipeline.as_str() == pipeline_id {
+        if key.pipeline.as_str() == pipeline_id && visible_stage_keys.contains(key) {
             let kind = &key.kind;
             let stage_key_str = kind.to_string();
             let stage_id = kind.graph_node_id(pipeline_id);
@@ -151,11 +171,6 @@ pub(crate) async fn processing_graph(
             }
         }
     }
-
-    let pipeline_outputs: Vec<_> = outputs
-        .iter()
-        .filter(|output| output.pipeline_id == pipeline_id)
-        .collect();
     let ingest_is_hevc = ingest
         .and_then(|ingest| ingest.video.as_ref())
         .map(|video| video.codec == "hevc" || video.codec == "h265")
