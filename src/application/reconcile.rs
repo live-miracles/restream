@@ -1,5 +1,7 @@
 use crate::application::output_path::OutputPath;
+use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
 use crate::domain::stage::StageKey;
+use crate::media::engine::MediaEngine;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,10 +143,61 @@ pub fn collect_needed_stage_keys<'a>(
     needed_stages
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordingCommand {
+    Start {
+        pipeline_name: String,
+        pipeline_id: String,
+        input_source: Option<String>,
+    },
+    Stop {
+        pipeline_id: String,
+    },
+}
+
+pub async fn build_recording_reconcile_plan(
+    engine: &MediaEngine,
+    pipeline_catalog: &dyn PipelineCatalog,
+    meta_store: &dyn MetaStore,
+    ingest_disconnect_grace_ms: u64,
+) -> Result<Vec<RecordingCommand>, PipelineCatalogError> {
+    let pipelines = pipeline_catalog.list_pipelines().await?;
+    let mut commands = Vec::new();
+
+    for pipeline in pipelines {
+        let has_ingest = engine.has_active_ingest(&pipeline.id).await;
+        let effective_has_ingest = has_ingest
+            || engine
+                .has_recent_ingest_disconnect(&pipeline.id, ingest_disconnect_grace_ms)
+                .await;
+        let rec_enabled =
+            crate::application::recording::load_recording_enabled(meta_store, &pipeline.id).await;
+        let rec_active = engine.is_recording_active(&pipeline.id).await;
+
+        match decide_recording_action(rec_enabled, effective_has_ingest, rec_active) {
+            RecordingAction::Keep => {}
+            RecordingAction::Start => commands.push(RecordingCommand::Start {
+                pipeline_name: pipeline.name,
+                pipeline_id: pipeline.id,
+                input_source: pipeline.input_source,
+            }),
+            RecordingAction::Stop => commands.push(RecordingCommand::Stop {
+                pipeline_id: pipeline.id,
+            }),
+        }
+    }
+
+    Ok(commands)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::ports::{MetaLookupFuture, PipelineCatalogFuture};
     use crate::domain::stage::StageKind;
+    use crate::types::Pipeline;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     fn test_retry_policy() -> OutputRetryPolicy {
         OutputRetryPolicy {
@@ -271,5 +324,108 @@ mod tests {
             )
         )));
         assert_eq!(stages.len(), 3);
+    }
+
+    struct FakePipelineCatalog {
+        pipelines: Vec<Pipeline>,
+        error: Option<&'static str>,
+    }
+
+    impl PipelineCatalog for FakePipelineCatalog {
+        fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a> {
+            Box::pin(async move {
+                if let Some(message) = self.error {
+                    return Err(PipelineCatalogError::new(message));
+                }
+                Ok(self.pipelines.clone())
+            })
+        }
+    }
+
+    struct FakeMetaStore {
+        values: Mutex<HashMap<String, String>>,
+    }
+
+    impl MetaStore for FakeMetaStore {
+        fn get_meta<'a>(&'a self, key: &'a str) -> MetaLookupFuture<'a> {
+            Box::pin(async move {
+                Ok(self
+                    .values
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(key)
+                    .cloned())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_reconcile_plan_starts_enabled_pipeline_with_ingest() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipeline-1", "stream-one", "rtmp")
+            .await
+            .unwrap();
+        let catalog = FakePipelineCatalog {
+            pipelines: vec![Pipeline {
+                id: "pipeline-1".to_string(),
+                name: "Pipeline One".to_string(),
+                stream_key: "stream-one".to_string(),
+                input_source: Some("cam-1".to_string()),
+                encoding: None,
+                srt_ingest_policy: None,
+            }],
+            error: None,
+        };
+        let store = FakeMetaStore {
+            values: Mutex::new(HashMap::from([(
+                "recording_enabled:pipeline-1".to_string(),
+                "1".to_string(),
+            )])),
+        };
+
+        let commands = build_recording_reconcile_plan(&engine, &catalog, &store, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            commands,
+            vec![RecordingCommand::Start {
+                pipeline_name: "Pipeline One".to_string(),
+                pipeline_id: "pipeline-1".to_string(),
+                input_source: Some("cam-1".to_string()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn recording_reconcile_plan_stops_disabled_active_recording() {
+        let engine = MediaEngine::new();
+        let _token = engine.register_recording("pipeline-1").await;
+        let catalog = FakePipelineCatalog {
+            pipelines: vec![Pipeline {
+                id: "pipeline-1".to_string(),
+                name: "Pipeline One".to_string(),
+                stream_key: "stream-one".to_string(),
+                input_source: None,
+                encoding: None,
+                srt_ingest_policy: None,
+            }],
+            error: None,
+        };
+        let store = FakeMetaStore {
+            values: Mutex::new(HashMap::new()),
+        };
+
+        let commands = build_recording_reconcile_plan(&engine, &catalog, &store, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            commands,
+            vec![RecordingCommand::Stop {
+                pipeline_id: "pipeline-1".to_string(),
+            }]
+        );
     }
 }

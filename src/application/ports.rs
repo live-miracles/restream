@@ -6,6 +6,8 @@ use std::pin::Pin;
 
 pub type PipelineLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Pipeline>, PipelineLookupError>> + Send + 'a>>;
+pub type PipelineCatalogFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<Pipeline>, PipelineCatalogError>> + Send + 'a>>;
 pub type MetaLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<String>, MetaLookupError>> + Send + 'a>>;
 pub type MetaWriteFuture<'a> =
@@ -33,6 +35,27 @@ impl fmt::Display for PipelineLookupError {
 impl std::error::Error for PipelineLookupError {}
 
 #[derive(Debug, Clone)]
+pub struct PipelineCatalogError {
+    message: String,
+}
+
+impl PipelineCatalogError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for PipelineCatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PipelineCatalogError {}
+
+#[derive(Debug, Clone)]
 pub struct MetaLookupError {
     message: String,
 }
@@ -55,6 +78,10 @@ impl std::error::Error for MetaLookupError {}
 
 pub trait PipelineLookup: Send + Sync {
     fn get_pipeline_by_stream_key<'a>(&'a self, stream_key: &'a str) -> PipelineLookupFuture<'a>;
+}
+
+pub trait PipelineCatalog: Send + Sync {
+    fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a>;
 }
 
 pub trait MetaStore: Send + Sync {
@@ -93,6 +120,16 @@ impl PipelineLookup for SqlitePipelineLookup {
             crate::db::get_pipeline_by_stream_key(&self.pool, stream_key)
                 .await
                 .map_err(|err| PipelineLookupError::new(err.to_string()))
+        })
+    }
+}
+
+impl PipelineCatalog for SqlitePipelineLookup {
+    fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a> {
+        Box::pin(async move {
+            crate::db::list_pipelines(&self.pool)
+                .await
+                .map_err(|err| PipelineCatalogError::new(err.to_string()))
         })
     }
 }
@@ -151,6 +188,24 @@ mod tests {
         let pipeline = lookup.get_pipeline_by_stream_key("missing").await.unwrap();
 
         assert!(pipeline.is_none());
+    }
+
+    #[tokio::test]
+    async fn sqlite_pipeline_catalog_lists_pipelines() {
+        let pool = test_pool().await;
+        crate::db::create_pipeline(&pool, "p1", "Pipeline One", "stream-one", None, None, None)
+            .await
+            .unwrap();
+        crate::db::create_pipeline(&pool, "p2", "Pipeline Two", "stream-two", None, None, None)
+            .await
+            .unwrap();
+        let lookup = SqlitePipelineLookup::new(pool);
+
+        let pipelines = lookup.list_pipelines().await.unwrap();
+
+        assert_eq!(pipelines.len(), 2);
+        assert!(pipelines.iter().any(|pipeline| pipeline.id == "p1"));
+        assert!(pipelines.iter().any(|pipeline| pipeline.id == "p2"));
     }
 
     #[tokio::test]

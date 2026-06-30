@@ -54,9 +54,9 @@ pub mod types;
 
 use crate::application::output_path::OutputPath;
 use crate::application::reconcile::{
-    OutputFailureWindow, OutputStartAction, OutputStopAction, RecordingAction,
-    collect_needed_stage_keys, decide_output_start_action, decide_output_stop_action,
-    decide_recording_action, next_output_retry_count,
+    OutputFailureWindow, OutputStartAction, OutputStopAction, RecordingCommand,
+    build_recording_reconcile_plan, collect_needed_stage_keys, decide_output_start_action,
+    decide_output_stop_action, next_output_retry_count,
 };
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
@@ -359,7 +359,10 @@ pub async fn run_app() {
     ));
     let srt_ingest_global =
         crate::application::srt_ingest::load_global_srt_ingest_config(&meta_store).await;
-    let srt_ingest_pipelines = db::list_pipelines(&pool).await.unwrap_or_default();
+    let pipeline_store = crate::application::ports::SqlitePipelineLookup::new(pool.clone());
+    let pipeline_catalog: Arc<dyn crate::application::ports::PipelineCatalog> =
+        Arc::new(pipeline_store.clone());
+    let srt_ingest_pipelines = pipeline_catalog.list_pipelines().await.unwrap_or_default();
     let srt_ingest_policy_store = Arc::new(crate::media::srt::SrtIngestPolicyStore::new(
         srt_ingest_global,
         &srt_ingest_pipelines,
@@ -368,9 +371,8 @@ pub async fn run_app() {
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
     let engine = Arc::new(MediaEngine::new());
-    let pipeline_lookup: Arc<dyn crate::application::ports::PipelineLookup> = Arc::new(
-        crate::application::ports::SqlitePipelineLookup::new(pool.clone()),
-    );
+    let pipeline_lookup: Arc<dyn crate::application::ports::PipelineLookup> =
+        Arc::new(pipeline_store);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     engine.set_event_sink(event_tx);
     {
@@ -1067,43 +1069,45 @@ pub async fn run_app() {
         }
 
         // Reconcile recordings: auto-start/stop based on enabled flag and ingest state
-        let pipelines = match db::list_pipelines(&pool).await {
-            Ok(p) => p,
+        let recording_commands = match build_recording_reconcile_plan(
+            &engine,
+            pipeline_catalog.as_ref(),
+            &meta_store,
+            tuning.ingest_disconnect_grace_ms,
+        )
+        .await
+        {
+            Ok(commands) => commands,
             Err(e) => {
-                warn!(tick = reconciler_tick, err = %e, "DB error reading pipelines");
+                warn!(
+                    tick = reconciler_tick,
+                    err = %e,
+                    "pipeline catalog error while reconciling recordings"
+                );
                 continue;
             }
         };
-        for pipeline in pipelines {
-            let has_ingest = engine.has_active_ingest(&pipeline.id).await;
-            let effective_has_ingest = has_ingest
-                || engine
-                    .has_recent_ingest_disconnect(&pipeline.id, tuning.ingest_disconnect_grace_ms)
-                    .await;
-
-            // Reconcile recordings
-            let rec_enabled =
-                crate::application::recording::load_recording_enabled(&meta_store, &pipeline.id)
-                    .await;
-            let rec_active = engine.is_recording_active(&pipeline.id).await;
-
-            match decide_recording_action(rec_enabled, effective_has_ingest, rec_active) {
-                RecordingAction::Keep => {}
-                RecordingAction::Start => {
-                    let recording_settings =
-                        crate::application::recording::load_recording_settings(&meta_store).await;
+        let recording_settings =
+            crate::application::recording::load_recording_settings(&meta_store).await;
+        for command in recording_commands {
+            match command {
+                RecordingCommand::Start {
+                    pipeline_name,
+                    pipeline_id,
+                    input_source,
+                } => {
                     crate::application::recording::spawn_recording_task(
                         engine.clone(),
-                        pipeline.name.clone(),
-                        pipeline.id.clone(),
-                        pipeline.input_source.clone(),
+                        pipeline_name,
+                        pipeline_id,
+                        input_source,
                         reconciler_media_dir.clone(),
-                        recording_settings,
+                        recording_settings.clone(),
                     )
                     .await;
                 }
-                RecordingAction::Stop => {
-                    engine.unregister_recording(&pipeline.id).await;
+                RecordingCommand::Stop { pipeline_id } => {
+                    engine.unregister_recording(&pipeline_id).await;
                 }
             }
         }
