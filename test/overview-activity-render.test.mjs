@@ -154,6 +154,57 @@ test("buildRestreamActivityBursts respects the nearby 20s window for same-target
   assert.equal(bursts.length, 2);
 });
 
+test("buildRestreamActivityBursts models api-smoke restart cycles as startup, shutdown, and restart bursts", async () => {
+  const { buildRestreamActivityBursts } = await loadOverviewActivityModule();
+
+  const bursts = buildRestreamActivityBursts([
+    makeLog({
+      id: 1,
+      ts: isoAt(0),
+      eventType: "restream.http.ready",
+      message: "http api ready",
+    }),
+    makeLog({
+      id: 2,
+      ts: isoAt(5),
+      target: "restream::server",
+      message: "rtmp server listening on 0.0.0.0:1935",
+    }),
+    makeLog({
+      id: 3,
+      ts: isoAt(41),
+      eventType: "restream.shutdown.requested",
+      message: "shutdown requested",
+      fields: JSON.stringify({ correlation_id: "sys-0000000000000401" }),
+    }),
+    makeLog({
+      id: 4,
+      ts: isoAt(49),
+      eventType: "restream.shutdown.completed",
+      message: "shutdown completed",
+      fields: JSON.stringify({ correlation_id: "sys-0000000000000401" }),
+    }),
+    makeLog({
+      id: 5,
+      ts: isoAt(76),
+      eventType: "restream.http.ready",
+      message: "http api ready",
+    }),
+    makeLog({
+      id: 6,
+      ts: isoAt(83),
+      target: "restream::server",
+      message: "rtmp server listening on 0.0.0.0:1935",
+    }),
+  ]);
+
+  assert.equal(bursts.length, 3);
+  assert.equal(bursts[0].headline, "Restream startup sequence");
+  assert.equal(bursts[1].headline, "Restream shutdown sequence");
+  assert.ok(bursts[1].detailBadges.includes("Link: correlation id"));
+  assert.equal(bursts[2].headline, "Restream startup sequence");
+});
+
 test("renderRestreamActivityCards returns grouped cards without leaking correlation field keys", async () => {
   const { renderRestreamActivityCards } = await loadOverviewActivityModule();
 

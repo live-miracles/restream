@@ -224,6 +224,125 @@ test("buildPipelineIncidents splits long linked chains to avoid 40s false-positi
   assert.equal(incidents[1].headline, "Output lifecycle changed");
 });
 
+test("buildPipelineIncidents models recovery harness failures as one burst followed by a separate recovery burst", async () => {
+  const { buildPipelineIncidents } = await loadHistoryRenderModule();
+
+  const incidents = buildPipelineIncidents([
+    makeLog({
+      id: 1,
+      ts: isoAt(0),
+      eventType: "lifecycle.start",
+      outputId: "out-1",
+      message: "output job started",
+      fields: JSON.stringify({ correlation_id: "out-0000000000000101" }),
+    }),
+    makeLog({
+      id: 2,
+      ts: isoAt(6),
+      level: "WARN",
+      target: "restream::media::external_transcoder",
+      message:
+        "[ext-transcoder] ffmpeg stderr (pipe-1:video:720p): upload timeout",
+      fields: JSON.stringify({
+        correlation_id: "out-0000000000000101",
+        stage_encoding: "video:720p",
+        stage_backend: "external_ffmpeg",
+      }),
+    }),
+    makeLog({
+      id: 3,
+      ts: isoAt(11),
+      outputId: "out-1",
+      eventType: "egress.failed",
+      level: "ERROR",
+      message: "output failed",
+      fields: JSON.stringify({
+        correlation_id: "out-0000000000000101",
+        phase: "upload_segment",
+      }),
+    }),
+    makeLog({
+      id: 4,
+      ts: isoAt(35),
+      eventType: "ingest.connected",
+      message: "publisher connected",
+    }),
+    makeLog({
+      id: 5,
+      ts: isoAt(40),
+      eventType: "stage.started",
+      message: "stage started",
+      fields: JSON.stringify({ encoding: "video:720p" }),
+    }),
+    makeLog({
+      id: 6,
+      ts: isoAt(46),
+      outputId: "out-1",
+      eventType: "egress.started",
+      message: "output started",
+    }),
+  ]);
+
+  assert.equal(incidents.length, 2);
+  assert.equal(incidents[0].headline, "External stage fault impacted outputs");
+  assert.ok(incidents[0].detailBadges.includes("Link: correlation id"));
+  assert.equal(incidents[1].headline, "Pipeline came online");
+});
+
+test("buildPipelineIncidents keeps fault-resilience cascades separate from unrelated output restarts in the same pipeline", async () => {
+  const { buildPipelineIncidents } = await loadHistoryRenderModule();
+
+  const incidents = buildPipelineIncidents([
+    makeLog({
+      id: 1,
+      ts: isoAt(0),
+      eventType: "ingest.disconnected",
+      message: "publisher disconnected",
+    }),
+    makeLog({
+      id: 2,
+      ts: isoAt(5),
+      eventType: "stage.stopped",
+      message: "stage stopped",
+      fields: JSON.stringify({ encoding: "video:720p" }),
+    }),
+    makeLog({
+      id: 3,
+      ts: isoAt(10),
+      outputId: "out-1",
+      eventType: "egress.failed",
+      level: "ERROR",
+      message: "output failed",
+      fields: JSON.stringify({
+        correlation_id: "out-0000000000000201",
+        phase: "connect",
+      }),
+    }),
+    makeLog({
+      id: 4,
+      ts: isoAt(17),
+      outputId: "out-2",
+      eventType: "lifecycle.start",
+      message: "output job started",
+      fields: JSON.stringify({ correlation_id: "out-0000000000000202" }),
+    }),
+    makeLog({
+      id: 5,
+      ts: isoAt(23),
+      outputId: "out-2",
+      eventType: "egress.started",
+      message: "output started",
+      fields: JSON.stringify({ correlation_id: "out-0000000000000202" }),
+    }),
+  ]);
+
+  assert.equal(incidents.length, 2);
+  assert.equal(incidents[0].headline, "Input loss cascaded downstream");
+  assert.ok(incidents[0].detailBadges.includes("Cause: input disconnected"));
+  assert.equal(incidents[1].headline, "Output lifecycle changed");
+  assert.ok(incidents[1].detailBadges.includes("Impact: 1 output start"));
+});
+
 test("renderPipelineHistory shows operator-friendly nearby-link badges without exposing raw correlation field keys", async () => {
   const { document } = installFakeDom();
   const list = document.createElement("div");

@@ -11,6 +11,7 @@ npx tsc -p tsconfig.json --noEmit
 node ./scripts/check-api-drift.mjs
 npx tsc -p tsconfig.json --outDir "$TMP_DIR"
 API_CONTRACT_JS_DIR="$TMP_DIR" node --test test/frontend-api-contract.test.mjs
+bash scripts/check-history-grouping.sh
 scripts/resource-limit cargo test --test api -- --nocapture
 scripts/resource-limit cargo build --bin restream --bin test_harness
 RESTREAM_BIN=target/debug/restream \
