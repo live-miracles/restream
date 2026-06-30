@@ -27,6 +27,12 @@ pub struct PipelineFileIngestState {
 }
 
 #[derive(Debug)]
+pub enum ClearFileIngestsError {
+    PipelineStore(PipelineStoreError),
+    IngestLookup(IngestLookupError),
+}
+
+#[derive(Debug)]
 pub enum ResolveFileIngestError {
     IngestLookup(IngestLookupError),
     PipelineStore(PipelineStoreError),
@@ -71,6 +77,32 @@ pub async fn load_pipeline_file_ingest_state(
     };
 
     Ok(PipelineFileIngestState { ingest, running })
+}
+
+pub async fn clear_stream_key_file_ingests(
+    pipeline_lookup: &dyn PipelineStore,
+    ingest_lookup: &dyn IngestLookup,
+    engine: &MediaEngine,
+    stream_key: &str,
+) -> Result<(), ClearFileIngestsError> {
+    if let Some(pipeline) = pipeline_lookup
+        .get_pipeline_by_stream_key(stream_key)
+        .await
+        .map_err(ClearFileIngestsError::PipelineStore)?
+    {
+        engine.unregister_ingest(&pipeline.id).await;
+    }
+
+    let ingests = ingest_lookup
+        .list_ingests_for_stream_key(stream_key)
+        .await
+        .map_err(ClearFileIngestsError::IngestLookup)?;
+    for ingest in ingests {
+        let _ = engine.stop_file_ingest_child(&ingest.id).await;
+        engine.clear_file_ingest_running(&ingest.id).await;
+    }
+
+    Ok(())
 }
 
 pub async fn authenticate_publish_stream_key(
@@ -386,5 +418,45 @@ mod tests {
 
         assert_eq!(state.ingest.unwrap().id, "ingest-1");
         assert!(state.running);
+    }
+
+    #[tokio::test]
+    async fn clear_stream_key_file_ingests_unregisters_pipeline_and_clears_running_state() {
+        let ingest = FakeIngestLookup::ingest("ingest-1", "stream-key");
+        let pipeline = Pipeline {
+            id: "pipeline-1".to_string(),
+            name: "Pipeline".to_string(),
+            stream_key: "stream-key".to_string(),
+            input_source: None,
+            encoding: None,
+            srt_ingest_policy: None,
+        };
+        let ingest_lookup = FakeIngestLookup {
+            by_id: HashMap::new(),
+            by_stream_key: HashMap::from([("stream-key".to_string(), vec![ingest.clone()])]),
+            error: None,
+        };
+        let pipeline_lookup = FakePipelineStore {
+            pipelines: HashMap::from([("stream-key".to_string(), pipeline.clone())]),
+            error: None,
+        };
+        let engine = MediaEngine::new();
+        let _registration = engine
+            .try_register_ingest_attempt(&pipeline.id, &pipeline.stream_key, "file")
+            .await
+            .expect("pipeline should register");
+        engine.mark_file_ingest_running(&ingest.id).await;
+
+        clear_stream_key_file_ingests(
+            &pipeline_lookup,
+            &ingest_lookup,
+            &engine,
+            &pipeline.stream_key,
+        )
+        .await
+        .unwrap();
+
+        assert!(!engine.has_active_ingest(&pipeline.id).await);
+        assert!(!engine.is_file_ingest_running(&ingest.id).await);
     }
 }

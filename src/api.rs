@@ -33,11 +33,12 @@ use tracing::{error, warn};
 use crate::alerts;
 use crate::api_view_models;
 use crate::application::ingest::{
-    ResolveFileIngestError, load_pipeline_file_ingest_state, resolve_file_ingest_context,
+    ResolveFileIngestError, clear_stream_key_file_ingests, load_pipeline_file_ingest_state,
+    resolve_file_ingest_context,
 };
 use crate::application::ingest_security::save_ingest_security_config;
 use crate::application::ports::{
-    IngestLookup, PipelineStore, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
+    IngestLookup, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
 };
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::settings::load_settings_snapshot;
@@ -2303,32 +2304,6 @@ fn spawn_file_ingest_child(
     })
 }
 
-async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
-    let _ = engine.stop_file_ingest_child(ingest_id).await;
-}
-
-async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &str) {
-    if let Ok(Some(pipeline)) = SqlitePipelineStore::new(state.db.clone())
-        .get_pipeline_by_stream_key(stream_key)
-        .await
-    {
-        state.engine.unregister_ingest(&pipeline.id).await;
-    }
-}
-
-async fn stop_file_ingests_for_stream_key(state: &AppState, stream_key: &str) {
-    unregister_file_ingest_for_stream_key(state, stream_key).await;
-    if let Ok(ingests) = SqliteIngestLookup::new(state.db.clone())
-        .list_ingests_for_stream_key(stream_key)
-        .await
-    {
-        for ingest in ingests {
-            stop_file_ingest_child(&state.engine, &ingest.id).await;
-            state.engine.clear_file_ingest_running(&ingest.id).await;
-        }
-    }
-}
-
 async fn pipeline_file_ingest_get_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2400,7 +2375,17 @@ async fn pipeline_file_ingest_put_handler(
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
-    stop_file_ingests_for_stream_key(&state, &pipeline.stream_key).await;
+    if clear_stream_key_file_ingests(
+        &SqlitePipelineStore::new(state.db.clone()),
+        &SqliteIngestLookup::new(state.db.clone()),
+        &state.engine,
+        &pipeline.stream_key,
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
 
     let loop_val = payload.loop_flag.unwrap_or(false);
     let start_time = payload.start_time.unwrap_or_default();
@@ -2496,7 +2481,17 @@ async fn pipeline_file_ingest_delete_handler(
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
-    stop_file_ingests_for_stream_key(&state, &pipeline.stream_key).await;
+    if clear_stream_key_file_ingests(
+        &SqlitePipelineStore::new(state.db.clone()),
+        &SqliteIngestLookup::new(state.db.clone()),
+        &state.engine,
+        &pipeline.stream_key,
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     if let Ok(ingests) = SqliteIngestLookup::new(state.db.clone())
         .list_ingests_for_stream_key(&pipeline.stream_key)
         .await
@@ -2878,9 +2873,15 @@ async fn ingests_delete_handler(
         .get_ingest(&id)
         .await
     {
-        unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;
+        let _ = clear_stream_key_file_ingests(
+            &SqlitePipelineStore::new(state.db.clone()),
+            &SqliteIngestLookup::new(state.db.clone()),
+            &state.engine,
+            &ingest.stream_key,
+        )
+        .await;
     }
-    stop_file_ingest_child(&state.engine, &id).await;
+    let _ = state.engine.stop_file_ingest_child(&id).await;
     state.engine.clear_file_ingest_running(&id).await;
 
     let _ = db::delete_ingest(&state.db, &id).await;
@@ -3042,8 +3043,19 @@ async fn ingests_stop_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;
-    stop_file_ingest_child(&state.engine, &id).await;
+    if clear_stream_key_file_ingests(
+        &SqlitePipelineStore::new(state.db.clone()),
+        &SqliteIngestLookup::new(state.db.clone()),
+        &state.engine,
+        &ingest.stream_key,
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let _ = state.engine.stop_file_ingest_child(&id).await;
     state.engine.clear_file_ingest_running(&id).await;
 
     Json(serde_json::json!({
