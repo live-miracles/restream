@@ -3092,14 +3092,13 @@ async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
         Err(_) => vec![],
     };
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    state
-        .engine
-        .health_snapshot_with_disconnect_grace(
-            &pipeline_ids,
-            &recording_enabled,
-            state.ingest_disconnect_grace_ms,
-        )
-        .await
+    crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        state.ingest_disconnect_grace_ms,
+    )
+    .await
 }
 
 async fn v1_engine_health_handler(
@@ -4235,10 +4234,13 @@ async fn pipeline_alerts_handler(
 
     let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
-    let snapshot = state
-        .engine
-        .health_snapshot(std::slice::from_ref(&pipeline_id), &recording_enabled)
-        .await;
+    let snapshot = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        std::slice::from_ref(&pipeline_id),
+        &recording_enabled,
+        0,
+    )
+    .await;
     let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
     let mut alert_list = alerts::derive_alerts(&snapshot);
     state
@@ -4265,10 +4267,13 @@ async fn aggregate_alerts_handler(
         Err(_) => vec![],
     };
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let snapshot = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let snapshot = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
     let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
     let mut alert_list = alerts::derive_alerts(&snapshot);
     state.alert_tracker.track(&mut alert_list);
@@ -4327,10 +4332,13 @@ async fn v1_overview_handler(
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
     let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let snapshot = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let snapshot = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
 
     let alert_list = alerts::derive_alerts(&snapshot);
     let critical = alert_list
@@ -4517,10 +4525,13 @@ async fn agent_investigation_handler(
         .map(|pid| vec![pid])
         .unwrap_or_else(|| pipelines.iter().map(|p| p.id.clone()).collect());
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let health = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let health = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
     let alerts = alerts::derive_alerts(&health);
     let graph = if let Some(pid) = request.pipeline_id.as_deref()
         && pipeline_exists
@@ -4849,10 +4860,13 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     let jobs_json = api_view_models::job_response_json_list(&jobs);
     let ingests = db::list_ingests(&state.db).await.unwrap_or_default();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let health = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
     let alerts = alerts::derive_alerts(&health);
     let events = state.engine.recent_events(events::MAX_EVENTS, None);
     let engine_telemetry = crate::media::engine_views::engine_telemetry(&state.engine).await;
@@ -5273,10 +5287,13 @@ async fn verify_agent_operation(
         .collect();
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let health = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
     let alerts = alerts::derive_alerts(&health);
     let mut checks = Vec::new();
     let mut success = true;
@@ -5450,10 +5467,13 @@ async fn current_agent_alert_count(state: &AppState) -> usize {
         .map(|pipeline| pipeline.id.clone())
         .collect();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = state
-        .engine
-        .health_snapshot(&pipeline_ids, &recording_enabled)
-        .await;
+    let health = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        &pipeline_ids,
+        &recording_enabled,
+        0,
+    )
+    .await;
     alerts::derive_alerts(&health).len()
 }
 
@@ -5946,10 +5966,13 @@ async fn v1_pipeline_summary_handler(
 
     let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
-    let snapshot = state
-        .engine
-        .health_snapshot(std::slice::from_ref(&pipeline_id), &recording_enabled)
-        .await;
+    let snapshot = crate::media::engine_views::health_snapshot(
+        &state.engine,
+        std::slice::from_ref(&pipeline_id),
+        &recording_enabled,
+        0,
+    )
+    .await;
 
     let generated_at = snapshot["generatedAt"].as_str().unwrap_or("").to_string();
 
